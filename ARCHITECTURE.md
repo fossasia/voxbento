@@ -85,54 +85,60 @@ flowchart LR
 
 ## 6. Runtime components in this repository
 
-- `src/views/InterpreterConsoleView.vue`
-  - primary layout and orchestration surface
-- `src/composables/useInterpreterBooth.js`
-  - booth state, ingest lifecycle, handoff enforcement, reconnect behavior
-- `src/services/jitsiEmbed.js`
-  - Jitsi URL parsing and receive-first embed options
-- `src/services/ingestClient.js`
-  - ingest endpoint abstraction
-- `src/services/micStreamingManager.js`
-  - microphone stream, level meter, peer connection, stats, teardown
-- `src/services/boothRealtime.js`
-  - local + optional websocket booth sync transport
+- `app.py`
+  - Flask routes, Socket.IO event handlers, access token checks, and ingest API boundaries
+- `portal/booth_state.py`
+  - in-memory booth registry, participant role policy, active interpreter ownership, handoff state, and chat history
+- `portal/ingest.py`
+  - aiortc peer connection handling and FFmpeg/HLS recorder setup
+- `templates/base.html`
+  - Eventyay-style header and page shell
+- `templates/interpreter_booth.html`
+  - server-rendered booth page
+- `static/js/interpreter-booth.js`
+  - browser mic capture, WebRTC offer creation, Jitsi iframe setup, Socket.IO client behavior, and DOM updates
+- `static/css/interpreter.css`
+  - lightweight Eventyay-aligned styles
 
 ## 7. State model and ownership
 
-`useInterpreterBooth()` tracks:
+`BoothRegistry` tracks:
 
-- session metadata (`eventSlug`, `boothId`, `language`, `channelId`)
-- jitsi panel state
-- mic capture and device state
-- ingest transport state
-- pre-flight checklist state
-- participant roster and active interpreter
-- booth chat timeline
+- booth metadata (`booth_id`, `language`, `channel_id`)
+- active interpreter id
+- participant roster and roles
+- per-participant connection, mic, and ingest state
+- handoff state
+- internal booth chat timeline
+- ingest status
+
+The browser keeps only local UI/session state: joined participant id, mic stream, peer connection, current booth snapshot, and current chat messages. Server state remains the source of truth for who is active.
 
 ## 8. Active interpreter enforcement
 
 Enforcement rules:
 
 1. Start ingest only when local participant is active for the channel.
-2. On active participant reassignment, local live publisher is stopped.
-3. Coordinator role can override active ownership.
-4. Non-interpreter roles do not receive live-toggle actions.
+2. The server rejects ingest negotiation from standby interpreters.
+3. Active interpreter handoff clears the previous publisher's mic and ingest state.
+4. The server disconnects the previous ingest session when active ownership changes.
+5. Coordinator role can override active ownership.
+6. Non-interpreter roles cannot become active publishers.
 
 ## 9. Reconnect and teardown behavior
 
 Reconnect:
 
-- bounded exponential backoff for ingest reconnect attempts
-- status transitions: `connecting -> connected -> reconnecting/failed`
+- browser peer connection state is surfaced as connected/reconnecting/disconnected
+- stale live publishers are stopped when active ownership changes
+- durable reconnect policy belongs in the ingest service layer once production persistence is added
 
 Teardown:
 
 - close peer connection
-- clear interval/animation-frame timers
-- stop media tracks
-- close realtime transport channels
-- reset initialized state
+- stop recorder and peer connection server-side on disconnect
+- update booth state over Socket.IO
+- remove participant from in-memory booth on socket disconnect
 
 ## 10. Jitsi role vs ingest role
 
@@ -155,9 +161,11 @@ Ingest responsibilities:
 
 - interpreter portal is served as a web module in Eventyay deployment topology
 - ingest endpoint is reachable from interpreter browsers
-- optional websocket endpoint is available for cross-client booth state
-- FFmpeg/HLS infrastructure is externally provisioned and monitored
+- Socket.IO is available for cross-client booth state
+- local development uses locked PyAV wheels instead of compiling against system FFmpeg headers
+- aiortc `MediaRecorder` provides the HLS output path used by the prototype
 - viewer stage page consumes generated HLS language channels
+- PostgreSQL and Redis can be added later for persistence and multi-worker scale
 
 ## 12. Reliability and operational constraints
 

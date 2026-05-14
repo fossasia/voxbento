@@ -8,6 +8,12 @@ on:
       - dev
 
   pull_request:
+    branches:
+      - main
+      - develop
+      - dev
+
+  pull_request_review:
 
   workflow_dispatch:
 
@@ -32,13 +38,8 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: Create virtual environment
-        run: uv venv
-
-      - name: Install dependencies
-        run: |
-          uv pip install -r requirements.txt
+      - name: Sync dependencies
+        run: uv sync
 
       - name: Run tests
-        run: |
-          uv run pytest -v
+        run: uv run pytest -v
