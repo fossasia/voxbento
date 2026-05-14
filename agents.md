@@ -39,13 +39,14 @@ Expected behavior:
 
 ## Runtime architecture expectations
 
-- `src/services/jitsiEmbed.js` for Jitsi URL/iframe behavior
-- `src/services/ingestClient.js` for API negotiation boundaries
-- `src/services/micStreamingManager.js` for media + WebRTC lifecycle
-- `src/services/boothRealtime.js` for booth state/chat transport abstraction
-- `src/composables/useInterpreterBooth.js` for state orchestration and policy enforcement
+- `app.py` owns Flask routes, Socket.IO events, and ingest endpoint boundaries.
+- `portal/booth_state.py` owns in-memory booth state, participant roles, handoff policy, and chat history.
+- `portal/ingest.py` owns aiortc peer negotiation and FFmpeg/HLS recorder setup.
+- `templates/` owns server-rendered HTML.
+- `static/js/interpreter-booth.js` owns browser behavior for joining, chat, Jitsi iframe setup, mic capture, and WebRTC offer creation.
+- `static/css/interpreter.css` owns lightweight Eventyay-aligned styling.
 
-Do not collapse these boundaries into a single monolithic view component.
+Keep the browser layer small. Do not reintroduce a SPA, client-side router, frontend state store, or custom component system unless the Eventyay app integration requires it.
 
 ## Flow summary for implementation decisions
 
@@ -64,12 +65,14 @@ Do not collapse these boundaries into a single monolithic view component.
 
 Current default:
 
-- browser-local collaboration via `BroadcastChannel` + persisted chat state
+- Flask-SocketIO with in-memory booth state
+- booth invite URLs with optional temporary token query parameter
 
 Production path:
 
-- optional websocket transport (`VITE_BOOTH_WS_URL`) for cross-device booth sync
-- keep transport swappable without rewriting UI components
+- PostgreSQL for persistent booth/session records
+- Redis or another Socket.IO message queue when multiple app workers are deployed
+- keep viewer playback and ingest/HLS infrastructure outside the booth template layer
 
 ## Scaling and deployment assumptions
 
@@ -81,12 +84,20 @@ Production path:
 
 At minimum per change:
 
-- `npm run lint`
-- `npm run build`
+- `uv sync --python 3.13 --dev`
+- `uv run pytest`
+- manual browser check with two interpreter tabs and one coordinator tab
+
+Dependency invariants:
+
+- use the `uv` lockfile as the source of truth
+- keep local development on Python `3.13.x` unless the media stack is revalidated
+- avoid reintroducing `requirements.txt` as the primary bootstrap path
+- do not require building `av` from source for normal contributor setup
 
 For integrated environments:
 
-- execute the 3-browser scenario in `README.md` (speaker/interpreter/viewer)
+- execute the multi-user and media-path scenario in `README.md`
 - verify reconnect and handoff edge cases
 
 ## Documentation requirements
