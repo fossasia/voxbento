@@ -1,103 +1,201 @@
 # Eventyay Interpretation Portal
 
-Eventyay Interpretation Portal is a lightweight collaborative interpretation booth for multilingual live events.
+The Eventyay Interpretation Portal is a browser-based, interpreter-centric console that lets human interpreters broadcast simultaneous interpretation at live events — no OBS, no hardware encoder, no RTMP knowledge required.
 
-It is designed to feel like an Eventyay-first subsystem, not a standalone demo:
+It is built as an Eventyay-native subsystem. The portal feeds the Eventyay viewer playback surface with language-specific audio; it does not replace it.
 
-- **Jitsi** for monitoring and booth coordination
-- **WebRTC** for interpreter microphone ingest
-- **FFmpeg + HLS** for scalable viewer delivery
-- **Collaborative booth controls** for coordinators, active interpreters, and standby interpreters
+---
 
-The development environment is managed with `uv` and pinned to a working Python/media stack for Apple Silicon. See [`docs/development.md`](./docs/development.md) for the full bootstrap and troubleshooting guide.
+## What this repository is
 
-## System goals
+This repository contains:
 
-1. Run the interpreter workflow in one browser tab (no OBS/RTMP/external encoder).
-2. Keep monitoring and ingest separated (Jitsi is not the ingest transport).
-3. Enforce one active publisher per language channel.
-4. Support collaborative booth operations (participant state, handoff, internal chat).
-5. Stay visually and structurally aligned with Eventyay video UI patterns.
+- **The interpreter console** — a single-tab Vue 3 application where an interpreter monitors the floor session (via an embedded Jitsi frame) and broadcasts their spoken translation (via browser WebRTC mic capture → ingest API).
+- **The booth coordination layer** — a Flask + Socket.IO server that tracks participant roles (active interpreter, backup, coordinator, listener), enforces single-publisher-per-channel rules, handles handoffs, and runs internal booth chat.
+- **The ingest bridge** — an `aiortc`-powered endpoint that accepts WebRTC SDP offers from the interpreter's browser, terminates the audio connection server-side, and hands audio to FFmpeg for HLS segmentation.
 
-## Architecture summary
+The viewer-side playback (YouTube video clock + drift-corrected HLS audio) lives in the upstream Eventyay video module and is not part of this repository.
 
-- **Interpreter monitor path:** Jitsi iframe, receive-focused by default.
-- **Interpreter ingest path:** browser mic `getUserMedia` -> `RTCPeerConnection` offer/answer -> ingest endpoint.
-- **Distribution path:** ingest server -> FFmpeg transcode/segment -> HLS playlist -> viewer player.
-- **Coordination path:** Flask-SocketIO booth participant state and internal chat.
+---
 
-See [`ARCHITECTURE.md`](./ARCHITECTURE.md) for full diagrams and flow details.
+## What interpreter booths are
 
-## Interpreter workflow
+An **interpreter booth** is the virtual equivalent of a soundproofed glass booth at a UN-style conference. Each booth is scoped to one language channel (e.g., `hall-a-fr` for French interpretation of hall A).
 
-1. Join monitor room from a Jitsi URL.
-2. Join the booth as interpreter, coordinator, or listener.
-3. Confirm active/standby ownership in the participant list.
-4. Become active interpreter or receive coordinator assignment.
-5. Start interpretation stream to the ingest endpoint.
-6. Use booth chat and pass relay during handoff.
+Inside a booth:
 
-## Coordinator workflow
+| Role | What they do |
+|---|---|
+| **Active Interpreter** | The only person currently broadcasting live audio to viewers. |
+| **Backup Interpreter** | Ready to take over; can request or receive a handoff. |
+| **Coordinator** | Supervises the booth, can reassign the active role at any time. |
+| **Listener** | Observes the booth; no publishing rights. |
 
-1. Monitor participant states and speaking activity.
-2. Switch active interpreter when handoff is required.
-3. Use booth chat for terminology/rotation/technical coordination.
-4. Confirm only one live publisher per channel.
+The organizer generates a private, tokenized URL per language per session and shares it with the booth team. The interpreter opens the URL, goes through a preflight checklist (headset check, mic test, level meter), and clicks **Go Live** when ready. No other configuration is needed.
 
-## Viewer workflow (upstream Eventyay surface)
+---
 
-1. Viewer selects language on stage/video page.
-2. Viewer video clock (YouTube) remains master.
-3. Hidden audio (HLS) is synchronized via drift correction loop.
-4. Fallback to original audio remains available.
+## System architecture at a glance
 
-## Constraints and assumptions
+```
+Speaker/Presenter
+       │
+       ▼
+  Jitsi meeting ──────────────────────────────────────────────┐
+       │                                                       │
+       │  (interpreter monitors floor audio via Jitsi iframe) │
+       ▼                                                       ▼
+Interpreter Console (this repo)                     Eventyay Viewer
+  ┌─────────────────────────────┐                  ┌──────────────────────────┐
+  │  Jitsi iframe (receive-only)│                  │  YouTube video (master   │
+  │  Mic capture (WebRTC)       │                  │  clock)                  │
+  │  Booth chat / participant   │                  │  HLS language audio      │
+  │  grid / health panel        │                  │  (drift-corrected)       │
+  └────────────┬────────────────┘                  └──────────────────────────┘
+               │ WebRTC SDP offer/answer
+               ▼
+         Ingest API  (app.py / portal/ingest.py)
+               │ aiortc terminates RTP
+               ▼
+           FFmpeg  →  HLS segments  →  hls-output/
+```
 
-- Jitsi monitor should start with mic/camera muted (receive-first behavior).
-- Ingest audio must never be locally looped back.
-- DSP flags are enabled for mic capture:
-  - `echoCancellation: true`
-  - `noiseSuppression: true`
-  - `autoGainControl: true`
-- Ingest negotiation endpoint contract:
-  - `POST /api/interpreter/connect/{channel}`
-- One active interpreter publishes per language channel.
-- Initial collaboration state is in memory; production deploys should add PostgreSQL persistence and Redis-backed Socket.IO when multiple workers are used.
-- Local setup is pinned to Python `3.13.x`, `aiortc 1.14.0`, and `av 16.1.0`.
-- The repo no longer relies on building `av` against the system FFmpeg installation during normal development setup.
+Full diagrams: [docs/architecture/system-overview.md](docs/architecture/system-overview.md)
 
-## Scaling assumptions
+---
 
-- Initial target: medium event scale (hundreds of concurrent viewers per language through HLS distribution).
-- FFmpeg and HLS packaging are external infrastructure concerns.
-- CDN is optional for initial rollout; can be introduced as traffic profile grows.
+## Quick start
 
-## Local setup
+### Prerequisites
+
+- Python 3.13 (managed by `uv`)
+- Node.js 18+ and npm (for the Vue frontend build)
+- `uv` — the Python package manager ([install guide](https://docs.astral.sh/uv/getting-started/installation/))
+
+### Backend
 
 ```bash
+cd eventyay-interpretation-portal
+cp .env.example .env          # review and adjust if needed
 uv sync --python 3.13 --dev
 uv run python app.py
 ```
 
-Open:
+Server starts at `http://127.0.0.1:5000`.
+
+### Frontend (development mode)
+
+```bash
+npm install
+npm run dev
+```
+
+Vite dev server starts at `http://localhost:5173`.
+
+### Open an interpreter booth
 
 ```text
 http://127.0.0.1:5000/interpreter/hall-a-fr?token=dev-token&language=French
 ```
 
-If `BOOTH_ACCESS_TOKEN` is empty, the `token` query parameter is optional. If a token is configured, every booth URL and API call must use the matching temporary token.
+If `BOOTH_ACCESS_TOKEN` is empty in `.env`, the `token` parameter is optional. When a token is set, every booth URL and API call must include the matching token.
 
-## Local environment
+---
 
-Copy `.env.example` to `.env` and configure:
+## Environment variables
 
-- `HOST` - bind address for local development. Defaults to `127.0.0.1`.
-- `PORT` - Flask/Socket.IO server port.
-- `FLASK_DEBUG` - `1` to enable debug mode locally.
-- `SECRET_KEY` - Flask session secret.
-- `BOOTH_ACCESS_TOKEN` - optional temporary booth invite token.
-- `BOOTH_WS_CORS_ORIGINS` - allowed Socket.IO origins.
-- `DEFAULT_JITSI_ROOM` - monitoring room prefill.
+Copy `.env.example` to `.env`. All variables have safe development defaults.
+
+| Variable | Default | Description |
+|---|---|---|
+| `HOST` | `127.0.0.1` | Bind address. Use `0.0.0.0` only for LAN testing. |
+| `PORT` | `5000` | Flask/Socket.IO port. |
+| `FLASK_DEBUG` | `1` | Enable Flask debug mode locally. |
+| `SECRET_KEY` | `change-me` | Flask session secret. Change in production. |
+| `BOOTH_ACCESS_TOKEN` | _(empty)_ | Optional invite token for booth URLs. |
+| `BOOTH_WS_CORS_ORIGINS` | `*` | Allowed Socket.IO origins (comma-separated or `*`). |
+| `DEFAULT_JITSI_ROOM` | `https://meet.jit.si/eventyay-stage-room` | Pre-filled Jitsi monitoring URL. |
+| `JITSI_DOMAIN` | `meet.jit.si` | Jitsi server domain used for embed URL validation. |
+| `INGEST_HLS_ROOT` | `./hls-output` | Directory where FFmpeg writes HLS playlists and segments. |
+| `HLS_SEGMENT_SECONDS` | `2` | Target segment duration in seconds. |
+| `HLS_PLAYLIST_LENGTH` | `8` | Number of segments retained in the live playlist. |
+
+---
+
+## Workflows
+
+### Interpreter
+
+1. Open the tokenized booth URL.
+2. Complete the preflight checklist (headphones, mic test, level meter).
+3. Monitor the floor session via the embedded Jitsi frame.
+4. When assigned as active interpreter, click **Go Live**.
+5. Speak. Your audio is captured, sent via WebRTC, and segmented into HLS.
+6. Use booth chat for coordination, terminology, or handoff signalling.
+7. Click **Stop** or accept a coordinator handoff to yield the active role.
+
+### Coordinator
+
+1. Open the same booth URL with `role=coordinator`.
+2. Watch the participant grid for active/standby/connection status.
+3. Assign a different interpreter active via the participant grid.
+4. Use booth chat for rotation planning and terminology.
+
+### Viewer (upstream Eventyay surface)
+
+1. Open an Eventyay event stage page.
+2. Select a language from the audio track picker.
+3. The page loads HLS language audio alongside the YouTube video clock.
+4. A drift-correction loop keeps the language audio in sync with video.
+
+---
+
+## Running tests
+
+```bash
+uv run pytest
+```
+
+Tests cover booth state, participant role enforcement, ingest API boundaries, and Socket.IO event handlers. See [docs/testing/e2e-testing.md](docs/testing/e2e-testing.md).
+
+---
+
+## Documentation index
+
+| Document | Purpose |
+|---|---|
+| [docs/context/project-context.md](docs/context/project-context.md) | Product background and design intent |
+| [docs/architecture/system-overview.md](docs/architecture/system-overview.md) | Full system diagram and component map |
+| [docs/architecture/interpreter-flow.md](docs/architecture/interpreter-flow.md) | End-to-end interpreter audio pipeline |
+| [docs/architecture/jitsi-integration.md](docs/architecture/jitsi-integration.md) | How Jitsi is used for monitoring |
+| [docs/architecture/webrtc-ingest.md](docs/architecture/webrtc-ingest.md) | WebRTC ingest design and SDP flow |
+| [docs/frontend/frontend-architecture.md](docs/frontend/frontend-architecture.md) | Vue 3 component and service layer |
+| [docs/backend/backend-architecture.md](docs/backend/backend-architecture.md) | Flask routes, booth state, and ingest service |
+| [docs/specifications/interpreter-portal-spec.md](docs/specifications/interpreter-portal-spec.md) | Interpreter console feature specification |
+| [docs/specifications/booth-collaboration-spec.md](docs/specifications/booth-collaboration-spec.md) | Booth roles, handoff, and chat rules |
+| [docs/specifications/jitsi-room-management-spec.md](docs/specifications/jitsi-room-management-spec.md) | Jitsi room and embed policy |
+| [docs/setup/local-development.md](docs/setup/local-development.md) | Detailed local setup and troubleshooting |
+| [docs/testing/e2e-testing.md](docs/testing/e2e-testing.md) | Test suite overview and manual scenarios |
+| [docs/phases/implementation-roadmap.md](docs/phases/implementation-roadmap.md) | Current phase and future roadmap |
+
+---
+
+## Key constraints
+
+- Jitsi iframe starts muted (receive-only). Interpreters must use headphones to prevent echo.
+- Ingest audio is never looped back to the interpreter's local speakers.
+- Browser mic capture enables `echoCancellation`, `noiseSuppression`, and `autoGainControl`.
+- Exactly one active interpreter publishes per language channel at any time.
+- Booth state is currently in-memory. Production deployments require PostgreSQL and Redis.
+- Python runtime is pinned to `3.13.x`; `aiortc 1.14.0` and `av 16.1.0` are the validated media stack.
+
+---
+
+## Contributing
+
+See [AGENTS.md](AGENTS.md) for implementation guardrails and agent-specific instructions.
+See [docs/setup/local-development.md](docs/setup/local-development.md) for the full environment setup.
+
 - `JITSI_DOMAIN` - allowed Jitsi hostname for iframe validation.
 - `INGEST_HLS_ROOT` - local HLS output directory.
 - `HLS_SEGMENT_SECONDS` - FFmpeg HLS segment length.
