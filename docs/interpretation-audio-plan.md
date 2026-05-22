@@ -3,6 +3,8 @@
 > **Document status:** Working plan · Last updated: May 2026  
 > **Scope:** End-to-end design from mic capture to audience consumption, from local dev to single Docker Compose production deployment.
 
+> **Platform independence:** The interpretation portal is a self-contained product. Its primary output is a set of plain **HLS stream URLs** — one per language per event. These URLs can be consumed by Eventyay (Phase 6), embedded in any third-party event platform, pasted into a player widget, or played directly in a browser. Eventyay integration is optional and additive; it does not affect how the portal operates.
+
 ---
 
 ## Table of Contents
@@ -37,20 +39,24 @@ The portal is a **separate, standalone** application from the main Eventyay plat
 | `portal/ingest.py` | `aiortc` WebRTC peer connection handler. Receives browser SDP offer, returns answer. On RTP track arrival starts `aiortc.MediaRecorder` writing HLS (AAC 128kbps, 2s segments, 8-segment sliding window) to `hls-output/<channel_id>/`. | Working in isolation, not yet reliable behind NAT |
 | `portal/config.py` | Typed `Settings` dataclass from env vars. | Working |
 
-#### Frontend Stack Decision: Vanilla JS + Jinja2 Only
+#### Frontend Stack: Active UI vs. Prototype SPA
 
-**Vue is not used in this project.** The entire frontend is server-rendered Jinja2 templates with plain ES module JavaScript. No build step, no bundler, no framework.
+The portal has two frontends in the repository, but only one is the **active production path**:
 
-**Current frontend:**
-- Jinja2 template (`templates/interpreter_booth.html`) served by Flask
-- Vanilla ES module (`static/js/interpreter-booth.js`) with full WebRTC + Socket.IO client logic
-- Covers: mic capture, WebRTC offer/answer, Go Live / Mute / Pass Relay controls, participant roster, Jitsi iframe monitoring, internal chat
+| Path | Stack | Status |
+|---|---|---|
+| `templates/` + `static/js/` | Jinja2 + vanilla ES modules, Socket.IO | **Active — all new work goes here** |
+| `src/` | Vue 3 SPA (Vite build) | Prototype only — not wired to Flask, not used in production |
 
-**The `src/` directory (Vue SPA) is abandoned and will be deleted.** All new UI work happens in `templates/` + `static/js/` using plain JS and CSS. The design system in `static/css/interpreter.css` is kept and extended.
+All further UI development uses **server-rendered Jinja2 templates and plain ES module JavaScript** — no build step, no bundler, no frontend framework. This keeps the portal deployable as a single Python process without a Node.js build stage.
+
+**Why vanilla JS?** The interpreter console is a single-page tool with a fixed set of controls. A framework would add build complexity and bundle size with no meaningful benefit at this scope. Native browser APIs (`RTCPeerConnection`, `getUserMedia`, `MediaDevices`, `AnalyserNode`, `WebSocket`) cover every requirement directly.
+
+The `src/` Vue SPA was an early prototype. It is **not connected** to the Flask backend and will be removed in a dedicated cleanup PR (tracked separately). The `package.json`, `vite.config.js`, and related node config files remain in-tree until that PR lands — do not treat them as the active frontend stack.
 
 #### HLS Output Evidence
 
-A real HLS session output exists in `hls-output/demo-booth-audio/` — 9 segments at ~2s each (AAC in MPEG-TS). This confirms the aiortc → FFmpeg → HLS pipeline executes correctly at least locally.
+`hls-output/` is gitignored (local runtime output, not committed). When the aiortc ingest pipeline runs locally, it writes a sliding-window HLS playlist to `hls-output/<channel_id>/playlist.m3u8` plus MPEG-TS segment files (~2s each, AAC audio). A successful local test run produces approximately 9 segments in a demo session. This confirms the aiortc → FFmpeg → HLS pipeline executes correctly on a local machine before the MediaMTX migration.
 
 ---
 
@@ -137,26 +143,47 @@ Full WebRTC SFU with egress recording to HLS. More powerful (supports mixing, tr
 
 ### 3.2 Transport Protocol: WHIP
 
-WHIP (WebRTC-HTTP Ingest Protocol, RFC draft) is the standard way browsers push WebRTC to a media server. It replaces the custom `POST /api/interpreter/connect` SDP endpoint. The browser:
-1. Does `POST https://media-server/whip/<path>` with an SDP offer body
-2. Gets a 201 with SDP answer
-3. Opens RTP/RTCP to MediaMTX directly
+**What it is:** WHIP (WebRTC-HTTP Ingest Protocol) is an IETF-standardised way for a browser to push a WebRTC audio/video stream to a media server using a single HTTP POST. The browser sends an SDP offer as the request body; the server responds with an SDP answer; then RTP/UDP flows directly browser → server.
 
-This is a **minimal change** to the browser JS: swap the fetch URL from `/api/interpreter/connect/{channelId}` to `{MEDIAMTX_URL}/whip/{channelId}`.
+**Why chosen over the current custom SDP endpoint:** The current `POST /api/interpreter/connect` in Flask is effectively a hand-rolled version of WHIP. Replacing it with the standard means:
+- The browser can talk directly to MediaMTX without Flask in the audio path (Flask only validates auth, then hands back the WHIP URL)
+- Any WHIP-compatible media server can be swapped in later without changing browser code
+- Simpler code: `fetch(whipUrl, { method: 'POST', body: offer.sdp })` — no JSON wrapper, no custom schema
 
 ### 3.3 HLS Delivery and CORS
 
-MediaMTX serves HLS at `http://media-server:8888/<path>/index.m3u8`.  
-An Nginx reverse proxy sits in front, applies CORS headers, and optionally serves a CDN-friendly path.  
-Eventyay's `StreamSchedule.url` is set to the public-facing Nginx URL.
+**What HLS is:** HTTP Live Streaming (HLS) is Apple's adaptive streaming protocol. A server writes a rolling playlist file (`index.m3u8`) listing short audio/video segment files (`.ts`). A player fetches the playlist periodically and downloads new segments as they appear — this is how live streaming works on the web without any persistent connection.
+
+**Why HLS over WebRTC for audience delivery:** WebRTC gives < 500ms latency but requires a persistent signalling server per viewer and does not scale cost-effectively to hundreds of simultaneous listeners. HLS scales horizontally to any number of viewers via a standard CDN, works in every browser natively on Safari and with `hls.js` everywhere else, and the 2–4s latency is acceptable for simultaneous interpretation.
+
+**Why not DASH or other formats:** HLS has universal browser support and MediaMTX outputs it natively. DASH is equally capable but requires additional player library support with no advantage at this scale.
+
+MediaMTX serves HLS at `http://media-server:8888/<path>/index.m3u8`. An Nginx reverse proxy sits in front to apply CORS headers (so any origin — Eventyay, a third-party embed, or a standalone player — can fetch the playlist) and to terminate TLS. The public-facing URL is what operators share and what any consumer (Eventyay or otherwise) plugs in.
 
 ### 3.4 State Persistence
 
-Redis is added for:
-- Flask-SocketIO pubsub/broadcast (required for multi-process/multi-container Flask-SocketIO)
-- Booth registry state snapshot (survives container restart; use Redis hash per booth)
+**Why Redis for Socket.IO:** Flask-SocketIO in multi-worker mode requires a message queue so that an event emitted by worker A reaches clients connected to worker B. Redis pub/sub is the standard Flask-SocketIO backend for this. Without it, Socket.IO events only reach clients connected to the same process.
 
-The PostgreSQL database of the main Eventyay platform is **not** touched by the portal. The portal only calls Eventyay's REST API to register/update `StreamSchedule` entries.
+**Why SQLite for booth/auth data (Phase 4):** The portal's relational data (events, rooms, booths, invite tokens) has a simple schema with low write volume. SQLite handles this without an additional service. PostgreSQL can be substituted by changing one env var (`DATABASE_URL`) if the deployment grows.
+
+The PostgreSQL database of the main Eventyay platform is **not** touched by the portal. The portal only calls Eventyay's REST API when Eventyay integration is enabled — and that is entirely optional.
+
+### 3.5 Why Flask
+
+The project already uses Flask and Flask-SocketIO. Flask is kept because:
+- It is already integrated with aiortc and the booth state machine
+- Flask-SocketIO provides the realtime coordination layer (booth state sync, chat, role events) with minimal ceremony
+- Jinja2 template rendering is native to Flask — no template engine to add
+- The portal is a small, single-purpose service; Django or FastAPI would be overengineered
+
+### 3.6 Why Nginx
+
+Nginx sits in front of both Flask (portal) and MediaMTX (media) to:
+1. Terminate TLS so both services serve `https://`
+2. Set CORS response headers on HLS responses — MediaMTX does not set them by default
+3. Enforce `Cache-Control: no-cache` on HLS playlists (critical for live streams)
+4. Proxy WebSocket upgrades for Socket.IO
+5. Provide a single public IP/hostname for the entire stack
 
 ---
 
@@ -281,9 +308,9 @@ Local test sequence:
 6. Open `http://localhost:5000/hls/booth-1/playlist.m3u8` → should return valid M3U8
 7. Play in VLC or browser with HLS.js
 
-#### Step 5 — Preflight Checklist (already in Vue components)
+#### Step 5 — Preflight Checklist (port to Jinja2 + plain JS)
 
-The `PreflightChecklist.vue` component already exists. For the legacy frontend, add a pre-join mic permission check:
+The prototype Vue SPA contains a `PreflightChecklist.vue` component that can be used as a **reference for the logic**, but the implementation must be built fresh in the Jinja2 + plain JS frontend. Add a pre-join check screen in `templates/preflight.html` + `static/js/preflight.js`:
 
 ```js
 // Before showing "Go Live", confirm mic access
@@ -914,7 +941,9 @@ All styles in `static/css/interpreter.css` using CSS custom properties. No CSS f
 
 ## 9. Phase 6 — Eventyay Integration (Audio Links)
 
-**Goal:** The HLS audio stream URL appears in Eventyay exactly where a YouTube link would appear — per language, per room, per time slot.
+**Goal:** Wire the portal's HLS stream URLs into Eventyay's existing stream schedule UI so that audience members on the Eventyay viewer page can select an interpretation language. This phase is **entirely optional** \u2014 the portal functions without it; the HLS URLs it produces are usable in any player or platform regardless of whether Eventyay integration is configured.
+
+**Note on platform independence:** `StreamSchedule.url` already accepts an `hls` stream type. The interpretation portal provides a valid HLS URL at `https://media.your-domain.com/{event}/{lang}/index.m3u8`. There is nothing Eventyay-specific about this URL \u2014 it is a standard HLS manifest that any player can consume.
 
 ### 9.1 How Eventyay Currently Shows Stream URLs
 
@@ -984,7 +1013,7 @@ A new Django template partial is added to the talk/schedule viewer page:
 {% endif %}
 ```
 
-JavaScript (no jQuery, external ES module as required by `js.instructions.md`):
+JavaScript (no jQuery; plain ES module — no build step required in this repo):
 ```js
 // static/eventyay/js/interpretation-player.js
 import Hls from 'https://cdn.skypack.dev/hls.js';
@@ -1166,27 +1195,26 @@ server {
         proxy_pass http://mediamtx:8888;
         proxy_set_header Host $host;
 
-        # CORS — allow Eventyay viewer origin to fetch HLS
-        add_header Access-Control-Allow-Origin "https://your-eventyay-domain.com" always;
+        # CORS — allow any origin to fetch HLS (Eventyay, third-party embeds, standalone players)
+        # Restrict to specific origins in production if needed (e.g., "https://your-eventyay-domain.com")
+        add_header Access-Control-Allow-Origin "*" always;
         add_header Access-Control-Allow-Methods "GET, HEAD, OPTIONS" always;
         add_header Cache-Control "no-cache" always;
         if ($request_method = OPTIONS) {
             return 204;
         }
     }
-}
 
-# WHIP endpoint — interpreter browsers connect here
-server {
-    listen 443 ssl http2;
-    server_name media.your-domain.com;
-
+    # WHIP ingest — interpreter browsers POST their SDP offer here
+    # NOTE: Both HLS (/) and WHIP (/whip/) are in the same server block.
+    # Two server blocks with the same server_name would cause Nginx to silently
+    # ignore one of them — always merge locations under a single block.
     location /whip/ {
         proxy_pass http://mediamtx:8889/whip/;
         proxy_set_header Host $host;
-        # CORS for browser WHIP POST
+        # CORS for browser WHIP POST (interpreters may be on any origin)
         add_header Access-Control-Allow-Origin "*" always;
-        add_header Access-Control-Allow-Headers "Content-Type" always;
+        add_header Access-Control-Allow-Headers "Content-Type, Authorization" always;
         if ($request_method = OPTIONS) {
             return 204;
         }
@@ -1408,4 +1436,17 @@ This is partially designed in `booth_state.py` (`leave_participant` already pick
 
 ## Frontend Stack
 
-The portal uses **vanilla JS ES modules + Jinja2 templates** exclusively. There is no Vue, React, or any frontend build step. The `src/` directory (Vue SPA) is abandoned. All new UI is in `templates/` + `static/js/` + `static/css/`.
+The active frontend is **vanilla JS ES modules + Jinja2 templates**. No build step, no bundler, no framework. All new UI goes in `templates/` + `static/js/` + `static/css/`.
+
+The `src/` directory (Vue 3 / Vite prototype) remains in-tree but is **not connected to the Flask backend and is not used in production**. It will be removed in a dedicated cleanup PR. The presence of `package.json` and `vite.config.js` in the repo reflects this legacy prototype, not the active stack.
+
+## Platform Independence
+
+The interpretation portal is a **standalone product**. It operates independently of Eventyay and produces standard HLS stream URLs as output. These URLs can be:
+
+- Added to Eventyay's `StreamSchedule` (Phase 6 of this plan)
+- Embedded in any other event platform that accepts an HLS URL
+- Played directly in any HLS-capable player (VLC, QuickTime, browser + hls.js)
+- Shared as a raw link for monitoring or recording
+
+Eventyay integration is a consumer of the portal's output, not a dependency of its operation. The portal has no compile-time or runtime coupling to the main Eventyay codebase.
