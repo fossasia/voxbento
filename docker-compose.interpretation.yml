@@ -8,7 +8,7 @@ services:
     ports:
       - "8888:8888"    # HLS output
       - "8889:8889"    # WHIP (WebRTC HTTP ingest)
-      - "8189:8189/udp" # WebRTC ICE/UDP mux
+      - "8189:8189/udp" # WebRTC ICE/UDP mux (matches webrtcICEUDPMuxAddress in mediamtx.yml)
     restart: unless-stopped
     # No HTTP healthcheck: the HLS root path always returns 404 until a stream is
     # published, which would falsely mark the container as unhealthy. The MediaMTX

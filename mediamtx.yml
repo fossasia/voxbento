@@ -1,22 +1,52 @@
-# mediamtx.yml — local dev configuration
-# See https://github.com/bluenviron/mediamtx for full reference.
+# mediamtx.yml — local development configuration
+# Full reference: https://github.com/bluenviron/mediamtx/blob/main/mediamtx.yml
+#
+# This file is mounted read-only into the mediamtx container via
+# docker-compose.interpretation.yml. Restart the container after any change.
+#
+# Production notes:
+# - Set webrtcEncryption/hlsEncryption to 'yes' and configure TLS certificates.
+# - Configure STUN/TURN servers under webrtcICEServers for NAT traversal.
+# - Restrict publishUser/publishPass per path to authenticate WHIP publishers.
 
-logLevel: info
+logLevel: info           # debug | info | warn | error
 logDestinations: [stdout]
 
-# ── WHIP ingest (WebRTC HTTP Ingest Protocol) ───────────────────
+# ── WebRTC / WHIP ingest ────────────────────────────────────────────────────
+# Browsers POST their SDP offer to http://host:8889/whip/{path} and receive
+# an SDP answer in return; RTP/Opus audio then flows browser → MediaMTX.
+#
+# webrtcEncryption: disables DTLS-SRTP (per-packet media encryption), which is
+# required for local dev because self-signed DTLS certs are otherwise needed.
+# This is DISTINCT from HTTPS/TLS transport — it controls WebRTC media
+# encryption only. NEVER set this to 'no' in production.
 webrtcAddress: :8889
 webrtcEncryption: no
+webrtcLocalUDPAddress: :8189  # single UDP port for all ICE traffic (replaces deprecated webrtcICEUDPMuxAddress)
 
-# ── HLS output ──────────────────────────────────────────────────
+# ── HLS output ──────────────────────────────────────────────────────────────
+# Playlists and segments are served at http://host:8888/{path}/index.m3u8.
+#
+# hlsAlwaysRemux:     transcode Opus → AAC so HLS is playable in all browsers
+#                     without needing the browser to support Opus in HLS.
+# hlsSegmentDuration: each .ts segment is 2 seconds; three segments in the
+#                     window gives ~6-8 s end-to-end latency (standard HLS).
+# hlsSegmentMaxSize:  safety cap — prevents a single runaway segment consuming
+#                     excessive memory in the MediaMTX process.
+# hlsPartDuration:    (commented) enable Low-Latency HLS to reduce latency to
+#                     ~1-2 s. Requires hls.js 1.x on the viewer side. Deferred
+#                     until post-MVP per docs/detailedplan.md § 11.2.
 hlsAddress: :8888
 hlsEncryption: no
 hlsAlwaysRemux: yes
 hlsSegmentDuration: 2s
 hlsSegmentMaxSize: 50MB
+# hlsPartDuration: 200ms   # uncomment to enable LL-HLS (post-MVP)
 
-# ── Path defaults ───────────────────────────────────────────────
-# All paths are auto-created on first publish.
-# Single publisher per path is enforced by default.
+# ── Path defaults ────────────────────────────────────────────────────────────
+# Every path is auto-created on first WHIP publish — no static path config
+# needed. MediaMTX enforces exactly ONE active WHIP publisher per path; a
+# second publisher on the same path is rejected with 409 Conflict, which
+# provides a network-level guard on top of the in-process booth_state.py check.
 pathDefaults:
-  record: no
+  record: no             # disable on-disk recording for local dev
