@@ -83,8 +83,10 @@ uv run python app.py
 
 ## MediaMTX (local media server)
 
-MediaMTX handles WebRTC audio ingest (WHIP) and HLS output. It replaces the
-prototype `aiortc` ingest pipeline with a production-grade media server.
+MediaMTX handles WebRTC audio ingest (WHIP) and HLS output. It is the planned
+production replacement for the prototype `aiortc` ingest pipeline (`portal/ingest.py`).
+Both run side-by-side during migration — see the Phase 1 migration plan in
+`docs/detailedplan.md` for the full removal schedule.
 
 ### Quick start (Docker Compose)
 
@@ -93,8 +95,8 @@ docker compose -f docker-compose.interpretation.yml up -d
 ```
 
 This starts MediaMTX with:
-- **WHIP ingest** on `http://localhost:8889` — interpreters publish audio here
-- **HLS output** on `http://localhost:8888` — audience fetches streams here
+- **WHIP ingest** on `http://localhost:8889/whip/{path}` — interpreters publish audio here
+- **HLS output** on `http://localhost:8888/{path}/index.m3u8` — audience fetches streams here
 
 ### Quick start (standalone Docker)
 
@@ -110,15 +112,20 @@ docker run --rm -d --name mediamtx \
 ### Verify MediaMTX is running
 
 ```bash
-# HLS endpoint (should return a page or 200)
+# HLS endpoint — 404 is expected here (no stream path specified).
+# A 404 from MediaMTX confirms the server is up and listening.
 curl -s -o /dev/null -w "%{http_code}" http://localhost:8888/
 
-# WHIP endpoint (should return 404 — no path specified, but confirms server is up)
+# WHIP endpoint — 404 is also expected (no stream path specified).
 curl -s -o /dev/null -w "%{http_code}" http://localhost:8889/
 
 # Container logs
 docker logs mediamtx
 ```
+
+Both endpoints return **404 until a stream is published** — this is expected.
+To confirm a live stream, check `http://localhost:8888/{path}/index.m3u8` after
+a publisher connects to `http://localhost:8889/whip/{path}`.
 
 ### Configuration
 
@@ -130,7 +137,7 @@ development. Key settings:
 | `webrtcAddress` | `:8889` | WHIP ingest port |
 | `hlsAddress` | `:8888` | HLS output port |
 | `hlsSegmentDuration` | `2s` | HLS segment length |
-| `webrtcEncryption` | `no` | Disable DTLS for local dev (no TLS) |
+| `webrtcEncryption` | `no` | Disable WebRTC DTLS-SRTP media encryption for local dev. **Do not use in production.** (Distinct from HTTPS/TLS transport — this controls per-packet media encryption.) |
 
 See [MediaMTX docs](https://github.com/bluenviron/mediamtx) for full configuration reference.
 
