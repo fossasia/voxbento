@@ -1,8 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
-from threading import RLock
 from typing import Literal
 from uuid import uuid4
 
@@ -55,32 +55,36 @@ class Booth:
             'active_interpreter_id': self.active_interpreter_id,
             'handoff_state': self.handoff_state,
             'ingest_status': self.ingest_status,
-            'participants': [asdict(participant) for participant in self.participants.values()],
-            'chat_messages': [asdict(message) for message in self.chat_messages[-100:]],
+            'participants': [asdict(p) for p in self.participants.values()],
+            'chat_messages': [asdict(m) for m in self.chat_messages[-100:]],
         }
+
+
+def _pick_next_interpreter(booth: Booth) -> str | None:
+    for p in booth.participants.values():
+        if p.role == 'interpreter':
+            return p.participant_id
+    return None
 
 
 class BoothRegistry:
     def __init__(self) -> None:
         self._booths: dict[str, Booth] = {}
-        # TODO(Phase 1C): migrate to asyncio.Lock when Flask-SocketIO is removed
-        self._lock = RLock()
+        self._lock = asyncio.Lock()
 
-    def get_or_create_booth(self, booth_id: str, language: str, channel_id: str) -> Booth:
-        with self._lock:
-            booth = self._booths.get(booth_id)
-            if booth is not None:
-                return booth
+    def _get_or_create_booth(self, booth_id: str, language: str, channel_id: str) -> Booth:
+        """Return existing booth or create one. Caller must hold self._lock."""
+        booth = self._booths.get(booth_id)
+        if booth is None:
             booth = Booth(booth_id=booth_id, language=language, channel_id=channel_id)
             self._booths[booth_id] = booth
-            return booth
+        return booth
 
-    def snapshot(self, booth_id: str, language: str, channel_id: str) -> dict:
-        with self._lock:
-            booth = self.get_or_create_booth(booth_id, language, channel_id)
-            return booth.as_public_dict()
+    async def snapshot(self, booth_id: str, language: str, channel_id: str) -> dict:
+        async with self._lock:
+            return self._get_or_create_booth(booth_id, language, channel_id).as_public_dict()
 
-    def join_participant(
+    async def join_participant(
         self,
         booth_id: str,
         display_name: str,
@@ -89,8 +93,8 @@ class BoothRegistry:
         channel_id: str,
         participant_id: str | None = None,
     ) -> tuple[Participant, dict]:
-        with self._lock:
-            booth = self.get_or_create_booth(booth_id, language, channel_id)
+        async with self._lock:
+            booth = self._get_or_create_booth(booth_id, language, channel_id)
             participant = Participant(
                 participant_id=participant_id or uuid4().hex,
                 display_name=display_name.strip() or 'Interpreter',
@@ -103,21 +107,21 @@ class BoothRegistry:
                 booth.active_interpreter_id = participant.participant_id
             return participant, booth.as_public_dict()
 
-    def leave_participant(self, booth_id: str, participant_id: str, language: str, channel_id: str) -> dict:
-        with self._lock:
-            booth = self.get_or_create_booth(booth_id, language, channel_id)
+    async def leave_participant(self, booth_id: str, participant_id: str, language: str, channel_id: str) -> dict:
+        async with self._lock:
+            booth = self._get_or_create_booth(booth_id, language, channel_id)
             participant = booth.participants.pop(participant_id, None)
             if participant is None:
                 return booth.as_public_dict()
             if booth.active_interpreter_id == participant_id:
-                booth.active_interpreter_id = self._pick_next_interpreter(booth)
+                booth.active_interpreter_id = _pick_next_interpreter(booth)
                 booth.handoff_state = 'pending' if booth.active_interpreter_id else 'idle'
             if not booth.participants:
                 booth.ingest_status = 'disconnected'
                 booth.handoff_state = 'idle'
             return booth.as_public_dict()
 
-    def set_active_interpreter(
+    async def set_active_interpreter(
         self,
         booth_id: str,
         requester_id: str,
@@ -125,8 +129,8 @@ class BoothRegistry:
         language: str,
         channel_id: str,
     ) -> dict:
-        with self._lock:
-            booth = self.get_or_create_booth(booth_id, language, channel_id)
+        async with self._lock:
+            booth = self._get_or_create_booth(booth_id, language, channel_id)
             requester = booth.participants.get(requester_id)
             target = booth.participants.get(target_id)
             if requester is None or target is None:
@@ -134,20 +138,22 @@ class BoothRegistry:
             if target.role != 'interpreter':
                 raise ValueError('Only participants with interpreter role can be set active.')
             requester_is_coordinator = requester.role == 'coordinator'
-            requester_is_active_interpreter = booth.active_interpreter_id == requester_id
+            requester_is_active = booth.active_interpreter_id == requester_id
             requester_is_target = requester_id == target_id
-            if not requester_is_coordinator and not requester_is_active_interpreter and not requester_is_target:
+            if not requester_is_coordinator and not requester_is_active and not requester_is_target:
                 raise PermissionError('Only coordinators or the active interpreter can reassign another interpreter.')
             booth.active_interpreter_id = target_id
             booth.handoff_state = 'completed'
-            for participant in booth.participants.values():
-                participant.ingest_connected = participant.participant_id == target_id and participant.ingest_connected
-                participant.mic_active = participant.participant_id == target_id and participant.mic_active
-                participant.updated_at = utc_now_iso()
-            booth.ingest_status = 'connected' if any(p.ingest_connected for p in booth.participants.values()) else 'disconnected'
+            for p in booth.participants.values():
+                p.ingest_connected = p.participant_id == target_id and p.ingest_connected
+                p.mic_active = p.participant_id == target_id and p.mic_active
+                p.updated_at = utc_now_iso()
+            booth.ingest_status = (
+                'connected' if any(p.ingest_connected for p in booth.participants.values()) else 'disconnected'
+            )
             return booth.as_public_dict()
 
-    def add_chat_message(
+    async def add_chat_message(
         self,
         booth_id: str,
         sender_id: str,
@@ -155,8 +161,8 @@ class BoothRegistry:
         language: str,
         channel_id: str,
     ) -> tuple[dict, dict]:
-        with self._lock:
-            booth = self.get_or_create_booth(booth_id, language, channel_id)
+        async with self._lock:
+            booth = self._get_or_create_booth(booth_id, language, channel_id)
             sender = booth.participants.get(sender_id)
             if sender is None:
                 raise ValueError('Sender is not registered in booth.')
@@ -173,7 +179,7 @@ class BoothRegistry:
                 booth.chat_messages = booth.chat_messages[-500:]
             return asdict(message), booth.as_public_dict()
 
-    def update_participant_state(
+    async def update_participant_state(
         self,
         booth_id: str,
         participant_id: str,
@@ -184,8 +190,8 @@ class BoothRegistry:
         ingest_connected: bool | None = None,
         connected: bool | None = None,
     ) -> dict:
-        with self._lock:
-            booth = self.get_or_create_booth(booth_id, language, channel_id)
+        async with self._lock:
+            booth = self._get_or_create_booth(booth_id, language, channel_id)
             participant = booth.participants.get(participant_id)
             if participant is None:
                 raise ValueError('Participant does not exist in booth.')
@@ -199,23 +205,18 @@ class BoothRegistry:
             if connected is not None:
                 participant.connected = connected
             participant.updated_at = utc_now_iso()
-            booth.ingest_status = 'connected' if any(p.ingest_connected for p in booth.participants.values()) else 'disconnected'
+            booth.ingest_status = (
+                'connected' if any(p.ingest_connected for p in booth.participants.values()) else 'disconnected'
+            )
             return booth.as_public_dict()
 
-    def is_active_interpreter(self, booth_id: str, participant_id: str, language: str, channel_id: str) -> bool:
-        with self._lock:
-            booth = self.get_or_create_booth(booth_id, language, channel_id)
+    async def is_active_interpreter(self, booth_id: str, participant_id: str, language: str, channel_id: str) -> bool:
+        async with self._lock:
+            booth = self._get_or_create_booth(booth_id, language, channel_id)
             return booth.active_interpreter_id == participant_id
 
-    def set_ingest_status(self, booth_id: str, status: str, language: str, channel_id: str) -> dict:
-        with self._lock:
-            booth = self.get_or_create_booth(booth_id, language, channel_id)
+    async def set_ingest_status(self, booth_id: str, status: str, language: str, channel_id: str) -> dict:
+        async with self._lock:
+            booth = self._get_or_create_booth(booth_id, language, channel_id)
             booth.ingest_status = status
             return booth.as_public_dict()
-
-    @staticmethod
-    def _pick_next_interpreter(booth: Booth) -> str | None:
-        for participant in booth.participants.values():
-            if participant.role == 'interpreter':
-                return participant.participant_id
-        return None

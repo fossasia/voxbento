@@ -33,6 +33,13 @@ class Settings(BaseSettings):
     mediamtx_whip_base: str = 'http://localhost:8889'
     mediamtx_hls_base: str = 'http://localhost:8888'
     use_legacy_ingest: bool = False
+    # JWT configuration — jwt_secret defaults to secret_key when empty
+    jwt_secret: str = ''
+    jwt_expiry_seconds: int = 86400
+
+    @property
+    def effective_jwt_secret(self) -> str:
+        return self.jwt_secret or self.secret_key
 
     @field_validator('socket_cors_origins', mode='before')
     @classmethod

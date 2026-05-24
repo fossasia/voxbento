@@ -5,7 +5,9 @@ if (!portal) {
 }
 
 const state = {
-  socketConnected: false,
+  wsConnected: false,
+  ws: null,
+  jwt: null,
   joined: false,
   boothId: portal.dataset.boothId,
   token: portal.dataset.boothToken || '',
@@ -24,8 +26,6 @@ const state = {
   jitsiDomain: portal.dataset.jitsiDomain || '',
   whipBase: portal.dataset.whipBase || '',
   hlsBase: portal.dataset.hlsBase || '',
-  // USE_LEGACY_INGEST feature flag surfaced from server config.
-  // When true, startLiveIngest() falls back to the legacy aiortc endpoint if WHIP fails.
   useLegacyIngest: portal.dataset.useLegacyIngest === 'true',
   usedLegacyFallback: false,
   micDeviceId: localStorage.getItem('mic-device-id') || '',
@@ -80,19 +80,17 @@ const elements = {
   hlsValidationStatus: document.getElementById('hls-validation-status'),
 }
 
-// ── Audio context state (not reflected directly in UI) ────────────────────
+// ── Audio context state ───────────────────────────────────────────────────────
 let micTestStream = null
 let micAnimFrame = null
 let micAudioCtx = null
 let micAnalyser = null
 
-// ── HLS polling state ────────────────────────────────────────────────────
+// ── HLS polling state ─────────────────────────────────────────────────────────
 let hlsPollTimer = null
 let hlsPollCount = 0
 const HLS_POLL_INTERVAL_MS = 1000
 const HLS_POLL_MAX_ATTEMPTS = 10
-
-const socket = io()
 
 boot().catch((error) => {
   showError(`Failed to boot interpreter portal: ${error.message}`)
@@ -103,46 +101,120 @@ async function boot() {
   await fetchBoothState()
   await fetchIngestReachability()
   await populateMicDevices()
+  await acquireJwt()
+  await connectWebSocket()
   bindEventHandlers()
-  render() // show page with pending preflight state first
+  render()
   runPreflightChecks().catch((error) => {
     showError(`Preflight checks failed: ${error.message}`)
   })
 }
 
-function bindEventHandlers() {
-  socket.on('connect', () => {
-    state.socketConnected = true
-    setBadge(elements.connectionStatus, 'Connected', 'success')
-  })
+// ── JWT and WebSocket lifecycle ───────────────────────────────────────────────
 
-  socket.on('disconnect', () => {
-    state.socketConnected = false
-    setBadge(elements.connectionStatus, 'Disconnected', 'warning')
-  })
+async function acquireJwt() {
+  try {
+    const response = await fetch('/api/auth/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ token: state.token }),
+    })
+    if (!response.ok) return
+    const data = await response.json()
+    state.jwt = data.access_token || null
+  } catch {
+    // Server may not require auth; proceed without JWT
+  }
+}
 
-  socket.on('booth:joined', (payload) => {
-    state.participantId = payload.participant_id
+function buildWsUrl() {
+  const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+  const url = new URL(`${proto}//${window.location.host}/ws/booth/${encodeURIComponent(state.boothId)}`)
+  if (state.jwt) {
+    url.searchParams.set('token', state.jwt)
+  }
+  return url.toString()
+}
+
+function connectWebSocket() {
+  return new Promise((resolve) => {
+    const ws = new WebSocket(buildWsUrl())
+    state.ws = ws
+
+    const openTimer = setTimeout(() => resolve(), 4000)
+
+    ws.addEventListener('open', () => {
+      clearTimeout(openTimer)
+      state.wsConnected = true
+      setBadge(elements.connectionStatus, 'Connected', 'success')
+      resolve()
+    })
+
+    ws.addEventListener('close', (event) => {
+      state.wsConnected = false
+      state.ws = null
+      setBadge(elements.connectionStatus, 'Disconnected', 'warning')
+      if (event.code !== 1000 && event.code !== 1001) {
+        showError('Connection lost. Refresh the page to reconnect.')
+      }
+    })
+
+    ws.addEventListener('error', () => {
+      clearTimeout(openTimer)
+      showError('WebSocket connection failed. Is the server running?')
+      resolve()
+    })
+
+    ws.addEventListener('message', (event) => {
+      try {
+        handleServerMessage(JSON.parse(event.data))
+      } catch {
+        // Ignore malformed server messages
+      }
+    })
+  })
+}
+
+function handleServerMessage(data) {
+  const type = data.type
+  if (type === 'booth:joined') {
+    state.participantId = data.participant_id
     state.joined = true
-    applyBoothState(payload.state)
+    applyBoothState(data.state)
     render()
     showError('')
-  })
-
-  socket.on('booth:state', (payload) => {
-    applyBoothState(payload)
+  } else if (type === 'booth:state') {
+    applyBoothState(data.state)
     render()
-  })
-
-  socket.on('booth:chat', (message) => {
-    state.chatMessages.push(message)
+  } else if (type === 'booth:chat') {
+    state.chatMessages.push(data.message)
     renderChat()
-  })
+  } else if (type === 'booth:error') {
+    showError(data.message || 'An unknown booth error occurred.')
+  }
+}
 
-  socket.on('booth:error', (payload) => {
-    showError(payload.message || 'An unknown booth error occurred.')
-  })
+/**
+ * Send a JSON message over the WebSocket.
+ * @returns {boolean} true if the message was sent successfully
+ */
+function wsSend(obj) {
+  if (!state.ws || state.ws.readyState !== WebSocket.OPEN) {
+    showError('Not connected to server.')
+    return false
+  }
+  state.ws.send(JSON.stringify(obj))
+  return true
+}
 
+function authHeaders() {
+  if (!state.jwt) return {}
+  return { Authorization: `Bearer ${state.jwt}` }
+}
+
+// ── Event binding ─────────────────────────────────────────────────────────────
+
+function bindEventHandlers() {
   elements.joinBooth.addEventListener('click', () => {
     joinBooth()
   })
@@ -179,7 +251,6 @@ function bindEventHandlers() {
   elements.micDeviceSelect.addEventListener('change', () => {
     state.micDeviceId = elements.micDeviceSelect.value
     localStorage.setItem('mic-device-id', state.micDeviceId)
-    // If a test or live stream is active with a different device, restart it
     if (micTestStream) {
       stopMicTest().then(startMicTest).catch(() => {})
     }
@@ -204,7 +275,6 @@ function bindEventHandlers() {
     }).catch(() => {})
   })
 
-  // Chevron: toggle mic device picker popup
   elements.micChevron.addEventListener('click', (event) => {
     event.stopPropagation()
     const isHidden = elements.ctrlMicPopup.classList.contains('hidden')
@@ -212,7 +282,6 @@ function bindEventHandlers() {
     elements.micChevron.setAttribute('aria-expanded', String(isHidden))
   })
 
-  // Close popup when clicking outside it
   document.addEventListener('click', (event) => {
     if (!elements.ctrlMicPopup.classList.contains('hidden') &&
         !elements.ctrlMicPopup.contains(event.target) &&
@@ -222,7 +291,6 @@ function bindEventHandlers() {
     }
   })
 
-  // Space key: toggle mute (skip when focus is in a text input / select)
   document.addEventListener('keydown', (event) => {
     if (event.code !== 'Space') return
     const tag = document.activeElement?.tagName?.toLowerCase()
@@ -231,7 +299,6 @@ function bindEventHandlers() {
     toggleMicMute().catch(() => {})
   })
 
-  // Leave booth button
   elements.preflightRetry.addEventListener('click', () => {
     runPreflightChecks().catch((error) => {
       showError(`Preflight checks failed: ${error.message}`)
@@ -243,16 +310,14 @@ function bindEventHandlers() {
       await stopLiveIngest()
     }
     if (state.joined && state.participantId) {
-      socket.emit('booth:leave', {
-        booth_id: state.boothId,
-        participant_id: state.participantId,
-        language: state.language,
-        channel_id: state.channelId,
-      })
+      wsSend({ type: 'booth:leave' })
       state.joined = false
       state.participantId = null
     }
-    socket.disconnect()
+    if (state.ws) {
+      state.ws.close(1000)
+      state.ws = null
+    }
     setBadge(elements.connectionStatus, 'Left', 'warning')
     renderMicControls()
   })
@@ -267,32 +332,26 @@ function bindEventHandlers() {
     if (!target.classList.contains('set-active-btn')) return
     const participantId = target.dataset.participantId
     if (!participantId) return
-    socket.emit('booth:set-active', {
-      booth_id: state.boothId,
-      requester_id: state.participantId,
+    wsSend({
+      type: 'booth:set-active',
       target_id: participantId,
-      language: state.language,
-      channel_id: state.channelId,
     })
   })
 
   window.addEventListener('beforeunload', () => {
-    if (!state.joined || !state.participantId) return
-    socket.emit('booth:leave', {
-      booth_id: state.boothId,
-      participant_id: state.participantId,
-      language: state.language,
-      channel_id: state.channelId,
-    })
+    if (state.joined && state.participantId) {
+      wsSend({ type: 'booth:leave' })
+    }
   })
 }
+
+// ── Preflight checks ──────────────────────────────────────────────────────────
 
 async function runPreflightChecks() {
   setPreflightStatus('micPermission', 'pending', 'Checking…')
   setPreflightStatus('audioDevice', 'pending', 'Checking…')
   setPreflightStatus('serverReachable', 'pending', 'Checking…')
 
-  // 1. Microphone permission
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
     stream.getTracks().forEach((t) => t.stop())
@@ -305,7 +364,6 @@ async function runPreflightChecks() {
     setPreflightStatus('micPermission', 'fail', msg)
   }
 
-  // 2. Audio device detected
   try {
     const devices = await navigator.mediaDevices.enumerateDevices()
     const audioInputs = devices.filter((d) => d.kind === 'audioinput')
@@ -318,15 +376,12 @@ async function runPreflightChecks() {
     setPreflightStatus('audioDevice', 'warn', 'Could not enumerate devices')
   }
 
-  // 3. Media server reachability — any HTTP response (even 404) means the server is up;
-  //    only a network error (connection refused / timeout) means it is down.
   if (!state.hlsBase) {
     setPreflightStatus('serverReachable', 'warn', 'HLS base not configured — server check skipped')
   } else {
     try {
       const controller = new AbortController()
       const timeoutId = window.setTimeout(() => controller.abort(), 4000)
-      // no-cors avoids CORS errors; opaque response (status 0) is fine — network errors throw
       await fetch(`${state.hlsBase}/`, { method: 'HEAD', mode: 'no-cors', signal: controller.signal })
       window.clearTimeout(timeoutId)
       setPreflightStatus('serverReachable', 'pass', 'MediaMTX is reachable')
@@ -361,23 +416,21 @@ function setPreflightStatus(check, status, message = '') {
   if (msgEl) msgEl.textContent = message
 }
 
-// ── HLS validation ───────────────────────────────────────────────────────
+// ── HLS validation ────────────────────────────────────────────────────────────
+
 async function validateHlsOutput() {
   if (!state.hlsBase || !state.channelId) return false
   const url = `${state.hlsBase}/${encodeURIComponent(state.channelId)}/index.m3u8`
   try {
     const response = await fetch(url, { cache: 'no-store' })
     if (!response.ok) return false
-
     const contentType = response.headers.get('content-type') || ''
-    const normalizedContentType = contentType.toLowerCase()
-    const isHlsMimeType =
-      normalizedContentType.startsWith('application/vnd.apple.mpegurl') ||
-      normalizedContentType.startsWith('application/x-mpegurl') ||
-      normalizedContentType.startsWith('audio/mpegurl')
-
-    if (!isHlsMimeType) return false
-
+    const normalized = contentType.toLowerCase()
+    const isHls =
+      normalized.startsWith('application/vnd.apple.mpegurl') ||
+      normalized.startsWith('application/x-mpegurl') ||
+      normalized.startsWith('audio/mpegurl')
+    if (!isHls) return false
     const text = await response.text()
     return text.includes('#EXTM3U')
   } catch {
@@ -392,7 +445,7 @@ function startHlsPolling() {
 
   async function poll() {
     hlsPollCount += 1
-    setHlsValidationStatus('polling') // update count in badge
+    setHlsValidationStatus('polling')
     const valid = await validateHlsOutput()
     if (valid) {
       setHlsValidationStatus('streaming')
@@ -419,37 +472,35 @@ function stopHlsPolling() {
 
 function setHlsValidationStatus(status) {
   const statusMap = {
-    idle:        { text: 'Not started', tone: '' },
+    idle:        { text: 'Not started',   tone: '' },
     polling:     { text: `Validating\u2026 ${hlsPollCount}/${HLS_POLL_MAX_ATTEMPTS}`, tone: 'warning' },
-    streaming:   { text: 'Streaming',   tone: 'success' },
+    streaming:   { text: 'Streaming',     tone: 'success' },
     unavailable: { text: 'Not available', tone: 'danger' },
   }
   const { text, tone } = statusMap[status] ?? { text: status, tone: '' }
   setBadge(elements.hlsValidationStatus, text, tone)
 }
 
+// ── REST helpers ──────────────────────────────────────────────────────────────
+
 async function fetchBoothState() {
   const url = new URL(`/api/booth/${encodeURIComponent(state.boothId)}/state`, window.location.origin)
   url.searchParams.set('token', state.token)
   url.searchParams.set('language', state.language)
   url.searchParams.set('channel', state.channelId)
-  const response = await fetch(url)
+  const response = await fetch(url, { headers: authHeaders() })
   if (!response.ok) {
     const payload = await response.json().catch(() => ({ error: response.statusText }))
     throw new Error(payload.error || 'Failed to fetch booth state.')
   }
-  const payload = await response.json()
-  applyBoothState(payload)
+  applyBoothState(await response.json())
 }
 
 async function fetchIngestReachability() {
   if (state.whipBase) {
-    // WHIP path: MediaMTX is configured; treat as reachable. Actual connectivity
-    // is validated at publish time (startLiveIngest will surface errors on failure).
     state.ingestReachable = true
     return
   }
-  // Legacy: check aiortc/FFmpeg reachability via Flask
   const response = await fetch(`/api/interpreter/status/${encodeURIComponent(state.channelId)}`)
   if (!response.ok) return
   const payload = await response.json()
@@ -473,13 +524,14 @@ function applyBoothState(payload) {
   }
 }
 
+// ── Booth actions ─────────────────────────────────────────────────────────────
+
 function joinBooth() {
   const displayName = elements.displayName.value.trim()
   state.language = elements.language.value.trim() || state.language
   state.channelId = elements.channel.value.trim() || state.channelId
-  socket.emit('booth:join', {
-    booth_id: state.boothId,
-    token: state.token,
+  wsSend({
+    type: 'booth:join',
     display_name: displayName || 'Interpreter',
     role: elements.role.value,
     language: state.language,
@@ -516,8 +568,6 @@ function joinMonitoringFeed() {
 }
 
 async function populateMicDevices() {
-  // A brief getUserMedia call is required before enumerateDevices returns device labels.
-  // The stream is immediately stopped — this only grants the label permission.
   try {
     const tempStream = await navigator.mediaDevices.getUserMedia({ audio: true })
     tempStream.getTracks().forEach((t) => t.stop())
@@ -541,7 +591,6 @@ async function populateMicDevices() {
     elements.micDeviceSelect.appendChild(opt)
   }
 
-  // Restore saved selection
   const saved = state.micDeviceId
   if (saved && elements.micDeviceSelect.querySelector(`option[value="${CSS.escape(saved)}"]`)) {
     elements.micDeviceSelect.value = saved
@@ -550,9 +599,10 @@ async function populateMicDevices() {
   }
 }
 
+// ── Microphone management ─────────────────────────────────────────────────────
+
 async function ensureMicStream() {
   if (state.micStream) return state.micStream
-  // If a test stream is active on the same device, stop it — live stream replaces it
   if (micTestStream) {
     stopMicTest()
   }
@@ -596,14 +646,13 @@ function stopMicTest() {
   micTestStream = null
   elements.micTestBtn.textContent = '⚙ Test'
   elements.micTestBtn.classList.remove('btn-primary')
-  // Only stop the meter if we're not currently live
   if (!state.ingestConnected) {
     stopMicMeter()
   }
 }
 
 function startMicMeter(stream) {
-  stopMicMeter() // clean up any previous context first
+  stopMicMeter()
   try {
     micAudioCtx = new AudioContext()
     micAnalyser = micAudioCtx.createAnalyser()
@@ -623,21 +672,19 @@ function startMicMeter(stream) {
     micAnimFrame = requestAnimationFrame(draw)
     micAnalyser.getByteFrequencyData(data)
     const avg = data.reduce((a, b) => a + b, 0) / data.length
-    const volume = avg / 128 // normalise 0..1
+    const volume = avg / 128
 
     ctx.clearRect(0, 0, canvas.width, canvas.height)
-    // Track background
     ctx.fillStyle = '#e9ecef'
     ctx.fillRect(0, 0, canvas.width, canvas.height)
-    // Active bar — grey when muted, colour reflects level when live
     if (state.micMuted) {
-      ctx.fillStyle = '#9ca3af' // grey — muted
+      ctx.fillStyle = '#9ca3af'
     } else if (volume > 0.95) {
-      ctx.fillStyle = '#dc3545' // red — clipping
+      ctx.fillStyle = '#dc3545'
     } else if (volume > 0.75) {
-      ctx.fillStyle = '#fd7e14' // amber — loud
+      ctx.fillStyle = '#fd7e14'
     } else {
-      ctx.fillStyle = '#22c55e' // green — normal
+      ctx.fillStyle = '#22c55e'
     }
     ctx.fillRect(0, 0, volume * canvas.width, canvas.height)
   }
@@ -671,19 +718,16 @@ async function toggleMicMute() {
     track.enabled = !state.micMuted
   })
   if (state.joined && state.participantId) {
-    socket.emit('booth:update-state', {
-      booth_id: state.boothId,
-      participant_id: state.participantId,
-      language: state.language,
-      channel_id: state.channelId,
+    wsSend({
+      type: 'booth:update-state',
       mic_active: !state.micMuted && state.ingestConnected,
     })
   }
   renderMicControls()
 }
 
-// ── Ingest path helpers ───────────────────────────────────────────────────────
-// MediaMTX WHIP URL format: /{channelId}/whip (not /whip/{channelId})
+// ── Ingest helpers ────────────────────────────────────────────────────────────
+
 async function doWhipIngest(peerConnection) {
   const whipUrl = `${state.whipBase}/${encodeURIComponent(state.channelId)}/whip`
   const response = await fetch(whipUrl, {
@@ -699,12 +743,12 @@ async function doWhipIngest(peerConnection) {
   await peerConnection.setRemoteDescription({ type: 'answer', sdp: answerSdp })
 }
 
-// Legacy aiortc path via Flask — kept for the migration period (USE_LEGACY_INGEST=true).
+// Legacy aiortc path via FastAPI — kept for the migration period (USE_LEGACY_INGEST=true).
 // Phase 1D: remove this function and the /api/interpreter/connect route.
 async function doLegacyIngest(peerConnection) {
   const response = await fetch(`/api/interpreter/connect/${encodeURIComponent(state.channelId)}`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...authHeaders() },
     body: JSON.stringify({
       booth_id: state.boothId,
       participant_id: state.participantId,
@@ -761,13 +805,11 @@ async function startLiveIngest() {
     await waitForIceGathering(peerConnection)
 
     if (state.whipBase) {
-      // Primary path: WHIP to MediaMTX.
       try {
         await doWhipIngest(peerConnection)
         state.usedLegacyFallback = false
       } catch (whipError) {
         if (state.useLegacyIngest) {
-          // USE_LEGACY_INGEST=true — fall back to aiortc endpoint.
           showError(`WHIP failed (${whipError.message}); retrying via legacy ingest…`)
           await doLegacyIngest(peerConnection)
           state.usedLegacyFallback = true
@@ -776,7 +818,6 @@ async function startLiveIngest() {
         }
       }
     } else if (state.useLegacyIngest) {
-      // No WHIP base configured — use legacy endpoint only if flag is set.
       await doLegacyIngest(peerConnection)
       state.usedLegacyFallback = true
     } else {
@@ -785,11 +826,8 @@ async function startLiveIngest() {
 
     state.ingestConnected = true
     if (state.hlsBase) startHlsPolling()
-    socket.emit('booth:update-state', {
-      booth_id: state.boothId,
-      participant_id: state.participantId,
-      language: state.language,
-      channel_id: state.channelId,
+    wsSend({
+      type: 'booth:update-state',
       mic_active: !state.micMuted,
       ingest_connected: true,
     })
@@ -806,7 +844,6 @@ async function stopLiveIngest() {
     state.peerConnection.close()
     state.peerConnection = null
   }
-  // Release live mic stream and stop the meter (unless a test is still active)
   if (state.micStream) {
     state.micStream.getTracks().forEach((t) => t.stop())
     state.micStream = null
@@ -816,10 +853,9 @@ async function stopLiveIngest() {
   }
   if (state.joined && state.participantId) {
     if (state.usedLegacyFallback) {
-      // Release the server-side aiortc peer connection only when the legacy path was used.
       await fetch(`/api/interpreter/disconnect/${encodeURIComponent(state.channelId)}`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...authHeaders() },
         body: JSON.stringify({
           booth_id: state.boothId,
           participant_id: state.participantId,
@@ -829,11 +865,8 @@ async function stopLiveIngest() {
       }).catch(() => {})
       state.usedLegacyFallback = false
     }
-    socket.emit('booth:update-state', {
-      booth_id: state.boothId,
-      participant_id: state.participantId,
-      language: state.language,
-      channel_id: state.channelId,
+    wsSend({
+      type: 'booth:update-state',
       mic_active: false,
       ingest_connected: false,
     })
@@ -846,20 +879,16 @@ async function stopLiveIngest() {
 
 function passRelayToNextInterpreter() {
   if (!state.joined || !state.participantId) return
-  const interpreters = state.participants.filter((participant) => participant.role === 'interpreter')
+  const interpreters = state.participants.filter((p) => p.role === 'interpreter')
   if (interpreters.length < 2) {
     showError('At least two interpreters are required for relay handoff.')
     return
   }
-  const currentIndex = interpreters.findIndex((participant) => participant.participant_id === state.activeInterpreterId)
+  const currentIndex = interpreters.findIndex((p) => p.participant_id === state.activeInterpreterId)
   const nextIndex = currentIndex >= 0 ? (currentIndex + 1) % interpreters.length : 0
-  const nextInterpreter = interpreters[nextIndex]
-  socket.emit('booth:set-active', {
-    booth_id: state.boothId,
-    requester_id: state.participantId,
-    target_id: nextInterpreter.participant_id,
-    language: state.language,
-    channel_id: state.channelId,
+  wsSend({
+    type: 'booth:set-active',
+    target_id: interpreters[nextIndex].participant_id,
   })
 }
 
@@ -870,15 +899,11 @@ function sendChatMessage() {
     showError('Join the booth before sending messages.')
     return
   }
-  socket.emit('booth:chat', {
-    booth_id: state.boothId,
-    sender_id: state.participantId,
-    language: state.language,
-    channel_id: state.channelId,
-    body,
-  })
+  wsSend({ type: 'booth:chat', body })
   elements.chatInput.value = ''
 }
+
+// ── Rendering ─────────────────────────────────────────────────────────────────
 
 function render() {
   renderParticipants()
@@ -887,13 +912,13 @@ function render() {
 }
 
 function renderParticipants() {
-  const currentParticipant = state.participants.find((participant) => participant.participant_id === state.participantId)
+  const currentParticipant = state.participants.find((p) => p.participant_id === state.participantId)
   const canReassign = currentParticipant?.role === 'coordinator'
-  const activeParticipant = state.participants.find((participant) => participant.participant_id === state.activeInterpreterId)
+  const activeParticipant = state.participants.find((p) => p.participant_id === state.activeInterpreterId)
   setBadge(
     elements.activeIndicator,
     activeParticipant ? `${activeParticipant.display_name} is active` : 'No active interpreter',
-    activeParticipant ? 'success' : 'warning'
+    activeParticipant ? 'success' : 'warning',
   )
   elements.activeName.textContent = activeParticipant ? activeParticipant.display_name : 'Unassigned'
   elements.participantList.innerHTML = ''
@@ -949,11 +974,14 @@ function renderChat() {
 
 function renderMicControls() {
   const joinedActiveInterpreter = state.joined && state.participantId === state.activeInterpreterId
-  setBadge(elements.ingestStatus, state.ingestConnected ? 'Ingest connected' : 'Ingest disconnected', state.ingestConnected ? 'success' : 'warning')
+  setBadge(
+    elements.ingestStatus,
+    state.ingestConnected ? 'Ingest connected' : 'Ingest disconnected',
+    state.ingestConnected ? 'success' : 'warning',
+  )
   elements.ingestReachable.textContent = state.ingestReachable ? 'Reachable' : 'Unavailable'
   elements.micState.textContent = state.micMuted ? 'Muted' : state.micStream ? 'Ready' : 'Inactive'
-  // ── Control bar icon states ─────────────────────────────────────────────
-  // Mute button: show mic-off icon + muted class + pulsing when muted
+
   const micOnIcon = elements.toggleMic.querySelector('.ctrl-icon--mic-on')
   const micOffIcon = elements.toggleMic.querySelector('.ctrl-icon--mic-off')
   if (micOnIcon) micOnIcon.classList.toggle('hidden', state.micMuted)
@@ -964,7 +992,6 @@ function renderMicControls() {
   elements.toggleMic.setAttribute('aria-label', state.micMuted ? 'Unmute microphone' : 'Mute microphone')
   elements.toggleMic.setAttribute('title', state.micMuted ? 'Unmute (Space)' : 'Mute (Space)')
 
-  // Go Live button
   elements.goLive.classList.toggle('live', state.ingestConnected)
   if (elements.liveLabel) elements.liveLabel.textContent = state.ingestConnected ? 'STOP' : 'GO LIVE'
 
@@ -974,9 +1001,8 @@ function renderMicControls() {
     state.preflight.serverReachable !== 'fail'
   elements.goLive.disabled = !state.ingestConnected && (!joinedActiveInterpreter || !state.ingestReachable || !preflightCriticalPass)
   elements.passRelay.disabled = !joinedActiveInterpreter
-  // Disable device selector while streaming — cannot switch device mid-stream
   elements.micDeviceSelect.disabled = state.ingestConnected
-  // Show HLS stream URL once live so the interpreter can paste it into VLC
+
   if (state.ingestConnected && state.hlsBase) {
     const url = `${state.hlsBase}/${encodeURIComponent(state.channelId)}/index.m3u8`
     elements.hlsUrlDisplay.textContent = url
@@ -986,12 +1012,12 @@ function renderMicControls() {
   }
 }
 
+// ── Utilities ─────────────────────────────────────────────────────────────────
+
 function setBadge(element, text, tone = '') {
   element.textContent = text
   element.classList.remove('success', 'warning', 'danger')
-  if (tone) {
-    element.classList.add(tone)
-  }
+  if (tone) element.classList.add(tone)
 }
 
 function showError(message) {
