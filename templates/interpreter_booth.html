@@ -63,6 +63,72 @@
     </div>
   </section>
 
+  <!-- ── Google Meet–style control bar ───────────────────────────────────── -->
+  <div class='control-bar' id='main-control-bar'>
+    <!-- Mic device picker — floats above bar when chevron is clicked -->
+    <div id='ctrl-mic-popup' class='ctrl-popup hidden' role='dialog' aria-label='Microphone options'>
+      <p class='ctrl-popup-title'>🎤 Microphone</p>
+      <select id='mic-device-select' class='input device-select'>
+        <option value=''>Default microphone</option>
+      </select>
+      <div id='meter-row' class='meter-row hidden'>
+        <span class='meter-label'>Input level</span>
+        <canvas id='mic-meter' class='mic-meter' width='400' height='10'></canvas>
+      </div>
+      <div class='ctrl-popup-actions'>
+        <button id='mic-test-btn' type='button' class='btn' title='Acquire mic and show live level'>⚙ Test</button>
+      </div>
+    </div>
+
+    <div class='ctrl-row'>
+      <!-- Compound mic button: toggle mute + device chevron -->
+      <div class='ctrl-compound'>
+        <button id='toggle-mic' type='button' class='ctrl-btn ctrl-btn--mic' title='Mute / Unmute (Space)' aria-label='Mute microphone'>
+          <!-- mic-on icon -->
+          <svg class='ctrl-icon ctrl-icon--mic-on' viewBox='0 0 24 24' fill='currentColor' aria-hidden='true'>
+            <path d='M12 14c1.66 0 2.99-1.34 2.99-3L15 5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm5.3-3c0 3-2.54 5.1-5.3 5.1S6.7 14 6.7 11H5c0 3.41 2.72 6.23 6 6.72V21h2v-3.28C16.28 17.23 19 14.41 19 11h-1.7z'/>
+          </svg>
+          <!-- mic-off icon (shown when muted) -->
+          <svg class='ctrl-icon ctrl-icon--mic-off hidden' viewBox='0 0 24 24' fill='currentColor' aria-hidden='true'>
+            <path d='M19 11h-1.7c0 .74-.16 1.43-.43 2.05l1.23 1.23c.56-.98.9-2.09.9-3.28zm-4.02.17c0-.06.02-.11.02-.17V5c0-1.66-1.34-3-3-3S9 3.34 9 5v.18l5.98 5.99zM4.27 3 3 4.27l6.01 6.01V11c0 1.66 1.33 3 2.99 3 .22 0 .44-.03.65-.08l1.66 1.66c-.71.33-1.5.52-2.31.52-2.76 0-5.3-2.1-5.3-5.1H5c0 3.41 2.72 6.23 6 6.72V21h2v-3.28c.91-.13 1.77-.45 2.54-.9L19.73 21 21 19.73 4.27 3z'/>
+          </svg>
+          <span class='ctrl-label' id='mute-label'>MUTE</span>
+        </button>
+        <button id='mic-chevron' type='button' class='ctrl-chevron' title='Microphone options' aria-label='Microphone options' aria-expanded='false' aria-controls='ctrl-mic-popup'>
+          <svg viewBox='0 0 24 24' width='12' height='12' fill='currentColor' aria-hidden='true'>
+            <path d='M7 14l5-5 5 5z'/>
+          </svg>
+        </button>
+      </div>
+
+      <!-- Go Live / Stop Live -->
+      <button id='go-live' type='button' class='ctrl-btn' title='Go Live / Stop Live' aria-label='Go live'>
+        <svg class='ctrl-icon' viewBox='0 0 24 24' fill='currentColor' aria-hidden='true'>
+          <path d='M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 14.5v-9l6 4.5-6 4.5z'/>
+        </svg>
+        <span class='ctrl-label' id='live-label'>GO LIVE</span>
+      </button>
+
+      <!-- Pass Relay -->
+      <button id='pass-relay' type='button' class='ctrl-btn' title='Pass relay to next interpreter' aria-label='Pass relay'>
+        <svg class='ctrl-icon' viewBox='0 0 24 24' fill='currentColor' aria-hidden='true'>
+          <path d='M6.99 11 3 15l3.99 4v-3H14v-2H6.99v-3zM21 9l-3.99-4v3H10v2h7.01v3L21 9z'/>
+        </svg>
+        <span class='ctrl-label'>RELAY</span>
+      </button>
+
+      <!-- Leave booth -->
+      <button id='leave-booth-btn' type='button' class='ctrl-btn ctrl-btn--danger' title='Leave booth' aria-label='Leave booth'>
+        <svg class='ctrl-icon' viewBox='0 0 24 24' fill='currentColor' aria-hidden='true'>
+          <path d='M10.09 15.59L11.5 17l5-5-5-5-1.41 1.41L12.67 11H3v2h9.67l-2.58 2.59zM19 3H5c-1.11 0-2 .9-2 2v4h2V5h14v14H5v-4H3v4c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2z'/>
+        </svg>
+        <span class='ctrl-label'>LEAVE</span>
+      </button>
+    </div>
+
+    <p class='ctrl-shortcut-hint'>Press <kbd>Space</kbd> to mute / unmute</p>
+  </div>
+
   <section class='panel'>
     <header class='panel-header'>
       <h2>Participants</h2>
@@ -89,34 +155,11 @@
 
   <section class='panel'>
     <header class='panel-header'>
-      <h2>Mic Controls</h2>
+      <h2>Audio Status</h2>
       <span id='ingest-status' class='status-badge'>Ingest disconnected</span>
     </header>
     <div class='panel-body mic-controls'>
-
-      <div class='device-row'>
-        <label class='device-label' for='mic-device-select'>🎤 Microphone</label>
-        <div class='device-select-row'>
-          <select id='mic-device-select' class='input device-select'>
-            <option value=''>Default microphone</option>
-          </select>
-          <button id='mic-test-btn' type='button' class='btn' title='Acquire mic and show live level'>⚙ Test</button>
-        </div>
-      </div>
-
-      <div id='meter-row' class='meter-row hidden'>
-        <span class='meter-label'>Input level</span>
-        <canvas id='mic-meter' class='mic-meter' width='400' height='10'></canvas>
-      </div>
-
-      <hr class='mic-divider' />
       <p class='hint'>Only the active interpreter can go live. Headphones are recommended.</p>
-      <div class='mic-buttons'>
-        <button id='toggle-mic' type='button' class='btn'>Mute</button>
-        <button id='go-live' type='button' class='btn btn-primary'>Go Live</button>
-        <button id='pass-relay' type='button' class='btn'>Pass Relay</button>
-      </div>
-
       <dl class='status-list'>
         <div><dt>Mic state</dt><dd id='mic-state'>Inactive</dd></div>
         <div><dt>Ingest reachable</dt><dd id='ingest-reachable'>Unknown</dd></div>

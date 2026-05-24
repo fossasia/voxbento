@@ -58,6 +58,12 @@ const elements = {
   hlsUrlRow: document.getElementById('hls-url-row'),
   hlsUrlDisplay: document.getElementById('hls-url-display'),
   copyHlsUrl: document.getElementById('copy-hls-url'),
+  micChevron: document.getElementById('mic-chevron'),
+  ctrlMicPopup: document.getElementById('ctrl-mic-popup'),
+  muteLabel: document.getElementById('mute-label'),
+  liveLabel: document.getElementById('live-label'),
+  ctrlCompound: document.querySelector('.ctrl-compound'),
+  leaveBooth: document.getElementById('leave-booth-btn'),
 }
 
 // ── Audio context state (not reflected directly in UI) ────────────────────
@@ -173,6 +179,53 @@ function bindEventHandlers() {
         elements.copyHlsUrl.textContent = 'Copy'
       }, 2000)
     }).catch(() => {})
+  })
+
+  // Chevron: toggle mic device picker popup
+  elements.micChevron.addEventListener('click', (event) => {
+    event.stopPropagation()
+    const isHidden = elements.ctrlMicPopup.classList.contains('hidden')
+    elements.ctrlMicPopup.classList.toggle('hidden', !isHidden)
+    elements.micChevron.setAttribute('aria-expanded', String(isHidden))
+  })
+
+  // Close popup when clicking outside it
+  document.addEventListener('click', (event) => {
+    if (!elements.ctrlMicPopup.classList.contains('hidden') &&
+        !elements.ctrlMicPopup.contains(event.target) &&
+        event.target !== elements.micChevron) {
+      elements.ctrlMicPopup.classList.add('hidden')
+      elements.micChevron.setAttribute('aria-expanded', 'false')
+    }
+  })
+
+  // Space key: toggle mute (skip when focus is in a text input / select)
+  document.addEventListener('keydown', (event) => {
+    if (event.code !== 'Space') return
+    const tag = document.activeElement?.tagName?.toLowerCase()
+    if (tag === 'input' || tag === 'textarea' || tag === 'select') return
+    event.preventDefault()
+    toggleMicMute().catch(() => {})
+  })
+
+  // Leave booth button
+  elements.leaveBooth.addEventListener('click', async () => {
+    if (state.ingestConnected) {
+      await stopLiveIngest()
+    }
+    if (state.joined && state.participantId) {
+      socket.emit('booth:leave', {
+        booth_id: state.boothId,
+        participant_id: state.participantId,
+        language: state.language,
+        channel_id: state.channelId,
+      })
+      state.joined = false
+      state.participantId = null
+    }
+    socket.disconnect()
+    setBadge(elements.connectionStatus, 'Left', 'warning')
+    renderMicControls()
   })
 
   navigator.mediaDevices.addEventListener('devicechange', () => {
@@ -406,8 +459,10 @@ function startMicMeter(stream) {
     // Track background
     ctx.fillStyle = '#e9ecef'
     ctx.fillRect(0, 0, canvas.width, canvas.height)
-    // Active bar — colour reflects level
-    if (volume > 0.95) {
+    // Active bar — grey when muted, colour reflects level when live
+    if (state.micMuted) {
+      ctx.fillStyle = '#9ca3af' // grey — muted
+    } else if (volume > 0.95) {
       ctx.fillStyle = '#dc3545' // red — clipping
     } else if (volume > 0.75) {
       ctx.fillStyle = '#fd7e14' // amber — loud
@@ -697,8 +752,22 @@ function renderMicControls() {
   setBadge(elements.ingestStatus, state.ingestConnected ? 'Ingest connected' : 'Ingest disconnected', state.ingestConnected ? 'success' : 'warning')
   elements.ingestReachable.textContent = state.ingestReachable ? 'Reachable' : 'Unavailable'
   elements.micState.textContent = state.micMuted ? 'Muted' : state.micStream ? 'Ready' : 'Inactive'
-  elements.toggleMic.textContent = state.micMuted ? 'Unmute' : 'Mute'
-  elements.goLive.textContent = state.ingestConnected ? 'Stop Live' : 'Go Live'
+  // ── Control bar icon states ─────────────────────────────────────────────
+  // Mute button: show mic-off icon + muted class + pulsing when muted
+  const micOnIcon = elements.toggleMic.querySelector('.ctrl-icon--mic-on')
+  const micOffIcon = elements.toggleMic.querySelector('.ctrl-icon--mic-off')
+  if (micOnIcon) micOnIcon.classList.toggle('hidden', state.micMuted)
+  if (micOffIcon) micOffIcon.classList.toggle('hidden', !state.micMuted)
+  elements.toggleMic.classList.toggle('muted', state.micMuted)
+  if (elements.ctrlCompound) elements.ctrlCompound.classList.toggle('muted', state.micMuted)
+  if (elements.muteLabel) elements.muteLabel.textContent = state.micMuted ? 'UNMUTE' : 'MUTE'
+  elements.toggleMic.setAttribute('aria-label', state.micMuted ? 'Unmute microphone' : 'Mute microphone')
+  elements.toggleMic.setAttribute('title', state.micMuted ? 'Unmute (Space)' : 'Mute (Space)')
+
+  // Go Live button
+  elements.goLive.classList.toggle('live', state.ingestConnected)
+  if (elements.liveLabel) elements.liveLabel.textContent = state.ingestConnected ? 'STOP' : 'GO LIVE'
+
   elements.toggleMic.disabled = !state.joined
   elements.goLive.disabled = !state.ingestConnected && (!joinedActiveInterpreter || !state.ingestReachable)
   elements.passRelay.disabled = !joinedActiveInterpreter

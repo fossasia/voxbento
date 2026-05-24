@@ -326,27 +326,10 @@ label {
   font-size: 0.88rem;
 }
 
-/* ── Device selection ─────────────────────────────────────── */
-.device-row {
-  display: grid;
-  gap: 0.35rem;
-}
-
-.device-label {
-  color: var(--color-muted);
-  font-size: 0.88rem;
-  font-weight: 500;
-}
-
-.device-select-row {
-  display: grid;
-  grid-template-columns: 1fr auto;
-  gap: 0.5rem;
-  align-items: center;
-}
-
+/* ── Device select (used inside ctrl-popup) ───────────────── */
 .device-select {
-  min-width: 0; /* prevent overflow in grid */
+  min-width: 0;
+  width: 100%;
 }
 
 /* ── Mic level meter ──────────────────────────────────────── */
@@ -373,12 +356,6 @@ label {
   border: 1px solid var(--color-border);
 }
 
-.mic-divider {
-  border: none;
-  border-top: 1px solid var(--color-panel-border);
-  margin: 0.1rem 0;
-}
-
 /* ── HLS URL row ──────────────────────────────────────────── */
 .hls-url-cell {
   display: flex;
@@ -397,6 +374,189 @@ label {
   padding: 0.15rem 0.4rem;
   font-size: 0.78rem;
   flex-shrink: 0;
+}
+
+/* ── Google Meet–style control bar ───────────────────────── */
+.control-bar {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.65rem 1rem;
+  background: #f8f9fa;
+  border-top: 1px solid var(--color-panel-border);
+  border-bottom: 1px solid var(--color-panel-border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-lightest);
+}
+
+.ctrl-row {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+}
+
+/* Compound button wrapper (mic toggle + chevron arrow) */
+.ctrl-compound {
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+}
+
+/* Base icon button */
+.ctrl-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.18rem;
+  min-width: 3.2rem;
+  padding: 0.55rem 0.7rem;
+  border-radius: 0.6rem;
+  border: none;
+  background: #e4e6e8;
+  color: #1c1e21;
+  cursor: pointer;
+  transition:
+    background 0.15s,
+    box-shadow 0.15s;
+}
+
+.ctrl-btn:hover:not(:disabled) {
+  background: #d0d2d5;
+}
+
+.ctrl-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Left side of compound: same radius but square on the right */
+.ctrl-btn--mic {
+  border-radius: 0.6rem 0 0 0.6rem;
+}
+
+/* Right side of compound: the chevron arrow */
+.ctrl-chevron {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0 0.45rem;
+  border: none;
+  background: #e4e6e8;
+  border-radius: 0 0.6rem 0.6rem 0;
+  cursor: pointer;
+  color: #444;
+  transition: background 0.15s;
+}
+
+.ctrl-chevron:hover {
+  background: #d0d2d5;
+}
+
+/* SVG icon inside a ctrl-btn */
+.ctrl-icon {
+  width: 1.3rem;
+  height: 1.3rem;
+  flex-shrink: 0;
+}
+
+/* Small text label under icon */
+.ctrl-label {
+  font-size: 0.6rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: inherit;
+  line-height: 1;
+}
+
+/* ── Muted state ─────────────────────────────────────────── */
+.ctrl-btn--mic.muted,
+.ctrl-compound.muted .ctrl-btn--mic,
+.ctrl-compound.muted .ctrl-chevron {
+  background: rgb(226 14 58 / 0.14);
+  color: #c0163e;
+}
+
+.ctrl-btn--mic.muted:hover,
+.ctrl-compound.muted .ctrl-btn--mic:hover {
+  background: rgb(226 14 58 / 0.22);
+}
+
+@keyframes pulse-muted {
+  0%, 100% { box-shadow: 0 0 0 0 rgb(192 22 62 / 0.45); }
+  50%       { box-shadow: 0 0 0 7px rgb(192 22 62 / 0); }
+}
+
+.ctrl-btn--mic.muted {
+  animation: pulse-muted 1.6s ease-in-out infinite;
+}
+
+/* ── Live state ──────────────────────────────────────────── */
+#go-live.live {
+  background: var(--color-primary);
+  color: #fff;
+}
+
+#go-live.live:hover {
+  background: var(--color-primary-text);
+}
+
+/* ── Danger button (leave) ──────────────────────────────── */
+.ctrl-btn--danger {
+  background: #c0392b;
+  color: #fff;
+}
+
+.ctrl-btn--danger:hover:not(:disabled) {
+  background: #a93226;
+}
+
+/* ── Keyboard shortcut hint ──────────────────────────────── */
+.ctrl-shortcut-hint {
+  margin: 0;
+  font-size: 0.72rem;
+  color: var(--color-muted);
+}
+
+.ctrl-shortcut-hint kbd {
+  display: inline-block;
+  border: 1px solid var(--color-border);
+  border-radius: 3px;
+  padding: 0 0.3em;
+  font-size: 0.7rem;
+  font-family: inherit;
+  background: #fff;
+  color: var(--color-text);
+  line-height: 1.4;
+}
+
+/* ── Mic device picker popup ────────────────────────────── */
+.ctrl-popup {
+  position: absolute;
+  bottom: calc(100% + 0.5rem);
+  left: 0;
+  background: #fff;
+  border: 1px solid var(--color-border);
+  border-radius: 0.5rem;
+  box-shadow: 0 4px 20px rgb(0 0 0 / 0.15);
+  padding: 0.85rem;
+  min-width: 280px;
+  z-index: 200;
+}
+
+.ctrl-popup-title {
+  margin: 0 0 0.55rem 0;
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: var(--color-text);
+}
+
+.ctrl-popup-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 0.55rem;
 }
 
 /* ── Utility ─────────────────────────────────────────────── */
