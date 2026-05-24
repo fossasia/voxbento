@@ -93,16 +93,38 @@
       <span id='ingest-status' class='status-badge'>Ingest disconnected</span>
     </header>
     <div class='panel-body mic-controls'>
+
+      <div class='device-row'>
+        <label class='device-label' for='mic-device-select'>🎤 Microphone</label>
+        <div class='device-select-row'>
+          <select id='mic-device-select' class='input device-select'>
+            <option value=''>Default microphone</option>
+          </select>
+          <button id='mic-test-btn' type='button' class='btn' title='Acquire mic and show live level'>⚙ Test</button>
+        </div>
+      </div>
+
+      <div id='meter-row' class='meter-row hidden'>
+        <span class='meter-label'>Input level</span>
+        <canvas id='mic-meter' class='mic-meter' width='400' height='10'></canvas>
+      </div>
+
+      <hr class='mic-divider' />
       <p class='hint'>Only the active interpreter can go live. Headphones are recommended.</p>
       <div class='mic-buttons'>
         <button id='toggle-mic' type='button' class='btn'>Mute</button>
         <button id='go-live' type='button' class='btn btn-primary'>Go Live</button>
         <button id='pass-relay' type='button' class='btn'>Pass Relay</button>
       </div>
+
       <dl class='status-list'>
         <div><dt>Mic state</dt><dd id='mic-state'>Inactive</dd></div>
         <div><dt>Ingest reachable</dt><dd id='ingest-reachable'>Unknown</dd></div>
         <div><dt>Active interpreter</dt><dd id='active-name'>Unassigned</dd></div>
+        <div id='hls-url-row' class='hidden'>
+          <dt>HLS stream (VLC / browser)</dt>
+          <dd class='hls-url-cell'><code id='hls-url-display'></code><button id='copy-hls-url' type='button' class='btn btn-xs'>Copy</button></dd>
+        </div>
       </dl>
       <p id='error-banner' class='error-banner'></p>
     </div>

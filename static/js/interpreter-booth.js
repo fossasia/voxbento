@@ -24,6 +24,7 @@ const state = {
   jitsiDomain: portal.dataset.jitsiDomain || '',
   whipBase: portal.dataset.whipBase || '',
   hlsBase: portal.dataset.hlsBase || '',
+  micDeviceId: localStorage.getItem('mic-device-id') || '',
 }
 
 const elements = {
@@ -50,7 +51,20 @@ const elements = {
   toggleMic: document.getElementById('toggle-mic'),
   goLive: document.getElementById('go-live'),
   passRelay: document.getElementById('pass-relay'),
+  micDeviceSelect: document.getElementById('mic-device-select'),
+  micMeter: document.getElementById('mic-meter'),
+  meterRow: document.getElementById('meter-row'),
+  micTestBtn: document.getElementById('mic-test-btn'),
+  hlsUrlRow: document.getElementById('hls-url-row'),
+  hlsUrlDisplay: document.getElementById('hls-url-display'),
+  copyHlsUrl: document.getElementById('copy-hls-url'),
 }
+
+// ── Audio context state (not reflected directly in UI) ────────────────────
+let micTestStream = null
+let micAnimFrame = null
+let micAudioCtx = null
+let micAnalyser = null
 
 const socket = io()
 
@@ -62,6 +76,7 @@ async function boot() {
   elements.jitsiUrl.value = state.defaultJitsiRoom
   await fetchBoothState()
   await fetchIngestReachability()
+  await populateMicDevices()
   bindEventHandlers()
   render()
 }
@@ -130,6 +145,38 @@ function bindEventHandlers() {
 
   elements.passRelay.addEventListener('click', () => {
     passRelayToNextInterpreter()
+  })
+
+  elements.micDeviceSelect.addEventListener('change', () => {
+    state.micDeviceId = elements.micDeviceSelect.value
+    localStorage.setItem('mic-device-id', state.micDeviceId)
+    // If a test or live stream is active with a different device, restart it
+    if (micTestStream) {
+      stopMicTest().then(startMicTest).catch(() => {})
+    }
+  })
+
+  elements.micTestBtn.addEventListener('click', async () => {
+    if (micTestStream) {
+      stopMicTest()
+    } else {
+      await startMicTest()
+    }
+  })
+
+  elements.copyHlsUrl.addEventListener('click', () => {
+    const url = elements.hlsUrlDisplay.textContent
+    if (!url) return
+    navigator.clipboard.writeText(url).then(() => {
+      elements.copyHlsUrl.textContent = 'Copied!'
+      setTimeout(() => {
+        elements.copyHlsUrl.textContent = 'Copy'
+      }, 2000)
+    }).catch(() => {})
+  })
+
+  navigator.mediaDevices.addEventListener('devicechange', () => {
+    populateMicDevices().catch(() => {})
   })
 
   elements.participantList.addEventListener('click', (event) => {
@@ -245,16 +292,149 @@ function joinMonitoringFeed() {
   }
 }
 
+async function populateMicDevices() {
+  // A brief getUserMedia call is required before enumerateDevices returns device labels.
+  // The stream is immediately stopped — this only grants the label permission.
+  try {
+    const tempStream = await navigator.mediaDevices.getUserMedia({ audio: true })
+    tempStream.getTracks().forEach((t) => t.stop())
+  } catch {
+    // Permission denied or no device — continue without labels
+  }
+  const devices = await navigator.mediaDevices.enumerateDevices()
+  const audioInputs = devices.filter((d) => d.kind === 'audioinput')
+  const previous = elements.micDeviceSelect.value
+  elements.micDeviceSelect.innerHTML = ''
+
+  const defaultOpt = document.createElement('option')
+  defaultOpt.value = ''
+  defaultOpt.textContent = 'Default microphone'
+  elements.micDeviceSelect.appendChild(defaultOpt)
+
+  for (const device of audioInputs) {
+    const opt = document.createElement('option')
+    opt.value = device.deviceId
+    opt.textContent = device.label || `Microphone ${elements.micDeviceSelect.options.length}`
+    elements.micDeviceSelect.appendChild(opt)
+  }
+
+  // Restore saved selection
+  const saved = state.micDeviceId
+  if (saved && elements.micDeviceSelect.querySelector(`option[value="${CSS.escape(saved)}"]`)) {
+    elements.micDeviceSelect.value = saved
+  } else if (previous && elements.micDeviceSelect.querySelector(`option[value="${CSS.escape(previous)}"]`)) {
+    elements.micDeviceSelect.value = previous
+  }
+}
+
 async function ensureMicStream() {
   if (state.micStream) return state.micStream
+  // If a test stream is active on the same device, stop it — live stream replaces it
+  if (micTestStream) {
+    stopMicTest()
+  }
+  const deviceId = state.micDeviceId
   state.micStream = await navigator.mediaDevices.getUserMedia({
     audio: {
+      deviceId: deviceId ? { exact: deviceId } : undefined,
       echoCancellation: true,
       noiseSuppression: true,
       autoGainControl: true,
     },
   })
+  startMicMeter(state.micStream)
   return state.micStream
+}
+
+async function startMicTest() {
+  if (micTestStream) return
+  try {
+    const deviceId = state.micDeviceId
+    micTestStream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        deviceId: deviceId ? { exact: deviceId } : undefined,
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+      },
+    })
+    startMicMeter(micTestStream)
+    elements.micTestBtn.textContent = '⏹ Stop'
+    elements.micTestBtn.classList.add('btn-primary')
+    showError('')
+  } catch (error) {
+    showError(`Cannot access microphone: ${error.message}`)
+  }
+}
+
+function stopMicTest() {
+  if (!micTestStream) return
+  micTestStream.getTracks().forEach((t) => t.stop())
+  micTestStream = null
+  elements.micTestBtn.textContent = '⚙ Test'
+  elements.micTestBtn.classList.remove('btn-primary')
+  // Only stop the meter if we're not currently live
+  if (!state.ingestConnected) {
+    stopMicMeter()
+  }
+}
+
+function startMicMeter(stream) {
+  stopMicMeter() // clean up any previous context first
+  try {
+    micAudioCtx = new AudioContext()
+    micAnalyser = micAudioCtx.createAnalyser()
+    micAnalyser.fftSize = 256
+    const source = micAudioCtx.createMediaStreamSource(stream)
+    source.connect(micAnalyser)
+  } catch {
+    return
+  }
+
+  elements.meterRow.classList.remove('hidden')
+  const canvas = elements.micMeter
+  const ctx = canvas.getContext('2d')
+  const data = new Uint8Array(micAnalyser.frequencyBinCount)
+
+  function draw() {
+    micAnimFrame = requestAnimationFrame(draw)
+    micAnalyser.getByteFrequencyData(data)
+    const avg = data.reduce((a, b) => a + b, 0) / data.length
+    const volume = avg / 128 // normalise 0..1
+
+    ctx.clearRect(0, 0, canvas.width, canvas.height)
+    // Track background
+    ctx.fillStyle = '#e9ecef'
+    ctx.fillRect(0, 0, canvas.width, canvas.height)
+    // Active bar — colour reflects level
+    if (volume > 0.95) {
+      ctx.fillStyle = '#dc3545' // red — clipping
+    } else if (volume > 0.75) {
+      ctx.fillStyle = '#fd7e14' // amber — loud
+    } else {
+      ctx.fillStyle = '#22c55e' // green — normal
+    }
+    ctx.fillRect(0, 0, volume * canvas.width, canvas.height)
+  }
+  draw()
+}
+
+function stopMicMeter() {
+  if (micAnimFrame) {
+    cancelAnimationFrame(micAnimFrame)
+    micAnimFrame = null
+  }
+  if (micAudioCtx) {
+    micAudioCtx.close().catch(() => {})
+    micAudioCtx = null
+    micAnalyser = null
+  }
+  const canvas = elements.micMeter
+  if (canvas) {
+    const ctx = canvas.getContext('2d')
+    ctx.clearRect(0, 0, canvas.width, canvas.height)
+  }
+  elements.meterRow.classList.add('hidden')
 }
 
 async function toggleMicMute() {
@@ -373,6 +553,14 @@ async function stopLiveIngest() {
   if (state.peerConnection) {
     state.peerConnection.close()
     state.peerConnection = null
+  }
+  // Release live mic stream and stop the meter (unless a test is still active)
+  if (state.micStream) {
+    state.micStream.getTracks().forEach((t) => t.stop())
+    state.micStream = null
+  }
+  if (!micTestStream) {
+    stopMicMeter()
   }
   if (state.joined && state.participantId) {
     if (!state.whipBase) {
@@ -514,6 +702,16 @@ function renderMicControls() {
   elements.toggleMic.disabled = !state.joined
   elements.goLive.disabled = !state.ingestConnected && (!joinedActiveInterpreter || !state.ingestReachable)
   elements.passRelay.disabled = !joinedActiveInterpreter
+  // Disable device selector while streaming — cannot switch device mid-stream
+  elements.micDeviceSelect.disabled = state.ingestConnected
+  // Show HLS stream URL once live so the interpreter can paste it into VLC
+  if (state.ingestConnected && state.hlsBase) {
+    const url = `${state.hlsBase}/${encodeURIComponent(state.channelId)}/index.m3u8`
+    elements.hlsUrlDisplay.textContent = url
+    elements.hlsUrlRow.classList.remove('hidden')
+  } else {
+    elements.hlsUrlRow.classList.add('hidden')
+  }
 }
 
 function setBadge(element, text, tone = '') {

@@ -50,3 +50,9 @@ hlsSegmentMaxSize: 50MB
 # provides a network-level guard on top of the in-process booth_state.py check.
 pathDefaults:
   record: no             # disable on-disk recording for local dev
+
+# all_others is the wildcard entry that allows any path to be auto-created on
+# first WHIP publish. Without this, MediaMTX v1.x returns 400
+# "path not configured" even though pathDefaults is set.
+paths:
+  all_others:

@@ -325,3 +325,81 @@ label {
   color: var(--color-danger);
   font-size: 0.88rem;
 }
+
+/* ── Device selection ─────────────────────────────────────── */
+.device-row {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.device-label {
+  color: var(--color-muted);
+  font-size: 0.88rem;
+  font-weight: 500;
+}
+
+.device-select-row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.device-select {
+  min-width: 0; /* prevent overflow in grid */
+}
+
+/* ── Mic level meter ──────────────────────────────────────── */
+.meter-row {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.35rem 0;
+}
+
+.meter-label {
+  color: var(--color-muted);
+  font-size: 0.82rem;
+  white-space: nowrap;
+}
+
+.mic-meter {
+  display: block;
+  width: 100%;
+  height: 10px;
+  border-radius: 5px;
+  background: #e9ecef;
+  border: 1px solid var(--color-border);
+}
+
+.mic-divider {
+  border: none;
+  border-top: 1px solid var(--color-panel-border);
+  margin: 0.1rem 0;
+}
+
+/* ── HLS URL row ──────────────────────────────────────────── */
+.hls-url-cell {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  word-break: break-all;
+}
+
+.hls-url-cell code {
+  font-size: 0.82rem;
+  color: var(--color-primary-text);
+}
+
+.btn-xs {
+  padding: 0.15rem 0.4rem;
+  font-size: 0.78rem;
+  flex-shrink: 0;
+}
+
+/* ── Utility ─────────────────────────────────────────────── */
+.hidden {
+  display: none !important;
+}
