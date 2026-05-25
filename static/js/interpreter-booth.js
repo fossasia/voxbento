@@ -179,7 +179,9 @@ function handleServerMessage(data) {
   if (type === 'booth:joined') {
     state.participantId = data.participant_id
     state.joined = true
-    applyBoothState(data.state)
+    // skipAutoStart: the server auto-sets the first interpreter as active on
+    // join, but the interpreter must press Go Live themselves.
+    applyBoothState(data.state, { skipAutoStart: true })
     render()
     showError('')
   } else if (type === 'booth:state') {
@@ -514,7 +516,7 @@ async function fetchIngestReachability() {
   state.ingestReachable = Boolean(payload.reachable)
 }
 
-function applyBoothState(payload) {
+function applyBoothState(payload, { skipAutoStart = false } = {}) {
   const previousActiveInterpreterId = state.activeInterpreterId
   state.participants = payload.participants || []
   state.activeInterpreterId = payload.active_interpreter_id || null
@@ -539,11 +541,11 @@ function applyBoothState(payload) {
     })
   }
 
-  if (becameActive && !state.ingestConnected && state.ingestReachable) {
-    // Delay slightly so the outgoing interpreter's WHIP session closes first,
-    // then auto-start on the same MediaMTX path — same HLS URL, no manual step.
+  if (!skipAutoStart && becameActive && !state.ingestConnected && state.ingestReachable) {
+    // Wait briefly for the outgoing interpreter's WHIP DELETE to be processed
+    // by MediaMTX (DELETE is now sent immediately, so 300 ms is enough).
+    // Then auto-start so the booth stream resumes with no manual step.
     window.setTimeout(() => {
-      // Force-unmute so audio flows immediately — no manual step required.
       if (state.micMuted) {
         state.micMuted = false
         if (state.micStream) {
@@ -554,7 +556,7 @@ function applyBoothState(payload) {
       startLiveIngest().catch((error) => {
         showError(`Could not auto-start audio relay: ${error.message}`)
       })
-    }, 1200)
+    }, 300)
   }
 }
 
@@ -945,12 +947,24 @@ function renderParticipants() {
     }
     const canActivateSelf = participant.participant_id === state.participantId
     const canActivate = participant.role === 'interpreter' && (canReassign || canActivateSelf)
+    const isThisActive = participant.participant_id === state.activeInterpreterId
     const ingestLabel = participant.ingest_connected ? 'ingest connected' : 'ingest idle'
+    // Set Active / Active button:
+    //   active tile  → green "Active" badge (visible to all, no action needed)
+    //   non-active   → "Set Active" button only if this user can reassign
+    let activeButton = ''
+    if (participant.role === 'interpreter') {
+      if (isThisActive) {
+        activeButton = `<button type="button" class="btn btn-active-status" disabled>Active</button>`
+      } else if (canActivate) {
+        activeButton = `<button type="button" class="btn set-active-btn" data-participant-id="${participant.participant_id}">Set Active</button>`
+      }
+    }
     tile.innerHTML = `
       <div class="participant-top">
         <strong>${escapeHtml(participant.display_name)}</strong>
-        <span class="participant-pill ${participant.participant_id === state.activeInterpreterId ? 'live' : ''}">
-          ${participant.participant_id === state.activeInterpreterId ? 'LIVE' : participant.role}
+        <span class="participant-pill ${isThisActive ? 'live' : ''}">
+          ${isThisActive ? 'LIVE' : participant.role}
         </span>
       </div>
       <div class="participant-meta">${escapeHtml(participant.language)} · ${escapeHtml(participant.channel_id)}</div>
@@ -959,7 +973,7 @@ function renderParticipants() {
           <span class="participant-pill">${participant.mic_active ? 'mic active' : 'mic muted'}</span>
           <span class="participant-pill">${ingestLabel}</span>
         </div>
-        ${canActivate ? `<button type="button" class="btn set-active-btn" data-participant-id="${participant.participant_id}">Set Active</button>` : ''}
+        ${activeButton}
       </div>
     `
     elements.participantList.append(tile)
