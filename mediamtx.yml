@@ -23,6 +23,13 @@ logDestinations: [stdout]
 webrtcAddress: :8889
 webrtcEncryption: no
 webrtcLocalUDPAddress: :8189  # single UDP port for all ICE traffic (replaces deprecated webrtcICEUDPMuxAddress)
+# When MediaMTX runs inside Docker, its auto-detected host IP is the
+# container-internal address (e.g. 172.17.0.x), which browsers on the host
+# cannot reach. Adding 127.0.0.1 ensures the SDP answer includes a
+# localhost ICE candidate so the browser can connect via the port-forwarded
+# UDP port 8189.
+webrtcAdditionalHosts:
+  - 127.0.0.1
 
 # ── HLS output ──────────────────────────────────────────────────────────────
 # Playlists and segments are served at http://host:8888/{path}/index.m3u8.
@@ -38,20 +45,29 @@ webrtcLocalUDPAddress: :8189  # single UDP port for all ICE traffic (replaces de
 #                     until post-MVP per docs/detailedplan.md § 11.2.
 hlsAddress: :8888
 hlsEncryption: no
-# Allow the browser JS on :5000 to fetch the HLS playlist for validation (cross-origin)
+# Allow the browser JS on :8000 (FastAPI portal) to fetch the HLS playlist for validation (cross-origin)
 hlsAllowOrigin: '*'
 hlsAlwaysRemux: yes
-hlsSegmentDuration: 2s
+# 1 s segments reduce the first-segment wait after interpreter switch to ~1 s
+# (down from 2 s) while still giving viewers 3 s of buffer (3 segments × 1 s).
+hlsSegmentDuration: 1s
 hlsSegmentMaxSize: 50MB
 # hlsPartDuration: 200ms   # uncomment to enable LL-HLS (post-MVP)
 
 # ── Path defaults ────────────────────────────────────────────────────────────
 # Every path is auto-created on first WHIP publish — no static path config
-# needed. MediaMTX enforces exactly ONE active WHIP publisher per path; a
-# second publisher on the same path is rejected with 409 Conflict, which
-# provides a network-level guard on top of the in-process booth_state.py check.
+# needed.
+#
+# overridePublisher: when a new WHIP publisher connects to a path that already
+# has one, MediaMTX kicks the old publisher and seamlessly continues the HLS
+# muxer with the new source. This is critical for relay handoff — the incoming
+# interpreter can connect IMMEDIATELY and the HLS stream never pauses.
+# Without this, the incoming gets 409 until the outgoing DELETEs, causing a
+# ~100-300 ms gap where the HLS muxer is torn down and viewers experience a
+# stall/pause.
 pathDefaults:
   record: no             # disable on-disk recording for local dev
+  overridePublisher: yes
 
 # all_others is the wildcard entry that allows any path to be auto-created on
 # first WHIP publish. Without this, MediaMTX v1.x returns 400

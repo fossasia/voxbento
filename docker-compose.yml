@@ -1,0 +1,50 @@
+services:
+
+  # ── FastAPI interpretation portal ─────────────────────────────
+  portal:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      HOST: "0.0.0.0"
+      PORT: "8000"
+      SECRET_KEY: "${SECRET_KEY:-change-me}"
+      BOOTH_ACCESS_TOKEN: "${BOOTH_ACCESS_TOKEN:-}"
+      JWT_SECRET: "${JWT_SECRET:-}"
+      JWT_EXPIRY_SECONDS: "${JWT_EXPIRY_SECONDS:-86400}"
+      DEFAULT_JITSI_ROOM: "${DEFAULT_JITSI_ROOM:-https://meet.jit.si/eventyay-stage-room}"
+      JITSI_DOMAIN: "${JITSI_DOMAIN:-meet.jit.si}"
+      # Browser-facing URLs — must be reachable from the user's machine
+      MEDIAMTX_WHIP_BASE: "${MEDIAMTX_WHIP_BASE:-http://localhost:8889}"
+      MEDIAMTX_HLS_BASE: "${MEDIAMTX_HLS_BASE:-http://localhost:8888}"
+      # Internal URL for Python health checks (Docker service name)
+      MEDIAMTX_INTERNAL_BASE: "http://mediamtx:8888"
+    volumes:
+      # Mount source for hot-reload — code changes take effect instantly
+      - .:/app
+      # Keep the container's .venv intact (don't override with host .venv)
+      - /app/.venv
+    depends_on:
+      - mediamtx
+    restart: unless-stopped
+    # --reload watches for file changes and restarts uvicorn automatically
+    command: ["uv", "run", "uvicorn", "fastapi_app:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  # ── MediaMTX audio server ─────────────────────────────────────
+  mediamtx:
+    image: bluenviron/mediamtx:1
+    volumes:
+      - ./mediamtx.yml:/mediamtx.yml:ro
+    ports:
+      - "8888:8888"    # HLS output
+      - "8889:8889"    # WHIP (WebRTC HTTP ingest)
+      - "8189:8189/udp" # WebRTC ICE/UDP mux
+    restart: unless-stopped

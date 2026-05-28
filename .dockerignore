@@ -1,0 +1,10 @@
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.env
+hls-output/
+*.log
+mediamtx
+mediamtx_v*

@@ -10,3 +10,7 @@ __pycache__/
 instance/
 hls-output/
 *.egg-info/
+
+# MediaMTX binary (download locally, do not commit)
+mediamtx
+mediamtx_v*

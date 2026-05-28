@@ -1,21 +1,18 @@
-"""FastAPI entry point — Phase 1C: handles all coordination, templates, and REST.
-
-Flask (app.py) is kept as a deprecated stub until Phase 1D.
+"""FastAPI entry point — sole backend for the Eventyay Interpretation Portal.
 
 Start with:
-    uvicorn fastapi_app:app --host 0.0.0.0 --port 8001 --reload
+    uvicorn fastapi_app:app --host 0.0.0.0 --port 8000 --reload
 """
 from __future__ import annotations
 
-import asyncio
 import json
-import urllib.error
-import urllib.request
+import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Any
 
+import httpx
 import jwt as pyjwt
 from fastapi import Body, Depends, FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect, status
 from fastapi.responses import RedirectResponse
@@ -27,18 +24,18 @@ from pydantic import BaseModel
 from portal.auth import create_token, decode_token, security, verify_ws_token
 from portal.booth_state import BoothRegistry
 from portal.config import settings
-from portal.ingest import AIORTC_AVAILABLE, IngestService, IngestUnavailableError
 
 _BASE_DIR = Path(__file__).resolve().parent
+# Appended to static JS URLs so the browser always fetches fresh JS after
+# a server restart (prevents stale-cache issues during development).
+_JS_CACHE_BUST = str(int(time.time()))
 
 booths = BoothRegistry()
-ingest = IngestService(settings)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     yield
-    ingest.shutdown()
 
 
 app = FastAPI(title='Eventyay Interpretation Portal', version='1.0.0', lifespan=lifespan)
@@ -95,16 +92,16 @@ manager = ConnectionManager()
 
 # ── Utilities ─────────────────────────────────────────────────────────────────
 
-def _check_mediamtx() -> bool:
-    if not settings.mediamtx_hls_base:
+async def _check_mediamtx() -> bool:
+    """Non-blocking reachability check for MediaMTX HLS endpoint."""
+    base = settings.effective_mediamtx_internal_base
+    if not base:
         return False
     try:
-        req = urllib.request.Request(f'{settings.mediamtx_hls_base}/', method='HEAD')
-        with urllib.request.urlopen(req, timeout=2):
-            return True
-    except urllib.error.HTTPError:
-        return True
-    except urllib.error.URLError:
+        async with httpx.AsyncClient(timeout=2.0) as client:
+            r = await client.head(f'{base}/')
+        return r.status_code < 500
+    except (httpx.ConnectError, httpx.TimeoutException, httpx.RequestError):
         return False
 
 
@@ -137,22 +134,6 @@ class TokenResponse(BaseModel):
     token_type: str = 'bearer'
 
 
-class IngestConnectPayload(BaseModel):
-    booth_id: str
-    participant_id: str
-    token: str = ''
-    language: str = 'English'
-    type: str
-    sdp: str
-
-
-class IngestDisconnectPayload(BaseModel):
-    booth_id: str
-    participant_id: str
-    token: str = ''
-    language: str = 'English'
-
-
 # ── Auth endpoint ─────────────────────────────────────────────────────────────
 
 @app.post('/api/auth/token', response_model=TokenResponse)
@@ -175,9 +156,7 @@ async def healthz() -> dict:
     return {
         'ok': True,
         'server': 'fastapi',
-        'aiortc_available': AIORTC_AVAILABLE,
-        'use_legacy_ingest': settings.use_legacy_ingest,
-        'mediamtx_ok': _check_mediamtx(),
+        'mediamtx_ok': await _check_mediamtx(),
     }
 
 
@@ -200,10 +179,31 @@ async def interpreter_booth(
             'booth_channel_id': channel_id,
             'default_jitsi_room': settings.default_jitsi_room,
             'jitsi_domain': settings.jitsi_domain,
-            'aiortc_available': AIORTC_AVAILABLE,
             'mediamtx_whip_base': settings.mediamtx_whip_base,
             'mediamtx_hls_base': settings.mediamtx_hls_base,
-            'use_legacy_ingest': settings.use_legacy_ingest,
+            'js_version': _JS_CACHE_BUST,
+        },
+    )
+
+
+@app.get('/listen/{booth_id}')
+async def listen_booth(
+    request: Request,
+    booth_id: str,
+    language: str = 'English',
+    channel: str | None = Query(None),
+) -> Any:
+    """Listener page with hls.js auto-recovery for seamless handoff."""
+    channel_id = channel or f'{booth_id}-audio'
+    hls_url = f'{settings.mediamtx_hls_base}/{channel_id}/index.m3u8'
+    return templates.TemplateResponse(
+        request,
+        'listener.html',
+        {
+            'booth_id': booth_id,
+            'language': language,
+            'channel_id': channel_id,
+            'hls_url': hls_url,
         },
     )
 
@@ -223,67 +223,14 @@ async def booth_state_api(
     return await booths.snapshot(booth_id, language, channel_id)
 
 
-@app.post('/api/interpreter/connect/{channel_id}')
-async def connect_interpreter_ingest(
-    channel_id: str,
-    payload: IngestConnectPayload,
-    credentials: HTTPAuthorizationCredentials | None = Depends(security),
-) -> dict:
-    _require_access(credentials, payload.token)
-    if not await booths.is_active_interpreter(payload.booth_id, payload.participant_id, payload.language, channel_id):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail='Only the active interpreter can publish ingest audio.',
-        )
-    try:
-        answer = await asyncio.to_thread(
-            ingest.connect,
-            channel_id=channel_id,
-            booth_id=payload.booth_id,
-            participant_id=payload.participant_id,
-            offer_type=payload.type,
-            offer_sdp=payload.sdp,
-        )
-    except IngestUnavailableError as exc:
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc))
-    state = await booths.update_participant_state(
-        payload.booth_id,
-        payload.participant_id,
-        payload.language,
-        channel_id,
-        mic_active=True,
-        ingest_connected=True,
-    )
-    await manager.broadcast(payload.booth_id, {'type': 'booth:state', 'state': state})
-    return answer
-
-
-@app.post('/api/interpreter/disconnect/{channel_id}')
-async def disconnect_interpreter_ingest(
-    channel_id: str,
-    payload: IngestDisconnectPayload,
-    credentials: HTTPAuthorizationCredentials | None = Depends(security),
-) -> dict:
-    _require_access(credentials, payload.token)
-    await asyncio.to_thread(ingest.disconnect, channel_id)
-    state = await booths.update_participant_state(
-        payload.booth_id,
-        payload.participant_id,
-        payload.language,
-        channel_id,
-        mic_active=False,
-        ingest_connected=False,
-    )
-    await manager.broadcast(payload.booth_id, {'type': 'booth:state', 'state': state})
-    return {'ok': True}
-
 
 @app.get('/api/interpreter/status/{channel_id}')
 async def ingest_status_api(channel_id: str) -> dict:
+    """Returns MediaMTX reachability — used by the frontend preflight check."""
     return {
         'channel_id': channel_id,
-        'state': ingest.status(channel_id),
-        'reachable': AIORTC_AVAILABLE,
+        'state': 'mediamtx',
+        'reachable': await _check_mediamtx(),
     }
 
 
@@ -362,7 +309,7 @@ async def _handle_set_active(ws: WebSocket, session: Session, data: dict) -> Non
         await ws.send_text(json.dumps({'type': 'booth:error', 'message': str(exc)}))
         return
     if previous_active and previous_active != target_id:
-        await asyncio.to_thread(ingest.disconnect, session.channel_id)
+        pass  # client is responsible for stopping its own ingest (WHIP teardown)
     await manager.broadcast(session.booth_id, {'type': 'booth:state', 'state': state})
 
 
@@ -441,7 +388,7 @@ async def ws_booth(websocket: WebSocket, booth_id: str) -> None:
 
 def main() -> None:
     import uvicorn
-    uvicorn.run('fastapi_app:app', host=settings.host, port=8001, reload=settings.debug)
+    uvicorn.run('fastapi_app:app', host=settings.host, port=settings.port, reload=settings.debug)
 
 
 if __name__ == '__main__':

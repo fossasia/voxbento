@@ -17,17 +17,17 @@ const state = {
   participants: [],
   activeInterpreterId: null,
   chatMessages: [],
+  relayingOut: false,   // true while outgoing interp is in silence-mode handoff
   micStream: null,
   peerConnection: null,
+  whipResourceUrl: null,
   micMuted: false,
   ingestConnected: false,
-  ingestReachable: portal.dataset.aiortcAvailable === 'true',
+  ingestReachable: Boolean(portal.dataset.whipBase),
   defaultJitsiRoom: portal.dataset.defaultJitsi || '',
   jitsiDomain: portal.dataset.jitsiDomain || '',
   whipBase: portal.dataset.whipBase || '',
   hlsBase: portal.dataset.hlsBase || '',
-  useLegacyIngest: portal.dataset.useLegacyIngest === 'true',
-  usedLegacyFallback: false,
   micDeviceId: localStorage.getItem('mic-device-id') || '',
   preflight: {
     micPermission: 'pending',
@@ -180,7 +180,9 @@ function handleServerMessage(data) {
   if (type === 'booth:joined') {
     state.participantId = data.participant_id
     state.joined = true
-    applyBoothState(data.state)
+    // skipAutoStart: the server auto-sets the first interpreter as active on
+    // join, but the interpreter must press Go Live themselves.
+    applyBoothState(data.state, { skipAutoStart: true })
     render()
     showError('')
   } else if (type === 'booth:state') {
@@ -309,6 +311,12 @@ function bindEventHandlers() {
     if (state.ingestConnected) {
       await stopLiveIngest()
     }
+    // Release mic stream on explicit leave (stopLiveIngest keeps it for relay handoff)
+    if (state.micStream) {
+      state.micStream.getTracks().forEach((t) => t.stop())
+      state.micStream = null
+      stopMicMeter()
+    }
     if (state.joined && state.participantId) {
       wsSend({ type: 'booth:leave' })
       state.joined = false
@@ -322,9 +330,11 @@ function bindEventHandlers() {
     renderMicControls()
   })
 
-  navigator.mediaDevices.addEventListener('devicechange', () => {
-    populateMicDevices().catch(() => {})
-  })
+  if (navigator.mediaDevices) {
+    navigator.mediaDevices.addEventListener('devicechange', () => {
+      populateMicDevices().catch(() => {})
+    })
+  }
 
   elements.participantList.addEventListener('click', (event) => {
     const target = event.target
@@ -497,30 +507,68 @@ async function fetchBoothState() {
 }
 
 async function fetchIngestReachability() {
-  if (state.whipBase) {
-    state.ingestReachable = true
+  // Always query the backend status endpoint so the UI reflects actual
+  // MediaMTX availability rather than assuming reachable whenever whipBase
+  // is configured. The early-return that forced ingestReachable=true when
+  // whipBase was set has been removed.
+  const response = await fetch(`/api/interpreter/status/${encodeURIComponent(state.channelId)}`)
+  if (!response.ok) {
+    state.ingestReachable = false
     return
   }
-  const response = await fetch(`/api/interpreter/status/${encodeURIComponent(state.channelId)}`)
-  if (!response.ok) return
   const payload = await response.json()
   state.ingestReachable = Boolean(payload.reachable)
 }
 
-function applyBoothState(payload) {
+function applyBoothState(payload, { skipAutoStart = false } = {}) {
   const previousActiveInterpreterId = state.activeInterpreterId
   state.participants = payload.participants || []
   state.activeInterpreterId = payload.active_interpreter_id || null
   state.chatMessages = payload.chat_messages || []
+
   const lostActivePublisher =
     state.ingestConnected &&
     state.participantId &&
     previousActiveInterpreterId === state.participantId &&
     state.activeInterpreterId !== state.participantId
+
+  // This client just became the active interpreter (e.g. coordinator switched)
+  const becameActive =
+    state.joined &&
+    state.participantId &&
+    state.activeInterpreterId === state.participantId &&
+    previousActiveInterpreterId !== state.participantId
+
   if (lostActivePublisher) {
-    stopLiveIngest().catch((error) => {
-      showError(`Unable to stop previous ingest session: ${error.message}`)
+    // With overridePublisher enabled on MediaMTX, the incoming interpreter
+    // will take over the WHIP path immediately.  MediaMTX kicks our
+    // peer-connection and seamlessly continues the HLS muxer, so viewers
+    // never see a gap.  We just clean up our side.
+    state.relayingOut = true
+    if (state.micStream) {
+      state.micStream.getAudioTracks().forEach((t) => { t.enabled = false })
+    }
+    stopLiveIngest().catch(() => {}).then(() => {
+      state.relayingOut = false
+      if (state.micStream) {
+        state.micStream.getAudioTracks().forEach((t) => { t.enabled = !state.micMuted })
+      }
     })
+  }
+
+  if (!skipAutoStart && becameActive && !state.ingestConnected && state.ingestReachable) {
+    // Unmute immediately so audio is ready the moment WHIP connects.
+    if (state.micMuted) {
+      state.micMuted = false
+      if (state.micStream) {
+        state.micStream.getAudioTracks().forEach((t) => { t.enabled = true })
+      }
+      renderMicControls()
+    }
+    // With overridePublisher enabled on MediaMTX, the first attempt succeeds
+    // immediately (no 409 Conflict). The retry logic is kept as a safety net
+    // for edge cases (network hiccups, slow ICE gathering).
+    attemptRelayStart(0)
   }
 }
 
@@ -568,13 +616,23 @@ function joinMonitoringFeed() {
 }
 
 async function populateMicDevices() {
+  if (!navigator.mediaDevices) {
+    // Non-secure context or unsupported browser — skip device enumeration gracefully
+    return
+  }
   try {
     const tempStream = await navigator.mediaDevices.getUserMedia({ audio: true })
     tempStream.getTracks().forEach((t) => t.stop())
   } catch {
     // Permission denied or no device — continue without labels
   }
-  const devices = await navigator.mediaDevices.enumerateDevices()
+  let devices = []
+  try {
+    devices = await navigator.mediaDevices.enumerateDevices()
+  } catch {
+    // Cannot enumerate — proceed without device list
+    return
+  }
   const audioInputs = devices.filter((d) => d.kind === 'audioinput')
   const previous = elements.micDeviceSelect.value
   elements.micDeviceSelect.innerHTML = ''
@@ -739,31 +797,15 @@ async function doWhipIngest(peerConnection) {
     const detail = await response.text().catch(() => response.statusText)
     throw new Error(`WHIP error ${response.status}: ${detail}`)
   }
+  // Save the WHIP resource URL so we can DELETE it for clean teardown.
+  // Explicit DELETE lets MediaMTX release the path immediately instead of
+  // waiting for ICE timeout (~5-10s), enabling fast relay handoff.
+  const location = response.headers.get('Location')
+  if (location) {
+    state.whipResourceUrl = new URL(location, whipUrl).href
+  }
   const answerSdp = await response.text()
   await peerConnection.setRemoteDescription({ type: 'answer', sdp: answerSdp })
-}
-
-// Legacy aiortc path via FastAPI — kept for the migration period (USE_LEGACY_INGEST=true).
-// Phase 1D: remove this function and the /api/interpreter/connect route.
-async function doLegacyIngest(peerConnection) {
-  const response = await fetch(`/api/interpreter/connect/${encodeURIComponent(state.channelId)}`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', ...authHeaders() },
-    body: JSON.stringify({
-      booth_id: state.boothId,
-      participant_id: state.participantId,
-      language: state.language,
-      token: state.token,
-      type: peerConnection.localDescription.type,
-      sdp: peerConnection.localDescription.sdp,
-    }),
-  })
-  if (!response.ok) {
-    const payload = await response.json().catch(() => ({ error: response.statusText }))
-    throw new Error(payload.error || 'Legacy ingest negotiation failed.')
-  }
-  const answer = await response.json()
-  await peerConnection.setRemoteDescription(answer)
 }
 
 async function startLiveIngest() {
@@ -782,6 +824,12 @@ async function startLiveIngest() {
   }
   try {
     await ensureMicStream()
+    // Ensure track.enabled is consistent with micMuted before adding to the
+    // peer connection (guards against tracks being left disabled by a
+    // previous silence-mode handoff).
+    if (state.micStream) {
+      state.micStream.getAudioTracks().forEach((t) => { t.enabled = !state.micMuted })
+    }
     if (state.peerConnection) {
       state.peerConnection.close()
       state.peerConnection = null
@@ -805,23 +853,9 @@ async function startLiveIngest() {
     await waitForIceGathering(peerConnection)
 
     if (state.whipBase) {
-      try {
-        await doWhipIngest(peerConnection)
-        state.usedLegacyFallback = false
-      } catch (whipError) {
-        if (state.useLegacyIngest) {
-          showError(`WHIP failed (${whipError.message}); retrying via legacy ingest…`)
-          await doLegacyIngest(peerConnection)
-          state.usedLegacyFallback = true
-        } else {
-          throw whipError
-        }
-      }
-    } else if (state.useLegacyIngest) {
-      await doLegacyIngest(peerConnection)
-      state.usedLegacyFallback = true
+      await doWhipIngest(peerConnection)
     } else {
-      throw new Error('No ingest path available. Set MEDIAMTX_WHIP_BASE or enable USE_LEGACY_INGEST.')
+      throw new Error('MEDIAMTX_WHIP_BASE is not configured. Set it in your .env and restart the server.')
     }
 
     state.ingestConnected = true
@@ -840,31 +874,29 @@ async function startLiveIngest() {
 }
 
 async function stopLiveIngest() {
+  // DELETE the WHIP session to release the MediaMTX path immediately.
+  // Use the resource URL from the Location header if captured; otherwise
+  // fall back to the standard WHIP endpoint for this channel.
+  // Only send DELETE if WHIP was actually connected (avoids spurious 404s).
+  if (state.ingestConnected || state.whipResourceUrl) {
+    const deleteUrl = state.whipResourceUrl
+      || (state.whipBase && state.channelId
+          ? `${state.whipBase}/${encodeURIComponent(state.channelId)}/whip`
+          : null)
+    state.whipResourceUrl = null
+    if (deleteUrl) fetch(deleteUrl, { method: 'DELETE' }).catch(() => {})
+  }
   if (state.peerConnection) {
     state.peerConnection.close()
     state.peerConnection = null
   }
-  if (state.micStream) {
-    state.micStream.getTracks().forEach((t) => t.stop())
-    state.micStream = null
-  }
-  if (!micTestStream) {
+  // Keep the mic stream alive so a relay handoff can reuse it without
+  // requesting mic permission again. The stream is stopped only when the
+  // participant explicitly leaves the booth.
+  if (!micTestStream && !state.micStream) {
     stopMicMeter()
   }
   if (state.joined && state.participantId) {
-    if (state.usedLegacyFallback) {
-      await fetch(`/api/interpreter/disconnect/${encodeURIComponent(state.channelId)}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', ...authHeaders() },
-        body: JSON.stringify({
-          booth_id: state.boothId,
-          participant_id: state.participantId,
-          language: state.language,
-          token: state.token,
-        }),
-      }).catch(() => {})
-      state.usedLegacyFallback = false
-    }
     wsSend({
       type: 'booth:update-state',
       mic_active: false,
@@ -875,6 +907,65 @@ async function stopLiveIngest() {
   setHlsValidationStatus('idle')
   state.ingestConnected = false
   renderMicControls()
+}
+
+// Retry intervals for WHIP on relay handoff (ms from previous attempt).
+// Outgoing interpreter stops at ~700ms, so the 800ms mark (2 × 400ms) wins.
+const _RELAY_RETRY_INTERVAL_MS = 400
+const _RELAY_MAX_ATTEMPTS = 6
+
+function attemptRelayStart(attempt) {
+  if (attempt >= _RELAY_MAX_ATTEMPTS) return
+  window.setTimeout(async () => {
+    // Bail if conditions changed while waiting
+    if (!state.joined || !state.participantId) return
+    if (state.activeInterpreterId !== state.participantId) return
+    if (state.ingestConnected) return
+    try {
+      await ensureMicStream()
+      // Restore track.enabled (may have been muted during silence-mode handoff)
+      if (state.micStream) {
+        state.micStream.getAudioTracks().forEach((t) => { t.enabled = !state.micMuted })
+      }
+      if (state.peerConnection) {
+        state.peerConnection.close()
+        state.peerConnection = null
+      }
+      const pc = new RTCPeerConnection()
+      state.peerConnection = pc
+      state.micStream.getAudioTracks().forEach((t) => pc.addTrack(t, state.micStream))
+      pc.addEventListener('connectionstatechange', () => {
+        if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
+          setBadge(elements.ingestStatus, 'Ingest reconnecting', 'warning')
+        }
+        if (pc.connectionState === 'connected') {
+          setBadge(elements.ingestStatus, 'Ingest connected', 'success')
+        }
+      })
+      const offer = await pc.createOffer({ offerToReceiveAudio: false, offerToReceiveVideo: false })
+      await pc.setLocalDescription(offer)
+      await waitForIceGathering(pc)
+      if (!state.whipBase) throw new Error('MEDIAMTX_WHIP_BASE is not configured')
+      await doWhipIngest(pc)
+      state.ingestConnected = true
+      if (state.hlsBase) startHlsPolling()
+      wsSend({ type: 'booth:update-state', mic_active: !state.micMuted, ingest_connected: true })
+      showError('')
+    } catch (error) {
+      if (state.peerConnection) {
+        state.peerConnection.close()
+        state.peerConnection = null
+      }
+      state.whipResourceUrl = null
+      // 409 = path busy (outgoing interpreter still in silence mode); retry
+      if (error.message.includes('409') && attempt < _RELAY_MAX_ATTEMPTS - 1) {
+        attemptRelayStart(attempt + 1)
+        return
+      }
+      showError(`Could not start relay: ${error.message}`)
+    }
+    renderMicControls()
+  }, attempt === 0 ? 0 : _RELAY_RETRY_INTERVAL_MS)
 }
 
 function passRelayToNextInterpreter() {
@@ -913,7 +1004,10 @@ function render() {
 
 function renderParticipants() {
   const currentParticipant = state.participants.find((p) => p.participant_id === state.participantId)
-  const canReassign = currentParticipant?.role === 'coordinator'
+  // Coordinator or the currently-active interpreter may reassign any interpreter.
+  // This aligns with the server permission model (booth_state.set_active_interpreter).
+  const isActiveInterpreter = state.activeInterpreterId === state.participantId
+  const canReassign = currentParticipant?.role === 'coordinator' || isActiveInterpreter
   const activeParticipant = state.participants.find((p) => p.participant_id === state.activeInterpreterId)
   setBadge(
     elements.activeIndicator,
@@ -930,23 +1024,54 @@ function renderParticipants() {
     }
     const canActivateSelf = participant.participant_id === state.participantId
     const canActivate = participant.role === 'interpreter' && (canReassign || canActivateSelf)
-    const ingestLabel = participant.ingest_connected ? 'ingest connected' : 'ingest idle'
-    tile.innerHTML = `
-      <div class="participant-top">
-        <strong>${escapeHtml(participant.display_name)}</strong>
-        <span class="participant-pill ${participant.participant_id === state.activeInterpreterId ? 'live' : ''}">
-          ${participant.participant_id === state.activeInterpreterId ? 'LIVE' : participant.role}
-        </span>
-      </div>
-      <div class="participant-meta">${escapeHtml(participant.language)} · ${escapeHtml(participant.channel_id)}</div>
-      <div class="participant-bottom">
-        <div>
-          <span class="participant-pill">${participant.mic_active ? 'mic active' : 'mic muted'}</span>
-          <span class="participant-pill">${ingestLabel}</span>
-        </div>
-        ${canActivate ? `<button type="button" class="btn set-active-btn" data-participant-id="${participant.participant_id}">Set Active</button>` : ''}
-      </div>
-    `
+    const isThisActive = participant.participant_id === state.activeInterpreterId
+
+    // Build participant tile using DOM construction (no innerHTML) to prevent XSS.
+    const top = document.createElement('div')
+    top.className = 'participant-top'
+    const nameEl = document.createElement('strong')
+    nameEl.textContent = participant.display_name
+    const rolePill = document.createElement('span')
+    rolePill.className = `participant-pill${isThisActive ? ' live' : ''}`
+    rolePill.textContent = isThisActive ? 'LIVE' : participant.role
+    top.append(nameEl, rolePill)
+
+    const meta = document.createElement('div')
+    meta.className = 'participant-meta'
+    meta.textContent = `${participant.language} \u00b7 ${participant.channel_id}`
+
+    const bottom = document.createElement('div')
+    bottom.className = 'participant-bottom'
+    const pillGroup = document.createElement('div')
+    const micPill = document.createElement('span')
+    micPill.className = 'participant-pill'
+    micPill.textContent = participant.mic_active ? 'mic active' : 'mic muted'
+    const ingestPill = document.createElement('span')
+    ingestPill.className = 'participant-pill'
+    ingestPill.textContent = participant.ingest_connected ? 'ingest connected' : 'ingest idle'
+    pillGroup.append(micPill, ingestPill)
+    bottom.append(pillGroup)
+
+    // Set Active / Active button:
+    //   active tile  → green "Active" badge (visible to all, no action needed)
+    //   non-active   → "Set Active" button only if this user can reassign
+    if (participant.role === 'interpreter') {
+      const btn = document.createElement('button')
+      btn.type = 'button'
+      if (isThisActive) {
+        btn.className = 'btn btn-active-status'
+        btn.disabled = true
+        btn.textContent = 'Active'
+        bottom.append(btn)
+      } else if (canActivate) {
+        btn.className = 'btn set-active-btn'
+        btn.dataset.participantId = participant.participant_id
+        btn.textContent = 'Set Active'
+        bottom.append(btn)
+      }
+    }
+
+    tile.append(top, meta, bottom)
     elements.participantList.append(tile)
   }
 }
@@ -960,13 +1085,15 @@ function renderChat() {
   for (const message of state.chatMessages.slice(-100)) {
     const entry = document.createElement('article')
     entry.className = 'chat-entry'
-    entry.innerHTML = `
-      <header>
-        <strong>${escapeHtml(message.sender_name)}</strong>
-        <span>${formatTime(message.sent_at)}</span>
-      </header>
-      <p>${escapeHtml(message.body)}</p>
-    `
+    const header = document.createElement('header')
+    const senderEl = document.createElement('strong')
+    senderEl.textContent = message.sender_name
+    const timeEl = document.createElement('span')
+    timeEl.textContent = formatTime(message.sent_at)
+    header.append(senderEl, timeEl)
+    const bodyEl = document.createElement('p')
+    bodyEl.textContent = message.body
+    entry.append(header, bodyEl)
     elements.chatLog.append(entry)
   }
   elements.chatLog.scrollTop = elements.chatLog.scrollHeight

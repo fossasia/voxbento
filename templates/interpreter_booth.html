@@ -12,10 +12,8 @@
   data-default-channel='{{ booth_channel_id }}'
   data-default-jitsi='{{ default_jitsi_room }}'
   data-jitsi-domain='{{ jitsi_domain }}'
-  data-aiortc-available='{{ "true" if aiortc_available else "false" }}'
   data-whip-base='{{ mediamtx_whip_base }}'
   data-hls-base='{{ mediamtx_hls_base }}'
-  data-use-legacy-ingest='{{ "true" if use_legacy_ingest else "false" }}'
 >
   <section class='panel'>
     <header class='panel-header'>
@@ -209,5 +207,5 @@
   </section>
 </div>
 
-<script type='module' src="{{ url_for('static', path='js/interpreter-booth.js') }}"></script>
+<script type='module' src="{{ url_for('static', path='js/interpreter-booth.js') }}?v={{ js_version }}"></script>
 {% endblock %}

@@ -73,7 +73,12 @@ class BoothRegistry:
         self._lock = asyncio.Lock()
 
     def _get_or_create_booth(self, booth_id: str, language: str, channel_id: str) -> Booth:
-        """Return existing booth or create one. Caller must hold self._lock."""
+        """Return existing booth or create one. Caller must hold self._lock.
+
+        ``language`` and ``channel_id`` are only used when *creating* the booth;
+        they are treated as immutable once set so that a later request from a
+        different client cannot silently change the booth's canonical values.
+        """
         booth = self._booths.get(booth_id)
         if booth is None:
             booth = Booth(booth_id=booth_id, language=language, channel_id=channel_id)
