@@ -46,7 +46,7 @@ webrtcAdditionalHosts:
 hlsAddress: :8888
 hlsEncryption: no
 # Allow the browser JS on :8000 (FastAPI portal) to fetch the HLS playlist for validation (cross-origin)
-hlsAllowOrigins: ['*']
+hlsAllowOrigin: '*'
 hlsAlwaysRemux: yes
 # 1 s segments reduce the first-segment wait after interpreter switch to ~1 s
 # (down from 2 s) while still giving viewers 3 s of buffer (3 segments × 1 s).

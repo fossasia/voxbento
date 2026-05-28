@@ -389,7 +389,26 @@ def test_ws_auth_required_with_token(monkeypatch):
     # When the provided token matches BOOTH_ACCESS_TOKEN, the endpoint issues a JWT.
     res = client.post('/api/auth/token', json={'token': 'secret-test-token'})
     assert res.status_code == 200
-    assert 'access_token' in res.json()
+    jwt_token = res.json()['access_token']
+
+    # WebSocket WITHOUT a token should be rejected (closed with code 4001).
+    with pytest.raises(Exception):
+        with client.websocket_connect('/ws/booth/auth-test') as ws:
+            ws.receive_text()
+
+    # WebSocket WITH a valid JWT should be accepted.
+    with client.websocket_connect(f'/ws/booth/auth-test?token={jwt_token}') as ws:
+        ws.send_text(json.dumps({
+            'type': 'booth:join', 'display_name': 'AuthUser',
+            'role': 'interpreter', 'language': 'English',
+            'channel_id': 'auth-test-audio',
+        }))
+        msg = json.loads(ws.receive_text())
+        assert msg['type'] in ('booth:joined', 'booth:state')
+
+    # A wrong access token should be rejected by the token endpoint.
+    res_bad = client.post('/api/auth/token', json={'token': 'wrong-password'})
+    assert res_bad.status_code == 401
 
 
 def test_ws_coordinator_can_switch_active_interpreter():

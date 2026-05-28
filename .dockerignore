@@ -6,3 +6,5 @@ __pycache__/
 .env
 hls-output/
 *.log
+mediamtx
+mediamtx_v*

@@ -550,12 +550,16 @@ function applyBoothState(payload, { skipAutoStart = false } = {}) {
     }
     window.setTimeout(() => {
       state.relayingOut = false
-      // Restore track.enabled to match micMuted BEFORE stopping so that
-      // if this user becomes active again the tracks are in the right state.
-      if (state.micStream) {
-        state.micStream.getAudioTracks().forEach((t) => { t.enabled = !state.micMuted })
-      }
-      stopLiveIngest().catch(() => {})
+      // Stop the WHIP session FIRST, then restore track.enabled.
+      // Restoring before stop would briefly send live audio to the
+      // outgoing path during teardown.
+      stopLiveIngest().catch(() => {}).then(() => {
+        // Restore track.enabled to match micMuted so that if this user
+        // becomes active again the tracks are in the right state.
+        if (state.micStream) {
+          state.micStream.getAudioTracks().forEach((t) => { t.enabled = !state.micMuted })
+        }
+      })
     }, 700)
   }
 

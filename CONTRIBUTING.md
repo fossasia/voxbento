@@ -35,7 +35,7 @@ All 27 tests must pass before opening a PR. The same checks run in CI
 - Python 3.13+; run with `uv`
 - `asyncio.Lock` for all shared mutable state in `BoothRegistry`
 - Use specific exception types (`ValueError`, `PermissionError`) — do not catch bare `Exception`
-- `eventyay.*` namespace for new imports; no `pretix.*`, `pretalx.*`, or `venueless.*`
+- `portal.*` namespace for new imports; no `pretix.*`, `pretalx.*`, or `venueless.*`
 
 ### JavaScript
 
@@ -71,7 +71,7 @@ uv add <package>
 uv add --dev <package>
 
 # Always commit the updated uv.lock
-uv sync --python 3.13   # regenerate lock
+uv sync --all-groups --python 3.13   # regenerate lock
 git add pyproject.toml uv.lock
 ```
 
