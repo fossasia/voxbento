@@ -14,6 +14,3 @@ hls-output/
 # MediaMTX binary (download locally, do not commit)
 mediamtx
 mediamtx_v*
-
-# Local-only docs
-DEPLOYMENT_GUIDE.md

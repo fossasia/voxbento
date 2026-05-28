@@ -540,27 +540,20 @@ function applyBoothState(payload, { skipAutoStart = false } = {}) {
     previousActiveInterpreterId !== state.participantId
 
   if (lostActivePublisher) {
-    // Silence-mode handoff: mute the mic tracks so we send silence while
-    // keeping the WHIP connection alive. MediaMTX keeps the HLS path up
-    // (no muxer teardown) so viewers never see a 404. After 700 ms the
-    // incoming interpreter has had time to claim the path, then we stop.
+    // With overridePublisher enabled on MediaMTX, the incoming interpreter
+    // will take over the WHIP path immediately.  MediaMTX kicks our
+    // peer-connection and seamlessly continues the HLS muxer, so viewers
+    // never see a gap.  We just clean up our side.
     state.relayingOut = true
     if (state.micStream) {
       state.micStream.getAudioTracks().forEach((t) => { t.enabled = false })
     }
-    window.setTimeout(() => {
+    stopLiveIngest().catch(() => {}).then(() => {
       state.relayingOut = false
-      // Stop the WHIP session FIRST, then restore track.enabled.
-      // Restoring before stop would briefly send live audio to the
-      // outgoing path during teardown.
-      stopLiveIngest().catch(() => {}).then(() => {
-        // Restore track.enabled to match micMuted so that if this user
-        // becomes active again the tracks are in the right state.
-        if (state.micStream) {
-          state.micStream.getAudioTracks().forEach((t) => { t.enabled = !state.micMuted })
-        }
-      })
-    }, 700)
+      if (state.micStream) {
+        state.micStream.getAudioTracks().forEach((t) => { t.enabled = !state.micMuted })
+      }
+    })
   }
 
   if (!skipAutoStart && becameActive && !state.ingestConnected && state.ingestReachable) {
@@ -572,8 +565,9 @@ function applyBoothState(payload, { skipAutoStart = false } = {}) {
       }
       renderMicControls()
     }
-    // Try WHIP right away. Outgoing interpreter is in silence mode for ~700ms,
-    // so we may get 409 Conflict. attemptRelayStart retries every 400ms.
+    // With overridePublisher enabled on MediaMTX, the first attempt succeeds
+    // immediately (no 409 Conflict). The retry logic is kept as a safety net
+    // for edge cases (network hiccups, slow ICE gathering).
     attemptRelayStart(0)
   }
 }

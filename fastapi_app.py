@@ -186,6 +186,28 @@ async def interpreter_booth(
     )
 
 
+@app.get('/listen/{booth_id}')
+async def listen_booth(
+    request: Request,
+    booth_id: str,
+    language: str = 'English',
+    channel: str | None = Query(None),
+) -> Any:
+    """Listener page with hls.js auto-recovery for seamless handoff."""
+    channel_id = channel or f'{booth_id}-audio'
+    hls_url = f'{settings.mediamtx_hls_base}/{channel_id}/index.m3u8'
+    return templates.TemplateResponse(
+        request,
+        'listener.html',
+        {
+            'booth_id': booth_id,
+            'language': language,
+            'channel_id': channel_id,
+            'hls_url': hls_url,
+        },
+    )
+
+
 # ── REST API ──────────────────────────────────────────────────────────────────
 
 @app.get('/api/booth/{booth_id}/state')

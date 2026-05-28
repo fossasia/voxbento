@@ -56,11 +56,18 @@ hlsSegmentMaxSize: 50MB
 
 # ── Path defaults ────────────────────────────────────────────────────────────
 # Every path is auto-created on first WHIP publish — no static path config
-# needed. MediaMTX enforces exactly ONE active WHIP publisher per path; a
-# second publisher on the same path is rejected with 409 Conflict, which
-# provides a network-level guard on top of the in-process booth_state.py check.
+# needed.
+#
+# overridePublisher: when a new WHIP publisher connects to a path that already
+# has one, MediaMTX kicks the old publisher and seamlessly continues the HLS
+# muxer with the new source. This is critical for relay handoff — the incoming
+# interpreter can connect IMMEDIATELY and the HLS stream never pauses.
+# Without this, the incoming gets 409 until the outgoing DELETEs, causing a
+# ~100-300 ms gap where the HLS muxer is torn down and viewers experience a
+# stall/pause.
 pathDefaults:
   record: no             # disable on-disk recording for local dev
+  overridePublisher: yes
 
 # all_others is the wildcard entry that allows any path to be auto-created on
 # first WHIP publish. Without this, MediaMTX v1.x returns 400
