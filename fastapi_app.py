@@ -178,7 +178,7 @@ async def interpreter_booth(
             'booth_language': language,
             'booth_channel_id': channel_id,
             'default_jitsi_room': settings.default_jitsi_room,
-            'jitsi_domain': settings.jitsi_domain,
+            'jitsi_domain': settings.effective_jitsi_domain,
             'jitsi_base_url': settings.effective_jitsi_base_url,
             'mediamtx_whip_base': settings.mediamtx_whip_base,
             'mediamtx_hls_base': settings.mediamtx_hls_base,

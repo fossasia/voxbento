@@ -51,6 +51,21 @@ def test_interpreter_booth_jitsi_url_uses_base_url():
     assert expected_prefix.encode() in res.content
 
 
+def test_interpreter_booth_jitsi_domain_matches_base_url_host():
+    """data-jitsi-domain must equal the host of the effective Jitsi base URL.
+
+    When JITSI_BASE_URL overrides the scheme/host, the JS validation in
+    joinMonitoringFeed() compares meetingUrl.host against data-jitsi-domain.
+    If they differ the user's own pre-filled URL is rejected.
+    """
+    from urllib.parse import urlparse
+    from portal.config import settings
+    res = client.get('/interpreter/test-booth')
+    assert res.status_code == 200
+    expected_host = urlparse(settings.effective_jitsi_base_url).netloc
+    assert f"data-jitsi-domain='{expected_host}'".encode() in res.content
+
+
 def test_auth_token_no_password():
     """When BOOTH_ACCESS_TOKEN is empty, any (or empty) token grants a JWT."""
     res = client.post('/api/auth/token', json={'token': ''})

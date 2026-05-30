@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from urllib.parse import urlparse
+
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -37,6 +39,15 @@ class Settings(BaseSettings):
     @property
     def effective_jitsi_base_url(self) -> str:
         return self.jitsi_base_url or f'http://{self.jitsi_domain}'
+
+    @property
+    def effective_jitsi_domain(self) -> str:
+        """Hostname (and port) derived from effective_jitsi_base_url.
+
+        Always consistent with the pre-filled Jitsi URL so that the JS
+        validation in joinMonitoringFeed() does not reject its own input.
+        """
+        return urlparse(self.effective_jitsi_base_url).netloc
     # JWT configuration — jwt_secret defaults to secret_key when empty
     jwt_secret: str = ''
     jwt_expiry_seconds: int = 86400
