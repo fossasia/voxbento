@@ -1,6 +1,6 @@
 # Backend Architecture
 
-The backend is a Flask application with Flask-SocketIO for realtime communication and aiortc for WebRTC ingest.
+The backend is a FastAPI application using native WebSocket for realtime communication. Audio ingest is handled entirely by MediaMTX via the WHIP protocol — Python never touches audio data.
 
 ---
 
@@ -8,12 +8,13 @@ The backend is a Flask application with Flask-SocketIO for realtime communicatio
 
 | Technology | Version | Role |
 |---|---|---|
-| Flask | 3.1.3 | HTTP server and route handling |
-| Flask-SocketIO | 5.6.1 | WebSocket/Socket.IO server |
-| aiortc | 1.14.0 | Server-side WebRTC peer connection |
-| av (PyAV) | 16.1.0 | FFmpeg bindings used by aiortc |
-| python-dotenv | 1.2.2 | `.env` file loading |
-| Python | 3.13.x | Runtime |
+| FastAPI | — | HTTP server, route handling, ASGI |
+| uvicorn | — | ASGI server |
+| WebSocket (FastAPI native) | — | Realtime booth coordination |
+| PyJWT | — | JWT token authentication |
+| pydantic-settings | — | Environment variable loading and validation |
+| MediaMTX | bluenviron/mediamtx:1 | WHIP ingest and HLS delivery (external service) |
+| Python | 3.12.x | Runtime |
 | uv | — | Dependency management and venv |
 
 ---
@@ -21,70 +22,75 @@ The backend is a Flask application with Flask-SocketIO for realtime communicatio
 ## Module structure
 
 ```
-app.py                   # Flask app, routes, Socket.IO handlers, access control
+fastapi_app.py               # FastAPI app, routes, WebSocket handlers, access control
 portal/
 ├── __init__.py
-├── config.py            # Settings dataclass loaded from env vars
-├── booth_state.py       # In-memory booth registry and state machine
-└── ingest.py            # aiortc ingest service and async runtime
+├── config.py                # Settings via pydantic-settings loaded from env vars
+├── auth.py                  # JWT authentication via PyJWT
+└── booth_state.py           # Async in-memory booth registry and state machine
 templates/
-├── base.html            # Page shell (Eventyay-style header)
-└── interpreter_booth.html  # Booth page (passes config to Vue)
+├── base.html                # Page shell (Eventyay-style header)
+├── interpreter_booth.html   # Booth page (server-rendered with Jinja2)
+└── listen.html              # HLS listener page with hls.js
+static/
+└── js/
+    └── interpreter-booth.js # Plain ES module: state machine, WebSocket, WHIP, UI
 ```
 
 ---
 
-## `app.py` — Flask routes and Socket.IO handlers
+## `fastapi_app.py` — FastAPI routes and WebSocket handlers
 
 ### HTTP routes
 
 | Method | Path | Purpose |
 |---|---|---|
 | `GET` | `/` | Redirect to `/interpreter/demo-booth` |
-| `GET` | `/healthz` | Health check; includes `aiortc_available` flag |
-| `GET` | `/interpreter/<booth_id>` | Render interpreter booth page |
-| `GET` | `/api/booth/<booth_id>/state` | Fetch current booth state snapshot |
-| `POST` | `/api/interpreter/connect/<channel_id>` | Accept WebRTC SDP offer; return answer |
-| `POST` | `/api/interpreter/disconnect/<channel_id>` | Disconnect ingest session |
-| `GET` | `/api/interpreter/status/<channel_id>` | Query ingest session state |
+| `GET` | `/healthz` | Health check |
+| `GET` | `/interpreter/{booth_id}` | Render interpreter booth page (Jinja2) |
+| `GET` | `/listen/{booth_id}` | Render HLS listener page (Jinja2) |
+| `GET` | `/api/booth/{booth_id}/state` | Fetch current booth state snapshot |
 
-### Socket.IO events (server receives)
+### WebSocket endpoint
 
-| Event | Payload | Purpose |
+| Path | Purpose |
+|---|---|
+| `/ws/booth/{booth_id}` | Realtime booth coordination (join, leave, chat, handoff, state updates) |
+
+### WebSocket messages (client sends)
+
+| Message type | Payload | Purpose |
 |---|---|---|
 | `booth:join` | `{ booth_id, token, display_name, role, language, channel_id, participant_id }` | Join booth; creates participant |
 | `booth:leave` | `{ booth_id, participant_id, language, channel_id }` | Leave booth; remove participant |
 | `booth:chat` | `{ booth_id, sender_id, body, language, channel_id }` | Send chat message |
 | `booth:set-active` | `{ booth_id, requester_id, target_id, language, channel_id }` | Assign active interpreter |
 | `booth:update-state` | `{ booth_id, participant_id, mic_active, ingest_connected, connected, ... }` | Update participant state |
-| `disconnect` | — | Socket.IO disconnect; auto-leave booth |
 
-### Socket.IO events (server emits)
+### WebSocket messages (server sends)
 
-| Event | Target | Payload |
+| Message type | Target | Payload |
 |---|---|---|
-| `booth:state` | All booth room members | Full booth state snapshot |
+| `booth:state` | All booth WebSocket connections | Full booth state snapshot |
 | `booth:joined` | Connecting client only | `{ participant_id, state }` |
-| `booth:chat` | All booth room members | Chat message object |
+| `booth:chat` | All booth WebSocket connections | Chat message object |
 | `booth:error` | Connecting client only | `{ message }` |
 
 ### Access control
 
-`require_access_token(token)` checks the token against `settings.booth_access_token`. If the token is set in the environment and the request/event does not provide a matching value, a `PermissionError` is raised and translated to a `403` HTTP response or a `booth:error` Socket.IO event.
+`portal/auth.py` handles JWT-based authentication via PyJWT. Tokens are validated on HTTP API calls and WebSocket connections. If the token is invalid or missing, the request is rejected.
 
-The ingest endpoint (`POST /api/interpreter/connect/{channel_id}`) additionally enforces that the requesting participant is the active interpreter for the channel via `booths.is_active_interpreter(...)`.
+### Connection management
 
-### Room management
+Each booth has a set of active WebSocket connections. All `booth:state` broadcasts are scoped to connections for the same booth so participants only receive state for their booth.
 
-Each booth has a Socket.IO room named `booth:{booth_id}`. All `booth:state` broadcasts are scoped to this room so participants only receive state for their booth.
-
-The `sid_index` dict maps Socket.IO session IDs to `{ booth_id, participant_id, language, channel_id }` to enable automatic leave-on-disconnect.
+The server tracks WebSocket connections and performs automatic leave-on-disconnect when a connection drops.
 
 ---
 
 ## `portal/booth_state.py` — BoothRegistry
 
-The `BoothRegistry` is the single source of truth for all booth state at runtime. It is a thread-safe in-memory registry using an `RLock`.
+The `BoothRegistry` is the single source of truth for all booth state at runtime. It is an async in-memory registry.
 
 ### Data model
 
@@ -139,88 +145,17 @@ ChatMessage
 
 ---
 
-## `portal/ingest.py` — IngestService
+## `portal/auth.py` — JWT Authentication
 
-Manages server-side WebRTC peer connections using aiortc.
-
-### AsyncRuntime
-
-aiortc is asyncio-based. Flask uses threading. `AsyncRuntime` runs a dedicated asyncio event loop on a daemon thread:
-
-```python
-class AsyncRuntime:
-    def __init__(self):
-        self.loop = asyncio.new_event_loop()
-        self.thread = Thread(target=self._run_forever, daemon=True)
-        self.thread.start()
-
-    def run(self, coroutine):
-        future = asyncio.run_coroutine_threadsafe(coroutine, self.loop)
-        return future.result()   # blocks calling thread
-```
-
-All Flask request handlers call `ingest.connect(...)` or `ingest.disconnect(...)` which dispatch to this runtime and block until the result is available.
-
-### IngestSession
-
-```python
-@dataclass
-class IngestSession:
-    channel_id: str
-    booth_id: str
-    participant_id: str
-    peer_connection: RTCPeerConnection
-    recorder: MediaRecorder
-    connection_state: str = 'new'
-    recorder_started: bool = False
-```
-
-Sessions are keyed by `channel_id` in `IngestService.sessions`.
-
-### Connect sequence
-
-1. Disconnect any existing session for the channel.
-2. Create a new `RTCPeerConnection`.
-3. Create a `MediaRecorder` pointed at `{INGEST_HLS_ROOT}/{channel_id}/playlist.m3u8`.
-4. Register `connectionstatechange` handler — tears down on `failed`/`closed`.
-5. Register `track` handler — adds audio tracks to the recorder and starts it.
-6. `setRemoteDescription(offer)` → `createAnswer()` → `setLocalDescription(answer)`.
-7. Wait for ICE gathering.
-8. Store session; return `{ type, sdp }` answer.
-
-### Disconnect sequence
-
-1. Stop the recorder if started.
-2. Close the peer connection.
-3. Remove session from `sessions` dict.
-
-### Graceful shutdown
-
-`@atexit.register close_ingest()` calls `ingest.shutdown()`, which stops all active sessions and shuts down the async runtime thread.
+Handles token creation and validation using PyJWT. Provides middleware for protecting HTTP endpoints and WebSocket connections.
 
 ---
 
 ## `portal/config.py` — Settings
 
-A frozen dataclass loaded from environment variables via `python-dotenv`. All settings have safe development defaults.
+A pydantic-settings model loaded from environment variables. All settings have safe development defaults.
 
-```python
-@dataclass(frozen=True)
-class Settings:
-    host: str
-    port: int
-    debug: bool
-    secret_key: str
-    booth_access_token: str
-    socket_cors_origins: list[str] | str
-    default_jitsi_room: str
-    jitsi_domain: str
-    ingest_hls_root: Path
-    hls_segment_seconds: int
-    hls_playlist_length: int
-```
-
-`settings` is a module-level singleton created at import time. It is injected into `IngestService` at startup.
+`settings` is a module-level singleton created at import time.
 
 ---
 
@@ -228,15 +163,21 @@ class Settings:
 
 ### `templates/base.html`
 
-Provides the Eventyay-style page shell: meta tags, CSS imports, and a `{% block content %}` for the booth page.
+Provides the Eventyay-style page shell: meta tags, CSS imports, and a `{% block content %}` for page content.
 
 ### `templates/interpreter_booth.html`
 
-Extends `base.html`. Renders a `<div id="app">` where Vue mounts. Passes server-side config to Vue via `<script>` data attributes or a JSON config object:
+Extends `base.html`. Renders the interpreter console with all panels. Server-side config is passed into the HTML via Jinja2 template variables:
 
 - `booth_id`, `booth_token`, `booth_language`, `booth_channel_id`
 - `default_jitsi_room`, `jitsi_domain`
-- `aiortc_available`
+- `mediamtx_whip_url`, `mediamtx_hls_url`
+
+JavaScript in `static/js/interpreter-booth.js` reads these values and drives the UI.
+
+### `templates/listen.html`
+
+Renders the HLS listener page for a specific booth. Uses hls.js with auto-recovery to play the interpretation audio stream from MediaMTX.
 
 ---
 
@@ -244,20 +185,20 @@ Extends `base.html`. Renders a `<div id="app">` where Vue mounts. Passes server-
 
 ### In-memory state
 
-`BoothRegistry` stores all state in a Python dict. This means:
+`BoothRegistry` stores all state in-memory. This means:
 
 - Booth state is lost on server restart.
-- Multi-worker deployments (Gunicorn with multiple processes) will have separate state per worker — participants in different workers will not see each other.
+- Multi-worker deployments will have separate state per worker — participants in different workers will not see each other.
 
-**Production fix:** Add PostgreSQL persistence for `Booth` and `Participant` records, and use Redis as the Flask-SocketIO message queue (`socketio = SocketIO(app, message_queue='redis://...')`).
+**Production fix:** Add PostgreSQL persistence for `Booth` and `Participant` records, and use a shared pub/sub layer (e.g., Redis) for cross-worker WebSocket broadcasting.
 
-### Secret key
+### JWT secret
 
-`SECRET_KEY` must be changed in production and kept secret. It is used for Flask session signing.
+The JWT signing secret must be changed in production and kept secret.
 
 ### CORS
 
-`BOOTH_WS_CORS_ORIGINS` defaults to `*` (development). In production, set it to the explicit Eventyay origin(s).
+CORS origins should be configured explicitly in production rather than allowing all origins.
 
 ### HTTPS
 

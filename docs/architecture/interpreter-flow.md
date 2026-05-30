@@ -1,6 +1,6 @@
 # Interpreter Audio Flow
 
-This document traces the complete audio path from the interpreter's microphone to the viewer's HLS player.
+This document traces the complete audio path from the interpreter's microphone to the listener's HLS player.
 
 ---
 
@@ -36,44 +36,32 @@ MediaStream (audio-only; never connected to AudioContext.destination)
        ICE gathering (3 s timeout)
        │
        ▼
-       POST /api/interpreter/connect/{channel_id}
-       Body: { type, sdp, booth_id, participant_id, token, language }
+       WHIP POST to MediaMTX :8889/{channel_id}
+       Body: SDP offer (application/sdp)
        │
-       ▼  (server-side: portal/ingest.py)
-       aiortc RTCPeerConnection.setRemoteDescription(offer)
-       │
-       ▼
-       aiortc RTCPeerConnection.createAnswer()
+       ▼  (MediaMTX handles WebRTC termination)
+       MediaMTX accepts WHIP session
        │
        ▼
-       ICE gathering (server-side)
-       │
-       ▼
-       JSON response: { type: "answer", sdp: "..." }
+       SDP answer returned (201 Created, application/sdp)
        │
        ▼  (back in browser)
        peerConnection.setRemoteDescription(answer)
        │
        ▼
-       ICE candidate exchange (embedded in SDP / trickle ICE)
+       ICE candidate exchange (embedded in SDP)
        │
        ▼
-       RTP stream (Opus codec) → server-side aiortc peer connection
+       RTP stream (Opus codec) → MediaMTX
        │
        ▼
-       aiortc @peer_connection.on('track')
-         → recorder.addTrack(track)
-         → recorder.start()
+       MediaMTX transcodes and segments to HLS
        │
        ▼
-       MediaRecorder → FFmpeg pipe or HLS file recorder
+       HLS available at MediaMTX :8888/{channel_id}/playlist.m3u8
        │
        ▼
-       hls-output/{channel_id}/playlist.m3u8
-       hls-output/{channel_id}/segment-XXXX.ts
-       │
-       ▼
-       HLS origin / CDN
+       Listener page /listen/{booth_id}: hls.js player with auto-recovery
        │
        ▼
        Eventyay viewer: Hidden HLS audio player (drift-corrected against YouTube clock)
@@ -85,90 +73,56 @@ MediaStream (audio-only; never connected to AudioContext.destination)
 
 ### Step 1 — Device selection (preflight)
 
-`MicStreamingManager.listInputDevices()` calls `navigator.mediaDevices.enumerateDevices()` and filters for `audioinput` devices. The user selects their headset microphone from a dropdown in the `MicIngestPanel`.
+`static/js/interpreter-booth.js` calls `navigator.mediaDevices.enumerateDevices()` and filters for `audioinput` devices. The user selects their headset microphone from a dropdown in the mic ingest panel.
 
 ### Step 2 — Mic test
-
-`MicStreamingManager.startMicrophone(deviceId, onLevel)`:
 
 1. Calls `getUserMedia` with the selected device and DSP flags.
 2. Creates an `AudioContext` with an `AnalyserNode`.
 3. Connects the `MediaStreamSource` to the `AnalyserNode` only — never to `destination`. This prevents loopback.
-4. Runs a `requestAnimationFrame` loop computing RMS level from the time-domain data and calling `onLevel(level)`.
-5. The `MicIngestPanel` renders the level as a visual meter bar.
+4. Runs a `requestAnimationFrame` loop computing RMS level from the time-domain data and updating the level meter.
+5. The mic ingest panel renders the level as a visual meter bar.
 
 The mic test completes when the interpreter confirms they can see the level responding to their voice. The `preflight.micTestComplete` flag is set.
 
 ### Step 3 — Ingest connection (Go Live)
 
-`MicStreamingManager.createIngestConnection(onConnectionStateChange)`:
-
 1. Creates a new `RTCPeerConnection` with configured STUN servers.
 2. Adds all audio tracks from the active `MediaStream`.
 3. Creates an offer with `offerToReceiveAudio: false, offerToReceiveVideo: false` (send-only).
 4. Sets the local description and waits for ICE gathering to complete (max 3 s).
-5. Returns the local description (offer).
-
-`IngestClient.negotiate(channelId, localDescription)`:
-
-1. POSTs the SDP offer to `POST /api/interpreter/connect/{channel_id}`.
-2. Expects a JSON response with `type` and `sdp` fields (or a Janus-style `jsep` wrapper).
-3. Returns the answer SDP.
-
-Back in `MicStreamingManager`: calls `peerConnection.setRemoteDescription(answer)` to complete the connection.
+5. POSTs the SDP offer to the MediaMTX WHIP endpoint at `:8889/{channel_id}` with `Content-Type: application/sdp`.
+6. MediaMTX returns a `201 Created` response with the SDP answer in the body.
+7. Sets `peerConnection.setRemoteDescription(answer)` to complete the connection.
 
 ### Step 4 — Live streaming
 
-Once the peer connection state transitions to `connected`, the audio track flows as an Opus RTP stream to the server. The `BoothHealthPanel` shows live status.
+Once the peer connection state transitions to `connected`, the audio track flows as an Opus RTP stream directly to MediaMTX. The booth health panel shows live status.
 
-The `statsTimer` polls `RTCPeerConnection.getStats()` every 2 s to compute an approximate bitrate in kbps, which is surfaced in the health panel.
+A stats timer polls `RTCPeerConnection.getStats()` every 2 s to compute an approximate bitrate in kbps, which is surfaced in the health panel.
 
 ### Step 5 — Stop / handoff
 
-`MicStreamingManager.stopPeerConnection()` closes the peer connection and removes event listeners.
+Closing the peer connection stops the WHIP session. MediaMTX detects the disconnection and stops writing HLS segments.
 
-`IngestClient` calls `POST /api/interpreter/disconnect/{channel_id}` to signal the server.
-
-The server calls `ingest.disconnect(channel_id)` which closes the aiortc peer connection and stops the recorder.
+When a handoff occurs (active interpreter changes), `overridePublisher` is enabled on MediaMTX, allowing the new active interpreter to publish to the same channel path, replacing the previous publisher.
 
 ---
 
-## Server-side ingest in detail (`portal/ingest.py`)
+## MediaMTX ingest details
 
-The `IngestService` manages a dedicated asyncio event loop on a background thread (`AsyncRuntime`). All aiortc operations run on this loop to avoid blocking Flask's threading model.
+MediaMTX handles the entire audio pipeline. Python never touches audio data.
 
-### Connection sequence
+### WHIP session lifecycle
 
-```python
-await peer_connection.setRemoteDescription(offer)
-answer = await peer_connection.createAnswer()
-await peer_connection.setLocalDescription(answer)
-await _wait_for_ice_completion(peer_connection)    # polls gatheringstate
-```
-
-The `@peer_connection.on('track')` handler:
-
-```python
-async def on_track(track):
-    if track.kind != 'audio':
-        return
-    recorder.addTrack(track)
-    await recorder.start()
-```
-
-The recorder is an `aiortc.contrib.media.MediaRecorder` pointed at the HLS output path. It transcodes the incoming Opus track with FFmpeg and segments it into `.ts` files with a `.m3u8` playlist.
+- **Publish:** Browser POSTs SDP offer to `http://mediamtx:8889/{channel_id}` via WHIP protocol.
+- **Receive:** MediaMTX accepts the WebRTC session, receives Opus RTP, transcodes to HLS.
+- **HLS output:** Available at `http://mediamtx:8888/{channel_id}/playlist.m3u8`.
+- **Handoff:** `overridePublisher: yes` in MediaMTX config allows a new publisher to replace the current one on the same path without requiring explicit disconnection.
 
 ### Connection state monitoring
 
-```python
-@peer_connection.on('connectionstatechange')
-async def on_connectionstatechange():
-    session.connection_state = peer_connection.connectionState
-    if peer_connection.connectionState in {'failed', 'closed'}:
-        await _disconnect(channel_id)
-```
-
-When the browser disconnects or the peer connection fails, the server cleans up the session automatically.
+The browser monitors `RTCPeerConnection.connectionState`. If the state transitions to `failed` or `closed`, the booth health panel shows a warning and the interpreter can retry by clicking **Go Live** again.
 
 ---
 
@@ -186,9 +140,9 @@ The tertiary guarantee: the analyser node used for the level meter is **never co
 
 | Failure | Browser behaviour | Server behaviour |
 |---|---|---|
-| ICE negotiation timeout | Show warning; retry up to `MAX_RECONNECT_ATTEMPTS` | N/A — server waits for new offer |
-| WebRTC `connectionState === 'failed'` | Show warning; auto-retry | Session cleaned up via `connectionstatechange` handler |
-| Coordinator reassigns active role | Stop ingest; clear mic state | `ingest.disconnect(channel_id)` called by Socket.IO handler |
-| Interpreter leaves booth | Stop ingest | `leave_participant` + `ingest.disconnect` |
+| ICE negotiation timeout | Show warning; retry up to `MAX_RECONNECT_ATTEMPTS` | N/A — MediaMTX waits for new WHIP session |
+| WebRTC `connectionState === 'failed'` | Show warning; auto-retry | MediaMTX cleans up stale session |
+| Coordinator reassigns active role | Stop ingest; clear mic state | New active interpreter can publish via `overridePublisher` |
+| Interpreter leaves booth | Stop ingest | WebSocket handler broadcasts updated state |
 
 Viewer fallback: if the HLS playlist stops updating, the Eventyay viewer player falls back to the original floor audio.

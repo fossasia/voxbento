@@ -200,16 +200,20 @@ label {
 }
 
 .monitor-frame {
+  position: relative;
   border: 1px solid var(--color-panel-border);
   border-radius: var(--radius);
-  min-height: 360px;
+  height: 400px;
   overflow: hidden;
   background: #000;
 }
 
 .monitor-frame iframe {
+  position: absolute;
+  top: 0;
+  left: 0;
   width: 100%;
-  min-height: 360px;
+  height: 100%;
   border: 0;
 }
 

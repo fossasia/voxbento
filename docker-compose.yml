@@ -14,8 +14,8 @@ services:
       BOOTH_ACCESS_TOKEN: "${BOOTH_ACCESS_TOKEN:-}"
       JWT_SECRET: "${JWT_SECRET:-}"
       JWT_EXPIRY_SECONDS: "${JWT_EXPIRY_SECONDS:-86400}"
-      DEFAULT_JITSI_ROOM: "${DEFAULT_JITSI_ROOM:-https://meet.jit.si/eventyay-stage-room}"
-      JITSI_DOMAIN: "${JITSI_DOMAIN:-meet.jit.si}"
+      DEFAULT_JITSI_ROOM: "${DEFAULT_JITSI_ROOM:-eventyay-stage-room}"
+      JITSI_DOMAIN: "${JITSI_DOMAIN:-localhost:8080}"
       # Browser-facing URLs — must be reachable from the user's machine
       MEDIAMTX_WHIP_BASE: "${MEDIAMTX_WHIP_BASE:-http://localhost:8889}"
       MEDIAMTX_HLS_BASE: "${MEDIAMTX_HLS_BASE:-http://localhost:8888}"
@@ -48,3 +48,103 @@ services:
       - "8889:8889"    # WHIP (WebRTC HTTP ingest)
       - "8189:8189/udp" # WebRTC ICE/UDP mux
     restart: unless-stopped
+
+  # ── Self-hosted Jitsi Meet ────────────────────────────────────
+  # Interpreters watch/hear the speaker via this embedded Jitsi room.
+  # The room name (DEFAULT_JITSI_ROOM) is created on the local instance.
+  #
+  # Ports:
+  #   8443 → Jitsi web UI (HTTPS)
+  #   8080 → Jitsi web UI (HTTP, for local dev — no self-signed cert)
+  #   10000/udp → JVB media traffic
+
+  jitsi-web:
+    image: jitsi/web:stable-9823
+    ports:
+      - "${JITSI_WEB_PORT:-8443}:443"
+      - "${JITSI_WEB_HTTP_PORT:-8080}:80"
+    environment:
+      ENABLE_AUTH: "0"
+      ENABLE_GUESTS: "1"
+      PUBLIC_URL: "${JITSI_PUBLIC_URL:-http://localhost:8080}"
+      # BOSH_RELATIVE=true makes config.js use '/http-bind' (relative path)
+      # instead of hardcoding https:// which breaks HTTP setups
+      BOSH_RELATIVE: "true"
+      ENABLE_XMPP_WEBSOCKET: "0"
+      XMPP_SERVER: jitsi-prosody
+      TZ: "${TZ:-UTC}"
+      XMPP_DOMAIN: meet.jitsi
+      XMPP_AUTH_DOMAIN: auth.meet.jitsi
+      XMPP_BOSH_URL_BASE: http://jitsi-prosody:5280
+      XMPP_MUC_DOMAIN: muc.meet.jitsi
+    volumes:
+      - jitsi-web-config:/config
+    depends_on:
+      - jitsi-prosody
+    restart: unless-stopped
+
+  jitsi-prosody:
+    image: jitsi/prosody:stable-9823
+    environment:
+      XMPP_DOMAIN: meet.jitsi
+      XMPP_AUTH_DOMAIN: auth.meet.jitsi
+      XMPP_MUC_DOMAIN: muc.meet.jitsi
+      XMPP_INTERNAL_MUC_DOMAIN: internal-muc.meet.jitsi
+      JVB_AUTH_USER: jvb
+      JVB_AUTH_PASSWORD: "${JVB_AUTH_PASSWORD:-changeme}"
+      JICOFO_AUTH_USER: focus
+      JICOFO_AUTH_PASSWORD: "${JICOFO_AUTH_PASSWORD:-changeme}"
+      TZ: "${TZ:-UTC}"
+    volumes:
+      - jitsi-prosody-config:/config
+      - jitsi-prosody-plugins:/prosody-plugins-custom
+    restart: unless-stopped
+
+  jitsi-jicofo:
+    image: jitsi/jicofo:stable-9823
+    environment:
+      XMPP_DOMAIN: meet.jitsi
+      XMPP_AUTH_DOMAIN: auth.meet.jitsi
+      XMPP_INTERNAL_MUC_DOMAIN: internal-muc.meet.jitsi
+      XMPP_MUC_DOMAIN: muc.meet.jitsi
+      XMPP_SERVER: jitsi-prosody
+      JICOFO_AUTH_USER: focus
+      JICOFO_AUTH_PASSWORD: "${JICOFO_AUTH_PASSWORD:-changeme}"
+      TZ: "${TZ:-UTC}"
+    volumes:
+      - jitsi-jicofo-config:/config
+    depends_on:
+      - jitsi-prosody
+    restart: unless-stopped
+
+  jitsi-jvb:
+    image: jitsi/jvb:stable-9823
+    ports:
+      - "${JVB_PORT:-10000}:10000/udp"
+    environment:
+      XMPP_AUTH_DOMAIN: auth.meet.jitsi
+      XMPP_INTERNAL_MUC_DOMAIN: internal-muc.meet.jitsi
+      XMPP_DOMAIN: meet.jitsi
+      XMPP_SERVER: jitsi-prosody
+      JVB_AUTH_USER: jvb
+      JVB_AUTH_PASSWORD: "${JVB_AUTH_PASSWORD:-changeme}"
+      JVB_PORT: "10000"
+      JVB_STUN_SERVERS: "stun.l.google.com:19302"
+      # DOCKER_HOST_ADDRESS tells JVB what IP to advertise in ICE candidates.
+      # On macOS: set to your LAN IP (e.g. 192.168.1.x) — run: ipconfig getifaddr en0
+      # On Linux: set to your host IP — run: hostname -I | awk '{print $1}'
+      DOCKER_HOST_ADDRESS: "${DOCKER_HOST_ADDRESS:-}"
+      ENABLE_COLIBRI_WEBSOCKET: "true"
+      TZ: "${TZ:-UTC}"
+    volumes:
+      - jitsi-jvb-config:/config
+    depends_on:
+      - jitsi-prosody
+    restart: unless-stopped
+
+volumes:
+  jitsi-web-config:
+  jitsi-prosody-config:
+  jitsi-prosody-plugins:
+  jitsi-jicofo-config:
+  jitsi-jvb-config:

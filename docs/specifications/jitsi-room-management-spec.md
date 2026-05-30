@@ -56,7 +56,7 @@ The portal validates that the Jitsi URL entered by the interpreter uses the conf
 - Accidental use of an arbitrary Jitsi server.
 - URL substitution attacks where a malicious link redirects the interpreter to a hostile Jitsi room.
 
-Validation is performed by `buildJitsiEmbedUrl(rawUrl, { expectedDomain: env.jitsiDomain })` in `src/services/jitsiEmbed.js`.
+Validation is performed by the `buildJitsiEmbedUrl()` function in `static/js/interpreter-booth.js`.
 
 If the URL's origin does not match `https://{JITSI_DOMAIN}`, an error is shown and the iframe is not loaded.
 
@@ -92,13 +92,24 @@ This is the correct configuration. The interpreter hears the speaker and speaks 
 
 Multiple interpreter booths for the same event (e.g., French booth and German booth) will typically use the **same Jitsi room** for monitoring. This is intentional — they are all monitoring the same floor session.
 
-Each booth has its own ingest channel (`channel_id`), its own HLS stream, and its own Socket.IO room. Only the Jitsi monitoring room is shared.
+Each booth has its own ingest channel (`channel_id`), its own HLS stream, and its own WebSocket room. Only the Jitsi monitoring room is shared.
+
+---
+
+## Jitsi self-hosting
+
+The portal includes a self-hosted Jitsi Meet deployment via Docker Compose (4 containers: jitsi-web, jitsi-prosody, jitsi-jicofo, jitsi-jvb). Key configuration:
+
+- `BOSH_RELATIVE=true` — BOSH URLs use relative paths to avoid double-scheme bugs.
+- `ENABLE_XMPP_WEBSOCKET=0` — BOSH is sufficient for monitoring; disables XMPP WebSocket.
+- `DOCKER_HOST_ADDRESS` — Must be set to the host's LAN IP for JVB ICE candidates to be reachable.
+- Jitsi is served on HTTP port `:8080` for local development (avoids self-signed cert issues in iframes).
 
 ---
 
 ## Future: Jitsi API integration
 
-If future requirements need programmatic Jitsi control, the extension point is `src/services/jitsiEmbed.js`. Specifically:
+If future requirements need programmatic Jitsi control, the extension point is `static/js/interpreter-booth.js`. Specifically:
 
 - Replace or augment the `<iframe>` embed with `new JitsiMeetExternalAPI(...)`.
 - This would allow: detecting interpreter mic state in Jitsi, auto-muting/unmuting the Jitsi participant, participant event tracking.

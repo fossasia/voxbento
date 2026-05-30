@@ -43,22 +43,22 @@ For community-run, volunteer-driven, and open-source events (such as those hoste
 
 The current implementation covers:
 
-- Single-tab interpreter console (Vue 3 + Flask)
-- Jitsi embedded monitoring panel (receive-only iframe)
+- Server-rendered interpreter console (Jinja2 + plain ES module, single browser tab)
+- Self-hosted Jitsi Meet embedded monitoring panel (receive-only iframe, Docker)
 - Mic capture with DSP flags (echo cancellation, noise suppression, AGC)
 - Level meter for mic test
 - Preflight checklist gating Go Live
-- WebRTC offer/answer flow to the ingest API
+- WebRTC/WHIP audio publishing to MediaMTX
 - Booth participant grid (active, backup, coordinator, listener)
-- Internal booth chat (Socket.IO)
+- Internal booth chat (WebSocket)
 - Coordinator handoff controls
-- In-memory booth state (server-side)
+- Async in-memory booth state (server-side, FastAPI + native WebSocket)
+- HLS listener page with hls.js auto-recovery
 
 **Not yet in scope (future phases):**
 
-- Production ingest server deployment (aiortc endpoint at scale)
 - PostgreSQL persistence for booth/session records
-- Redis-backed Socket.IO for multi-worker deployments
+- Redis pub/sub for multi-worker WebSocket broadcasting
 - CDN delivery of HLS segments
 - Relay interpretation (interpreter-to-interpreter language chain)
 - Sign language video channel support
@@ -76,9 +76,10 @@ Eventyay core (Django app)
   │     └── HLS language audio player (drift-corrected)
   │
   └── Interpretation Portal (this repo)
-        ├── Flask + Socket.IO server
-        ├── Vue 3 interpreter console
-        └── aiortc ingest endpoint → FFmpeg → HLS output
+        ├── FastAPI + WebSocket server (booth coordination)
+        ├── Jinja2 templates + plain ES module (interpreter console)
+        ├── Self-hosted Jitsi Meet (floor monitoring, Docker)
+        └── MediaMTX (WHIP ingest → HLS output, Docker)
 ```
 
 The portal feeds language-specific HLS streams to the Eventyay viewer. It does not modify or replace the YouTube video path. Viewer-side synchronization is handled by a drift-correction loop in the Eventyay video module.

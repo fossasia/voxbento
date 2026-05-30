@@ -23,3 +23,14 @@ updates:
       - "github-actions"
     commit-message:
       prefix: "ci"
+
+  # Docker images (MediaMTX, Jitsi, Python base image)
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    labels:
+      - "dependencies"
+      - "docker"
+    commit-message:
+      prefix: "deps(docker)"

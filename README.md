@@ -24,10 +24,9 @@ FastAPI portal :8000 (coordination, state, JWT, REST)
 ```
 
 **Seamless interpreter handoff**: when the coordinator switches the active interpreter,
-the outgoing interpreter mutes its mic tracks but keeps the WHIP session alive for
-700 ms. MediaMTX never destroys the HLS muxer, so attendees see no 404 and need no
-browser refresh. The incoming interpreter retries WHIP every 400 ms (up to 6
-attempts) and connects cleanly once the outgoing side releases the path.
+MediaMTX's `overridePublisher: yes` lets the incoming interpreter connect immediately
+while kicking the outgoing one. Attendees using the `/listen/{booth_id}` page (hls.js)
+auto-recover from the brief ~2 s HLS muxer reset.
 
 ---
 
@@ -50,6 +49,8 @@ Open http://localhost:8000. That is it.
 | FastAPI portal | 8000 | Web UI, REST API, WebSocket |
 | MediaMTX HLS | 8888 | Audio stream for attendees |
 | MediaMTX WHIP | 8889 | Audio ingest from interpreters |
+| Jitsi Web | 8443 | Self-hosted video conferencing (interpreter monitors speaker) |
+| Jitsi JVB | 10000/udp | Jitsi media traffic |
 
 To stop: `Ctrl+C` or `docker compose down`.
 
@@ -96,8 +97,9 @@ curl http://localhost:8000/healthz
 1. Open http://localhost:8000/interpreter/demo-booth
 2. Enter a name, select **Interpreter**, click **Join Booth**
 3. Click **Go Live** — allow microphone when prompted
-4. Open VLC → File → Open Network → `http://localhost:8888/demo-booth-audio/index.m3u8`
-5. Speak — you should hear yourself in VLC with ~3 s delay
+4. Open http://localhost:8000/listen/demo-booth in another tab (hls.js auto-recovery player)
+   — or use VLC: File → Open Network → `http://localhost:8888/demo-booth-audio/index.m3u8`
+5. Speak — you should hear yourself with ~3 s delay
 
 ### Environment variables
 
@@ -105,11 +107,15 @@ Copy `.env.example` → `.env` and adjust as needed:
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `SECRET_KEY` | `dev-secret` | JWT signing key |
+| `SECRET_KEY` | `change-me` | JWT signing key |
 | `BOOTH_ACCESS_TOKEN` | *(empty)* | Booth password (empty = open access) |
+| `JITSI_DOMAIN` | `localhost:8443` | Jitsi Meet domain (self-hosted via Docker) |
+| `DEFAULT_JITSI_ROOM` | `eventyay-stage-room` | Default Jitsi room for interpreter monitoring |
 | `MEDIAMTX_WHIP_BASE` | `http://localhost:8889` | Browser-facing WHIP URL |
 | `MEDIAMTX_HLS_BASE` | `http://localhost:8888` | Browser-facing HLS URL |
 | `MEDIAMTX_INTERNAL_BASE` | *(empty)* | Python→MediaMTX URL (Docker: `http://mediamtx:8888`) |
+| `JVB_AUTH_PASSWORD` | `changeme` | Jitsi JVB auth (change in production) |
+| `JICOFO_AUTH_PASSWORD` | `changeme` | Jitsi Jicofo auth (change in production) |
 
 ---
 
@@ -119,6 +125,7 @@ Copy `.env.example` → `.env` and adjust as needed:
 |--------|------|-------------|
 | `GET`  | `/` | Redirect to demo booth |
 | `GET`  | `/interpreter/{booth_id}` | Interpreter booth UI |
+| `GET`  | `/listen/{booth_id}` | Attendee listener (hls.js) |
 | `POST` | `/api/auth/token` | Issue a signed JWT |
 | `GET`  | `/api/booth/{booth_id}/state` | Current booth snapshot |
 | `GET`  | `/api/interpreter/status/{channel_id}` | MediaMTX reachability |
@@ -156,12 +163,13 @@ portal/
   auth.py                     # JWT issue / validate
   booth_state.py              # async in-memory booth registry
 templates/
-  interpreter_booth.html      # Jinja2 template
+  interpreter_booth.html      # Jinja2 interpreter booth page
+  listener.html               # Jinja2 attendee page (hls.js)
 static/
   js/interpreter-booth.js     # Plain browser JS — WebRTC/WHIP + WebSocket
   css/interpreter.css
 mediamtx.yml                  # MediaMTX config (HLS 1 s segments, WHIP)
-docker-compose.yml            # portal + mediamtx services
+docker-compose.yml            # portal + mediamtx + jitsi services
 Dockerfile                    # FastAPI container (uv, Python 3.13-slim)
 tests/
   test_fastapi_app.py         # REST + WebSocket integration tests

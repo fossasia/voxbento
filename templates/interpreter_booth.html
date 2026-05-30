@@ -52,7 +52,7 @@
     </header>
     <div class='panel-body monitoring-body'>
       <div class='monitor-controls'>
-        <input id='jitsi-url' class='input' type='url' value='{{ default_jitsi_room }}' />
+        <input id='jitsi-url' class='input' type='url' value='http://{{ jitsi_domain }}/{{ default_jitsi_room }}' />
         <button id='join-jitsi' type='button' class='btn btn-primary'>Join Monitoring</button>
       </div>
       <p class='hint'>Jitsi is receive-focused. Keep local mic muted in the meeting room.</p>

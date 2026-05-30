@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from pydantic import AliasChoices, Field
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -14,11 +14,11 @@ class Settings(BaseSettings):
 
     host: str = '127.0.0.1'
     port: int = 8000
-    debug: bool = Field(default=True, validation_alias=AliasChoices('flask_debug', 'debug'))
+    debug: bool = Field(default=True)
     secret_key: str = 'change-me'
     booth_access_token: str = ''
-    default_jitsi_room: str = 'https://meet.jit.si/eventyay-stage-room'
-    jitsi_domain: str = 'meet.jit.si'
+    default_jitsi_room: str = 'eventyay-stage-room'
+    jitsi_domain: str = 'localhost:8080'
     mediamtx_whip_base: str = 'http://localhost:8889'
     mediamtx_hls_base: str = 'http://localhost:8888'
     # Internal URL for health checks (defaults to mediamtx_hls_base).

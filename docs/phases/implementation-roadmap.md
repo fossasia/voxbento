@@ -18,59 +18,55 @@ The goal of the MVP is a fully functional single-tab interpreter console that al
 
 ### What is done
 
-- [x] Vue 3 interpreter console (single-tab layout)
-- [x] Jitsi iframe monitoring panel (receive-only embed)
+- [x] Server-rendered interpreter console (Jinja2 + plain ES module, single-tab layout)
+- [x] Jitsi iframe monitoring panel (receive-only embed, self-hosted Jitsi Meet via Docker)
 - [x] Mic capture via `getUserMedia` with DSP flags
 - [x] Level meter (Web Audio API analyser, no loopback)
 - [x] Device selector for audio input
 - [x] Preflight checklist (4 items gating Go Live)
-- [x] WebRTC SDP offer/answer flow (`IngestClient`)
-- [x] `MicStreamingManager` (getUserMedia, peer connection, ICE gathering, stats)
+- [x] WebRTC/WHIP audio publishing to MediaMTX
 - [x] Booth participant grid (active/backup/coordinator/listener with state badges)
-- [x] Internal booth chat (Socket.IO)
+- [x] Internal booth chat (WebSocket)
 - [x] Coordinator handoff controls (Set Live button in participant grid)
-- [x] `BoothRealtimeClient` (Socket.IO + BroadcastChannel)
-- [x] Flask + Socket.IO server with in-memory booth state
+- [x] FastAPI + native WebSocket server with async in-memory booth state
 - [x] `BoothRegistry` with role enforcement and handoff policy
-- [x] `IngestService` with aiortc peer connection and async runtime
-- [x] Access token for booth URL security
+- [x] JWT-based booth access token security (PyJWT)
 - [x] Auto-reconnect on WebRTC disconnection
-- [x] `GET /healthz` with `aiortc_available` flag
-- [x] Graceful degradation when aiortc is unavailable
-- [x] Unit tests for booth state and Flask routes
+- [x] `GET /healthz` health check endpoint
+- [x] Unit tests for booth state and FastAPI routes
+- [x] HLS listener page (`/listen/{booth_id}`) with hls.js auto-recovery
+- [x] Self-hosted Jitsi Meet (4 Docker containers: web, prosody, jicofo, jvb)
+- [x] MediaMTX WHIP ingest + HLS delivery (Docker)
+- [x] Seamless interpreter handoff via `overridePublisher: yes`
 
 ### What is remaining for MVP completion
 
-- [ ] Vite build integrated with Flask static file serving (production build flow)
-- [ ] Vue component unit tests (Vitest)
 - [ ] End-to-end test with real mic in CI
-- [ ] Production deployment instructions
+- [ ] Production deployment instructions (HTTPS, TURN server)
+- [ ] PostgreSQL persistence for booth state
 
 ---
 
-## Phase 2: Production ingest infrastructure
+## Phase 2: Production infrastructure hardening
 
 **Status:** Not started
 
-The current aiortc ingest is suitable for development and small-scale testing. Phase 2 replaces or augments it with production-grade ingest infrastructure.
+MediaMTX handles all audio ingest and HLS delivery. Phase 2 focuses on scaling, reliability, and HTTPS deployment.
 
 ### Goals
 
 - Handle multiple simultaneous interpreters across multiple language channels
 - Reliable HLS delivery at medium event scale (hundreds of concurrent viewers per language)
-- Ingest server monitoring and alerting
+- HTTPS for production (required for `getUserMedia` in non-localhost environments)
 
 ### Planned work
 
-- [ ] Evaluate Janus WebRTC gateway as an alternative ingest backend
-  - `normalizeAnswerPayload` in `ingestClient.js` already supports the Janus `jsep` response format
-  - Janus has better NAT traversal and TURN integration than raw aiortc
-- [ ] Deploy aiortc endpoint behind a reverse proxy (nginx)
-- [ ] Configure TURN server for NAT traversal
-- [ ] Benchmark aiortc with 4–8 simultaneous interpreter channels
-- [ ] Move FFmpeg to a dedicated transcode/packaging service
+- [ ] Configure TURN server for NAT traversal (required for interpreters behind restrictive firewalls)
+- [ ] Deploy behind nginx reverse proxy with TLS termination
+- [ ] Benchmark MediaMTX with 4–8 simultaneous interpreter channels
 - [ ] CDN integration for HLS delivery (S3 + CloudFront, or equivalent)
 - [ ] HLS latency tuning (Low-Latency HLS if required)
+- [ ] MediaMTX monitoring and alerting (stream health, connection count)
 
 ---
 
@@ -88,7 +84,7 @@ The current aiortc ingest is suitable for development and small-scale testing. P
 
 - [ ] PostgreSQL models for `Booth`, `Participant`, `ChatMessage`, `IngestSession`
 - [ ] SQLAlchemy or Django ORM integration (if merging into main Eventyay Django app)
-- [ ] Redis adapter for Flask-SocketIO (`message_queue='redis://...'`)
+- [ ] Redis pub/sub for cross-worker WebSocket broadcasting
 - [ ] Migration from in-memory `BoothRegistry` to DB-backed registry
 - [ ] Session replay / chat history API for organizer review
 

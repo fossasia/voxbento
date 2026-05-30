@@ -22,35 +22,41 @@ Tests are located in `tests/`. All tests must pass before a PR can be merged.
 
 ## Test files
 
-### `tests/test_app.py`
+### `tests/test_fastapi_app.py`
 
-Tests for Flask routes and Socket.IO event handlers in `app.py`.
+Tests for FastAPI routes and WebSocket event handlers in `fastapi_app.py`.
 
 **HTTP route tests:**
 
 | Test | What it covers |
 |---|---|
-| `test_healthz` | `/healthz` returns `ok: true` |
-| `test_home_redirect` | `/` redirects to `/interpreter/demo-booth` |
-| `test_interpreter_booth_page` | `/interpreter/<booth_id>` renders the booth template |
-| `test_booth_state_api` | `/api/booth/<booth_id>/state` returns valid state JSON |
-| `test_booth_state_api_token_required` | Returns `403` when token is wrong |
-| `test_connect_ingest_missing_fields` | Returns `400` when required fields are missing |
-| `test_connect_ingest_not_active` | Returns `403` when requester is not active interpreter |
-| `test_disconnect_ingest` | `/api/interpreter/disconnect/{channel}` returns `ok: true` |
-| `test_ingest_status` | `/api/interpreter/status/{channel}` returns state |
+| `test_healthz_ok` | `/healthz` returns `ok: true` |
+| `test_home_redirects_to_demo_booth` | `/` redirects to `/interpreter/demo-booth` |
+| `test_interpreter_booth_page_renders` | `/interpreter/<booth_id>` renders the booth template |
+| `test_auth_token_no_password` | Token auth with no password configured |
+| `test_booth_state_returns_empty_booth` | `/api/booth/<booth_id>/state` returns valid state JSON |
+| `test_ingest_status_endpoint` | `/api/interpreter/status/{channel}` returns state |
 
-**Socket.IO event tests:**
+**WebSocket event tests:**
 
 | Test | What it covers |
 |---|---|
-| `test_socket_join_booth` | `booth:join` creates participant and emits `booth:joined` |
-| `test_socket_join_invalid_token` | `booth:join` with wrong token emits `booth:error` |
-| `test_socket_leave_booth` | `booth:leave` removes participant |
-| `test_socket_chat_message` | `booth:chat` broadcasts message to room |
-| `test_socket_chat_missing_sender` | `booth:chat` without sender_id emits `booth:error` |
-| `test_socket_set_active` | `booth:set-active` reassigns active interpreter |
-| `test_socket_disconnect` | Socket disconnect auto-removes participant |
+| `test_ws_join_receives_joined_and_state` | `booth:join` creates participant and receives `booth:joined` + `booth:state` |
+| `test_ws_join_then_leave_broadcasts_state` | `booth:leave` removes participant and broadcasts state |
+| `test_ws_chat_message` | `booth:chat` broadcasts message to booth |
+| `test_ws_invalid_json_returns_error` | Invalid JSON payload returns `booth:error` |
+| `test_ws_unknown_message_type_returns_error` | Unknown message type returns `booth:error` |
+| `test_ws_chat_before_join_returns_error` | Chat before joining returns error |
+| `test_ws_set_active_before_join_returns_error` | Set-active before joining returns error |
+| `test_ws_set_active_missing_target_returns_error` | Set-active without target returns error |
+| `test_ws_update_state_active_interpreter` | Active interpreter can update mic/ingest state |
+| `test_ws_disconnect_without_leave_auto_removes_participant` | WebSocket disconnect auto-removes participant |
+| `test_ws_active_interpreter_can_set_active` | Active interpreter can hand off to backup |
+| `test_ws_standby_cannot_set_mic_active` | Standby interpreter cannot set mic active |
+| `test_ws_three_way_coordinator_flow` | Full coordinator + two interpreters flow |
+| `test_ws_full_flow_join_update_chat_leave` | End-to-end: join → update state → chat → leave |
+| `test_ws_auth_required_with_token` | WebSocket rejects invalid tokens when `BOOTH_ACCESS_TOKEN` is set |
+| `test_ws_coordinator_can_switch_active_interpreter` | Coordinator can reassign active interpreter |
 
 ### `tests/test_booth_state.py`
 
@@ -75,24 +81,19 @@ Unit tests for `BoothRegistry` in `portal/booth_state.py`.
 
 ### `tests/conftest.py`
 
-Shared pytest fixtures:
-
-- `client` — Flask test client
-- `socketio_client` — Flask-SocketIO test client
-- `booth_registry` — Fresh `BoothRegistry` instance
-- `settings` — Test settings with `BOOTH_ACCESS_TOKEN` set to `test-token`
+Shared pytest fixtures:\n\n- `anyio_backend` — Configures async test backend (`asyncio`)
 
 ---
 
 ## Manual end-to-end scenarios
 
-These scenarios require a browser and both the Flask server and Vite dev server running.
+These scenarios require a browser and the FastAPI server running via Docker Compose.
 
 ### Scenario 1 — Single interpreter, mic test, go live
 
-**Setup:** Flask + Vite running. `aiortc_available = True`.
+**Setup:** `docker compose up` with all 6 services running.
 
-1. Open `http://localhost:5173/interpreter/demo-event/hall-a-fr` (or the Flask URL).
+1. Open `http://localhost:8000/interpreter/demo-event/hall-a-fr`.
 2. Verify the console loads with all panels visible.
 3. Click **Join Monitor Room** — Jitsi iframe loads. Verify `monitoringActive` is checked.
 4. Click the headphones checkbox manually. Verify it toggles.
@@ -131,15 +132,15 @@ These scenarios require a browser and both the Flask server and Vite dev server 
 3. Verify the message appears in tab 2.
 4. Refresh tab 1. Verify chat history is restored from localStorage.
 
-### Scenario 5 — aiortc unavailable (frontend-only development)
+### Scenario 5 — MediaMTX unavailable (coordination-only development)
 
-**Setup:** Install `aiortc` is not available (e.g., run `uv run python -c "import aiortc"` fails in a stripped env).
+**Setup:** MediaMTX container is not running.
 
-1. Start the Flask server. Check `/healthz` returns `"aiortc_available": false`.
+1. Start the portal with `uv run uvicorn fastapi_app:app`. Check `/healthz` returns `ok: true`.
 2. Open the booth.
-3. Verify a warning is shown ("Ingest server not available").
-4. Verify Go Live button is disabled.
-5. Verify Jitsi monitoring, participant grid, and booth chat all work normally.
+3. Verify the Go Live button is available but WHIP publish will fail with a connection error.
+4. Verify Jitsi monitoring, participant grid, and booth chat all work normally.
+5. Verify WebSocket coordination (join/leave/chat/handoff) is unaffected.
 
 ---
 
@@ -158,8 +159,8 @@ All tests must pass. There is no separate lint step currently; follow the code s
 
 ## What is not tested
 
-- Browser-side Vue components (no Vitest or browser-based test framework is configured yet).
-- FFmpeg HLS output (integration test requiring a real media pipeline).
-- Multi-worker Socket.IO behaviour (requires Redis; not tested in CI).
+- Browser-side JavaScript (no browser-based test framework is configured yet).
+- MediaMTX WHIP/HLS pipeline (integration test requiring a running MediaMTX instance).
+- Multi-worker WebSocket behaviour (requires Redis; not tested in CI).
 
 These are identified gaps for future test coverage.

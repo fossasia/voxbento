@@ -15,7 +15,7 @@ Each participant in a booth has exactly one role, set at join time.
 | **Coordinator** | No | Yes — full authority | Yes |
 | **Listener** | No | No | Yes (read-only by convention) |
 
-Roles are set via the `role` parameter in the `booth:join` Socket.IO event. The server validates the role against allowed values `['interpreter', 'coordinator', 'listener']`.
+Roles are set via the `role` parameter in the `booth:join` WebSocket message. The server validates the role against allowed values `['interpreter', 'coordinator', 'listener']`.
 
 ---
 
@@ -36,7 +36,7 @@ Subsequent interpreters join as backup (standby) regardless of join order.
 
 ### Manual assignment
 
-The active role can be reassigned via the `booth:set-active` Socket.IO event. Authorization rules:
+The active role can be reassigned via the `booth:set-active` WebSocket message. Authorization rules:
 
 1. A **coordinator** can reassign active from any participant to any interpreter.
 2. The **current active interpreter** can hand off to any other interpreter (self-initiated handoff).
@@ -87,8 +87,8 @@ A handoff is the process of transferring the active interpreter role from one pe
 
 ### Emergency handoff (active interpreter disconnects)
 
-1. Active interpreter's Socket.IO connection drops.
-2. `socket_disconnect()` handler calls `booths.leave_participant(...)`.
+1. Active interpreter's WebSocket connection drops.
+2. WebSocket disconnect handler calls `booths.leave_participant(...)`.
 3. `leave_participant` detects the leaving participant was active and calls `_pick_next_interpreter(booth)`.
 4. `_pick_next_interpreter` returns the first available interpreter in the roster (FCFS).
 5. `booth.handoff_state` is set to `'pending'`.
@@ -120,7 +120,7 @@ Internal booth chat is visible only to booth participants. It is not accessible 
 ### Rules
 
 - Any participant can send a message.
-- Messages are broadcast to all participants in the booth room.
+- Messages are broadcast to all participants in the booth via WebSocket.
 - The server retains the last 500 messages per booth (in memory).
 - Messages are also persisted to `localStorage` in the browser for the duration of the session.
 - Empty messages are rejected by the server.
@@ -154,7 +154,7 @@ Each participant's card in the booth grid reflects their real-time state:
 | State field | Possible values | Meaning |
 |---|---|---|
 | `role` | `interpreter` / `coordinator` / `listener` | Assigned role |
-| `connected` | `true` / `false` | Socket.IO connection alive |
+| `connected` | `true` / `false` | WebSocket connection alive |
 | `mic_active` | `true` / `false` | Microphone stream active |
 | `ingest_connected` | `true` / `false` | WebRTC ingest session active |
 | Active badge | computed from `active_interpreter_id` | Whether this participant is currently live |

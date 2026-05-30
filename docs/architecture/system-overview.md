@@ -31,27 +31,26 @@
 │  │  └─────────────────┘  └──────────────────┘ │                      │   │
 │  │                                             │                      │   │
 │  │  ┌────────────────────────────────────────┐ │                      │   │
-│  │  │ Booth Chat Panel (Socket.IO)           │ │ ──── booth:join ─────┘   │
+│  │  │ Booth Chat Panel (WebSocket)           │ │ ──── booth:join ─────┘   │
 │  │  └────────────────────────────────────────┘ │                          │
 │  └────────────────────┬────────────────────────┘                          │
-│                       │ WebRTC SDP offer/answer                           │
+│                       │ WHIP (WebRTC)                                     │
 │                       ▼                                                   │
 │  ┌────────────────────────────────────────────┐                          │
-│  │         Flask + Socket.IO server (app.py)  │                          │
+│  │         MediaMTX (bluenviron/mediamtx:1)   │                          │
 │  │                                             │                          │
-│  │  POST /api/interpreter/connect/{channel}   │                          │
-│  │  portal/ingest.py  (aiortc)                │                          │
+│  │  WHIP endpoint :8889                       │                          │
+│  │  HLS  endpoint :8888                       │                          │
+│  │  overridePublisher for handoff             │                          │
 │  └────────────────────┬────────────────────────┘                          │
-│                       │ PCM / Opus tracks                                 │
+│                       │ .m3u8 + .ts segments                              │
 │                       ▼                                                   │
-│  ┌─────────────────────────────┐                                          │
-│  │  FFmpeg transcode + segment │                                          │
-│  └──────────────┬──────────────┘                                          │
-│                 │ .m3u8 + .ts segments                                    │
-│                 ▼                                                         │
-│  hls-output/ ──► CDN / HLS origin server                                 │
-│                 │                                                         │
-│                 ▼                                                         │
+│  ┌──────────────────────────────────────────────────┐                    │
+│  │  Listener page /listen/{booth_id}                │                    │
+│  │                                                  │                    │
+│  │  hls.js player with auto-recovery               │                    │
+│  └──────────────────────────────────────────────────┘                    │
+│                                                                           │
 │  ┌──────────────────────────────────────────────────┐                    │
 │  │  Eventyay Viewer (stage page)                    │                    │
 │  │                                                  │                    │
@@ -65,38 +64,41 @@
 
 ## Component map
 
-### Frontend (Vue 3 SPA)
+### Frontend (Jinja2 templates + plain ES modules)
 
 | Component | File | Purpose |
 |---|---|---|
-| `InterpreterConsoleView` | `src/views/InterpreterConsoleView.vue` | Top-level view; wires all panels together |
-| `JitsiMonitorPanel` | `src/components/JitsiMonitorPanel.vue` | Jitsi iframe embed and join controls |
-| `MicIngestPanel` | `src/components/MicIngestPanel.vue` | Device selector, level meter, Go Live / Stop |
-| `PreflightChecklist` | `src/components/PreflightChecklist.vue` | Checklist gating the Go Live button |
-| `ParticipantGrid` | `src/components/ParticipantGrid.vue` | Booth participant list with role/status badges |
-| `BoothChatPanel` | `src/components/BoothChatPanel.vue` | Internal booth chat |
-| `BoothHealthPanel` | `src/components/BoothHealthPanel.vue` | Live ingest health indicators |
-| `useInterpreterBooth` | `src/composables/useInterpreterBooth.js` | Central state machine and event wiring |
-| `IngestClient` | `src/services/ingestClient.js` | WebRTC SDP negotiation with the ingest API |
-| `MicStreamingManager` | `src/services/micStreamingManager.js` | getUserMedia, level meter, peer connection |
-| `buildJitsiEmbedUrl` | `src/services/jitsiEmbed.js` | Jitsi URL parsing and embed URL construction |
-| `BoothRealtimeClient` | `src/services/boothRealtime.js` | Socket.IO + BroadcastChannel realtime transport |
+| Interpreter booth page | `templates/interpreter_booth.html` | Server-rendered booth page with all panels |
+| Booth JavaScript | `static/js/interpreter-booth.js` | Central state machine, WebSocket wiring, UI logic |
+| Jitsi embed helpers | `static/js/interpreter-booth.js` | Jitsi URL parsing and embed URL construction |
+| Listener page | `templates/listen.html` | HLS listener page with hls.js |
 
-### Backend (Flask + Socket.IO)
+### Backend (FastAPI + WebSocket)
 
 | Module | File | Purpose |
 |---|---|---|
-| Flask app | `app.py` | Routes, Socket.IO handlers, access token checks |
-| `BoothRegistry` | `portal/booth_state.py` | In-memory booth state, roles, handoff, chat |
-| `IngestService` | `portal/ingest.py` | aiortc peer connection management, async runtime |
-| `Settings` | `portal/config.py` | Environment variable loading and validation |
+| FastAPI app | `fastapi_app.py` | Routes, WebSocket handlers, access token checks |
+| `BoothRegistry` | `portal/booth_state.py` | Async in-memory booth state, roles, handoff, chat |
+| `Auth` | `portal/auth.py` | JWT authentication via PyJWT |
+| `Settings` | `portal/config.py` | pydantic-settings environment variable loading and validation |
 
 ### Templates
 
 | Template | Purpose |
 |---|---|
 | `templates/base.html` | Eventyay-style page shell |
-| `templates/interpreter_booth.html` | Server-rendered booth page (passes config to Vue) |
+| `templates/interpreter_booth.html` | Server-rendered booth page |
+| `templates/listen.html` | HLS listener page with hls.js auto-recovery |
+
+### Media infrastructure (Docker Compose)
+
+| Service | Image | Purpose |
+|---|---|---|
+| MediaMTX | `bluenviron/mediamtx:1` | WHIP ingest (:8889) and HLS delivery (:8888) |
+| Jitsi Web | `jitsi/web:stable-9823` | Self-hosted Jitsi frontend (HTTP :8080, HTTPS :8443) |
+| Jitsi Prosody | `jitsi/prosody:stable-9823` | XMPP server for Jitsi |
+| Jitsi Jicofo | `jitsi/jicofo:stable-9823` | Jitsi conference focus |
+| Jitsi JVB | `jitsi/jvb:stable-9823` | Jitsi video bridge |
 
 ---
 
@@ -108,26 +110,26 @@
 Speaker → Jitsi meeting → Jitsi iframe in interpreter console → interpreter's ears
 ```
 
-The Jitsi iframe loads with `startWithAudioMuted=false` (it plays floor audio) but `startWithVideoMuted=true` and `disableInitialGUM=true` so the interpreter's mic/camera is never accidentally published into the Jitsi call.
+The Jitsi iframe loads with `startWithAudioMuted=false` (it plays floor audio) but `startWithVideoMuted=true` and `disableInitialGUM=true` so the interpreter's mic/camera is never accidentally published into the Jitsi call. Jitsi is self-hosted via Docker containers (stable-9823), served on HTTP port :8080 (development) or HTTPS :8443 (production).
 
-### Ingest path (WebRTC → HLS)
+### Ingest path (WHIP → HLS)
 
 ```
 Interpreter mic
   → getUserMedia (echoCancellation + noiseSuppression + autoGainControl)
   → RTCPeerConnection (audio track only)
-  → SDP offer → POST /api/interpreter/connect/{channel_id}
-  → aiortc RTCPeerConnection (server-side)
-  → SDP answer returned
-  → RTP Opus stream received server-side
-  → aiortc MediaRecorder → FFmpeg command or HLS recorder
-  → hls-output/{channel_id}/playlist.m3u8 + segments
+  → WHIP POST to MediaMTX :8889
+  → MediaMTX receives WebRTC stream
+  → MediaMTX produces HLS segments
+  → HLS available at MediaMTX :8888/{channel_id}/playlist.m3u8
 ```
 
-### Coordination path (Socket.IO)
+Python never touches audio. The browser publishes directly to MediaMTX via WHIP. MediaMTX handles all transcoding and HLS segmentation.
+
+### Coordination path (WebSocket)
 
 ```
-Browser → socket.io connect → booth:join
+Browser → WebSocket connect → /ws/booth/{booth_id}
        ← booth:joined + booth:state
        ↔ booth:chat / booth:set-active / booth:update-state
        ← booth:state (broadcast to all booth participants on any change)
@@ -139,21 +141,20 @@ Browser → socket.io connect → booth:join
 
 | State | Owned by |
 |---|---|
-| Booth participants and roles | `portal/booth_state.py` (server, in-memory) |
+| Booth participants and roles | `portal/booth_state.py` (server, async in-memory) |
 | Active interpreter assignment | `portal/booth_state.py` (server) |
 | Handoff state | `portal/booth_state.py` (server) |
 | Chat history (last 500 messages) | `portal/booth_state.py` (server) |
-| Ingest session (peer connection) | `portal/ingest.py` (server, async runtime) |
-| Local mic stream | `MicStreamingManager` (browser) |
-| Local WebRTC peer connection | `MicStreamingManager` (browser) |
-| UI state (preflight, level, chat display) | `useInterpreterBooth` composable (browser) |
-| Persisted chat (localStorage) | `BoothRealtimeClient` (browser) |
+| WHIP ingest session | MediaMTX (external service) |
+| Local mic stream | `static/js/interpreter-booth.js` (browser) |
+| Local WebRTC peer connection | `static/js/interpreter-booth.js` (browser) |
+| UI state (preflight, level, chat display) | `static/js/interpreter-booth.js` (browser) |
 
 ---
 
 ## Security model
 
-- Booth URLs carry an optional `BOOTH_ACCESS_TOKEN`. When set, all HTTP API calls and Socket.IO events must include the matching token.
-- The ingest endpoint (`POST /api/interpreter/connect/{channel}`) additionally checks that the requesting participant is the active interpreter for the channel before accepting the SDP offer.
+- Booth access is controlled via JWT tokens (PyJWT) managed by `portal/auth.py`. All HTTP API calls and WebSocket messages must include a valid token.
+- The WHIP endpoint on MediaMTX accepts publisher connections. The portal's booth state enforces that only the active interpreter for a channel is authorized to publish.
 - Non-interpreter roles (coordinator, listener) cannot publish ingest audio.
 - Booth state is private to booth participants; there is no public viewer-facing API in this module.

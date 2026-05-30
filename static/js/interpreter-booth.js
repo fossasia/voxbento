@@ -97,7 +97,7 @@ boot().catch((error) => {
 })
 
 async function boot() {
-  elements.jitsiUrl.value = state.defaultJitsiRoom
+  // Jitsi URL is set by the template — don't overwrite it
   await fetchBoothState()
   await fetchIngestReachability()
   await populateMicDevices()
@@ -596,7 +596,7 @@ function joinMonitoringFeed() {
       return
     }
     const meetingUrl = new URL(rawUrl)
-    if (state.jitsiDomain && meetingUrl.hostname !== state.jitsiDomain) {
+    if (state.jitsiDomain && meetingUrl.host !== state.jitsiDomain) {
       showError(`Jitsi URL must use ${state.jitsiDomain}.`)
       return
     }

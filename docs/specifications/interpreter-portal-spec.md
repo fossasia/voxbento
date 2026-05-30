@@ -38,14 +38,14 @@ The organizer generates one URL per language per session and distributes it to t
 
 ## Preflight checklist
 
-The **Go Live** button is disabled until all four items are completed. This is enforced in `PreflightChecklist.vue` and `useInterpreterBooth.js`.
+The **Go Live** button is disabled until all four items are completed. This is enforced in `PreflightChecklist` and the booth JavaScript.
 
 | Item | How it is satisfied |
 |---|---|
 | Headphones connected | Interpreter manually checks the checkbox |
 | Monitoring active | Set automatically when the Jitsi iframe loads |
 | Mic test complete | Set after interpreter clicks **Test Mic** and confirms level |
-| Ingest reachable | Set after `IngestClient.checkReachable()` returns `true` |
+| Ingest reachable | Set after WHIP endpoint (MediaMTX :8889) is confirmed reachable |
 
 The checklist prevents an interpreter from accidentally going live without headphones (echo risk) or without confirming their mic is working.
 
@@ -72,27 +72,27 @@ Prerequisites:
 - No existing ingest session is active for this participant.
 
 Sequence:
-1. `MicStreamingManager.createIngestConnection(onConnectionStateChange)` — creates RTCPeerConnection and returns the SDP offer.
-2. `IngestClient.negotiate(channelId, localDescription)` — POSTs offer to `POST /api/interpreter/connect/{channel_id}`, receives answer.
-3. `MicStreamingManager.applyRemoteAnswer(answer)` — sets remote description.
-4. State transitions: `ingest.status = 'connecting'` → `'connected'` (on `connectionstatechange`).
-5. Socket.IO `booth:update-state` emitted to server with `mic_active: true, ingest_connected: true`.
-6. Server broadcasts updated `booth:state` to all booth participants.
+1. Browser creates `RTCPeerConnection` and captures audio track.
+2. SDP offer is formatted as a WHIP POST to `MediaMTX :8889/{channel_id}`.
+3. MediaMTX responds with an SDP answer.
+4. WebRTC connection is established; audio flows to MediaMTX.
+5. State transitions: `ingest.status = 'connecting'` → `'connected'`.
+6. WebSocket `booth:update-state` emitted to server with `mic_active: true, ingest_connected: true`.
+7. Server broadcasts updated `booth:state` to all booth participants.
 
 The **Go Live** button is replaced by a **Stop** button while live.
 
 ### Stop
 
-1. `MicStreamingManager.stopPeerConnection()` — closes the peer connection.
-2. `IngestClient` calls `POST /api/interpreter/disconnect/{channel_id}`.
-3. State transitions: `ingest.status = 'disconnected'`, `ingest.streamingLive = false`.
-4. Socket.IO `booth:update-state` emitted with `mic_active: false, ingest_connected: false`.
+1. Close the WebRTC peer connection (ends the WHIP session in MediaMTX).
+2. State transitions: `ingest.status = 'disconnected'`, `ingest.streamingLive = false`.
+3. WebSocket `booth:update-state` emitted with `mic_active: false, ingest_connected: false`.
 
 ---
 
 ## Device selection
 
-The `MicIngestPanel` shows a `<select>` element populated by `MicStreamingManager.listInputDevices()`. The interpreter can switch devices at any time. Switching a device:
+The `MicIngestPanel` shows a `<select>` element populated by `navigator.mediaDevices.enumerateDevices()`. The interpreter can switch devices at any time. Switching a device:
 
 1. Stops the current mic stream and level meter.
 2. Calls `getUserMedia` with the new `deviceId`.
@@ -114,17 +114,16 @@ On the viewer side: the HLS playlist stops updating. The viewer player falls bac
 
 ---
 
-## Ingest unavailability
+## MediaMTX unavailability
 
-If `aiortc` is not installed on the server (e.g., during frontend-only development), the backend sets `aiortc_available = False`. In this case:
+If MediaMTX is not running (e.g., during frontend-only development), WHIP POST requests will fail with a connection error. In this case:
 
-- `GET /healthz` returns `{ "aiortc_available": false }`.
-- `POST /api/interpreter/connect/{channel_id}` returns `503`.
-- The Vue console shows a warning banner: "Ingest server not available. Mic test is still usable."
-- The Go Live button is disabled.
+- `GET /healthz` still returns `ok: true` (the portal itself is healthy).
+- The Go Live button is available but WHIP publishing will fail.
+- The console shows a connection error when the interpreter tries to go live.
 - All other features (Jitsi monitoring, booth chat, participant grid) continue to work.
 
-This allows frontend development to proceed without a working aiortc environment.
+This allows booth coordination development to proceed without a running MediaMTX instance.
 
 ---
 
@@ -166,7 +165,7 @@ Below 1080px viewport width, the layout collapses to a single column (Jitsi pane
 
 ## Security considerations
 
-- The booth URL token is sent as a query parameter on initial page load and included in all subsequent API calls and Socket.IO events.
+- The booth URL token is sent as a query parameter on initial page load and included in all subsequent API calls and WebSocket messages.
 - The token is never stored in `localStorage` or `IndexedDB`.
 - All API calls use HTTPS in production (required for `getUserMedia`).
 - The ingest endpoint validates both the token and the active interpreter status before accepting an SDP offer, preventing unauthorized publishing.
