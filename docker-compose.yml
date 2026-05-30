@@ -16,6 +16,7 @@ services:
       JWT_EXPIRY_SECONDS: "${JWT_EXPIRY_SECONDS:-86400}"
       DEFAULT_JITSI_ROOM: "${DEFAULT_JITSI_ROOM:-eventyay-stage-room}"
       JITSI_DOMAIN: "${JITSI_DOMAIN:-localhost:8080}"
+      JITSI_BASE_URL: "${JITSI_BASE_URL:-}"
       # Browser-facing URLs — must be reachable from the user's machine
       MEDIAMTX_WHIP_BASE: "${MEDIAMTX_WHIP_BASE:-http://localhost:8889}"
       MEDIAMTX_HLS_BASE: "${MEDIAMTX_HLS_BASE:-http://localhost:8888}"

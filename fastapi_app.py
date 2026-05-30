@@ -92,6 +92,18 @@ manager = ConnectionManager()
 
 # ── Utilities ─────────────────────────────────────────────────────────────────
 
+def _make_jitsi_url(base_url: str, room: str) -> str:
+    """Return a full Jitsi meeting URL.
+
+    If *room* is already an absolute URL it is returned unchanged, so
+    existing deployments that stored a full URL in DEFAULT_JITSI_ROOM
+    are not broken by the base-URL prefix.
+    """
+    if room.startswith(('http://', 'https://')):
+        return room
+    return f'{base_url.rstrip("/")}/{room.lstrip("/")}'
+
+
 async def _check_mediamtx() -> bool:
     """Non-blocking reachability check for MediaMTX HLS endpoint."""
     base = settings.effective_mediamtx_internal_base
@@ -178,6 +190,9 @@ async def interpreter_booth(
             'booth_language': language,
             'booth_channel_id': channel_id,
             'default_jitsi_room': settings.default_jitsi_room,
+            'default_jitsi_url': _make_jitsi_url(
+                settings.effective_jitsi_base_url, settings.default_jitsi_room
+            ),
             'jitsi_domain': settings.effective_jitsi_domain,
             'jitsi_base_url': settings.effective_jitsi_base_url,
             'mediamtx_whip_base': settings.mediamtx_whip_base,
