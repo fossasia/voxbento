@@ -141,6 +141,14 @@ Existing free-form booth IDs (e.g. `hall-a-fr`) that happen to end with a valid 
   - JWT token creation and validation (PyJWT)
 - `portal/config.py`
   - pydantic-settings configuration loaded from environment variables / `.env`
+- `portal/roles.py`
+  - Permission enum, role-permission mapping, standalone permission helpers (mirrors Eventyay `core/permissions.py`)
+- `portal/models.py`
+  - SQLAlchemy 2.0 declarative models: Event, Room, DBBooth, InviteToken
+- `portal/database.py`
+  - async engine lifecycle, session factory, CRUD helpers for all models
+- `alembic/`
+  - database migration framework (async-aware env.py, version-controlled migration scripts)
 - `templates/base.html`
   - Eventyay-style header and page shell
 - `templates/interpreter_booth.html`
@@ -159,6 +167,122 @@ Existing free-form booth IDs (e.g. `hall-a-fr`) that happen to end with a valid 
   - MediaMTX configuration (WHIP ingest, WHEP playback, HLS fallback, Control API, overridePublisher for handoff)
 - `docker-compose.yml`
   - all services: portal, mediamtx, jitsi-web, jitsi-prosody, jitsi-jicofo, jitsi-jvb
+
+## 7.1 Database layer
+
+### Stack
+
+```
+FastAPI routes
+  ↓
+portal/database.py  (async CRUD helpers)
+  ↓
+SQLAlchemy 2.0  (async ORM, declarative models)
+  ↓
+Alembic  (migration framework)
+  ↓
+SQLite + aiosqlite (development)  /  PostgreSQL + asyncpg (production)
+```
+
+### Two data stores, one purpose each
+
+| Store | Manages | Lifetime | Technology |
+|-------|---------|----------|------------|
+| **In-memory registry** (`booth_state.py`) | Runtime booth state: participants, active interpreter, handoff, chat | Process lifetime (lost on restart) | Python dataclasses + `asyncio.Lock` |
+| **Persistent database** (`models.py`) | Admin-managed entities: events, rooms, booths, invite tokens | Survives restarts | SQLAlchemy + Alembic |
+
+The in-memory registry handles real-time coordination (WebSocket state, sub-second updates).
+The persistent database stores configuration that must survive restarts (which events exist, which booths are configured, invite tokens).
+
+### Models
+
+```mermaid
+erDiagram
+    Event ||--o{ Room : "has rooms"
+    Event ||--o{ DBBooth : "has booths"
+    Room  ||--o{ DBBooth : "contains booths"
+    DBBooth ||--o{ InviteToken : "has tokens"
+
+    Event {
+        int id PK
+        string slug UK
+        string display_name
+        datetime created_at
+    }
+    Room {
+        int id PK
+        int event_id FK
+        string display_name
+        string eventyay_room_id "nullable"
+        datetime created_at
+    }
+    DBBooth {
+        int id PK
+        int event_id FK
+        int room_id FK
+        string language_code
+        string language_name
+        datetime created_at
+    }
+    InviteToken {
+        string token PK "64-char hex"
+        int booth_id FK
+        string role
+        string label
+        datetime expires_at "nullable"
+        datetime used_at "nullable"
+        string created_by
+        datetime created_at
+    }
+```
+
+### Key design decisions
+
+- **No `mediamtx_path` column.** Derived at runtime via `make_mediamtx_path(event.slug, language_code)`. Single source of truth in `portal/booth_identity.py`.
+- **No `hls_url` column.** WHEP is the primary playback protocol. HLS URLs are derived from the MediaMTX path when needed.
+- **Model name `DBBooth`** avoids collision with the in-memory `Booth` dataclass in `booth_state.py`.
+- **Database-agnostic models.** SQLAlchemy column types work on both SQLite and PostgreSQL. Switching databases requires only changing `DATABASE_URL`.
+- **Async engine.** Uses `create_async_engine` with `aiosqlite` (dev) or `asyncpg` (prod) — non-blocking I/O consistent with FastAPI's async architecture.
+
+### Database lifecycle in Docker
+
+```
+docker compose up
+  ↓
+portal container starts
+  ↓
+alembic upgrade head  (applies any pending migrations)
+  ↓
+uvicorn starts serving
+  ↓
+SQLite file lives on 'portal-data' Docker volume
+
+docker compose down    →  containers removed, volume preserved
+docker compose up      →  data still there (volume survives)
+docker volume rm ...   →  data gone (explicit action required)
+```
+
+### Migration workflow
+
+```
+1. Edit portal/models.py  (add/change columns, tables)
+2. alembic revision --autogenerate -m "describe the change"
+3. Review the generated migration in alembic/versions/
+4. alembic upgrade head  (apply locally)
+5. Commit the migration file (alembic/versions/*.py)
+6. Never commit .db files
+```
+
+### Environment configuration
+
+| Environment | DATABASE_URL | Notes |
+|-------------|-------------|-------|
+| Native dev | `sqlite+aiosqlite:///./interpretation.db` | SQLite file in project root |
+| Docker dev | `sqlite+aiosqlite:////data/interpretation.db` | SQLite on `portal-data` volume |
+| CI | `sqlite+aiosqlite://` | In-memory, no file created |
+| Production | `postgresql+asyncpg://user:pass@db:5432/interpretation` | PostgreSQL with asyncpg driver |
+
+The `DATABASE_URL` env var overrides the default. Alembic reads the same setting.
 
 ## 8. State model and ownership
 
@@ -262,7 +386,8 @@ Ingest responsibilities:
 - WebSocket is available for cross-client booth state
 - self-hosted Jitsi Meet provides floor monitoring (4 Docker containers)
 - viewer stage page consumes language channels from MediaMTX (WHEP or HLS)
-- PostgreSQL and Redis can be added later for persistence and multi-worker scale
+- PostgreSQL and Redis can be added later for multi-worker scale; SQLAlchemy + Alembic are already in place for persistent storage
+- in Docker, `portal-data` volume persists the SQLite database across container restarts
 - in Docker, `DOCKER_HOST_ADDRESS` must be set to the host's LAN IP for JVB ICE to work
 
 ## 13. Reliability and operational constraints

@@ -11,6 +11,9 @@ The backend is a FastAPI application using native WebSocket for realtime communi
 | FastAPI | — | HTTP server, route handling, ASGI |
 | uvicorn | — | ASGI server |
 | WebSocket (FastAPI native) | — | Realtime booth coordination |
+| SQLAlchemy | 2.0+ | Async ORM for persistent entities |
+| Alembic | 1.15+ | Database migration framework |
+| aiosqlite | — | Async SQLite driver (development) |
 | PyJWT | — | JWT token authentication |
 | pydantic-settings | — | Environment variable loading and validation |
 | MediaMTX | bluenviron/mediamtx:1 | WHIP ingest, WHEP playback, and HLS fallback (external service) |
@@ -27,7 +30,14 @@ portal/
 ├── __init__.py
 ├── config.py                # Settings via pydantic-settings loaded from env vars
 ├── auth.py                  # JWT authentication via PyJWT
-└── booth_state.py           # Async in-memory booth registry and state machine
+├── booth_state.py           # Async in-memory booth registry and state machine
+├── booth_identity.py        # Booth ID ↔ MediaMTX path mapping
+├── roles.py                 # Permission enum, role-permission mapping
+├── models.py                # SQLAlchemy 2.0 declarative models
+└── database.py              # Async engine, session factory, CRUD helpers
+alembic/
+├── env.py                   # Async-aware migration environment
+└── versions/                # Migration scripts (committed to VCS)
 templates/
 ├── base.html                # Page shell (Eventyay-style header)
 ├── interpreter_booth.html   # Booth page (server-rendered with Jinja2)
@@ -188,6 +198,41 @@ Renders the primary WHEP listener page. Uses `RTCPeerConnection` to connect to M
 
 ---
 
+## Database layer
+
+### Two data stores
+
+| Store | Technology | Contents | Lifetime |
+|---|---|---|---|
+| SQLAlchemy database | SQLite (dev) / PostgreSQL (prod) | Events, rooms, booths, invite tokens | Persistent |
+| In-memory dicts | `booth_state.py` | WebSocket state, active interpreters | Ephemeral |
+
+### Models (`portal/models.py`)
+
+Four tables: `events` → `rooms` → `booths` → `invite_tokens`, with cascade
+deletes flowing downward. `DBBooth.mediamtx_path` is a computed `@property`,
+not a stored column.
+
+### CRUD helpers (`portal/database.py`)
+
+Async session factory with lazy-init engine. 18 CRUD functions cover all
+entity operations. Uses `joinedload` for booth→event relationship (needed for
+`mediamtx_path`).
+
+### Migrations (`alembic/`)
+
+Async-aware `env.py` reads `settings.database_url`. Migrations run
+automatically on container start (`alembic upgrade head`).
+
+### Configuration
+
+Controlled by `DATABASE_URL` env var. Default: `sqlite+aiosqlite:///./interpretation.db`.
+Switch to PostgreSQL by changing the URL to `postgresql+asyncpg://...`.
+
+For full details, see [database-guide.md](database-guide.md).
+
+---
+
 ## Production considerations
 
 ### In-memory state
@@ -197,7 +242,7 @@ Renders the primary WHEP listener page. Uses `RTCPeerConnection` to connect to M
 - Booth state is lost on server restart.
 - Multi-worker deployments will have separate state per worker — participants in different workers will not see each other.
 
-**Production fix:** Add PostgreSQL persistence for `Booth` and `Participant` records, and use a shared pub/sub layer (e.g., Redis) for cross-worker WebSocket broadcasting.
+**Production fix:** Add a shared pub/sub layer (e.g., Redis) for cross-worker WebSocket broadcasting. Structural data (events, rooms, booths) is already persisted in the database.
 
 ### JWT secret
 

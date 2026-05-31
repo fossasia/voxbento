@@ -1,0 +1,295 @@
+"""Async database engine, session factory, and CRUD helpers.
+
+Usage::
+
+    from portal.database import get_session, create_event, get_event_by_slug
+
+    async with get_session() as session:
+        event = await create_event(session, slug='pycon2026', display_name='PyCon 2026')
+
+For testing, call ``init_db()`` to create all tables without Alembic.
+To override the database URL in tests, call ``configure(url)`` before
+any database operations.
+"""
+
+from __future__ import annotations
+
+import logging
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
+from datetime import datetime, timezone
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+from sqlalchemy.orm import joinedload
+
+from portal.models import Base, DBBooth, Event, InviteToken, Room, generate_token, utc_now
+
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Engine lifecycle — lazy init, overridable for tests
+# ---------------------------------------------------------------------------
+
+_engine = None
+_async_session_factory = None
+
+
+def _get_engine():
+    global _engine, _async_session_factory
+    if _engine is None:
+        from portal.config import settings
+        _engine = create_async_engine(settings.database_url, echo=settings.debug)
+        _async_session_factory = async_sessionmaker(_engine, expire_on_commit=False)
+    return _engine
+
+
+def _get_session_factory():
+    if _async_session_factory is None:
+        _get_engine()
+    return _async_session_factory
+
+
+def configure(url: str, *, echo: bool = False) -> None:
+    """Override the database URL. Useful for tests or manual setup.
+
+    Must be called before any database operations.  Calling it again
+    replaces the engine (the old engine is NOT disposed — call
+    ``dispose()`` first if you need that).
+    """
+    global _engine, _async_session_factory
+    _engine = create_async_engine(url, echo=echo)
+    _async_session_factory = async_sessionmaker(_engine, expire_on_commit=False)
+
+
+async def dispose() -> None:
+    """Dispose the current engine (close connection pool)."""
+    global _engine, _async_session_factory
+    if _engine is not None:
+        await _engine.dispose()
+        _engine = None
+        _async_session_factory = None
+
+
+# ---------------------------------------------------------------------------
+# Session helpers
+# ---------------------------------------------------------------------------
+
+
+@asynccontextmanager
+async def get_session() -> AsyncGenerator[AsyncSession]:
+    factory = _get_session_factory()
+    async with factory() as session:
+        async with session.begin():
+            yield session
+
+
+async def init_db() -> None:
+    """Create all tables (for testing / development without Alembic)."""
+    engine = _get_engine()
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+
+
+async def drop_db() -> None:
+    """Drop all tables (for testing teardown)."""
+    engine = _get_engine()
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.drop_all)
+
+
+# ---------------------------------------------------------------------------
+# Event CRUD
+# ---------------------------------------------------------------------------
+
+
+async def create_event(session: AsyncSession, *, slug: str, display_name: str) -> Event:
+    ev = Event(slug=slug, display_name=display_name)
+    session.add(ev)
+    await session.flush()
+    return ev
+
+
+async def get_event_by_slug(session: AsyncSession, slug: str) -> Event | None:
+    result = await session.execute(select(Event).where(Event.slug == slug))
+    return result.scalar_one_or_none()
+
+
+async def get_event_by_id(session: AsyncSession, event_id: int) -> Event | None:
+    result = await session.execute(select(Event).where(Event.id == event_id))
+    return result.scalar_one_or_none()
+
+
+async def list_events(session: AsyncSession) -> list[Event]:
+    result = await session.execute(select(Event).order_by(Event.created_at))
+    return list(result.scalars().all())
+
+
+async def delete_event(session: AsyncSession, event_id: int) -> bool:
+    ev = await get_event_by_id(session, event_id)
+    if ev is None:
+        return False
+    await session.delete(ev)
+    await session.flush()
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Room CRUD
+# ---------------------------------------------------------------------------
+
+
+async def create_room(
+    session: AsyncSession,
+    *,
+    event_id: int,
+    display_name: str,
+    eventyay_room_id: str | None = None,
+) -> Room:
+    room = Room(event_id=event_id, display_name=display_name, eventyay_room_id=eventyay_room_id)
+    session.add(room)
+    await session.flush()
+    return room
+
+
+async def get_room_by_id(session: AsyncSession, room_id: int) -> Room | None:
+    result = await session.execute(select(Room).where(Room.id == room_id))
+    return result.scalar_one_or_none()
+
+
+async def list_rooms_for_event(session: AsyncSession, event_id: int) -> list[Room]:
+    result = await session.execute(
+        select(Room).where(Room.event_id == event_id).order_by(Room.created_at),
+    )
+    return list(result.scalars().all())
+
+
+async def delete_room(session: AsyncSession, room_id: int) -> bool:
+    room = await get_room_by_id(session, room_id)
+    if room is None:
+        return False
+    await session.delete(room)
+    await session.flush()
+    return True
+
+
+# ---------------------------------------------------------------------------
+# DBBooth CRUD
+# ---------------------------------------------------------------------------
+
+
+async def create_booth(
+    session: AsyncSession,
+    *,
+    event_id: int,
+    room_id: int,
+    language_code: str,
+    language_name: str,
+) -> DBBooth:
+    booth = DBBooth(
+        event_id=event_id,
+        room_id=room_id,
+        language_code=language_code,
+        language_name=language_name,
+    )
+    session.add(booth)
+    await session.flush()
+    return booth
+
+
+async def get_booth_by_id(session: AsyncSession, booth_id: int) -> DBBooth | None:
+    result = await session.execute(
+        select(DBBooth).options(joinedload(DBBooth.event)).where(DBBooth.id == booth_id),
+    )
+    return result.scalar_one_or_none()
+
+
+async def list_booths_for_event(session: AsyncSession, event_id: int) -> list[DBBooth]:
+    result = await session.execute(
+        select(DBBooth)
+        .options(joinedload(DBBooth.event))
+        .where(DBBooth.event_id == event_id)
+        .order_by(DBBooth.language_code),
+    )
+    return list(result.scalars().all())
+
+
+async def list_booths_for_room(session: AsyncSession, room_id: int) -> list[DBBooth]:
+    result = await session.execute(
+        select(DBBooth)
+        .options(joinedload(DBBooth.event))
+        .where(DBBooth.room_id == room_id)
+        .order_by(DBBooth.language_code),
+    )
+    return list(result.scalars().all())
+
+
+async def delete_booth(session: AsyncSession, booth_id: int) -> bool:
+    booth = await get_booth_by_id(session, booth_id)
+    if booth is None:
+        return False
+    await session.delete(booth)
+    await session.flush()
+    return True
+
+
+# ---------------------------------------------------------------------------
+# InviteToken CRUD
+# ---------------------------------------------------------------------------
+
+
+async def create_invite_token(
+    session: AsyncSession,
+    *,
+    booth_id: int,
+    role: str,
+    label: str = '',
+    expires_at: datetime | None = None,
+    created_by: str = '',
+) -> InviteToken:
+    token = InviteToken(
+        token=generate_token(),
+        booth_id=booth_id,
+        role=role,
+        label=label,
+        expires_at=expires_at,
+        created_by=created_by,
+    )
+    session.add(token)
+    await session.flush()
+    return token
+
+
+async def get_invite_token(session: AsyncSession, token_str: str) -> InviteToken | None:
+    result = await session.execute(
+        select(InviteToken)
+        .options(joinedload(InviteToken.booth).joinedload(DBBooth.event))
+        .where(InviteToken.token == token_str),
+    )
+    return result.scalar_one_or_none()
+
+
+async def redeem_invite_token(session: AsyncSession, token_str: str) -> InviteToken | None:
+    """Mark an invite token as used. Returns the token or None if not found.
+
+    Raises ``ValueError`` if the token is already used or expired.
+    """
+    tok = await get_invite_token(session, token_str)
+    if tok is None:
+        return None
+    if tok.is_used:
+        raise ValueError('Token has already been used.')
+    if tok.is_expired:
+        raise ValueError('Token has expired.')
+    tok.used_at = utc_now()
+    await session.flush()
+    return tok
+
+
+async def list_tokens_for_booth(session: AsyncSession, booth_id: int) -> list[InviteToken]:
+    result = await session.execute(
+        select(InviteToken)
+        .where(InviteToken.booth_id == booth_id)
+        .order_by(InviteToken.created_at),
+    )
+    return list(result.scalars().all())

@@ -127,11 +127,15 @@ This page plays the HLS stream from MediaMTX using hls.js with auto-recovery.
 uv run pytest
 ```
 
-Tests are in `tests/`. There are 27 tests covering:
+Tests are in `tests/`. There are 271 tests covering:
 
 - FastAPI routes and WebSocket handlers
 - `BoothRegistry` state machine
 - JWT authentication
+- Booth identity and validation
+- Role-based permissions
+- Database CRUD operations, cascade deletes, token lifecycle
+- End-to-end database persistence
 
 Tests use `httpx` and `anyio`. They run without a browser or Docker services.
 
@@ -139,6 +143,61 @@ To run with verbose output:
 
 ```bash
 uv run pytest -v
+```
+
+---
+
+## Database setup
+
+The portal uses SQLAlchemy with an async SQLite driver for local development.
+The database is created automatically on first run.
+
+### Initialize the database
+
+```bash
+uv run alembic upgrade head
+```
+
+This creates `interpretation.db` in the project root with four tables:
+`events`, `rooms`, `booths`, `invite_tokens`.
+
+### Check migration status
+
+```bash
+uv run alembic current
+```
+
+### Reset the database
+
+```bash
+rm interpretation.db
+uv run alembic upgrade head
+```
+
+### Inspect the database
+
+```bash
+sqlite3 interpretation.db ".tables"
+sqlite3 interpretation.db ".schema events"
+sqlite3 interpretation.db "SELECT * FROM events;"
+```
+
+Or use VS Code extensions (SQLite Viewer, SQLTools) — see
+[docs/backend/database-guide.md](../backend/database-guide.md) for detailed
+instructions.
+
+### Docker database
+
+When running via `docker compose up`, the database is stored on a Docker volume
+at `/data/interpretation.db`. Alembic migrations run automatically on container
+start.
+
+```bash
+# Inspect from host
+docker compose exec portal sqlite3 /data/interpretation.db ".tables"
+
+# Copy to host for GUI viewing
+docker compose cp portal:/data/interpretation.db ./interpretation.db
 ```
 
 ---
@@ -154,6 +213,7 @@ All variables are loaded from `.env` by `portal/config.py` via pydantic-settings
 | `DEBUG` | `true` | Debug mode (auto-reload, error pages). |
 | `JWT_SECRET` | `change-me` | JWT signing secret. **Change in production.** |
 | `BOOTH_ACCESS_TOKEN` | _(empty)_ | If set, all API calls and WebSocket connections must include this token. |
+| `DATABASE_URL` | `sqlite+aiosqlite:///./interpretation.db` | Database connection URL. Change to `postgresql+asyncpg://...` for PostgreSQL. |
 | `DEFAULT_JITSI_ROOM` | — | Pre-filled Jitsi URL (points to self-hosted instance). |
 | `JITSI_DOMAIN` | — | Domain validation for Jitsi embed URLs. |
 | `MEDIAMTX_WHIP_URL` | `http://localhost:8889` | MediaMTX WHIP endpoint for browser ingest. |

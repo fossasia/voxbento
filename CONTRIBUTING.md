@@ -51,8 +51,34 @@ All 27 tests must pass before opening a PR. The same checks run in CI
 
 - **Python is never in the audio path.** Audio flows: browser mic → WHIP → MediaMTX → WHEP/HLS → attendee. Do not add aiortc or similar.
 - **No Flask, no Socket.IO.** FastAPI + native WebSocket is the sole backend.
-- **In-memory state only.** `BoothRegistry` lives in process memory. Do not add a database dependency without a design discussion.
+- **Two data stores.** Real-time booth state lives in `BoothRegistry` (in-memory). Persistent admin entities (events, rooms, booths, tokens) live in SQLAlchemy models with Alembic migrations. See `portal/models.py` and `portal/database.py`.
 - **Booth fields are immutable after creation.** `language` and `channel_id` on a `Booth` object are set on first join and not overwritten.
+
+## Database and migrations
+
+The portal uses SQLAlchemy 2.0 (async) with Alembic for schema management.
+Models are database-agnostic — SQLite for development, PostgreSQL for production.
+
+### When you change a model
+
+```bash
+# 1. Edit portal/models.py
+# 2. Generate a migration
+alembic revision --autogenerate -m "describe the change"
+# 3. Review the generated file in alembic/versions/
+# 4. Apply locally
+alembic upgrade head
+# 5. Commit the migration file — it is version-controlled schema history
+git add alembic/versions/*.py
+```
+
+### Rules
+
+- **Always commit migration files.** They are the authoritative schema history.
+- **Never commit `.db` files.** They are git-ignored and environment-specific.
+- **Never edit a migration after it is merged.** Create a new migration instead.
+- **Test migrations in CI.** The test suite creates tables from models directly (no Alembic), but the migration must match the model definitions.
+- **Keep models database-agnostic.** Use SQLAlchemy column types that work on both SQLite and PostgreSQL. Do not use raw SQL.
 
 ## Audio handoff
 

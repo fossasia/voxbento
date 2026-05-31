@@ -120,6 +120,7 @@ Copy `.env.example` → `.env` and adjust as needed:
 | `MEDIAMTX_HLS_BASE` | `http://localhost:8888` | Browser-facing HLS URL |
 | `MEDIAMTX_INTERNAL_BASE` | *(empty)* | Python→MediaMTX URL (Docker: `http://mediamtx:8888`) |
 | `MEDIAMTX_API_BASE` | `http://localhost:9997` | MediaMTX Control API for dynamic path management |
+| `DATABASE_URL` | `sqlite+aiosqlite:///./interpretation.db` | Database connection string (PostgreSQL for production) |
 | `JVB_AUTH_PASSWORD` | `changeme` | Jitsi JVB auth (change in production) |
 | `JICOFO_AUTH_PASSWORD` | `changeme` | Jitsi Jicofo auth (change in production) |
 
@@ -157,9 +158,32 @@ Server broadcasts `booth:state` to all connections on every state change.
 
 ```bash
 uv sync --all-groups          # runtime + dev dependencies
-uv run pytest tests/ -v       # 27 tests
+uv run pytest tests/ -v       # run test suite
 node --check static/js/interpreter-booth.js   # JS syntax
 ```
+
+### Database
+
+The portal uses SQLAlchemy 2.0 (async) for persistent storage and Alembic for schema migrations.
+SQLite is the default for development; PostgreSQL is supported for production via `DATABASE_URL`.
+
+```bash
+# Apply migrations (creates tables if needed)
+alembic upgrade head
+
+# After changing models, generate a migration
+alembic revision --autogenerate -m "describe the change"
+
+# Apply the new migration
+alembic upgrade head
+```
+
+The SQLite database file (`interpretation.db`) is git-ignored. Migration scripts in
+`alembic/versions/` are committed — they are the version-controlled schema history.
+
+In Docker, `docker compose up` runs migrations automatically on startup. The database
+file is stored on a named volume (`portal-data`) that persists across `docker compose down`
+/ `docker compose up` cycles.
 
 ### Project layout
 
@@ -169,6 +193,13 @@ portal/
   config.py                   # pydantic-settings (env vars / .env)
   auth.py                     # JWT issue / validate
   booth_state.py              # async in-memory booth registry
+  booth_identity.py           # booth ID ↔ MediaMTX path mapping
+  roles.py                    # Permission enum, role-permission mapping
+  models.py                   # SQLAlchemy declarative models (Event, Room, DBBooth, InviteToken)
+  database.py                 # async engine, session factory, CRUD helpers
+alembic/
+  env.py                      # async-aware Alembic environment
+  versions/                   # migration scripts (committed to version control)
 templates/
   interpreter_booth.html      # Jinja2 interpreter booth page
   listener.html               # Jinja2 attendee page (hls.js fallback)
@@ -183,4 +214,7 @@ Dockerfile                    # FastAPI container (uv, Python 3.13-slim)
 tests/
   test_fastapi_app.py         # REST + WebSocket integration tests
   test_booth_state.py         # booth registry unit tests
+  test_booth_identity.py      # booth identity scheme tests
+  test_roles.py               # permission model tests
+  test_database.py            # database model + CRUD tests
 ```

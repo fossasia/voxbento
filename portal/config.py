@@ -55,6 +55,9 @@ class Settings(BaseSettings):
     jwt_secret: str = ''
     jwt_expiry_seconds: int = 86400
 
+    # Database — SQLite for dev, PostgreSQL for prod
+    database_url: str = 'sqlite+aiosqlite:///./interpretation.db'
+
     @property
     def effective_jwt_secret(self) -> str:
         return self.jwt_secret or self.secret_key
