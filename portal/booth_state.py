@@ -16,7 +16,13 @@ from portal.booth_identity import (
     validate_language_code,
 )
 
-ParticipantRole = Literal['interpreter', 'coordinator', 'listener']
+ParticipantRole = Literal[
+    'super_admin',
+    'event_admin',
+    'coordinator',
+    'interpreter',
+    'listener',
+]
 
 
 def utc_now_iso() -> str:
