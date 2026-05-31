@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import uuid
 from datetime import datetime, timedelta, timezone
 
 import jwt
@@ -14,6 +15,27 @@ security = HTTPBearer(auto_error=False)
 def create_token() -> str:
     now = datetime.now(timezone.utc)
     payload = {
+        'iat': now,
+        'exp': now + timedelta(seconds=settings.jwt_expiry_seconds),
+    }
+    return jwt.encode(payload, settings.effective_jwt_secret, algorithm='HS256')
+
+
+def create_participant_token(
+    *,
+    booth_id: int,
+    role: str,
+    event_slug: str,
+    language_code: str,
+) -> str:
+    """Create a JWT with role claims for a participant who joined via invite link."""
+    now = datetime.now(timezone.utc)
+    payload = {
+        'sub': str(uuid.uuid4()),
+        'booth_id': booth_id,
+        'role': role,
+        'event_slug': event_slug,
+        'language_code': language_code,
         'iat': now,
         'exp': now + timedelta(seconds=settings.jwt_expiry_seconds),
     }

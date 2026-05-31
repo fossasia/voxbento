@@ -21,7 +21,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 
-from portal.auth import create_token, decode_token, security, verify_ws_token
+from portal.auth import create_participant_token, create_token, decode_token, security, verify_ws_token
 from portal.booth_identity import make_booth_id, make_mediamtx_path
 from portal.booth_state import BoothRegistry
 from portal.config import settings
@@ -224,6 +224,49 @@ async def get_token(body: Annotated[TokenRequest | None, Body()] = None) -> Toke
     if settings.booth_access_token and provided != settings.booth_access_token:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail='Invalid access token.')
     return TokenResponse(access_token=create_token())
+
+
+# ── Invite-token join flow ────────────────────────────────────────────────────
+
+@app.get('/join/{token}')
+async def join_via_invite(token: str) -> RedirectResponse:
+    """Validate an invite token, issue a JWT cookie, and redirect to the booth.
+
+    Flow:
+    1. Look up the token in the database
+    2. Validate: not expired, not already used
+    3. Mark the token as used (``used_at = now``)
+    4. Issue a signed JWT cookie with role claims
+    5. Redirect to ``/interpreter/{event_slug}/{language_code}``
+    """
+    from portal.database import get_session, redeem_invite_token
+
+    async with get_session() as session:
+        try:
+            tok = await redeem_invite_token(session, token)
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc))
+
+    if tok is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Invalid invite token.')
+
+    jwt_token = create_participant_token(
+        booth_id=tok.booth_id,
+        role=tok.role,
+        event_slug=tok.booth.event.slug,
+        language_code=tok.booth.language_code,
+    )
+
+    redirect_url = f'/interpreter/{tok.booth.event.slug}/{tok.booth.language_code}'
+    response = RedirectResponse(url=redirect_url, status_code=status.HTTP_303_SEE_OTHER)
+    response.set_cookie(
+        key='session_token',
+        value=jwt_token,
+        httponly=True,
+        samesite='lax',
+        max_age=settings.jwt_expiry_seconds,
+    )
+    return response
 
 
 # ── Page routes ───────────────────────────────────────────────────────────────

@@ -138,7 +138,7 @@ Existing free-form booth IDs (e.g. `hall-a-fr`) that happen to end with a valid 
 - `portal/booth_state.py`
   - async in-memory booth registry, participant role policy, active interpreter ownership, handoff state, chat history, event-scoped queries (`get_booth`, `get_booth_for_event`, `validate_booth_event`)
 - `portal/auth.py`
-  - JWT token creation and validation (PyJWT)
+  - JWT token creation and validation (PyJWT), participant token issuance with role claims
 - `portal/config.py`
   - pydantic-settings configuration loaded from environment variables / `.env`
 - `portal/roles.py`
@@ -344,6 +344,58 @@ namespace isolation:
 - `validate_booth_event(booth_id, expected_event)` raises `PermissionError` if the booth's parsed event_slug doesn't match — used by event-scoped WHIP URL endpoint and WebSocket join handler.
 - MediaMTX paths embed the event slug (`{event_slug}/{language_code}`), so audio streams are physically separated per event.
 - WebSocket join with a mismatched `event_slug` field is rejected before the participant is added to the booth.
+
+## 9.2 Invite-token authentication flow
+
+Invite tokens provide a single-use, shareable URL for joining a specific booth with a pre-assigned role.
+
+### Flow
+
+```mermaid
+sequenceDiagram
+  participant Admin as Event Admin
+  participant DB as Database
+  participant User as Participant Browser
+  participant Portal as FastAPI Portal
+
+  Admin->>DB: create_invite_token(booth_id, role, label, expires_at)
+  DB-->>Admin: token (64-char hex)
+  Admin->>User: Share link: /join/{token}
+  User->>Portal: GET /join/{token}
+  Portal->>DB: get_invite_token(token) + joinedload(booth→event)
+  alt Token not found
+    Portal-->>User: 404 Invalid invite token
+  else Token expired
+    Portal-->>User: 403 Token has expired
+  else Token already used
+    Portal-->>User: 403 Token has already been used
+  else Valid
+    Portal->>DB: redeem_invite_token(token) → sets used_at
+    Portal->>Portal: create_participant_token(booth_id, role, event_slug, language_code)
+    Portal-->>User: 303 Redirect to /interpreter/{event_slug}/{language_code}
+    Note over Portal,User: Set-Cookie: session_token (JWT, HttpOnly, SameSite=lax)
+  end
+```
+
+### JWT cookie claims
+
+| Claim | Type | Description |
+|-------|------|-------------|
+| `sub` | UUID string | Unique participant identifier (generated per redemption) |
+| `booth_id` | int | Database ID of the assigned booth |
+| `role` | string | One of: `interpreter`, `coordinator`, `listener`, `event_admin`, `super_admin` |
+| `event_slug` | string | Slug of the event the booth belongs to |
+| `language_code` | string | ISO 639-1 language code of the booth |
+| `iat` | int | Issued-at timestamp |
+| `exp` | int | Expiry timestamp (configurable via `JWT_EXPIRY_SECONDS`) |
+
+### Security properties
+
+- Tokens are 64-character cryptographically random hex strings (`secrets.token_hex(32)`).
+- Each token can only be used once (`used_at` is set on redemption).
+- Optional expiry (`expires_at`) allows time-limited invitations.
+- The JWT cookie is `HttpOnly` and `SameSite=lax` to prevent XSS and CSRF.
+- Token lookup uses `joinedload` to eagerly load booth and event data in a single query.
 
 ## 10. Reconnect and teardown behavior
 

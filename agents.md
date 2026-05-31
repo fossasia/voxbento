@@ -5,6 +5,8 @@ This file defines implementation guardrails for contributors and coding agents w
 Read this file in full before making changes. The constraints here are non-negotiable.
 
 ---
+Follow Eventyay backend patterns wherever applicable. Reuse naming conventions, validation style, dataclass/model structure, route organization, API response patterns, testing conventions, and documentation style. Do not directly couple the interpretation portal to Eventyay yet. Only mirror architectural patterns to maintain consistency for future integration.
+---
 
 ## Product intent
 
@@ -61,7 +63,7 @@ Enforcement rules:
 |---|---|
 | `fastapi_app.py` | FastAPI routes, WebSocket handler, JWT auth, Jinja2 templates |
 | `portal/booth_state.py` | In-memory booth registry, participant roles, handoff policy, chat |
-| `portal/auth.py` | JWT token creation and validation |
+| `portal/auth.py` | JWT token creation and validation, participant token issuance with role claims |
 | `portal/config.py` | pydantic-settings (env vars / .env) |
 | `templates/` | Server-rendered HTML (base shell, booth page, WHEP listener page, HLS listener page) |
 | `static/js/interpreter-booth.js` | Plain browser JS — WebRTC/WHIP, WebSocket, mic controls, Jitsi embed |
@@ -95,6 +97,15 @@ Open booth URL → monitor participant grid → assign active interpreter
 ```
 Open /listener-webrtc/{booth_id} → WHEP WebRTC connects → sub-second audio (primary)
 Open /listen/{booth_id} → hls.js loads HLS stream → auto-recovers on handoff (fallback)
+```
+
+### Invite-token join flow
+
+```
+Receive invite link → GET /join/{token} → validate & redeem → JWT cookie → redirect to booth
+     │                                         │
+     ▼                                         ▼
+Token invalid/expired/used → 4xx error    /interpreter/{event_slug}/{language_code}
 ```
 
 ---
@@ -170,3 +181,5 @@ When changing architecture or behavior, update:
 - `README.md` for operational usage and setup
 - `ARCHITECTURE.md` for system design
 - `agents.md` (this file) for guardrails
+
+**Every PR that adds, removes, or changes a feature must update the relevant documentation files above as part of the same commit.** Do not defer documentation to a follow-up PR.
