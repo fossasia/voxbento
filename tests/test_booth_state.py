@@ -453,3 +453,29 @@ async def test_active_interpreter_can_turn_off_mic():
 
     participants = {p['participant_id']: p for p in state['participants']}
     assert participants[interpreter.participant_id]['mic_active'] is False
+
+
+# ── Booth listing tests ───────────────────────────────────────────────────────
+
+@pytest.mark.anyio
+async def test_list_booths_for_event_returns_matching():
+    registry = BoothRegistry()
+    await registry.create_booth(event_slug='pycon2026', language_code='en', language='English')
+    await registry.create_booth(event_slug='pycon2026', language_code='fr', language='French')
+    await registry.create_booth(event_slug='fossasia', language_code='en', language='English')
+
+    result = await registry.list_booths_for_event('pycon2026')
+
+    assert len(result) == 2
+    slugs = {b['language_code'] for b in result}
+    assert slugs == {'en', 'fr'}
+
+
+@pytest.mark.anyio
+async def test_list_booths_for_event_empty():
+    registry = BoothRegistry()
+    await registry.create_booth(event_slug='pycon2026', language_code='en', language='English')
+
+    result = await registry.list_booths_for_event('nonexistent')
+
+    assert result == []

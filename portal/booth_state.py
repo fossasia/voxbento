@@ -347,6 +347,15 @@ class BoothRegistry:
             booth = self._get_or_create_booth(booth_id, language, channel_id)
             return booth.active_interpreter_id == participant_id
 
+    async def list_booths_for_event(self, event_slug: str) -> list[dict]:
+        """Return public snapshots of all booths belonging to *event_slug*."""
+        async with self._lock:
+            return [
+                booth.as_public_dict()
+                for booth in self._booths.values()
+                if booth.event_slug == event_slug
+            ]
+
     async def set_ingest_status(self, booth_id: str, status: str, language: str, channel_id: str) -> dict:
         async with self._lock:
             booth = self._get_or_create_booth(booth_id, language, channel_id)

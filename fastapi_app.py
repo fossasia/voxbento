@@ -190,6 +190,13 @@ class TokenResponse(BaseModel):
     token_type: str = 'bearer'
 
 
+class CreateBoothRequest(BaseModel):
+    language_code: str
+    language: str = ''
+    room_id: int | None = None
+    instance: str = 'primary'
+
+
 # ── Auth endpoint ─────────────────────────────────────────────────────────────
 
 @app.post('/api/auth/token', response_model=TokenResponse)
@@ -214,6 +221,53 @@ async def healthz() -> dict:
         'server': 'fastapi',
         'mediamtx_ok': await _check_mediamtx(),
     }
+
+
+@app.get('/interpreter/{event_slug}/{language_code}')
+async def interpreter_booth_by_identity(
+    request: Request,
+    event_slug: str,
+    language_code: str,
+    token: str = '',
+    language: str = '',
+) -> Any:
+    """Booth page addressed by event_slug and language_code (preferred URL).
+
+    Derives booth_id, channel_id, WHIP URL, and WHEP URL from the identity
+    coordinates.  The MediaMTX path is created on first access.
+    """
+    from portal.booth_identity import make_booth_id, make_mediamtx_path
+
+    booth_id = make_booth_id(event_slug, language_code)
+    mediamtx_path = make_mediamtx_path(event_slug, language_code)
+    channel_id = mediamtx_path
+    display_language = language or language_code.upper()
+    await _ensure_mediamtx_path(channel_id)
+    whip_url = f'{settings.mediamtx_whip_base}/{mediamtx_path}/whip'
+    whep_url = f'{settings.mediamtx_whip_base}/{mediamtx_path}/whep'
+    return templates.TemplateResponse(
+        request,
+        'interpreter_booth.html',
+        {
+            'booth_id': booth_id,
+            'booth_token': token,
+            'booth_language': display_language,
+            'booth_channel_id': channel_id,
+            'event_slug': event_slug,
+            'language_code': language_code,
+            'whip_url': whip_url,
+            'whep_url': whep_url,
+            'default_jitsi_room': settings.default_jitsi_room,
+            'default_jitsi_url': _make_jitsi_url(
+                settings.effective_jitsi_base_url, settings.default_jitsi_room
+            ),
+            'jitsi_domain': settings.effective_jitsi_domain,
+            'jitsi_base_url': settings.effective_jitsi_base_url,
+            'mediamtx_whip_base': settings.mediamtx_whip_base,
+            'mediamtx_hls_base': settings.mediamtx_hls_base,
+            'js_version': _JS_CACHE_BUST,
+        },
+    )
 
 
 @app.get('/interpreter/{booth_id}')
@@ -336,6 +390,52 @@ async def booth_whip_url(
     whip_url = f'{settings.mediamtx_whip_base}/{channel_id}/whip'
     return {'whip_url': whip_url, 'channel_id': channel_id, 'booth_id': booth_id}
 
+
+@app.post('/api/events/{event_slug}/booths', status_code=status.HTTP_201_CREATED)
+async def create_event_booth(
+    event_slug: str,
+    body: CreateBoothRequest,
+    token: str = Query(''),
+    credentials: HTTPAuthorizationCredentials | None = Depends(security),
+) -> dict:
+    """Create a booth for an event.
+
+    Returns the booth state including derived booth_id, MediaMTX path,
+    WHIP URL, and WHEP URL.
+    """
+    _require_access(credentials, token)
+    try:
+        state = await booths.create_booth(
+            event_slug=event_slug,
+            language_code=body.language_code,
+            language=body.language or body.language_code.upper(),
+            instance=body.instance,
+            room_id=body.room_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    mediamtx_path = state['mediamtx_path']
+    await _ensure_mediamtx_path(mediamtx_path)
+    state['whip_url'] = f'{settings.mediamtx_whip_base}/{mediamtx_path}/whip'
+    state['whep_url'] = f'{settings.mediamtx_whip_base}/{mediamtx_path}/whep'
+    return state
+
+
+@app.get('/api/events/{event_slug}/booths')
+async def list_event_booths(
+    event_slug: str,
+    token: str = Query(''),
+    credentials: HTTPAuthorizationCredentials | None = Depends(security),
+) -> dict:
+    """List all booths for an event."""
+    _require_access(credentials, token)
+    booth_list = await booths.list_booths_for_event(event_slug)
+    for b in booth_list:
+        mtx = b.get('mediamtx_path', '')
+        if mtx:
+            b['whip_url'] = f'{settings.mediamtx_whip_base}/{mtx}/whip'
+            b['whep_url'] = f'{settings.mediamtx_whip_base}/{mtx}/whep'
+    return {'event_slug': event_slug, 'booths': booth_list}
 
 
 @app.get('/api/interpreter/status/{channel_id}')

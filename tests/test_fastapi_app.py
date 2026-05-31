@@ -597,3 +597,150 @@ def test_whip_url_missing_participant_id_returns_422():
     res = client.get('/api/booth/whip-missing-booth/whip-url')
     assert res.status_code == 422
 
+
+# ── Booth bootstrap flow tests (Issue #61) ────────────────────────────────────
+
+def test_create_event_booth():
+    """POST /api/events/{slug}/booths creates a booth and returns WHIP/WHEP URLs."""
+    res = client.post('/api/events/pycon2026/booths', json={
+        'language_code': 'en',
+        'language': 'English',
+        'room_id': 42,
+    })
+    assert res.status_code == 201
+    body = res.json()
+    assert body['booth_id'] == 'pycon2026-en'
+    assert body['event_slug'] == 'pycon2026'
+    assert body['language_code'] == 'en'
+    assert body['mediamtx_path'] == 'pycon2026/en'
+    assert body['room_id'] == 42
+    assert body['whip_url'].endswith('/pycon2026/en/whip')
+    assert body['whep_url'].endswith('/pycon2026/en/whep')
+
+
+def test_create_event_booth_duplicate_returns_400():
+    """Creating the same booth twice returns 400."""
+    client.post('/api/events/duptest/booths', json={'language_code': 'fr', 'language': 'French'})
+    res = client.post('/api/events/duptest/booths', json={'language_code': 'fr', 'language': 'French'})
+    assert res.status_code == 400
+    assert 'already exists' in res.json()['detail']
+
+
+def test_create_event_booth_invalid_language_code():
+    """Invalid language code returns 400."""
+    res = client.post('/api/events/pycon2026/booths', json={
+        'language_code': 'xyz',
+        'language': 'Unknown',
+    })
+    assert res.status_code == 400
+
+
+def test_create_event_booth_invalid_event_slug():
+    """Invalid event slug returns 400."""
+    res = client.post('/api/events/--bad--/booths', json={
+        'language_code': 'en',
+        'language': 'English',
+    })
+    assert res.status_code == 400
+
+
+def test_list_event_booths():
+    """GET /api/events/{slug}/booths lists booths for the event."""
+    client.post('/api/events/listtest/booths', json={'language_code': 'en', 'language': 'English'})
+    client.post('/api/events/listtest/booths', json={'language_code': 'de', 'language': 'German'})
+    client.post('/api/events/other/booths', json={'language_code': 'ja', 'language': 'Japanese'})
+
+    res = client.get('/api/events/listtest/booths')
+    assert res.status_code == 200
+    body = res.json()
+    assert body['event_slug'] == 'listtest'
+    assert len(body['booths']) == 2
+    codes = {b['language_code'] for b in body['booths']}
+    assert codes == {'en', 'de'}
+    # Each booth should have WHEP/WHIP URLs
+    for b in body['booths']:
+        assert 'whip_url' in b
+        assert 'whep_url' in b
+
+
+def test_list_event_booths_empty():
+    """Listing booths for a non-existent event returns empty list."""
+    res = client.get('/api/events/nonexistent/booths')
+    assert res.status_code == 200
+    assert res.json()['booths'] == []
+
+
+def test_interpreter_booth_by_identity_page():
+    """GET /interpreter/{event_slug}/{language_code} renders the booth page."""
+    res = client.get('/interpreter/myevent/en')
+    assert res.status_code == 200
+    assert b'myevent-en' in res.content
+    assert b"data-event-slug='myevent'" in res.content
+    assert b"data-language-code='en'" in res.content
+    assert b'data-whip-url=' in res.content
+    assert b'data-whep-url=' in res.content
+
+
+def test_interpreter_booth_by_identity_whip_whep_urls():
+    """The identity-based booth page has correct WHIP and WHEP URLs."""
+    res = client.get('/interpreter/fossasia/fr')
+    assert res.status_code == 200
+    content = res.content.decode()
+    assert 'fossasia/fr/whip' in content
+    assert 'fossasia/fr/whep' in content
+
+
+def test_legacy_interpreter_booth_still_works():
+    """The old /interpreter/{booth_id} route still works for backward compat."""
+    res = client.get('/interpreter/demo-booth')
+    assert res.status_code == 200
+    assert b'demo-booth' in res.content
+
+
+def test_full_bootstrap_flow():
+    """End-to-end: create booth → access page → join → go live (get WHIP URL)."""
+    # 1. Organiser creates booth via API
+    create_res = client.post('/api/events/bootstrap/booths', json={
+        'language_code': 'es',
+        'language': 'Spanish',
+        'room_id': 5,
+    })
+    assert create_res.status_code == 201
+    booth = create_res.json()
+    booth_id = booth['booth_id']
+    assert booth_id == 'bootstrap-es'
+
+    # 2. Interpreter accesses booth page
+    page_res = client.get('/interpreter/bootstrap/es')
+    assert page_res.status_code == 200
+    assert b'bootstrap-es' in page_res.content
+
+    # 3. Interpreter joins via WebSocket
+    channel = booth['mediamtx_path']
+    with client.websocket_connect(f'/ws/booth/{booth_id}') as ws:
+        ws.send_text(json.dumps({
+            'type': 'booth:join',
+            'display_name': 'Interpreter A',
+            'role': 'interpreter',
+            'language': 'Spanish',
+            'channel_id': channel,
+        }))
+        joined = json.loads(ws.receive_text())
+        if joined['type'] != 'booth:joined':
+            joined = json.loads(ws.receive_text())
+        pid = joined['participant_id']
+        ws.receive_text()  # drain booth:state
+
+        # 4. Active interpreter requests WHIP URL (Go Live)
+        whip_res = client.get(
+            f'/api/booth/{booth_id}/whip-url',
+            params={'participant_id': pid, 'language': 'Spanish', 'channel': channel},
+        )
+        assert whip_res.status_code == 200
+        whip_body = whip_res.json()
+        assert whip_body['whip_url'].endswith(f'/{channel}/whip')
+
+        # 5. Verify WHEP URL is derivable from the same path
+        whep_url = whip_body['whip_url'].replace('/whip', '/whep')
+        assert f'/{channel}/whep' in whep_url
+

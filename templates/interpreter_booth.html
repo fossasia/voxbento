@@ -14,6 +14,10 @@
   data-jitsi-domain='{{ jitsi_domain }}'
   data-whip-base='{{ mediamtx_whip_base }}'
   data-hls-base='{{ mediamtx_hls_base }}'
+  data-event-slug='{{ event_slug | default("") }}'
+  data-language-code='{{ language_code | default("") }}'
+  data-whip-url='{{ whip_url | default("") }}'
+  data-whep-url='{{ whep_url | default("") }}'
 >
   <section class='panel'>
     <header class='panel-header'>
@@ -196,9 +200,9 @@
         <div><dt>Mic state</dt><dd id='mic-state'>Inactive</dd></div>
         <div><dt>Ingest reachable</dt><dd id='ingest-reachable'>Unknown</dd></div>
         <div><dt>Active interpreter</dt><dd id='active-name'>Unassigned</dd></div>
-        <div><dt>HLS stream</dt><dd><span id='hls-validation-status' class='status-badge'>Not started</span></dd></div>
+        <div><dt>WHEP stream</dt><dd><span id='hls-validation-status' class='status-badge'>Not started</span></dd></div>
         <div id='hls-url-row' class='hidden'>
-          <dt>HLS stream (VLC / browser)</dt>
+          <dt>Listener URL (WHEP)</dt>
           <dd class='hls-url-cell'><code id='hls-url-display'></code><button id='copy-hls-url' type='button' class='btn btn-xs'>Copy</button></dd>
         </div>
       </dl>
