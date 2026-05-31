@@ -55,6 +55,7 @@ class Booth:
     channel_id: str
     instance: BoothInstance = 'primary'
     mediamtx_path: str = ''
+    room_id: int | None = None
     active_interpreter_id: str | None = None
     handoff_state: str = 'idle'
     participants: dict[str, Participant] = field(default_factory=dict)
@@ -62,8 +63,11 @@ class Booth:
     ingest_status: str = 'disconnected'
 
     def __post_init__(self) -> None:
-        if not self.mediamtx_path and self.event_slug and self.language_code:
-            self.mediamtx_path = make_mediamtx_path(self.event_slug, self.language_code)
+        if self.event_slug and self.language_code:
+            if not self.mediamtx_path:
+                self.mediamtx_path = make_mediamtx_path(self.event_slug, self.language_code)
+            if not self.channel_id:
+                self.channel_id = self.mediamtx_path
 
     def as_public_dict(self) -> dict:
         return {
@@ -72,6 +76,7 @@ class Booth:
             'language_code': self.language_code,
             'instance': self.instance,
             'mediamtx_path': self.mediamtx_path,
+            'room_id': self.room_id,
             'language': self.language,
             'channel_id': self.channel_id,
             'active_interpreter_id': self.active_interpreter_id,
@@ -94,12 +99,19 @@ class BoothRegistry:
         self._booths: dict[str, Booth] = {}
         self._lock = asyncio.Lock()
 
-    def _get_or_create_booth(self, booth_id: str, language: str, channel_id: str) -> Booth:
+    def _get_or_create_booth(
+        self,
+        booth_id: str,
+        language: str,
+        channel_id: str,
+        room_id: int | None = None,
+    ) -> Booth:
         """Return existing booth or create one. Caller must hold self._lock.
 
-        ``language`` and ``channel_id`` are only used when *creating* the booth;
-        they are treated as immutable once set so that a later request from a
-        different client cannot silently change the booth's canonical values.
+        ``language``, ``channel_id``, and ``room_id`` are only used when
+        *creating* the booth; they are treated as immutable once set so that
+        a later request from a different client cannot silently change the
+        booth's canonical values.
 
         The ``booth_id`` is parsed into ``event_slug`` and ``language_code``
         using :func:`parse_booth_id`.  If parsing fails (legacy free-form ID),
@@ -119,6 +131,7 @@ class BoothRegistry:
                 language_code=language_code,
                 language=language,
                 channel_id=channel_id,
+                room_id=room_id,
             )
             self._booths[booth_id] = booth
         return booth
@@ -130,11 +143,18 @@ class BoothRegistry:
         language: str,
         channel_id: str = '',
         instance: BoothInstance = 'primary',
+        room_id: int | None = None,
     ) -> dict:
         """Create a booth using validated identity coordinates.
 
-        This is the preferred entry point for new code.  The booth ID and
-        MediaMTX path are derived automatically from the coordinates.
+        This is the preferred entry point for new code.  The booth ID,
+        MediaMTX path, and default ``channel_id`` are derived automatically
+        from the coordinates.  When no explicit ``channel_id`` is given it
+        defaults to the MediaMTX path (``{event_slug}/{language_code}``).
+
+        ``room_id`` is an optional foreign key to an Eventyay Room.  It is
+        nullable and has no effect on booth identity — it exists to support
+        future Eventyay integration.
 
         Raises ``ValueError`` if the slug or language code is invalid, or if
         a booth with the same ID already exists.
@@ -143,6 +163,7 @@ class BoothRegistry:
         code = validate_language_code(language_code)
         inst = validate_instance(instance)
         booth_id = make_booth_id(slug, code)
+        mtx_path = make_mediamtx_path(slug, code)
 
         async with self._lock:
             if booth_id in self._booths:
@@ -152,15 +173,22 @@ class BoothRegistry:
                 event_slug=slug,
                 language_code=code,
                 language=language,
-                channel_id=channel_id or f'{booth_id}-audio',
+                channel_id=channel_id or mtx_path,
                 instance=inst,
+                room_id=room_id,
             )
             self._booths[booth_id] = booth
             return booth.as_public_dict()
 
-    async def snapshot(self, booth_id: str, language: str, channel_id: str) -> dict:
+    async def snapshot(
+        self,
+        booth_id: str,
+        language: str,
+        channel_id: str,
+        room_id: int | None = None,
+    ) -> dict:
         async with self._lock:
-            return self._get_or_create_booth(booth_id, language, channel_id).as_public_dict()
+            return self._get_or_create_booth(booth_id, language, channel_id, room_id=room_id).as_public_dict()
 
     async def join_participant(
         self,
@@ -170,9 +198,10 @@ class BoothRegistry:
         language: str,
         channel_id: str,
         participant_id: str | None = None,
+        room_id: int | None = None,
     ) -> tuple[Participant, dict]:
         async with self._lock:
-            booth = self._get_or_create_booth(booth_id, language, channel_id)
+            booth = self._get_or_create_booth(booth_id, language, channel_id, room_id=room_id)
             participant = Participant(
                 participant_id=participant_id or uuid4().hex,
                 display_name=display_name.strip() or 'Interpreter',

@@ -301,11 +301,12 @@ async def booth_state_api(
     token: str = Query(''),
     language: str = 'English',
     channel: str | None = Query(None),
+    room: int | None = Query(None),
     credentials: HTTPAuthorizationCredentials | None = Depends(security),
 ) -> dict:
     _require_access(credentials, token)
     channel_id = channel or f'{booth_id}-audio'
-    return await booths.snapshot(booth_id, language, channel_id)
+    return await booths.snapshot(booth_id, language, channel_id, room_id=room)
 
 
 
@@ -327,6 +328,13 @@ async def _handle_join(ws: WebSocket, session: Session, data: dict) -> None:
     language = data.get('language', 'English')
     channel_id = data.get('channel_id', f'{session.booth_id}-audio')
     participant_id = data.get('participant_id')
+    room_id = data.get('room_id')
+    if room_id is not None:
+        try:
+            room_id = int(room_id)
+        except (TypeError, ValueError):
+            await ws.send_text(json.dumps({'type': 'booth:error', 'message': 'room_id must be an integer.'}))
+            return
     try:
         participant, state = await booths.join_participant(
             booth_id=session.booth_id,
@@ -335,6 +343,7 @@ async def _handle_join(ws: WebSocket, session: Session, data: dict) -> None:
             language=language,
             channel_id=channel_id,
             participant_id=participant_id,
+            room_id=room_id,
         )
     except (ValueError, PermissionError) as exc:
         await ws.send_text(json.dumps({'type': 'booth:error', 'message': str(exc)}))

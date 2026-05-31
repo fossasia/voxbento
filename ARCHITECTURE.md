@@ -105,6 +105,10 @@ A booth is identified by three coordinates:
 
 **MediaMTX path:** `{event_slug}/{language_code}` → `pycon2026/en` (one active stream per language per event)
 
+**Channel ID:** defaults to the MediaMTX path (`{event_slug}/{language_code}`) when created via `create_booth()`. Can be overridden with an explicit value.
+
+**Room ID:** optional integer FK to an Eventyay Room (`room_id: int | None`). Nullable — has no effect on booth identity. Exists to support future Eventyay integration for mapping booths to event rooms.
+
 ### Validation rules
 
 - **Event slug:** `^[a-z0-9]+(?:-[a-z0-9]+)*$`, 1–64 characters. Must start and end with alphanumeric. No consecutive hyphens, no underscores, no spaces.
@@ -161,7 +165,7 @@ Existing free-form booth IDs (e.g. `hall-a-fr`) that happen to end with a valid 
 `BoothRegistry` tracks:
 
 - booth identity (`booth_id`, `event_slug`, `language_code`, `instance`, `mediamtx_path`)
-- booth metadata (`language`, `channel_id`)
+- booth metadata (`language`, `channel_id`, `room_id`)
 - active interpreter id
 - participant roster and roles
 - per-participant connection, mic, and ingest state

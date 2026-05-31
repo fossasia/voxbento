@@ -135,7 +135,8 @@ async def test_create_booth_sets_identity_fields():
     assert state['language_code'] == 'en'
     assert state['instance'] == 'primary'
     assert state['mediamtx_path'] == 'pycon2026/en'
-    assert state['channel_id'] == 'pycon2026-en-audio'
+    assert state['channel_id'] == 'pycon2026/en'
+    assert state['room_id'] is None
 
 
 @pytest.mark.anyio
@@ -230,3 +231,121 @@ async def test_identity_booth_join_and_snapshot():
     assert state['event_slug'] == 'pycon2026'
     assert state['language_code'] == 'de'
     assert len(state['participants']) == 1
+
+
+# ── Event and room field tests ────────────────────────────────────────────────
+
+@pytest.mark.anyio
+async def test_create_booth_with_room_id():
+    registry = BoothRegistry()
+    state = await registry.create_booth(
+        event_slug='pycon2026',
+        language_code='en',
+        language='English',
+        room_id=42,
+    )
+
+    assert state['room_id'] == 42
+    assert state['event_slug'] == 'pycon2026'
+    assert state['channel_id'] == 'pycon2026/en'
+
+
+@pytest.mark.anyio
+async def test_create_booth_room_id_defaults_to_none():
+    registry = BoothRegistry()
+    state = await registry.create_booth(
+        event_slug='fossasia2026',
+        language_code='fr',
+        language='French',
+    )
+
+    assert state['room_id'] is None
+
+
+@pytest.mark.anyio
+async def test_channel_id_defaults_to_mediamtx_path():
+    """When no explicit channel_id is given, it should equal the MediaMTX path."""
+    registry = BoothRegistry()
+    state = await registry.create_booth(
+        event_slug='pycon2026',
+        language_code='de',
+        language='German',
+    )
+
+    assert state['channel_id'] == 'pycon2026/de'
+    assert state['channel_id'] == state['mediamtx_path']
+
+
+@pytest.mark.anyio
+async def test_channel_id_explicit_overrides_default():
+    """An explicit channel_id should override the mediamtx_path default."""
+    registry = BoothRegistry()
+    state = await registry.create_booth(
+        event_slug='pycon2026',
+        language_code='es',
+        language='Spanish',
+        channel_id='custom-channel',
+    )
+
+    assert state['channel_id'] == 'custom-channel'
+    assert state['mediamtx_path'] == 'pycon2026/es'
+
+
+@pytest.mark.anyio
+async def test_snapshot_passes_room_id_on_creation():
+    """room_id passed via snapshot should be stored on initial booth creation."""
+    registry = BoothRegistry()
+    state = await registry.snapshot('pycon2026-en', 'English', 'pycon2026/en', room_id=7)
+
+    assert state['room_id'] == 7
+    assert state['event_slug'] == 'pycon2026'
+
+
+@pytest.mark.anyio
+async def test_snapshot_room_id_immutable_after_creation():
+    """room_id from a later snapshot call must not overwrite the original."""
+    registry = BoothRegistry()
+    await registry.snapshot('pycon2026-en', 'English', 'pycon2026/en', room_id=7)
+    state = await registry.snapshot('pycon2026-en', 'English', 'pycon2026/en', room_id=99)
+
+    assert state['room_id'] == 7
+
+
+@pytest.mark.anyio
+async def test_join_participant_passes_room_id():
+    """room_id passed via join_participant creates the booth with that room."""
+    registry = BoothRegistry()
+    _, state = await registry.join_participant(
+        booth_id='pycon2026-en',
+        display_name='Interpreter A',
+        role='interpreter',
+        language='English',
+        channel_id='pycon2026/en',
+        room_id=15,
+    )
+
+    assert state['room_id'] == 15
+
+
+@pytest.mark.anyio
+async def test_legacy_booth_has_no_room_id():
+    """Legacy booths auto-created without room_id should default to None."""
+    registry = BoothRegistry()
+    state = await registry.snapshot('hall-a-fr', 'French', 'hall-a-fr-audio')
+
+    assert state['room_id'] is None
+
+
+@pytest.mark.anyio
+async def test_as_public_dict_includes_room_id():
+    """as_public_dict must always include room_id in serialized output."""
+    registry = BoothRegistry()
+    state = await registry.create_booth(
+        event_slug='pycon2026',
+        language_code='ja',
+        language='Japanese',
+        room_id=100,
+    )
+
+    assert 'room_id' in state
+    assert state['room_id'] == 100
