@@ -170,9 +170,9 @@ jobs:
 
       - name: Portal ingest-status API
         run: |
-          resp=$(curl -sf "http://${CI_HOST}:${PORTAL_PORT}/api/ingest-status/ci-booth")
+          resp=$(curl -sf "http://${CI_HOST}:${PORTAL_PORT}/api/interpreter/status/ci-booth-audio")
           echo "$resp"
-          echo "$resp" | python3 -c "import sys,json; d=json.load(sys.stdin); assert 'whip_url' in d"
+          echo "$resp" | python3 -c "import sys,json; d=json.load(sys.stdin); assert d['channel_id']=='ci-booth-audio'; assert 'reachable' in d"
 
       - name: MediaMTX Control API lists paths
         run: |
