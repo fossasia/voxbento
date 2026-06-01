@@ -23,7 +23,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import joinedload
 
-from portal.models import Base, DBBooth, Event, EventMembership, InviteToken, Room, User, generate_token, utc_now
+from portal.models import Base, BoothMembership, DBBooth, Event, EventMembership, InviteToken, Room, User, generate_token, utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -409,6 +409,67 @@ async def list_memberships_for_user(session: AsyncSession, user_id: int) -> list
         .options(joinedload(EventMembership.event))
         .where(EventMembership.user_id == user_id)
         .order_by(EventMembership.created_at),
+    )
+    return list(result.scalars().all())
+
+
+# ---------------------------------------------------------------------------
+# BoothMembership CRUD
+# ---------------------------------------------------------------------------
+
+
+async def set_booth_membership(
+    session: AsyncSession,
+    *,
+    user_id: int,
+    booth_id: int,
+    role: str,
+) -> BoothMembership:
+    """Create or update a user's role for a specific booth."""
+    result = await session.execute(
+        select(BoothMembership).where(
+            BoothMembership.user_id == user_id,
+            BoothMembership.booth_id == booth_id,
+        ),
+    )
+    membership = result.scalar_one_or_none()
+    if membership:
+        membership.role = role
+    else:
+        membership = BoothMembership(user_id=user_id, booth_id=booth_id, role=role)
+        session.add(membership)
+    await session.flush()
+    return membership
+
+
+async def remove_booth_membership(session: AsyncSession, membership_id: int) -> bool:
+    result = await session.execute(
+        select(BoothMembership).where(BoothMembership.id == membership_id),
+    )
+    membership = result.scalar_one_or_none()
+    if membership is None:
+        return False
+    await session.delete(membership)
+    await session.flush()
+    return True
+
+
+async def list_memberships_for_booth(session: AsyncSession, booth_id: int) -> list[BoothMembership]:
+    result = await session.execute(
+        select(BoothMembership)
+        .options(joinedload(BoothMembership.user))
+        .where(BoothMembership.booth_id == booth_id)
+        .order_by(BoothMembership.created_at),
+    )
+    return list(result.scalars().all())
+
+
+async def list_booth_memberships_for_user(session: AsyncSession, user_id: int) -> list[BoothMembership]:
+    result = await session.execute(
+        select(BoothMembership)
+        .options(joinedload(BoothMembership.booth).joinedload(DBBooth.event))
+        .where(BoothMembership.user_id == user_id)
+        .order_by(BoothMembership.created_at),
     )
     return list(result.scalars().all())
 

@@ -7,6 +7,7 @@ Six tables:
 - ``invite_tokens`` — single-use invite tokens for booth access
 - ``users`` — registered user accounts
 - ``event_memberships`` — per-event role assignments for users
+- ``booth_memberships`` — per-booth role assignments for users (e.g. interpreter)
 
 Design decisions
 ~~~~~~~~~~~~~~~~
@@ -124,6 +125,9 @@ class DBBooth(Base):
     invite_tokens: Mapped[list[InviteToken]] = relationship(
         back_populates='booth', cascade='all, delete-orphan',
     )
+    memberships: Mapped[list[BoothMembership]] = relationship(
+        back_populates='booth', cascade='all, delete-orphan',
+    )
 
     @validates('language_code')
     def _validate_language_code(self, _key: str, value: str) -> str:
@@ -212,6 +216,9 @@ class User(Base):
     memberships: Mapped[list[EventMembership]] = relationship(
         back_populates='user', cascade='all, delete-orphan',
     )
+    booth_memberships: Mapped[list[BoothMembership]] = relationship(
+        back_populates='user', cascade='all, delete-orphan',
+    )
 
     @validates('email')
     def _validate_email(self, _key: str, value: str) -> str:
@@ -230,6 +237,7 @@ class User(Base):
 
 # Roles valid for event memberships (no super_admin — that's system-level)
 EVENT_ROLES = frozenset({'listener', 'interpreter', 'coordinator', 'event_admin'})
+BOOTH_ROLES = frozenset({'listener', 'interpreter', 'coordinator'})
 
 
 class EventMembership(Base):
@@ -261,3 +269,38 @@ class EventMembership(Base):
 
     def __repr__(self) -> str:
         return f'<EventMembership user={self.user_id} event={self.event_id} role={self.role!r}>'
+
+
+# ---------------------------------------------------------------------------
+# BoothMembership
+# ---------------------------------------------------------------------------
+
+
+class BoothMembership(Base):
+    """Per-booth role assignment for a user.
+
+    Used to assign specific interpreters/listeners to specific booths.
+    """
+
+    __tablename__ = 'booth_memberships'
+    __table_args__ = (
+        Index('ix_membership_user_booth', 'user_id', 'booth_id', unique=True),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey('users.id', ondelete='CASCADE'))
+    booth_id: Mapped[int] = mapped_column(ForeignKey('booths.id', ondelete='CASCADE'))
+    role: Mapped[str] = mapped_column(String(20))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+    user: Mapped[User] = relationship(back_populates='booth_memberships')
+    booth: Mapped[DBBooth] = relationship(back_populates='memberships')
+
+    @validates('role')
+    def _validate_role(self, _key: str, value: str) -> str:
+        if value not in BOOTH_ROLES:
+            raise ValueError(f"Invalid booth role '{value}'. Must be one of: {', '.join(sorted(BOOTH_ROLES))}")
+        return value
+
+    def __repr__(self) -> str:
+        return f'<BoothMembership user={self.user_id} booth={self.booth_id} role={self.role!r}>'

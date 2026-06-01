@@ -28,6 +28,30 @@
         <p class="hero-subtitle">Real-time multilingual interpretation for live events — browser-first, no external software required.</p>
       </section>
 
+      {% if my_booths %}
+      <section class="home-section">
+        <h2>Your Assigned Booths</h2>
+        <div class="card-grid">
+          {% for b in my_booths %}
+          <div class="card event-card home-event-card">
+            <div class="card-header">
+              <span class="card-title">{{ b.language_name }} — {{ b.event_name }}</span>
+              {% if b.is_live %}
+              <span class="status-live">● LIVE</span>
+              {% endif %}
+            </div>
+            <div class="card-body">
+              <p style="margin-bottom: 0;">Role: <span class="badge badge-role badge-{{ b.membership.role }}">{{ b.membership.role }}</span></p>
+            </div>
+            <div class="card-footer">
+              <a href="/interpreter/{{ b.event_slug }}/{{ b.language_code }}" class="btn btn-primary" style="width: 100%; text-align: center;">Open Booth ↗</a>
+            </div>
+          </div>
+          {% endfor %}
+        </div>
+      </section>
+      {% endif %}
+
       {% if events %}
       <section class="home-section">
         <h2>Active Events</h2>

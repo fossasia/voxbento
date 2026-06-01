@@ -98,8 +98,8 @@ def test_super_admin_has_all_permissions():
 # ── can_go_live ──────────────────────────────────────────────────────────
 
 
-ROLES_THAT_CAN_GO_LIVE = {'interpreter', 'event_admin', 'super_admin'}
-ROLES_THAT_CANNOT_GO_LIVE = {'coordinator', 'listener'}
+ROLES_THAT_CAN_GO_LIVE = {'coordinator', 'interpreter', 'event_admin', 'super_admin'}
+ROLES_THAT_CANNOT_GO_LIVE = {'listener'}
 
 
 @pytest.mark.parametrize('role', list(ROLES_THAT_CAN_GO_LIVE))
@@ -190,20 +190,20 @@ def test_privilege_escalation_hierarchy():
     listener = ROLE_PERMISSIONS['listener']
 
     assert listener.issubset(coord), 'listener perms must be subset of coordinator'
+    assert ROLE_PERMISSIONS['interpreter'].issubset(coord), 'interpreter perms must be subset of coordinator'
+    assert coord.issubset(ea), 'coordinator perms must be subset of event_admin'
     assert coord.issubset(ea), 'coordinator perms must be subset of event_admin'
     assert ea.issubset(sa), 'event_admin perms must be subset of super_admin'
 
 
-def test_interpreter_is_not_subset_of_coordinator():
-    """Interpreter has BOOTH_GO_LIVE which coordinator lacks.
+def test_interpreter_is_subset_of_coordinator():
+    """Interpreter has BOOTH_GO_LIVE, which coordinator now also has.
 
-    This verifies the intentional divergence: interpreters can go live
-    but cannot set active, while coordinators can set active but cannot
-    go live.
+    This means interpreter permissions are a strict subset of coordinator permissions.
     """
     interp = ROLE_PERMISSIONS['interpreter']
     coord = ROLE_PERMISSIONS['coordinator']
-    assert not interp.issubset(coord)
+    assert interp.issubset(coord)
     assert not coord.issubset(interp)
 
 

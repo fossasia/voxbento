@@ -59,6 +59,7 @@ Each booth detail page shows:
 - **Live Status** — whether an interpreter is currently broadcasting
 - **Active Interpreter** — who is currently live
 - **Participant Roster** — all connected users with roles
+- **Assigned Members** — assign registered users directly to this booth
 - **Invite Tokens** — generate, copy, and revoke booth access tokens
 
 ### Token Management (on Booth Detail Page)
@@ -111,9 +112,9 @@ Roles are assigned **per event**, not globally. A user can be an `interpreter` f
 
 | Role | Scope | Permissions |
 |------|-------|-------------|
-| `listener` | Event | View booths, listen to streams, send chat messages |
-| `interpreter` | Event | All listener permissions + go live (publish audio via WHIP) |
-| `coordinator` | Event | All listener permissions + assign active interpreter, manage handoffs |
+| `listener` | Booth / Event | View booths, listen to streams, send chat messages |
+| `interpreter` | Booth / Event | All listener permissions + go live (publish audio via WHIP) |
+| `coordinator` | Booth / Event | All listener permissions + assign active interpreter, manage handoffs + go live |
 | `event_admin` | Event | All coordinator permissions + manage booths and generate invite tokens |
 
 ### Assigning event roles
@@ -124,9 +125,18 @@ Roles are assigned **per event**, not globally. A user can be an `interpreter` f
 4. Choose a role from the **Event Role** dropdown (auto-saves on change)
 5. Select "— none —" to remove the role
 
-### Removing an event role
+### Assigning booth roles (Interpreter assignments)
 
-1. Go to the event's **Members** page
+For stricter access control, you can assign an interpreter to a *specific booth* rather than the whole event:
+
+1. Go to an event's **Rooms** → **Booths** and open a specific booth
+2. Scroll to **Assigned Members**
+3. Select `interpreter` next to the user's name
+4. When the interpreter logs in, they will see an "Open Booth" button on their home dashboard directly to this booth
+
+### Removing a role
+
+1. Go to the event's or booth's **Members** section
 2. Click **Remove** next to the membership
 
 ### User admin flags

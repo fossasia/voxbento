@@ -137,6 +137,69 @@
   {% endif %}
 </div>
 
+<!-- Assigned Members -->
+<div class="section-card">
+  <div class="section-header">
+    <h2>Assigned Members</h2>
+  </div>
+  {% if users %}
+  <table class="data-table">
+    <thead>
+      <tr>
+        <th>Email</th>
+        <th>Display Name</th>
+        <th>Account Status</th>
+        <th>Booth Role</th>
+        <th>Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for u in users %}
+      {% set m = membership_map.get(u.id) %}
+      <tr class="{{ 'row-assigned' if m else '' }}">
+        <td>{{ u.email }}</td>
+        <td>{{ u.display_name }}</td>
+        <td>
+          {% if u.is_active %}
+          <span class="status-live">● Active</span>
+          {% else %}
+          <span class="status-offline">○ Inactive</span>
+          {% endif %}
+        </td>
+        <td>
+          <form method="post" action="/admin/events/{{ event.id }}/rooms/{{ room.id }}/booths/{{ booth.id }}/members/" class="inline-form">
+            <input type="hidden" name="user_id" value="{{ u.id }}" />
+            <select name="role" class="role-select" onchange="this.form.submit()">
+              <option value="">— none —</option>
+              <option value="listener" {{ 'selected' if m and m.role == 'listener' }}>listener</option>
+              <option value="interpreter" {{ 'selected' if m and m.role == 'interpreter' }}>interpreter</option>
+              <option value="coordinator" {{ 'selected' if m and m.role == 'coordinator' }}>coordinator</option>
+            </select>
+          </form>
+        </td>
+        <td class="actions-cell">
+          {% if m %}
+          <form method="post"
+                action="/admin/events/{{ event.id }}/rooms/{{ room.id }}/booths/{{ booth.id }}/members/{{ m.id }}/delete"
+                class="inline-form"
+                onsubmit="return confirm('Remove {{ u.display_name }} from this booth?')">
+            <button type="submit" class="btn btn-sm btn-danger">Remove</button>
+          </form>
+          {% else %}
+          <span class="muted">—</span>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty-state">
+    <p>No registered users found.</p>
+  </div>
+  {% endif %}
+</div>
+
 <!-- Invite Tokens -->
 <div class="section-card">
   <div class="section-header">

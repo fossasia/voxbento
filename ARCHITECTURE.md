@@ -144,7 +144,7 @@ Existing free-form booth IDs (e.g. `hall-a-fr`) that happen to end with a valid 
 - `portal/roles.py`
   - Permission enum, role-permission mapping, standalone permission helpers (mirrors Eventyay `core/permissions.py`)
 - `portal/models.py`
-  - SQLAlchemy 2.0 declarative models: Event, Room, DBBooth, InviteToken, User, EventMembership
+  - SQLAlchemy 2.0 declarative models: Event, Room, DBBooth, InviteToken, User, EventMembership, BoothMembership
 - `portal/database.py`
   - async engine lifecycle, session factory, CRUD helpers for all models (including user management, event memberships, and token revocation)
 - `alembic/`
@@ -217,7 +217,9 @@ erDiagram
     Event ||--o{ EventMembership : "has members"
     Room  ||--o{ DBBooth : "contains booths"
     DBBooth ||--o{ InviteToken : "has tokens"
-    User  ||--o{ EventMembership : "has memberships"
+    DBBooth ||--o{ BoothMembership : "has members"
+    User  ||--o{ EventMembership : "has event memberships"
+    User  ||--o{ BoothMembership : "has booth memberships"
 
     Event {
         int id PK
@@ -263,6 +265,13 @@ erDiagram
         int id PK
         int user_id FK
         int event_id FK
+        string role
+        datetime created_at
+    }
+    BoothMembership {
+        int id PK
+        int user_id FK
+        int booth_id FK
         string role
         datetime created_at
     }

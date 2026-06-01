@@ -280,8 +280,11 @@ async def join_via_invite(token: str) -> RedirectResponse:
 
 @app.get('/')
 async def home(request: Request):
-    from portal.database import get_session, list_events, list_booths_for_event
+    from portal.database import get_session, list_events, list_booths_for_event, list_booth_memberships_for_user
 
+    current_user = await get_current_user(request)
+    my_booths = []
+    
     try:
         async with get_session() as session:
             events = await list_events(session)
@@ -299,12 +302,29 @@ async def home(request: Request):
                     'booths': booth_statuses,
                     'live_count': sum(1 for bs in booth_statuses if bs['is_live']),
                 })
+            
+            if current_user:
+                bms = await list_booth_memberships_for_user(session, int(current_user['sub']))
+                for bm in bms:
+                    bid = make_booth_id(bm.booth.event.slug, bm.booth.language_code)
+                    mem_booth = booths.get_booth_sync(bid)
+                    is_live = mem_booth is not None and mem_booth.ingest_status == 'connected'
+                    my_booths.append({
+                        'membership': bm,
+                        'booth_id': bid,
+                        'is_live': is_live,
+                        'event_name': bm.booth.event.display_name,
+                        'language_name': bm.booth.language_name,
+                        'event_slug': bm.booth.event.slug,
+                        'language_code': bm.booth.language_code,
+                    })
     except Exception:
         event_data = []
 
     return templates.TemplateResponse(request, 'home.html', {
         'events': event_data,
-        'current_user': await get_current_user(request),
+        'current_user': current_user,
+        'my_booths': my_booths,
     })
 
 
@@ -339,17 +359,25 @@ async def interpreter_booth_by_identity(
 
     granted_role = resolve_booth_role(payload)
 
-    # If role is still None the user is registered but has no event membership yet.
-    # Check EventMembership from the DB for this event.
+    # If role is still None the user is registered but has no role claim in the JWT.
+    # Check BoothMembership from the DB for this exact booth first,
+    # then fallback to EventMembership (for coordinators/admins).
     if granted_role is None and payload.get('sub'):
-        from portal.database import get_session, list_memberships_for_user
+        from portal.database import get_session, list_memberships_for_user, list_booth_memberships_for_user
         try:
             async with get_session() as db_session:
-                memberships = await list_memberships_for_user(db_session, int(payload['sub']))
-                for m in memberships:
-                    if m.event and m.event.slug == event_slug:
-                        granted_role = m.role
+                bms = await list_booth_memberships_for_user(db_session, int(payload['sub']))
+                for bm in bms:
+                    if bm.booth.event.slug == event_slug and bm.booth.language_code == language_code:
+                        granted_role = bm.role
                         break
+                
+                if granted_role is None:
+                    memberships = await list_memberships_for_user(db_session, int(payload['sub']))
+                    for m in memberships:
+                        if m.event and m.event.slug == event_slug:
+                            granted_role = m.role
+                            break
         except Exception:
             pass
 
@@ -1168,7 +1196,7 @@ async def admin_create_booth(request: Request, event_id: int, room_id: int):
 async def admin_booth_detail(request: Request, event_id: int, room_id: int, booth_id: int):
     from portal.database import (
         get_session, get_event_by_id, get_room_by_id, get_booth_by_id,
-        list_tokens_for_booth,
+        list_tokens_for_booth, list_users, list_memberships_for_booth
     )
 
     async with get_session() as session:
@@ -1182,6 +1210,10 @@ async def admin_booth_detail(request: Request, event_id: int, room_id: int, boot
         if db_booth is None or db_booth.room_id != room_id:
             raise HTTPException(status_code=404, detail='Booth not found.')
         tokens = await list_tokens_for_booth(session, booth_id)
+        users = await list_users(session)
+        memberships = await list_memberships_for_booth(session, booth_id)
+
+    membership_map = {m.user_id: m for m in memberships}
 
     bid = make_booth_id(event.slug, db_booth.language_code)
     mediamtx_path = make_mediamtx_path(event.slug, db_booth.language_code)
@@ -1204,7 +1236,58 @@ async def admin_booth_detail(request: Request, event_id: int, room_id: int, boot
         'participants': participants,
         'active_interpreter': active_interpreter,
         'tokens': tokens,
+        'users': users,
+        'membership_map': membership_map,
     })
+
+
+@app.post(
+    '/admin/events/{event_id}/rooms/{room_id}/booths/{booth_id}/members/',
+    dependencies=[Depends(require_admin)],
+)
+async def admin_add_booth_member(request: Request, event_id: int, room_id: int, booth_id: int):
+    from portal.database import get_session, list_memberships_for_booth, remove_booth_membership, set_booth_membership
+
+    form = await request.form()
+    user_id = form.get('user_id', '')
+    role = form.get('role', '').strip()
+    if user_id:
+        try:
+            uid = int(user_id)
+        except ValueError:
+            return RedirectResponse(
+                url=f'/admin/events/{event_id}/rooms/{room_id}/booths/{booth_id}/',
+                status_code=status.HTTP_303_SEE_OTHER,
+            )
+        async with get_session() as session:
+            if role:
+                await set_booth_membership(session, user_id=uid, booth_id=booth_id, role=role)
+            else:
+                # "— none —" selected: remove any existing membership
+                memberships = await list_memberships_for_booth(session, booth_id)
+                for m in memberships:
+                    if m.user_id == uid:
+                        await remove_booth_membership(session, m.id)
+                        break
+    return RedirectResponse(
+        url=f'/admin/events/{event_id}/rooms/{room_id}/booths/{booth_id}/',
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+@app.post(
+    '/admin/events/{event_id}/rooms/{room_id}/booths/{booth_id}/members/{membership_id}/delete',
+    dependencies=[Depends(require_admin)],
+)
+async def admin_remove_booth_member(request: Request, event_id: int, room_id: int, booth_id: int, membership_id: int):
+    from portal.database import get_session, remove_booth_membership
+
+    async with get_session() as session:
+        await remove_booth_membership(session, membership_id)
+    return RedirectResponse(
+        url=f'/admin/events/{event_id}/rooms/{room_id}/booths/{booth_id}/',
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
 
 
 @app.post(
