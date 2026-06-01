@@ -164,3 +164,61 @@ async def require_user(request: Request) -> dict:
     if user is None:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail='Login required.')
     return user
+
+
+# Role hierarchy — higher index = more privilege.
+_ROLE_RANK: dict[str, int] = {
+    'listener': 0,
+    'interpreter': 1,
+    'coordinator': 2,
+    'event_admin': 3,
+    'super_admin': 4,
+}
+
+
+def get_booth_session(request: Request) -> dict | None:
+    """Return decoded JWT payload from either session_token (invite) or user_token (registered user).
+
+    Returns None if neither cookie exists or both are invalid.
+    """
+    for cookie_name in ('session_token', 'user_token'):
+        cookie = request.cookies.get(cookie_name, '')
+        if not cookie:
+            continue
+        try:
+            payload = decode_token(cookie)
+            return payload
+        except jwt.InvalidTokenError:
+            continue
+    return None
+
+
+def resolve_booth_role(payload: dict | None) -> str | None:
+    """Extract the role claim from a booth session payload.
+
+    - Invite tokens carry a ``role`` claim directly.
+    - User tokens carry ``is_admin``; without a booth-specific role the
+      caller must check EventMembership separately.  When is_admin=True we
+      treat them as event_admin.
+    Returns None if no role can be determined.
+    """
+    if payload is None:
+        return None
+    # Invite / participant token
+    if 'role' in payload:
+        return payload['role']
+    # Registered user — is_admin maps to event_admin for booth purposes
+    if payload.get('is_admin'):
+        return 'event_admin'
+    return None
+
+
+def can_perform_role(granted_role: str | None, requested_role: str) -> bool:
+    """Return True if *granted_role* is at least as privileged as *requested_role*.
+
+    A coordinator can join as interpreter (lower rank), but a listener cannot
+    join as interpreter (higher rank).
+    """
+    if granted_role is None:
+        return False
+    return _ROLE_RANK.get(granted_role, -1) >= _ROLE_RANK.get(requested_role, 0)

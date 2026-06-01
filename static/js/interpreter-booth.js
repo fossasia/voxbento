@@ -29,6 +29,8 @@ const state = {
   whipBase: portal.dataset.whipBase || '',
   hlsBase: portal.dataset.hlsBase || '',
   micDeviceId: localStorage.getItem('mic-device-id') || '',
+  /** Role granted by the server (from JWT). Empty string = unknown / legacy. */
+  grantedRole: portal.dataset.grantedRole || '',
   preflight: {
     micPermission: 'pending',
     audioDevice: 'pending',
@@ -578,10 +580,16 @@ function joinBooth() {
   const displayName = elements.displayName.value.trim()
   state.language = elements.language.value.trim() || state.language
   state.channelId = elements.channel.value.trim() || state.channelId
+
+  // Use the granted_role from the server if available; otherwise fall back to
+  // whatever the (potentially disabled) role select shows.
+  const requestedRole = state.grantedRole || elements.role.value
+
   wsSend({
     type: 'booth:join',
     display_name: displayName || 'Interpreter',
-    role: elements.role.value,
+    role: requestedRole,
+    granted_role: state.grantedRole || null,
     language: state.language,
     channel_id: state.channelId,
     participant_id: state.participantId,
@@ -999,9 +1007,28 @@ function sendChatMessage() {
 // ── Rendering ─────────────────────────────────────────────────────────────────
 
 function render() {
+  renderRoleControls()
   renderParticipants()
   renderChat()
   renderMicControls()
+}
+
+/**
+ * Show/hide controls that are not available to the current role.
+ * - Listeners: hide Go Live, Relay, mic controls (they can only chat + observe).
+ * - Interpreters: show Go Live + Relay, hide coordinator-only actions.
+ * - Coordinators/admins: show all controls.
+ */
+function renderRoleControls() {
+  const role = state.grantedRole
+  if (!role) return  // unknown / legacy path — leave everything visible
+
+  const isListener = role === 'listener'
+  const canGo = !isListener  // interpreters + coordinators + admins can go live
+
+  if (elements.goLive) elements.goLive.style.display = canGo ? '' : 'none'
+  if (elements.passRelay) elements.passRelay.style.display = canGo ? '' : 'none'
+  if (elements.ctrlCompound) elements.ctrlCompound.style.display = canGo ? '' : 'none'
 }
 
 function renderParticipants() {

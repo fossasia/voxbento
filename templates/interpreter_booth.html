@@ -18,6 +18,7 @@
   data-language-code='{{ language_code | default("") }}'
   data-whip-url='{{ whip_url | default("") }}'
   data-whep-url='{{ whep_url | default("") }}'
+  data-granted-role='{{ granted_role | default("") }}'
 >
   <section class='panel'>
     <header class='panel-header'>
@@ -31,11 +32,26 @@
       </label>
       <label>
         Role
-        <select id='participant-role' class='input'>
-          <option value='interpreter'>Interpreter</option>
-          <option value='coordinator'>Coordinator</option>
-          <option value='listener'>Listener</option>
+        {% set gr = granted_role | default("") %}
+        <select id='participant-role' class='input'{% if gr %} disabled{% endif %}>
+          {% if gr == 'interpreter' or gr in ('coordinator', 'event_admin', 'super_admin') %}
+            <option value='interpreter'{% if gr == 'interpreter' %} selected{% endif %}>Interpreter</option>
+          {% endif %}
+          {% if gr in ('coordinator', 'event_admin', 'super_admin') %}
+            <option value='coordinator'{% if gr == 'coordinator' %} selected{% endif %}>Coordinator</option>
+          {% endif %}
+          {% if gr %}
+            <option value='listener'{% if gr == 'listener' %} selected{% endif %}>Listener</option>
+          {% else %}
+            <option value='interpreter'>Interpreter</option>
+            <option value='coordinator'>Coordinator</option>
+            <option value='listener'>Listener</option>
+          {% endif %}
         </select>
+        {% if gr %}
+          <input type='hidden' id='participant-role-hidden' value='{{ gr }}' />
+          <small class='hint'>Role assigned: <strong>{{ gr }}</strong></small>
+        {% endif %}
       </label>
       <label>
         Language

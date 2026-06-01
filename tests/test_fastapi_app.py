@@ -12,8 +12,26 @@ import pytest
 from fastapi.testclient import TestClient
 
 from fastapi_app import app
+from portal.auth import create_participant_token, create_user_token
 
 client = TestClient(app)
+
+
+def _interpreter_cookie(event_slug: str = 'test-event', language_code: str = 'en') -> dict:
+    """Return a cookies dict with a valid interpreter session_token."""
+    tok = create_participant_token(
+        booth_id=1,
+        role='interpreter',
+        event_slug=event_slug,
+        language_code=language_code,
+    )
+    return {'session_token': tok}
+
+
+def _admin_user_cookie() -> dict:
+    """Return a cookies dict with a valid is_admin user_token."""
+    tok = create_user_token(user_id=1, email='admin@test.com', is_admin=True)
+    return {'user_token': tok}
 
 
 # ── REST & page tests ─────────────────────────────────────────────────────────
@@ -34,8 +52,15 @@ def test_home_renders_home_page():
     assert b'Eventyay' in res.content
 
 
+def test_interpreter_booth_requires_auth():
+    """Unauthenticated /interpreter/ requests redirect to login."""
+    res = client.get('/interpreter/test-booth', follow_redirects=False)
+    assert res.status_code == 303
+    assert '/login' in res.headers['location']
+
+
 def test_interpreter_booth_page_renders():
-    res = client.get('/interpreter/test-booth')
+    res = client.get('/interpreter/test-booth', cookies=_interpreter_cookie())
     assert res.status_code == 200
     assert b'test-booth' in res.content
 
@@ -43,7 +68,7 @@ def test_interpreter_booth_page_renders():
 def test_interpreter_booth_jitsi_url_uses_base_url():
     """Jitsi URL in the booth page must use the configured base URL, not
     a hard-coded http:// scheme, to avoid mixed-content on HTTPS deployments."""
-    res = client.get('/interpreter/test-booth')
+    res = client.get('/interpreter/test-booth', cookies=_interpreter_cookie())
     assert res.status_code == 200
     from portal.config import settings
     from fastapi_app import _make_jitsi_url
@@ -73,7 +98,7 @@ def test_interpreter_booth_jitsi_domain_matches_base_url_host():
     """
     from urllib.parse import urlparse
     from portal.config import settings
-    res = client.get('/interpreter/test-booth')
+    res = client.get('/interpreter/test-booth', cookies=_interpreter_cookie())
     assert res.status_code == 200
     expected_host = urlparse(settings.effective_jitsi_base_url).netloc
     assert f"data-jitsi-domain='{expected_host}'".encode() in res.content
@@ -670,9 +695,16 @@ def test_list_event_booths_empty():
     assert res.json()['booths'] == []
 
 
+def test_interpreter_booth_by_identity_requires_auth():
+    """Unauthenticated /interpreter/{slug}/{lang} redirects to login."""
+    res = client.get('/interpreter/myevent/en', follow_redirects=False)
+    assert res.status_code == 303
+    assert '/login' in res.headers['location']
+
+
 def test_interpreter_booth_by_identity_page():
     """GET /interpreter/{event_slug}/{language_code} renders the booth page."""
-    res = client.get('/interpreter/myevent/en')
+    res = client.get('/interpreter/myevent/en', cookies=_interpreter_cookie('myevent', 'en'))
     assert res.status_code == 200
     assert b'myevent-en' in res.content
     assert b"data-event-slug='myevent'" in res.content
@@ -683,18 +715,53 @@ def test_interpreter_booth_by_identity_page():
 
 def test_interpreter_booth_by_identity_whip_whep_urls():
     """The identity-based booth page has correct WHIP and WHEP URLs."""
-    res = client.get('/interpreter/fossasia/fr')
+    res = client.get('/interpreter/fossasia/fr', cookies=_interpreter_cookie('fossasia', 'fr'))
     assert res.status_code == 200
     content = res.content.decode()
     assert 'fossasia/fr/whip' in content
     assert 'fossasia/fr/whep' in content
 
 
+def test_interpreter_booth_by_identity_no_role_returns_403():
+    """Registered user without event membership gets 403 on the booth page."""
+    # user_token without is_admin and no EventMembership in DB
+    tok = create_user_token(user_id=999, email='norole@test.com', is_admin=False)
+    res = client.get('/interpreter/norole-event/en', cookies={'user_token': tok})
+    assert res.status_code == 403
+
+
+def test_interpreter_booth_admin_user_gets_event_admin_role():
+    """A user with is_admin=True gets event_admin role without needing a membership."""
+    res = client.get('/interpreter/myevent/en', cookies=_admin_user_cookie())
+    assert res.status_code == 200
+    assert b"data-granted-role='event_admin'" in res.content
+
+
+def test_legacy_interpreter_booth_requires_auth():
+    """Unauthenticated legacy /interpreter/{booth_id} redirects to login."""
+    res = client.get('/interpreter/demo-booth', follow_redirects=False)
+    assert res.status_code == 303
+
+
 def test_legacy_interpreter_booth_still_works():
     """The old /interpreter/{booth_id} route still works for backward compat."""
-    res = client.get('/interpreter/demo-booth')
+    res = client.get('/interpreter/demo-booth', cookies=_interpreter_cookie())
     assert res.status_code == 200
     assert b'demo-booth' in res.content
+
+
+def test_listener_webrtc_requires_auth():
+    """Unauthenticated /listener-webrtc/ redirects to login."""
+    res = client.get('/listener-webrtc/demo-booth', follow_redirects=False)
+    assert res.status_code == 303
+    assert '/login' in res.headers['location']
+
+
+def test_listen_hls_requires_auth():
+    """Unauthenticated /listen/ redirects to login."""
+    res = client.get('/listen/demo-booth', follow_redirects=False)
+    assert res.status_code == 303
+    assert '/login' in res.headers['location']
 
 
 def test_full_bootstrap_flow():
@@ -710,8 +777,9 @@ def test_full_bootstrap_flow():
     booth_id = booth['booth_id']
     assert booth_id == 'bootstrap-es'
 
-    # 2. Interpreter accesses booth page
-    page_res = client.get('/interpreter/bootstrap/es')
+    # 2. Interpreter accesses booth page (with valid invite token)
+    page_res = client.get('/interpreter/bootstrap/es',
+                          cookies=_interpreter_cookie('bootstrap', 'es'))
     assert page_res.status_code == 200
     assert b'bootstrap-es' in page_res.content
 

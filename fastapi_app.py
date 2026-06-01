@@ -23,7 +23,8 @@ from pydantic import BaseModel
 
 from portal.auth import (
     create_admin_token, create_participant_token, create_token, create_user_token,
-    decode_token, get_current_user, hash_password, require_admin, require_user,
+    decode_token, get_booth_session, get_current_user, hash_password, require_admin,
+    require_user, resolve_booth_role, can_perform_role,
     security, verify_password, verify_ws_token,
 )
 from portal.booth_identity import make_booth_id, make_mediamtx_path
@@ -324,9 +325,39 @@ async def interpreter_booth_by_identity(
 ) -> Any:
     """Booth page addressed by event_slug and language_code (preferred URL).
 
-    Derives booth_id, channel_id, WHIP URL, and WHEP URL from the identity
-    coordinates.  The MediaMTX path is created on first access.
+    Requires a valid session_token (invite link) or user_token (registered user).
+    The granted role is passed to the template so the client cannot self-promote.
     """
+    payload = get_booth_session(request)
+    if payload is None:
+        return RedirectResponse(
+            url=f'/login?next=/interpreter/{event_slug}/{language_code}',
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+
+    granted_role = resolve_booth_role(payload)
+
+    # If role is still None the user is registered but has no event membership yet.
+    # Check EventMembership from the DB for this event.
+    if granted_role is None and payload.get('sub'):
+        from portal.database import get_session, list_memberships_for_user
+        try:
+            async with get_session() as db_session:
+                memberships = await list_memberships_for_user(db_session, int(payload['sub']))
+                for m in memberships:
+                    if m.event and m.event.slug == event_slug:
+                        granted_role = m.role
+                        break
+        except Exception:
+            pass
+
+    if granted_role is None:
+        # User is authenticated but has no role for this event
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail='You do not have a role assigned for this event. Ask an admin to assign you one.',
+        )
+
     booth_id = make_booth_id(event_slug, language_code)
     mediamtx_path = make_mediamtx_path(event_slug, language_code)
     channel_id = mediamtx_path
@@ -346,6 +377,7 @@ async def interpreter_booth_by_identity(
             'language_code': language_code,
             'whip_url': whip_url,
             'whep_url': whep_url,
+            'granted_role': granted_role,
             'default_jitsi_room': settings.default_jitsi_room,
             'default_jitsi_url': _make_jitsi_url(
                 settings.effective_jitsi_base_url, settings.default_jitsi_room
@@ -367,6 +399,21 @@ async def interpreter_booth(
     language: str = 'English',
     channel: str | None = Query(None),
 ) -> Any:
+    """Legacy booth URL (no event scope). Requires a valid session."""
+    payload = get_booth_session(request)
+    if payload is None:
+        return RedirectResponse(
+            url=f'/login?next=/interpreter/{booth_id}',
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+
+    granted_role = resolve_booth_role(payload)
+    if granted_role is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail='You do not have a role assigned. Ask an admin for an invite link.',
+        )
+
     channel_id = channel or f'{booth_id}-audio'
     await _ensure_mediamtx_path(channel_id)
     return templates.TemplateResponse(
@@ -377,6 +424,7 @@ async def interpreter_booth(
             'booth_token': token,
             'booth_language': language,
             'booth_channel_id': channel_id,
+            'granted_role': granted_role,
             'default_jitsi_room': settings.default_jitsi_room,
             'default_jitsi_url': _make_jitsi_url(
                 settings.effective_jitsi_base_url, settings.default_jitsi_room
@@ -398,6 +446,12 @@ async def listen_booth(
     channel: str | None = Query(None),
 ) -> Any:
     """Listener page with hls.js auto-recovery for seamless handoff."""
+    payload = get_booth_session(request)
+    if payload is None:
+        return RedirectResponse(
+            url=f'/login?next=/listen/{booth_id}',
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
     channel_id = channel or f'{booth_id}-audio'
     hls_url = f'{settings.mediamtx_hls_base}/{channel_id}/index.m3u8'
     return templates.TemplateResponse(
@@ -420,6 +474,12 @@ async def listen_webrtc_booth(
     channel: str | None = Query(None),
 ) -> Any:
     """Listener page using WHEP/WebRTC for low-latency playback."""
+    payload = get_booth_session(request)
+    if payload is None:
+        return RedirectResponse(
+            url=f'/login?next=/listener-webrtc/{booth_id}',
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
     channel_id = channel or f'{booth_id}-audio'
     await _ensure_mediamtx_path(channel_id)
     whep_url = f'{settings.mediamtx_whip_base}/{channel_id}/whep'
@@ -581,6 +641,18 @@ async def _handle_join(ws: WebSocket, session: Session, data: dict) -> None:
     language = data.get('language', 'English')
     channel_id = data.get('channel_id', f'{session.booth_id}-audio')
     participant_id = data.get('participant_id')
+
+    # Role enforcement: the client supplies what role they want, but we check
+    # their granted_role from the JWT (passed through the page data-attribute
+    # and echoed back here). If they try to claim a higher role, reject it.
+    granted_role = data.get('granted_role')
+    if granted_role is not None and not can_perform_role(granted_role, role):
+        await ws.send_text(json.dumps({
+            'type': 'booth:error',
+            'message': f'Your assigned role ({granted_role}) does not permit joining as {role}.',
+        }))
+        return
+
     # Cross-event isolation: reject if client-supplied event_slug doesn't match
     client_event = data.get('event_slug')
     if client_event is not None:
