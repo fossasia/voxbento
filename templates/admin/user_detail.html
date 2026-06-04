@@ -1,0 +1,113 @@
+{% extends "admin/base.html" %}
+
+{% block title %}User Detail — {{ user_detail.display_name }}{% endblock %}
+
+{% block breadcrumb %}
+<nav class="breadcrumb">
+  <a href="/admin/">Dashboard</a> ›
+  <a href="/admin/users/">Users</a> ›
+  <span>{{ user_detail.display_name }}</span>
+</nav>
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>User: {{ user_detail.display_name }}</h1>
+  {% if user_detail.is_admin %}
+  <span class="badge badge-role badge-super_admin">Super Admin</span>
+  {% endif %}
+</div>
+
+<div class="card" style="margin-bottom: 2rem;">
+  <div class="card-header">
+    <h3>User Information</h3>
+  </div>
+  <div class="card-body">
+    <table class="data-table compact" style="width: 100%; border-radius: 8px;">
+      <tbody>
+        <tr>
+          <td style="width: 200px; font-weight: 500;">Email</td>
+          <td>{{ user_detail.email }}</td>
+        </tr>
+        <tr>
+          <td style="font-weight: 500;">Display Name</td>
+          <td>{{ user_detail.display_name }}</td>
+        </tr>
+        <tr>
+          <td style="font-weight: 500;">Joined</td>
+          <td>{{ user_detail.created_at.strftime('%Y-%m-%d %H:%M UTC') if user_detail.created_at else '—' }}</td>
+        </tr>
+        <tr>
+          <td style="font-weight: 500;">Global Status</td>
+          <td>
+            <form method="post" action="/admin/users/{{ user_detail.id }}/toggle-active" class="inline-form">
+              <button type="submit" class="btn btn-sm {{ 'btn-warning' if user_detail.is_active else 'btn-success' }}">
+                {{ 'Deactivate Account' if user_detail.is_active else 'Activate Account' }}
+              </button>
+            </form>
+          </td>
+        </tr>
+        <tr>
+          <td style="font-weight: 500;">Global Admin</td>
+          <td>
+            <form method="post" action="/admin/users/{{ user_detail.id }}/toggle-admin" class="inline-form">
+              <button type="submit" class="btn btn-sm {{ 'btn-danger' if user_detail.is_admin else 'btn-primary' }}">
+                {{ 'Revoke Super Admin' if user_detail.is_admin else 'Promote to Super Admin' }}
+              </button>
+            </form>
+          </td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<h2>Event Admin Roles</h2>
+<p class="muted" style="margin-bottom: 1rem;">Toggle event admin status for specific events below. Interpreter and listener roles are assigned per-booth.</p>
+
+{% if events %}
+<table class="data-table">
+  <thead>
+    <tr>
+      <th>Event</th>
+      <th>Status</th>
+      <th>Action</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for event in events %}
+    {% set is_event_admin = event.id in event_admin_map %}
+    <tr class="{{ 'row-assigned' if is_event_admin else '' }}">
+      <td><strong>{{ event.display_name }}</strong> ({{ event.slug }})</td>
+      <td>
+        {% if is_event_admin %}
+        <span class="badge badge-role badge-event_admin">Event Admin</span>
+        {% else %}
+        <span class="muted">—</span>
+        {% endif %}
+      </td>
+      <td>
+        <form method="post" action="/admin/users/{{ user_detail.id }}/events/{{ event.id }}/toggle-admin" class="inline-form">
+          <button type="submit" class="btn btn-sm {{ 'btn-danger' if is_event_admin else 'btn-primary' }}">
+            {{ 'Remove Admin' if is_event_admin else 'Make Admin' }}
+          </button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<div class="empty-state">
+  <p>No events configured. <a href="/admin/events/">Create an event</a> to assign admin roles.</p>
+</div>
+{% endif %}
+
+<div style="margin-top: 3rem;">
+  <form method="post" action="/admin/users/{{ user_detail.id }}/delete"
+        onsubmit="return confirm('Delete user {{ user_detail.email }}? This cannot be undone.')">
+    <button type="submit" class="btn btn-danger">Delete User Account</button>
+  </form>
+</div>
+
+{% endblock %}

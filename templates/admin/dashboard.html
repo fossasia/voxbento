@@ -1,0 +1,58 @@
+{% extends "admin/base.html" %}
+{% block title %}Dashboard{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>Dashboard</h1>
+  <div class="system-health">
+    <span class="health-dot {{ 'health-ok' if mediamtx_ok else 'health-down' }}"></span>
+    MediaMTX {{ 'Online' if mediamtx_ok else 'Offline' }}
+  </div>
+</div>
+
+{% if not event_data %}
+<div class="empty-state">
+  <p>No events yet. <a href="/admin/events/">Create your first event</a> to get started.</p>
+</div>
+{% else %}
+<div class="card-grid">
+  {% for ed in event_data %}
+  <div class="card event-card">
+    <div class="card-header">
+      <a href="/admin/events/{{ ed.event.id }}/" class="card-title">{{ ed.event.display_name }}</a>
+      <span class="badge badge-slug">{{ ed.event.slug }}</span>
+    </div>
+    <div class="card-body">
+      <div class="stat-row">
+        <span class="stat-label">Booths</span>
+        <span class="stat-value">{{ ed.total_booths }}</span>
+      </div>
+      <div class="stat-row">
+        <span class="stat-label">Live Now</span>
+        <span class="stat-value">
+          {% if ed.live_count > 0 %}
+          <span class="status-live">● {{ ed.live_count }}</span>
+          {% else %}
+          <span class="status-offline">○ 0</span>
+          {% endif %}
+        </span>
+      </div>
+      {% if ed.booths %}
+      <div class="booth-chips">
+        {% for bs in ed.booths %}
+        <span class="chip {{ 'chip-live' if bs.is_live else 'chip-offline' }}">
+          {{ bs.db.language_name }} ({{ bs.db.language_code }})
+          {{ '●' if bs.is_live else '○' }}
+        </span>
+        {% endfor %}
+      </div>
+      {% endif %}
+    </div>
+    <div class="card-actions">
+      <a href="/admin/events/{{ ed.event.id }}/" class="btn btn-sm">Manage →</a>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
+{% endblock %}

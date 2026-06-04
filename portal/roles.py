@@ -57,6 +57,7 @@ ROLE_PERMISSIONS: dict[ParticipantRole, frozenset[Permission]] = {
         Permission.ADMIN_MANAGE_BOOTHS,
     }),
     'coordinator': frozenset({
+        Permission.BOOTH_GO_LIVE,
         Permission.BOOTH_SET_ACTIVE,
         Permission.BOOTH_CHAT_SEND,
         Permission.BOOTH_VIEW,

@@ -21,7 +21,12 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 
-from portal.auth import create_participant_token, create_token, decode_token, security, verify_ws_token
+from portal.auth import (
+    create_admin_token, create_participant_token, create_token, create_user_token,
+    decode_token, get_booth_session, get_current_user, hash_password, require_admin,
+    require_user, resolve_booth_role, can_perform_role,
+    security, verify_password, verify_ws_token,
+)
 from portal.booth_identity import make_booth_id, make_mediamtx_path
 from portal.booth_state import BoothRegistry
 from portal.config import settings
@@ -52,6 +57,8 @@ class Session:
     participant_id: str | None
     language: str
     channel_id: str
+    # Role derived from the bearer cookie at WS connection time — never from client data.
+    granted_role: str | None = None
 
 
 class ConnectionManager:
@@ -272,8 +279,77 @@ async def join_via_invite(token: str) -> RedirectResponse:
 # ── Page routes ───────────────────────────────────────────────────────────────
 
 @app.get('/')
-async def home() -> RedirectResponse:
-    return RedirectResponse('/interpreter/demo-booth')
+async def home(request: Request):
+    from portal.database import get_session, list_events, list_booths_for_event, list_booth_memberships_for_user, list_memberships_for_user
+
+    current_user = await get_current_user(request)
+    my_booths = []
+    
+    try:
+        async with get_session() as session:
+            events = await list_events(session)
+            
+            user_event_roles = {}
+            user_booth_roles = {}
+            if current_user:
+                uid = int(current_user['sub'])
+                ems = await list_memberships_for_user(session, uid)
+                user_event_roles = {em.event_id: em.role for em in ems}
+                
+                bms = await list_booth_memberships_for_user(session, uid)
+                user_booth_roles = {bm.booth_id: bm.role for bm in bms}
+                for bm in bms:
+                    bid = make_booth_id(bm.booth.event.slug, bm.booth.language_code)
+                    mem_booth = booths.get_booth_sync(bid)
+                    is_live = mem_booth is not None and mem_booth.ingest_status == 'connected'
+                    my_booths.append({
+                        'membership': bm,
+                        'booth_id': bid,
+                        'is_live': is_live,
+                        'event_name': bm.booth.event.display_name,
+                        'language_name': bm.booth.language_name,
+                        'event_slug': bm.booth.event.slug,
+                        'language_code': bm.booth.language_code,
+                    })
+                    
+            event_data = []
+            for ev in events:
+                db_booths = await list_booths_for_event(session, ev.id)
+                booth_statuses = []
+                for b in db_booths:
+                    bid = make_booth_id(ev.slug, b.language_code)
+                    mem_booth = booths.get_booth_sync(bid)
+                    is_live = mem_booth is not None and mem_booth.ingest_status == 'connected'
+                    
+                    can_interpret = False
+                    if current_user:
+                        is_admin = current_user.get('is_admin', False)
+                        ev_role = user_event_roles.get(ev.id)
+                        booth_role = user_booth_roles.get(b.id)
+                        if is_admin or ev_role in ('interpreter', 'coordinator', 'event_admin') or booth_role in ('interpreter', 'coordinator'):
+                            can_interpret = True
+                            
+                    booth_statuses.append({
+                        'db': b, 
+                        'booth_id': bid, 
+                        'is_live': is_live,
+                        'can_interpret': can_interpret
+                    })
+                event_data.append({
+                    'event': ev,
+                    'booths': booth_statuses,
+                    'live_count': sum(1 for bs in booth_statuses if bs['is_live']),
+                })
+    except Exception as _exc:
+        import logging
+        logging.getLogger(__name__).warning('home() DB error: %s', _exc, exc_info=True)
+        event_data = []
+
+    return templates.TemplateResponse(request, 'home.html', {
+        'events': event_data,
+        'current_user': current_user,
+        'my_booths': my_booths,
+    })
 
 
 @app.get('/healthz')
@@ -295,9 +371,53 @@ async def interpreter_booth_by_identity(
 ) -> Any:
     """Booth page addressed by event_slug and language_code (preferred URL).
 
-    Derives booth_id, channel_id, WHIP URL, and WHEP URL from the identity
-    coordinates.  The MediaMTX path is created on first access.
+    Requires a valid session_token (invite link) or user_token (registered user).
+    The granted role is passed to the template so the client cannot self-promote.
     """
+    payload = get_booth_session(request)
+    if payload is None:
+        return RedirectResponse(
+            url=f'/login?next=/interpreter/{event_slug}/{language_code}',
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+
+    granted_role = resolve_booth_role(payload)
+
+    # is_admin flag in JWT always grants event_admin — no DB lookup needed.
+    if granted_role is None and payload.get('is_admin'):
+        granted_role = 'event_admin'
+
+    # If role is still None the user is registered but has no role claim in the JWT.
+    # Check BoothMembership from the DB for this exact booth first,
+    # then fallback to EventMembership (for coordinators/event_admins).
+    if granted_role is None and payload.get('sub'):
+        from portal.database import get_session, list_memberships_for_user, list_booth_memberships_for_user
+        try:
+            async with get_session() as db_session:
+                # 1. Booth-level membership (e.g. interpreter assigned to this specific booth)
+                bms = await list_booth_memberships_for_user(db_session, int(payload['sub']))
+                for bm in bms:
+                    if bm.booth.event.slug == event_slug and bm.booth.language_code == language_code:
+                        granted_role = bm.role
+                        break
+
+                # 2. Event-level membership (coordinator, event_admin assigned to the event)
+                if granted_role is None:
+                    memberships = await list_memberships_for_user(db_session, int(payload['sub']))
+                    for m in memberships:
+                        if m.event and m.event.slug == event_slug:
+                            granted_role = m.role
+                            break
+        except Exception:
+            pass
+
+    if granted_role is None:
+        # User is authenticated but has no role for this event
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail='You do not have a role assigned for this event. Ask an admin to assign you one.',
+        )
+
     booth_id = make_booth_id(event_slug, language_code)
     mediamtx_path = make_mediamtx_path(event_slug, language_code)
     channel_id = mediamtx_path
@@ -317,6 +437,7 @@ async def interpreter_booth_by_identity(
             'language_code': language_code,
             'whip_url': whip_url,
             'whep_url': whep_url,
+            'granted_role': granted_role,
             'default_jitsi_room': settings.default_jitsi_room,
             'default_jitsi_url': _make_jitsi_url(
                 settings.effective_jitsi_base_url, settings.default_jitsi_room
@@ -338,7 +459,30 @@ async def interpreter_booth(
     language: str = 'English',
     channel: str | None = Query(None),
 ) -> Any:
-    channel_id = channel or f'{booth_id}-audio'
+    """Legacy booth URL (no event scope). Requires a valid session."""
+    payload = get_booth_session(request)
+    if payload is None:
+        return RedirectResponse(
+            url=f'/login?next=/interpreter/{booth_id}',
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+
+    granted_role = resolve_booth_role(payload)
+    if granted_role is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail='You do not have a role assigned. Ask an admin for an invite link.',
+        )
+
+    if channel:
+        channel_id = channel
+    else:
+        try:
+            from portal.booth_identity import booth_id_to_mediamtx_path
+            channel_id = booth_id_to_mediamtx_path(booth_id)
+        except ValueError:
+            channel_id = f'{booth_id}-audio'
+
     await _ensure_mediamtx_path(channel_id)
     return templates.TemplateResponse(
         request,
@@ -348,6 +492,7 @@ async def interpreter_booth(
             'booth_token': token,
             'booth_language': language,
             'booth_channel_id': channel_id,
+            'granted_role': granted_role,
             'default_jitsi_room': settings.default_jitsi_room,
             'default_jitsi_url': _make_jitsi_url(
                 settings.effective_jitsi_base_url, settings.default_jitsi_room
@@ -369,7 +514,21 @@ async def listen_booth(
     channel: str | None = Query(None),
 ) -> Any:
     """Listener page with hls.js auto-recovery for seamless handoff."""
-    channel_id = channel or f'{booth_id}-audio'
+    payload = get_booth_session(request)
+    if payload is None:
+        return RedirectResponse(
+            url=f'/login?next=/listen/{booth_id}',
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+    if channel:
+        channel_id = channel
+    else:
+        try:
+            from portal.booth_identity import booth_id_to_mediamtx_path
+            channel_id = booth_id_to_mediamtx_path(booth_id)
+        except ValueError:
+            channel_id = f'{booth_id}-audio'
+
     hls_url = f'{settings.mediamtx_hls_base}/{channel_id}/index.m3u8'
     return templates.TemplateResponse(
         request,
@@ -391,7 +550,21 @@ async def listen_webrtc_booth(
     channel: str | None = Query(None),
 ) -> Any:
     """Listener page using WHEP/WebRTC for low-latency playback."""
-    channel_id = channel or f'{booth_id}-audio'
+    payload = get_booth_session(request)
+    if payload is None:
+        return RedirectResponse(
+            url=f'/login?next=/listener-webrtc/{booth_id}',
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+    if channel:
+        channel_id = channel
+    else:
+        try:
+            from portal.booth_identity import booth_id_to_mediamtx_path
+            channel_id = booth_id_to_mediamtx_path(booth_id)
+        except ValueError:
+            channel_id = f'{booth_id}-audio'
+
     await _ensure_mediamtx_path(channel_id)
     whep_url = f'{settings.mediamtx_whip_base}/{channel_id}/whep'
     return templates.TemplateResponse(
@@ -552,6 +725,22 @@ async def _handle_join(ws: WebSocket, session: Session, data: dict) -> None:
     language = data.get('language', 'English')
     channel_id = data.get('channel_id', f'{session.booth_id}-audio')
     participant_id = data.get('participant_id')
+
+    # Role enforcement: use the server-derived granted_role stored on the session
+    # (populated from cookies at WS connect time). Never trust data['role'].
+    if session.granted_role is None:
+        await ws.send_text(json.dumps({
+            'type': 'booth:error',
+            'message': 'No role assigned for this session.',
+        }))
+        return
+    if not can_perform_role(session.granted_role, role):
+        await ws.send_text(json.dumps({
+            'type': 'booth:error',
+            'message': f'Your assigned role ({session.granted_role}) does not permit joining as {role}.',
+        }))
+        return
+
     # Cross-event isolation: reject if client-supplied event_slug doesn't match
     client_event = data.get('event_slug')
     if client_event is not None:
@@ -658,6 +847,728 @@ async def _handle_update_state(ws: WebSocket, session: Session, data: dict) -> N
     await manager.broadcast(session.booth_id, {'type': 'booth:state', 'state': state})
 
 
+# ── User registration & login routes ─────────────────────────────────────────
+
+
+@app.get('/register')
+async def register_page(request: Request):
+    current_user = await get_current_user(request)
+    if current_user:
+        return RedirectResponse(url='/account', status_code=status.HTTP_303_SEE_OTHER)
+    return templates.TemplateResponse(request, 'register.html', {})
+
+
+@app.post('/register')
+async def register_submit(request: Request):
+    from portal.database import create_user, get_session, get_user_by_email
+
+    form = await request.form()
+    email = form.get('email', '').strip().lower()
+    display_name = form.get('display_name', '').strip()
+    password = form.get('password', '')
+    password_confirm = form.get('password_confirm', '')
+
+    errors = []
+    if not email or '@' not in email:
+        errors.append('Valid email is required.')
+    if not display_name:
+        errors.append('Display name is required.')
+    if len(password) < 8:
+        errors.append('Password must be at least 8 characters.')
+    if password != password_confirm:
+        errors.append('Passwords do not match.')
+
+    if not errors:
+        async with get_session() as session:
+            existing = await get_user_by_email(session, email)
+            if existing:
+                errors.append('An account with this email already exists.')
+            else:
+                pw_hash = hash_password(password)
+                user = await create_user(
+                    session, email=email, display_name=display_name,
+                    password_hash=pw_hash,
+                )
+                token = create_user_token(user_id=user.id, email=user.email, is_admin=user.is_admin)
+                response = RedirectResponse(url='/account', status_code=status.HTTP_303_SEE_OTHER)
+                response.set_cookie(
+                    key='user_token', value=token,
+                    httponly=True, samesite='lax', max_age=settings.jwt_expiry_seconds,
+                )
+                return response
+
+    return templates.TemplateResponse(
+        request, 'register.html',
+        {'errors': errors, 'email': email, 'display_name': display_name},
+        status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+    )
+
+
+@app.get('/login')
+async def user_login_page(request: Request):
+    current_user = await get_current_user(request)
+    if current_user:
+        return RedirectResponse(url='/account', status_code=status.HTTP_303_SEE_OTHER)
+    return templates.TemplateResponse(request, 'login.html', {})
+
+
+@app.post('/login')
+async def user_login_submit(request: Request):
+    from portal.database import get_session, get_user_by_email
+
+    form = await request.form()
+    email = form.get('email', '').strip().lower()
+    password = form.get('password', '')
+
+    async with get_session() as session:
+        user = await get_user_by_email(session, email)
+
+    if user is None or not verify_password(password, user.password_hash):
+        return templates.TemplateResponse(
+            request, 'login.html',
+            {'error': 'Invalid email or password.', 'email': email},
+            status_code=status.HTTP_403_FORBIDDEN,
+        )
+    if not user.is_active:
+        return templates.TemplateResponse(
+            request, 'login.html',
+            {'error': 'Your account has been deactivated. Contact an admin.', 'email': email},
+            status_code=status.HTTP_403_FORBIDDEN,
+        )
+
+    token = create_user_token(user_id=user.id, email=user.email, is_admin=user.is_admin)
+    response = RedirectResponse(url='/account', status_code=status.HTTP_303_SEE_OTHER)
+    response.set_cookie(
+        key='user_token', value=token,
+        httponly=True, samesite='lax', max_age=settings.jwt_expiry_seconds,
+    )
+    return response
+
+
+@app.get('/logout')
+async def user_logout(request: Request):
+    response = RedirectResponse(url='/', status_code=status.HTTP_303_SEE_OTHER)
+    response.delete_cookie('user_token')
+    return response
+
+
+@app.get('/account')
+async def account_page(request: Request):
+    from portal.database import get_session, get_user_by_id, list_memberships_for_user
+
+    current_user = await get_current_user(request)
+    if current_user is None:
+        return RedirectResponse(url='/login', status_code=status.HTTP_303_SEE_OTHER)
+
+    async with get_session() as session:
+        user = await get_user_by_id(session, int(current_user['sub']))
+        if user is None:
+            response = RedirectResponse(url='/login', status_code=status.HTTP_303_SEE_OTHER)
+            response.delete_cookie('user_token')
+            return response
+        memberships = await list_memberships_for_user(session, user.id)
+
+    return templates.TemplateResponse(request, 'account.html', {'user': user, 'memberships': memberships})
+
+
+# ── Admin panel routes ────────────────────────────────────────────────────────
+
+
+@app.get('/admin/login')
+async def admin_login_page(request: Request):
+    user = await get_current_user(request)
+    if user and user.get('is_admin'):
+        return RedirectResponse(url='/admin/', status_code=status.HTTP_303_SEE_OTHER)
+    return templates.TemplateResponse(request, 'admin/login.html', {})
+
+
+@app.post('/admin/login')
+async def admin_login_submit(request: Request):
+    form = await request.form()
+    password = form.get('password', '')
+    if not settings.admin_password or password != settings.admin_password:
+        return templates.TemplateResponse(
+            request,
+            'admin/login.html',
+            {'error': 'Invalid password.'},
+            status_code=status.HTTP_403_FORBIDDEN,
+        )
+    token = create_admin_token()
+    response = RedirectResponse(url='/admin/', status_code=status.HTTP_303_SEE_OTHER)
+    response.set_cookie(
+        key='admin_token', value=token,
+        httponly=True, samesite='lax', max_age=settings.jwt_expiry_seconds,
+    )
+    return response
+
+
+@app.get('/admin/logout')
+async def admin_logout():
+    response = RedirectResponse(url='/admin/login', status_code=status.HTTP_303_SEE_OTHER)
+    response.delete_cookie('admin_token')
+    return response
+
+
+@app.get('/admin/', dependencies=[Depends(require_admin)])
+async def admin_dashboard(request: Request):
+    from portal.database import get_session, list_events, list_booths_for_event
+
+    async with get_session() as session:
+        events = await list_events(session)
+        event_data = []
+        for ev in events:
+            db_booths = await list_booths_for_event(session, ev.id)
+            booth_statuses = []
+            for b in db_booths:
+                booth_id = make_booth_id(ev.slug, b.language_code)
+                mem_booth = booths.get_booth_sync(booth_id)
+                is_live = (
+                    mem_booth is not None
+                    and mem_booth.ingest_status == 'connected'
+                )
+                booth_statuses.append({
+                    'db': b,
+                    'booth_id': booth_id,
+                    'is_live': is_live,
+                })
+            event_data.append({
+                'event': ev,
+                'booths': booth_statuses,
+                'live_count': sum(1 for bs in booth_statuses if bs['is_live']),
+                'total_booths': len(booth_statuses),
+            })
+
+    mediamtx_ok = await _check_mediamtx()
+    return templates.TemplateResponse(request, 'admin/dashboard.html', {
+        'event_data': event_data,
+        'mediamtx_ok': mediamtx_ok,
+    })
+
+
+@app.get('/admin/events/', dependencies=[Depends(require_admin)])
+async def admin_event_list(request: Request):
+    from portal.database import get_session, list_events
+
+    async with get_session() as session:
+        events = await list_events(session)
+    return templates.TemplateResponse(request, 'admin/event_list.html', {
+        'events': events,
+    })
+
+
+@app.post('/admin/events/', dependencies=[Depends(require_admin)])
+async def admin_create_event(request: Request):
+    from portal.database import get_session, create_event
+
+    form = await request.form()
+    slug = form.get('slug', '').strip()
+    display_name = form.get('display_name', '').strip()
+    if not slug or not display_name:
+        return RedirectResponse(url='/admin/events/', status_code=status.HTTP_303_SEE_OTHER)
+    try:
+        async with get_session() as session:
+            await create_event(session, slug=slug, display_name=display_name)
+    except Exception:
+        return RedirectResponse(url='/admin/events/', status_code=status.HTTP_303_SEE_OTHER)
+    return RedirectResponse(url='/admin/events/', status_code=status.HTTP_303_SEE_OTHER)
+
+
+@app.get('/admin/events/{event_id}/', dependencies=[Depends(require_admin)])
+async def admin_event_detail(request: Request, event_id: int):
+    from portal.database import (
+        get_session, get_event_by_id, list_rooms_for_event, list_booths_for_event,
+    )
+
+    async with get_session() as session:
+        event = await get_event_by_id(session, event_id)
+        if event is None:
+            raise HTTPException(status_code=404, detail='Event not found.')
+        rooms = await list_rooms_for_event(session, event_id)
+        db_booths = await list_booths_for_event(session, event_id)
+
+    booth_statuses = []
+    for b in db_booths:
+        bid = make_booth_id(event.slug, b.language_code)
+        mem_booth = booths.get_booth_sync(bid)
+        is_live = mem_booth is not None and mem_booth.ingest_status == 'connected'
+        booth_statuses.append({'db': b, 'booth_id': bid, 'is_live': is_live})
+
+    return templates.TemplateResponse(request, 'admin/event_detail.html', {
+        'event': event,
+        'rooms': rooms,
+        'booths': booth_statuses,
+        'live_count': sum(1 for bs in booth_statuses if bs['is_live']),
+    })
+
+
+@app.post('/admin/events/{event_id}/delete', dependencies=[Depends(require_admin)])
+async def admin_delete_event(request: Request, event_id: int):
+    from portal.database import get_session, delete_event
+
+    async with get_session() as session:
+        await delete_event(session, event_id)
+    return RedirectResponse(url='/admin/events/', status_code=status.HTTP_303_SEE_OTHER)
+
+
+@app.get('/admin/events/{event_id}/rooms/', dependencies=[Depends(require_admin)])
+async def admin_room_list(request: Request, event_id: int):
+    from portal.database import (
+        get_session, get_event_by_id, list_rooms_for_event, list_booths_for_room,
+    )
+
+    async with get_session() as session:
+        event = await get_event_by_id(session, event_id)
+        if event is None:
+            raise HTTPException(status_code=404, detail='Event not found.')
+        rooms = await list_rooms_for_event(session, event_id)
+        room_data = []
+        for room in rooms:
+            room_booths = await list_booths_for_room(session, room.id)
+            room_data.append({'room': room, 'booth_count': len(room_booths)})
+    return templates.TemplateResponse(request, 'admin/room_list.html', {
+        'event': event,
+        'room_data': room_data,
+    })
+
+
+@app.post('/admin/events/{event_id}/rooms/', dependencies=[Depends(require_admin)])
+async def admin_create_room(request: Request, event_id: int):
+    from portal.database import get_session, create_room
+
+    form = await request.form()
+    display_name = form.get('display_name', '').strip()
+    if not display_name:
+        return RedirectResponse(
+            url=f'/admin/events/{event_id}/rooms/',
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+    async with get_session() as session:
+        await create_room(session, event_id=event_id, display_name=display_name)
+    return RedirectResponse(
+        url=f'/admin/events/{event_id}/rooms/',
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+@app.get('/admin/events/{event_id}/rooms/{room_id}/', dependencies=[Depends(require_admin)])
+async def admin_room_detail(request: Request, event_id: int, room_id: int):
+    from portal.database import (
+        get_session, get_event_by_id, get_room_by_id, list_booths_for_room,
+    )
+
+    async with get_session() as session:
+        event = await get_event_by_id(session, event_id)
+        if event is None:
+            raise HTTPException(status_code=404, detail='Event not found.')
+        room = await get_room_by_id(session, room_id)
+        if room is None or room.event_id != event_id:
+            raise HTTPException(status_code=404, detail='Room not found.')
+        db_booths = await list_booths_for_room(session, room_id)
+
+    booth_statuses = []
+    for b in db_booths:
+        bid = make_booth_id(event.slug, b.language_code)
+        mem_booth = booths.get_booth_sync(bid)
+        is_live = mem_booth is not None and mem_booth.ingest_status == 'connected'
+        booth_statuses.append({'db': b, 'booth_id': bid, 'is_live': is_live})
+
+    return templates.TemplateResponse(request, 'admin/room_detail.html', {
+        'event': event,
+        'room': room,
+        'booths': booth_statuses,
+    })
+
+
+@app.post('/admin/events/{event_id}/rooms/{room_id}/delete', dependencies=[Depends(require_admin)])
+async def admin_delete_room(request: Request, event_id: int, room_id: int):
+    from portal.database import get_session, delete_room
+
+    async with get_session() as session:
+        await delete_room(session, room_id)
+    return RedirectResponse(
+        url=f'/admin/events/{event_id}/rooms/',
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+@app.get('/admin/events/{event_id}/rooms/{room_id}/booths/', dependencies=[Depends(require_admin)])
+async def admin_booth_list(request: Request, event_id: int, room_id: int):
+    from portal.database import (
+        get_session, get_event_by_id, get_room_by_id, list_booths_for_room,
+    )
+
+    async with get_session() as session:
+        event = await get_event_by_id(session, event_id)
+        if event is None:
+            raise HTTPException(status_code=404, detail='Event not found.')
+        room = await get_room_by_id(session, room_id)
+        if room is None or room.event_id != event_id:
+            raise HTTPException(status_code=404, detail='Room not found.')
+        db_booths = await list_booths_for_room(session, room_id)
+
+    booth_statuses = []
+    for b in db_booths:
+        bid = make_booth_id(event.slug, b.language_code)
+        mem_booth = booths.get_booth_sync(bid)
+        is_live = mem_booth is not None and mem_booth.ingest_status == 'connected'
+        booth_statuses.append({'db': b, 'booth_id': bid, 'is_live': is_live})
+
+    return templates.TemplateResponse(request, 'admin/booth_list.html', {
+        'event': event,
+        'room': room,
+        'booths': booth_statuses,
+    })
+
+
+@app.post('/admin/events/{event_id}/rooms/{room_id}/booths/', dependencies=[Depends(require_admin)])
+async def admin_create_booth(request: Request, event_id: int, room_id: int):
+    from portal.database import get_session, create_booth
+
+    form = await request.form()
+    language_code = form.get('language_code', '').strip().lower()
+    language_name = form.get('language_name', '').strip()
+    if not language_code or not language_name:
+        return RedirectResponse(
+            url=f'/admin/events/{event_id}/rooms/{room_id}/booths/',
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+    try:
+        async with get_session() as session:
+            await create_booth(
+                session, event_id=event_id, room_id=room_id,
+                language_code=language_code, language_name=language_name,
+            )
+    except Exception:
+        pass
+    return RedirectResponse(
+        url=f'/admin/events/{event_id}/rooms/{room_id}/booths/',
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+@app.get(
+    '/admin/events/{event_id}/rooms/{room_id}/booths/{booth_id}/',
+    dependencies=[Depends(require_admin)],
+)
+async def admin_booth_detail(request: Request, event_id: int, room_id: int, booth_id: int):
+    from portal.database import (
+        get_session, get_event_by_id, get_room_by_id, get_booth_by_id,
+        list_tokens_for_booth, list_users, list_memberships_for_booth
+    )
+
+    async with get_session() as session:
+        event = await get_event_by_id(session, event_id)
+        if event is None:
+            raise HTTPException(status_code=404, detail='Event not found.')
+        room = await get_room_by_id(session, room_id)
+        if room is None or room.event_id != event_id:
+            raise HTTPException(status_code=404, detail='Room not found.')
+        db_booth = await get_booth_by_id(session, booth_id)
+        if db_booth is None or db_booth.room_id != room_id:
+            raise HTTPException(status_code=404, detail='Booth not found.')
+        tokens = await list_tokens_for_booth(session, booth_id)
+        users = await list_users(session)
+        memberships = await list_memberships_for_booth(session, booth_id)
+
+    membership_map = {m.user_id: m for m in memberships}
+
+    bid = make_booth_id(event.slug, db_booth.language_code)
+    mediamtx_path = make_mediamtx_path(event.slug, db_booth.language_code)
+    whep_url = f'{settings.mediamtx_whip_base}/{mediamtx_path}/whep'
+    mem_booth = booths.get_booth_sync(bid)
+    is_live = mem_booth is not None and mem_booth.ingest_status == 'connected'
+    participants = list(mem_booth.participants.values()) if mem_booth else []
+    active_interpreter = None
+    if mem_booth and mem_booth.active_interpreter_id:
+        active_interpreter = mem_booth.participants.get(mem_booth.active_interpreter_id)
+
+    return templates.TemplateResponse(request, 'admin/booth_detail.html', {
+        'event': event,
+        'room': room,
+        'booth': db_booth,
+        'booth_id': bid,
+        'mediamtx_path': mediamtx_path,
+        'whep_url': whep_url,
+        'is_live': is_live,
+        'participants': participants,
+        'active_interpreter': active_interpreter,
+        'tokens': tokens,
+        'users': users,
+        'memberships': memberships,
+        'membership_map': membership_map,
+    })
+
+
+@app.post(
+    '/admin/events/{event_id}/rooms/{room_id}/booths/{booth_id}/members/',
+    dependencies=[Depends(require_admin)],
+)
+async def admin_add_booth_member(request: Request, event_id: int, room_id: int, booth_id: int):
+    from portal.database import get_session, list_memberships_for_booth, remove_booth_membership, set_booth_membership, get_user_by_email
+
+    form = await request.form()
+    email = form.get('email', '').strip()
+    role = form.get('role', '').strip()
+    if email:
+        async with get_session() as session:
+            user = await get_user_by_email(session, email)
+            if not user:
+                return RedirectResponse(
+                    url=f'/admin/events/{event_id}/rooms/{room_id}/booths/{booth_id}/?error=user_not_found',
+                    status_code=status.HTTP_303_SEE_OTHER,
+                )
+            uid = user.id
+            if role:
+                await set_booth_membership(session, user_id=uid, booth_id=booth_id, role=role)
+            else:
+                # "— none —" selected: remove any existing membership
+                memberships = await list_memberships_for_booth(session, booth_id)
+                for m in memberships:
+                    if m.user_id == uid:
+                        await remove_booth_membership(session, m.id)
+                        break
+    return RedirectResponse(
+        url=f'/admin/events/{event_id}/rooms/{room_id}/booths/{booth_id}/',
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+@app.post(
+    '/admin/events/{event_id}/rooms/{room_id}/booths/{booth_id}/members/{membership_id}/delete',
+    dependencies=[Depends(require_admin)],
+)
+async def admin_remove_booth_member(request: Request, event_id: int, room_id: int, booth_id: int, membership_id: int):
+    from portal.database import get_session, remove_booth_membership
+
+    async with get_session() as session:
+        await remove_booth_membership(session, membership_id)
+    return RedirectResponse(
+        url=f'/admin/events/{event_id}/rooms/{room_id}/booths/{booth_id}/',
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+@app.post(
+    '/admin/events/{event_id}/rooms/{room_id}/booths/{booth_id}/delete',
+    dependencies=[Depends(require_admin)],
+)
+async def admin_delete_booth(request: Request, event_id: int, room_id: int, booth_id: int):
+    from portal.database import get_session, delete_booth
+
+    async with get_session() as session:
+        await delete_booth(session, booth_id)
+    return RedirectResponse(
+        url=f'/admin/events/{event_id}/rooms/{room_id}/booths/',
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+# ── Admin user management routes ─────────────────────────────────────────────
+
+
+@app.get('/admin/users/', dependencies=[Depends(require_admin)])
+async def admin_user_list(request: Request):
+    from portal.database import get_session, list_users
+
+    async with get_session() as session:
+        users = await list_users(session)
+    return templates.TemplateResponse(request, 'admin/user_list.html', {'users': users})
+
+
+@app.post('/admin/users/{user_id}/toggle-active', dependencies=[Depends(require_admin)])
+async def admin_toggle_user_active(request: Request, user_id: int):
+    from portal.database import get_session, get_user_by_id, update_user_active
+
+    async with get_session() as session:
+        user = await get_user_by_id(session, user_id)
+        if user:
+            await update_user_active(session, user_id, is_active=not user.is_active)
+    return RedirectResponse(url='/admin/users/', status_code=status.HTTP_303_SEE_OTHER)
+
+
+@app.post('/admin/users/{user_id}/delete', dependencies=[Depends(require_admin)])
+async def admin_delete_user(request: Request, user_id: int):
+    from portal.database import get_session, delete_user
+
+    async with get_session() as session:
+        await delete_user(session, user_id)
+    return RedirectResponse(url='/admin/users/', status_code=status.HTTP_303_SEE_OTHER)
+
+@app.get('/admin/users/{user_id}/', dependencies=[Depends(require_admin)])
+async def admin_user_detail(request: Request, user_id: int):
+    from portal.database import get_session, get_user_by_id, list_events, list_memberships_for_user
+
+    async with get_session() as session:
+        user = await get_user_by_id(session, user_id)
+        if not user:
+            return RedirectResponse(url='/admin/users/', status_code=status.HTTP_303_SEE_OTHER)
+        
+        events = await list_events(session)
+        memberships = await list_memberships_for_user(session, user_id)
+        
+        event_admin_map = {m.event_id: m for m in memberships if m.role == 'event_admin'}
+        
+    return templates.TemplateResponse(request, 'admin/user_detail.html', {
+        'user_detail': user,  # Named 'user_detail' so it doesn't clash with context 'user'
+        'events': events,
+        'event_admin_map': event_admin_map
+    })
+
+
+@app.post('/admin/users/{user_id}/toggle-admin', dependencies=[Depends(require_admin)])
+async def admin_toggle_user_admin(request: Request, user_id: int):
+    from portal.database import get_session, get_user_by_id
+    from sqlalchemy import update
+    from portal.models import User
+
+    async with get_session() as session:
+        user = await get_user_by_id(session, user_id)
+        if user:
+            stmt = update(User).where(User.id == user_id).values(is_admin=not user.is_admin)
+            await session.execute(stmt)
+            await session.commit()
+    return RedirectResponse(url=f'/admin/users/{user_id}/', status_code=status.HTTP_303_SEE_OTHER)
+
+
+@app.post('/admin/users/{user_id}/events/{event_id}/toggle-admin', dependencies=[Depends(require_admin)])
+async def admin_toggle_user_event_admin(request: Request, user_id: int, event_id: int):
+    from portal.database import get_session, get_user_by_id, list_memberships_for_user, set_event_membership, remove_event_membership
+
+    async with get_session() as session:
+        user = await get_user_by_id(session, user_id)
+        if user:
+            memberships = await list_memberships_for_user(session, user_id)
+            event_admin_membership = next((m for m in memberships if m.event_id == event_id and m.role == 'event_admin'), None)
+            
+            if event_admin_membership:
+                await remove_event_membership(session, event_admin_membership.id)
+            else:
+                await set_event_membership(session, user_id=user_id, event_id=event_id, role='event_admin')
+                
+    return RedirectResponse(url=f'/admin/users/{user_id}/', status_code=status.HTTP_303_SEE_OTHER)
+
+
+# ── Admin event membership routes ────────────────────────────────────────────
+
+
+@app.get('/admin/events/{event_id}/members/', dependencies=[Depends(require_admin)])
+async def admin_event_members(request: Request, event_id: int):
+    from portal.database import get_session, get_event_by_id, list_memberships_for_event, list_users
+
+    async with get_session() as session:
+        event = await get_event_by_id(session, event_id)
+        if event is None:
+            raise HTTPException(status_code=404, detail='Event not found.')
+        memberships = await list_memberships_for_event(session, event_id)
+        users = await list_users(session)
+
+    # Build lookup: user_id → membership (role, id)
+    membership_map = {m.user_id: m for m in memberships}
+
+    return templates.TemplateResponse(request, 'admin/event_members.html', {
+        'event': event,
+        'memberships': memberships,
+        'membership_map': membership_map,
+        'users': users,
+    })
+
+
+@app.post('/admin/events/{event_id}/members/', dependencies=[Depends(require_admin)])
+async def admin_add_event_member(request: Request, event_id: int):
+    from portal.database import get_session, list_memberships_for_event, remove_event_membership, set_event_membership, get_user_by_email
+
+    form = await request.form()
+    email = form.get('email', '').strip()
+    role = form.get('role', '').strip()
+    if email:
+        async with get_session() as session:
+            user = await get_user_by_email(session, email)
+            if not user:
+                return RedirectResponse(
+                    url=f'/admin/events/{event_id}/members/?error=user_not_found',
+                    status_code=status.HTTP_303_SEE_OTHER,
+                )
+            uid = user.id
+            if role:
+                await set_event_membership(session, user_id=uid, event_id=event_id, role=role)
+            else:
+                # "— none —" selected: remove any existing membership
+                memberships = await list_memberships_for_event(session, event_id)
+                for m in memberships:
+                    if m.user_id == uid:
+                        await remove_event_membership(session, m.id)
+                        break
+    return RedirectResponse(
+        url=f'/admin/events/{event_id}/members/',
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+@app.post('/admin/events/{event_id}/members/{membership_id}/delete', dependencies=[Depends(require_admin)])
+async def admin_remove_event_member(request: Request, event_id: int, membership_id: int):
+    from portal.database import get_session, remove_event_membership
+
+    async with get_session() as session:
+        await remove_event_membership(session, membership_id)
+    return RedirectResponse(
+        url=f'/admin/events/{event_id}/members/',
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+# ── Admin token management routes ────────────────────────────────────────────
+
+
+@app.post(
+    '/admin/events/{event_id}/rooms/{room_id}/booths/{booth_id}/tokens/',
+    dependencies=[Depends(require_admin)],
+)
+async def admin_create_token(request: Request, event_id: int, room_id: int, booth_id: int):
+    from portal.database import create_invite_token, get_session
+
+    form = await request.form()
+    role = form.get('role', '').strip()
+    label = form.get('label', '').strip()
+    expires_hours = form.get('expires_hours', '').strip()
+
+    expires_at = None
+    if expires_hours:
+        from datetime import timedelta
+        from portal.models import utc_now
+        try:
+            expires_at = utc_now() + timedelta(hours=int(expires_hours))
+        except ValueError:
+            pass
+
+    if role:
+        async with get_session() as session:
+            await create_invite_token(
+                session, booth_id=booth_id, role=role, label=label,
+                expires_at=expires_at,
+            )
+
+    return RedirectResponse(
+        url=f'/admin/events/{event_id}/rooms/{room_id}/booths/{booth_id}/',
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+@app.post(
+    '/admin/events/{event_id}/rooms/{room_id}/booths/{booth_id}/tokens/{token_id}/revoke',
+    dependencies=[Depends(require_admin)],
+)
+async def admin_revoke_token(request: Request, event_id: int, room_id: int, booth_id: int, token_id: str):
+    from portal.database import get_session, revoke_invite_token
+
+    async with get_session() as session:
+        await revoke_invite_token(session, token_id)
+
+    return RedirectResponse(
+        url=f'/admin/events/{event_id}/rooms/{room_id}/booths/{booth_id}/',
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
 # ── WebSocket endpoint ────────────────────────────────────────────────────────
 
 @app.websocket('/ws/booth/{booth_id}')
@@ -667,12 +1578,83 @@ async def ws_booth(websocket: WebSocket, booth_id: str) -> None:
     except ValueError:
         return
 
+    # Derive granted_role from cookies at connect time — never trust client data.
+    ws_cookies = websocket.cookies
+    ws_session_payload: dict | None = None
+    for cookie_name in ('session_token', 'user_token'):
+        raw = ws_cookies.get(cookie_name, '')
+        if not raw:
+            continue
+        try:
+            import jwt as _pyjwt
+            ws_session_payload = _pyjwt.decode(
+                raw, settings.effective_jwt_secret, algorithms=['HS256'],
+            )
+            break
+        except Exception:
+            continue
+
+    ws_granted_role = resolve_booth_role(ws_session_payload)
+
+    # is_admin in JWT always grants event_admin at the WS level too.
+    if ws_granted_role is None and ws_session_payload is not None and ws_session_payload.get('is_admin'):
+        ws_granted_role = 'event_admin'
+
+    # For registered users whose token carries no 'role' claim, fall back to
+    # BoothMembership then EventMembership in the DB.
+    if ws_granted_role is None and ws_session_payload is not None and ws_session_payload.get('sub'):
+        try:
+            from portal.booth_identity import parse_booth_id as _parse_booth_id
+            from portal.database import (
+                get_session as _get_session,
+                list_memberships_for_user as _list_memberships,
+                list_booth_memberships_for_user as _list_booth_memberships,
+            )
+            _event_slug, _lang_code = _parse_booth_id(booth_id)
+            async with _get_session() as _db:
+                # 1. Booth-level membership first (interpreter for specific booth)
+                _booth_mems = await _list_booth_memberships(_db, int(ws_session_payload['sub']))
+                for _bm in _booth_mems:
+                    if (
+                        _bm.booth.event.slug == _event_slug
+                        and _bm.booth.language_code == _lang_code
+                    ):
+                        ws_granted_role = _bm.role
+                        break
+                # 2. Event-level membership (coordinator, event_admin)
+                if ws_granted_role is None:
+                    _memberships = await _list_memberships(_db, int(ws_session_payload['sub']))
+                    for _m in _memberships:
+                        if _m.event and _m.event.slug == _event_slug:
+                            ws_granted_role = _m.role
+                            break
+        except Exception:
+            pass
+
+    # Validate invite/participant token scope: the token's (event_slug, language_code)
+    # must match the booth being connected to.  This prevents a valid token for booth A
+    # from being used to join booth B.
+    if ws_session_payload is not None and 'role' in ws_session_payload:
+        token_event = ws_session_payload.get('event_slug', '')
+        token_lang = ws_session_payload.get('language_code', '')
+        if token_event and token_lang:
+            try:
+                from portal.booth_identity import make_booth_id as _make_booth_id
+                expected_booth_id = _make_booth_id(token_event, token_lang)
+                if expected_booth_id != booth_id:
+                    await websocket.close(code=4003)
+                    return
+            except Exception:
+                await websocket.close(code=4003)
+                return
+
     await websocket.accept()
     session = Session(
         booth_id=booth_id,
         participant_id=None,
         language='English',
         channel_id=f'{booth_id}-audio',
+        granted_role=ws_granted_role,
     )
     manager.add(websocket, session)
 

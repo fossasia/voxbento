@@ -1,0 +1,84 @@
+{% extends "admin/base.html" %}
+{% block title %}{{ room.display_name }} — {{ event.display_name }}{% endblock %}
+
+{% block breadcrumb %}
+<nav class="breadcrumb">
+  <a href="/admin/">Dashboard</a> <span>/</span>
+  <a href="/admin/events/">Events</a> <span>/</span>
+  <a href="/admin/events/{{ event.id }}/">{{ event.display_name }}</a> <span>/</span>
+  <a href="/admin/events/{{ event.id }}/rooms/">Rooms</a> <span>/</span>
+  <span>{{ room.display_name }}</span>
+</nav>
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>{{ room.display_name }}</h1>
+  <div class="header-meta">
+    <span class="meta-text">Event: {{ event.display_name }}</span>
+    <span class="meta-text">Created {{ room.created_at.strftime('%Y-%m-%d') if room.created_at else '—' }}</span>
+  </div>
+</div>
+
+<!-- Interpretation Schedule Table (replaces manual spreadsheet) -->
+<div class="section-card">
+  <div class="section-header">
+    <h2>Interpretation Booths ({{ booths|length }})</h2>
+    <a href="/admin/events/{{ event.id }}/rooms/{{ room.id }}/booths/" class="btn btn-sm btn-primary">Manage Booths</a>
+  </div>
+
+  {% if booths %}
+  <table class="data-table schedule-table">
+    <thead>
+      <tr>
+        <th>Language</th>
+        <th>Code</th>
+        <th>Status</th>
+        <th>Interpreter Booth URL</th>
+        <th>Listener URL (WHEP)</th>
+        <th>Details</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for bs in booths %}
+      <tr class="{{ 'row-live' if bs.is_live else '' }}">
+        <td><strong>{{ bs.db.language_name }}</strong></td>
+        <td><code>{{ bs.db.language_code }}</code></td>
+        <td>
+          {% if bs.is_live %}
+          <span class="status-live">● LIVE</span>
+          {% else %}
+          <span class="status-offline">○ Offline</span>
+          {% endif %}
+        </td>
+        <td>
+          <a href="/interpreter/{{ event.slug }}/{{ bs.db.language_code }}" target="_blank" class="link-external">
+            /interpreter/{{ event.slug }}/{{ bs.db.language_code }}
+          </a>
+        </td>
+        <td>
+          <a href="/listener-webrtc/{{ bs.booth_id }}" target="_blank" class="link-external">
+            /listener-webrtc/{{ bs.booth_id }}
+          </a>
+        </td>
+        <td>
+          <a href="/admin/events/{{ event.id }}/rooms/{{ room.id }}/booths/{{ bs.db.id }}/" class="btn btn-sm">View</a>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="muted">No booths in this room. <a href="/admin/events/{{ event.id }}/rooms/{{ room.id }}/booths/">Add booths</a>.</p>
+  {% endif %}
+</div>
+
+<div class="danger-zone">
+  <h3>Danger Zone</h3>
+  <form method="post" action="/admin/events/{{ event.id }}/rooms/{{ room.id }}/delete" class="inline-delete"
+        onsubmit="return confirm('Delete room \'{{ room.display_name }}\'? All booths in this room will be removed.')">
+    <button type="submit" class="btn btn-danger">Delete Room</button>
+    <span class="danger-text">This removes all booths and their invite tokens.</span>
+  </form>
+</div>
+{% endblock %}

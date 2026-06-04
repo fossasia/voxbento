@@ -50,6 +50,7 @@ jobs:
         run: |
           node --check static/js/interpreter-booth.js
           node --check static/js/whep-listener.js
+          node --check static/js/admin.js
 
       - name: Run unit tests
         run: uv run pytest tests/ -v
@@ -75,6 +76,7 @@ jobs:
       MEDIAMTX_WHIP_BASE: http://localhost:8889
       MEDIAMTX_HLS_BASE: http://localhost:8888
       MEDIAMTX_API_BASE: http://mediamtx:9997
+      ADMIN_PASSWORD: ci-admin-pass
 
     steps:
       - name: Checkout repository
@@ -161,12 +163,13 @@ jobs:
       - name: Portal page endpoints
         run: |
           source /tmp/ci-helpers.sh
-          assert_http "http://${CI_HOST}:${PORTAL_PORT}/interpreter/ci-booth?token=ci-test-token" \
-                      "GET /interpreter/ci-booth"
+          # Booth pages now require auth — unauthenticated requests redirect to /login
+          assert_http "http://${CI_HOST}:${PORTAL_PORT}/interpreter/ci-event/en" \
+                      "GET /interpreter/ci-event/en (no auth → 303)" "303"
           assert_http "http://${CI_HOST}:${PORTAL_PORT}/listener-webrtc/ci-booth" \
-                      "GET /listener-webrtc/ci-booth"
+                      "GET /listener-webrtc/ci-booth (no auth → 303)" "303"
           assert_http "http://${CI_HOST}:${PORTAL_PORT}/listen/ci-booth" \
-                      "GET /listen/ci-booth"
+                      "GET /listen/ci-booth (no auth → 303)" "303"
 
       - name: Portal ingest-status API
         run: |
@@ -185,6 +188,110 @@ jobs:
           source /tmp/ci-helpers.sh
           assert_http "http://${CI_HOST}:${PORTAL_PORT}/static/js/interpreter-booth.js" "interpreter-booth.js"
           assert_http "http://${CI_HOST}:${PORTAL_PORT}/static/js/whep-listener.js"     "whep-listener.js"
+          assert_http "http://${CI_HOST}:${PORTAL_PORT}/static/js/admin.js"             "admin.js"
+          assert_http "http://${CI_HOST}:${PORTAL_PORT}/static/css/admin.css"           "admin.css"
+
+      # ── Auth & admin panel smoke tests ──────────────────────
+      - name: Home page, login, register render
+        run: |
+          source /tmp/ci-helpers.sh
+          assert_http "http://${CI_HOST}:${PORTAL_PORT}/"         "GET /"
+          assert_http "http://${CI_HOST}:${PORTAL_PORT}/login"    "GET /login"
+          assert_http "http://${CI_HOST}:${PORTAL_PORT}/register" "GET /register"
+
+      - name: Admin panel login and CRUD smoke test
+        run: |
+          BASE="http://${CI_HOST}:${PORTAL_PORT}"
+
+          # Admin login page renders
+          code=$(curl -s -o /dev/null -w '%{http_code}' "${BASE}/admin/login")
+          echo "GET /admin/login → $code"
+          [ "$code" = "200" ] || { echo "FAIL"; exit 1; }
+
+          # Admin login with correct password → redirect + cookie
+          resp=$(curl -s -D - -o /dev/null -X POST "${BASE}/admin/login" -d "password=ci-admin-pass")
+          echo "$resp" | head -5
+          echo "$resp" | grep -qi "set-cookie.*admin_token" || { echo "FAIL: no admin_token cookie"; exit 1; }
+
+          # Extract the admin_token cookie
+          ADMIN_COOKIE=$(echo "$resp" | grep -i 'set-cookie.*admin_token' | sed 's/.*admin_token=\([^;]*\).*/\1/')
+          echo "Admin token: ${ADMIN_COOKIE:0:20}..."
+
+          # Dashboard loads
+          code=$(curl -s -o /dev/null -w '%{http_code}' -b "admin_token=${ADMIN_COOKIE}" "${BASE}/admin/")
+          echo "GET /admin/ → $code"
+          [ "$code" = "200" ] || { echo "FAIL"; exit 1; }
+
+          # Create event
+          code=$(curl -s -o /dev/null -w '%{http_code}' -X POST -b "admin_token=${ADMIN_COOKIE}" \
+            -d "slug=ci-smoke&display_name=CI+Smoke+Test" "${BASE}/admin/events/")
+          echo "POST /admin/events/ → $code"
+          [ "$code" = "303" ] || { echo "FAIL"; exit 1; }
+
+          # Events list renders
+          code=$(curl -s -o /dev/null -w '%{http_code}' -b "admin_token=${ADMIN_COOKIE}" "${BASE}/admin/events/")
+          echo "GET /admin/events/ → $code"
+          [ "$code" = "200" ] || { echo "FAIL"; exit 1; }
+
+          # Users list renders
+          code=$(curl -s -o /dev/null -w '%{http_code}' -b "admin_token=${ADMIN_COOKIE}" "${BASE}/admin/users/")
+          echo "GET /admin/users/ → $code"
+          [ "$code" = "200" ] || { echo "FAIL"; exit 1; }
+
+          # Admin without cookie → 403
+          code=$(curl -s -o /dev/null -w '%{http_code}' "${BASE}/admin/")
+          echo "GET /admin/ (no cookie) → $code"
+          [ "$code" = "403" ] || { echo "FAIL: expected 403"; exit 1; }
+
+      - name: User registration and login smoke test
+        run: |
+          BASE="http://${CI_HOST}:${PORTAL_PORT}"
+
+          # Register a new user
+          resp=$(curl -s -D - -o /dev/null -X POST "${BASE}/register" \
+            -d "email=ci-test@example.com&display_name=CI+User&password=securepass123&password_confirm=securepass123")
+          echo "$resp" | head -5
+          echo "$resp" | grep -qi "set-cookie.*user_token" || { echo "FAIL: no user_token after register"; exit 1; }
+
+          # Login with the registered user
+          resp=$(curl -s -D - -o /dev/null -X POST "${BASE}/login" \
+            -d "email=ci-test@example.com&password=securepass123")
+          echo "$resp" | head -5
+          echo "$resp" | grep -qi "set-cookie.*user_token" || { echo "FAIL: no user_token after login"; exit 1; }
+
+          # Extract user token and check account page
+          USER_COOKIE=$(echo "$resp" | grep -i 'set-cookie.*user_token' | sed 's/.*user_token=\([^;]*\).*/\1/')
+          code=$(curl -s -o /dev/null -w '%{http_code}' -b "user_token=${USER_COOKIE}" "${BASE}/account")
+          echo "GET /account → $code"
+          [ "$code" = "200" ] || { echo "FAIL"; exit 1; }
+
+          # Login with wrong password → 403
+          code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "${BASE}/login" \
+            -d "email=ci-test@example.com&password=wrong")
+          echo "POST /login (wrong pw) → $code"
+          [ "$code" = "403" ] || { echo "FAIL: expected 403"; exit 1; }
+
+          # Account without cookie → redirect to login
+          code=$(curl -s -o /dev/null -w '%{http_code}' "${BASE}/account")
+          echo "GET /account (no cookie) → $code"
+          [ "$code" = "303" ] || { echo "FAIL: expected 303 redirect"; exit 1; }
+
+          # Listener / WebRTC pages redirect unauthenticated users
+          code=$(curl -s -o /dev/null -w '%{http_code}' "${BASE}/listen/ci-booth")
+          echo "GET /listen/ci-booth (no cookie) → $code"
+          [ "$code" = "303" ] || { echo "FAIL: expected 303"; exit 1; }
+
+          # With a valid user_token but no event membership → 403 on interpreter page
+          code=$(curl -s -o /dev/null -w '%{http_code}' -b "user_token=${USER_COOKIE}" \
+            "${BASE}/interpreter/ci-smoke/en")
+          echo "GET /interpreter/ci-smoke/en (user, no membership) → $code"
+          [ "$code" = "403" ] || { echo "FAIL: expected 403 without membership"; exit 1; }
+
+          # With user_token, listener pages (no event scope) should pass through
+          code=$(curl -s -o /dev/null -w '%{http_code}' -b "user_token=${USER_COOKIE}" \
+            "${BASE}/listen/ci-booth")
+          echo "GET /listen/ci-booth (user_token) → $code"
+          [ "$code" = "200" ] || { echo "FAIL: expected 200"; exit 1; }
 
       # ── Collect logs on failure ─────────────────────────────
       - name: Dump logs on failure

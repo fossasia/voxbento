@@ -368,6 +368,13 @@ class BoothRegistry:
             booth = self._booths.get(booth_id)
             return booth.as_public_dict() if booth is not None else None
 
+    def get_booth_sync(self, booth_id: str) -> Booth | None:
+        """Return the raw Booth dataclass without locking.
+
+        Safe for read-only admin panel access (snapshot of volatile state).
+        """
+        return self._booths.get(booth_id)
+
     async def get_booth_for_event(self, event_slug: str, language_code: str) -> dict | None:
         """Return the booth for a specific event + language, or None.
 

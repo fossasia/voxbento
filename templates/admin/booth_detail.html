@@ -1,0 +1,334 @@
+{% extends "admin/base.html" %}
+{% block title %}{{ booth.language_name }} Booth — {{ event.display_name }}{% endblock %}
+
+{% block breadcrumb %}
+<nav class="breadcrumb">
+  <a href="/admin/">Dashboard</a> <span>/</span>
+  <a href="/admin/events/">Events</a> <span>/</span>
+  <a href="/admin/events/{{ event.id }}/">{{ event.display_name }}</a> <span>/</span>
+  <a href="/admin/events/{{ event.id }}/rooms/">Rooms</a> <span>/</span>
+  <a href="/admin/events/{{ event.id }}/rooms/{{ room.id }}/">{{ room.display_name }}</a> <span>/</span>
+  <a href="/admin/events/{{ event.id }}/rooms/{{ room.id }}/booths/">Booths</a> <span>/</span>
+  <span>{{ booth.language_name }}</span>
+</nav>
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>
+    {{ booth.language_name }} ({{ booth.language_code }})
+    {% if is_live %}
+    <span class="status-live header-status">● LIVE</span>
+    {% else %}
+    <span class="status-offline header-status">○ OFFLINE</span>
+    {% endif %}
+  </h1>
+  <div class="header-meta">
+    <span class="meta-text">Event: {{ event.display_name }}</span>
+    <span class="meta-text">Room: {{ room.display_name }}</span>
+  </div>
+</div>
+
+<!-- Booth Info Cards -->
+<div class="detail-grid">
+  <div class="detail-card">
+    <h3>Booth Information</h3>
+    <dl class="detail-list">
+      <dt>Booth ID</dt>
+      <dd><code>{{ booth_id }}</code></dd>
+      <dt>MediaMTX Path</dt>
+      <dd><code>{{ mediamtx_path }}</code></dd>
+      <dt>Language</dt>
+      <dd>{{ booth.language_name }} ({{ booth.language_code }})</dd>
+      <dt>Created</dt>
+      <dd>{{ booth.created_at.strftime('%Y-%m-%d %H:%M UTC') if booth.created_at else '—' }}</dd>
+    </dl>
+  </div>
+
+  <div class="detail-card">
+    <h3>Links</h3>
+    <dl class="detail-list">
+      <dt>Interpreter Booth</dt>
+      <dd>
+        <a href="/interpreter/{{ event.slug }}/{{ booth.language_code }}" target="_blank" class="link-external">
+          /interpreter/{{ event.slug }}/{{ booth.language_code }} ↗
+        </a>
+      </dd>
+      <dt>WHEP Listener URL</dt>
+      <dd class="copyable-field">
+        <code id="whep-url">{{ whep_url }}</code>
+        <button type="button" class="btn btn-sm btn-copy" data-copy-target="whep-url">Copy</button>
+      </dd>
+      <dt>Listener Page (WebRTC)</dt>
+      <dd>
+        <a href="/listener-webrtc/{{ booth_id }}" target="_blank" class="link-external">
+          /listener-webrtc/{{ booth_id }} ↗
+        </a>
+      </dd>
+      <dt>Listener Page (HLS Fallback)</dt>
+      <dd>
+        <a href="/listen/{{ booth_id }}" target="_blank" class="link-external">
+          /listen/{{ booth_id }} ↗
+        </a>
+      </dd>
+    </dl>
+  </div>
+
+  <div class="detail-card">
+    <h3>Live Status</h3>
+    <dl class="detail-list">
+      <dt>Status</dt>
+      <dd>
+        {% if is_live %}
+        <span class="status-live">● LIVE — Audio streaming</span>
+        {% else %}
+        <span class="status-offline">○ OFFLINE — No active stream</span>
+        {% endif %}
+      </dd>
+      <dt>Active Interpreter</dt>
+      <dd>
+        {% if active_interpreter %}
+        {{ active_interpreter.display_name }} ({{ active_interpreter.role }})
+        {% else %}
+        <span class="muted">None</span>
+        {% endif %}
+      </dd>
+    </dl>
+  </div>
+</div>
+
+<!-- Participant Roster -->
+<div class="section-card">
+  <div class="section-header">
+    <h2>Participant Roster ({{ participants|length }})</h2>
+  </div>
+  {% if participants %}
+  <table class="data-table">
+    <thead>
+      <tr>
+        <th>Name</th>
+        <th>Role</th>
+        <th>Mic</th>
+        <th>Ingest</th>
+        <th>Joined</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for p in participants %}
+      <tr>
+        <td>
+          {{ p.display_name or p.participant_id }}
+          {% if active_interpreter and p.participant_id == active_interpreter.participant_id %}
+          <span class="badge badge-active">Active</span>
+          {% endif %}
+        </td>
+        <td><span class="badge badge-role badge-{{ p.role }}">{{ p.role }}</span></td>
+        <td>{{ '🎙️ On' if p.mic_active else '🔇 Off' }}</td>
+        <td>{{ '📡 Connected' if p.ingest_connected else '—' }}</td>
+        <td>{{ p.joined_at if p.joined_at else '—' }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty-state">
+    <p>No participants currently connected to this booth.</p>
+  </div>
+  {% endif %}
+</div>
+
+<!-- Assigned Members -->
+<div class="section-card">
+  <div class="section-header">
+    <h2>Assigned Members</h2>
+  </div>
+  
+  {% if request.query_params.get('error') == 'user_not_found' %}
+  <div class="alert alert-danger" style="margin-bottom: 1rem; color: #d32f2f; background-color: #fde0e0; padding: 10px; border-radius: 4px;">
+    <strong>Error:</strong> User with that email address was not found. They must register first.
+  </div>
+  {% endif %}
+
+  <!-- Assign Member Form -->
+  <div class="token-form-card" style="margin-bottom: 1.5rem;">
+    <h3>Assign Member</h3>
+    <form method="post" action="/admin/events/{{ event.id }}/rooms/{{ room.id }}/booths/{{ booth.id }}/members/" class="token-form">
+      <div class="form-row">
+        <div class="form-group" style="flex: 2;">
+          <label for="member_email">User Email</label>
+          <input type="email" name="email" id="member_email" placeholder="user@example.com" required />
+        </div>
+        <div class="form-group">
+          <label for="member_role">Role</label>
+          <select name="role" id="member_role" required>
+            <option value="listener">listener</option>
+            <option value="interpreter" selected>interpreter</option>
+            <option value="coordinator">coordinator</option>
+          </select>
+        </div>
+        <div class="form-group form-group-btn">
+          <button type="submit" class="btn btn-primary">Assign Member</button>
+        </div>
+      </div>
+    </form>
+  </div>
+
+  {% set current_members = [] %}
+  {% for m in memberships %}
+    {% set current_members = current_members.append(m) %}
+  {% endfor %}
+
+  {% if memberships %}
+  <table class="data-table">
+    <thead>
+      <tr>
+        <th>Email</th>
+        <th>Display Name</th>
+        <th>Account Status</th>
+        <th>Booth Role</th>
+        <th>Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for m in memberships %}
+      {% set u = m.user %}
+      <tr class="row-assigned">
+        <td>{{ u.email }}</td>
+        <td>{{ u.display_name }}</td>
+        <td>
+          {% if u.is_active %}
+          <span class="status-live">● Active</span>
+          {% else %}
+          <span class="status-offline">○ Inactive</span>
+          {% endif %}
+        </td>
+        <td>
+          <span class="badge badge-role badge-{{ m.role }}">{{ m.role }}</span>
+        </td>
+        <td class="actions-cell">
+          <form method="post"
+                action="/admin/events/{{ event.id }}/rooms/{{ room.id }}/booths/{{ booth.id }}/members/{{ m.id }}/delete"
+                class="inline-form"
+                onsubmit="return confirm('Remove {{ u.display_name }} from this booth?')">
+            <button type="submit" class="btn btn-sm btn-danger">Remove</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty-state">
+    <p>No users are assigned to this booth yet.</p>
+  </div>
+  {% endif %}
+</div>
+
+<!-- Invite Tokens -->
+<div class="section-card">
+  <div class="section-header">
+    <h2>Invite Tokens ({{ tokens|length }})</h2>
+  </div>
+
+  <!-- Token Generation Form -->
+  <div class="token-form-card">
+    <h3>Generate New Token</h3>
+    <form method="post" action="/admin/events/{{ event.id }}/rooms/{{ room.id }}/booths/{{ booth.id }}/tokens/" class="token-form">
+      <div class="form-row">
+        <div class="form-group">
+          <label for="role">Role</label>
+          <select name="role" id="role" required>
+            <option value="listener">listener</option>
+            <option value="interpreter" selected>interpreter</option>
+            <option value="coordinator">coordinator</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label for="label">Label</label>
+          <input type="text" name="label" id="label" placeholder="e.g. Alice — Spanish interpreter" />
+        </div>
+        <div class="form-group">
+          <label for="expires_hours">Expires in (hours)</label>
+          <input type="number" name="expires_hours" id="expires_hours" placeholder="Empty = never" min="1" />
+        </div>
+        <div class="form-group form-group-btn">
+          <button type="submit" class="btn btn-primary">Generate Token</button>
+        </div>
+      </div>
+    </form>
+  </div>
+
+  {% if tokens %}
+  <table class="data-table">
+    <thead>
+      <tr>
+        <th>Label</th>
+        <th>Role</th>
+        <th>Invite Link</th>
+        <th>Status</th>
+        <th>Expires</th>
+        <th>Created</th>
+        <th>Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for tok in tokens %}
+      <tr class="{{ 'row-used' if tok.is_used else ('row-expired' if tok.is_expired else '') }}">
+        <td>{{ tok.label or '—' }}</td>
+        <td><span class="badge badge-role badge-{{ tok.role }}">{{ tok.role }}</span></td>
+        <td>
+          {% if not tok.is_used and not tok.is_expired %}
+          <span class="copyable-field">
+            <code id="tok-{{ tok.token[:8] }}">/join/{{ tok.token }}</code>
+            <button type="button" class="btn btn-sm btn-copy" data-copy-target="tok-{{ tok.token[:8] }}">Copy Link</button>
+          </span>
+          {% else %}
+          <span class="muted">—</span>
+          {% endif %}
+        </td>
+        <td>
+          {% if tok.is_used %}
+          <span class="badge badge-used">Revoked / Used</span>
+          {% elif tok.is_expired %}
+          <span class="badge badge-expired">Expired</span>
+          {% else %}
+          <span class="badge badge-valid">Valid</span>
+          {% endif %}
+        </td>
+        <td>{{ tok.expires_at.strftime('%Y-%m-%d %H:%M') if tok.expires_at else 'Never' }}</td>
+        <td>{{ tok.created_at.strftime('%Y-%m-%d %H:%M') if tok.created_at else '—' }}</td>
+        <td>
+          {% if not tok.is_used and not tok.is_expired %}
+          <form method="post"
+                action="/admin/events/{{ event.id }}/rooms/{{ room.id }}/booths/{{ booth.id }}/tokens/{{ tok.token }}/revoke"
+                class="inline-form"
+                onsubmit="return confirm('Revoke this token? It cannot be used to join after revocation.')">
+            <button type="submit" class="btn btn-sm btn-danger">Revoke</button>
+          </form>
+          {% else %}
+          <span class="muted">—</span>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty-state">
+    <p>No invite tokens for this booth yet. Use the form above to generate one.</p>
+  </div>
+  {% endif %}
+</div>
+
+<div class="danger-zone">
+  <h3>Danger Zone</h3>
+  <form method="post" action="/admin/events/{{ event.id }}/rooms/{{ room.id }}/booths/{{ booth.id }}/delete"
+        class="inline-delete"
+        onsubmit="return confirm('Delete the {{ booth.language_name }} booth? All invite tokens will be removed.')">
+    <button type="submit" class="btn btn-danger">Delete Booth</button>
+    <span class="danger-text">This removes all invite tokens for this booth.</span>
+  </form>
+</div>
+
+<script type="module" src="{{ url_for('static', path='js/admin.js') }}"></script>
+{% endblock %}

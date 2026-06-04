@@ -1,0 +1,71 @@
+# Caddyfile — voxbento.com production
+#
+# Deploy:
+#   sudo cp Caddyfile /etc/caddy/Caddyfile
+#   sudo systemctl reload caddy
+#
+# DNS requirements:
+#   A  voxbento.com       → 100.56.6.172
+#   A  jitsi.voxbento.com → 100.56.6.172
+#
+# Caddy handles TLS automatically via Let's Encrypt.
+#
+# Port layout (all Docker-exposed, bound to 0.0.0.0 on host):
+#   8000  FastAPI interpretation portal
+#   8888  MediaMTX HLS
+#   8889  MediaMTX WHIP/WHEP (WebRTC ingest + playback)
+#   8080  Jitsi web (HTTP)
+#   8189  MediaMTX WebRTC ICE/UDP  ← NOT proxied by Caddy (UDP)
+#
+# URL structure (as seen by browsers):
+#   https://voxbento.com/{channel}/whip         → MediaMTX WHIP ingest
+#   https://voxbento.com/{channel}/whep         → MediaMTX WHEP playback
+#   https://voxbento.com/hls/{channel}/...      → MediaMTX HLS segments
+#   https://jitsi.voxbento.com/...              → Jitsi Meet (monitoring feed)
+#   https://voxbento.com/*                      → FastAPI portal
+
+# ── Interpretation Portal ─────────────────────────────────────────────────────
+voxbento.com {
+
+    # ── HLS streaming ─────────────────────────────────────────────────────────
+    # Browser requests: https://voxbento.com/hls/{channel}/index.m3u8
+    # MediaMTX serves:  http://localhost:8888/{channel}/index.m3u8
+    # Strip /hls prefix before forwarding.
+    handle /hls/* {
+        uri strip_prefix /hls
+        reverse_proxy localhost:8888
+    }
+
+    # ── WebRTC WHIP ingest + WHEP playback ────────────────────────────────────
+    # Browser requests: https://voxbento.com/{channel}/whip  (POST SDP offer)
+    # Browser requests: https://voxbento.com/{channel}/whep  (POST SDP offer)
+    # MediaMTX serves:  http://localhost:8889/{channel}/whip|whep
+    # Match any path that ends with /whip or /whep (channel IDs use / separators
+    # which Caddy normalises from %2F, e.g. fossasia-2027/de/whip).
+    @whip_whep {
+        path_regexp whip_whep /(whip|whep)$
+    }
+    handle @whip_whep {
+        reverse_proxy localhost:8889
+    }
+
+    # ── FastAPI portal (catch-all) ────────────────────────────────────────────
+    reverse_proxy localhost:8000
+}
+
+# ── Jitsi Meet monitoring feed ────────────────────────────────────────────────
+# Interpreters use this embedded iframe to monitor the speaker.
+# Jitsi web runs in Docker on host port 8080 (HTTP).
+# Caddy provides HTTPS termination so the iframe loads securely inside the portal.
+#
+# Required: DNS A record jitsi.voxbento.com → 100.56.6.172
+# Note: JVB media (UDP 10000) connects DIRECTLY to the server, not via Caddy.
+jitsi.voxbento.com {
+    # Forward all requests including WebSocket (BOSH, Colibri) to Jitsi web.
+    reverse_proxy localhost:8080 {
+        header_up Host {host}
+        header_up X-Real-IP {remote_host}
+        header_up X-Forwarded-For {remote_host}
+        header_up X-Forwarded-Proto {scheme}
+    }
+}

@@ -23,7 +23,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import joinedload
 
-from portal.models import Base, DBBooth, Event, InviteToken, Room, generate_token, utc_now
+from portal.models import Base, BoothMembership, DBBooth, Event, EventMembership, InviteToken, Room, User, generate_token, utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -293,3 +293,197 @@ async def list_tokens_for_booth(session: AsyncSession, booth_id: int) -> list[In
         .order_by(InviteToken.created_at),
     )
     return list(result.scalars().all())
+
+
+# ---------------------------------------------------------------------------
+# User CRUD
+# ---------------------------------------------------------------------------
+
+
+async def create_user(
+    session: AsyncSession,
+    *,
+    email: str,
+    display_name: str,
+    password_hash: str,
+) -> User:
+    user = User(
+        email=email.strip().lower(),
+        display_name=display_name,
+        password_hash=password_hash,
+    )
+    session.add(user)
+    await session.flush()
+    return user
+
+
+async def get_user_by_email(session: AsyncSession, email: str) -> User | None:
+    result = await session.execute(
+        select(User).where(User.email == email.strip().lower()),
+    )
+    return result.scalar_one_or_none()
+
+
+async def get_user_by_id(session: AsyncSession, user_id: int) -> User | None:
+    result = await session.execute(select(User).where(User.id == user_id))
+    return result.scalar_one_or_none()
+
+
+async def list_users(session: AsyncSession) -> list[User]:
+    result = await session.execute(select(User).order_by(User.created_at))
+    return list(result.scalars().all())
+
+
+async def update_user_active(session: AsyncSession, user_id: int, *, is_active: bool) -> User | None:
+    user = await get_user_by_id(session, user_id)
+    if user is None:
+        return None
+    user.is_active = is_active
+    await session.flush()
+    return user
+
+
+async def delete_user(session: AsyncSession, user_id: int) -> bool:
+    user = await get_user_by_id(session, user_id)
+    if user is None:
+        return False
+    await session.delete(user)
+    await session.flush()
+    return True
+
+
+# ---------------------------------------------------------------------------
+# EventMembership CRUD
+# ---------------------------------------------------------------------------
+
+
+async def set_event_membership(
+    session: AsyncSession,
+    *,
+    user_id: int,
+    event_id: int,
+    role: str,
+) -> EventMembership:
+    """Create or update a user's role for an event."""
+    result = await session.execute(
+        select(EventMembership).where(
+            EventMembership.user_id == user_id,
+            EventMembership.event_id == event_id,
+        ),
+    )
+    membership = result.scalar_one_or_none()
+    if membership:
+        membership.role = role
+    else:
+        membership = EventMembership(user_id=user_id, event_id=event_id, role=role)
+        session.add(membership)
+    await session.flush()
+    return membership
+
+
+async def remove_event_membership(session: AsyncSession, membership_id: int) -> bool:
+    result = await session.execute(
+        select(EventMembership).where(EventMembership.id == membership_id),
+    )
+    membership = result.scalar_one_or_none()
+    if membership is None:
+        return False
+    await session.delete(membership)
+    await session.flush()
+    return True
+
+
+async def list_memberships_for_event(session: AsyncSession, event_id: int) -> list[EventMembership]:
+    result = await session.execute(
+        select(EventMembership)
+        .options(joinedload(EventMembership.user))
+        .where(EventMembership.event_id == event_id)
+        .order_by(EventMembership.created_at),
+    )
+    return list(result.scalars().all())
+
+
+async def list_memberships_for_user(session: AsyncSession, user_id: int) -> list[EventMembership]:
+    result = await session.execute(
+        select(EventMembership)
+        .options(joinedload(EventMembership.event))
+        .where(EventMembership.user_id == user_id)
+        .order_by(EventMembership.created_at),
+    )
+    return list(result.scalars().all())
+
+
+# ---------------------------------------------------------------------------
+# BoothMembership CRUD
+# ---------------------------------------------------------------------------
+
+
+async def set_booth_membership(
+    session: AsyncSession,
+    *,
+    user_id: int,
+    booth_id: int,
+    role: str,
+) -> BoothMembership:
+    """Create or update a user's role for a specific booth."""
+    result = await session.execute(
+        select(BoothMembership).where(
+            BoothMembership.user_id == user_id,
+            BoothMembership.booth_id == booth_id,
+        ),
+    )
+    membership = result.scalar_one_or_none()
+    if membership:
+        membership.role = role
+    else:
+        membership = BoothMembership(user_id=user_id, booth_id=booth_id, role=role)
+        session.add(membership)
+    await session.flush()
+    return membership
+
+
+async def remove_booth_membership(session: AsyncSession, membership_id: int) -> bool:
+    result = await session.execute(
+        select(BoothMembership).where(BoothMembership.id == membership_id),
+    )
+    membership = result.scalar_one_or_none()
+    if membership is None:
+        return False
+    await session.delete(membership)
+    await session.flush()
+    return True
+
+
+async def list_memberships_for_booth(session: AsyncSession, booth_id: int) -> list[BoothMembership]:
+    result = await session.execute(
+        select(BoothMembership)
+        .options(joinedload(BoothMembership.user))
+        .where(BoothMembership.booth_id == booth_id)
+        .order_by(BoothMembership.created_at),
+    )
+    return list(result.scalars().all())
+
+
+async def list_booth_memberships_for_user(session: AsyncSession, user_id: int) -> list[BoothMembership]:
+    result = await session.execute(
+        select(BoothMembership)
+        .options(joinedload(BoothMembership.booth).joinedload(DBBooth.event))
+        .where(BoothMembership.user_id == user_id)
+        .order_by(BoothMembership.created_at),
+    )
+    return list(result.scalars().all())
+
+
+# ---------------------------------------------------------------------------
+# Token revocation
+# ---------------------------------------------------------------------------
+
+
+async def revoke_invite_token(session: AsyncSession, token_str: str) -> InviteToken | None:
+    """Revoke an invite token by setting used_at (prevents future use)."""
+    tok = await get_invite_token(session, token_str)
+    if tok is None:
+        return None
+    tok.used_at = utc_now()
+    await session.flush()
+    return tok

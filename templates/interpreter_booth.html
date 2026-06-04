@@ -1,6 +1,6 @@
 {% extends 'base.html' %}
 
-{% block title %}Booth {{ booth_id }} | Eventyay Interpreter Portal{% endblock %}
+{% block title %}Booth {{ booth_id }} | Voxbento Interpreter Portal{% endblock %}
 
 {% block content %}
 <div
@@ -18,6 +18,7 @@
   data-language-code='{{ language_code | default("") }}'
   data-whip-url='{{ whip_url | default("") }}'
   data-whep-url='{{ whep_url | default("") }}'
+  data-granted-role='{{ granted_role | default("") }}'
 >
   <section class='panel'>
     <header class='panel-header'>
@@ -31,11 +32,37 @@
       </label>
       <label>
         Role
-        <select id='participant-role' class='input'>
-          <option value='interpreter'>Interpreter</option>
-          <option value='coordinator'>Coordinator</option>
-          <option value='listener'>Listener</option>
+        {% set gr = granted_role | default("") %}
+        <select id='participant-role' class='input'{% if gr %} disabled{% endif %}>
+          {% if not gr %}
+            {# No assigned role — show all options freely #}
+            <option value='interpreter'>Interpreter</option>
+            <option value='coordinator'>Coordinator</option>
+            <option value='listener'>Listener</option>
+          {% elif gr == 'listener' %}
+            <option value='listener' selected>Listener</option>
+          {% elif gr == 'interpreter' %}
+            <option value='interpreter' selected>Interpreter</option>
+          {% elif gr in ('coordinator', 'event_admin', 'super_admin') %}
+            {# Coordinators and admins can join as coordinator or interpreter #}
+            <option value='coordinator'{% if gr == 'coordinator' %} selected{% endif %}>Coordinator</option>
+            <option value='interpreter'>Interpreter</option>
+            <option value='listener'>Listener</option>
+          {% endif %}
         </select>
+        {% if gr %}
+          <input type='hidden' id='participant-role-hidden' value='{{ gr }}' />
+          <small class='hint'>
+            Role: <strong>{{ gr }}</strong>
+            {% if gr in ('event_admin', 'super_admin') %}
+              — you have full access to this booth
+            {% elif gr == 'coordinator' %}
+              — you can assign the active interpreter
+            {% elif gr == 'interpreter' %}
+              — you can go live when active
+            {% endif %}
+          </small>
+        {% endif %}
       </label>
       <label>
         Language

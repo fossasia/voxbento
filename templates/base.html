@@ -3,14 +3,14 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>{% block title %}Eventyay Interpreter Booth{% endblock %}</title>
+    <title>{% block title %}Voxbento Interpreter Booth{% endblock %}</title>
     <link rel="icon" type="image/x-icon" href="{{ url_for('static', path='favicon.ico') }}" />
     <link rel="stylesheet" href="{{ url_for('static', path='css/interpreter.css') }}" />
     {% block head %}{% endblock %}
   </head>
   <body>
     <header class="portal-header">
-      <a class="brand" href="/">Eventyay</a>
+      <a class="brand" href="/">Voxbento</a>
       <span class="header-context">Interpreter Booth Portal</span>
     </header>
     <main class="portal-main">{% block content %}{% endblock %}</main>

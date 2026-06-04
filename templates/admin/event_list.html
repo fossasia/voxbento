@@ -1,0 +1,56 @@
+{% extends "admin/base.html" %}
+{% block title %}Events{% endblock %}
+
+{% block breadcrumb %}
+<nav class="breadcrumb">
+  <a href="/admin/">Dashboard</a> <span>/</span> <span>Events</span>
+</nav>
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>Events</h1>
+</div>
+
+<div class="form-card">
+  <h3>Create Event</h3>
+  <form method="post" action="/admin/events/" class="inline-form">
+    <input type="text" name="slug" placeholder="event-slug" required pattern="^[a-z0-9]+(-[a-z0-9]+)*$" title="Lowercase letters, numbers, hyphens only" />
+    <input type="text" name="display_name" placeholder="Display Name" required />
+    <button type="submit" class="btn btn-primary">Create</button>
+  </form>
+</div>
+
+{% if events %}
+<table class="data-table">
+  <thead>
+    <tr>
+      <th>Event Name</th>
+      <th>Slug</th>
+      <th>Created</th>
+      <th>Actions</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for ev in events %}
+    <tr>
+      <td><a href="/admin/events/{{ ev.id }}/">{{ ev.display_name }}</a></td>
+      <td><code>{{ ev.slug }}</code></td>
+      <td>{{ ev.created_at.strftime('%Y-%m-%d %H:%M') if ev.created_at else '—' }}</td>
+      <td>
+        <a href="/admin/events/{{ ev.id }}/" class="btn btn-sm">View</a>
+        <form method="post" action="/admin/events/{{ ev.id }}/delete" class="inline-delete"
+              onsubmit="return confirm('Delete event \'{{ ev.display_name }}\'? This will remove all rooms, booths, and tokens.')">
+          <button type="submit" class="btn btn-sm btn-danger">Delete</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<div class="empty-state">
+  <p>No events created yet. Use the form above to create one.</p>
+</div>
+{% endif %}
+{% endblock %}

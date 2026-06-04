@@ -138,15 +138,15 @@ Existing free-form booth IDs (e.g. `hall-a-fr`) that happen to end with a valid 
 - `portal/booth_state.py`
   - async in-memory booth registry, participant role policy, active interpreter ownership, handoff state, chat history, event-scoped queries (`get_booth`, `get_booth_for_event`, `validate_booth_event`)
 - `portal/auth.py`
-  - JWT token creation and validation (PyJWT), participant token issuance with role claims
+  - JWT token creation and validation (PyJWT), participant token issuance with role claims, user authentication (bcrypt password hashing, user session tokens), admin token guard
 - `portal/config.py`
   - pydantic-settings configuration loaded from environment variables / `.env`
 - `portal/roles.py`
   - Permission enum, role-permission mapping, standalone permission helpers (mirrors Eventyay `core/permissions.py`)
 - `portal/models.py`
-  - SQLAlchemy 2.0 declarative models: Event, Room, DBBooth, InviteToken
+  - SQLAlchemy 2.0 declarative models: Event, Room, DBBooth, InviteToken, User, EventMembership, BoothMembership
 - `portal/database.py`
-  - async engine lifecycle, session factory, CRUD helpers for all models
+  - async engine lifecycle, session factory, CRUD helpers for all models (including user management, event memberships, and token revocation)
 - `alembic/`
   - database migration framework (async-aware env.py, version-controlled migration scripts)
 - `templates/base.html`
@@ -163,6 +163,20 @@ Existing free-form booth IDs (e.g. `hall-a-fr`) that happen to end with a valid 
   - WHEP WebRTC listener client — connects to MediaMTX WHEP endpoint for low-latency playback
 - `static/css/interpreter.css`
   - lightweight Eventyay-aligned styles
+- `static/css/admin.css`
+  - admin panel, login/register, account, and home page styles
+- `templates/home.html`
+  - public home page with event list, listener links, auth-aware header
+- `templates/register.html`
+  - user registration form (email, display name, password)
+- `templates/login.html`
+  - user login form (email, password)
+- `templates/account.html`
+  - user account page showing event memberships and account status
+- `templates/admin/`
+  - admin panel templates: dashboard, event/room/booth CRUD, user management, event members, login
+- `static/js/admin.js`
+  - admin panel client-side utilities (clipboard copy for invite links)
 - `mediamtx.yml`
   - MediaMTX configuration (WHIP ingest, WHEP playback, HLS fallback, Control API, overridePublisher for handoff)
 - `docker-compose.yml`
@@ -200,8 +214,12 @@ The persistent database stores configuration that must survive restarts (which e
 erDiagram
     Event ||--o{ Room : "has rooms"
     Event ||--o{ DBBooth : "has booths"
+    Event ||--o{ EventMembership : "has members"
     Room  ||--o{ DBBooth : "contains booths"
     DBBooth ||--o{ InviteToken : "has tokens"
+    DBBooth ||--o{ BoothMembership : "has members"
+    User  ||--o{ EventMembership : "has event memberships"
+    User  ||--o{ BoothMembership : "has booth memberships"
 
     Event {
         int id PK
@@ -232,6 +250,29 @@ erDiagram
         datetime expires_at "nullable"
         datetime used_at "nullable"
         string created_by
+        datetime created_at
+    }
+    User {
+        int id PK
+        string email UK
+        string display_name
+        string password_hash
+        bool is_admin "default: false"
+        bool is_active "default: true"
+        datetime created_at
+    }
+    EventMembership {
+        int id PK
+        int user_id FK
+        int event_id FK
+        string role
+        datetime created_at
+    }
+    BoothMembership {
+        int id PK
+        int user_id FK
+        int booth_id FK
+        string role
         datetime created_at
     }
 ```
@@ -442,7 +483,81 @@ Ingest responsibilities:
 - in Docker, `portal-data` volume persists the SQLite database across container restarts
 - in Docker, `DOCKER_HOST_ADDRESS` must be set to the host's LAN IP for JVB ICE to work
 
-## 13. Reliability and operational constraints
+## 13. User registration and authentication
+
+The portal supports self-service user registration and admin-managed role promotion.
+
+### Registration flow
+
+```mermaid
+sequenceDiagram
+    participant U as User Browser
+    participant P as Portal (FastAPI)
+    participant DB as Database
+
+    U->>P: GET /register
+    P->>U: Registration form
+    U->>P: POST /register (email, name, password)
+    P->>P: Validate input + hash password (bcrypt)
+    P->>DB: INSERT user (role=listener)
+    P->>P: Create JWT (user_token cookie)
+    P->>U: 303 → /account
+```
+
+### Key design decisions
+
+- **Default role is `listener`** — no role selection at registration. Users cannot self-assign admin, interpreter, or coordinator roles.
+- **Password hashing uses bcrypt** (`bcrypt.hashpw` with auto-generated salt). Plaintext passwords are never stored.
+- **User sessions use JWT cookies** (`user_token`, HttpOnly, SameSite=lax) — same pattern as admin tokens.
+- **Roles are per-event** — admins assign roles at `/admin/events/{id}/members/` via `EventMembership`. There is no global role field on the user.
+- **`is_admin` flag** on `User` grants access to the admin panel; it is toggled from `/admin/users/`.
+- **Deactivated accounts** cannot log in but are not deleted (preserving audit trail).
+
+### Admin user management
+
+The admin panel provides two layers of user management:
+
+**Site-wide** (`/admin/users/`):
+
+| Action | Route | Effect |
+|--------|-------|--------|
+| View all users | `GET /admin/users/` | Table with email, name, admin status, join date |
+| Toggle active | `POST /admin/users/{id}/toggle-active` | Enable/disable login without deleting |
+| Delete user | `POST /admin/users/{id}/delete` | Permanent removal |
+
+**Per-event** (`/admin/events/{id}/members/`):
+
+| Action | Route | Effect |
+|--------|-------|--------|
+| View all users + memberships | `GET /admin/events/{id}/members/` | Table with inline role dropdown for every user |
+| Assign / change role | `POST /admin/events/{id}/members/` | Create or update `EventMembership` (roles: `listener`, `interpreter`, `coordinator`, `event_admin`) |
+| Remove membership | `POST /admin/events/{id}/members/{mid}/delete` | Delete `EventMembership` row |
+
+## 14. Admin panel
+
+The admin panel (`/admin/`) provides a server-rendered management UI guarded by the `ADMIN_PASSWORD` env var.
+
+### Route structure
+
+| Route | Purpose |
+|-------|--------|
+| `GET /admin/login` | Admin login form |
+| `POST /admin/login` | Validate password, set `admin_token` cookie |
+| `GET /admin/logout` | Clear cookie, redirect to login |
+| `GET /admin/` | Dashboard with event cards, live status, MediaMTX health |
+| `GET /admin/events/` | Event list + create form |
+| `GET /admin/events/{id}/` | Event detail: rooms, booths, interpreter page links |
+| `GET /admin/events/{id}/rooms/` | Room list + create form |
+| `GET /admin/events/{id}/rooms/{id}/` | Room detail: schedule table, live status |
+| `GET /admin/events/{id}/rooms/{id}/booths/` | Booth list + create form |
+| `GET /admin/events/{id}/rooms/{id}/booths/{id}/` | Booth detail: WHEP URL, participants, invite tokens |
+| `GET /admin/users/` | User management: role assignment, activate/deactivate |
+
+### Auth guard
+
+Admin routes use `Depends(require_admin)` which checks for a valid `admin_token` JWT cookie with `admin=True` claim. Returns HTTP 403 if missing or invalid.
+
+## 15. Reliability and operational constraints
 
 - recommend headphones-first operation to reduce feedback risk
 - prevent local audio loopback in mic capture path

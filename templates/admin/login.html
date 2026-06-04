@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Admin Login — Voxbento</title>
+    <link rel="icon" type="image/x-icon" href="{{ url_for('static', path='favicon.ico') }}" />
+    <link rel="stylesheet" href="{{ url_for('static', path='css/admin.css') }}" />
+  </head>
+  <body>
+    <div class="login-page">
+      <div class="login-card">
+        <div class="login-brand">
+          <span class="brand-text">Voxbento</span>
+          <span class="login-subtitle">Interpretation Portal — Admin</span>
+        </div>
+        {% if error %}
+        <div class="alert alert-error">{{ error }}</div>
+        {% endif %}
+        <form method="post" action="/admin/login" class="login-form">
+          <label for="password">Admin Password</label>
+          <input type="password" id="password" name="password" placeholder="Enter admin password" required autofocus />
+          <button type="submit" class="btn btn-primary">Sign In</button>
+        </form>
+        <div class="login-footer">
+          <a href="/">← Back to Portal Home</a>
+        </div>
+      </div>
+    </div>
+  </body>
+</html>

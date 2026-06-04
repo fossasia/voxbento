@@ -1,10 +1,13 @@
 """SQLAlchemy declarative models for persistent portal entities.
 
-Four tables:
+Six tables:
 - ``events`` — top-level event container (slug is unique key)
 - ``rooms`` — rooms within an event (mapped to Eventyay rooms)
 - ``booths`` — interpretation booths (one per language per room)
 - ``invite_tokens`` — single-use invite tokens for booth access
+- ``users`` — registered user accounts
+- ``event_memberships`` — per-event role assignments for users
+- ``booth_memberships`` — per-booth role assignments for users (e.g. interpreter)
 
 Design decisions
 ~~~~~~~~~~~~~~~~
@@ -23,7 +26,7 @@ from __future__ import annotations
 import secrets
 from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, ForeignKey, Index, String
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, String
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, validates
 
 from portal.booth_identity import make_mediamtx_path, validate_event_slug, validate_language_code
@@ -122,6 +125,9 @@ class DBBooth(Base):
     invite_tokens: Mapped[list[InviteToken]] = relationship(
         back_populates='booth', cascade='all, delete-orphan',
     )
+    memberships: Mapped[list[BoothMembership]] = relationship(
+        back_populates='booth', cascade='all, delete-orphan',
+    )
 
     @validates('language_code')
     def _validate_language_code(self, _key: str, value: str) -> str:
@@ -182,3 +188,119 @@ class InviteToken(Base):
 
     def __repr__(self) -> str:
         return f'<InviteToken token={self.token[:8]}… role={self.role!r}>'
+
+
+# ---------------------------------------------------------------------------
+# User
+# ---------------------------------------------------------------------------
+
+
+class User(Base):
+    """Registered user account.
+
+    Users sign up with email + password. They have no global booth role —
+    roles are assigned per-event via ``EventMembership``.  The only
+    system-level flag is ``is_admin`` which grants admin panel access.
+    """
+
+    __tablename__ = 'users'
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    email: Mapped[str] = mapped_column(String(320), unique=True, index=True)
+    display_name: Mapped[str] = mapped_column(String(200))
+    password_hash: Mapped[str] = mapped_column(String(200))
+    is_admin: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+    memberships: Mapped[list[EventMembership]] = relationship(
+        back_populates='user', cascade='all, delete-orphan',
+    )
+    booth_memberships: Mapped[list[BoothMembership]] = relationship(
+        back_populates='user', cascade='all, delete-orphan',
+    )
+
+    @validates('email')
+    def _validate_email(self, _key: str, value: str) -> str:
+        value = value.strip().lower()
+        if '@' not in value or '.' not in value.split('@')[-1]:
+            raise ValueError('Invalid email address.')
+        return value
+
+    def __repr__(self) -> str:
+        return f'<User id={self.id} email={self.email!r}>'
+
+
+# ---------------------------------------------------------------------------
+# EventMembership
+# ---------------------------------------------------------------------------
+
+# Roles valid for event memberships (no super_admin — that's system-level)
+EVENT_ROLES = frozenset({'listener', 'interpreter', 'coordinator', 'event_admin'})
+BOOTH_ROLES = frozenset({'listener', 'interpreter', 'coordinator'})
+
+
+class EventMembership(Base):
+    """Per-event role assignment for a user.
+
+    A user can have different roles in different events. For example,
+    a user might be an interpreter for PyCon and a coordinator for FOSDEM.
+    """
+
+    __tablename__ = 'event_memberships'
+    __table_args__ = (
+        Index('ix_membership_user_event', 'user_id', 'event_id', unique=True),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey('users.id', ondelete='CASCADE'))
+    event_id: Mapped[int] = mapped_column(ForeignKey('events.id', ondelete='CASCADE'))
+    role: Mapped[str] = mapped_column(String(20))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+    user: Mapped[User] = relationship(back_populates='memberships')
+    event: Mapped[Event] = relationship()
+
+    @validates('role')
+    def _validate_role(self, _key: str, value: str) -> str:
+        if value not in EVENT_ROLES:
+            raise ValueError(f"Invalid event role '{value}'. Must be one of: {', '.join(sorted(EVENT_ROLES))}")
+        return value
+
+    def __repr__(self) -> str:
+        return f'<EventMembership user={self.user_id} event={self.event_id} role={self.role!r}>'
+
+
+# ---------------------------------------------------------------------------
+# BoothMembership
+# ---------------------------------------------------------------------------
+
+
+class BoothMembership(Base):
+    """Per-booth role assignment for a user.
+
+    Used to assign specific interpreters/listeners to specific booths.
+    """
+
+    __tablename__ = 'booth_memberships'
+    __table_args__ = (
+        Index('ix_membership_user_booth', 'user_id', 'booth_id', unique=True),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey('users.id', ondelete='CASCADE'))
+    booth_id: Mapped[int] = mapped_column(ForeignKey('booths.id', ondelete='CASCADE'))
+    role: Mapped[str] = mapped_column(String(20))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+    user: Mapped[User] = relationship(back_populates='booth_memberships')
+    booth: Mapped[DBBooth] = relationship(back_populates='memberships')
+
+    @validates('role')
+    def _validate_role(self, _key: str, value: str) -> str:
+        if value not in BOOTH_ROLES:
+            raise ValueError(f"Invalid booth role '{value}'. Must be one of: {', '.join(sorted(BOOTH_ROLES))}")
+        return value
+
+    def __repr__(self) -> str:
+        return f'<BoothMembership user={self.user_id} booth={self.booth_id} role={self.role!r}>'

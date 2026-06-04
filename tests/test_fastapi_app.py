@@ -12,8 +12,31 @@ import pytest
 from fastapi.testclient import TestClient
 
 from fastapi_app import app
+from portal.auth import create_participant_token, create_user_token
 
 client = TestClient(app)
+
+
+def _interpreter_cookie(event_slug: str = 'test-event', language_code: str = 'en') -> dict:
+    """Return a cookies dict with a valid interpreter session_token."""
+    tok = create_participant_token(
+        booth_id=1,
+        role='interpreter',
+        event_slug=event_slug,
+        language_code=language_code,
+    )
+    return {'session_token': tok}
+
+
+def _admin_user_cookie() -> dict:
+    """Return a cookies dict with a valid is_admin user_token."""
+    tok = create_user_token(user_id=1, email='admin@test.com', is_admin=True)
+    return {'user_token': tok}
+
+
+# Convenience alias: admin user token has event_admin role and no scope restriction,
+# so it works with any booth ID in WS tests.
+_ws_auth = _admin_user_cookie
 
 
 # ── REST & page tests ─────────────────────────────────────────────────────────
@@ -28,14 +51,21 @@ def test_healthz_ok():
     assert 'aiortc_available' not in body
 
 
-def test_home_redirects_to_demo_booth():
-    res = client.get('/', follow_redirects=False)
-    assert res.status_code in (301, 302, 307, 308)
-    assert 'demo-booth' in res.headers['location']
+def test_home_renders_home_page():
+    res = client.get('/')
+    assert res.status_code == 200
+    assert b'Voxbento' in res.content
+
+
+def test_interpreter_booth_requires_auth():
+    """Unauthenticated /interpreter/ requests redirect to login."""
+    res = client.get('/interpreter/test-booth', follow_redirects=False)
+    assert res.status_code == 303
+    assert '/login' in res.headers['location']
 
 
 def test_interpreter_booth_page_renders():
-    res = client.get('/interpreter/test-booth')
+    res = client.get('/interpreter/test-booth', cookies=_interpreter_cookie())
     assert res.status_code == 200
     assert b'test-booth' in res.content
 
@@ -43,7 +73,7 @@ def test_interpreter_booth_page_renders():
 def test_interpreter_booth_jitsi_url_uses_base_url():
     """Jitsi URL in the booth page must use the configured base URL, not
     a hard-coded http:// scheme, to avoid mixed-content on HTTPS deployments."""
-    res = client.get('/interpreter/test-booth')
+    res = client.get('/interpreter/test-booth', cookies=_interpreter_cookie())
     assert res.status_code == 200
     from portal.config import settings
     from fastapi_app import _make_jitsi_url
@@ -73,7 +103,7 @@ def test_interpreter_booth_jitsi_domain_matches_base_url_host():
     """
     from urllib.parse import urlparse
     from portal.config import settings
-    res = client.get('/interpreter/test-booth')
+    res = client.get('/interpreter/test-booth', cookies=_interpreter_cookie())
     assert res.status_code == 200
     expected_host = urlparse(settings.effective_jitsi_base_url).netloc
     assert f"data-jitsi-domain='{expected_host}'".encode() in res.content
@@ -107,7 +137,7 @@ def test_ingest_status_endpoint():
 # ── WebSocket protocol tests ──────────────────────────────────────────────────
 
 def test_ws_join_receives_joined_and_state():
-    with client.websocket_connect('/ws/booth/ws-test-booth') as ws:
+    with client.websocket_connect('/ws/booth/ws-test-booth', cookies=_ws_auth()) as ws:
         ws.send_text(json.dumps({
             'type': 'booth:join',
             'display_name': 'Alice',
@@ -127,8 +157,23 @@ def test_ws_join_receives_joined_and_state():
     assert 'state' in joined
 
 
+def test_ws_join_rejected_without_session():
+    """WebSocket join must be rejected when no session cookie is present."""
+    with client.websocket_connect('/ws/booth/no-session-booth') as ws:
+        ws.send_text(json.dumps({
+            'type': 'booth:join',
+            'display_name': 'Hacker',
+            'role': 'interpreter',
+            'language': 'English',
+            'channel_id': 'no-session-audio',
+        }))
+        msg = json.loads(ws.receive_text())
+    assert msg['type'] == 'booth:error'
+    assert 'No role' in msg['message']
+
+
 def test_ws_join_then_leave_broadcasts_state():
-    with client.websocket_connect('/ws/booth/leave-test-booth') as ws:
+    with client.websocket_connect('/ws/booth/leave-test-booth', cookies=_ws_auth()) as ws:
         ws.send_text(json.dumps({
             'type': 'booth:join',
             'display_name': 'Bob',
@@ -147,7 +192,7 @@ def test_ws_join_then_leave_broadcasts_state():
 
 
 def test_ws_chat_message():
-    with client.websocket_connect('/ws/booth/chat-test-booth') as ws:
+    with client.websocket_connect('/ws/booth/chat-test-booth', cookies=_ws_auth()) as ws:
         ws.send_text(json.dumps({
             'type': 'booth:join',
             'display_name': 'Charlie',
@@ -169,7 +214,7 @@ def test_ws_chat_message():
 
 
 def test_ws_invalid_json_returns_error():
-    with client.websocket_connect('/ws/booth/json-err-booth') as ws:
+    with client.websocket_connect('/ws/booth/json-err-booth', cookies=_ws_auth()) as ws:
         ws.send_text('not-valid-json')
         msg = json.loads(ws.receive_text())
 
@@ -177,7 +222,7 @@ def test_ws_invalid_json_returns_error():
 
 
 def test_ws_unknown_message_type_returns_error():
-    with client.websocket_connect('/ws/booth/unknown-msg-booth') as ws:
+    with client.websocket_connect('/ws/booth/unknown-msg-booth', cookies=_ws_auth()) as ws:
         ws.send_text(json.dumps({'type': 'something:weird'}))
         msg = json.loads(ws.receive_text())
 
@@ -185,7 +230,7 @@ def test_ws_unknown_message_type_returns_error():
 
 
 def test_ws_chat_before_join_returns_error():
-    with client.websocket_connect('/ws/booth/no-join-chat-booth') as ws:
+    with client.websocket_connect('/ws/booth/no-join-chat-booth', cookies=_ws_auth()) as ws:
         ws.send_text(json.dumps({'type': 'booth:chat', 'body': 'too early'}))
         msg = json.loads(ws.receive_text())
 
@@ -193,7 +238,7 @@ def test_ws_chat_before_join_returns_error():
 
 
 def test_ws_set_active_before_join_returns_error():
-    with client.websocket_connect('/ws/booth/no-join-sa-booth') as ws:
+    with client.websocket_connect('/ws/booth/no-join-sa-booth', cookies=_ws_auth()) as ws:
         ws.send_text(json.dumps({'type': 'booth:set-active', 'target_id': 'nobody'}))
         msg = json.loads(ws.receive_text())
 
@@ -201,7 +246,7 @@ def test_ws_set_active_before_join_returns_error():
 
 
 def test_ws_set_active_missing_target_returns_error():
-    with client.websocket_connect('/ws/booth/sa-missing-booth') as ws:
+    with client.websocket_connect('/ws/booth/sa-missing-booth', cookies=_ws_auth()) as ws:
         ws.send_text(json.dumps({'type': 'booth:join', 'display_name': 'Dave', 'role': 'interpreter', 'language': 'Italian', 'channel_id': 'sa-missing-booth-audio'}))
         ws.receive_text()
         ws.receive_text()
@@ -213,7 +258,7 @@ def test_ws_set_active_missing_target_returns_error():
 
 
 def test_ws_update_state_active_interpreter():
-    with client.websocket_connect('/ws/booth/upd-state-booth') as ws:
+    with client.websocket_connect('/ws/booth/upd-state-booth', cookies=_ws_auth()) as ws:
         ws.send_text(json.dumps({
             'type': 'booth:join',
             'display_name': 'Eve',
@@ -232,7 +277,7 @@ def test_ws_update_state_active_interpreter():
 
 def test_ws_disconnect_without_leave_auto_removes_participant():
     """Participant is cleaned up from registry when WS disconnects unexpectedly."""
-    with client.websocket_connect('/ws/booth/disc-booth') as ws:
+    with client.websocket_connect('/ws/booth/disc-booth', cookies=_ws_auth()) as ws:
         ws.send_text(json.dumps({
             'type': 'booth:join',
             'display_name': 'Frank',
@@ -256,7 +301,7 @@ def test_ws_active_interpreter_can_set_active():
     issues with TestClient. Permission logic is covered by test_booth_state.py;
     here we verify the WS protocol path produces a booth:state response.
     """
-    with client.websocket_connect('/ws/booth/self-active-booth') as ws:
+    with client.websocket_connect('/ws/booth/self-active-booth', cookies=_ws_auth()) as ws:
         ws.send_text(json.dumps({
             'type': 'booth:join',
             'display_name': 'Solo',
@@ -281,8 +326,8 @@ def test_ws_active_interpreter_can_set_active():
 def test_ws_standby_cannot_set_mic_active():
     """Standby interpreter (not active) receives booth:error when trying to set mic_active."""
     # Use two connections: IntA (first-joined = active), IntB (standby)
-    with client.websocket_connect('/ws/booth/standby-perm-booth') as ws_a, \
-         client.websocket_connect('/ws/booth/standby-perm-booth') as ws_b:
+    with client.websocket_connect('/ws/booth/standby-perm-booth', cookies=_ws_auth()) as ws_a, \
+         client.websocket_connect('/ws/booth/standby-perm-booth', cookies=_ws_auth()) as ws_b:
 
         # IntA joins first → becomes active; ws_b receives the broadcast immediately
         ws_a.send_text(json.dumps({
@@ -346,9 +391,9 @@ def test_ws_three_way_coordinator_flow():
         ws.receive_text()  # drain booth:state broadcast from own join
         return pid
 
-    with client.websocket_connect(f'/ws/booth/{booth}') as ws_a, \
-         client.websocket_connect(f'/ws/booth/{booth}') as ws_b, \
-         client.websocket_connect(f'/ws/booth/{booth}') as ws_coord:
+    with client.websocket_connect(f'/ws/booth/{booth}', cookies=_ws_auth()) as ws_a, \
+         client.websocket_connect(f'/ws/booth/{booth}', cookies=_ws_auth()) as ws_b, \
+         client.websocket_connect(f'/ws/booth/{booth}', cookies=_ws_auth()) as ws_coord:
 
         # IntA joins (no pending for ws_a; ws_b + ws_coord each queue 1 state msg)
         pid_a = ws_join(ws_a, 'IntA', 'interpreter', n_pending=0)
@@ -378,7 +423,7 @@ def test_ws_three_way_coordinator_flow():
 
 def test_ws_full_flow_join_update_chat_leave():
     """Single-connection end-to-end flow: join → update-state → chat → leave."""
-    with client.websocket_connect('/ws/booth/e2e-flow-booth') as ws:
+    with client.websocket_connect('/ws/booth/e2e-flow-booth', cookies=_ws_auth()) as ws:
         # 1. Join
         ws.send_text(json.dumps({
             'type': 'booth:join', 'display_name': 'E2E', 'role': 'interpreter',
@@ -436,7 +481,7 @@ def test_ws_auth_required_with_token(monkeypatch):
             ws.receive_text()
 
     # WebSocket WITH a valid JWT should be accepted.
-    with client.websocket_connect(f'/ws/booth/auth-test?token={jwt_token}') as ws:
+    with client.websocket_connect(f'/ws/booth/auth-test?token={jwt_token}', cookies=_ws_auth()) as ws:
         ws.send_text(json.dumps({
             'type': 'booth:join', 'display_name': 'AuthUser',
             'role': 'interpreter', 'language': 'English',
@@ -452,8 +497,8 @@ def test_ws_auth_required_with_token(monkeypatch):
 
 def test_ws_coordinator_can_switch_active_interpreter():
     """Coordinator assigns a second interpreter as active; state broadcast reflects the change."""
-    with client.websocket_connect('/ws/booth/switch-booth') as ws_a, \
-         client.websocket_connect('/ws/booth/switch-booth') as ws_coord:
+    with client.websocket_connect('/ws/booth/switch-booth', cookies=_ws_auth()) as ws_a, \
+         client.websocket_connect('/ws/booth/switch-booth', cookies=_ws_auth()) as ws_coord:
 
         # Interpreter A joins
         ws_a.send_text(json.dumps({
@@ -498,7 +543,7 @@ def test_whip_url_active_interpreter_gets_url():
     """Active interpreter receives a WHIP URL from the gated endpoint."""
     booth = 'whip-gate-booth'
     channel = f'{booth}-audio'
-    with client.websocket_connect(f'/ws/booth/{booth}') as ws:
+    with client.websocket_connect(f'/ws/booth/{booth}', cookies=_ws_auth()) as ws:
         ws.send_text(json.dumps({
             'type': 'booth:join', 'display_name': 'Active',
             'role': 'interpreter', 'language': 'English', 'channel_id': channel,
@@ -526,8 +571,8 @@ def test_whip_url_standby_interpreter_rejected():
     """Standby interpreter receives 403 from the WHIP URL endpoint."""
     booth = 'whip-standby-booth'
     channel = f'{booth}-audio'
-    with client.websocket_connect(f'/ws/booth/{booth}') as ws_a, \
-         client.websocket_connect(f'/ws/booth/{booth}') as ws_b:
+    with client.websocket_connect(f'/ws/booth/{booth}', cookies=_ws_auth()) as ws_a, \
+         client.websocket_connect(f'/ws/booth/{booth}', cookies=_ws_auth()) as ws_b:
 
         # IntA joins first → becomes active
         ws_a.send_text(json.dumps({
@@ -563,7 +608,7 @@ def test_whip_url_coordinator_rejected():
     """Coordinator role receives 403 from the WHIP URL endpoint."""
     booth = 'whip-coord-booth'
     channel = f'{booth}-audio'
-    with client.websocket_connect(f'/ws/booth/{booth}') as ws:
+    with client.websocket_connect(f'/ws/booth/{booth}', cookies=_ws_auth()) as ws:
         ws.send_text(json.dumps({
             'type': 'booth:join', 'display_name': 'Coord',
             'role': 'coordinator', 'language': 'English', 'channel_id': channel,
@@ -670,9 +715,16 @@ def test_list_event_booths_empty():
     assert res.json()['booths'] == []
 
 
+def test_interpreter_booth_by_identity_requires_auth():
+    """Unauthenticated /interpreter/{slug}/{lang} redirects to login."""
+    res = client.get('/interpreter/myevent/en', follow_redirects=False)
+    assert res.status_code == 303
+    assert '/login' in res.headers['location']
+
+
 def test_interpreter_booth_by_identity_page():
     """GET /interpreter/{event_slug}/{language_code} renders the booth page."""
-    res = client.get('/interpreter/myevent/en')
+    res = client.get('/interpreter/myevent/en', cookies=_interpreter_cookie('myevent', 'en'))
     assert res.status_code == 200
     assert b'myevent-en' in res.content
     assert b"data-event-slug='myevent'" in res.content
@@ -683,18 +735,53 @@ def test_interpreter_booth_by_identity_page():
 
 def test_interpreter_booth_by_identity_whip_whep_urls():
     """The identity-based booth page has correct WHIP and WHEP URLs."""
-    res = client.get('/interpreter/fossasia/fr')
+    res = client.get('/interpreter/fossasia/fr', cookies=_interpreter_cookie('fossasia', 'fr'))
     assert res.status_code == 200
     content = res.content.decode()
     assert 'fossasia/fr/whip' in content
     assert 'fossasia/fr/whep' in content
 
 
+def test_interpreter_booth_by_identity_no_role_returns_403():
+    """Registered user without event membership gets 403 on the booth page."""
+    # user_token without is_admin and no EventMembership in DB
+    tok = create_user_token(user_id=999, email='norole@test.com', is_admin=False)
+    res = client.get('/interpreter/norole-event/en', cookies={'user_token': tok})
+    assert res.status_code == 403
+
+
+def test_interpreter_booth_admin_user_gets_event_admin_role():
+    """A user with is_admin=True gets event_admin role without needing a membership."""
+    res = client.get('/interpreter/myevent/en', cookies=_admin_user_cookie())
+    assert res.status_code == 200
+    assert b"data-granted-role='event_admin'" in res.content
+
+
+def test_legacy_interpreter_booth_requires_auth():
+    """Unauthenticated legacy /interpreter/{booth_id} redirects to login."""
+    res = client.get('/interpreter/demo-booth', follow_redirects=False)
+    assert res.status_code == 303
+
+
 def test_legacy_interpreter_booth_still_works():
     """The old /interpreter/{booth_id} route still works for backward compat."""
-    res = client.get('/interpreter/demo-booth')
+    res = client.get('/interpreter/demo-booth', cookies=_interpreter_cookie())
     assert res.status_code == 200
     assert b'demo-booth' in res.content
+
+
+def test_listener_webrtc_requires_auth():
+    """Unauthenticated /listener-webrtc/ redirects to login."""
+    res = client.get('/listener-webrtc/demo-booth', follow_redirects=False)
+    assert res.status_code == 303
+    assert '/login' in res.headers['location']
+
+
+def test_listen_hls_requires_auth():
+    """Unauthenticated /listen/ redirects to login."""
+    res = client.get('/listen/demo-booth', follow_redirects=False)
+    assert res.status_code == 303
+    assert '/login' in res.headers['location']
 
 
 def test_full_bootstrap_flow():
@@ -710,14 +797,15 @@ def test_full_bootstrap_flow():
     booth_id = booth['booth_id']
     assert booth_id == 'bootstrap-es'
 
-    # 2. Interpreter accesses booth page
-    page_res = client.get('/interpreter/bootstrap/es')
+    # 2. Interpreter accesses booth page (with valid invite token)
+    page_res = client.get('/interpreter/bootstrap/es',
+                          cookies=_interpreter_cookie('bootstrap', 'es'))
     assert page_res.status_code == 200
     assert b'bootstrap-es' in page_res.content
 
     # 3. Interpreter joins via WebSocket
     channel = booth['mediamtx_path']
-    with client.websocket_connect(f'/ws/booth/{booth_id}') as ws:
+    with client.websocket_connect(f'/ws/booth/{booth_id}', cookies=_ws_auth()) as ws:
         ws.send_text(json.dumps({
             'type': 'booth:join',
             'display_name': 'Interpreter A',
@@ -783,7 +871,7 @@ def test_event_booth_state_does_not_autocreate():
 def test_event_booth_whip_url_active_interpreter():
     """Event-scoped WHIP URL returns URL for active interpreter."""
     client.post('/api/events/whipevent/booths', json={'language_code': 'en', 'language': 'English'})
-    with client.websocket_connect('/ws/booth/whipevent-en') as ws:
+    with client.websocket_connect('/ws/booth/whipevent-en', cookies=_ws_auth()) as ws:
         ws.send_text(json.dumps({
             'type': 'booth:join',
             'display_name': 'Interp',
@@ -810,7 +898,7 @@ def test_event_booth_whip_url_active_interpreter():
 def test_event_booth_whip_url_standby_rejected():
     """Event-scoped WHIP URL rejects standby interpreter."""
     client.post('/api/events/whiprej/booths', json={'language_code': 'en', 'language': 'English'})
-    with client.websocket_connect('/ws/booth/whiprej-en') as ws:
+    with client.websocket_connect('/ws/booth/whiprej-en', cookies=_ws_auth()) as ws:
         # First interpreter joins (becomes active)
         ws.send_text(json.dumps({
             'type': 'booth:join', 'display_name': 'Active',
@@ -820,7 +908,7 @@ def test_event_booth_whip_url_standby_rejected():
         ws.receive_text()  # state
 
         # Second interpreter joins (becomes standby)
-        with client.websocket_connect('/ws/booth/whiprej-en') as ws2:
+        with client.websocket_connect('/ws/booth/whiprej-en', cookies=_ws_auth()) as ws2:
             ws2.send_text(json.dumps({
                 'type': 'booth:join', 'display_name': 'Standby',
                 'role': 'interpreter', 'language': 'English', 'channel_id': 'whiprej/en',
@@ -874,7 +962,7 @@ def test_cross_event_mediamtx_path_isolation():
 def test_ws_cross_event_join_rejected():
     """WebSocket join with mismatched event_slug must be rejected."""
     client.post('/api/events/evtreal/booths', json={'language_code': 'en', 'language': 'English'})
-    with client.websocket_connect('/ws/booth/evtreal-en') as ws:
+    with client.websocket_connect('/ws/booth/evtreal-en', cookies=_ws_auth()) as ws:
         ws.send_text(json.dumps({
             'type': 'booth:join',
             'display_name': 'Attacker',
@@ -891,7 +979,7 @@ def test_ws_cross_event_join_rejected():
 def test_ws_cross_event_join_accepted_with_correct_slug():
     """WebSocket join with matching event_slug must succeed."""
     client.post('/api/events/evtok/booths', json={'language_code': 'en', 'language': 'English'})
-    with client.websocket_connect('/ws/booth/evtok-en') as ws:
+    with client.websocket_connect('/ws/booth/evtok-en', cookies=_ws_auth()) as ws:
         ws.send_text(json.dumps({
             'type': 'booth:join',
             'display_name': 'Good Interpreter',
@@ -911,7 +999,7 @@ def test_full_isolation_flow():
     client.post('/api/events/fest2/booths', json={'language_code': 'en', 'language': 'English'})
 
     # Join fest1 booth
-    with client.websocket_connect('/ws/booth/fest1-en') as ws:
+    with client.websocket_connect('/ws/booth/fest1-en', cookies=_ws_auth()) as ws:
         ws.send_text(json.dumps({
             'type': 'booth:join', 'display_name': 'Alice',
             'role': 'interpreter', 'language': 'English', 'channel_id': 'fest1/en',

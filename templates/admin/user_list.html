@@ -1,0 +1,87 @@
+{% extends "admin/base.html" %}
+
+{% block title %}Users{% endblock %}
+
+{% block breadcrumb %}
+<nav class="breadcrumb">
+  <a href="/admin/">Dashboard</a> › <span>Users</span>
+</nav>
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>Registered Users</h1>
+  <span class="badge">{{ users|length }} total</span>
+</div>
+
+{% if users %}
+<table class="data-table">
+  <thead>
+    <tr>
+      <th>ID</th>
+      <th>Email</th>
+      <th>Display Name</th>
+      <th>Admin</th>
+      <th>Status</th>
+      <th>Joined</th>
+      <th>Actions</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for user in users %}
+    <tr>
+      <td>{{ user.id }}</td>
+      <td><a href="/admin/users/{{ user.id }}/">{{ user.email }}</a></td>
+      <td><a href="/admin/users/{{ user.id }}/">{{ user.display_name }}</a></td>
+      <td>
+        {% if user.is_admin %}
+        <span class="badge badge-role badge-event_admin">Admin</span>
+        {% else %}
+        <span class="muted">—</span>
+        {% endif %}
+      </td>
+      <td>
+        {% if user.is_active %}
+        <span class="status-live">● Active</span>
+        {% else %}
+        <span class="status-offline">○ Inactive</span>
+        {% endif %}
+      </td>
+      <td>{{ user.created_at.strftime('%Y-%m-%d') if user.created_at else '—' }}</td>
+      <td class="actions-cell">
+        <form method="post" action="/admin/users/{{ user.id }}/toggle-active" class="inline-form">
+          <button type="submit" class="btn btn-sm {{ 'btn-warning' if user.is_active else 'btn-success' }}">
+            {{ 'Deactivate' if user.is_active else 'Activate' }}
+          </button>
+        </form>
+        <form method="post" action="/admin/users/{{ user.id }}/delete" class="inline-form"
+              onsubmit="return confirm('Delete user {{ user.email }}? This cannot be undone.')">
+          <button type="submit" class="btn btn-sm btn-danger">Delete</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<div class="empty-state">
+  <p>No registered users yet. Users can sign up at <a href="/register">/register</a>.</p>
+</div>
+{% endif %}
+
+<div class="admin-help-section">
+  <h3>How Roles Work</h3>
+  <p>Roles are assigned <strong>per event</strong>, not globally. To manage a user's role for a specific event, go to that event's detail page and click <strong>Members</strong>.</p>
+  <table class="data-table compact">
+    <thead>
+      <tr><th>Role</th><th>Scope</th><th>Permissions</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><strong>listener</strong></td><td>Event</td><td>Listen to interpretation streams and participate in booth chat.</td></tr>
+      <tr><td><strong>interpreter</strong></td><td>Event</td><td>Go live and provide real-time interpretation in assigned booths.</td></tr>
+      <tr><td><strong>coordinator</strong></td><td>Event</td><td>Assign active interpreters and manage handoffs within booths.</td></tr>
+      <tr><td><strong>event_admin</strong></td><td>Event</td><td>Manage booths, rooms, and generate invite tokens for the event.</td></tr>
+    </tbody>
+  </table>
+</div>
+{% endblock %}

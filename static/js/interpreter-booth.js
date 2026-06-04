@@ -29,6 +29,8 @@ const state = {
   whipBase: portal.dataset.whipBase || '',
   hlsBase: portal.dataset.hlsBase || '',
   micDeviceId: localStorage.getItem('mic-device-id') || '',
+  /** Role granted by the server (from JWT). Empty string = unknown / legacy. */
+  grantedRole: portal.dataset.grantedRole || '',
   preflight: {
     micPermission: 'pending',
     audioDevice: 'pending',
@@ -430,7 +432,7 @@ function setPreflightStatus(check, status, message = '') {
 
 async function validateHlsOutput() {
   if (!state.hlsBase || !state.channelId) return false
-  const url = `${state.hlsBase}/${encodeURIComponent(state.channelId)}/index.m3u8`
+  const url = `${state.hlsBase}/${state.channelId}/index.m3u8`
   try {
     const response = await fetch(url, { cache: 'no-store' })
     if (!response.ok) return false
@@ -578,13 +580,21 @@ function joinBooth() {
   const displayName = elements.displayName.value.trim()
   state.language = elements.language.value.trim() || state.language
   state.channelId = elements.channel.value.trim() || state.channelId
+
+  // The select value is the BOOTH role the user wants to join as.
+  // For roles like event_admin/super_admin, the select offers coordinator
+  // as default so admins don't accidentally take an interpreter slot.
+  // state.grantedRole is only used as fallback if the select has no value.
+  const requestedRole = elements.role.value || state.grantedRole || 'interpreter'
+
   wsSend({
     type: 'booth:join',
     display_name: displayName || 'Interpreter',
-    role: elements.role.value,
+    role: requestedRole,
     language: state.language,
     channel_id: state.channelId,
     participant_id: state.participantId,
+    event_slug: portal.dataset.eventSlug || '',
   })
 }
 
@@ -999,9 +1009,28 @@ function sendChatMessage() {
 // ── Rendering ─────────────────────────────────────────────────────────────────
 
 function render() {
+  renderRoleControls()
   renderParticipants()
   renderChat()
   renderMicControls()
+}
+
+/**
+ * Show/hide controls that are not available to the current role.
+ * - Listeners: hide Go Live, Relay, mic controls (they can only chat + observe).
+ * - Interpreters: show Go Live + Relay, hide coordinator-only actions.
+ * - Coordinators/admins: show all controls.
+ */
+function renderRoleControls() {
+  const role = state.grantedRole
+  if (!role) return  // unknown / legacy path — leave everything visible
+
+  const isListener = role === 'listener'
+  const canGo = !isListener  // interpreters + coordinators + admins can go live
+
+  if (elements.goLive) elements.goLive.style.display = canGo ? '' : 'none'
+  if (elements.passRelay) elements.passRelay.style.display = canGo ? '' : 'none'
+  if (elements.ctrlCompound) elements.ctrlCompound.style.display = canGo ? '' : 'none'
 }
 
 function renderParticipants() {
@@ -1132,8 +1161,8 @@ function renderMicControls() {
   elements.passRelay.disabled = !joinedActiveInterpreter
   elements.micDeviceSelect.disabled = state.ingestConnected
 
-  if (state.ingestConnected && state.hlsBase) {
-    const url = `${state.hlsBase}/${encodeURIComponent(state.channelId)}/index.m3u8`
+  if (state.ingestConnected && state.boothId) {
+    const url = `${window.location.origin}/listener-webrtc/${encodeURIComponent(state.boothId)}`
     elements.hlsUrlDisplay.textContent = url
     elements.hlsUrlRow.classList.remove('hidden')
   } else {

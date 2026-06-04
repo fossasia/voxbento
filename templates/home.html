@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Voxbento Interpretation Portal</title>
+    <link rel="icon" type="image/x-icon" href="{{ url_for('static', path='favicon.ico') }}" />
+    <link rel="stylesheet" href="{{ url_for('static', path='css/admin.css') }}" />
+  </head>
+  <body>
+    <header class="portal-home-header">
+      <a class="brand" href="/">Voxbento</a>
+      <nav class="header-nav">
+        {% if current_user %}
+        <a href="/account">My Account</a>
+        <a href="/logout">Logout</a>
+        {% else %}
+        <a href="/login">Sign In</a>
+        <a href="/register">Register</a>
+        {% endif %}
+        <a href="/admin/login">Admin Panel</a>
+      </nav>
+    </header>
+
+    <main class="home-main">
+      <section class="hero">
+        <h1>Interpretation Portal</h1>
+        <p class="hero-subtitle">Real-time multilingual interpretation for live events — browser-first, no external software required.</p>
+      </section>
+
+      {% if my_booths %}
+      <section class="home-section">
+        <h2>Your Assigned Booths</h2>
+        <div class="card-grid">
+          {% for b in my_booths %}
+          <div class="card event-card home-event-card">
+            <div class="card-header">
+              <span class="card-title">{{ b.language_name }} — {{ b.event_name }}</span>
+              {% if b.is_live %}
+              <span class="status-live">● LIVE</span>
+              {% endif %}
+            </div>
+            <div class="card-body">
+              <p style="margin-bottom: 0;">Role: <span class="badge badge-role badge-{{ b.membership.role }}">{{ b.membership.role }}</span></p>
+            </div>
+            <div class="card-footer">
+              <a href="/interpreter/{{ b.event_slug }}/{{ b.language_code }}" class="btn btn-primary" style="width: 100%; text-align: center;">Open Booth ↗</a>
+            </div>
+          </div>
+          {% endfor %}
+        </div>
+      </section>
+      {% endif %}
+
+      {% if events %}
+      <section class="home-section">
+        <h2>Active Events</h2>
+        <div class="card-grid">
+          {% for ed in events %}
+          <div class="card event-card home-event-card">
+            <div class="card-header">
+              <span class="card-title">{{ ed.event.display_name }}</span>
+              {% if ed.live_count > 0 %}
+              <span class="status-live">● {{ ed.live_count }} live</span>
+              {% endif %}
+            </div>
+            <div class="card-body">
+              {% if ed.booths %}
+              <h4>Interpretation Booths</h4>
+              <table class="data-table compact home-table">
+                <thead>
+                  <tr>
+                    <th>Language</th>
+                    <th>Status</th>
+                    <th>Listen</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {% for bs in ed.booths %}
+                  <tr>
+                    <td>{{ bs.db.language_name }}</td>
+                    <td>
+                      {% if bs.is_live %}
+                      <span class="status-live">● Live</span>
+                      {% else %}
+                      <span class="status-offline">○</span>
+                      {% endif %}
+                    </td>
+                    <td style="display: flex; gap: 0.5rem; align-items: center;">
+                      <a href="/listener-webrtc/{{ bs.booth_id }}" class="btn btn-sm">Listen ↗</a>
+                      {% if bs.can_interpret %}
+                      <a href="/interpreter/{{ ed.event.slug }}/{{ bs.db.language_code }}" class="btn btn-sm btn-outline" style="border-color: #007bff; color: #007bff; background: transparent;">Open Booth ↗</a>
+                      {% endif %}
+                    </td>
+                  </tr>
+                  {% endfor %}
+                </tbody>
+              </table>
+              {% else %}
+              <p class="muted">No interpretation booths configured yet.</p>
+              {% endif %}
+            </div>
+          </div>
+          {% endfor %}
+        </div>
+      </section>
+      {% else %}
+      <section class="home-section">
+        <div class="empty-state home-empty">
+          {% if current_user %}
+          <p>No events are currently configured. Admins can create events in the <a href="/admin/">Admin Panel</a>.</p>
+          {% else %}
+          <p>No events are currently configured. Admins can <a href="/admin/login">sign in</a> to set up events and booths.</p>
+          {% endif %}
+        </div>
+      </section>
+      {% endif %}
+
+      <section class="home-section roles-section">
+        <h2>How It Works</h2>
+        <div class="role-cards">
+          <div class="role-card">
+            <div class="role-icon">🎤</div>
+            <h3>Interpreters</h3>
+            <p>Join your assigned booth via invite link, go live, and provide real-time interpretation. No OBS or external tools needed.</p>
+          </div>
+          <div class="role-card">
+            <div class="role-icon">🎧</div>
+            <h3>Listeners</h3>
+            <p>Select your language and listen to interpretation in real-time with sub-second latency via WebRTC.</p>
+          </div>
+          <div class="role-card">
+            <div class="role-icon">📋</div>
+            <h3>Coordinators</h3>
+            <p>Manage interpreter assignments, monitor booth status, and coordinate handoffs between interpreters.</p>
+          </div>
+          <div class="role-card">
+            <div class="role-icon">⚙️</div>
+            <h3>Admins</h3>
+            <p>Set up events, rooms, and booths. Generate invite tokens and monitor live status from the admin panel.</p>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="admin-footer">
+      <span>Voxbento Interpretation Portal — Powered by FastAPI + MediaMTX</span>
+    </footer>
+  </body>
+</html>

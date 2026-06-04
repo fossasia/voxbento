@@ -12,6 +12,7 @@ services:
       PORT: "8000"
       SECRET_KEY: "${SECRET_KEY:-change-me}"
       BOOTH_ACCESS_TOKEN: "${BOOTH_ACCESS_TOKEN:-}"
+      ADMIN_PASSWORD: "${ADMIN_PASSWORD:-}"
       JWT_SECRET: "${JWT_SECRET:-}"
       JWT_EXPIRY_SECONDS: "${JWT_EXPIRY_SECONDS:-86400}"
       DEFAULT_JITSI_ROOM: "${DEFAULT_JITSI_ROOM:-eventyay-stage-room}"

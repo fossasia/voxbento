@@ -1,0 +1,84 @@
+{% extends "admin/base.html" %}
+{% block title %}Booths — {{ room.display_name }}{% endblock %}
+
+{% block breadcrumb %}
+<nav class="breadcrumb">
+  <a href="/admin/">Dashboard</a> <span>/</span>
+  <a href="/admin/events/">Events</a> <span>/</span>
+  <a href="/admin/events/{{ event.id }}/">{{ event.display_name }}</a> <span>/</span>
+  <a href="/admin/events/{{ event.id }}/rooms/">Rooms</a> <span>/</span>
+  <a href="/admin/events/{{ event.id }}/rooms/{{ room.id }}/">{{ room.display_name }}</a> <span>/</span>
+  <span>Booths</span>
+</nav>
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>Booths — {{ room.display_name }}</h1>
+  <div class="header-meta">
+    <span class="meta-text">Event: {{ event.display_name }}</span>
+  </div>
+</div>
+
+<div class="form-card">
+  <h3>Add Interpretation Booth</h3>
+  <form method="post" action="/admin/events/{{ event.id }}/rooms/{{ room.id }}/booths/" class="inline-form">
+    <input type="text" name="language_code" placeholder="Language code (e.g. en, fr, zh)" required
+           pattern="^[a-z]{2}$" maxlength="2" title="Two-letter ISO 639-1 code" />
+    <input type="text" name="language_name" placeholder="Language name (e.g. English, French)" required />
+    <button type="submit" class="btn btn-primary">Add Booth</button>
+  </form>
+</div>
+
+{% if booths %}
+<table class="data-table schedule-table">
+  <thead>
+    <tr>
+      <th>Language</th>
+      <th>Code</th>
+      <th>Status</th>
+      <th>Interpreter Page</th>
+      <th>Listener Page (WHEP)</th>
+      <th>Actions</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for bs in booths %}
+    <tr class="{{ 'row-live' if bs.is_live else '' }}">
+      <td><strong>{{ bs.db.language_name }}</strong></td>
+      <td><code>{{ bs.db.language_code }}</code></td>
+      <td>
+        {% if bs.is_live %}
+        <span class="status-live">● LIVE</span>
+        {% else %}
+        <span class="status-offline">○ Offline</span>
+        {% endif %}
+      </td>
+      <td>
+        <a href="/interpreter/{{ event.slug }}/{{ bs.db.language_code }}" target="_blank" class="link-external">
+          Open Booth ↗
+        </a>
+      </td>
+      <td>
+        <a href="/listener-webrtc/{{ bs.booth_id }}" target="_blank" class="link-external">
+          Listen ↗
+        </a>
+      </td>
+      <td>
+        <a href="/admin/events/{{ event.id }}/rooms/{{ room.id }}/booths/{{ bs.db.id }}/" class="btn btn-sm">Details</a>
+        <form method="post" action="/admin/events/{{ event.id }}/rooms/{{ room.id }}/booths/{{ bs.db.id }}/delete"
+              class="inline-delete"
+              onsubmit="return confirm('Delete {{ bs.db.language_name }} booth?')">
+          <button type="submit" class="btn btn-sm btn-danger">Delete</button>
+        </form>
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<div class="empty-state">
+  <p>No booths in this room. Use the form above to add one.</p>
+</div>
+{% endif %}
+{% endblock %}

@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>{% block title %}Admin Panel{% endblock %} — Voxbento</title>
+    <link rel="icon" type="image/x-icon" href="{{ url_for('static', path='favicon.ico') }}" />
+    <link rel="stylesheet" href="{{ url_for('static', path='css/admin.css') }}" />
+    {% block head %}{% endblock %}
+  </head>
+  <body>
+    <header class="admin-header">
+      <div class="header-left">
+        <a class="brand" href="/admin/">Voxbento</a>
+        <span class="header-badge">Admin</span>
+      </div>
+      <nav class="header-nav">
+        <a href="/admin/">Dashboard</a>
+        <a href="/admin/events/">Events</a>
+        <a href="/admin/users/">Users</a>
+        <a href="/" target="_blank">Portal Home</a>
+        <a href="/admin/logout" class="nav-logout">Logout</a>
+      </nav>
+    </header>
+
+    {% block breadcrumb %}{% endblock %}
+
+    <main class="admin-main">
+      {% block content %}{% endblock %}
+    </main>
+
+    <footer class="admin-footer">
+      <span>Voxbento Interpretation Portal — Admin Panel</span>
+    </footer>
+  </body>
+</html>
