@@ -154,7 +154,7 @@
     <h3>Assign Member</h3>
     <form method="post" action="/admin/events/{{ event.id }}/rooms/{{ room.id }}/booths/{{ booth.id }}/members/" class="token-form">
       <div class="form-row">
-        <div class="form-group" style="flex: 2;">
+        <div class="form-group">
           <label for="member_email">User Email</label>
           <input type="email" name="email" id="member_email" placeholder="user@example.com" required />
         </div>
@@ -167,7 +167,7 @@
           </select>
         </div>
         <div class="form-group form-group-btn">
-          <button type="submit" class="btn btn-primary">Assign Member</button>
+          <button type="submit" class="btn btn-primary">Assign</button>
         </div>
       </div>
     </form>

@@ -383,10 +383,6 @@ async def interpreter_booth_by_identity(
 
     granted_role = resolve_booth_role(payload)
 
-    # is_admin flag in JWT always grants event_admin — no DB lookup needed.
-    if granted_role is None and payload.get('is_admin'):
-        granted_role = 'event_admin'
-
     # If role is still None the user is registered but has no role claim in the JWT.
     # Check BoothMembership from the DB for this exact booth first,
     # then fallback to EventMembership (for coordinators/event_admins).
@@ -410,6 +406,10 @@ async def interpreter_booth_by_identity(
                             break
         except Exception:
             pass
+
+    # is_admin flag in JWT grants event_admin if no specific role is assigned.
+    if granted_role is None and payload.get('is_admin'):
+        granted_role = 'event_admin'
 
     if granted_role is None:
         # User is authenticated but has no role for this event
@@ -1596,10 +1596,6 @@ async def ws_booth(websocket: WebSocket, booth_id: str) -> None:
 
     ws_granted_role = resolve_booth_role(ws_session_payload)
 
-    # is_admin in JWT always grants event_admin at the WS level too.
-    if ws_granted_role is None and ws_session_payload is not None and ws_session_payload.get('is_admin'):
-        ws_granted_role = 'event_admin'
-
     # For registered users whose token carries no 'role' claim, fall back to
     # BoothMembership then EventMembership in the DB.
     if ws_granted_role is None and ws_session_payload is not None and ws_session_payload.get('sub'):
@@ -1630,6 +1626,10 @@ async def ws_booth(websocket: WebSocket, booth_id: str) -> None:
                             break
         except Exception:
             pass
+
+    # is_admin in JWT grants event_admin at the WS level if no specific role is assigned.
+    if ws_granted_role is None and ws_session_payload is not None and ws_session_payload.get('is_admin'):
+        ws_granted_role = 'event_admin'
 
     # Validate invite/participant token scope: the token's (event_slug, language_code)
     # must match the booth being connected to.  This prevents a valid token for booth A

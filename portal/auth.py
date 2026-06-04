@@ -221,9 +221,6 @@ def resolve_booth_role(payload: dict | None) -> str | None:
     # Invite / participant token
     if 'role' in payload:
         return payload['role']
-    # Registered user — is_admin maps to event_admin for booth purposes
-    if payload.get('is_admin'):
-        return 'event_admin'
     return None
 
 
