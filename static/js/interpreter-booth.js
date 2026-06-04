@@ -99,16 +99,16 @@ boot().catch((error) => {
 })
 
 async function boot() {
-  // Start preflight checks immediately so they run in parallel with initialization
-  runPreflightChecks().catch((error) => {
-    const msg = error instanceof Error ? error.message : String(error)
-    showError(`Preflight checks failed: ${msg}`)
-  })
-
   // Jitsi URL is set by the template — don't overwrite it
   await fetchBoothState()
   await fetchIngestReachability()
   await populateMicDevices()
+
+  // Run preflights asynchronously before blocking on JWT/WS connection
+  runPreflightChecks().catch((error) => {
+    const msg = error instanceof Error ? error.message : String(error)
+    showError(`Preflight checks failed: ${msg}`)
+  })
   await acquireJwt()
   await connectWebSocket()
   bindEventHandlers()

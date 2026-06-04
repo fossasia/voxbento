@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import datetime, timedelta, timezone
 
 import bcrypt
+
+logger = logging.getLogger(__name__)
 import jwt
 from fastapi import HTTPException, Request, WebSocket, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -242,8 +245,11 @@ async def resolve_booth_role(payload: dict | None, booth_id: str | None = None) 
                         if m.event and m.event.slug == event_slug:
                             granted_role = m.role
                             break
-        except Exception:
+        except ValueError:
+            # booth_id is likely a legacy format (e.g., 'demo-booth') that cannot be parsed
             pass
+        except Exception as e:
+            logger.error("Failed to resolve booth role from database: %s", e)
 
     # 3. Global admin fallback
     if granted_role is None and payload.get('is_admin'):
