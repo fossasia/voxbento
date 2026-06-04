@@ -16,8 +16,8 @@ services:
       JWT_SECRET: "${JWT_SECRET:-}"
       JWT_EXPIRY_SECONDS: "${JWT_EXPIRY_SECONDS:-86400}"
       DEFAULT_JITSI_ROOM: "${DEFAULT_JITSI_ROOM:-eventyay-stage-room}"
-      JITSI_DOMAIN: "${JITSI_DOMAIN:-localhost:8080}"
-      JITSI_BASE_URL: "${JITSI_BASE_URL:-}"
+      JITSI_DOMAIN: "${JITSI_DOMAIN:-jitsi.voxbento.com}"
+      JITSI_BASE_URL: "${JITSI_BASE_URL:-https://jitsi.voxbento.com}"
       # Browser-facing URLs — must be reachable from the user's machine
       MEDIAMTX_WHIP_BASE: "${MEDIAMTX_WHIP_BASE:-http://localhost:8889}"
 

@@ -20,7 +20,7 @@ class Settings(BaseSettings):
     secret_key: str = 'change-me'
     booth_access_token: str = ''
     default_jitsi_room: str = 'eventyay-stage-room'
-    jitsi_domain: str = 'localhost:8080'
+    jitsi_domain: str = 'jitsi.voxbento.com'
     # Full Jitsi base URL including scheme. When empty, defaults to
     # http://{jitsi_domain}. Set to https://... for production HTTPS.
     jitsi_base_url: str = ''
