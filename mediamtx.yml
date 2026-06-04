@@ -33,8 +33,8 @@ webrtcAdditionalHosts:
   - 127.0.0.1
   # Production: add your server's public IP and domain so browsers can reach
   # the WebRTC UDP port (8189) from outside Docker. Update these for your deployment.
-  # - 100.56.6.172   # production server IP (set via DOCKER_HOST_ADDRESS in .env)
-  # - voxbento.com   # public hostname
+  - 100.56.6.172   # production server IP (set via DOCKER_HOST_ADDRESS in .env)
+  - voxbento.com   # public hostname
 # Allow the browser JS on :8000 (FastAPI portal) to POST WHEP/WHIP offers
 # (cross-origin).  Plural form required by MediaMTX ≥ 1.18.
 webrtcAllowOrigins: ['*']
