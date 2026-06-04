@@ -265,7 +265,7 @@ async def test_booth_mediamtx_path_not_column(db: AsyncSession):
 
 @pytest.mark.anyio
 async def test_no_hls_url_column(db: AsyncSession):
-    """No hls_url column in any table — WHEP is primary."""
+    """No hls_url column in any table — WHEP is the only playback protocol."""
     for model in [Event, Room, DBBooth, InviteToken]:
         columns = {c.name for c in model.__table__.columns}
         assert 'hls_url' not in columns

@@ -113,13 +113,13 @@ def _make_jitsi_url(base_url: str, room: str) -> str:
 
 
 async def _check_mediamtx() -> bool:
-    """Non-blocking reachability check for MediaMTX HLS endpoint."""
-    base = settings.effective_mediamtx_internal_base
+    """Non-blocking reachability check for MediaMTX API endpoint."""
+    base = settings.mediamtx_api_base
     if not base:
         return False
     try:
         async with httpx.AsyncClient(timeout=2.0) as client:
-            r = await client.head(f'{base}/')
+            r = await client.get(f'{base}/v3/paths/list')
         return r.status_code < 500
     except (httpx.ConnectError, httpx.TimeoutException, httpx.RequestError):
         return False
@@ -418,7 +418,6 @@ async def interpreter_booth_by_identity(
             'jitsi_domain': settings.effective_jitsi_domain,
             'jitsi_base_url': settings.effective_jitsi_base_url,
             'mediamtx_whip_base': settings.mediamtx_whip_base,
-            'mediamtx_hls_base': settings.mediamtx_hls_base,
             'js_version': _JS_CACHE_BUST,
         },
     )
@@ -473,46 +472,11 @@ async def interpreter_booth(
             'jitsi_domain': settings.effective_jitsi_domain,
             'jitsi_base_url': settings.effective_jitsi_base_url,
             'mediamtx_whip_base': settings.mediamtx_whip_base,
-            'mediamtx_hls_base': settings.mediamtx_hls_base,
             'js_version': _JS_CACHE_BUST,
         },
     )
 
 
-@app.get('/listen/{booth_id}')
-async def listen_booth(
-    request: Request,
-    booth_id: str,
-    language: str = 'English',
-    channel: str | None = Query(None),
-) -> Any:
-    """Listener page with hls.js auto-recovery for seamless handoff."""
-    payload = get_booth_session(request)
-    if payload is None:
-        return RedirectResponse(
-            url=f'/login?next=/listen/{booth_id}',
-            status_code=status.HTTP_303_SEE_OTHER,
-        )
-    if channel:
-        channel_id = channel
-    else:
-        try:
-            from portal.booth_identity import booth_id_to_mediamtx_path
-            channel_id = booth_id_to_mediamtx_path(booth_id)
-        except ValueError:
-            channel_id = f'{booth_id}-audio'
-
-    hls_url = f'{settings.mediamtx_hls_base}/{channel_id}/index.m3u8'
-    return templates.TemplateResponse(
-        request,
-        'listener.html',
-        {
-            'booth_id': booth_id,
-            'language': language,
-            'channel_id': channel_id,
-            'hls_url': hls_url,
-        },
-    )
 
 
 @app.get('/listener-webrtc/{booth_id}')
@@ -680,7 +644,7 @@ async def event_booth_whip_url(
     return await _resolve_whip_url(booth_id, participant_id, language_code.upper(), channel_id)
 
 
-@app.get('/api/interpreter/status/{channel_id}')
+@app.get('/api/interpreter/status/{channel_id:path}')
 async def ingest_status_api(channel_id: str) -> dict:
     """Returns MediaMTX reachability — used by the frontend preflight check."""
     return {
