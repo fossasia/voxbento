@@ -11,6 +11,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Any
+from urllib.parse import urlparse
 
 import httpx
 import jwt as pyjwt
@@ -35,6 +36,13 @@ _BASE_DIR = Path(__file__).resolve().parent
 # Appended to static JS URLs so the browser always fetches fresh JS after
 # a server restart (prevents stale-cache issues during development).
 _JS_CACHE_BUST = str(int(time.time()))
+
+
+def safe_redirect(url: str, status_code: int = status.HTTP_303_SEE_OTHER) -> RedirectResponse:
+    url = url.replace('\\', '')
+    if not urlparse(url).netloc and not urlparse(url).scheme:
+        return RedirectResponse(url=url, status_code=status_code)
+    return RedirectResponse(url='/', status_code=status_code)
 
 booths = BoothRegistry()
 
@@ -376,7 +384,7 @@ async def interpreter_booth_by_identity(
     """
     payload = get_booth_session(request)
     if payload is None:
-        return RedirectResponse(
+        return safe_redirect(
             url=f'/login?next=/interpreter/{event_slug}/{language_code}',
             status_code=status.HTTP_303_SEE_OTHER,
         )
@@ -435,7 +443,7 @@ async def interpreter_booth(
     """Legacy booth URL (no event scope). Requires a valid session."""
     payload = get_booth_session(request)
     if payload is None:
-        return RedirectResponse(
+        return safe_redirect(
             url=f'/login?next=/interpreter/{booth_id}',
             status_code=status.HTTP_303_SEE_OTHER,
         )
@@ -489,7 +497,7 @@ async def listen_booth(
     """Listener page with hls.js auto-recovery for seamless handoff."""
     payload = get_booth_session(request)
     if payload is None:
-        return RedirectResponse(
+        return safe_redirect(
             url=f'/login?next=/listen/{booth_id}',
             status_code=status.HTTP_303_SEE_OTHER,
         )
@@ -525,7 +533,7 @@ async def listen_webrtc_booth(
     """Listener page using WHEP/WebRTC for low-latency playback."""
     payload = get_booth_session(request)
     if payload is None:
-        return RedirectResponse(
+        return safe_redirect(
             url=f'/login?next=/listener-webrtc/{booth_id}',
             status_code=status.HTTP_303_SEE_OTHER,
         )
@@ -827,7 +835,7 @@ async def _handle_update_state(ws: WebSocket, session: Session, data: dict) -> N
 async def register_page(request: Request):
     current_user = await get_current_user(request)
     if current_user:
-        return RedirectResponse(url='/account', status_code=status.HTTP_303_SEE_OTHER)
+        return safe_redirect(url='/account', status_code=status.HTTP_303_SEE_OTHER)
     return templates.TemplateResponse(request, 'register.html', {})
 
 
@@ -863,7 +871,7 @@ async def register_submit(request: Request):
                     password_hash=pw_hash,
                 )
                 token = create_user_token(user_id=user.id, email=user.email, is_admin=user.is_admin)
-                response = RedirectResponse(url='/account', status_code=status.HTTP_303_SEE_OTHER)
+                response = safe_redirect(url='/account', status_code=status.HTTP_303_SEE_OTHER)
                 response.set_cookie(
                     key='user_token', value=token,
                     httponly=True, samesite='lax', max_age=settings.jwt_expiry_seconds,
@@ -881,7 +889,7 @@ async def register_submit(request: Request):
 async def user_login_page(request: Request):
     current_user = await get_current_user(request)
     if current_user:
-        return RedirectResponse(url='/account', status_code=status.HTTP_303_SEE_OTHER)
+        return safe_redirect(url='/account', status_code=status.HTTP_303_SEE_OTHER)
     return templates.TemplateResponse(request, 'login.html', {})
 
 
@@ -910,7 +918,7 @@ async def user_login_submit(request: Request):
         )
 
     token = create_user_token(user_id=user.id, email=user.email, is_admin=user.is_admin)
-    response = RedirectResponse(url='/account', status_code=status.HTTP_303_SEE_OTHER)
+    response = safe_redirect(url='/account', status_code=status.HTTP_303_SEE_OTHER)
     response.set_cookie(
         key='user_token', value=token,
         httponly=True, samesite='lax', max_age=settings.jwt_expiry_seconds,
@@ -920,7 +928,7 @@ async def user_login_submit(request: Request):
 
 @app.get('/logout')
 async def user_logout(request: Request):
-    response = RedirectResponse(url='/', status_code=status.HTTP_303_SEE_OTHER)
+    response = safe_redirect(url='/', status_code=status.HTTP_303_SEE_OTHER)
     response.delete_cookie('user_token')
     return response
 
@@ -931,12 +939,12 @@ async def account_page(request: Request):
 
     current_user = await get_current_user(request)
     if current_user is None:
-        return RedirectResponse(url='/login', status_code=status.HTTP_303_SEE_OTHER)
+        return safe_redirect(url='/login', status_code=status.HTTP_303_SEE_OTHER)
 
     async with get_session() as session:
         user = await get_user_by_id(session, int(current_user['sub']))
         if user is None:
-            response = RedirectResponse(url='/login', status_code=status.HTTP_303_SEE_OTHER)
+            response = safe_redirect(url='/login', status_code=status.HTTP_303_SEE_OTHER)
             response.delete_cookie('user_token')
             return response
         memberships = await list_memberships_for_user(session, user.id)
@@ -951,7 +959,7 @@ async def account_page(request: Request):
 async def admin_login_page(request: Request):
     user = await get_current_user(request)
     if user and user.get('is_admin'):
-        return RedirectResponse(url='/admin/', status_code=status.HTTP_303_SEE_OTHER)
+        return safe_redirect(url='/admin/', status_code=status.HTTP_303_SEE_OTHER)
     return templates.TemplateResponse(request, 'admin/login.html', {})
 
 
@@ -967,7 +975,7 @@ async def admin_login_submit(request: Request):
             status_code=status.HTTP_403_FORBIDDEN,
         )
     token = create_admin_token()
-    response = RedirectResponse(url='/admin/', status_code=status.HTTP_303_SEE_OTHER)
+    response = safe_redirect(url='/admin/', status_code=status.HTTP_303_SEE_OTHER)
     response.set_cookie(
         key='admin_token', value=token,
         httponly=True, samesite='lax', max_age=settings.jwt_expiry_seconds,
@@ -977,7 +985,7 @@ async def admin_login_submit(request: Request):
 
 @app.get('/admin/logout')
 async def admin_logout():
-    response = RedirectResponse(url='/admin/login', status_code=status.HTTP_303_SEE_OTHER)
+    response = safe_redirect(url='/admin/login', status_code=status.HTTP_303_SEE_OTHER)
     response.delete_cookie('admin_token')
     return response
 
@@ -1037,13 +1045,13 @@ async def admin_create_event(request: Request):
     slug = form.get('slug', '').strip()
     display_name = form.get('display_name', '').strip()
     if not slug or not display_name:
-        return RedirectResponse(url='/admin/events/', status_code=status.HTTP_303_SEE_OTHER)
+        return safe_redirect(url='/admin/events/', status_code=status.HTTP_303_SEE_OTHER)
     try:
         async with get_session() as session:
             await create_event(session, slug=slug, display_name=display_name)
     except Exception:
-        return RedirectResponse(url='/admin/events/', status_code=status.HTTP_303_SEE_OTHER)
-    return RedirectResponse(url='/admin/events/', status_code=status.HTTP_303_SEE_OTHER)
+        return safe_redirect(url='/admin/events/', status_code=status.HTTP_303_SEE_OTHER)
+    return safe_redirect(url='/admin/events/', status_code=status.HTTP_303_SEE_OTHER)
 
 
 @app.get('/admin/events/{event_id}/', dependencies=[Depends(require_admin)])
@@ -1080,7 +1088,7 @@ async def admin_delete_event(request: Request, event_id: int):
 
     async with get_session() as session:
         await delete_event(session, event_id)
-    return RedirectResponse(url='/admin/events/', status_code=status.HTTP_303_SEE_OTHER)
+    return safe_redirect(url='/admin/events/', status_code=status.HTTP_303_SEE_OTHER)
 
 
 @app.get('/admin/events/{event_id}/rooms/', dependencies=[Depends(require_admin)])
@@ -1111,13 +1119,13 @@ async def admin_create_room(request: Request, event_id: int):
     form = await request.form()
     display_name = form.get('display_name', '').strip()
     if not display_name:
-        return RedirectResponse(
+        return safe_redirect(
             url=f'/admin/events/{event_id}/rooms/',
             status_code=status.HTTP_303_SEE_OTHER,
         )
     async with get_session() as session:
         await create_room(session, event_id=event_id, display_name=display_name)
-    return RedirectResponse(
+    return safe_redirect(
         url=f'/admin/events/{event_id}/rooms/',
         status_code=status.HTTP_303_SEE_OTHER,
     )
@@ -1158,7 +1166,7 @@ async def admin_delete_room(request: Request, event_id: int, room_id: int):
 
     async with get_session() as session:
         await delete_room(session, room_id)
-    return RedirectResponse(
+    return safe_redirect(
         url=f'/admin/events/{event_id}/rooms/',
         status_code=status.HTTP_303_SEE_OTHER,
     )
@@ -1201,7 +1209,7 @@ async def admin_create_booth(request: Request, event_id: int, room_id: int):
     language_code = form.get('language_code', '').strip().lower()
     language_name = form.get('language_name', '').strip()
     if not language_code or not language_name:
-        return RedirectResponse(
+        return safe_redirect(
             url=f'/admin/events/{event_id}/rooms/{room_id}/booths/',
             status_code=status.HTTP_303_SEE_OTHER,
         )
@@ -1213,7 +1221,7 @@ async def admin_create_booth(request: Request, event_id: int, room_id: int):
             )
     except Exception:
         pass
-    return RedirectResponse(
+    return safe_redirect(
         url=f'/admin/events/{event_id}/rooms/{room_id}/booths/',
         status_code=status.HTTP_303_SEE_OTHER,
     )
@@ -1286,7 +1294,7 @@ async def admin_add_booth_member(request: Request, event_id: int, room_id: int, 
         async with get_session() as session:
             user = await get_user_by_email(session, email)
             if not user:
-                return RedirectResponse(
+                return safe_redirect(
                     url=f'/admin/events/{event_id}/rooms/{room_id}/booths/{booth_id}/?error=user_not_found',
                     status_code=status.HTTP_303_SEE_OTHER,
                 )
@@ -1300,7 +1308,7 @@ async def admin_add_booth_member(request: Request, event_id: int, room_id: int, 
                     if m.user_id == uid:
                         await remove_booth_membership(session, m.id)
                         break
-    return RedirectResponse(
+    return safe_redirect(
         url=f'/admin/events/{event_id}/rooms/{room_id}/booths/{booth_id}/',
         status_code=status.HTTP_303_SEE_OTHER,
     )
@@ -1315,7 +1323,7 @@ async def admin_remove_booth_member(request: Request, event_id: int, room_id: in
 
     async with get_session() as session:
         await remove_booth_membership(session, membership_id)
-    return RedirectResponse(
+    return safe_redirect(
         url=f'/admin/events/{event_id}/rooms/{room_id}/booths/{booth_id}/',
         status_code=status.HTTP_303_SEE_OTHER,
     )
@@ -1330,7 +1338,7 @@ async def admin_delete_booth(request: Request, event_id: int, room_id: int, boot
 
     async with get_session() as session:
         await delete_booth(session, booth_id)
-    return RedirectResponse(
+    return safe_redirect(
         url=f'/admin/events/{event_id}/rooms/{room_id}/booths/',
         status_code=status.HTTP_303_SEE_OTHER,
     )
@@ -1356,7 +1364,7 @@ async def admin_toggle_user_active(request: Request, user_id: int):
         user = await get_user_by_id(session, user_id)
         if user:
             await update_user_active(session, user_id, is_active=not user.is_active)
-    return RedirectResponse(url='/admin/users/', status_code=status.HTTP_303_SEE_OTHER)
+    return safe_redirect(url='/admin/users/', status_code=status.HTTP_303_SEE_OTHER)
 
 
 @app.post('/admin/users/{user_id}/delete', dependencies=[Depends(require_admin)])
@@ -1365,7 +1373,7 @@ async def admin_delete_user(request: Request, user_id: int):
 
     async with get_session() as session:
         await delete_user(session, user_id)
-    return RedirectResponse(url='/admin/users/', status_code=status.HTTP_303_SEE_OTHER)
+    return safe_redirect(url='/admin/users/', status_code=status.HTTP_303_SEE_OTHER)
 
 @app.get('/admin/users/{user_id}/', dependencies=[Depends(require_admin)])
 async def admin_user_detail(request: Request, user_id: int):
@@ -1374,7 +1382,7 @@ async def admin_user_detail(request: Request, user_id: int):
     async with get_session() as session:
         user = await get_user_by_id(session, user_id)
         if not user:
-            return RedirectResponse(url='/admin/users/', status_code=status.HTTP_303_SEE_OTHER)
+            return safe_redirect(url='/admin/users/', status_code=status.HTTP_303_SEE_OTHER)
         
         events = await list_events(session)
         memberships = await list_memberships_for_user(session, user_id)
@@ -1400,7 +1408,7 @@ async def admin_toggle_user_admin(request: Request, user_id: int):
             stmt = update(User).where(User.id == user_id).values(is_admin=not user.is_admin)
             await session.execute(stmt)
             await session.commit()
-    return RedirectResponse(url=f'/admin/users/{user_id}/', status_code=status.HTTP_303_SEE_OTHER)
+    return safe_redirect(url=f'/admin/users/{user_id}/', status_code=status.HTTP_303_SEE_OTHER)
 
 
 @app.post('/admin/users/{user_id}/events/{event_id}/toggle-admin', dependencies=[Depends(require_admin)])
@@ -1418,7 +1426,7 @@ async def admin_toggle_user_event_admin(request: Request, user_id: int, event_id
             else:
                 await set_event_membership(session, user_id=user_id, event_id=event_id, role='event_admin')
                 
-    return RedirectResponse(url=f'/admin/users/{user_id}/', status_code=status.HTTP_303_SEE_OTHER)
+    return safe_redirect(url=f'/admin/users/{user_id}/', status_code=status.HTTP_303_SEE_OTHER)
 
 
 # ── Admin event membership routes ────────────────────────────────────────────
@@ -1457,7 +1465,7 @@ async def admin_add_event_member(request: Request, event_id: int):
         async with get_session() as session:
             user = await get_user_by_email(session, email)
             if not user:
-                return RedirectResponse(
+                return safe_redirect(
                     url=f'/admin/events/{event_id}/members/?error=user_not_found',
                     status_code=status.HTTP_303_SEE_OTHER,
                 )
@@ -1471,7 +1479,7 @@ async def admin_add_event_member(request: Request, event_id: int):
                     if m.user_id == uid:
                         await remove_event_membership(session, m.id)
                         break
-    return RedirectResponse(
+    return safe_redirect(
         url=f'/admin/events/{event_id}/members/',
         status_code=status.HTTP_303_SEE_OTHER,
     )
@@ -1483,7 +1491,7 @@ async def admin_remove_event_member(request: Request, event_id: int, membership_
 
     async with get_session() as session:
         await remove_event_membership(session, membership_id)
-    return RedirectResponse(
+    return safe_redirect(
         url=f'/admin/events/{event_id}/members/',
         status_code=status.HTTP_303_SEE_OTHER,
     )
@@ -1520,7 +1528,7 @@ async def admin_create_token(request: Request, event_id: int, room_id: int, boot
                 expires_at=expires_at,
             )
 
-    return RedirectResponse(
+    return safe_redirect(
         url=f'/admin/events/{event_id}/rooms/{room_id}/booths/{booth_id}/',
         status_code=status.HTTP_303_SEE_OTHER,
     )
@@ -1536,7 +1544,7 @@ async def admin_revoke_token(request: Request, event_id: int, room_id: int, boot
     async with get_session() as session:
         await revoke_invite_token(session, token_id)
 
-    return RedirectResponse(
+    return safe_redirect(
         url=f'/admin/events/{event_id}/rooms/{room_id}/booths/{booth_id}/',
         status_code=status.HTTP_303_SEE_OTHER,
     )
