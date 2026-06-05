@@ -407,6 +407,29 @@ async def interpreter_booth_by_identity(
     await _ensure_mediamtx_path(channel_id)
     whip_url = f'{settings.mediamtx_whip_base}/{mediamtx_path}/whip'
     whep_url = f'{settings.mediamtx_whip_base}/{mediamtx_path}/whep'
+    from portal.database import get_session
+    from sqlalchemy import select
+    from sqlalchemy.orm import joinedload
+    from portal.models import Event, DBBooth
+
+    room_jitsi_url = None
+    async with get_session() as session:
+        stmt = (
+            select(DBBooth)
+            .join(Event)
+            .options(joinedload(DBBooth.room))
+            .where(Event.slug == event_slug)
+            .where(DBBooth.language_code == language_code)
+        )
+        db_booth = (await session.scalars(stmt)).first()
+        if db_booth and db_booth.room and db_booth.room.jitsi_url:
+            room_jitsi_url = db_booth.room.jitsi_url
+
+    default_jitsi_url = _make_jitsi_url(
+        settings.effective_jitsi_base_url, settings.default_jitsi_room
+    )
+    final_jitsi_url = room_jitsi_url or default_jitsi_url
+
     display_name = payload.get('display_name', '') or payload.get('email', '')
     return templates.TemplateResponse(
         request,
@@ -423,9 +446,7 @@ async def interpreter_booth_by_identity(
             'granted_role': granted_role,
             'display_name': display_name,
             'default_jitsi_room': settings.default_jitsi_room,
-            'default_jitsi_url': _make_jitsi_url(
-                settings.effective_jitsi_base_url, settings.default_jitsi_room
-            ),
+            'jitsi_url': final_jitsi_url,
             'jitsi_domain': settings.effective_jitsi_domain,
             'jitsi_base_url': settings.effective_jitsi_base_url,
             'mediamtx_whip_base': settings.mediamtx_whip_base,
@@ -479,7 +500,7 @@ async def interpreter_booth(
             'granted_role': granted_role,
             'display_name': display_name,
             'default_jitsi_room': settings.default_jitsi_room,
-            'default_jitsi_url': _make_jitsi_url(
+            'jitsi_url': _make_jitsi_url(
                 settings.effective_jitsi_base_url, settings.default_jitsi_room
             ),
             'jitsi_domain': settings.effective_jitsi_domain,
@@ -1106,7 +1127,17 @@ async def admin_create_room(request: Request, event_id: int):
             status_code=status.HTTP_303_SEE_OTHER,
         )
     async with get_session() as session:
-        await create_room(session, event_id=event_id, display_name=display_name)
+        from portal.database import get_event_by_id
+        import re
+
+        ev = await get_event_by_id(session, event_id)
+        jitsi_url = None
+        if ev:
+            clean_name = re.sub(r'[^a-zA-Z0-9]+', '', display_name)
+            room_id_str = f"Voxbento-{ev.slug}-{clean_name}"
+            jitsi_url = _make_jitsi_url(settings.effective_jitsi_base_url, room_id_str)
+            
+        await create_room(session, event_id=event_id, display_name=display_name, jitsi_url=jitsi_url)
     return safe_redirect(
         url=f'/admin/events/{event_id}/rooms/',
         status_code=status.HTTP_303_SEE_OTHER,
@@ -1135,11 +1166,35 @@ async def admin_room_detail(request: Request, event_id: int, room_id: int):
         is_live = mem_booth is not None and mem_booth.ingest_status == 'connected'
         booth_statuses.append({'db': b, 'booth_id': bid, 'is_live': is_live})
 
+    import re
+    clean_name = re.sub(r'[^a-zA-Z0-9]+', '', room.display_name)
+    room_id_str = f"Voxbento-{event.slug}-{clean_name}"
+    fallback_jitsi_url = _make_jitsi_url(settings.effective_jitsi_base_url, room_id_str)
+
     return templates.TemplateResponse(request, 'admin/room_detail.html', {
         'event': event,
         'room': room,
         'booths': booth_statuses,
+        'fallback_jitsi_url': fallback_jitsi_url,
     })
+
+
+@app.post('/admin/events/{event_id}/rooms/{room_id}/edit', dependencies=[Depends(require_admin)])
+async def admin_edit_room(request: Request, event_id: int, room_id: int):
+    from portal.database import get_session, get_room_by_id
+    form = await request.form()
+    jitsi_url = form.get('jitsi_url', '').strip()
+    
+    async with get_session() as session:
+        room = await get_room_by_id(session, room_id)
+        if room and room.event_id == event_id:
+            room.jitsi_url = jitsi_url if jitsi_url else None
+            await session.commit()
+            
+    return safe_redirect(
+        url=f'/admin/events/{event_id}/rooms/{room_id}/',
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
 
 
 @app.post('/admin/events/{event_id}/rooms/{room_id}/delete', dependencies=[Depends(require_admin)])

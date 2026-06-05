@@ -87,6 +87,7 @@ class Room(Base):
     event_id: Mapped[int] = mapped_column(ForeignKey('events.id', ondelete='CASCADE'))
     display_name: Mapped[str] = mapped_column(String(200))
     eventyay_room_id: Mapped[str | None] = mapped_column(String(200), nullable=True, default=None)
+    jitsi_url: Mapped[str | None] = mapped_column(String(500), nullable=True, default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
     event: Mapped[Event] = relationship(back_populates='rooms')

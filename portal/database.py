@@ -145,8 +145,9 @@ async def create_room(
     event_id: int,
     display_name: str,
     eventyay_room_id: str | None = None,
+    jitsi_url: str | None = None,
 ) -> Room:
-    room = Room(event_id=event_id, display_name=display_name, eventyay_room_id=eventyay_room_id)
+    room = Room(event_id=event_id, display_name=display_name, eventyay_room_id=eventyay_room_id, jitsi_url=jitsi_url)
     session.add(room)
     await session.flush()
     return room

@@ -20,6 +20,23 @@
   </div>
 </div>
 
+<!-- Room Settings Form -->
+<div class="token-form-card" style="margin-bottom: 2rem;">
+  <h3>Room Settings</h3>
+  <form method="post" action="/admin/events/{{ event.id }}/rooms/{{ room.id }}/edit" class="token-form">
+    <div class="form-row">
+      <div class="form-group" style="flex: 1;">
+        <label for="jitsi_url">Jitsi URL</label>
+        <input type="url" id="jitsi_url" name="jitsi_url" value="{{ room.jitsi_url or fallback_jitsi_url }}" placeholder="e.g. https://jitsi.voxbento.com/Room-Event-TrackA">
+      </div>
+      <div class="form-group form-group-btn">
+        <button type="submit" class="btn btn-primary">Save Settings</button>
+      </div>
+    </div>
+    <p class="form-help" style="margin-top: 0.5rem; font-size: 0.85rem; color: #666;">Interpreters in all booths for this room will automatically join this Jitsi URL for floor monitoring.</p>
+  </form>
+</div>
+
 <!-- Interpretation Schedule Table (replaces manual spreadsheet) -->
 <div class="section-card">
   <div class="section-header">

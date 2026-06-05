@@ -10,7 +10,7 @@
   data-booth-token='{{ booth_token }}'
   data-default-language='{{ booth_language }}'
   data-default-channel='{{ booth_channel_id }}'
-  data-default-jitsi='{{ default_jitsi_room }}'
+  data-jitsi-url='{{ jitsi_url }}'
   data-jitsi-domain='{{ jitsi_domain }}'
   data-whip-base='{{ mediamtx_whip_base }}'
 
@@ -81,11 +81,6 @@
       <!-- Video Feed -->
       <section class='panel panel--jitsi'>
         <div class='panel-body monitoring-body'>
-          <div class='monitor-controls'>
-            <input id='jitsi-url' class='input input-sm' type='url' value='{{ default_jitsi_url }}' />
-            <button id='join-jitsi' type='button' class='btn btn-primary btn-sm'>Join Monitoring</button>
-            <span id='monitor-status' class='status-badge'>Idle</span>
-          </div>
           <div class='monitor-frame'>
             <iframe id='jitsi-frame' title='Jitsi monitoring feed' allow='camera; microphone; autoplay; fullscreen; display-capture; speaker-selection'></iframe>
           </div>
