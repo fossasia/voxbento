@@ -13,8 +13,7 @@ Design decisions
 ~~~~~~~~~~~~~~~~
 - **No mediamtx_path column**: derived at runtime via
   ``portal.booth_identity.make_mediamtx_path(event.slug, booth.language_code)``.
-- **No hls_url column**: HLS is a fallback; URL derived from MediaMTX path.
-  WHEP is the primary playback protocol.
+- **No hls_url column**: WHEP is the primary playback protocol.
 - **Model name DBBooth**: avoids collision with the in-memory ``Booth``
   dataclass in ``portal.booth_state``.
 - **InviteToken.role** stores a ``ParticipantRole`` string value validated

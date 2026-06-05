@@ -467,8 +467,8 @@ label {
   border: 1px solid var(--color-border);
 }
 
-/* ── HLS URL row ──────────────────────────────────────────── */
-.hls-url-cell {
+/* ── Listener URL row ────────────────────────────────────── */
+.listener-url-cell {
   display: flex;
   align-items: center;
   gap: 0.5rem;
@@ -476,7 +476,7 @@ label {
   word-break: break-all;
 }
 
-.hls-url-cell code {
+.listener-url-cell code {
   font-size: 0.82rem;
   color: var(--color-primary-text);
 }

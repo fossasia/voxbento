@@ -777,12 +777,6 @@ def test_listener_webrtc_requires_auth():
     assert '/login' in res.headers['location']
 
 
-def test_listen_hls_requires_auth():
-    """Unauthenticated /listen/ redirects to login."""
-    res = client.get('/listen/demo-booth', follow_redirects=False)
-    assert res.status_code == 303
-    assert '/login' in res.headers['location']
-
 
 def test_full_bootstrap_flow():
     """End-to-end: create booth → access page → join → go live (get WHIP URL)."""

@@ -13,7 +13,7 @@
   data-default-jitsi='{{ default_jitsi_room }}'
   data-jitsi-domain='{{ jitsi_domain }}'
   data-whip-base='{{ mediamtx_whip_base }}'
-  data-hls-base='{{ mediamtx_hls_base }}'
+
   data-event-slug='{{ event_slug | default("") }}'
   data-language-code='{{ language_code | default("") }}'
   data-whip-url='{{ whip_url | default("") }}'
@@ -197,10 +197,9 @@
             <dl class='status-list status-list-compact' style='margin-top: 0.5rem'>
               <div><dt>Mic</dt><dd id='mic-state'>Inactive</dd></div>
               <div><dt>Ingest</dt><dd id='ingest-reachable'>Unknown</dd></div>
-              <div><dt>WHEP</dt><dd><span id='hls-validation-status' class='status-badge'>Not started</span></dd></div>
-              <div id='hls-url-row' class='hidden'>
+              <div id='listener-url-row' class='hidden'>
                 <dt>WHEP URL</dt>
-                <dd class='hls-url-cell'><code id='hls-url-display'></code><button id='copy-hls-url' type='button' class='btn btn-xs'>Copy</button></dd>
+                <dd class='listener-url-cell'><code id='listener-url-display'></code><button id='copy-listener-url' type='button' class='btn btn-xs'>Copy</button></dd>
               </div>
             </dl>
             <p id='error-banner' class='error-banner'></p>
