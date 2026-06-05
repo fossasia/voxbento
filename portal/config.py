@@ -20,24 +20,18 @@ class Settings(BaseSettings):
     secret_key: str = 'change-me'
     booth_access_token: str = ''
     default_jitsi_room: str = 'eventyay-stage-room'
-    jitsi_domain: str = 'localhost:8080'
+    jitsi_domain: str = 'jitsi.voxbento.com'
     # Full Jitsi base URL including scheme. When empty, defaults to
     # http://{jitsi_domain}. Set to https://... for production HTTPS.
     jitsi_base_url: str = ''
     mediamtx_whip_base: str = 'http://localhost:8889'
-    mediamtx_hls_base: str = 'http://localhost:8888'
-    # Internal URL for health checks (defaults to mediamtx_hls_base).
-    # In Docker, set MEDIAMTX_INTERNAL_BASE=http://mediamtx:8888 so Python
-    # can reach MediaMTX via Docker's internal network, while the browser
-    # uses MEDIAMTX_HLS_BASE=http://localhost:8888 (the host-mapped port).
-    mediamtx_internal_base: str = ''
     # MediaMTX Control API (port 9997). Used to dynamically create named
     # paths with alwaysAvailable so WHEP readers survive publisher handoffs.
     mediamtx_api_base: str = 'http://localhost:9997'
 
     @property
     def effective_mediamtx_internal_base(self) -> str:
-        return self.mediamtx_internal_base or self.mediamtx_hls_base
+        return self.mediamtx_internal_base or self.mediamtx_api_base
 
     @property
     def effective_jitsi_base_url(self) -> str:

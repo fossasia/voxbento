@@ -16,11 +16,11 @@ services:
       JWT_SECRET: "${JWT_SECRET:-}"
       JWT_EXPIRY_SECONDS: "${JWT_EXPIRY_SECONDS:-86400}"
       DEFAULT_JITSI_ROOM: "${DEFAULT_JITSI_ROOM:-eventyay-stage-room}"
-      JITSI_DOMAIN: "${JITSI_DOMAIN:-localhost:8080}"
-      JITSI_BASE_URL: "${JITSI_BASE_URL:-}"
+      JITSI_DOMAIN: "${JITSI_DOMAIN:-jitsi.voxbento.com}"
+      JITSI_BASE_URL: "${JITSI_BASE_URL:-https://jitsi.voxbento.com}"
       # Browser-facing URLs — must be reachable from the user's machine
       MEDIAMTX_WHIP_BASE: "${MEDIAMTX_WHIP_BASE:-http://localhost:8889}"
-      MEDIAMTX_HLS_BASE: "${MEDIAMTX_HLS_BASE:-http://localhost:8888}"
+
       # Internal URL for Python health checks (Docker service name)
       MEDIAMTX_INTERNAL_BASE: "http://mediamtx:8888"
       # MediaMTX Control API (Docker internal) — creates alwaysAvailable paths
@@ -55,7 +55,7 @@ services:
     volumes:
       - ./mediamtx.yml:/mediamtx.yml:ro
     ports:
-      - "8888:8888"    # HLS output
+      - "8888:8888"    # MediaMTX HTTP (used by Control API health checks)
       - "8889:8889"    # WHIP/WHEP (WebRTC HTTP ingest + playback)
       - "8189:8189/udp" # WebRTC ICE/UDP mux
       - "9997:9997"    # Control API (used by FastAPI for alwaysAvailable paths)

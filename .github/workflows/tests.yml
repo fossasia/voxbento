@@ -65,7 +65,6 @@ jobs:
     env:
       CI_HOST: localhost
       PORTAL_PORT: 8000
-      HLS_PORT: 8888
       WEBRTC_PORT: 8889
       MEDIAMTX_API_PORT: 9997
       JITSI_HTTP_PORT: 8080
@@ -74,7 +73,6 @@ jobs:
       DOCKER_HOST_ADDRESS: 127.0.0.1
       JITSI_DOMAIN: localhost:8080
       MEDIAMTX_WHIP_BASE: http://localhost:8889
-      MEDIAMTX_HLS_BASE: http://localhost:8888
       MEDIAMTX_API_BASE: http://mediamtx:9997
       ADMIN_PASSWORD: ci-admin-pass
 
@@ -148,7 +146,6 @@ jobs:
       - name: Wait for MediaMTX and Jitsi
         run: |
           source /tmp/ci-helpers.sh
-          wait_for_url "http://${CI_HOST}:${HLS_PORT}/"                   "MediaMTX HLS"        20
           wait_for_url "http://${CI_HOST}:${WEBRTC_PORT}/"                "MediaMTX WebRTC"      20
           wait_for_url "http://${CI_HOST}:${MEDIAMTX_API_PORT}/v3/paths/list" "MediaMTX Control API" 20
           wait_for_url "http://${CI_HOST}:${JITSI_HTTP_PORT}/"            "Jitsi web"            30 "200,301,302"
@@ -168,8 +165,6 @@ jobs:
                       "GET /interpreter/ci-event/en (no auth → 303)" "303"
           assert_http "http://${CI_HOST}:${PORTAL_PORT}/listener-webrtc/ci-booth" \
                       "GET /listener-webrtc/ci-booth (no auth → 303)" "303"
-          assert_http "http://${CI_HOST}:${PORTAL_PORT}/listen/ci-booth" \
-                      "GET /listen/ci-booth (no auth → 303)" "303"
 
       - name: Portal ingest-status API
         run: |
@@ -276,9 +271,9 @@ jobs:
           echo "GET /account (no cookie) → $code"
           [ "$code" = "303" ] || { echo "FAIL: expected 303 redirect"; exit 1; }
 
-          # Listener / WebRTC pages redirect unauthenticated users
-          code=$(curl -s -o /dev/null -w '%{http_code}' "${BASE}/listen/ci-booth")
-          echo "GET /listen/ci-booth (no cookie) → $code"
+          # Listener WebRTC page redirects unauthenticated users
+          code=$(curl -s -o /dev/null -w '%{http_code}' "${BASE}/listener-webrtc/ci-booth")
+          echo "GET /listener-webrtc/ci-booth (no cookie) → $code"
           [ "$code" = "303" ] || { echo "FAIL: expected 303"; exit 1; }
 
           # With a valid user_token but no event membership → 403 on interpreter page
@@ -289,8 +284,8 @@ jobs:
 
           # With user_token, listener pages (no event scope) should pass through
           code=$(curl -s -o /dev/null -w '%{http_code}' -b "user_token=${USER_COOKIE}" \
-            "${BASE}/listen/ci-booth")
-          echo "GET /listen/ci-booth (user_token) → $code"
+            "${BASE}/listener-webrtc/ci-booth")
+          echo "GET /listener-webrtc/ci-booth (user_token) → $code"
           [ "$code" = "200" ] || { echo "FAIL: expected 200"; exit 1; }
 
       # ── Collect logs on failure ─────────────────────────────

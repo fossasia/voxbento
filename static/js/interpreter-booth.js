@@ -27,7 +27,7 @@ const state = {
   defaultJitsiRoom: portal.dataset.defaultJitsi || '',
   jitsiDomain: portal.dataset.jitsiDomain || '',
   whipBase: portal.dataset.whipBase || '',
-  hlsBase: portal.dataset.hlsBase || '',
+  whipBase: portal.dataset.whipBase || '',
   micDeviceId: localStorage.getItem('mic-device-id') || '',
   /** Role granted by the server (from JWT). Empty string = unknown / legacy. */
   grantedRole: portal.dataset.grantedRole || '',
@@ -65,9 +65,9 @@ const elements = {
   micMeter: document.getElementById('mic-meter'),
   meterRow: document.getElementById('meter-row'),
   micTestBtn: document.getElementById('mic-test-btn'),
-  hlsUrlRow: document.getElementById('hls-url-row'),
-  hlsUrlDisplay: document.getElementById('hls-url-display'),
-  copyHlsUrl: document.getElementById('copy-hls-url'),
+  listenerUrlRow: document.getElementById('listener-url-row'),
+  listenerUrlDisplay: document.getElementById('listener-url-display'),
+  copyListenerUrl: document.getElementById('copy-listener-url'),
   micChevron: document.getElementById('mic-chevron'),
   ctrlMicPopup: document.getElementById('ctrl-mic-popup'),
   muteLabel: document.getElementById('mute-label'),
@@ -78,7 +78,6 @@ const elements = {
   checkMicPermission: document.getElementById('check-mic-permission'),
   checkAudioDevice: document.getElementById('check-audio-device'),
   checkServer: document.getElementById('check-server'),
-  hlsValidationStatus: document.getElementById('hls-validation-status'),
 }
 
 // ── Audio context state ───────────────────────────────────────────────────────
@@ -87,11 +86,6 @@ let micAnimFrame = null
 let micAudioCtx = null
 let micAnalyser = null
 
-// ── HLS polling state ─────────────────────────────────────────────────────────
-let hlsPollTimer = null
-let hlsPollCount = 0
-const HLS_POLL_INTERVAL_MS = 1000
-const HLS_POLL_MAX_ATTEMPTS = 10
 
 boot().catch((error) => {
   const msg = error instanceof Error ? error.message : String(error)
@@ -271,16 +265,18 @@ function bindEventHandlers() {
     }
   })
 
-  elements.copyHlsUrl.addEventListener('click', () => {
-    const url = elements.hlsUrlDisplay.textContent
-    if (!url) return
-    navigator.clipboard.writeText(url).then(() => {
-      elements.copyHlsUrl.textContent = 'Copied!'
-      setTimeout(() => {
-        elements.copyHlsUrl.textContent = 'Copy'
-      }, 2000)
-    }).catch(() => {})
-  })
+  if (elements.copyListenerUrl) {
+    elements.copyListenerUrl.addEventListener('click', () => {
+      const url = elements.listenerUrlDisplay.textContent
+      if (!url) return
+      navigator.clipboard.writeText(url).then(() => {
+        elements.copyListenerUrl.textContent = 'Copied!'
+        setTimeout(() => {
+          elements.copyListenerUrl.textContent = 'Copy'
+        }, 2000)
+      }).catch(() => {})
+    })
+  }
 
   elements.micChevron.addEventListener('click', (event) => {
     event.stopPropagation()
@@ -391,24 +387,22 @@ async function runPreflightChecks() {
     setPreflightStatus('audioDevice', 'warn', 'Could not enumerate devices')
   }
 
-  if (!state.hlsBase) {
-    setPreflightStatus('serverReachable', 'warn', 'HLS base not configured — server check skipped')
-  } else {
-    try {
-      const controller = new AbortController()
-      const timeoutId = window.setTimeout(() => controller.abort(), 4000)
-      await fetch(`${state.hlsBase}/`, { method: 'HEAD', mode: 'no-cors', signal: controller.signal })
-      window.clearTimeout(timeoutId)
-      setPreflightStatus('serverReachable', 'pass', 'MediaMTX is reachable')
-      state.ingestReachable = true
-    } catch (error) {
-      const msg =
-        error.name === 'AbortError'
-          ? 'Timed out — start MediaMTX: docker compose up mediamtx'
-          : 'Unreachable — start MediaMTX: docker compose up mediamtx'
-      setPreflightStatus('serverReachable', 'fail', msg)
+  try {
+    const resp = await fetch(`/api/interpreter/status/${encodeURIComponent(state.channelId)}`)
+    if (resp.ok) {
+      const payload = await resp.json()
+      state.ingestReachable = Boolean(payload.reachable)
+    } else {
       state.ingestReachable = false
     }
+  } catch {
+    state.ingestReachable = false
+  }
+
+  if (!state.ingestReachable) {
+    setPreflightStatus('serverReachable', 'fail', 'MediaMTX is unreachable — start MediaMTX: docker compose up mediamtx')
+  } else {
+    setPreflightStatus('serverReachable', 'pass', 'MediaMTX is reachable')
   }
 
   renderMicControls()
@@ -431,70 +425,6 @@ function setPreflightStatus(check, status, message = '') {
   if (msgEl) msgEl.textContent = message
 }
 
-// ── HLS validation ────────────────────────────────────────────────────────────
-
-async function validateHlsOutput() {
-  if (!state.hlsBase || !state.channelId) return false
-  const url = `${state.hlsBase}/${state.channelId}/index.m3u8`
-  try {
-    const response = await fetch(url, { cache: 'no-store' })
-    if (!response.ok) return false
-    const contentType = response.headers.get('content-type') || ''
-    const normalized = contentType.toLowerCase()
-    const isHls =
-      normalized.startsWith('application/vnd.apple.mpegurl') ||
-      normalized.startsWith('application/x-mpegurl') ||
-      normalized.startsWith('audio/mpegurl')
-    if (!isHls) return false
-    const text = await response.text()
-    return text.includes('#EXTM3U')
-  } catch {
-    return false
-  }
-}
-
-function startHlsPolling() {
-  stopHlsPolling()
-  hlsPollCount = 0
-  setHlsValidationStatus('polling')
-
-  async function poll() {
-    hlsPollCount += 1
-    setHlsValidationStatus('polling')
-    const valid = await validateHlsOutput()
-    if (valid) {
-      setHlsValidationStatus('streaming')
-      hlsPollTimer = null
-      return
-    }
-    if (hlsPollCount >= HLS_POLL_MAX_ATTEMPTS) {
-      setHlsValidationStatus('unavailable')
-      hlsPollTimer = null
-      return
-    }
-    hlsPollTimer = window.setTimeout(poll, HLS_POLL_INTERVAL_MS)
-  }
-
-  hlsPollTimer = window.setTimeout(poll, HLS_POLL_INTERVAL_MS)
-}
-
-function stopHlsPolling() {
-  if (hlsPollTimer !== null) {
-    window.clearTimeout(hlsPollTimer)
-    hlsPollTimer = null
-  }
-}
-
-function setHlsValidationStatus(status) {
-  const statusMap = {
-    idle:        { text: 'Not started',   tone: '' },
-    polling:     { text: `Validating\u2026 ${hlsPollCount}/${HLS_POLL_MAX_ATTEMPTS}`, tone: 'warning' },
-    streaming:   { text: 'Streaming',     tone: 'success' },
-    unavailable: { text: 'Not available', tone: 'danger' },
-  }
-  const { text, tone } = statusMap[status] ?? { text: status, tone: '' }
-  setBadge(elements.hlsValidationStatus, text, tone)
-}
 
 // ── REST helpers ──────────────────────────────────────────────────────────────
 
@@ -547,7 +477,7 @@ function applyBoothState(payload, { skipAutoStart = false } = {}) {
   if (lostActivePublisher) {
     // With overridePublisher enabled on MediaMTX, the incoming interpreter
     // will take over the WHIP path immediately.  MediaMTX kicks our
-    // peer-connection and seamlessly continues the HLS muxer, so viewers
+    // peer-connection and seamlessly continues the WHEP stream, so viewers
     // never see a gap.  We just clean up our side.
     state.relayingOut = true
     if (state.micStream) {
@@ -874,7 +804,6 @@ async function startLiveIngest() {
     }
 
     state.ingestConnected = true
-    if (state.hlsBase) startHlsPolling()
     wsSend({
       type: 'booth:update-state',
       mic_active: !state.micMuted,
@@ -918,8 +847,6 @@ async function stopLiveIngest() {
       ingest_connected: false,
     })
   }
-  stopHlsPolling()
-  setHlsValidationStatus('idle')
   state.ingestConnected = false
   renderMicControls()
 }
@@ -963,7 +890,6 @@ function attemptRelayStart(attempt) {
       if (!state.whipBase) throw new Error('MEDIAMTX_WHIP_BASE is not configured')
       await doWhipIngest(pc)
       state.ingestConnected = true
-      if (state.hlsBase) startHlsPolling()
       wsSend({ type: 'booth:update-state', mic_active: !state.micMuted, ingest_connected: true })
       showError('')
     } catch (error) {
@@ -1165,10 +1091,10 @@ function renderMicControls() {
 
   if (state.ingestConnected && state.boothId) {
     const url = `${window.location.origin}/listener-webrtc/${encodeURIComponent(state.boothId)}`
-    elements.hlsUrlDisplay.textContent = url
-    elements.hlsUrlRow.classList.remove('hidden')
+    if (elements.listenerUrlDisplay) elements.listenerUrlDisplay.textContent = url
+    if (elements.listenerUrlRow) elements.listenerUrlRow.classList.remove('hidden')
   } else {
-    elements.hlsUrlRow.classList.add('hidden')
+    if (elements.listenerUrlRow) elements.listenerUrlRow.classList.add('hidden')
   }
 }
 
