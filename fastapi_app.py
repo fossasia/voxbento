@@ -5,12 +5,15 @@ Start with:
 """
 from __future__ import annotations
 
+import typing
+import uuid
+import datetime
 import json
 import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, cast
 from urllib.parse import urlparse
 
 import httpx
@@ -31,6 +34,7 @@ from portal.auth import (
 from portal.booth_identity import make_booth_id, make_mediamtx_path
 from portal.booth_state import BoothRegistry
 from portal.config import settings
+from portal.transcription import start_transcription_worker, stop_transcription_worker
 
 _BASE_DIR = Path(__file__).resolve().parent
 # Appended to static JS URLs so the browser always fetches fresh JS after
@@ -103,8 +107,36 @@ class ConnectionManager:
         for ws in dead:
             self.remove(ws)
 
+class ListenerConnectionManager:
+    def __init__(self) -> None:
+        self._rooms: dict[str, set[WebSocket]] = {}
+
+    def add(self, ws: WebSocket, booth_id: str) -> None:
+        self._rooms.setdefault(booth_id, set()).add(ws)
+
+    def remove(self, ws: WebSocket, booth_id: str) -> None:
+        room = self._rooms.get(booth_id, set())
+        room.discard(ws)
+        if not room:
+            self._rooms.pop(booth_id, None)
+
+    async def broadcast(self, booth_id: str, message: dict) -> None:
+        payload = json.dumps(message)
+        dead: list[WebSocket] = []
+        for ws in list(self._rooms.get(booth_id, set())):
+            try:
+                await ws.send_text(payload)
+            except Exception:
+                dead.append(ws)
+        for ws in dead:
+            self.remove(ws, booth_id)
 
 manager = ConnectionManager()
+listener_manager = ListenerConnectionManager()
+
+async def broadcast_transcription(booth_id: str, text: str):
+    await listener_manager.broadcast(booth_id, {'type': 'transcription', 'text': text})
+
 
 
 # ── Utilities ─────────────────────────────────────────────────────────────────
@@ -1689,6 +1721,34 @@ async def ws_booth(websocket: WebSocket, booth_id: str) -> None:
                 session.booth_id, session.participant_id, session.language, session.channel_id,
             )
             await manager.broadcast(session.booth_id, {'type': 'booth:state', 'state': state})
+
+@app.websocket('/ws/captions/{booth_id}')
+async def ws_captions(websocket: WebSocket, booth_id: str) -> None:
+    await websocket.accept()
+    listener_manager.add(websocket, booth_id)
+    try:
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        pass
+    finally:
+        listener_manager.remove(websocket, booth_id)
+
+@app.post('/api/booth/{booth_id}/transcription/start')
+async def api_transcription_start(booth_id: str, request: Request):
+    data = await request.json()
+    event_slug = data.get('event_slug')
+    language_code = data.get('language_code')
+    if not event_slug or not language_code:
+        raise HTTPException(status_code=400, detail="Missing event_slug or language_code")
+        
+    await start_transcription_worker(event_slug, language_code, booth_id, broadcast_transcription)
+    return {"status": "started"}
+
+@app.post('/api/booth/{booth_id}/transcription/stop')
+async def api_transcription_stop(booth_id: str):
+    await stop_transcription_worker(booth_id)
+    return {"status": "stopped"}
 
 
 def main() -> None:

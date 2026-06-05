@@ -24,6 +24,35 @@
   .status-badge.error       { background: #f8d7da; color: #721c24; }
   .status-badge.recovering  { background: #cce5ff; color: #004085; }
 
+  /* Captions Box */
+  .captions-box {
+    margin: 1rem auto;
+    width: 100%;
+    max-width: 640px;
+    height: 150px;
+    background: #222;
+    color: #fff;
+    border-radius: 8px;
+    padding: 1rem;
+    overflow-y: auto;
+    text-align: left;
+    font-size: 1.1rem;
+    line-height: 1.5;
+    box-shadow: inset 0 2px 4px rgba(0,0,0,0.5);
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+  .captions-box p {
+    margin: 0;
+    color: #eee;
+    animation: fadeIn 0.3s ease-in-out;
+  }
+  @keyframes fadeIn {
+    from { opacity: 0; transform: translateY(5px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
   /* Debug panel */
   .debug-panel {
     margin-top: 1.5rem;
@@ -107,6 +136,10 @@
   <div id="status"><span class="status-badge waiting">Waiting for selection...</span></div>
   <audio id="audio-player" controls autoplay></audio>
 
+  <div id="live-captions" class="captions-box">
+    <!-- Captions will appear here -->
+  </div>
+
   <div class="debug-panel">
     <h3>Connection Debug</h3>
     <dl class="debug-grid">
@@ -131,6 +164,8 @@
   var audioEl = document.getElementById('audio-player');
   var statusEl = document.getElementById('status');
   var logEl = document.getElementById('stream-log');
+  var captionsBox = document.getElementById('live-captions');
+  var captionsWs = null;
 
   // Debug fields
   var dbgPc = document.getElementById('dbg-pc');
@@ -172,6 +207,11 @@
 
   function stopCurrentStream() {
     WhepListener.stop();
+    if (captionsWs) {
+      captionsWs.close();
+      captionsWs = null;
+    }
+    captionsBox.innerHTML = '';
     setStatus('Waiting for selection...', 'waiting');
     dbgPc.textContent = '—';
     dbgIce.textContent = '—';
@@ -198,6 +238,7 @@
       var opt = document.createElement('option');
       opt.value = b.whep_url;
       opt.textContent = b.language_name;
+      opt.dataset.boothId = '{{ event.slug }}-' + b.language_code;
       languageSelect.appendChild(opt);
     });
   });
@@ -205,6 +246,9 @@
   languageSelect.addEventListener('change', function() {
     stopCurrentStream();
     var whepUrl = this.value;
+    var selectedOpt = this.options[this.selectedIndex];
+    var boothId = selectedOpt ? selectedOpt.dataset.boothId : null;
+    
     if (whepUrl) {
       setStatus('Connecting...', 'recovering');
       WhepListener.start({
@@ -213,6 +257,24 @@
         onState: onState,
         onLog: appendLog,
       });
+      
+      if (boothId) {
+        var wsProto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        captionsWs = new WebSocket(wsProto + '//' + window.location.host + '/ws/captions/' + boothId);
+        captionsWs.onmessage = function(event) {
+          try {
+            var data = JSON.parse(event.data);
+            if (data.type === 'transcription' && data.text) {
+              var p = document.createElement('p');
+              p.textContent = data.text;
+              captionsBox.appendChild(p);
+              captionsBox.scrollTop = captionsBox.scrollHeight;
+            }
+          } catch (e) {
+            console.error('Failed to parse caption data', e);
+          }
+        };
+      }
     }
   });
 

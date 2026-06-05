@@ -17,6 +17,8 @@ dependencies = [
     "aiosqlite>=0.21.0",
     "python-multipart>=0.0.30",
     "bcrypt>=5.0.0",
+    "faster-whisper>=1.2.1",
+    "numpy>=2.4.6",
 ]
 
 [dependency-groups]
