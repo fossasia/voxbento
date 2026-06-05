@@ -169,7 +169,7 @@ class TestHomePage:
         async with _client() as c:
             resp = await c.get('/')
         assert resp.status_code == 200
-        assert b'listener-webrtc' in resp.content
+        assert b'/listener/testcon' in resp.content
 
 
 # ---------------------------------------------------------------------------
@@ -310,7 +310,7 @@ class TestRoomCRUD:
                 cookies=admin_cookie,
             )
         assert b'/interpreter/testcon/en' in resp.content
-        assert b'listener-webrtc' in resp.content
+        assert b'/listener/testcon' in resp.content
 
     @pytest.mark.anyio
     async def test_delete_room(self, admin_cookie, seed_event):
