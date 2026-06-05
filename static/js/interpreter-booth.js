@@ -21,7 +21,7 @@ const state = {
   micStream: null,
   peerConnection: null,
   whipResourceUrl: null,
-  micMuted: false,
+  micMuted: true,
   ingestConnected: false,
   ingestReachable: Boolean(portal.dataset.whipBase),
   defaultJitsiRoom: portal.dataset.defaultJitsi || '',
@@ -456,6 +456,16 @@ function applyBoothState(payload, { skipAutoStart = false } = {}) {
   state.participants = payload.participants || []
   state.activeInterpreterId = payload.active_interpreter_id || null
   state.chatMessages = payload.chat_messages || []
+
+  // Ensure non-active interpreters are always muted locally
+  if (state.participantId && state.activeInterpreterId !== state.participantId) {
+    if (!state.micMuted) {
+      state.micMuted = true
+      if (state.micStream) {
+        state.micStream.getAudioTracks().forEach((t) => { t.enabled = false })
+      }
+    }
+  }
 
   const lostActivePublisher =
     state.ingestConnected &&
@@ -1083,7 +1093,7 @@ function renderMicControls() {
   elements.goLive.classList.toggle('live', state.ingestConnected)
   if (elements.liveLabel) elements.liveLabel.textContent = state.ingestConnected ? 'STOP' : 'GO LIVE'
 
-  elements.toggleMic.disabled = !state.joined
+  elements.toggleMic.disabled = !joinedActiveInterpreter
   const preflightCriticalPass =
     state.preflight.micPermission === 'pass' &&
       state.preflight.serverReachable !== 'fail'
