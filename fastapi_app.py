@@ -39,8 +39,9 @@ _JS_CACHE_BUST = str(int(time.time()))
 
 
 def safe_redirect(url: str, status_code: int = status.HTTP_303_SEE_OTHER) -> RedirectResponse:
-    url = url.replace('\\', '')
-    if not urlparse(url).netloc and not urlparse(url).scheme:
+    url = url.replace('\\', '').strip()
+    parsed = urlparse(url)
+    if url and not parsed.netloc and not parsed.scheme and url.startswith('/'):
         return RedirectResponse(url=url, status_code=status_code)
     return RedirectResponse(url='/', status_code=status_code)
 
