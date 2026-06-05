@@ -51,14 +51,17 @@ jobs:
               echo "Caddy config updated and reloaded"
             fi
 
+            # ── Apply changes from docker-compose.yml ──────────────────────
+            # Running 'up -d' ensures new environment variables and port mappings
+            # (like the new RTSP port 8554) are actually applied.
+            echo "--- docker compose up -d ---"
+            docker compose up -d --remove-orphans
+
             # ── Restart portal (uvicorn --reload picks up code changes) ────
-            # Full restart ensures env changes and new dependencies are loaded.
+            # Just in case 'up -d' didn't recreate the container, restart it
+            # so the FastAPI app fully reloads.
             echo "--- docker compose restart portal ---"
             docker compose restart portal
-
-            # ── Restart mediamtx if mediamtx.yml changed ───────────────────
-            echo "--- docker compose restart mediamtx ---"
-            docker compose restart mediamtx
 
             # ── Wait for portal health ──────────────────────────────────────
             echo "--- waiting for portal health ---"
