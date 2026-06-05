@@ -59,6 +59,7 @@ services:
       - "8889:8889"    # WHIP/WHEP (WebRTC HTTP ingest + playback)
       - "8189:8189/udp" # WebRTC ICE/UDP mux
       - "9997:9997"    # Control API (used by FastAPI for alwaysAvailable paths)
+      - "8554:8554"    # RTSP (for faster-whisper/ffmpeg integration)
     restart: unless-stopped
 
   # ── Self-hosted Jitsi Meet ────────────────────────────────────
