@@ -15,6 +15,7 @@
 #   8888  MediaMTX HLS
 #   8889  MediaMTX WHIP/WHEP (WebRTC ingest + playback)
 #   8080  Jitsi web (HTTP)
+#   8554  MediaMTX RTSP            ← NOT proxied by Caddy (TCP/UDP)
 #   8189  MediaMTX WebRTC ICE/UDP  ← NOT proxied by Caddy (UDP)
 #
 # URL structure (as seen by browsers):
