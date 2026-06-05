@@ -488,6 +488,42 @@ async def interpreter_booth(
             'js_version': _JS_CACHE_BUST,
         },
     )
+@app.get('/listener-webrtc/{booth_id}')
+async def listen_webrtc_booth(
+    request: Request,
+    booth_id: str,
+    language: str = 'English',
+    channel: str | None = Query(None),
+) -> Any:
+    """Listener page using WHEP/WebRTC for low-latency playback."""
+    payload = get_booth_session(request)
+    if payload is None:
+        return safe_redirect(
+            url=f'/login?next=/listener-webrtc/{booth_id}',
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+    if channel:
+        channel_id = channel
+    else:
+        try:
+            from portal.booth_identity import booth_id_to_mediamtx_path
+            channel_id = booth_id_to_mediamtx_path(booth_id)
+        except ValueError:
+            channel_id = f'{booth_id}-audio'
+
+    await _ensure_mediamtx_path(channel_id)
+    whep_url = f'{settings.mediamtx_whip_base}/{channel_id}/whep'
+    return templates.TemplateResponse(
+        request,
+        'listener-webrtc.html',
+        {
+            'booth_id': booth_id,
+            'language': language,
+            'channel_id': channel_id,
+            'whep_url': whep_url,
+            'js_version': _JS_CACHE_BUST,
+        },
+    )
 
 
 @app.get('/listener/{event_slug}')
