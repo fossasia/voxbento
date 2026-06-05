@@ -1088,8 +1088,11 @@ function renderMicControls() {
   elements.passRelay.disabled = !joinedActiveInterpreter
   elements.micDeviceSelect.disabled = state.ingestConnected
 
-  if (state.ingestConnected && portal.dataset.whepUrl) {
-    const url = portal.dataset.whepUrl
+  if (state.ingestConnected && portal.dataset.eventSlug) {
+    const proto = window.location.protocol
+    const host = window.location.host
+    const slug = portal.dataset.eventSlug
+    const url = `${proto}//${host}/listener/${slug}`
     if (elements.listenerUrlDisplay) elements.listenerUrlDisplay.textContent = url
     if (elements.listenerUrlRow) elements.listenerUrlRow.classList.remove('hidden')
   } else {
