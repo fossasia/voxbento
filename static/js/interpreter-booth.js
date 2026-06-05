@@ -44,7 +44,6 @@ const elements = {
   activeIndicator: document.getElementById('active-indicator'),
   ingestStatus: document.getElementById('ingest-status'),
   micState: document.getElementById('mic-state'),
-  ingestReachable: document.getElementById('ingest-reachable'),
   errorBanner: document.getElementById('error-banner'),
   participantList: document.getElementById('participant-list'),
   chatLog: document.getElementById('chat-log'),
@@ -59,22 +58,19 @@ const elements = {
   goLive: document.getElementById('go-live'),
   passRelay: document.getElementById('pass-relay'),
   micDeviceSelect: document.getElementById('mic-device-select'),
+  showVirtualDevices: document.getElementById('show-virtual-devices'),
   micMeter: document.getElementById('mic-meter'),
   meterRow: document.getElementById('meter-row'),
   micTestBtn: document.getElementById('mic-test-btn'),
   listenerUrlRow: document.getElementById('listener-url-row'),
   listenerUrlDisplay: document.getElementById('listener-url-display'),
   copyListenerUrl: document.getElementById('copy-listener-url'),
-  micChevron: document.getElementById('mic-chevron'),
-  ctrlMicPopup: document.getElementById('ctrl-mic-popup'),
   muteLabel: document.getElementById('mute-label'),
   liveLabel: document.getElementById('live-label'),
   ctrlCompound: document.querySelector('.ctrl-compound'),
   // leaveBooth removed
   preflightRetry: document.getElementById('preflight-retry'),
   checkMicPermission: document.getElementById('check-mic-permission'),
-  checkAudioDevice: document.getElementById('check-audio-device'),
-  checkServer: document.getElementById('check-server'),
 }
 
 // ── Audio context state ───────────────────────────────────────────────────────
@@ -272,6 +268,10 @@ function bindEventHandlers() {
     }
   })
 
+  elements.showVirtualDevices.addEventListener('change', () => {
+    populateMicDevices()
+  })
+
   elements.micTestBtn.addEventListener('click', async () => {
     if (micTestStream) {
       stopMicTest()
@@ -293,21 +293,7 @@ function bindEventHandlers() {
     })
   }
 
-  elements.micChevron.addEventListener('click', (event) => {
-    event.stopPropagation()
-    const isHidden = elements.ctrlMicPopup.classList.contains('hidden')
-    elements.ctrlMicPopup.classList.toggle('hidden', !isHidden)
-    elements.micChevron.setAttribute('aria-expanded', String(isHidden))
-  })
 
-  document.addEventListener('click', (event) => {
-    if (!elements.ctrlMicPopup.classList.contains('hidden') &&
-        !elements.ctrlMicPopup.contains(event.target) &&
-        event.target !== elements.micChevron) {
-      elements.ctrlMicPopup.classList.add('hidden')
-      elements.micChevron.setAttribute('aria-expanded', 'false')
-    }
-  })
 
   document.addEventListener('keydown', (event) => {
     if (event.code !== 'Space') return
@@ -369,17 +355,6 @@ async function runPreflightChecks() {
     setPreflightStatus('micPermission', 'fail', msg)
   }
 
-  try {
-    const devices = await navigator.mediaDevices.enumerateDevices()
-    const audioInputs = devices.filter((d) => d.kind === 'audioinput')
-    if (audioInputs.length > 0) {
-      setPreflightStatus('audioDevice', 'pass', `${audioInputs.length} device${audioInputs.length > 1 ? 's' : ''} found`)
-    } else {
-      setPreflightStatus('audioDevice', 'fail', 'No microphone detected — connect a USB mic or headset')
-    }
-  } catch {
-    setPreflightStatus('audioDevice', 'warn', 'Could not enumerate devices')
-  }
 
   try {
     const resp = await fetch(`/api/interpreter/status/${encodeURIComponent(state.channelId)}`)
@@ -394,9 +369,7 @@ async function runPreflightChecks() {
   }
 
   if (!state.ingestReachable) {
-    setPreflightStatus('serverReachable', 'fail', 'MediaMTX is unreachable — start MediaMTX: docker compose up mediamtx')
-  } else {
-    setPreflightStatus('serverReachable', 'pass', 'MediaMTX is reachable')
+    console.warn('MediaMTX is unreachable — start MediaMTX: docker compose up mediamtx')
   }
 
   renderMicControls()
@@ -406,8 +379,6 @@ function setPreflightStatus(check, status, message = '') {
   state.preflight[check] = status
   const idMap = {
     micPermission: 'check-mic-permission',
-    audioDevice: 'check-audio-device',
-    serverReachable: 'check-server',
   }
   const iconMap = { pass: '✅', fail: '❌', warn: '⚠️', pending: '⏳' }
   const el = document.getElementById(idMap[check])
@@ -579,7 +550,19 @@ async function populateMicDevices() {
     // Cannot enumerate — proceed without device list
     return
   }
-  const audioInputs = devices.filter((d) => d.kind === 'audioinput')
+
+  const virtualKeywords = ['zoom', 'teams', 'nomachine', 'blackhole', 'loopback', 'soundflower', 'obs', 'virtual', 'webex']
+  const showVirtual = elements.showVirtualDevices.checked
+
+  let audioInputs = devices.filter((d) => d.kind === 'audioinput')
+  
+  if (!showVirtual) {
+    audioInputs = audioInputs.filter((d) => {
+      const lower = d.label.toLowerCase()
+      return !virtualKeywords.some((keyword) => lower.includes(keyword))
+    })
+  }
+
   const previous = elements.micDeviceSelect.value
   elements.micDeviceSelect.innerHTML = ''
 
@@ -1068,7 +1051,6 @@ function renderMicControls() {
     state.ingestConnected ? 'Ingest connected' : 'Ingest disconnected',
     state.ingestConnected ? 'success' : 'warning',
   )
-  elements.ingestReachable.textContent = state.ingestReachable ? 'Reachable' : 'Unavailable'
   elements.micState.textContent = state.micMuted ? 'Muted' : state.micStream ? 'Ready' : 'Inactive'
 
   const micOnIcon = elements.toggleMic.querySelector('.ctrl-icon--mic-on')

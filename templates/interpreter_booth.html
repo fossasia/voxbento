@@ -31,18 +31,6 @@
       <div class='booth-controls-header'>
         <!-- Google Meet–style control bar -->
         <div class='control-bar' id='main-control-bar'>
-          <div id='ctrl-mic-popup' class='ctrl-popup hidden' role='dialog' aria-label='Microphone options'>
-            <p class='ctrl-popup-title'>🎤 Microphone</p>
-            <select id='mic-device-select' class='input device-select'><option value=''>Default microphone</option></select>
-            <div id='meter-row' class='meter-row hidden'>
-              <span class='meter-label'>Input level</span>
-              <canvas id='mic-meter' class='mic-meter' width='400' height='10'></canvas>
-            </div>
-            <div class='ctrl-popup-actions'>
-              <button id='mic-test-btn' type='button' class='btn btn-sm' title='Acquire mic and show live level'>⚙ Test</button>
-            </div>
-          </div>
-
           <div class='ctrl-row'>
             <!-- Mic button -->
             <div class='ctrl-compound'>
@@ -54,9 +42,6 @@
                   <path d='M19 11h-1.7c0 .74-.16 1.43-.43 2.05l1.23 1.23c.56-.98.9-2.09.9-3.28zm-4.02.17c0-.06.02-.11.02-.17V5c0-1.66-1.34-3-3-3S9 3.34 9 5v.18l5.98 5.99zM4.27 3 3 4.27l6.01 6.01V11c0 1.66 1.33 3 2.99 3 .22 0 .44-.03.65-.08l1.66 1.66c-.71.33-1.5.52-2.31.52-2.76 0-5.3-2.1-5.3-5.1H5c0 3.41 2.72 6.23 6 6.72V21h2v-3.28c.91-.13 1.77-.45 2.54-.9L19.73 21 21 19.73 4.27 3z'/>
                 </svg>
                 <span class='ctrl-label' id='mute-label'>MUTE</span>
-              </button>
-              <button id='mic-chevron' type='button' class='ctrl-chevron' title='Microphone options' aria-label='Microphone options' aria-expanded='false' aria-controls='ctrl-mic-popup'>
-                <svg viewBox='0 0 24 24' width='12' height='12' fill='currentColor' aria-hidden='true'><path d='M7 14l5-5 5 5z'/></svg>
               </button>
             </div>
             <!-- Go Live -->
@@ -140,13 +125,20 @@
                 <span class='preflight-icon'>⏳</span>
                 <div class='preflight-info'><span class='preflight-name'>Mic</span> <span class='preflight-msg'></span></div>
               </li>
-              <li id='check-audio-device' class='preflight-item preflight--pending'>
-                <span class='preflight-icon'>⏳</span>
-                <div class='preflight-info'><span class='preflight-name'>Audio</span> <span class='preflight-msg'></span></div>
-              </li>
-              <li id='check-server' class='preflight-item preflight--pending'>
-                <span class='preflight-icon'>⏳</span>
-                <div class='preflight-info'><span class='preflight-name'>Media</span> <span class='preflight-msg'></span></div>
+              <li class='preflight-item' style='flex-direction: column; align-items: stretch; gap: 0.5rem;'>
+                <div style='display: flex; justify-content: space-between; align-items: center;'>
+                  <span style='font-size: 0.85rem; font-weight: 500;'>Audio Input Device</span>
+                  <button id='mic-test-btn' type='button' class='btn btn-xs' title='Acquire mic and show live level'>⚙ Test</button>
+                </div>
+                <select id='mic-device-select' class='input device-select' style='width: 100%; font-size: 0.8rem; padding: 0.25rem;'><option value=''>Default microphone</option></select>
+                <div style='display: flex; align-items: center; gap: 0.3rem; margin-top: 0.2rem;'>
+                  <input type='checkbox' id='show-virtual-devices' style='margin: 0;'>
+                  <label for='show-virtual-devices' style='font-size: 0.7rem; color: var(--color-muted); cursor: pointer;'>Show virtual devices</label>
+                </div>
+                <div id='meter-row' class='meter-row hidden' style='margin-top: 0.25rem;'>
+                  <span class='meter-label' style='font-size: 0.7rem;'>Input level</span>
+                  <canvas id='mic-meter' class='mic-meter' width='400' height='10' style='width: 100%;'></canvas>
+                </div>
               </li>
             </ul>
           </div>
@@ -157,7 +149,6 @@
             </div>
             <dl class='status-list status-list-compact' style='margin-top: 0.5rem'>
               <div><dt>Mic</dt><dd id='mic-state'>Inactive</dd></div>
-              <div><dt>Ingest</dt><dd id='ingest-reachable'>Unknown</dd></div>
               <div id='listener-url-row' class='hidden'>
                 <dt>Listener URL</dt>
                 <dd class='listener-url-cell'><code id='listener-url-display'></code><button id='copy-listener-url' type='button' class='btn btn-xs'>Copy</button></dd>
