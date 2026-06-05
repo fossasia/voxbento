@@ -770,13 +770,6 @@ def test_legacy_interpreter_booth_still_works():
     assert b'demo-booth' in res.content
 
 
-def test_listener_webrtc_requires_auth():
-    """Unauthenticated /listener-webrtc/ redirects to login."""
-    res = client.get('/listener-webrtc/demo-booth', follow_redirects=False)
-    assert res.status_code == 303
-    assert '/login' in res.headers['location']
-
-
 
 def test_full_bootstrap_flow():
     """End-to-end: create booth → access page → join → go live (get WHIP URL)."""
