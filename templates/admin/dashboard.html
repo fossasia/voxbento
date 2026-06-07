@@ -5,8 +5,6 @@
 <div class="page-header">
   <h1>Dashboard</h1>
   <div class="system-health">
-    <span class="health-dot {{ 'health-ok' if mediamtx_ok else 'health-down' }}"></span>
-    MediaMTX {{ 'Online' if mediamtx_ok else 'Offline' }}
   </div>
 </div>
 
@@ -48,7 +46,7 @@
       </div>
       {% endif %}
     </div>
-    <div class="card-actions">
+    <div class="card-actions" style="margin-top: auto;">
       <a href="/admin/events/{{ ed.event.id }}/" class="btn btn-sm">Manage →</a>
     </div>
   </div>
