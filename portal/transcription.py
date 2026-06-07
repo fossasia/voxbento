@@ -41,21 +41,26 @@ def pcm_to_wav(pcm_data: bytes, sample_rate: int = 16000) -> bytes:
         wf.writeframes(pcm_data)
     return buf.getvalue()
 
-# --- Providers ---
-_http_client = None
+from dataclasses import dataclass
+from tenacity import AsyncRetrying, wait_exponential, stop_after_attempt, retry_if_exception_type
+import httpx
 
-def get_http_client() -> httpx.AsyncClient:
-    global _http_client
-    if _http_client is None:
-        _http_client = httpx.AsyncClient(timeout=10.0)
-    return _http_client
+# --- Providers ---
+shared_http_client: httpx.AsyncClient | None = None
+
+@dataclass
+class ProviderConfig:
+    api_key: str | None
+    
+    def get_key(self) -> str | None:
+        return self.api_key
 
 class TranscriptionProvider:
-    async def process_chunk(self, chunk: bytes, language_code: str, model_variant: str, api_key: str | None) -> str:
+    async def process_chunk(self, chunk: bytes, language_code: str, model_variant: str, config: ProviderConfig) -> str:
         raise NotImplementedError
 
 class LocalProvider(TranscriptionProvider):
-    async def process_chunk(self, chunk: bytes, language_code: str, model_variant: str, api_key: str | None) -> str:
+    async def process_chunk(self, chunk: bytes, language_code: str, model_variant: str, config: ProviderConfig) -> str:
         audio_data = np.frombuffer(chunk, np.int16).astype(np.float32) / 32768.0
         return await asyncio.to_thread(self._run_inference, audio_data, language_code, model_variant)
         
@@ -66,7 +71,8 @@ class LocalProvider(TranscriptionProvider):
         return text.strip()
 
 class OpenAIProvider(TranscriptionProvider):
-    async def process_chunk(self, chunk: bytes, language_code: str, model_variant: str, api_key: str | None) -> str:
+    async def process_chunk(self, chunk: bytes, language_code: str, model_variant: str, config: ProviderConfig) -> str:
+        api_key = config.get_key()
         if not api_key:
             logger.error(f"OpenAI API key missing")
             return ""
@@ -81,19 +87,29 @@ class OpenAIProvider(TranscriptionProvider):
             "language": language_code
         }
         
-        client = get_http_client()
         try:
-            resp = await client.post("https://api.openai.com/v1/audio/transcriptions", headers=headers, files=files, data=data)
-            if resp.status_code == 200:
-                return resp.json().get("text", "").strip()
-            else:
-                logger.error(f"OpenAI error status={resp.status_code}")
+            async for attempt in AsyncRetrying(
+                wait=wait_exponential(multiplier=1, min=2, max=10),
+                stop=stop_after_attempt(3),
+                retry=retry_if_exception_type((httpx.ReadTimeout, httpx.ConnectError, httpx.HTTPStatusError))
+            ):
+                with attempt:
+                    resp = await shared_http_client.post("https://api.openai.com/v1/audio/transcriptions", headers=headers, files=files, data=data)
+                    if resp.status_code in (429, 502, 503, 504):
+                        resp.raise_for_status()
+                    
+                    if resp.status_code == 200:
+                        return resp.json().get("text", "").strip()
+                    else:
+                        logger.error(f"OpenAI error status={resp.status_code}")
         except Exception as e:
-                logger.error(f"OpenAI request failed: {e}")
+            logger.error(f"OpenAI request failed: {e}")
+            raise e
         return ""
 
 class DeepgramProvider(TranscriptionProvider):
-    async def process_chunk(self, chunk: bytes, language_code: str, model_variant: str, api_key: str | None) -> str:
+    async def process_chunk(self, chunk: bytes, language_code: str, model_variant: str, config: ProviderConfig) -> str:
+        api_key = config.get_key()
         if not api_key:
             logger.error(f"Deepgram API key missing")
             return ""
@@ -105,23 +121,37 @@ class DeepgramProvider(TranscriptionProvider):
         
         url = f"https://api.deepgram.com/v1/listen?model={model_variant}&language={language_code}&encoding=linear16&sample_rate=16000&channels=1"
         
-        client = get_http_client()
         try:
-            resp = await client.post(url, headers=headers, content=chunk)
-            if resp.status_code == 200:
-                data = resp.json()
-                try:
-                    return data["results"]["channels"][0]["alternatives"][0]["transcript"].strip()
-                except (KeyError, IndexError):
-                    pass
-            else:
-                logger.error(f"Deepgram error status={resp.status_code}")
+            async for attempt in AsyncRetrying(
+                wait=wait_exponential(multiplier=1, min=2, max=10),
+                stop=stop_after_attempt(3),
+                retry=retry_if_exception_type((httpx.ReadTimeout, httpx.ConnectError, httpx.HTTPStatusError))
+            ):
+                with attempt:
+                    resp = await shared_http_client.post(url, headers=headers, content=chunk)
+                    if resp.status_code in (429, 502, 503, 504):
+                        resp.raise_for_status()
+                        
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        try:
+                            return data["results"]["channels"][0]["alternatives"][0]["transcript"].strip()
+                        except (KeyError, IndexError):
+                            pass
+                    else:
+                        logger.error(f"Deepgram error status={resp.status_code}")
         except Exception as e:
-                logger.error(f"Deepgram request failed: {e}")
+            logger.error(f"Deepgram request failed: {e}")
+            raise e
         return ""
 
 class NVIDIAProvider(TranscriptionProvider):
-    async def process_chunk(self, chunk: bytes, language_code: str, model_variant: str, api_key: str | None) -> str:
+    def __init__(self):
+        self._auth = None
+        self._asr_service = None
+
+    async def process_chunk(self, chunk: bytes, language_code: str, model_variant: str, config: ProviderConfig) -> str:
+        api_key = config.get_key()
         if not api_key:
             logger.error(f"NVIDIA API key missing")
             return ""
@@ -132,20 +162,21 @@ class NVIDIAProvider(TranscriptionProvider):
             # Map standard language code 'en' to 'en-US' since NVIDIA requires region
             riva_lang = "en-US" if language_code == "en" else language_code
             
-            # The function-id is specific to the model on NIM. 
-            # We use the provided parakeet function-id by default.
-            function_id = settings.nvidia_function_id
-            
-            auth = rc.Auth(
-                use_ssl=True,
-                uri="grpc.nvcf.nvidia.com:443",
-                metadata_args=[
-                    ["function-id", function_id],
-                    ["authorization", f"Bearer {api_key}"]
-                ]
-            )
-            asr_service = rc.ASRService(auth)
-            config = rc.RecognitionConfig(
+            if self._asr_service is None:
+                from portal.config import settings
+                function_id = settings.nvidia_function_id
+                
+                self._auth = rc.Auth(
+                    use_ssl=True,
+                    uri="grpc.nvcf.nvidia.com:443",
+                    metadata_args=[
+                        ["function-id", function_id],
+                        ["authorization", f"Bearer {api_key}"]
+                    ]
+                )
+                self._asr_service = rc.ASRService(self._auth)
+                
+            config_rc = rc.RecognitionConfig(
                 encoding=rc.AudioEncoding.LINEAR_PCM,
                 sample_rate_hertz=16000,
                 audio_channel_count=1,
@@ -155,7 +186,7 @@ class NVIDIAProvider(TranscriptionProvider):
             )
             
             try:
-                response = asr_service.offline_recognize(chunk, config)
+                response = self._asr_service.offline_recognize(chunk, config_rc)
                 text = ""
                 for result in response.results:
                     if result.alternatives:
@@ -163,12 +194,13 @@ class NVIDIAProvider(TranscriptionProvider):
                 return text.strip()
             except Exception as e:
                 logger.error(f"NVIDIA API Error: {e}")
-                return ""
+                raise e
                 
         return await asyncio.to_thread(_run_riva)
 
 class ElevenLabsProvider(TranscriptionProvider):
-    async def process_chunk(self, chunk: bytes, language_code: str, model_variant: str, api_key: str | None) -> str:
+    async def process_chunk(self, chunk: bytes, language_code: str, model_variant: str, config: ProviderConfig) -> str:
+        api_key = config.get_key()
         if not api_key:
             logger.error(f"ElevenLabs API key missing")
             return ""
@@ -183,15 +215,24 @@ class ElevenLabsProvider(TranscriptionProvider):
             "language_code": language_code
         }
         
-        client = get_http_client()
         try:
-            resp = await client.post("https://api.elevenlabs.io/v1/speech-to-text", headers=headers, files=files, data=data)
-            if resp.status_code == 200:
-                return resp.json().get("text", "").strip()
-            else:
-                logger.error(f"ElevenLabs error status={resp.status_code}")
+            async for attempt in AsyncRetrying(
+                wait=wait_exponential(multiplier=1, min=2, max=10),
+                stop=stop_after_attempt(3),
+                retry=retry_if_exception_type((httpx.ReadTimeout, httpx.ConnectError, httpx.HTTPStatusError))
+            ):
+                with attempt:
+                    resp = await shared_http_client.post("https://api.elevenlabs.io/v1/speech-to-text", headers=headers, files=files, data=data)
+                    if resp.status_code in (429, 502, 503, 504):
+                        resp.raise_for_status()
+                        
+                    if resp.status_code == 200:
+                        return resp.json().get("text", "").strip()
+                    else:
+                        logger.error(f"ElevenLabs error status={resp.status_code}")
         except Exception as e:
-                logger.error(f"ElevenLabs request failed: {e}")
+            logger.error(f"ElevenLabs request failed: {e}")
+            raise e
         return ""
 
 PROVIDERS = {
@@ -206,7 +247,7 @@ PROVIDERS = {
 active_workers: dict[str, asyncio.Task] = {}
 active_processes: dict[str, asyncio.subprocess.Process] = {}
 
-async def transcription_worker(event_slug: str, language_code: str, booth_id: str, broadcast_callback, provider_name: str, model_size: str, api_key: str | None):
+async def transcription_worker(event_slug: str, language_code: str, booth_id: str, broadcast_callback, provider_name: str, model_size: str, config: ProviderConfig):
     logger.info(f"Starting {provider_name} transcription worker for booth {booth_id}")
     rtsp_url = f"rtsp://mediamtx:8554/{event_slug}/{language_code}"
     
@@ -230,6 +271,7 @@ async def transcription_worker(event_slug: str, language_code: str, booth_id: st
     )
     active_processes[booth_id] = process
     
+    consecutive_errors = 0
     try:
         chunk_size_bytes = 16000 * 2 * 3 # 3 seconds
         
@@ -238,11 +280,19 @@ async def transcription_worker(event_slug: str, language_code: str, booth_id: st
             if not chunk:
                 break
                 
-            text = await provider.process_chunk(chunk, language_code, model_size, api_key)
-            
-            if text:
-                logger.debug(f"[{booth_id}] Transcribed: {text}")
-                await broadcast_callback(booth_id, text)
+            try:
+                text = await provider.process_chunk(chunk, language_code, model_size, config)
+                consecutive_errors = 0
+                
+                if text:
+                    logger.debug(f"[{booth_id}] Transcribed: {text}")
+                    await broadcast_callback(booth_id, text)
+            except Exception as e:
+                consecutive_errors += 1
+                logger.error(f"[{booth_id}] Provider error ({consecutive_errors}/3): {e}")
+                if consecutive_errors >= 3:
+                    await broadcast_callback(booth_id, "[Transcription provider failed. Check logs.]")
+                    break
                 
     except asyncio.IncompleteReadError:
         logger.error(f"[{booth_id}] ffmpeg stream ended abruptly.")
@@ -262,12 +312,12 @@ async def transcription_worker(event_slug: str, language_code: str, booth_id: st
         active_workers.pop(booth_id, None)
         logger.info(f"[{booth_id}] Transcription worker exited.")
 
-async def start_transcription_worker(event_slug: str, language_code: str, booth_id: str, broadcast_callback, provider: str, model_size: str, api_key: str | None = None):
+async def start_transcription_worker(event_slug: str, language_code: str, booth_id: str, broadcast_callback, provider: str, model_size: str, config: ProviderConfig):
     if booth_id in active_workers:
         logger.info(f"Transcription worker for {booth_id} is already running.")
         return
         
-    task = asyncio.create_task(transcription_worker(event_slug, language_code, booth_id, broadcast_callback, provider, model_size, api_key))
+    task = asyncio.create_task(transcription_worker(event_slug, language_code, booth_id, broadcast_callback, provider, model_size, config))
     active_workers[booth_id] = task
 
 async def stop_transcription_worker(booth_id: str):

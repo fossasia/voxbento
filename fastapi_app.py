@@ -54,7 +54,12 @@ booths = BoothRegistry()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    import portal.transcription as ts
+    import httpx
+    ts.shared_http_client = httpx.AsyncClient(timeout=10.0)
     yield
+    if ts.shared_http_client:
+        await ts.shared_http_client.aclose()
 
 
 app = FastAPI(title='Eventyay Interpretation Portal', version='1.0.0', lifespan=lifespan)
@@ -1575,19 +1580,13 @@ async def admin_transcription_settings(
                 await stop_transcription_worker(bid)
                 await broadcast_transcription(bid, "")
                 
-                api_key = None
-                if transcription_provider == 'openai':
-                    api_key = event.openai_api_key
-                elif transcription_provider == 'deepgram':
-                    api_key = event.deepgram_api_key
-                elif transcription_provider == 'nvidia':
-                    api_key = event.nvidia_api_key
-                elif transcription_provider == 'elevenlabs':
-                    api_key = event.elevenlabs_api_key
-                    
+                from portal.transcription import ProviderConfig
+                api_key = get_provider_api_key(event, transcription_provider)
+                config = ProviderConfig(api_key=api_key)
+                
                 import asyncio
                 await asyncio.sleep(0.1)
-                await start_transcription_worker(event.slug, db_booth.language_code, bid, broadcast_transcription, transcription_provider, transcription_model, api_key)
+                await start_transcription_worker(event.slug, db_booth.language_code, bid, broadcast_transcription, transcription_provider, transcription_model, config)
     return safe_redirect(
         url=f'/admin/events/{event_id}/rooms/{room_id}/booths/{booth_id}/',
         status_code=status.HTTP_303_SEE_OTHER,
@@ -1933,15 +1932,21 @@ async def api_transcription_start(
         model_size = db_booth.transcription_model
         
         if not db_booth.event.transcription_api_enabled and provider != 'local':
-            provider = 'local'
-            model_size = 'tiny'
+            raise HTTPException(status_code=400, detail="External API transcription is disabled for this event.")
         
         api_key = get_provider_api_key(db_booth.event, provider)
             
         if provider != 'local' and not api_key:
             raise HTTPException(status_code=400, detail=f"{provider} API key missing. Cannot start transcription.")
+            
+        from portal.transcription import active_workers, ProviderConfig
+        MAX_ACTIVE_WORKERS = 10
+        if provider != 'local' and len(active_workers) >= MAX_ACTIVE_WORKERS:
+            raise HTTPException(status_code=429, detail=f"System at maximum capacity ({MAX_ACTIVE_WORKERS} concurrent external API booths).")
+            
+        config = ProviderConfig(api_key=api_key)
 
-    await start_transcription_worker(event_slug, language_code, booth_id, broadcast_transcription, provider, model_size, api_key)
+    await start_transcription_worker(event_slug, language_code, booth_id, broadcast_transcription, provider, model_size, config)
     return {"status": "started", "provider": provider, "model": model_size}
 
 @app.post('/api/booth/{booth_id}/transcription/stop')

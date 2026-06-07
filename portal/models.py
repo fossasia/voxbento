@@ -25,7 +25,7 @@ from __future__ import annotations
 import secrets
 from datetime import datetime, timezone
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Index, String
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, String, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, validates
 import sqlalchemy as sa
 
@@ -64,10 +64,50 @@ class Event(Base):
     slug: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     display_name: Mapped[str] = mapped_column(String(200))
     transcription_api_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default='0')
-    openai_api_key: Mapped[str | None] = mapped_column(String(255), nullable=True, default=None)
-    deepgram_api_key: Mapped[str | None] = mapped_column(String(255), nullable=True, default=None)
-    nvidia_api_key: Mapped[str | None] = mapped_column(String(255), nullable=True, default=None)
-    elevenlabs_api_key: Mapped[str | None] = mapped_column(String(255), nullable=True, default=None)
+    _openai_api_key: Mapped[str | None] = mapped_column("openai_api_key", Text, nullable=True, default=None)
+    _deepgram_api_key: Mapped[str | None] = mapped_column("deepgram_api_key", Text, nullable=True, default=None)
+    _nvidia_api_key: Mapped[str | None] = mapped_column("nvidia_api_key", Text, nullable=True, default=None)
+    _elevenlabs_api_key: Mapped[str | None] = mapped_column("elevenlabs_api_key", Text, nullable=True, default=None)
+
+    @property
+    def openai_api_key(self) -> str | None:
+        from portal.crypto import decrypt_val
+        return decrypt_val(self._openai_api_key)
+
+    @openai_api_key.setter
+    def openai_api_key(self, value: str | None):
+        from portal.crypto import encrypt_val
+        self._openai_api_key = encrypt_val(value)
+
+    @property
+    def deepgram_api_key(self) -> str | None:
+        from portal.crypto import decrypt_val
+        return decrypt_val(self._deepgram_api_key)
+
+    @deepgram_api_key.setter
+    def deepgram_api_key(self, value: str | None):
+        from portal.crypto import encrypt_val
+        self._deepgram_api_key = encrypt_val(value)
+
+    @property
+    def nvidia_api_key(self) -> str | None:
+        from portal.crypto import decrypt_val
+        return decrypt_val(self._nvidia_api_key)
+
+    @nvidia_api_key.setter
+    def nvidia_api_key(self, value: str | None):
+        from portal.crypto import encrypt_val
+        self._nvidia_api_key = encrypt_val(value)
+
+    @property
+    def elevenlabs_api_key(self) -> str | None:
+        from portal.crypto import decrypt_val
+        return decrypt_val(self._elevenlabs_api_key)
+
+    @elevenlabs_api_key.setter
+    def elevenlabs_api_key(self, value: str | None):
+        from portal.crypto import encrypt_val
+        self._elevenlabs_api_key = encrypt_val(value)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
     rooms: Mapped[list[Room]] = relationship(back_populates='event', cascade='all, delete-orphan')
