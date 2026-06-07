@@ -353,8 +353,17 @@ code { font-family: var(--font-mono); font-size: 0.875em; background: #f0f1f3; p
   .inline-form input { min-width: 100%; }
   .header-nav { gap: 12px; }
   .hero h1 { font-size: 1.5rem; }
-  .data-table { font-size: 0.8125rem; }
-  .data-table th, .data-table td { padding: 8px 6px; }
+  
+  /* Make tables horizontally scrollable to prevent squishing */
+  .data-table { 
+    display: block; 
+    width: 100%; 
+    overflow-x: auto; 
+    -webkit-overflow-scrolling: touch;
+    white-space: nowrap; 
+  }
+  .data-table th, .data-table td { padding: 8px 12px; }
+  
   .page-header { flex-direction: column; }
   .role-cards { grid-template-columns: 1fr 1fr; }
 }

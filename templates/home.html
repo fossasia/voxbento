@@ -86,9 +86,13 @@
                       <span class="status-offline">○</span>
                       {% endif %}
                     </td>
-                    <td style="display: flex; gap: 0.5rem; align-items: center;">
+                    <td>
                       {% if bs.can_interpret %}
-                      <a href="/interpreter/{{ ed.event.slug }}/{{ bs.db.language_code }}" class="btn btn-sm btn-outline" style="border-color: #007bff; color: #007bff; background: transparent;">Open Booth ↗</a>
+                      <div style="display: flex; gap: 0.5rem; align-items: center;">
+                        <a href="/interpreter/{{ ed.event.slug }}/{{ bs.db.language_code }}" class="btn btn-sm btn-outline" style="border-color: #007bff; color: #007bff; background: transparent;">Open Booth ↗</a>
+                      </div>
+                      {% else %}
+                      <span class="muted">—</span>
                       {% endif %}
                     </td>
                   </tr>

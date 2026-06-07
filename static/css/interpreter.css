@@ -787,3 +787,23 @@ label {
 .hidden {
   display: none !important;
 }
+
+@media (max-width: 900px) {
+  .booth-columns {
+    grid-template-columns: 1fr;
+  }
+  .booth-layout {
+    height: auto;
+    min-height: calc(100vh - 80px);
+  }
+  .panel--jitsi .monitor-frame {
+    height: 40vh;
+    min-height: 250px;
+  }
+  .booth-main-col {
+    order: 1;
+  }
+  .booth-sidebar-col {
+    order: 2;
+  }
+}
