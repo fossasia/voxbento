@@ -91,6 +91,38 @@
   </div>
 </div>
 
+<!-- Transcription Settings Form -->
+<form method="post" action="/admin/events/{{ event.id }}/rooms/{{ room.id }}/booths/{{ booth.id }}/transcription-settings" class="token-form">
+  <div class="token-form-card" style="margin-bottom: 2rem;">
+    <h3>Transcription Settings</h3>
+    <div class="form-row">
+      <div class="form-group" style="flex: 1;">
+        <label for="transcription_enabled" style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer;">
+          <input type="checkbox" id="transcription_enabled" name="transcription_enabled" value="true" {% if booth.transcription_enabled %}checked{% endif %}>
+          <strong>Enable Live Transcription</strong>
+        </label>
+        <p class="form-help" style="margin-top: 0.5rem; font-size: 0.85rem; color: #666;">
+          When enabled, a background worker will consume the RTSP feed and generate live captions. Turn off to save CPU/RAM.
+        </p>
+      </div>
+      <div class="form-group" style="flex: 1;">
+        <label for="transcription_model">Whisper Model Size</label>
+        <select id="transcription_model" name="transcription_model" class="input">
+          <option value="tiny" {% if booth.transcription_model == 'tiny' %}selected{% endif %}>tiny (Fastest, low CPU)</option>
+          <option value="base" {% if booth.transcription_model == 'base' %}selected{% endif %}>base</option>
+          <option value="small" {% if booth.transcription_model == 'small' %}selected{% endif %}>small</option>
+          <option value="medium" {% if booth.transcription_model == 'medium' %}selected{% endif %}>medium</option>
+          <option value="large-v2" {% if booth.transcription_model == 'large-v2' %}selected{% endif %}>large-v2</option>
+          <option value="large-v3" {% if booth.transcription_model == 'large-v3' %}selected{% endif %}>large-v3 (Most accurate, high CPU/RAM)</option>
+        </select>
+      </div>
+      <div class="form-group form-group-btn" style="display: flex; align-items: flex-end;">
+        <button type="submit" class="btn btn-primary" style="margin-bottom: 0.25rem;">Save Settings</button>
+      </div>
+    </div>
+  </div>
+</form>
+
 <!-- Participant Roster -->
 <div class="section-card">
   <div class="section-header">

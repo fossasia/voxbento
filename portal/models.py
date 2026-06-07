@@ -120,6 +120,8 @@ class DBBooth(Base):
     room_id: Mapped[int] = mapped_column(ForeignKey('rooms.id', ondelete='CASCADE'))
     language_code: Mapped[str] = mapped_column(String(2))
     language_name: Mapped[str] = mapped_column(String(100))
+    transcription_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default='0')
+    transcription_model: Mapped[str] = mapped_column(String(20), default='tiny', server_default="'tiny'")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
     event: Mapped[Event] = relationship(back_populates='booths')

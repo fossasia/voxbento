@@ -1045,6 +1045,18 @@ async function startLiveIngest() {
     }
 
     state.ingestConnected = true
+    
+    // Start backend transcription
+    try {
+      const payload = { event_slug: portal.dataset.eventSlug, language_code: portal.dataset.languageCode }
+      await fetch(`/api/booth/${state.boothId}/transcription/start`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      })
+    } catch (err) {
+      console.warn('Failed to start transcription worker:', err)
+    }
     wsSend({
       type: 'booth:update-state',
       mic_active: !state.micMuted,
@@ -1087,6 +1099,13 @@ async function stopLiveIngest() {
       mic_active: false,
       ingest_connected: false,
     })
+    
+    // Stop backend transcription
+    try {
+      await fetch(`/api/booth/${state.boothId}/transcription/stop`, { method: 'POST' })
+    } catch (err) {
+      console.warn('Failed to stop transcription worker:', err)
+    }
   }
   state.ingestConnected = false
   renderMicControls()

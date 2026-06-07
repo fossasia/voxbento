@@ -54,7 +54,6 @@ class Settings(BaseSettings):
 
     # Admin panel — simple password guard (Phase 3 Step 7 will add proper auth)
     admin_password: str = ''
-
     @property
     def effective_jwt_secret(self) -> str:
         return self.jwt_secret or self.secret_key

@@ -5,17 +5,20 @@ Start with:
 """
 from __future__ import annotations
 
+import typing
+import uuid
+import datetime
 import json
 import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, cast
 from urllib.parse import urlparse
 
 import httpx
 import jwt as pyjwt
-from fastapi import Body, Depends, FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect, status
+from fastapi import Body, Depends, FastAPI, Form, HTTPException, Query, Request, WebSocket, WebSocketDisconnect, status
 from fastapi.responses import RedirectResponse
 from fastapi.security import HTTPAuthorizationCredentials
 from fastapi.staticfiles import StaticFiles
@@ -31,6 +34,7 @@ from portal.auth import (
 from portal.booth_identity import make_booth_id, make_mediamtx_path
 from portal.booth_state import BoothRegistry
 from portal.config import settings
+from portal.transcription import start_transcription_worker, stop_transcription_worker
 
 _BASE_DIR = Path(__file__).resolve().parent
 # Appended to static JS URLs so the browser always fetches fresh JS after
@@ -103,8 +107,36 @@ class ConnectionManager:
         for ws in dead:
             self.remove(ws)
 
+class ListenerConnectionManager:
+    def __init__(self) -> None:
+        self._rooms: dict[str, set[WebSocket]] = {}
+
+    def add(self, ws: WebSocket, booth_id: str) -> None:
+        self._rooms.setdefault(booth_id, set()).add(ws)
+
+    def remove(self, ws: WebSocket, booth_id: str) -> None:
+        room = self._rooms.get(booth_id, set())
+        room.discard(ws)
+        if not room:
+            self._rooms.pop(booth_id, None)
+
+    async def broadcast(self, booth_id: str, message: dict) -> None:
+        payload = json.dumps(message)
+        dead: list[WebSocket] = []
+        for ws in list(self._rooms.get(booth_id, set())):
+            try:
+                await ws.send_text(payload)
+            except Exception:
+                dead.append(ws)
+        for ws in dead:
+            self.remove(ws, booth_id)
 
 manager = ConnectionManager()
+listener_manager = ListenerConnectionManager()
+
+async def broadcast_transcription(booth_id: str, text: str):
+    await listener_manager.broadcast(booth_id, {'type': 'transcription', 'text': text})
+
 
 
 # ── Utilities ─────────────────────────────────────────────────────────────────
@@ -1396,6 +1428,62 @@ async def admin_delete_booth(request: Request, event_id: int, room_id: int, boot
     )
 
 
+@app.post(
+    '/admin/events/{event_id}/rooms/{room_id}/booths/{booth_id}/transcription-settings',
+    dependencies=[Depends(require_admin)],
+)
+async def admin_transcription_settings(
+    request: Request,
+    event_id: int,
+    room_id: int,
+    booth_id: int,
+    transcription_enabled: bool | None = Form(False),
+    transcription_model: str = Form('tiny'),
+):
+    from portal.database import get_session, get_booth_by_id, get_event_by_id
+    from portal.booth_identity import make_booth_id
+    from portal.booth_state import booths
+    from portal.transcription import start_transcription_worker, stop_transcription_worker
+
+    async with get_session() as session:
+        db_booth = await get_booth_by_id(session, booth_id)
+        if db_booth is None or db_booth.room_id != room_id:
+            raise HTTPException(status_code=404, detail='Booth not found.')
+            
+        event = await get_event_by_id(session, event_id)
+        if event is None:
+            raise HTTPException(status_code=404, detail='Event not found.')
+            
+        old_enabled = db_booth.transcription_enabled
+        old_model = db_booth.transcription_model
+        
+        # We need to manually update the columns and commit
+        db_booth.transcription_enabled = bool(transcription_enabled)
+        db_booth.transcription_model = transcription_model
+        await session.commit()
+        
+        bid = make_booth_id(event.slug, db_booth.language_code)
+        
+        # Check if booth is live
+        state = booths.get(bid)
+        is_live = state is not None and state.active_publisher_id is not None
+        
+        if is_live:
+            if not transcription_enabled:
+                await stop_transcription_worker(bid)
+                await broadcast_transcription(bid, "")
+            elif old_enabled != transcription_enabled or old_model != transcription_model:
+                await stop_transcription_worker(bid)
+                await broadcast_transcription(bid, "")
+                import asyncio
+                await asyncio.sleep(0.1)
+                await start_transcription_worker(event.slug, db_booth.language_code, bid, broadcast_transcription, transcription_model)
+    return safe_redirect(
+        url=f'/admin/events/{event_id}/rooms/{room_id}/booths/{booth_id}/',
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
 # ── Admin user management routes ─────────────────────────────────────────────
 
 
@@ -1689,6 +1777,50 @@ async def ws_booth(websocket: WebSocket, booth_id: str) -> None:
                 session.booth_id, session.participant_id, session.language, session.channel_id,
             )
             await manager.broadcast(session.booth_id, {'type': 'booth:state', 'state': state})
+
+@app.websocket('/ws/captions/{booth_id}')
+async def ws_captions(websocket: WebSocket, booth_id: str) -> None:
+    await websocket.accept()
+    listener_manager.add(websocket, booth_id)
+    try:
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        pass
+    finally:
+        listener_manager.remove(websocket, booth_id)
+
+@app.post('/api/booth/{booth_id}/transcription/start')
+async def api_transcription_start(booth_id: str, request: Request):
+    data = await request.json()
+    event_slug = data.get('event_slug')
+    language_code = data.get('language_code')
+    if not event_slug or not language_code:
+        raise HTTPException(status_code=400, detail="Missing event_slug or language_code")
+        
+    from portal.database import get_session
+    from portal.models import DBBooth, Event
+    from sqlalchemy import select
+
+    async with get_session() as session:
+        stmt = select(DBBooth).join(Event).where(
+            Event.slug == event_slug,
+            DBBooth.language_code == language_code
+        )
+        db_booth = await session.scalar(stmt)
+
+        if not db_booth or not db_booth.transcription_enabled:
+            return {"status": "disabled", "message": "Transcription is not enabled for this booth."}
+            
+        model_size = db_booth.transcription_model
+
+    await start_transcription_worker(event_slug, language_code, booth_id, broadcast_transcription, model_size)
+    return {"status": "started", "model": model_size}
+
+@app.post('/api/booth/{booth_id}/transcription/stop')
+async def api_transcription_stop(booth_id: str):
+    await stop_transcription_worker(booth_id)
+    return {"status": "stopped"}
 
 
 def main() -> None:
