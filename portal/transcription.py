@@ -8,21 +8,32 @@ from portal.config import settings
 
 logger = logging.getLogger(__name__)
 
+import threading
+
 # Lazy load _current_model_size: str | None = None
 _current_model_size = None
 _current_model = None
+_model_lock = threading.Lock()
 
 def get_model(model_size: str):
     global _current_model_size, _current_model
-    if _current_model_size != model_size:
-        logger.info(f"Loading faster-whisper model: {model_size} (this may take a moment)")
-        if _current_model is not None:
-            del _current_model
-            import gc
-            gc.collect()
-        _current_model = WhisperModel(model_size, device="cpu", compute_type="int8")
-        _current_model_size = model_size
-        logger.info(f"Model {model_size} loaded successfully")
+    
+    # Fast path: if it's already the right model, return it immediately without locking
+    if _current_model_size == model_size and _current_model is not None:
+        return _current_model
+        
+    with _model_lock:
+        # Double-check inside the lock in case another thread just finished loading it
+        if _current_model_size != model_size:
+            logger.info(f"Loading faster-whisper model: {model_size} (this may take a moment)")
+            if _current_model is not None:
+                del _current_model
+                import gc
+                gc.collect()
+            _current_model = WhisperModel(model_size, device="cpu", compute_type="int8")
+            _current_model_size = model_size
+            logger.info(f"Model {model_size} loaded successfully")
+            
     return _current_model
 
 # Track active tasks so we can cancel them
