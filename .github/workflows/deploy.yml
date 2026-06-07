@@ -57,9 +57,9 @@ jobs:
             echo "--- docker compose up -d ---"
             docker compose up -d --remove-orphans
 
-            # ── Restart portal (uvicorn --reload picks up code changes) ────
-            # Just in case 'up -d' didn't recreate the container, restart it
-            # so the FastAPI app fully reloads.
+            # ── Restart portal (loads fresh code since --reload is disabled) ────
+            # Because we disabled uvicorn --reload for production performance,
+            # this explicit restart is required for the FastAPI app to load new code.
             echo "--- docker compose restart portal ---"
             docker compose restart portal
 

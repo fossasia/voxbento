@@ -39,9 +39,9 @@ services:
     depends_on:
       - mediamtx
     restart: unless-stopped
-    # --reload watches for file changes and restarts uvicorn automatically.
+    # In production, --reload is omitted to prevent high CPU usage and extra processes.
     # Alembic migration runs first to ensure the database schema is current.
-    command: ["sh", "-c", "uv run alembic upgrade head && uv run uvicorn fastapi_app:app --host 0.0.0.0 --port 8000 --reload"]
+    command: ["sh", "-c", "uv run alembic upgrade head && uv run uvicorn fastapi_app:app --host 0.0.0.0 --port 8000"]
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz', timeout=3)"]
       interval: 10s
