@@ -1534,10 +1534,10 @@ async def admin_transcription_settings(
             raise HTTPException(status_code=400, detail="Invalid transcription provider")
             
         ALLOWED_MODELS = {
-            "local": {"tiny", "base", "small", "medium", "large-v3"},
+            "local": {"tiny", "base", "small", "medium", "large-v2", "large-v3"},
             "openai": {"whisper-1"},
             "deepgram": {"nova-2"},
-            "nvidia": {"parakeet-ctc-0_6b-asr", "parakeet-rnnt-1.1b-asr"},
+            "nvidia": {"parakeet-rnnt", "parakeet-ctc"},
             "elevenlabs": {"scribe_v2"}
         }
         if transcription_model not in ALLOWED_MODELS.get(transcription_provider, set()):
