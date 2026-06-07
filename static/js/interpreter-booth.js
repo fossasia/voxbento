@@ -585,6 +585,9 @@ function joinMonitoringFeed() {
       'config.startWithVideoMuted': 'true',
       'config.prejoinPageEnabled': 'false',
       'config.disableInitialGUM': 'false',
+      'config.disableDeepLinking': 'true',
+      'config.toolbarButtons': '["microphone", "camera", "chat", "participants-pane", "tileview", "fullscreen", "settings"]',
+      'interfaceConfig.TOOLBAR_BUTTONS': '["microphone", "camera", "chat", "participants-pane", "tileview", "fullscreen", "settings"]',
     })
     
     // Add user info to Jitsi URL config

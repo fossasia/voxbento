@@ -43,11 +43,14 @@ code { font-family: var(--font-mono); font-size: 0.875em; background: #f0f1f3; p
 .admin-header, .portal-home-header {
   background: var(--color-surface);
   border-bottom: 1px solid var(--color-border);
-  padding: 0 24px;
-  height: 56px;
+  padding: 12px 24px;
+  min-height: 56px;
+  height: auto;
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
   position: sticky;
   top: 0;
   z-index: 100;
@@ -55,7 +58,7 @@ code { font-family: var(--font-mono); font-size: 0.875em; background: #f0f1f3; p
 .header-left { display: flex; align-items: center; gap: 12px; }
 .brand { font-size: 1.25rem; font-weight: 700; color: var(--color-primary); text-decoration: none; }
 .header-badge { font-size: 0.75rem; font-weight: 600; background: var(--color-primary); color: #fff; padding: 2px 8px; border-radius: 12px; }
-.header-nav { display: flex; gap: 20px; align-items: center; }
+.header-nav { display: flex; gap: 20px; align-items: center; flex-wrap: wrap; }
 .header-nav a { font-size: 0.875rem; color: var(--color-text-secondary); text-decoration: none; }
 .header-nav a:hover { color: var(--color-primary); }
 .nav-logout { color: var(--color-danger) !important; }
@@ -80,6 +83,7 @@ code { font-family: var(--font-mono); font-size: 0.875em; background: #f0f1f3; p
   margin: 0 auto;
   padding: 24px;
   width: 100%;
+  min-width: 0;
   flex: 1;
 }
 
@@ -115,6 +119,7 @@ code { font-family: var(--font-mono); font-size: 0.875em; background: #f0f1f3; p
   border-radius: var(--radius);
   overflow: hidden;
   box-shadow: var(--shadow-sm);
+  min-width: 0;
 }
 .card-header {
   padding: 16px 20px 8px;
@@ -122,6 +127,7 @@ code { font-family: var(--font-mono); font-size: 0.875em; background: #f0f1f3; p
   align-items: center;
   justify-content: space-between;
   gap: 8px;
+  flex-wrap: wrap;
 }
 .card-title { font-size: 1.125rem; font-weight: 600; color: var(--color-text); text-decoration: none; }
 .card-title:hover { color: var(--color-primary); }
@@ -146,8 +152,9 @@ code { font-family: var(--font-mono); font-size: 0.875em; background: #f0f1f3; p
   border-radius: var(--radius);
   padding: 20px;
   box-shadow: var(--shadow-sm);
+  min-width: 0;
 }
-.section-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
+.section-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; flex-wrap: wrap; gap: 12px; }
 .section-header h2 { font-size: 1.125rem; font-weight: 600; }
 
 .item-list { list-style: none; }
@@ -163,6 +170,7 @@ code { font-family: var(--font-mono); font-size: 0.875em; background: #f0f1f3; p
   border-radius: var(--radius);
   padding: 20px;
   box-shadow: var(--shadow-sm);
+  min-width: 0;
 }
 .detail-card h3 { font-size: 0.9375rem; font-weight: 600; margin-bottom: 12px; color: var(--color-text-secondary); }
 .detail-list { display: grid; grid-template-columns: auto 1fr; gap: 8px 16px; font-size: 0.875rem; }
@@ -175,8 +183,9 @@ code { font-family: var(--font-mono); font-size: 0.875em; background: #f0f1f3; p
 /* ── Tables ──────────────────────────────────────────────────────────────── */
 
 .data-table { width: 100%; border-collapse: collapse; font-size: 0.875rem; }
-.data-table th { text-align: left; padding: 10px 12px; border-bottom: 2px solid var(--color-border); font-weight: 600; color: var(--color-text-secondary); font-size: 0.8125rem; text-transform: uppercase; letter-spacing: 0.04em; }
-.data-table td { padding: 10px 12px; border-bottom: 1px solid var(--color-border); vertical-align: middle; }
+.data-table th, .data-table td { padding: 10px 12px; border-bottom: 1px solid var(--color-border); vertical-align: middle; text-align: left; }
+.data-table thead th { border-bottom: 2px solid var(--color-border); font-weight: 600; color: var(--color-text-secondary); font-size: 0.8125rem; text-transform: uppercase; letter-spacing: 0.04em; }
+.data-table tbody th { font-weight: 600; color: var(--color-text-secondary); font-size: 0.8125rem; text-transform: uppercase; letter-spacing: 0.04em; }
 .data-table tbody tr:hover { background: #f8f9fa; }
 .data-table.compact th, .data-table.compact td { padding: 8px 10px; }
 
@@ -239,6 +248,7 @@ code { font-family: var(--font-mono); font-size: 0.875em; background: #f0f1f3; p
   padding: 20px;
   margin-bottom: 20px;
   box-shadow: var(--shadow-sm);
+  min-width: 0;
 }
 .form-card h3 { font-size: 0.9375rem; font-weight: 600; margin-bottom: 12px; }
 .inline-form { display: flex; gap: 8px; flex-wrap: wrap; align-items: end; }
@@ -345,17 +355,31 @@ code { font-family: var(--font-mono); font-size: 0.875em; background: #f0f1f3; p
 /* ── Responsive ──────────────────────────────────────────────────────────── */
 
 @media (max-width: 768px) {
-  .admin-header, .portal-home-header { padding: 0 16px; }
+  .admin-header, .portal-home-header { padding: 12px 16px; }
   .admin-main, .home-main { padding: 16px; }
   .card-grid { grid-template-columns: 1fr; }
   .detail-grid { grid-template-columns: 1fr; }
-  .inline-form { flex-direction: column; }
+  .inline-form { flex-direction: column; align-items: stretch; }
   .inline-form input { min-width: 100%; }
   .header-nav { gap: 12px; }
   .hero h1 { font-size: 1.5rem; }
-  .data-table { font-size: 0.8125rem; }
-  .data-table th, .data-table td { padding: 8px 6px; }
-  .page-header { flex-direction: column; }
+  
+  /* Make tables horizontally scrollable to prevent squishing */
+  .data-table { 
+    display: block; 
+    width: 100%; 
+    max-width: 100%;
+    overflow-x: auto; 
+    -webkit-overflow-scrolling: touch;
+    white-space: nowrap; 
+    border: 0;
+  }
+  .data-table thead, .data-table tbody, .data-table tr {
+    width: 100%;
+  }
+  .data-table th, .data-table td { padding: 8px 12px; }
+  
+  .page-header { flex-direction: column; align-items: flex-start; }
   .role-cards { grid-template-columns: 1fr 1fr; }
 }
 
