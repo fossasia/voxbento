@@ -53,42 +53,6 @@
     to { opacity: 1; transform: translateY(0); }
   }
 
-  /* Debug panel */
-  .debug-panel {
-    margin-top: 1.5rem;
-    text-align: left;
-    background: #f8f9fa;
-    border: 1px solid #dee2e6;
-    border-radius: 6px;
-    padding: 1rem;
-  }
-  .debug-panel h3 {
-    margin: 0 0 0.5rem;
-    font-size: 0.9rem;
-    color: #333;
-  }
-  .debug-grid {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 0.35rem 1rem;
-    font-size: 0.82rem;
-  }
-  .debug-grid dt { font-weight: 600; color: #555; }
-  .debug-grid dd { margin: 0; font-family: monospace; color: #222; }
-
-  #stream-log {
-    margin-top: 1rem;
-    text-align: left;
-    font-family: monospace;
-    font-size: 0.75rem;
-    max-height: 200px;
-    overflow-y: auto;
-    background: #f8f9fa;
-    padding: 0.5rem;
-    border-radius: 4px;
-    color: #333;
-    border: 1px solid #dee2e6;
-  }
 
   .selectors-container {
     display: flex;
@@ -136,22 +100,15 @@
   <div id="status"><span class="status-badge waiting">Waiting for selection...</span></div>
   <audio id="audio-player" controls autoplay></audio>
 
-  <div id="live-captions" class="captions-box">
-    <!-- Captions will appear here -->
+  <div class="captions-container" style="margin-top: 2rem;">
+    <h3 style="text-align: left; margin-bottom: 0.5rem; font-size: 1.1rem; color: #444; max-width: 640px; margin-left: auto; margin-right: auto;">Live Captions</h3>
+    <div id="live-captions" class="captions-box">
+      <!-- Captions will appear here -->
+      <p style="color: #888; font-style: italic; font-size: 0.95rem;">Waiting for interpreter...</p>
+    </div>
   </div>
 
-  <div class="debug-panel">
-    <h3>Connection Debug</h3>
-    <dl class="debug-grid">
-      <dt>PeerConnection</dt> <dd id="dbg-pc">—</dd>
-      <dt>ICE</dt>            <dd id="dbg-ice">—</dd>
-      <dt>Signaling</dt>      <dd id="dbg-sig">—</dd>
-      <dt>Audio Active</dt>   <dd id="dbg-audio">—</dd>
-      <dt>Stream URL</dt>       <dd id="dbg-url" style="word-break:break-all;">—</dd>
-    </dl>
-  </div>
 
-  <div id="stream-log"></div>
 </div>
 
 <script src="{{ url_for('static', path='js/whep-listener.js') }}?v={{ js_version }}"></script>
@@ -163,35 +120,14 @@
   var languageSelect = document.getElementById('language-select');
   var audioEl = document.getElementById('audio-player');
   var statusEl = document.getElementById('status');
-  var logEl = document.getElementById('stream-log');
   var captionsBox = document.getElementById('live-captions');
   var captionsWs = null;
-
-  // Debug fields
-  var dbgPc = document.getElementById('dbg-pc');
-  var dbgIce = document.getElementById('dbg-ice');
-  var dbgSig = document.getElementById('dbg-sig');
-  var dbgAudio = document.getElementById('dbg-audio');
-  var dbgUrl = document.getElementById('dbg-url');
 
   function setStatus(text, cls) {
     statusEl.innerHTML = '<span class="status-badge ' + cls + '">' + text + '</span>';
   }
 
-  function appendLog(msg) {
-    var line = document.createElement('div');
-    line.textContent = '[' + new Date().toLocaleTimeString() + '] ' + msg;
-    logEl.appendChild(line);
-    logEl.scrollTop = logEl.scrollHeight;
-  }
-
   function onState(s) {
-    dbgPc.textContent    = s.peerConnection;
-    dbgIce.textContent   = s.ice;
-    dbgSig.textContent   = s.signaling;
-    dbgAudio.textContent = s.audioActive ? 'YES' : 'no';
-    dbgUrl.textContent   = s.whepUrl;
-
     if (s.peerConnection === 'connected' && s.audioActive) {
       setStatus('Live (WebRTC)', 'live');
     } else if (s.peerConnection === 'connecting' || s.ice === 'checking') {
@@ -213,11 +149,6 @@
     }
     captionsBox.innerHTML = '';
     setStatus('Waiting for selection...', 'waiting');
-    dbgPc.textContent = '—';
-    dbgIce.textContent = '—';
-    dbgSig.textContent = '—';
-    dbgAudio.textContent = '—';
-    dbgUrl.textContent = '—';
   }
 
   roomSelect.addEventListener('change', function() {
@@ -254,8 +185,7 @@
       WhepListener.start({
         whepUrl: whepUrl,
         audioEl: audioEl,
-        onState: onState,
-        onLog: appendLog,
+        onState: onState
       });
       
       if (boothId) {
