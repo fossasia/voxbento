@@ -36,27 +36,27 @@
       <p class="form-help" style="margin-top: 8px; margin-bottom: 0;">If disabled, booths will only be able to use the Local Faster-Whisper CPU model.</p>
     </div>
 
-    <div class="form-group">
-      <label for="openai_api_key">OpenAI API Key</label>
-      <input type="password" id="openai_api_key" name="openai_api_key" value="{{ event.openai_api_key or '' }}" placeholder="sk-..." class="input">
-      <p class="form-help">Required for OpenAI Whisper (REST API)</p>
+    <div class="form-group" style="margin-bottom: 24px;">
+      <label for="openai_api_key" style="display: block; font-weight: 600; margin-bottom: 8px; color: #374151;">OpenAI API Key</label>
+      <input type="password" id="openai_api_key" name="openai_api_key" value="{{ event.openai_api_key or '' }}" placeholder="sk-..." class="input" style="width: 100%; padding: 10px 12px; border: 1px solid #d1d5db; border-radius: 6px; box-sizing: border-box; font-family: monospace; font-size: 14px;">
+      <p class="form-help" style="margin-top: 6px; font-size: 0.85rem; color: #6b7280; margin-bottom: 0;">Required for OpenAI Whisper (REST API)</p>
     </div>
 
-    <div class="form-group">
-      <label for="deepgram_api_key">Deepgram API Key</label>
-      <input type="password" id="deepgram_api_key" name="deepgram_api_key" value="{{ event.deepgram_api_key or '' }}" class="input">
-      <p class="form-help">Required for Deepgram (Fastest streaming captions)</p>
+    <div class="form-group" style="margin-bottom: 24px;">
+      <label for="deepgram_api_key" style="display: block; font-weight: 600; margin-bottom: 8px; color: #374151;">Deepgram API Key</label>
+      <input type="password" id="deepgram_api_key" name="deepgram_api_key" value="{{ event.deepgram_api_key or '' }}" class="input" style="width: 100%; padding: 10px 12px; border: 1px solid #d1d5db; border-radius: 6px; box-sizing: border-box; font-family: monospace; font-size: 14px;">
+      <p class="form-help" style="margin-top: 6px; font-size: 0.85rem; color: #6b7280; margin-bottom: 0;">Required for Deepgram (Fastest streaming captions)</p>
     </div>
 
-    <div class="form-group">
-      <label for="nvidia_api_key">NVIDIA Parakeet API Key</label>
-      <input type="password" id="nvidia_api_key" name="nvidia_api_key" value="{{ event.nvidia_api_key or '' }}" class="input">
-      <p class="form-help">Required for NVIDIA Parakeet (NVCF endpoint)</p>
+    <div class="form-group" style="margin-bottom: 30px;">
+      <label for="nvidia_api_key" style="display: block; font-weight: 600; margin-bottom: 8px; color: #374151;">NVIDIA Parakeet API Key</label>
+      <input type="password" id="nvidia_api_key" name="nvidia_api_key" value="{{ event.nvidia_api_key or '' }}" class="input" style="width: 100%; padding: 10px 12px; border: 1px solid #d1d5db; border-radius: 6px; box-sizing: border-box; font-family: monospace; font-size: 14px;">
+      <p class="form-help" style="margin-top: 6px; font-size: 0.85rem; color: #6b7280; margin-bottom: 0;">Required for NVIDIA Parakeet (NVCF endpoint)</p>
     </div>
 
-    <div class="form-actions" style="margin-top: 30px;">
-      <button type="submit" class="btn btn-primary">Save API Settings</button>
-      <a href="/admin/events/{{ event.id }}/" class="btn" style="background: transparent; border: 1px solid #ccc; margin-left: 10px;">Cancel</a>
+    <div class="form-actions" style="margin-top: 20px; padding-top: 20px; border-top: 1px solid #e5e7eb; display: flex; align-items: center;">
+      <button type="submit" class="btn btn-primary" style="padding: 10px 20px; font-size: 14px;">Save API Settings</button>
+      <a href="/admin/events/{{ event.id }}/" class="btn" style="background: white; border: 1px solid #d1d5db; color: #374151; margin-left: 12px; padding: 10px 20px; font-size: 14px;">Cancel</a>
     </div>
   </form>
 </div>
