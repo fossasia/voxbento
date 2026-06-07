@@ -43,11 +43,14 @@ code { font-family: var(--font-mono); font-size: 0.875em; background: #f0f1f3; p
 .admin-header, .portal-home-header {
   background: var(--color-surface);
   border-bottom: 1px solid var(--color-border);
-  padding: 0 24px;
-  height: 56px;
+  padding: 12px 24px;
+  min-height: 56px;
+  height: auto;
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
   position: sticky;
   top: 0;
   z-index: 100;
@@ -55,7 +58,7 @@ code { font-family: var(--font-mono); font-size: 0.875em; background: #f0f1f3; p
 .header-left { display: flex; align-items: center; gap: 12px; }
 .brand { font-size: 1.25rem; font-weight: 700; color: var(--color-primary); text-decoration: none; }
 .header-badge { font-size: 0.75rem; font-weight: 600; background: var(--color-primary); color: #fff; padding: 2px 8px; border-radius: 12px; }
-.header-nav { display: flex; gap: 20px; align-items: center; }
+.header-nav { display: flex; gap: 20px; align-items: center; flex-wrap: wrap; }
 .header-nav a { font-size: 0.875rem; color: var(--color-text-secondary); text-decoration: none; }
 .header-nav a:hover { color: var(--color-primary); }
 .nav-logout { color: var(--color-danger) !important; }
@@ -122,6 +125,7 @@ code { font-family: var(--font-mono); font-size: 0.875em; background: #f0f1f3; p
   align-items: center;
   justify-content: space-between;
   gap: 8px;
+  flex-wrap: wrap;
 }
 .card-title { font-size: 1.125rem; font-weight: 600; color: var(--color-text); text-decoration: none; }
 .card-title:hover { color: var(--color-primary); }
@@ -147,7 +151,7 @@ code { font-family: var(--font-mono); font-size: 0.875em; background: #f0f1f3; p
   padding: 20px;
   box-shadow: var(--shadow-sm);
 }
-.section-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
+.section-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; flex-wrap: wrap; gap: 12px; }
 .section-header h2 { font-size: 1.125rem; font-weight: 600; }
 
 .item-list { list-style: none; }
@@ -345,11 +349,11 @@ code { font-family: var(--font-mono); font-size: 0.875em; background: #f0f1f3; p
 /* ── Responsive ──────────────────────────────────────────────────────────── */
 
 @media (max-width: 768px) {
-  .admin-header, .portal-home-header { padding: 0 16px; }
+  .admin-header, .portal-home-header { padding: 12px 16px; }
   .admin-main, .home-main { padding: 16px; }
   .card-grid { grid-template-columns: 1fr; }
   .detail-grid { grid-template-columns: 1fr; }
-  .inline-form { flex-direction: column; }
+  .inline-form { flex-direction: column; align-items: stretch; }
   .inline-form input { min-width: 100%; }
   .header-nav { gap: 12px; }
   .hero h1 { font-size: 1.5rem; }
@@ -364,7 +368,7 @@ code { font-family: var(--font-mono); font-size: 0.875em; background: #f0f1f3; p
   }
   .data-table th, .data-table td { padding: 8px 12px; }
   
-  .page-header { flex-direction: column; }
+  .page-header { flex-direction: column; align-items: flex-start; }
   .role-cards { grid-template-columns: 1fr 1fr; }
 }
 
