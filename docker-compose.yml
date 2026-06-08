@@ -11,6 +11,7 @@ services:
       HOST: "0.0.0.0"
       PORT: "8000"
       SECRET_KEY: "${SECRET_KEY:-change-me}"
+      API_KEY_ENCRYPTION_KEY: "${API_KEY_ENCRYPTION_KEY:-change-this-encryption-key-in-production}"
       BOOTH_ACCESS_TOKEN: "${BOOTH_ACCESS_TOKEN:-}"
       ADMIN_PASSWORD: "${ADMIN_PASSWORD:-}"
       JWT_SECRET: "${JWT_SECRET:-}"

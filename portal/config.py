@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     port: int = 8000
     debug: bool = Field(default=True)
     secret_key: str = 'change-me'
+    api_key_encryption_key: str | None = Field(default=None)
     booth_access_token: str = ''
     default_jitsi_room: str = 'eventyay-stage-room'
     jitsi_domain: str = 'jitsi.voxbento.com'
@@ -59,7 +60,7 @@ class Settings(BaseSettings):
         return self.jwt_secret or self.secret_key
 
     # Transcription Settings
-    nvidia_function_id: str = 'd8dd4e9b-fbf5-4fb0-9dba-8cf436c8d965'
+    nvidia_function_id: str = ''
 
 
 settings = Settings()

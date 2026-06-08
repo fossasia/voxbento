@@ -1,0 +1,82 @@
+import asyncio
+import json
+import logging
+
+from portal.transcription.providers.base import TranscriptionProvider, ProviderConfig
+
+logger = logging.getLogger(__name__)
+
+class DeepgramProvider(TranscriptionProvider):
+    async def process_chunk(self, chunk: bytes, language_code: str, model_variant: str, config: ProviderConfig) -> str:
+        return ""
+
+    async def run_stream(self, process: asyncio.subprocess.Process, language_code: str, model_variant: str, config: ProviderConfig, broadcast_callback, booth_id: str) -> None:
+        import websockets
+        
+        api_key = config.get_key()
+        if not api_key:
+            logger.error(f"Deepgram API key missing")
+            return
+            
+        url = f"wss://api.deepgram.com/v1/listen?model={model_variant}&language={language_code}&encoding=linear16&sample_rate=16000&channels=1&interim_results=false&keepalive=true&endpointing=2000&smart_format=true&punctuate=true"
+        headers = {"Authorization": f"Token {api_key}"}
+        
+        consecutive_errors = 0
+        while process.returncode is None:
+            try:
+                async with websockets.connect(url, additional_headers=headers) as ws:
+                    consecutive_errors = 0
+                    
+                    async def sender():
+                        try:
+                            while True:
+                                try:
+                                    chunk = await process.stdout.readexactly(4096)
+                                except asyncio.IncompleteReadError as e:
+                                    chunk = e.partial
+                                    if not chunk:
+                                        return "EOF"
+                                if not chunk:
+                                    return "EOF"
+                                await ws.send(chunk)
+                        except Exception as e:
+                            logger.error(f"[{booth_id}] Deepgram WS sender error: {e}")
+                            return "ERROR"
+                            
+                    async def receiver():
+                        try:
+                            async for msg in ws:
+                                data = json.loads(msg)
+                                if "channel" in data:
+                                    try:
+                                        transcript = data["channel"]["alternatives"][0]["transcript"].strip()
+                                        if transcript:
+                                            logger.debug(f"[{booth_id}] Transcribed: {transcript}")
+                                            await broadcast_callback(booth_id, transcript)
+                                    except (KeyError, IndexError):
+                                        pass
+                        except Exception as e:
+                            logger.error(f"[{booth_id}] Deepgram WS receiver error: {e}")
+                            return "ERROR"
+                            
+                    sender_task = asyncio.create_task(sender())
+                    receiver_task = asyncio.create_task(receiver())
+                    
+                    done, pending = await asyncio.wait(
+                        [sender_task, receiver_task], 
+                        return_when=asyncio.FIRST_COMPLETED
+                    )
+                    
+                    for task in pending:
+                        task.cancel()
+                        
+                    if sender_task in done and sender_task.result() == "EOF":
+                        return # Clean exit
+
+            except Exception as e:
+                consecutive_errors += 1
+                logger.error(f"[{booth_id}] Deepgram connection failed ({consecutive_errors}): {e}")
+                if consecutive_errors >= 5:
+                    logger.error(f"[{booth_id}] Deepgram Realtime connection repeatedly failed. Giving up.")
+                    break
+                await asyncio.sleep(2)

@@ -1181,22 +1181,34 @@ async def admin_event_api_settings_post(
         if clear_openai_api_key:
             event.openai_api_key = None
         elif openai_api_key and openai_api_key.strip():
-            event.openai_api_key = openai_api_key.strip()
+            key = openai_api_key.strip()
+            if not key.startswith("sk-"):
+                raise HTTPException(status_code=400, detail="Invalid OpenAI API key format. Must start with 'sk-'.")
+            event.openai_api_key = key
             
         if clear_deepgram_api_key:
             event.deepgram_api_key = None
         elif deepgram_api_key and deepgram_api_key.strip():
-            event.deepgram_api_key = deepgram_api_key.strip()
+            key = deepgram_api_key.strip()
+            if len(key) < 10:
+                raise HTTPException(status_code=400, detail="Invalid Deepgram API key format.")
+            event.deepgram_api_key = key
             
         if clear_nvidia_api_key:
             event.nvidia_api_key = None
         elif nvidia_api_key and nvidia_api_key.strip():
-            event.nvidia_api_key = nvidia_api_key.strip()
+            key = nvidia_api_key.strip()
+            if len(key) < 10:
+                raise HTTPException(status_code=400, detail="Invalid NVIDIA API key format.")
+            event.nvidia_api_key = key
             
         if clear_elevenlabs_api_key:
             event.elevenlabs_api_key = None
         elif elevenlabs_api_key and elevenlabs_api_key.strip():
-            event.elevenlabs_api_key = elevenlabs_api_key.strip()
+            key = elevenlabs_api_key.strip()
+            if len(key) < 10:
+                raise HTTPException(status_code=400, detail="Invalid ElevenLabs API key format.")
+            event.elevenlabs_api_key = key
         
         await session.commit()
         
@@ -1501,16 +1513,6 @@ async def admin_delete_booth(request: Request, event_id: int, room_id: int, boot
         status_code=status.HTTP_303_SEE_OTHER,
     )
 
-def get_provider_api_key(event, provider: str) -> str | None:
-    if provider == 'openai':
-        return event.openai_api_key
-    elif provider == 'deepgram':
-        return event.deepgram_api_key
-    elif provider == 'nvidia':
-        return event.nvidia_api_key
-    elif provider == 'elevenlabs':
-        return event.elevenlabs_api_key
-    return None
 
 @app.post(
     '/admin/events/{event_id}/rooms/{room_id}/booths/{booth_id}/transcription-settings',
@@ -1527,33 +1529,29 @@ async def admin_transcription_settings(
 ):
     from portal.database import get_session, get_booth_by_id, get_event_by_id
     from portal.booth_identity import make_booth_id
-    from portal.transcription import start_transcription_worker, stop_transcription_worker
+    from portal.transcription import start_transcription_worker, stop_transcription_worker, ProviderEnum, ALLOWED_MODELS, get_api_key
 
     async with get_session() as session:
         db_booth = await get_booth_by_id(session, booth_id)
         if db_booth is None or db_booth.room_id != room_id:
             raise HTTPException(status_code=404, detail='Booth not found.')
             
-        ALLOWED_PROVIDERS = {"local", "openai", "deepgram", "nvidia", "elevenlabs"}
-        if transcription_provider not in ALLOWED_PROVIDERS:
+        try:
+            provider_enum = ProviderEnum(transcription_provider)
+        except ValueError:
             raise HTTPException(status_code=400, detail="Invalid transcription provider")
             
-        ALLOWED_MODELS = {
-            "local": {"tiny", "base", "small", "medium", "large-v2", "large-v3"},
-            "openai": {"whisper-1"},
-            "deepgram": {"nova-2"},
-            "nvidia": {"parakeet-rnnt", "parakeet-ctc"},
-            "elevenlabs": {"scribe_v2"}
-        }
-        if transcription_model not in ALLOWED_MODELS.get(transcription_provider, set()):
+        if transcription_model not in ALLOWED_MODELS.get(provider_enum, set()):
             raise HTTPException(status_code=400, detail=f"Invalid model '{transcription_model}' for provider '{transcription_provider}'")
             
         event = await get_event_by_id(session, event_id)
         if event is None:
             raise HTTPException(status_code=404, detail='Event not found.')
             
-        if transcription_provider != "local":
-            if not get_provider_api_key(event, transcription_provider):
+        if provider_enum != ProviderEnum.LOCAL:
+            if not event.transcription_api_enabled:
+                raise HTTPException(status_code=400, detail="External API transcription is disabled for this event.")
+            if not get_api_key(event, provider_enum):
                 raise HTTPException(status_code=400, detail=f"API key for {transcription_provider} is not configured on the event.")
             
         old_enabled = db_booth.transcription_enabled
@@ -1580,8 +1578,8 @@ async def admin_transcription_settings(
                 await stop_transcription_worker(bid)
                 await broadcast_transcription(bid, "")
                 
-                from portal.transcription import ProviderConfig
-                api_key = get_provider_api_key(event, transcription_provider)
+                from portal.transcription import ProviderConfig, get_api_key, ProviderEnum
+                api_key = get_api_key(event, ProviderEnum(transcription_provider))
                 config = ProviderConfig(api_key=api_key)
                 
                 import asyncio
@@ -1931,17 +1929,24 @@ async def api_transcription_start(
         provider = db_booth.transcription_provider
         model_size = db_booth.transcription_model
         
-        if not db_booth.event.transcription_api_enabled and provider != 'local':
+        from portal.transcription import ProviderEnum, get_api_key
+        try:
+            provider_enum = ProviderEnum(provider)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid transcription provider")
+
+        if not db_booth.event.transcription_api_enabled and provider_enum != ProviderEnum.LOCAL:
             raise HTTPException(status_code=400, detail="External API transcription is disabled for this event.")
         
-        api_key = get_provider_api_key(db_booth.event, provider)
+        api_key = get_api_key(db_booth.event, provider_enum)
             
-        if provider != 'local' and not api_key:
+        if provider_enum != ProviderEnum.LOCAL and not api_key:
             raise HTTPException(status_code=400, detail=f"{provider} API key missing. Cannot start transcription.")
             
         from portal.transcription import active_workers, ProviderConfig
         MAX_ACTIVE_WORKERS = 10
-        if provider != 'local' and len(active_workers) >= MAX_ACTIVE_WORKERS:
+        external_count = len([w for w in active_workers.values() if w["provider"] != ProviderEnum.LOCAL.value])
+        if provider_enum != ProviderEnum.LOCAL and external_count >= MAX_ACTIVE_WORKERS:
             raise HTTPException(status_code=429, detail=f"System at maximum capacity ({MAX_ACTIVE_WORKERS} concurrent external API booths).")
             
         config = ProviderConfig(api_key=api_key)
