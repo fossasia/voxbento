@@ -130,6 +130,102 @@ class OpenAIProvider(TranscriptionProvider):
             raise e
         return ""
 
+    async def run_stream(self, process: asyncio.subprocess.Process, language_code: str, model_variant: str, config: ProviderConfig, broadcast_callback, booth_id: str) -> None:
+        if model_variant == "whisper-1":
+            # whisper-1 only supports REST API, use the fallback HTTP 3-second chunking loop
+            await super().run_stream(process, language_code, model_variant, config, broadcast_callback, booth_id)
+            return
+
+        api_key = config.get_key()
+        if not api_key:
+            logger.error(f"OpenAI API key missing")
+            return
+
+        # Map user-friendly strings to actual OpenAI realtime models
+        realtime_model = "gpt-4o-realtime-preview"
+        if "mini" in model_variant:
+            realtime_model = "gpt-4o-mini-realtime-preview"
+
+        url = f"wss://api.openai.com/v1/realtime?model={realtime_model}"
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "OpenAI-Beta": "realtime=v1"
+        }
+
+        consecutive_errors = 0
+        while process.returncode is None:
+            try:
+                import websockets
+                import base64
+                async with websockets.connect(url, additional_headers=headers) as ws:
+                    consecutive_errors = 0
+
+                    # 1. Initialize the session to use Whisper for audio transcription
+                    session_update = {
+                        "type": "session.update",
+                        "session": {
+                            "modalities": ["text"],
+                            "input_audio_format": "pcm16",
+                            "input_audio_transcription": {"model": "whisper-1"},
+                            "turn_detection": {"type": "server_vad", "threshold": 0.5, "prefix_padding_ms": 300, "silence_duration_ms": 1000}
+                        }
+                    }
+                    await ws.send(json.dumps(session_update))
+
+                    async def sender():
+                        try:
+                            while True:
+                                chunk = await process.stdout.read(4096)
+                                if not chunk:
+                                    return "EOF"
+                                payload = {
+                                    "type": "input_audio_buffer.append",
+                                    "audio": base64.b64encode(chunk).decode('utf-8')
+                                }
+                                await ws.send(json.dumps(payload))
+                        except Exception as e:
+                            logger.error(f"[{booth_id}] OpenAI WS sender error: {e}")
+                            return "ERROR"
+                            
+                    async def receiver():
+                        try:
+                            async for msg in ws:
+                                data = json.loads(msg)
+                                event_type = data.get("type")
+                                
+                                # We listen for the completed transcription from the user's input
+                                if event_type == "conversation.item.input_audio_transcription.completed":
+                                    transcript = data.get("transcript", "").strip()
+                                    if transcript:
+                                        await broadcast_callback(booth_id, transcript)
+                                elif event_type == "error":
+                                    logger.error(f"[{booth_id}] OpenAI Realtime Error: {data}")
+                        except Exception as e:
+                            logger.error(f"[{booth_id}] OpenAI WS receiver error: {e}")
+                            return "ERROR"
+                            
+                    sender_task = asyncio.create_task(sender())
+                    receiver_task = asyncio.create_task(receiver())
+                    
+                    done, pending = await asyncio.wait([sender_task, receiver_task], return_when=asyncio.FIRST_COMPLETED)
+                    
+                    for task in pending:
+                        task.cancel()
+                        
+                    if process.returncode is not None:
+                        return
+                        
+                    if sender_task in done and sender_task.result() == "EOF":
+                        return
+                        
+            except Exception as e:
+                consecutive_errors += 1
+                logger.error(f"[{booth_id}] OpenAI Realtime connection failed ({consecutive_errors}/3): {e}")
+                if consecutive_errors >= 3:
+                    await broadcast_callback(booth_id, "[Transcription provider failed. Check logs.]")
+                    return
+                await asyncio.sleep(2)
+
 class DeepgramProvider(TranscriptionProvider):
     async def process_chunk(self, chunk: bytes, language_code: str, model_variant: str, config: ProviderConfig) -> str:
         # Fallback just in case, but run_stream handles it directly now.
@@ -350,6 +446,77 @@ class ElevenLabsProvider(TranscriptionProvider):
             logger.error(f"ElevenLabs request failed: {e}")
             raise e
         return ""
+
+    async def run_stream(self, process: asyncio.subprocess.Process, language_code: str, model_variant: str, config: ProviderConfig, broadcast_callback, booth_id: str) -> None:
+        api_key = config.get_key()
+        if not api_key:
+            logger.error(f"ElevenLabs API key missing")
+            return
+            
+        url = f"wss://api.elevenlabs.io/v1/speech-to-text/realtime?model_id={model_variant}&language_code={language_code}&audio_format=pcm_16000&commit_strategy=vad"
+        headers = {"xi-api-key": api_key}
+        
+        consecutive_errors = 0
+        while process.returncode is None:
+            try:
+                import websockets
+                import base64
+                async with websockets.connect(url, additional_headers=headers) as ws:
+                    consecutive_errors = 0
+                    
+                    async def sender():
+                        try:
+                            while True:
+                                chunk = await process.stdout.read(4096)
+                                if not chunk:
+                                    return "EOF"
+                                payload = {
+                                    "message_type": "input_audio_chunk",
+                                    "audio_base_64": base64.b64encode(chunk).decode('utf-8'),
+                                    "commit": False,
+                                    "sample_rate": 16000
+                                }
+                                await ws.send(json.dumps(payload))
+                        except Exception as e:
+                            logger.error(f"[{booth_id}] ElevenLabs WS sender error: {e}")
+                            return "ERROR"
+                            
+                    async def receiver():
+                        try:
+                            async for msg in ws:
+                                data = json.loads(msg)
+                                message_type = data.get("message_type")
+                                if message_type == "committed_transcript":
+                                    text = data.get("text", "").strip()
+                                    if text:
+                                        await broadcast_callback(booth_id, text)
+                                elif message_type == "error":
+                                    logger.error(f"[{booth_id}] ElevenLabs Realtime Error: {data}")
+                        except Exception as e:
+                            logger.error(f"[{booth_id}] ElevenLabs WS receiver error: {e}")
+                            return "ERROR"
+                            
+                    sender_task = asyncio.create_task(sender())
+                    receiver_task = asyncio.create_task(receiver())
+                    
+                    done, pending = await asyncio.wait([sender_task, receiver_task], return_when=asyncio.FIRST_COMPLETED)
+                    
+                    for task in pending:
+                        task.cancel()
+                        
+                    if process.returncode is not None:
+                        return
+                        
+                    if sender_task in done and sender_task.result() == "EOF":
+                        return
+                        
+            except Exception as e:
+                consecutive_errors += 1
+                logger.error(f"[{booth_id}] ElevenLabs connection failed ({consecutive_errors}/3): {e}")
+                if consecutive_errors >= 3:
+                    await broadcast_callback(booth_id, "[Transcription provider failed. Check logs.]")
+                    return
+                await asyncio.sleep(2)
 
 PROVIDERS = {
     'local': LocalProvider(),
