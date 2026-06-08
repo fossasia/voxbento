@@ -144,7 +144,7 @@ class DeepgramProvider(TranscriptionProvider):
             logger.error(f"Deepgram API key missing")
             return
             
-        url = f"wss://api.deepgram.com/v1/listen?model={model_variant}&language={language_code}&encoding=linear16&sample_rate=16000&channels=1&interim_results=false&keepalive=true"
+        url = f"wss://api.deepgram.com/v1/listen?model={model_variant}&language={language_code}&encoding=linear16&sample_rate=16000&channels=1&interim_results=false&keepalive=true&endpointing=2000&smart_format=true&punctuate=true"
         headers = {"Authorization": f"Token {api_key}"}
         
         consecutive_errors = 0
