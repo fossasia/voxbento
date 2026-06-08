@@ -6,8 +6,6 @@ from portal.transcription.providers.base import TranscriptionProvider, ProviderC
 logger = logging.getLogger(__name__)
 
 class NVIDIAProvider(TranscriptionProvider):
-    def __init__(self):
-        self._services = {}
 
     async def process_chunk(self, chunk: bytes, language_code: str, model_variant: str, config: ProviderConfig) -> str:
         return ""
@@ -23,24 +21,21 @@ class NVIDIAProvider(TranscriptionProvider):
             
         riva_lang = "en-US" if language_code == "en" else language_code
         
-        if api_key not in self._services:
-            from portal.config import settings
-            function_id = settings.nvidia_function_id
-            if not function_id:
-                logger.error("NVIDIA_FUNCTION_ID is not configured in the environment.")
-                return
-            
-            auth = rc.Auth(
-                use_ssl=True,
-                uri="grpc.nvcf.nvidia.com:443",
-                metadata_args=[
-                    ["function-id", function_id],
-                    ["authorization", f"Bearer {api_key}"]
-                ]
-            )
-            self._services[api_key] = rc.ASRService(auth)
-            
-        asr_service = self._services[api_key]
+        from portal.config import settings
+        function_id = settings.nvidia_function_id
+        if not function_id:
+            logger.error("NVIDIA_FUNCTION_ID is not configured in the environment.")
+            return
+        
+        auth = rc.Auth(
+            use_ssl=True,
+            uri="grpc.nvcf.nvidia.com:443",
+            metadata_args=[
+                ["function-id", function_id],
+                ["authorization", f"Bearer {api_key}"]
+            ]
+        )
+        asr_service = rc.ASRService(auth)
         
         config_rc = rc.RecognitionConfig(
             encoding=rc.AudioEncoding.LINEAR_PCM,
@@ -92,13 +87,16 @@ class NVIDIAProvider(TranscriptionProvider):
                 consecutive_errors = 0
                 while True:
                     try:
-                        chunk = await process.stdout.readexactly(4096)
-                    except asyncio.IncompleteReadError as e:
-                        chunk = e.partial
+                        chunk = await process.stdout.read(4096)
                         if not chunk:
                             q.put(None)
                             await thread_task
                             return
+                    except Exception as e:
+                        logger.error(f"[{booth_id}] Error reading stdout: {e}")
+                        q.put(None)
+                        await thread_task
+                        return
                             
                     if not chunk:
                         q.put(None)

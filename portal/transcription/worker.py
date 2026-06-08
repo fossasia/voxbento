@@ -20,6 +20,8 @@ PROVIDERS = {
 }
 
 # --- Worker State ---
+active_workers_lock = asyncio.Lock()
+MAX_ACTIVE_WORKERS = 10
 # Store dict containing {"task": asyncio.Task, "provider": str}
 active_workers: Dict[str, Dict[str, Any]] = {}
 active_processes: Dict[str, asyncio.subprocess.Process] = {}
@@ -65,19 +67,26 @@ async def transcription_worker(event_slug: str, language_code: str, booth_id: st
             except ProcessLookupError:
                 pass
         active_processes.pop(booth_id, None)
-        active_workers.pop(booth_id, None)
+        async with active_workers_lock:
+            active_workers.pop(booth_id, None)
         logger.info(f"[{booth_id}] Transcription worker exited.")
 
 async def start_transcription_worker(event_slug: str, language_code: str, booth_id: str, broadcast_callback, provider: str, model_size: str, config: ProviderConfig):
-    if booth_id in active_workers:
-        logger.info(f"Transcription worker for {booth_id} is already running.")
-        return
-        
-    task = asyncio.create_task(transcription_worker(event_slug, language_code, booth_id, broadcast_callback, provider, model_size, config))
-    active_workers[booth_id] = {
-        "task": task,
-        "provider": provider
-    }
+    async with active_workers_lock:
+        if booth_id in active_workers:
+            logger.info(f"Transcription worker for {booth_id} is already running.")
+            return
+
+        if provider != "local":
+            external_count = sum(1 for w in active_workers.values() if w["provider"] != "local")
+            if external_count >= MAX_ACTIVE_WORKERS:
+                raise ValueError(f"System at maximum capacity ({MAX_ACTIVE_WORKERS} concurrent external API booths).")
+
+        task = asyncio.create_task(transcription_worker(event_slug, language_code, booth_id, broadcast_callback, provider, model_size, config))
+        active_workers[booth_id] = {
+            "task": task,
+            "provider": provider
+        }
 
 async def stop_transcription_worker(booth_id: str):
     worker_data = active_workers.get(booth_id)

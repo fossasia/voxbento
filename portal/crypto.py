@@ -30,6 +30,6 @@ def decrypt_val(val: str | None) -> str | None:
         return None
     try:
         return get_fernet().decrypt(val.encode()).decode()
-    except Exception:
-        logger.exception("Failed to decrypt API key. This may indicate a corrupted database entry or an incorrect API_KEY_ENCRYPTION_KEY.")
-        return None  # Fail securely if decryption is invalid
+    except Exception as e:
+        logger.exception("Failed to decrypt API key.")
+        raise ValueError("Failed to decrypt API key. This may indicate a corrupted database entry or an incorrect API_KEY_ENCRYPTION_KEY.") from e

@@ -1170,6 +1170,7 @@ async def admin_event_api_settings_post(
     clear_elevenlabs_api_key: bool | None = Form(False),
 ):
     from portal.database import get_session, get_event_by_id
+    from portal.crypto import encrypt_val
 
     async with get_session() as session:
         event = await get_event_by_id(session, event_id)
@@ -1179,36 +1180,24 @@ async def admin_event_api_settings_post(
         event.transcription_api_enabled = bool(transcription_api_enabled)
         
         if clear_openai_api_key:
-            event.openai_api_key = None
+            event.encrypted_openai_api_key = None
         elif openai_api_key and openai_api_key.strip():
-            key = openai_api_key.strip()
-            if not key.startswith("sk-"):
-                raise HTTPException(status_code=400, detail="Invalid OpenAI API key format. Must start with 'sk-'.")
-            event.openai_api_key = key
+            event.encrypted_openai_api_key = encrypt_val(openai_api_key.strip())
             
         if clear_deepgram_api_key:
-            event.deepgram_api_key = None
+            event.encrypted_deepgram_api_key = None
         elif deepgram_api_key and deepgram_api_key.strip():
-            key = deepgram_api_key.strip()
-            if len(key) < 10:
-                raise HTTPException(status_code=400, detail="Invalid Deepgram API key format.")
-            event.deepgram_api_key = key
+            event.encrypted_deepgram_api_key = encrypt_val(deepgram_api_key.strip())
             
         if clear_nvidia_api_key:
-            event.nvidia_api_key = None
+            event.encrypted_nvidia_api_key = None
         elif nvidia_api_key and nvidia_api_key.strip():
-            key = nvidia_api_key.strip()
-            if len(key) < 10:
-                raise HTTPException(status_code=400, detail="Invalid NVIDIA API key format.")
-            event.nvidia_api_key = key
+            event.encrypted_nvidia_api_key = encrypt_val(nvidia_api_key.strip())
             
         if clear_elevenlabs_api_key:
-            event.elevenlabs_api_key = None
+            event.encrypted_elevenlabs_api_key = None
         elif elevenlabs_api_key and elevenlabs_api_key.strip():
-            key = elevenlabs_api_key.strip()
-            if len(key) < 10:
-                raise HTTPException(status_code=400, detail="Invalid ElevenLabs API key format.")
-            event.elevenlabs_api_key = key
+            event.encrypted_elevenlabs_api_key = encrypt_val(elevenlabs_api_key.strip())
         
         await session.commit()
         
@@ -1938,20 +1927,21 @@ async def api_transcription_start(
         if not db_booth.event.transcription_api_enabled and provider_enum != ProviderEnum.LOCAL:
             raise HTTPException(status_code=400, detail="External API transcription is disabled for this event.")
         
-        api_key = get_api_key(db_booth.event, provider_enum)
+        try:
+            api_key = get_api_key(db_booth.event, provider_enum)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail="API Key decryption failed. The encryption key has rotated. Please go to the Admin portal, clear your existing keys, and re-enter them.")
             
         if provider_enum != ProviderEnum.LOCAL and not api_key:
             raise HTTPException(status_code=400, detail=f"{provider} API key missing. Cannot start transcription.")
             
-        from portal.transcription import active_workers, ProviderConfig
-        MAX_ACTIVE_WORKERS = 10
-        external_count = len([w for w in active_workers.values() if w["provider"] != ProviderEnum.LOCAL.value])
-        if provider_enum != ProviderEnum.LOCAL and external_count >= MAX_ACTIVE_WORKERS:
-            raise HTTPException(status_code=429, detail=f"System at maximum capacity ({MAX_ACTIVE_WORKERS} concurrent external API booths).")
-            
+        from portal.transcription import ProviderConfig
         config = ProviderConfig(api_key=api_key)
 
-    await start_transcription_worker(event_slug, language_code, booth_id, broadcast_transcription, provider, model_size, config)
+    try:
+        await start_transcription_worker(event_slug, language_code, booth_id, broadcast_transcription, provider, model_size, config)
+    except ValueError as e:
+        raise HTTPException(status_code=429, detail=str(e))
     return {"status": "started", "provider": provider, "model": model_size}
 
 @app.post('/api/booth/{booth_id}/transcription/stop')

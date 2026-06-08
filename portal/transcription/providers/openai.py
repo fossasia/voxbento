@@ -64,11 +64,7 @@ class OpenAIProvider(TranscriptionProvider):
             logger.error(f"OpenAI API key missing")
             return
 
-        realtime_model = "gpt-4o-realtime-preview"
-        if "mini" in model_variant:
-            realtime_model = "gpt-4o-mini-realtime-preview"
-
-        url = f"wss://api.openai.com/v1/realtime?model={realtime_model}"
+        url = f"wss://api.openai.com/v1/realtime?model={model_variant}"
         headers = {
             "Authorization": f"Bearer {api_key}",
             "OpenAI-Beta": "realtime=v1"
@@ -96,12 +92,7 @@ class OpenAIProvider(TranscriptionProvider):
                     async def sender():
                         try:
                             while True:
-                                try:
-                                    chunk = await process.stdout.readexactly(4096)
-                                except asyncio.IncompleteReadError as e:
-                                    chunk = e.partial
-                                    if not chunk:
-                                        return "EOF"
+                                chunk = await process.stdout.read(4096)
                                 if not chunk:
                                     return "EOF"
                                 payload = {
@@ -136,6 +127,16 @@ class OpenAIProvider(TranscriptionProvider):
                         return_when=asyncio.FIRST_COMPLETED
                     )
                     
+                    if sender_task in done and sender_task.result() == "EOF":
+                        try:
+                            await ws.send(json.dumps({"type": "input_audio_buffer.commit"}))
+                            await receiver_task
+                        except Exception:
+                            pass
+                        for task in pending:
+                            task.cancel()
+                        return # Clean exit
+
                     for task in pending:
                         task.cancel()
                         

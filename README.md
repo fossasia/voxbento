@@ -63,3 +63,11 @@ docker compose up --build
 Open http://localhost:8000 — all services are running.
 
 For detailed API documentation, environment variables, port mappings, and native development setup, please see [CONTRIBUTING.md](CONTRIBUTING.md).
+
+---
+
+## Upgrade Notes
+
+### API Key Encryption Changes
+If you are upgrading an existing installation, a new mandatory environment variable `API_KEY_ENCRYPTION_KEY` has been introduced to securely encrypt third-party API keys in the database. 
+You must generate a secure key (e.g., using `openssl rand -hex 32`) and add it to your `.env` file before starting the application. Without this key, decryption will fail hard to protect your data.

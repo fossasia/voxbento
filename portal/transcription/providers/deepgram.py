@@ -18,7 +18,7 @@ class DeepgramProvider(TranscriptionProvider):
             logger.error(f"Deepgram API key missing")
             return
             
-        url = f"wss://api.deepgram.com/v1/listen?model={model_variant}&language={language_code}&encoding=linear16&sample_rate=16000&channels=1&interim_results=false&keepalive=true&endpointing=2000&smart_format=true&punctuate=true"
+        url = f"wss://api.deepgram.com/v1/listen?model={model_variant}&language={language_code}&encoding=linear16&sample_rate=16000&channels=1&interim_results=true&keepalive=true&endpointing=2000&smart_format=true&punctuate=true"
         headers = {"Authorization": f"Token {api_key}"}
         
         consecutive_errors = 0
@@ -31,14 +31,12 @@ class DeepgramProvider(TranscriptionProvider):
                         try:
                             while True:
                                 try:
-                                    chunk = await process.stdout.readexactly(4096)
-                                except asyncio.IncompleteReadError as e:
-                                    chunk = e.partial
+                                    chunk = await asyncio.wait_for(process.stdout.read(4096), timeout=5.0)
                                     if not chunk:
                                         return "EOF"
-                                if not chunk:
-                                    return "EOF"
-                                await ws.send(chunk)
+                                    await ws.send(chunk)
+                                except asyncio.TimeoutError:
+                                    await ws.send(json.dumps({"type": "KeepAlive"}))
                         except Exception as e:
                             logger.error(f"[{booth_id}] Deepgram WS sender error: {e}")
                             return "ERROR"
@@ -67,11 +65,18 @@ class DeepgramProvider(TranscriptionProvider):
                         return_when=asyncio.FIRST_COMPLETED
                     )
                     
+                    if sender_task in done and sender_task.result() == "EOF":
+                        try:
+                            await ws.send(b"")
+                            await receiver_task
+                        except Exception:
+                            pass
+                        for task in pending:
+                            task.cancel()
+                        return # Clean exit
+
                     for task in pending:
                         task.cancel()
-                        
-                    if sender_task in done and sender_task.result() == "EOF":
-                        return # Clean exit
 
             except Exception as e:
                 consecutive_errors += 1

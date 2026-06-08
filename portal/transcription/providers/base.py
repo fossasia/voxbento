@@ -19,13 +19,15 @@ def pcm_to_wav(pcm_data: bytes, sample_rate: int = 16000) -> bytes:
     return buf.getvalue()
 
 def get_api_key(event: Event, provider: ProviderEnum) -> str | None:
+    from portal.crypto import decrypt_val
     key_map = {
-        ProviderEnum.OPENAI: event.openai_api_key,
-        ProviderEnum.DEEPGRAM: event.deepgram_api_key,
-        ProviderEnum.NVIDIA: event.nvidia_api_key,
-        ProviderEnum.ELEVENLABS: event.elevenlabs_api_key,
+        ProviderEnum.OPENAI: event.encrypted_openai_api_key,
+        ProviderEnum.DEEPGRAM: event.encrypted_deepgram_api_key,
+        ProviderEnum.NVIDIA: event.encrypted_nvidia_api_key,
+        ProviderEnum.ELEVENLABS: event.encrypted_elevenlabs_api_key,
     }
-    return key_map.get(provider)
+    encrypted = key_map.get(provider)
+    return decrypt_val(encrypted) if encrypted else None
 
 @dataclass
 class ProviderConfig:
