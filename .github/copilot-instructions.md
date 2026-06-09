@@ -1,4 +1,4 @@
-# GitHub Copilot Instructions — Eventyay Interpretation Portal
+# GitHub Copilot Instructions — Voxbento
 
 Canonical project policy is in [`../agents.md`](../agents.md). Read that first.
 
@@ -12,7 +12,7 @@ Canonical project policy is in [`../agents.md`](../agents.md). Read that first.
 
 ## What this repo is
 
-A browser-first interpretation booth console for Eventyay live events.
+A browser-first interpretation booth console.
 
 **Stack:** FastAPI (ASGI/uvicorn) + MediaMTX (WHIP/WHEP/HLS) + self-hosted Jitsi Meet. No Flask, no Socket.IO, no aiortc.
 

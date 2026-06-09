@@ -1,4 +1,4 @@
-"""FastAPI entry point — sole backend for the Eventyay Interpretation Portal.
+"""FastAPI entry point — sole backend for the Voxbento.
 
 Start with:
     uvicorn fastapi_app:app --host 0.0.0.0 --port 8000 --reload
@@ -62,7 +62,7 @@ async def lifespan(app: FastAPI):
         await ts.shared_http_client.aclose()
 
 
-app = FastAPI(title='Eventyay Interpretation Portal', version='1.0.0', lifespan=lifespan)
+app = FastAPI(title='Voxbento', version='1.0.0', lifespan=lifespan)
 app.mount('/static', StaticFiles(directory=_BASE_DIR / 'static'), name='static')
 templates = Jinja2Templates(directory=str(_BASE_DIR / 'templates'))
 

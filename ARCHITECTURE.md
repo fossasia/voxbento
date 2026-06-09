@@ -1,4 +1,4 @@
-# Eventyay Interpretation Portal Architecture
+# Voxbento Architecture
 
 ## 1. Scope and intent
 

@@ -1,4 +1,4 @@
-# Contributing to Eventyay Interpretation Portal
+# Contributing to Voxbento
 
 ## Running tests
 

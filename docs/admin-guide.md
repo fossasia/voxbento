@@ -1,4 +1,4 @@
-# Admin & User Guide — Eventyay Interpretation Portal
+# Admin & User Guide — Voxbento
 
 ## Quick Start
 

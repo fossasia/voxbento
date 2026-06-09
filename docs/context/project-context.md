@@ -1,8 +1,8 @@
 # Project Context
 
-## What is the Eventyay Interpretation Portal?
+## What is Voxbento?
 
-The Eventyay Interpretation Portal is a browser-based subsystem of the Eventyay live event platform that enables human simultaneous interpreters to broadcast their translations to viewers in real time.
+Voxbento is a browser-based subsystem that enables human simultaneous interpreters to broadcast their translations to viewers in real time.
 
 It is modelled on the real-world interpretation workflow at multilingual conferences (UN, EU Parliament, large international events) but eliminates the hardware and specialist knowledge requirements. An interpreter needs only:
 
