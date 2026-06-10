@@ -1,0 +1,110 @@
+{
+  "projectType": "saas",
+  "projectName": "Voxbento",
+  "projectDescription": "Voxbento is a browser-first, real-time interpretation platform for live events, enabling interpreters to monitor floor audio via Jitsi and broadcast translated audio to attendees with sub-second latency over WebRTC.",
+  "theme": "luma",
+  "primaryColor": "#14968d",
+  "lightColor": "#b9e0dd",
+  "darkColor": "#7cc4c4",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "how-it-works"
+            ]
+          },
+          {
+            "group": "Admin Guide",
+            "pages": [
+              "admin/events-and-rooms",
+              "admin/booths",
+              "admin/members-and-roles",
+              "admin/invite-tokens",
+              "admin/transcription"
+            ]
+          },
+          {
+            "group": "Interpreter Guide",
+            "pages": [
+              "interpreter/joining-a-booth",
+              "interpreter/going-live",
+              "interpreter/handoff"
+            ]
+          },
+          {
+            "group": "Listener Guide",
+            "pages": [
+              "listener/attending-an-event",
+              "listener/live-captions"
+            ]
+          },
+          {
+            "group": "Configuration",
+            "pages": [
+              "configuration/environment-variables",
+              "configuration/deployment",
+              "configuration/security"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Overview",
+            "pages": [
+              "api/overview",
+              "api/authentication"
+            ]
+          },
+          {
+            "group": "Booths",
+            "pages": [
+              "api/booths/state",
+              "api/booths/whip-whep",
+              "api/booths/events"
+            ]
+          },
+          {
+            "group": "Real-Time",
+            "pages": [
+              "api/websocket/booth",
+              "api/websocket/captions"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Browser-first interpreter booth — no plugins or installs required",
+    "Sub-second WebRTC/WHEP audio delivery to attendees",
+    "Seamless interpreter handoff with zero listener reconnection",
+    "Multi-booth, multi-language event support",
+    "Role-based access: super_admin, event_admin, coordinator, interpreter, listener",
+    "Live captions via multiple transcription providers (Whisper, OpenAI, Deepgram, ElevenLabs, NVIDIA Riva)",
+    "Invite token system for secure participant onboarding",
+    "Real-time booth coordination over WebSocket (chat, handoff, status)",
+    "Jitsi Meet floor monitoring embedded in interpreter console",
+    "HLS fallback for maximum listener compatibility"
+  ],
+  "publicApiSurface": [
+    "POST /api/auth/token — issue bearer JWT",
+    "GET /api/booth/{booth_id}/state — booth state",
+    "GET /api/booth/{booth_id}/whip-url — WHIP URL for active interpreter",
+    "POST /api/events/{event_slug}/booths — create in-memory booth",
+    "GET /api/events/{event_slug}/booths — list booths for event",
+    "GET /api/events/{event_slug}/booths/{language_code}/state — booth state",
+    "GET /api/events/{event_slug}/booths/{language_code}/whip-url — WHIP URL",
+    "GET /api/interpreter/status/{channel_id} — MediaMTX reachability check",
+    "WS /ws/booth/{booth_id} — real-time booth coordination",
+    "WS /ws/captions/{booth_id} — live caption feed (no auth)"
+  ]
+}

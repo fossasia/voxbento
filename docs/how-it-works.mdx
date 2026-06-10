@@ -1,0 +1,139 @@
+---
+title: "Voxbento Audio Pipeline: From Interpreter Mic to Listener"
+sidebarTitle: "How It Works"
+description: "Trace the complete path from an interpreter's microphone through the WebRTC pipeline to listeners' ears, with sub-second end-to-end latency."
+---
+
+Voxbento is built on a single guiding principle: the audio path should be as short and as direct as possible. Rather than routing interpreter microphone audio through application servers, Voxbento sends audio straight from the interpreter's browser to MediaMTX — an open-source media server — and from there straight to each listener's browser. The Voxbento coordination portal sits alongside that path to handle coordination, but it never touches the audio itself.
+
+## The Interpretation Pipeline
+
+Here is how audio travels from the speaker on stage to a listener's headphones, step by step:
+
+<Steps>
+  <Step title="Floor audio: the speaker enters Jitsi">
+    The presenter or speaker joins a self-hosted Jitsi Meet session. This session carries the event's floor audio — the source language that interpreters listen to and translate.
+
+    Voxbento embeds the relevant Jitsi session as an iframe directly inside each interpreter's booth page. The interpreter monitors floor audio and video from within the same browser tab where they will broadcast their translation, which keeps the workflow contained and the latency low.
+  </Step>
+  <Step title="Interpreter audio: mic capture and WebRTC publish">
+    When the interpreter clicks **Go Live**, the browser calls `navigator.mediaDevices.getUserMedia` to capture microphone input. Before the audio leaves the browser, the browser's built-in DSP stack applies:
+
+    - Echo cancellation (to prevent Jitsi floor audio from bleeding into the interpreter's mic)
+    - Noise suppression
+    - Auto gain control
+
+    The processed audio track is added to an `RTCPeerConnection`. The browser then performs a WHIP handshake — a standard HTTP POST that negotiates the WebRTC session with MediaMTX. After the handshake, audio flows over the established WebRTC media connection directly to MediaMTX.
+
+    <Note>
+      The audio path goes directly from your browser to MediaMTX and then to listeners — Voxbento's coordination portal is only involved in booth state, role checks, and captions, and never relays interpreter microphone data.
+    </Note>
+  </Step>
+  <Step title="MediaMTX: ingest and remux">
+    MediaMTX terminates the WebRTC connection from the interpreter's browser, decodes the audio, and makes it available on a named path that corresponds to the booth's identity:
+
+    ```text
+    {event_slug}/{language_code}
+    ```
+
+    For example, the English booth at PyCon 2026 occupies the path `pycon2026/en`. The WHIP and WHEP URLs for that booth follow the pattern:
+
+    ```text
+    # Interpreter publishes to:
+    {mediamtx_base}/pycon2026/en/whip
+    
+    # Listeners connect to:
+    {mediamtx_base}/pycon2026/en/whep
+    ```
+
+    MediaMTX holds these paths open even when no interpreter is currently publishing, so listener connections are never dropped between handoffs.
+  </Step>
+  <Step title="Listener delivery: WHEP (primary) and HLS (fallback)">
+    Listeners connect to the WHEP endpoint for their chosen language. WHEP (WebRTC HTTP Egress Protocol) is the mirror of WHIP — it negotiates a WebRTC session from the server side and streams audio to the listener's browser with sub-second latency.
+
+    For devices that do not handle WebRTC reliably, MediaMTX also produces HLS segments on a separate port. The listener page loads hls.js and falls back to HLS automatically when WHEP is unavailable. HLS introduces roughly three seconds of additional latency but works on virtually any device.
+
+    <Tip>
+      You do not need to configure the fallback manually. The listener page tries WHEP first and switches to HLS transparently if the WebRTC negotiation fails.
+    </Tip>
+  </Step>
+</Steps>
+
+## Booth Identity
+
+Every booth in Voxbento is uniquely identified by two coordinates:
+
+| Coordinate | Format | Example |
+| --- | --- | --- |
+| `event_slug` | Lowercase alphanumeric and hyphens, 1–64 characters | `pycon2026` |
+| `language_code` | ISO 639-1 two-letter code | `en` |
+
+These two values combine to form the **MediaMTX path** (`pycon2026/en`) and the **booth ID** (`pycon2026-en`). Both are derived at runtime — there is no separate stored URL. If you change the event slug or language code, the derived URLs update automatically.
+
+## Interpreter Handoff
+
+In a professional interpretation setting, interpreters rotate every 20–30 minutes to prevent fatigue. Voxbento handles this transition without interrupting listeners.
+
+Here is what happens when a coordinator switches the active interpreter:
+
+1. The coordinator clicks **Set Active** next to the incoming interpreter in the booth.
+2. The portal updates the active interpreter state and notifies all booth participants over WebSocket.
+3. The incoming interpreter's browser calls the gated `/api/booth/{booth_id}/whip-url` endpoint, receives the WHIP URL, and begins publishing.
+4. MediaMTX is configured with `overridePublisher: yes` — it immediately accepts the new publisher and disconnects the outgoing interpreter's WHIP session.
+5. All existing WHEP listeners receive the new publisher's audio within approximately one to two seconds. Their `RTCPeerConnection` stays open throughout; MediaMTX routes the new track into it automatically.
+
+<Note>
+  Listeners on the HLS fallback path experience a longer gap during handoff — roughly 10–15 seconds — while hls.js recovers from the muxer reset that occurs when the publisher changes.
+</Note>
+
+## Roles
+
+Voxbento has three participant roles that are active during a live event:
+
+<CardGroup cols={3}>
+  <Card title="Coordinator" icon="sliders">
+    Manages the booth. Assigns which interpreter is active, initiates handoffs, and monitors participant state. Coordinators can see the full participant roster and internal booth chat. They cannot publish audio themselves.
+  </Card>
+
+  <Card title="Interpreter" icon="microphone">
+    Monitors floor audio via the Jitsi iframe and publishes translated audio to MediaMTX via WHIP when they are the active interpreter. Only the active interpreter can go live — all others are held in standby.
+  </Card>
+
+  <Card title="Listener" icon="headphones">
+    Receives the interpreted audio stream from MediaMTX via WHEP or HLS. Listeners connect to the event's public listener page and choose a language — no login required by default.
+  </Card>
+</CardGroup>
+
+## Live Captions
+
+When transcription is enabled for a booth, Voxbento pipes the active interpreter's audio to a transcription backend (Whisper, OpenAI, Deepgram, ElevenLabs, or NVIDIA Riva) and broadcasts the resulting text to all listeners in real time.
+
+Captions are delivered over a dedicated WebSocket endpoint:
+
+```text
+/ws/captions/{booth_id}
+```
+
+For example:
+
+```text
+/ws/captions/pycon2026-en
+```
+
+Listeners connected to the caption WebSocket receive transcription segments as they are produced. The caption stream is independent of the audio stream — listeners can receive captions even while audio is playing through WHEP or HLS.
+
+## Security Layers
+
+Publishing audio to a booth is protected by three independent enforcement layers:
+
+<Tabs>
+  <Tab title="Role and active-interpreter check">
+    Voxbento's server-side coordination layer rejects any attempt to activate a microphone or begin audio publishing unless the participant holds the `interpreter` role **and** is the currently designated active interpreter for that booth. Coordinators and listeners cannot publish audio under any circumstances.
+  </Tab>
+  <Tab title="WHIP URL gating">
+    Before the browser can start publishing, it must request the MediaMTX ingest URL from the Voxbento API (`GET /api/booth/{booth_id}/whip-url`). That URL is returned only to the active interpreter. Any other participant receives HTTP 403 and never receives a usable ingest address.
+  </Tab>
+  <Tab title="Media server">
+    MediaMTX is configured to allow only one publisher per stream path at a time. Even if a stale or unexpected session somehow reaches the media server, it immediately displaces any existing publisher — ensuring a single, authoritative audio source at all times.
+  </Tab>
+</Tabs>

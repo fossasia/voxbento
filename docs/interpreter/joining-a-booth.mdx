@@ -1,0 +1,104 @@
+---
+title: "Join a Voxbento Interpretation Booth"
+sidebarTitle: "Joining a Booth"
+description: "Learn how to access your assigned Voxbento interpretation booth — either through a coordinator-issued invite link or your registered account dashboard."
+---
+
+Before you can start interpreting, you need to access the booth assigned to your language channel. Voxbento gives you two ways to do this: your coordinator can send you a one-click invite link that requires no account, or you can log in with a registered account and open the booth directly from your home dashboard. Both paths land you in the same interpreter console.
+
+## Two Ways to Join
+
+<CardGroup cols={2}>
+  <Card title="Invite Link" icon="link">
+    Your coordinator shares a `/join/{token}` URL. Click it and you're in — no registration needed. Your role is already baked into the token.
+  </Card>
+  <Card title="Registered Account" icon="user">
+    Register at `/register`, get assigned to a booth by your coordinator, then log in. Your home dashboard shows an **Open Booth** button for every booth you're assigned to.
+  </Card>
+</CardGroup>
+
+## Using an Invite Link
+
+Your coordinator generates a token-based invite link from the booth detail page in the admin panel and shares it with you directly.
+
+<Steps>
+  <Step title="Click the invite link">
+    Open the link your coordinator shared — it looks like `https://your-voxbento-instance.com/join/{token}`. You don't need an account or a password.
+  </Step>
+  <Step title="Browser opens the booth">
+    Voxbento validates the token, sets a secure session cookie, and redirects you straight to the interpreter booth for your assigned language channel.
+  </Step>
+  <Step title="You're in">
+    Your role (interpreter or coordinator) is granted automatically from the token. You'll see the full interpreter console immediately.
+  </Step>
+</Steps>
+
+<Note>
+  Invite tokens can be set to expire after a number of hours. If you see an "invalid or expired token" message, ask your coordinator to generate a fresh link.
+</Note>
+
+## Using a Registered Account
+
+If your organisation uses persistent accounts, your coordinator assigns you to a specific booth by email address rather than issuing a one-time token.
+
+<Steps>
+  <Step title="Register for an account">
+    Go to `/register` and fill in your email address, display name, and a password of at least eight characters. You'll be redirected to your account page on success.
+  </Step>
+  <Step title="Wait for your coordinator to assign you">
+    Your coordinator opens the booth detail page in the admin panel, enters your email under **Assigned Members**, selects the `interpreter` role, and clicks **Assign Member**.
+  </Step>
+  <Step title="Log in and open the booth">
+    Go to `/login` and sign in. Your home page lists every booth you've been assigned to. Click **Open Booth** next to the language channel you're interpreting for.
+  </Step>
+</Steps>
+
+## The Interpreter Booth UI
+
+Once you're inside the booth, you'll see several panels working together:
+
+<CardGroup cols={2}>
+  <Card title="Jitsi Floor Monitor" icon="video">
+    An embedded Jitsi iframe shows the main session — the floor audio and video your audience is watching. This is your reference feed as you interpret.
+  </Card>
+  <Card title="Mic Controls" icon="microphone">
+    A toolbar with a mute/unmute toggle, a VU meter showing your current mic level, and a **Go Live** / **Go Offline** button to start or stop publishing your audio.
+  </Card>
+  <Card title="Participant Roster" icon="users">
+    Lists everyone currently in the booth — their display name, role, and whether they are the active interpreter. Coordinators can promote or demote interpreters from here.
+  </Card>
+  <Card title="Chat Panel" icon="message">
+    A real-time text chat shared by all booth participants. Use it to coordinate handoffs, flag issues, or send timing cues to colleagues without interrupting your audio stream.
+  </Card>
+</CardGroup>
+
+The **Audio Status** panel in the toolbar shows your current publishing state — **Idle**, **Streaming**, or **Error** — so you always know whether listeners can hear you.
+
+## Granting Microphone Permission
+
+The first time you open a booth, your browser will prompt you to allow microphone access. You must grant this permission for Voxbento to publish your interpretation audio.
+
+<Steps>
+  <Step title="Allow microphone access">
+    When the browser permission dialog appears, click **Allow**. Voxbento only activates your mic when you explicitly click **Go Live** — permission does not mean you're broadcasting immediately.
+  </Step>
+  <Step title="Check the VU meter">
+    After granting access, speak a few words and watch the VU meter. If the bars move, your mic is working correctly.
+  </Step>
+</Steps>
+
+<Warning>
+  If you accidentally click **Block**, your browser will remember that choice. You'll need to reset mic permissions in your browser's site settings and reload the page before you can go live.
+</Warning>
+
+<Tip>
+  Use a modern browser — Chrome or Edge is recommended — for the best WebRTC audio quality and the most reliable microphone handling. Firefox works but may behave differently with some USB audio interfaces.
+</Tip>
+
+## Joining as a Backup Interpreter
+
+You don't have to go live the moment you join. You can enter the booth, monitor the floor audio through the Jitsi iframe, and stay silent until the coordinator sets you as the active interpreter.
+
+<Note>
+  You can join as a backup interpreter (not active) and monitor the floor without going live. The active interpreter is shown in the participant roster so you always know who is currently on air.
+</Note>

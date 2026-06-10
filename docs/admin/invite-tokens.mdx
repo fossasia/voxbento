@@ -1,0 +1,111 @@
+---
+title: "Generate and Revoke Booth Invite Tokens — Voxbento"
+sidebarTitle: "Invite Tokens"
+description: "Generate, share, and revoke time-limited invite tokens to grant interpreters, coordinators, and listeners direct access to Voxbento booths."
+---
+
+Invite tokens let you bring participants into a booth without requiring them to register an account. You generate a token for a specific role, copy the join link, and share it with the intended person — when they open the link, Voxbento validates the token and drops them directly into the booth with the right permissions. This makes invite tokens ideal for one-time event attendees or interpreters who don't have an existing Voxbento account.
+
+## What Are Invite Tokens?
+
+An invite token is a single-use credential tied to a specific booth and role. It contains:
+
+- The **booth** the token grants access to.
+- The **role** the bearer receives when they join — `listener`, `interpreter`, or `coordinator`.
+- An optional **expiry time** after which the token can no longer be used.
+- A human-readable **label** you assign to help you track who the token was shared with.
+
+When a participant opens the join URL, Voxbento validates the token and authenticates them directly into that booth with the correct role for the session.
+
+## When to Use Invite Tokens
+
+<CardGroup cols={2}>
+  <Card title="Guest Interpreters" icon="language">
+    Quickly onboard interpreters who don't have a registered account. Generate an interpreter token and share the link — they're live in seconds.
+  </Card>
+
+  <Card title="One-Time Attendees" icon="ticket">
+    For events where listeners don't need persistent accounts, issue listener tokens and distribute them alongside your event registration materials.
+  </Card>
+
+  <Card title="Coordinator Access" icon="users-gear">
+    Give a coordinator temporary access to a specific booth without granting them a full event-level role.
+  </Card>
+
+  <Card title="Testing Booths" icon="flask">
+    Generate a short-lived token to verify a booth is working before the event starts, then revoke it immediately after.
+  </Card>
+</CardGroup>
+
+## Generating a Token
+
+<Steps>
+  <Step title="Open the booth detail page">
+    In the admin panel, navigate to your event → **Rooms** → select a room → **Booths** → click the booth you want to generate a token for.
+  </Step>
+  <Step title="Find the Invite Tokens section">
+    Scroll down to the **Invite Tokens** section on the booth detail page.
+  </Step>
+  <Step title="Fill in the token form">
+    Complete the three fields:
+
+    - **Role** — select `listener`, `interpreter`, or `coordinator` from the dropdown.
+    - **Label** — a short note to help you remember who this token is for, e.g. `Alice — French interpreter` or `Press listener seat 12`.
+    - **Expires in (hours)** — how many hours until the token becomes invalid. Leave this blank to create a token that never expires.
+  </Step>
+  <Step title="Generate the token">
+    Click **Generate Token**. The new token appears immediately in the table below the form.
+  </Step>
+  <Step title="Copy and share the link">
+    Click **Copy Link** next to the new token. The join URL is now in your clipboard — share it with the intended participant via email, chat, or any secure channel.
+  </Step>
+</Steps>
+
+## The Join URL Format
+
+Every invite token maps to a URL in the form:
+
+```text
+/join/{token}
+```
+
+For example:
+
+```text
+https://voxbento.com/join/a3f8c2d1e9b04f7a8c3d2e1f0b5a9c6e
+```
+
+When a participant opens this URL, Voxbento:
+
+1. Looks up the token and confirms it has not expired or been revoked.
+2. Authenticates the participant with the role, event, and language channel the token was issued for.
+3. Redirects them to the correct interpreter or listener page for the booth.
+
+No account creation or password is required.
+
+## Token Expiry
+
+<Tabs>
+  <Tab title="Never-Expiring Tokens">
+    Leave the **Expires in (hours)** field blank when generating the token. The token remains valid indefinitely until you manually revoke it. Use this for trusted participants who may need to rejoin across multiple sessions.
+  </Tab>
+  <Tab title="Time-Limited Tokens">
+    Enter a number of hours in the **Expires in (hours)** field — for example, `4` for a token that expires four hours after creation. Voxbento stores the exact expiry timestamp and rejects the token after that point, even if it has never been used.
+  </Tab>
+</Tabs>
+
+## Revoking a Token
+
+To invalidate a token before it is used or before it expires:
+
+1. Find the token in the **Invite Tokens** table on the booth detail page.
+2. Click **Revoke** next to the token you want to cancel.
+3. The token is immediately marked as used and can no longer be accepted at the join URL.
+
+<Warning>
+  Revoking a token is permanent — it cannot be reinstated. If you accidentally revoke the wrong token, generate a new one for the affected participant.
+</Warning>
+
+<Note>
+  Share invite links only with the intended participant. Anyone who has the link can join the booth with the assigned role until the token expires or is revoked.
+</Note>
