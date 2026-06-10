@@ -8,7 +8,7 @@ const config: Config = {
   favicon: 'img/favicon.ico',
 
   url: 'https://voxbento.com',
-  baseUrl: '/',
+  baseUrl: '/voxbento/',
 
   organizationName: 'fossasia',
   projectName: 'voxbento',
