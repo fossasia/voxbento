@@ -1,0 +1,74 @@
+
+---
+title: "Voxbento: Real-Time Interpretation for Live Events"
+sidebarTitle: "Home"
+description: "Voxbento is a browser-first simultaneous interpretation platform. No plugins required — interpreters go live instantly and attendees hear translated audio in under a second."
+---
+
+import { Cards, Card } from 'nextra/components'
+
+Voxbento lets you run professional simultaneous interpretation for any live event, entirely in the browser. Interpreters monitor the floor session through a built-in Jitsi console and broadcast translated audio directly to attendees via WebRTC — with sub-second latency and seamless handoff between interpreter shifts.
+
+<Cards>
+  <Card title="Quick Start" href="/quickstart">
+    Set up your first event, booth, and invite interpreters in minutes.
+  </Card>
+
+  <Card title="How It Works" href="/how-it-works">
+    Understand the interpretation flow from floor audio to listener playback.
+  </Card>
+
+  <Card title="Admin Guide" href="/admin/events-and-rooms">
+    Create events, manage rooms, assign roles, and generate invite tokens.
+  </Card>
+
+  <Card title="API Reference" href="/api/overview">
+    Integrate Voxbento into your event platform using the REST and WebSocket APIs.
+  </Card>
+</Cards>
+
+## How Voxbento Works
+
+## Step 1: Create an event and booths
+
+Log in to the admin panel and set up your event with rooms and language booths. Each booth represents one interpretation channel (e.g., English, French, Spanish).
+
+## Step 2: Invite interpreters and coordinators
+
+Generate invite tokens for each booth and share the links. Participants open their unique link — no account needed — and join the booth directly in their browser.
+
+## Step 3: Go live
+
+The active interpreter clicks **Go Live**. Audio streams instantly via WebRTC/WHIP to MediaMTX and is served to listeners with sub-second latency.
+
+## Step 4: Listeners tune in
+
+Attendees visit the listener page for your event, pick their language, and hear the interpretation in real time — with optional live captions powered by AI transcription.
+
+## Key Features
+
+<Cards>
+  <Card title="Sub-second Latency">
+    WebRTC/WHEP delivery keeps audio delay under one second for every listener.
+  </Card>
+
+  <Card title="Seamless Handoff">
+    Coordinators switch active interpreters without dropping listeners or interrupting playback.
+  </Card>
+
+  <Card title="Live Captions">
+    Automatic transcription via Whisper, OpenAI, Deepgram, ElevenLabs, or NVIDIA Riva.
+  </Card>
+
+  <Card title="No Install Required">
+    Everything runs in the browser. Interpreters and listeners need no plugins or apps.
+  </Card>
+
+  <Card title="Multi-language">
+    Run unlimited language booths simultaneously for a single event.
+  </Card>
+
+  <Card title="Role-based Access">
+    Fine-grained roles — coordinator, interpreter, listener — scoped per event or per booth.
+  </Card>
+</Cards>
