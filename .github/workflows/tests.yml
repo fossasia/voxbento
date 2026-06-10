@@ -31,6 +31,9 @@ jobs:
       matrix:
         python-version: ["3.13"]
 
+    env:
+      API_KEY_ENCRYPTION_KEY: "ci-test-encryption-key-must-be-32-chars-long"
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -75,6 +78,7 @@ jobs:
       MEDIAMTX_WHIP_BASE: http://localhost:8889
       MEDIAMTX_API_BASE: http://mediamtx:9997
       ADMIN_PASSWORD: ci-admin-pass
+      API_KEY_ENCRYPTION_KEY: "ci-test-encryption-key-must-be-32-chars-long"
 
     steps:
       - name: Checkout repository

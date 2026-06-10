@@ -1,4 +1,4 @@
-"""FastAPI entry point — sole backend for the Eventyay Interpretation Portal.
+"""FastAPI entry point — sole backend for the Voxbento.
 
 Start with:
     uvicorn fastapi_app:app --host 0.0.0.0 --port 8000 --reload
@@ -54,10 +54,15 @@ booths = BoothRegistry()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    import portal.transcription as ts
+    import httpx
+    ts.shared_http_client = httpx.AsyncClient(timeout=10.0)
     yield
+    if ts.shared_http_client:
+        await ts.shared_http_client.aclose()
 
 
-app = FastAPI(title='Eventyay Interpretation Portal', version='1.0.0', lifespan=lifespan)
+app = FastAPI(title='Voxbento', version='1.0.0', lifespan=lifespan)
 app.mount('/static', StaticFiles(directory=_BASE_DIR / 'static'), name='static')
 templates = Jinja2Templates(directory=str(_BASE_DIR / 'templates'))
 
@@ -134,10 +139,22 @@ class ListenerConnectionManager:
 manager = ConnectionManager()
 listener_manager = ListenerConnectionManager()
 
-async def broadcast_transcription(booth_id: str, text: str):
-    await listener_manager.broadcast(booth_id, {'type': 'transcription', 'text': text})
-
-
+async def broadcast_transcription(booth_id: str, payload: str | dict):
+    if isinstance(payload, str):
+        # Legacy support and error handling
+        text = payload
+        if text.startswith("[Server overloaded") or text.startswith("[Transcription provider failed"):
+            await manager.broadcast(booth_id, {'type': 'booth:error', 'message': text})
+            booth = booths.get_booth_sync(booth_id)
+            if booth:
+                booth.ingest_status = 'overloaded'
+                await manager.broadcast(booth_id, {'type': 'booth:state', 'state': booth.as_public_dict()})
+        else:
+            msg = {'type': 'caption', 'status': 'final', 'text': text}
+            await listener_manager.broadcast(booth_id, msg)
+    else:
+        # Aggregator payload
+        await listener_manager.broadcast(booth_id, payload)
 
 # ── Utilities ─────────────────────────────────────────────────────────────────
 
@@ -1136,6 +1153,72 @@ async def admin_event_detail(request: Request, event_id: int):
     })
 
 
+@app.get('/admin/events/{event_id}/api-settings/', dependencies=[Depends(require_admin)])
+async def admin_event_api_settings_get(request: Request, event_id: int):
+    from portal.database import get_session, get_event_by_id
+
+    async with get_session() as session:
+        event = await get_event_by_id(session, event_id)
+        if event is None:
+            raise HTTPException(status_code=404, detail='Event not found.')
+
+    return templates.TemplateResponse(request, 'admin/api_settings.html', {
+        'event': event,
+    })
+
+
+@app.post('/admin/events/{event_id}/api-settings', dependencies=[Depends(require_admin)])
+async def admin_event_api_settings_post(
+    request: Request,
+    event_id: int,
+    transcription_api_enabled: bool | None = Form(False),
+    openai_api_key: str | None = Form(None),
+    deepgram_api_key: str | None = Form(None),
+    nvidia_api_key: str | None = Form(None),
+    elevenlabs_api_key: str | None = Form(None),
+    clear_openai_api_key: bool | None = Form(False),
+    clear_deepgram_api_key: bool | None = Form(False),
+    clear_nvidia_api_key: bool | None = Form(False),
+    clear_elevenlabs_api_key: bool | None = Form(False),
+):
+    from portal.database import get_session, get_event_by_id
+    from portal.crypto import encrypt_val
+
+    async with get_session() as session:
+        event = await get_event_by_id(session, event_id)
+        if event is None:
+            raise HTTPException(status_code=404, detail='Event not found.')
+        
+        event.transcription_api_enabled = bool(transcription_api_enabled)
+        
+        try:
+            if clear_openai_api_key:
+                event.encrypted_openai_api_key = None
+            elif openai_api_key and openai_api_key.strip():
+                event.encrypted_openai_api_key = encrypt_val(openai_api_key.strip())
+                
+            if clear_deepgram_api_key:
+                event.encrypted_deepgram_api_key = None
+            elif deepgram_api_key and deepgram_api_key.strip():
+                event.encrypted_deepgram_api_key = encrypt_val(deepgram_api_key.strip())
+                
+            if clear_nvidia_api_key:
+                event.encrypted_nvidia_api_key = None
+            elif nvidia_api_key and nvidia_api_key.strip():
+                event.encrypted_nvidia_api_key = encrypt_val(nvidia_api_key.strip())
+                
+            if clear_elevenlabs_api_key:
+                event.encrypted_elevenlabs_api_key = None
+            elif elevenlabs_api_key and elevenlabs_api_key.strip():
+                event.encrypted_elevenlabs_api_key = encrypt_val(elevenlabs_api_key.strip())
+        except (ValueError, RuntimeError) as e:
+            raise HTTPException(status_code=400, detail=f"API Key encryption failed: {e}")
+        
+        await session.commit()
+        
+    return safe_redirect(url=f'/admin/events/{event_id}/api-settings/', status_code=status.HTTP_303_SEE_OTHER)
+
+
 @app.post('/admin/events/{event_id}/delete', dependencies=[Depends(require_admin)])
 async def admin_delete_event(request: Request, event_id: int):
     from portal.database import get_session, delete_event
@@ -1445,26 +1528,43 @@ async def admin_transcription_settings(
     room_id: int,
     booth_id: int,
     transcription_enabled: bool | None = Form(False),
+    transcription_provider: str = Form('local'),
     transcription_model: str = Form('tiny'),
 ):
     from portal.database import get_session, get_booth_by_id, get_event_by_id
     from portal.booth_identity import make_booth_id
-    from portal.transcription import start_transcription_worker, stop_transcription_worker
+    from portal.transcription import start_transcription_worker, stop_transcription_worker, ProviderEnum, ALLOWED_MODELS, get_api_key
 
     async with get_session() as session:
         db_booth = await get_booth_by_id(session, booth_id)
         if db_booth is None or db_booth.room_id != room_id:
             raise HTTPException(status_code=404, detail='Booth not found.')
             
+        try:
+            provider_enum = ProviderEnum(transcription_provider)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid transcription provider")
+            
+        if transcription_model not in ALLOWED_MODELS.get(provider_enum, set()):
+            raise HTTPException(status_code=400, detail=f"Invalid model '{transcription_model}' for provider '{transcription_provider}'")
+            
         event = await get_event_by_id(session, event_id)
         if event is None:
             raise HTTPException(status_code=404, detail='Event not found.')
             
+        if provider_enum != ProviderEnum.LOCAL:
+            if not event.transcription_api_enabled:
+                raise HTTPException(status_code=400, detail="External API transcription is disabled for this event.")
+            if not get_api_key(event, provider_enum):
+                raise HTTPException(status_code=400, detail=f"API key for {transcription_provider} is not configured on the event.")
+            
         old_enabled = db_booth.transcription_enabled
+        old_provider = db_booth.transcription_provider
         old_model = db_booth.transcription_model
         
         # We need to manually update the columns and commit
         db_booth.transcription_enabled = bool(transcription_enabled)
+        db_booth.transcription_provider = transcription_provider
         db_booth.transcription_model = transcription_model
         await session.commit()
         
@@ -1478,12 +1578,17 @@ async def admin_transcription_settings(
             if not transcription_enabled:
                 await stop_transcription_worker(bid)
                 await broadcast_transcription(bid, "")
-            elif old_enabled != transcription_enabled or old_model != transcription_model:
+            elif old_enabled != transcription_enabled or old_provider != transcription_provider or old_model != transcription_model:
                 await stop_transcription_worker(bid)
                 await broadcast_transcription(bid, "")
+                
+                from portal.transcription import ProviderConfig, get_api_key, ProviderEnum
+                api_key = get_api_key(event, ProviderEnum(transcription_provider))
+                config = ProviderConfig(api_key=api_key)
+                
                 import asyncio
                 await asyncio.sleep(0.1)
-                await start_transcription_worker(event.slug, db_booth.language_code, bid, broadcast_transcription, transcription_model)
+                await start_transcription_worker(event.slug, db_booth.language_code, bid, broadcast_transcription, transcription_provider, transcription_model, config)
     return safe_redirect(
         url=f'/admin/events/{event_id}/rooms/{room_id}/booths/{booth_id}/',
         status_code=status.HTTP_303_SEE_OTHER,
@@ -1797,7 +1902,13 @@ async def ws_captions(websocket: WebSocket, booth_id: str) -> None:
         listener_manager.remove(websocket, booth_id)
 
 @app.post('/api/booth/{booth_id}/transcription/start')
-async def api_transcription_start(booth_id: str, request: Request):
+async def api_transcription_start(
+    booth_id: str, 
+    request: Request,
+    token: str = Query(''),
+    credentials: HTTPAuthorizationCredentials | None = Depends(security)
+):
+    _require_access(credentials, token)
     data = await request.json()
     event_slug = data.get('event_slug')
     language_code = data.get('language_code')
@@ -1807,9 +1918,10 @@ async def api_transcription_start(booth_id: str, request: Request):
     from portal.database import get_session
     from portal.models import DBBooth, Event
     from sqlalchemy import select
+    from sqlalchemy.orm import selectinload
 
     async with get_session() as session:
-        stmt = select(DBBooth).join(Event).where(
+        stmt = select(DBBooth).join(Event).options(selectinload(DBBooth.event)).where(
             Event.slug == event_slug,
             DBBooth.language_code == language_code
         )
@@ -1818,13 +1930,42 @@ async def api_transcription_start(booth_id: str, request: Request):
         if not db_booth or not db_booth.transcription_enabled:
             return {"status": "disabled", "message": "Transcription is not enabled for this booth."}
             
+        provider = db_booth.transcription_provider
         model_size = db_booth.transcription_model
+        
+        from portal.transcription import ProviderEnum, get_api_key
+        try:
+            provider_enum = ProviderEnum(provider)
+        except ValueError:
+            raise HTTPException(status_code=400, detail="Invalid transcription provider")
 
-    await start_transcription_worker(event_slug, language_code, booth_id, broadcast_transcription, model_size)
-    return {"status": "started", "model": model_size}
+        if not db_booth.event.transcription_api_enabled and provider_enum != ProviderEnum.LOCAL:
+            raise HTTPException(status_code=400, detail="External API transcription is disabled for this event.")
+        
+        try:
+            api_key = get_api_key(db_booth.event, provider_enum)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail="API Key decryption failed. The encryption key has rotated. Please go to the Admin portal, clear your existing keys, and re-enter them.")
+            
+        if provider_enum != ProviderEnum.LOCAL and not api_key:
+            raise HTTPException(status_code=400, detail=f"{provider} API key missing. Cannot start transcription.")
+            
+        from portal.transcription import ProviderConfig
+        config = ProviderConfig(api_key=api_key)
+
+    try:
+        await start_transcription_worker(event_slug, language_code, booth_id, broadcast_transcription, provider, model_size, config)
+    except ValueError as e:
+        raise HTTPException(status_code=429, detail=str(e))
+    return {"status": "started", "provider": provider, "model": model_size}
 
 @app.post('/api/booth/{booth_id}/transcription/stop')
-async def api_transcription_stop(booth_id: str):
+async def api_transcription_stop(
+    booth_id: str,
+    token: str = Query(''),
+    credentials: HTTPAuthorizationCredentials | None = Depends(security)
+):
+    _require_access(credentials, token)
     await stop_transcription_worker(booth_id)
     return {"status": "stopped"}
 

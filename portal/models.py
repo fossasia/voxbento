@@ -25,8 +25,9 @@ from __future__ import annotations
 import secrets
 from datetime import datetime, timezone
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Index, String
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, String, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, validates
+import sqlalchemy as sa
 
 from portal.booth_identity import make_mediamtx_path, validate_event_slug, validate_language_code
 from portal.roles import ALL_ROLES
@@ -62,6 +63,11 @@ class Event(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     slug: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     display_name: Mapped[str] = mapped_column(String(200))
+    transcription_api_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default='0')
+    encrypted_openai_api_key: Mapped[str | None] = mapped_column("openai_api_key", Text, nullable=True, default=None)
+    encrypted_deepgram_api_key: Mapped[str | None] = mapped_column("deepgram_api_key", Text, nullable=True, default=None)
+    encrypted_nvidia_api_key: Mapped[str | None] = mapped_column("nvidia_api_key", Text, nullable=True, default=None)
+    encrypted_elevenlabs_api_key: Mapped[str | None] = mapped_column("elevenlabs_api_key", Text, nullable=True, default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
     rooms: Mapped[list[Room]] = relationship(back_populates='event', cascade='all, delete-orphan')
@@ -121,7 +127,8 @@ class DBBooth(Base):
     language_code: Mapped[str] = mapped_column(String(2))
     language_name: Mapped[str] = mapped_column(String(100))
     transcription_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default='0')
-    transcription_model: Mapped[str] = mapped_column(String(20), default='tiny', server_default="'tiny'")
+    transcription_provider: Mapped[str] = mapped_column(String(20), default='local', server_default=sa.text("'local'"))
+    transcription_model: Mapped[str] = mapped_column(String(20), default='tiny', server_default=sa.text("'tiny'"))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
     event: Mapped[Event] = relationship(back_populates='booths')
@@ -136,6 +143,16 @@ class DBBooth(Base):
     @validates('language_code')
     def _validate_language_code(self, _key: str, value: str) -> str:
         return validate_language_code(value)
+
+    @validates('transcription_provider')
+    def _validate_transcription_provider(self, _key: str, value: str) -> str:
+        # Avoid circular imports since models are imported everywhere
+        from portal.transcription.providers.base import ProviderEnum
+        try:
+            ProviderEnum(value)
+        except ValueError:
+            raise ValueError(f"Invalid transcription provider '{value}'. Must be one of: {[p.value for p in ProviderEnum]}")
+        return value
 
     @property
     def mediamtx_path(self) -> str:

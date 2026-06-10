@@ -25,17 +25,59 @@
   .status-badge.recovering  { background: #cce5ff; color: #004085; }
 
   /* Captions Box */
-  .captions-box {
-    margin: 1rem auto;
-    width: 100%;
+  .captions-container {
+    margin-top: 2rem;
     max-width: 640px;
-    height: 150px;
+    margin-left: auto;
+    margin-right: auto;
+    display: flex;
+    flex-direction: column;
+    transition: all 0.3s ease;
+  }
+  .captions-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 0.5rem;
+    padding: 0 0.5rem;
+  }
+  .captions-header h3 {
+    margin: 0;
+    font-size: 1.1rem;
+    color: #444;
+  }
+  .toggle-btn {
+    background: none;
+    border: none;
+    font-size: 1.2rem;
+    cursor: pointer;
+    color: #666;
+  }
+  .toggle-btn:hover {
+    color: #000;
+  }
+  .captions-box {
+    margin: 0 auto;
+    width: 100%;
+    height: 40vh;
+    min-height: 200px;
+    max-height: 500px;
     background: #222;
     color: #fff;
     border-radius: 8px;
     padding: 1rem;
     overflow-y: auto;
     text-align: left;
+    transition: all 0.3s ease;
+  }
+  .captions-container.minimized .captions-box {
+    height: 0;
+    min-height: 0;
+    padding-top: 0;
+    padding-bottom: 0;
+    overflow: hidden;
+    opacity: 0;
+  }
     font-size: 1.1rem;
     line-height: 1.5;
     box-shadow: inset 0 2px 4px rgba(0,0,0,0.5);
@@ -47,6 +89,17 @@
     margin: 0;
     color: #eee;
     animation: fadeIn 0.3s ease-in-out;
+  }
+  .caption-history {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    color: #ccc;
+  }
+  .caption-current {
+    color: #fff;
+    font-weight: 500;
+    min-height: 1.5em;
   }
   @keyframes fadeIn {
     from { opacity: 0; transform: translateY(5px); }
@@ -100,16 +153,31 @@
   <div id="status"><span class="status-badge waiting">Waiting for selection...</span></div>
   <audio id="audio-player" controls autoplay></audio>
 
-  <div class="captions-container" style="margin-top: 2rem;">
-    <h3 style="text-align: left; margin-bottom: 0.5rem; font-size: 1.1rem; color: #444; max-width: 640px; margin-left: auto; margin-right: auto;">Live Captions</h3>
+  <div class="captions-container" id="captions-container">
+    <div class="captions-header">
+      <h3>Live Captions</h3>
+      <button id="toggle-captions-btn" class="toggle-btn" title="Minimize/Maximize Captions">▼</button>
+    </div>
     <div id="live-captions" class="captions-box">
-      <!-- Captions will appear here -->
-      <p style="color: #888; font-style: italic; font-size: 0.95rem;">Waiting for interpreter...</p>
+      <div id="caption-history" class="caption-history"></div>
+      <div id="caption-current" class="caption-current"></div>
+      <p id="waiting-text" style="color: #888; font-style: italic; font-size: 0.95rem;">Waiting for interpreter...</p>
     </div>
   </div>
 
-
 </div>
+
+<script>
+  document.getElementById('toggle-captions-btn').addEventListener('click', function() {
+    var container = document.getElementById('captions-container');
+    container.classList.toggle('minimized');
+    if (container.classList.contains('minimized')) {
+      this.textContent = '▲';
+    } else {
+      this.textContent = '▼';
+    }
+  });
+</script>
 
 <script src="{{ url_for('static', path='js/whep-listener.js') }}?v={{ js_version }}"></script>
 <script>
@@ -147,7 +215,7 @@
       captionsWs.close();
       captionsWs = null;
     }
-    captionsBox.innerHTML = '';
+    captionsBox.innerHTML = '<div id="caption-history" class="caption-history"></div><div id="caption-current" class="caption-current"></div><p id="waiting-text" style="color: #888; font-style: italic; font-size: 0.95rem;">Waiting for interpreter...</p>';
     setStatus('Waiting for selection...', 'waiting');
   }
 
@@ -194,14 +262,43 @@
         captionsWs.onmessage = function(event) {
           try {
             var data = JSON.parse(event.data);
-            if (data.type === 'transcription') {
+            if (data.type === 'caption') {
+              var historyBox = document.getElementById('caption-history');
+              var currentBox = document.getElementById('caption-current');
+              var waitingText = document.getElementById('waiting-text');
+              if (waitingText) {
+                waitingText.remove();
+              }
+              
+              if (data.status === 'partial') {
+                currentBox.textContent = data.text || '';
+              } else if (data.status === 'final') {
+                if (data.text) {
+                  var p = document.createElement('div');
+                  p.textContent = data.text;
+                  historyBox.appendChild(p);
+                  while (historyBox.children.length > 50) {
+                    historyBox.removeChild(historyBox.firstChild);
+                  }
+                }
+                currentBox.textContent = '';
+              } else if (data.status === 'clear') {
+                currentBox.textContent = '';
+              }
+              captionsBox.scrollTop = captionsBox.scrollHeight;
+            } else if (data.type === 'transcription') {
+              // Legacy support
               if (data.text) {
-                var p = document.createElement('p');
+                var p = document.createElement('div');
                 p.textContent = data.text;
-                captionsBox.appendChild(p);
+                var historyBox = document.getElementById('caption-history');
+                historyBox.appendChild(p);
                 captionsBox.scrollTop = captionsBox.scrollHeight;
               } else {
-                captionsBox.innerHTML = '';
+                var historyBox = document.getElementById('caption-history');
+                historyBox.innerHTML = '';
+                var currentBox = document.getElementById('caption-current');
+                currentBox.textContent = '';
               }
             }
           } catch (e) {

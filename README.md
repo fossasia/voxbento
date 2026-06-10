@@ -63,3 +63,18 @@ docker compose up --build
 Open http://localhost:8000 — all services are running.
 
 For detailed API documentation, environment variables, port mappings, and native development setup, please see [CONTRIBUTING.md](CONTRIBUTING.md).
+
+---
+
+## Upgrade Notes
+
+### API Key Encryption & Rotation
+A mandatory environment variable `API_KEY_ENCRYPTION_KEY` securely encrypts third-party API keys in the database. 
+- You must generate a secure key (e.g., using `openssl rand -hex 32`) and add it to your `.env` file before starting the application. 
+- **Rotation**: To rotate keys without breaking existing database entries, provide a comma-separated list of keys. Voxbento will encrypt new tokens using the *first* key, but will use *all* keys to attempt decryption.
+
+### Optional NVIDIA Transcription
+NVIDIA Riva support is now an optional dependency to reduce the default installation footprint. If you intend to run NVIDIA transcription models, you must explicitly install the optional package:
+```bash
+uv pip install -e .[nvidia]
+```

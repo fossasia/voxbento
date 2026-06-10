@@ -1054,7 +1054,7 @@ async function startLiveIngest() {
       const payload = { event_slug: portal.dataset.eventSlug, language_code: portal.dataset.languageCode }
       await fetch(`/api/booth/${state.boothId}/transcription/start`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { ...authHeaders(), 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
       })
     } catch (err) {
@@ -1105,7 +1105,7 @@ async function stopLiveIngest() {
     
     // Stop backend transcription
     try {
-      await fetch(`/api/booth/${state.boothId}/transcription/stop`, { method: 'POST' })
+      await fetch(`/api/booth/${state.boothId}/transcription/stop`, { method: 'POST', headers: authHeaders() })
     } catch (err) {
       console.warn('Failed to stop transcription worker:', err)
     }
