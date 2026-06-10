@@ -15,3 +15,7 @@ hls-output/
 # MediaMTX binary (download locally, do not commit)
 mediamtx
 mediamtx_v*
+
+#documentation
+export.zip
+package-lock.json

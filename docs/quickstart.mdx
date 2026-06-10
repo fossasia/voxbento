@@ -1,0 +1,159 @@
+---
+title: "Quickstart — Create Your First Event and Go Live"
+sidebarTitle: "Quickstart"
+description: "Create your first event, configure a language booth, invite an interpreter, and have listeners hearing live audio in under ten minutes."
+---
+
+This guide walks you through the complete flow of setting up a Voxbento event from scratch — from creating the event in the admin panel to an interpreter broadcasting live audio to listeners. By the end, you will have a working multi-language booth that any attendee can tune into from their browser.
+
+## Prerequisites
+
+Before you begin, make sure you have:
+
+- A running Voxbento instance with MediaMTX and Jitsi available. See [Deployment](/configuration/deployment) if you need to stand one up.
+- Admin credentials (the `ADMIN_PASSWORD` you configured in your `.env` file).
+
+<Steps>
+  <Step title="Log in to the admin panel">
+    Open your Voxbento instance and navigate to `/admin/login`. Enter your admin password and click **Log In**. You will land on the dashboard, which shows all events and a MediaMTX health indicator.
+
+    <Tip>
+      Keep the admin panel open in a separate browser tab during your event — the dashboard gives you a live view of which booths are active.
+    </Tip>
+  </Step>
+  <Step title="Create an event">
+    Go to **Events** in the sidebar and fill in the two required fields:
+
+    <ParamField body="slug" type="string" required>
+      A URL-safe identifier for the event. Use lowercase alphanumeric characters and hyphens only — no spaces, underscores, or consecutive hyphens. Maximum 64 characters.
+
+      **Example:** `pycon2026`
+    </ParamField>
+
+    <ParamField body="display_name" type="string" required>
+      A human-readable name shown on the home page and admin dashboard.
+
+      **Example:** `PyCon 2026`
+    </ParamField>
+
+    Click **Create Event**. Voxbento records the event and takes you to the event detail page.
+  </Step>
+  <Step title="Create a room inside the event">
+    From the event detail page, open the **Rooms** section and click **Add Room**. Enter a display name for the room (for example, `Main Stage` or `Hall A`). Voxbento generates a Jitsi Meet URL for the room automatically based on the event slug and room name.
+
+    Click **Add Room** to save.
+
+    <Note>
+      Rooms map to Jitsi Meet sessions. Interpreters monitor floor audio from the Jitsi session associated with their room.
+    </Note>
+  </Step>
+  <Step title="Create a booth inside the room">
+    Open the room you just created and navigate to **Booths**. Click **Add Booth** and fill in:
+
+    <ParamField body="language_code" type="string" required>
+      The ISO 639-1 two-letter code for the interpretation language.
+
+      **Examples:** `en` (English), `fr` (French), `es` (Spanish)
+    </ParamField>
+
+    <ParamField body="language_name" type="string" required>
+      The human-readable language name displayed to listeners when they choose a channel.
+
+      **Example:** `English`, `Français`, `Español`
+    </ParamField>
+
+    Click **Add Booth**. Voxbento creates the booth and assigns it the MediaMTX stream path `{event_slug}/{language_code}` — for example, `pycon2026/en`.
+  </Step>
+  <Step title="Generate an invite token for an interpreter">
+    Open the **Booth Detail** page for the booth you created. Scroll to the **Invite Tokens** section and fill in:
+
+    <ParamField body="role" type="string" required>
+      Select `interpreter` from the dropdown to grant the recipient permission to go live.
+    </ParamField>
+
+    <ParamField body="label" type="string">
+      A human-readable label so you can identify the token later. For example: `Alice — English interpreter`.
+    </ParamField>
+
+    <ParamField body="expires_in_hours" type="number">
+      Optional. Leave empty for a token that never expires, or enter a number of hours (for example `48`) for a time-limited invitation.
+    </ParamField>
+
+    Click **Generate Token**. The new token appears in the table below with a **Copy Link** button.
+  </Step>
+  <Step title="Copy and share the invite link with the interpreter">
+    Click **Copy Link** next to the token you just created. This copies a one-time invite URL in the form:
+
+    ```text
+    https://your-voxbento-instance.com/join/{64-char-token}
+    ```
+
+    Send this link to your interpreter by email, chat, or any other channel. Each token can only be redeemed once — generate a separate token for each interpreter.
+
+    <Warning>
+      Treat invite links like passwords. Anyone who holds the link can claim the interpreter role for that booth. Revoke unused tokens from the Booth Detail page if they are no longer needed.
+    </Warning>
+  </Step>
+  <Step title="Interpreter opens the link and joins the booth">
+    When the interpreter clicks the invite link, Voxbento:
+
+    1. Validates the token (checks it has not expired and has not been used before).
+    2. Marks the token as redeemed.
+    3. Issues a signed session cookie encoding the interpreter's role, event, and language.
+    4. Redirects the interpreter to their booth page.
+
+    The interpreter booth page URL follows this pattern:
+
+    ```text
+    /interpreter/{event_slug}/{language_code}
+    ```
+
+    For example:
+
+    ```text
+    /interpreter/pycon2026/en
+    ```
+
+    <Note>
+      The interpreter page URL is shown on the Booth Detail page. Share it directly with interpreters who have registered accounts — they can bookmark it and return without needing a new invite token each time.
+    </Note>
+
+    Inside the booth, the interpreter sees an embedded Jitsi iframe showing the floor session (the speaker or presenter), a microphone control, and a **Go Live** button.
+  </Step>
+  <Step title="Interpreter clicks Go Live">
+    When the interpreter is ready to broadcast, they click **Go Live**. The browser:
+
+    1. Requests microphone access via `getUserMedia`.
+    2. Applies browser-level audio processing (echo cancellation, noise suppression, auto gain control).
+    3. Opens a WebRTC peer connection and publishes the audio stream to MediaMTX via WHIP.
+
+    The booth status indicator on the admin dashboard turns live. The interpreter's audio is now available to listeners in sub-second time.
+  </Step>
+  <Step title="Listeners visit the event listener page and pick a language">
+    Direct attendees to the listener page for your event:
+
+    ```text
+    /listener/{event_slug}
+    ```
+
+    For example:
+
+    ```text
+    /listener/pycon2026
+    ```
+
+    Listeners see a list of available language booths. They click their preferred language and the page connects to the WHEP endpoint for that booth. Audio begins playing within one second on modern browsers.
+
+    <Tip>
+      For devices that do not support WebRTC well, Voxbento automatically falls back to HLS playback (roughly three seconds of latency) using hls.js — no action required from the listener.
+    </Tip>
+  </Step>
+</Steps>
+
+## What's Next
+
+Now that your first booth is live, explore these topics to get more from Voxbento:
+
+- [**How It Works**](/how-it-works) — understand the full audio pipeline and interpreter handoff mechanism.
+- [**Events & Rooms**](/admin/events-and-rooms) — manage multiple events, rooms, and booths across your organization.
+- [**API Overview**](/api/overview) — integrate Voxbento data into your event management tooling via the REST and WebSocket APIs.
