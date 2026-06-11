@@ -240,11 +240,11 @@
       <div class="form-row">
         <div class="form-group">
           <label for="member_email">User Email</label>
-          <input type="email" name="email" id="member_email" placeholder="user@example.com" required />
+          <input type="email" name="email" id="member_email" class="input" placeholder="user@example.com" required />
         </div>
         <div class="form-group">
           <label for="member_role">Role</label>
-          <select name="role" id="member_role" required>
+          <select name="role" id="member_role" class="input" required>
             <option value="listener">listener</option>
             <option value="interpreter" selected>interpreter</option>
             <option value="coordinator">coordinator</option>
@@ -321,7 +321,7 @@
       <div class="form-row">
         <div class="form-group">
           <label for="role">Role</label>
-          <select name="role" id="role" required>
+          <select name="role" id="role" class="input" required>
             <option value="listener">listener</option>
             <option value="interpreter" selected>interpreter</option>
             <option value="coordinator">coordinator</option>
@@ -329,11 +329,11 @@
         </div>
         <div class="form-group">
           <label for="label">Label</label>
-          <input type="text" name="label" id="label" placeholder="e.g. Alice — Spanish interpreter" />
+          <input type="text" name="label" id="label" class="input" placeholder="e.g. Alice — Spanish interpreter" />
         </div>
         <div class="form-group">
           <label for="expires_hours">Expires in (hours)</label>
-          <input type="number" name="expires_hours" id="expires_hours" placeholder="Empty = never" min="1" />
+          <input type="number" name="expires_hours" id="expires_hours" class="input" placeholder="Empty = never" min="1" />
         </div>
         <div class="form-group form-group-btn">
           <button type="submit" class="btn btn-primary">Generate Token</button>
