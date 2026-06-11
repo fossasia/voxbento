@@ -154,19 +154,24 @@
   <audio id="audio-player" controls autoplay></audio>
 
   <div class="captions-container" id="captions-container">
-    <div class="captions-header">
-      <div style="display: flex; align-items: center; gap: 15px;">
-        <h3 style="margin: 0;">Live Captions</h3>
-        <select id="caption-mode-select" class="input" style="padding: 2px 8px; font-size: 0.85rem; height: auto;" disabled>
-          <option value="original">Original</option>
-          <option value="translated">Translated</option>
-          <option value="side-by-side">Side-by-Side</option>
-        </select>
-        <select id="translation-lang-select" class="input" style="padding: 2px 8px; font-size: 0.85rem; height: auto; display: none;">
-          <!-- Populated dynamically via JS based on room settings -->
-        </select>
+    <div class="captions-header" style="justify-content: space-between; align-items: flex-end;">
+      <div class="selectors-container" style="margin-bottom: 0; gap: 1rem;">
+        <div class="selector-group">
+          <label for="caption-mode-select">Captions Mode</label>
+          <select id="caption-mode-select" class="input" disabled>
+            <option value="original">Original</option>
+            <option value="translated">Translated</option>
+            <option value="side-by-side">Side-by-Side</option>
+          </select>
+        </div>
+        <div class="selector-group" id="translation-lang-group" style="display: none;">
+          <label for="translation-lang-select">Target Language</label>
+          <select id="translation-lang-select" class="input">
+            <!-- Populated dynamically via JS based on room settings -->
+          </select>
+        </div>
       </div>
-      <button id="toggle-captions-btn" class="toggle-btn" title="Minimize/Maximize Captions">▼</button>
+      <button id="toggle-captions-btn" class="toggle-btn" title="Minimize/Maximize Captions" style="margin-bottom: 0.5rem;">▼</button>
     </div>
     <div id="live-captions" class="captions-box">
       <div id="captions-content-area" class="captions-content" style="display: flex; gap: 20px;">
@@ -251,23 +256,24 @@
     var mode = captionModeSelect.value;
     var colOrig = document.getElementById('captions-col-original');
     var colTrans = document.getElementById('captions-col-translated');
+    var transGroup = document.getElementById('translation-lang-group');
     
     if (mode === 'original') {
       colOrig.style.display = 'flex';
       colTrans.style.display = 'none';
-      translationLangSelect.style.display = 'none';
+      transGroup.style.display = 'none';
     } else if (mode === 'translated') {
       colOrig.style.display = 'none';
       colTrans.style.display = 'flex';
       colTrans.style.borderLeft = 'none';
       colTrans.style.paddingLeft = '0';
-      translationLangSelect.style.display = 'inline-block';
+      transGroup.style.display = 'flex';
     } else if (mode === 'side-by-side') {
       colOrig.style.display = 'flex';
       colTrans.style.display = 'flex';
       colTrans.style.borderLeft = '1px solid #444';
       colTrans.style.paddingLeft = '20px';
-      translationLangSelect.style.display = 'inline-block';
+      transGroup.style.display = 'flex';
     }
   }
 
