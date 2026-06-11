@@ -614,6 +614,19 @@ async def listen_event_page(
         })
         ensure_tasks.append(_ensure_mediamtx_path(channel_id))
         
+    for r in rooms:
+        if r.floor_transcription_enabled:
+            channel_id = f"{ev.slug}/floor"
+            booths_data.append({
+                'id': f"floor_{r.id}",
+                'room_id': r.id,
+                'language_code': "floor",
+                'language_name': "🌍 Floor Audio (Original)",
+                'channel_id': channel_id,
+                'whep_url': f'{settings.mediamtx_whip_base}/{channel_id}/whep'
+            })
+            ensure_tasks.append(_ensure_mediamtx_path(channel_id))
+            
     if ensure_tasks:
         await asyncio.gather(*ensure_tasks)
 
@@ -1321,17 +1334,140 @@ async def admin_edit_room(request: Request, event_id: int, room_id: int):
     relay_booth_id_str = form.get('relay_booth_id', '').strip()
     relay_booth_id = int(relay_booth_id_str) if relay_booth_id_str and relay_booth_id_str.lower() != 'none' else None
     
+    floor_transcription_enabled = form.get('floor_transcription_enabled') == 'on'
+    floor_transcription_provider = form.get('floor_transcription_provider', 'local').strip()
+    floor_transcription_model = form.get('floor_transcription_model', 'tiny').strip()
+    floor_language_code = form.get('floor_language_code', '').strip() or None
+    
     async with get_session() as session:
         room = await get_room_by_id(session, room_id)
         if room and room.event_id == event_id:
             room.jitsi_url = jitsi_url if jitsi_url else None
             room.relay_booth_id = relay_booth_id
+            room.floor_transcription_enabled = floor_transcription_enabled
+            room.floor_transcription_provider = floor_transcription_provider
+            room.floor_transcription_model = floor_transcription_model
+            room.floor_language_code = floor_language_code
             await session.commit()
             
     return safe_redirect(
         url=f'/admin/events/{event_id}/rooms/{room_id}/',
         status_code=status.HTTP_303_SEE_OTHER,
     )
+
+import httpx
+import logging
+from portal.config import settings
+
+logger = logging.getLogger(__name__)
+
+@app.post('/api/rooms/{room_id}/floor-transcription/start', dependencies=[Depends(require_admin)])
+async def api_start_floor_transcription(room_id: int):
+    from portal.database import get_session, get_room_by_id, get_event_by_id
+    from portal.transcription.worker import start_transcription_worker
+    
+    async with get_session() as session:
+        room = await get_room_by_id(session, room_id)
+        if not room or not room.floor_transcription_enabled:
+            raise HTTPException(status_code=400, detail="Floor transcription not enabled or invalid room")
+        event = await get_event_by_id(session, room.event_id)
+        if not event:
+            raise HTTPException(status_code=400, detail="Event not found")
+            
+        event_slug = event.slug
+        
+        import re
+        clean_name = re.sub(r'[^a-zA-Z0-9]+', '', room.display_name)
+        room_id_str = f"Voxbento-{event.slug}-{clean_name}"
+        
+        if room.jitsi_url:
+            jitsi_url = room.jitsi_url
+            # Replace local or production domains with internal docker routing (use https internally to avoid WebRTC HTTP blocking)
+            if jitsi_url.startswith(settings.effective_jitsi_base_url):
+                jitsi_url = jitsi_url.replace(settings.effective_jitsi_base_url, "https://jitsi-web", 1)
+            elif "jitsi.voxbento.com" in jitsi_url:
+                jitsi_url = re.sub(r"https?://jitsi\.voxbento\.com", "https://jitsi-web", jitsi_url, count=1)
+            elif "localhost" in jitsi_url or "127.0.0.1" in jitsi_url:
+                jitsi_url = re.sub(r"https?://(?:localhost|127\.0\.0\.1)(?::\d+)?", "https://jitsi-web", jitsi_url, count=1)
+        else:
+            jitsi_url = f"https://jitsi-web/{room_id_str}"
+            
+        floor_language_code = room.floor_language_code
+    
+    # 1. Start floor-bot subprocess
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                f"{settings.floor_bot_base}/start",
+                json={
+                    "event_slug": event_slug,
+                    "jitsi_url": jitsi_url,
+                    "mediamtx_rtsp_base": "rtsp://mediamtx:8554"
+                },
+                timeout=10.0
+            )
+            resp.raise_for_status()
+    except Exception as e:
+        logger.error(f"Failed to start floor-bot: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to start floor bot: {e}")
+        
+    # 2. Start transcription worker reading from {event_slug}/floor via RTSP
+    # We use {event_slug}-floor as the pseudo booth_id, and floor_language_code for the provider.
+    from portal.transcription import ProviderConfig, get_api_key, ProviderEnum
+    try:
+        api_key = get_api_key(event, ProviderEnum(room.floor_transcription_provider))
+        config = ProviderConfig(api_key=api_key)
+        
+        await start_transcription_worker(
+            event_slug=event_slug,
+            language_code="floor", # Tells aggregator this is floor audio path
+            booth_id=f"{event_slug}-floor",
+            broadcast_callback=broadcast_transcription,
+            provider=room.floor_transcription_provider,
+            model_size=room.floor_transcription_model,
+            config=config,
+            transcription_language=room.floor_language_code # Added parameter
+        )
+    except Exception as e:
+        logger.error(f"Failed to start transcription worker: {e}")
+        # Rollback bot if worker fails to start
+        async with httpx.AsyncClient() as client:
+            await client.post(f"{settings.floor_bot_base}/stop", json={"event_slug": event_slug})
+        raise HTTPException(status_code=500, detail=f"Failed to start transcription worker: {e}")
+        
+    return {"status": "started"}
+
+@app.post('/api/rooms/{room_id}/floor-transcription/stop', dependencies=[Depends(require_admin)])
+async def api_stop_floor_transcription(room_id: int):
+    from portal.database import get_session, get_room_by_id, get_event_by_id
+    from portal.transcription.worker import stop_transcription_worker
+    
+    async with get_session() as session:
+        room = await get_room_by_id(session, room_id)
+        if not room:
+            raise HTTPException(status_code=400, detail="Invalid room")
+        event = await get_event_by_id(session, room.event_id)
+        if not event:
+            raise HTTPException(status_code=400, detail="Event not found")
+            
+        event_slug = event.slug
+    
+    # 1. Stop floor-bot
+    try:
+        async with httpx.AsyncClient() as client:
+            await client.post(
+                f"{settings.floor_bot_base}/stop",
+                json={"event_slug": event_slug},
+                timeout=5.0
+            )
+    except Exception as e:
+        logger.error(f"Failed to stop floor-bot: {e}")
+        # Continue to try stopping the worker even if bot fails
+        
+    # 2. Stop transcription worker
+    stop_transcription_worker(f"{event_slug}-floor")
+    
+    return {"status": "stopped"}
 
 
 @app.post('/admin/events/{event_id}/rooms/{room_id}/delete', dependencies=[Depends(require_admin)])

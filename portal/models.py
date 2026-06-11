@@ -95,6 +95,10 @@ class Room(Base):
     eventyay_room_id: Mapped[str | None] = mapped_column(String(200), nullable=True, default=None)
     jitsi_url: Mapped[str | None] = mapped_column(String(500), nullable=True, default=None)
     relay_booth_id: Mapped[int | None] = mapped_column(ForeignKey('booths.id', ondelete='SET NULL'), nullable=True, default=None)
+    floor_transcription_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default='0')
+    floor_transcription_provider: Mapped[str] = mapped_column(String(20), default='local', server_default=sa.text("'local'"))
+    floor_transcription_model: Mapped[str] = mapped_column(String(40), default='tiny', server_default=sa.text("'tiny'"))
+    floor_language_code: Mapped[str | None] = mapped_column(String(10), nullable=True, default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
     event: Mapped[Event] = relationship(back_populates='rooms')
