@@ -57,8 +57,8 @@
       <h3 style="margin: 0;">Floor Audio Transcription</h3>
       <div style="display: flex; gap: 0.5rem;">
         {% if room.floor_transcription_enabled %}
-          <button type="button" class="btn btn-sm btn-outline" onclick="startFloorTranscription({{ room.id }})">Start Bot</button>
-          <button type="button" class="btn btn-sm btn-danger" onclick="stopFloorTranscription({{ room.id }})">Stop Bot</button>
+          <button type="button" class="btn btn-sm btn-outline" id="start-bot-btn" onclick="startFloorTranscription({{ room.id }})">Start Bot</button>
+          <button type="button" class="btn btn-sm btn-danger" id="stop-bot-btn" onclick="stopFloorTranscription({{ room.id }})">Stop Bot</button>
         {% endif %}
       </div>
     </div>
@@ -143,30 +143,58 @@
   });
 
 async function startFloorTranscription(roomId) {
+  const btn = document.getElementById('start-bot-btn');
+  const originalText = btn.textContent;
+  btn.textContent = 'Starting...';
+  btn.disabled = true;
   try {
     const res = await fetch(`/api/rooms/${roomId}/floor-transcription/start`, { method: 'POST' });
     if (res.ok) {
-      alert("Floor transcription bot started!");
+      btn.textContent = 'Started!';
+      btn.classList.add('btn-success');
+      btn.classList.remove('btn-outline');
+      setTimeout(() => {
+        btn.textContent = originalText;
+        btn.classList.remove('btn-success');
+        btn.classList.add('btn-outline');
+        btn.disabled = false;
+      }, 3000);
     } else {
       const data = await res.json();
-      alert("Error: " + (data.detail || "Failed to start"));
+      btn.textContent = "Error: " + (data.detail || "Failed");
+      setTimeout(() => { btn.textContent = originalText; btn.disabled = false; }, 3000);
     }
   } catch (err) {
-    alert("Request failed: " + err);
+    btn.textContent = "Failed";
+    setTimeout(() => { btn.textContent = originalText; btn.disabled = false; }, 3000);
   }
 }
 
 async function stopFloorTranscription(roomId) {
+  const btn = document.getElementById('stop-bot-btn');
+  const originalText = btn.textContent;
+  btn.textContent = 'Stopping...';
+  btn.disabled = true;
   try {
     const res = await fetch(`/api/rooms/${roomId}/floor-transcription/stop`, { method: 'POST' });
     if (res.ok) {
-      alert("Floor transcription bot stopped!");
+      btn.textContent = 'Stopped!';
+      btn.classList.add('btn-outline');
+      btn.classList.remove('btn-danger');
+      setTimeout(() => {
+        btn.textContent = originalText;
+        btn.classList.remove('btn-outline');
+        btn.classList.add('btn-danger');
+        btn.disabled = false;
+      }, 3000);
     } else {
       const data = await res.json();
-      alert("Error: " + (data.detail || "Failed to stop"));
+      btn.textContent = "Error: " + (data.detail || "Failed");
+      setTimeout(() => { btn.textContent = originalText; btn.disabled = false; }, 3000);
     }
   } catch (err) {
-    alert("Request failed: " + err);
+    btn.textContent = "Failed";
+    setTimeout(() => { btn.textContent = originalText; btn.disabled = false; }, 3000);
   }
 }
 </script>

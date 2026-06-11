@@ -37,6 +37,17 @@ import subprocess
 from playwright.async_api import async_playwright
 
 async def run_capture():
+    loop = asyncio.get_running_loop()
+    main_task = asyncio.current_task()
+    
+    def signal_handler():
+        print("Received terminate signal, shutting down...")
+        if main_task:
+            main_task.cancel()
+            
+    loop.add_signal_handler(signal.SIGTERM, signal_handler)
+    loop.add_signal_handler(signal.SIGINT, signal_handler)
+
     event_slug = os.environ.get("BOT_EVENT_SLUG")
     jitsi_url = os.environ.get("BOT_JITSI_URL")
     mediamtx_rtsp_base = os.environ.get("BOT_MEDIAMTX_RTSP_BASE")
