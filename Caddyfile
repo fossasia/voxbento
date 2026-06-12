@@ -41,23 +41,14 @@ voxbento.com {
     # Browser requests: https://voxbento.com/{channel}/whip  (POST SDP offer)
     # Browser requests: https://voxbento.com/{channel}/whep  (POST SDP offer)
     # MediaMTX serves:  http://localhost:8889/{channel}/whip|whep
+    # Match any path that ends with /whip or /whep (channel IDs use / separators
+    # which Caddy normalises from %2F, e.g. fossasia-2027/de/whip).
     @whip_whep {
         path_regexp whip_whep /(whip|whep)$
     }
     handle @whip_whep {
-        # 1. Add CORS headers to all WHEP/WHIP responses
-        header Access-Control-Allow-Origin "*"
-        header Access-Control-Allow-Methods "POST, OPTIONS"
-        header Access-Control-Allow-Headers "Content-Type"
-        
-        # 2. Immediately respond with 204 No Content for preflight OPTIONS requests
-        @options method OPTIONS
-        respond @options 204
-        
-        # 3. Proxy the actual POST requests to MediaMTX
         reverse_proxy localhost:8889
     }
-
 
     # ── FastAPI portal (catch-all) ────────────────────────────────────────────
     reverse_proxy localhost:8000
