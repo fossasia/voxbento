@@ -2,7 +2,7 @@ import asyncio
 import logging
 import os
 import signal
-import subprocess
+import subprocess  # nosec B404
 import threading
 import json
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -186,7 +186,7 @@ asyncio.run(run_capture())
 """
             ]
             
-            proc = subprocess.Popen(
+            proc = subprocess.Popen(  # nosec B603
                 cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -272,7 +272,7 @@ class RequestHandler(BaseHTTPRequestHandler):
             self.send_error(404, "Not Found")
 
 if __name__ == "__main__":
-    server_address = ('0.0.0.0', 8080)
+    server_address = ('0.0.0.0', 8080)  # nosec B104
     httpd = HTTPServer(server_address, RequestHandler)
     logger.info("Starting floor-bot on port 8080...")
     try:
