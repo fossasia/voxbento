@@ -1534,6 +1534,7 @@ async def admin_edit_room(request: Request, event_id: int, room_id: int):
     import pycountry
 
     form = await request.form()
+    display_name = form.get('display_name', '').strip()
     jitsi_url = form.get('jitsi_url', '').strip()
     relay_booth_id_str = form.get('relay_booth_id', '').strip()
     relay_booth_id = int(relay_booth_id_str) if relay_booth_id_str and relay_booth_id_str.lower() != 'none' else None
@@ -1552,6 +1553,8 @@ async def admin_edit_room(request: Request, event_id: int, room_id: int):
     async with get_session() as session:
         room = await get_room_by_id(session, room_id)
         if room and room.event_id == event_id:
+            if display_name:
+                room.display_name = display_name
             room.jitsi_url = jitsi_url if jitsi_url else None
             room.relay_booth_id = relay_booth_id
             room.floor_transcription_enabled = floor_transcription_enabled
@@ -1982,6 +1985,28 @@ async def admin_booth_translation_settings(
         url=f'/admin/events/{event_id}/rooms/{room_id}/booths/{booth_id}/',
         status_code=status.HTTP_303_SEE_OTHER,
     )
+
+@app.post('/admin/events/{event_id}/rooms/{room_id}/booths/{booth_id}/edit', dependencies=[Depends(require_admin)])
+async def admin_edit_booth(request: Request, event_id: int, room_id: int, booth_id: int):
+    from portal.database import get_session, get_booth_by_id
+    form = await request.form()
+    language_name = form.get('language_name', '').strip()
+    language_code = form.get('language_code', '').strip()
+    
+    async with get_session() as session:
+        booth = await get_booth_by_id(session, booth_id)
+        if booth and booth.event_id == event_id and booth.room_id == room_id:
+            if language_name:
+                booth.language_name = language_name
+            if language_code:
+                booth.language_code = language_code
+        await session.commit()
+        
+    return safe_redirect(
+        url=f'/admin/events/{event_id}/rooms/{room_id}/booths/{booth_id}/',
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
 
 
 @app.post(

@@ -26,8 +26,15 @@
     <h3>Room Settings</h3>
     <div class="form-row">
       <div class="form-group" style="flex: 1;">
+        <label for="display_name">Room Name</label>
+        <input type="text" id="display_name" name="display_name" class="input" value="{{ room.display_name }}" required>
+      </div>
+      <div class="form-group" style="flex: 2;">
         <label for="jitsi_url">Jitsi Room URL (Floor Audio Source)</label>
         <input type="url" id="jitsi_url" name="jitsi_url" class="input" value="{{ room.jitsi_url or fallback_jitsi_url }}" placeholder="e.g. https://jitsi.voxbento.com/Room-Event-TrackA">
+      </div>
+      <div class="form-group form-group-btn" style="flex: 0; align-self: flex-end;">
+        <button type="submit" class="btn btn-primary">Save Settings</button>
       </div>
     </div>
     <p class="form-help" style="margin-top: 0.5rem; font-size: 0.85rem; color: #666;">Interpreters in all booths for this room will automatically join this Jitsi URL for floor monitoring.</p>
