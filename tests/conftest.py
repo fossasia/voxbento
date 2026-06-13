@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+import os
 import sys
 from pathlib import Path
 
 import pytest
+
+os.environ['API_KEY_ENCRYPTION_KEY'] = 'test-encryption-key-value-for-all-tests'
+os.environ['BOOTH_ACCESS_TOKEN'] = ''
+
 
 ROOT = Path(__file__).resolve().parents[1]
 

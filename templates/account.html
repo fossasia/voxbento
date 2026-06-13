@@ -4,12 +4,12 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>My Account — Voxbento</title>
-    <link rel="icon" type="image/x-icon" href="{{ url_for('static', path='favicon.ico') }}" />
+    <link rel="icon" type="image/x-icon" href="{{ url_for('static', path='img/favicon.ico') }}" />
     <link rel="stylesheet" href="{{ url_for('static', path='css/admin.css') }}" />
   </head>
   <body>
     <header class="portal-home-header">
-      <a class="brand" href="/">Voxbento</a>
+      <a class="brand" href="/"><img src="{{ url_for('static', path='img/wordmark.png') }}" alt="Voxbento" style="height: 32px; vertical-align: middle;" /></a>
       <nav class="header-nav">
         <a href="/account">My Account</a>
         <a href="/logout">Logout</a>

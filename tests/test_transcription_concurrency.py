@@ -3,6 +3,10 @@ from __future__ import annotations
 
 import asyncio
 import os
+
+os.environ['BOOTH_ACCESS_TOKEN'] = ''
+os.environ['API_KEY_ENCRYPTION_KEY'] = 'test-key-encryption-key-for-transcription'
+
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -17,7 +21,6 @@ from portal.auth import create_user_token
 
 # Bypass token requirements for WS/REST endpoints where applicable,
 # and use an admin token to satisfy _require_access.
-os.environ['BOOTH_ACCESS_TOKEN'] = ''
 
 @pytest.fixture(autouse=True)
 def setup_db():

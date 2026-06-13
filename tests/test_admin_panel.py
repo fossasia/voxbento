@@ -155,7 +155,7 @@ class TestHomePage:
         async with _client() as c:
             resp = await c.get('/')
         assert resp.status_code == 200
-        assert b'Interpretation Portal' in resp.content
+        assert b'VoxBento' in resp.content
 
     @pytest.mark.anyio
     async def test_home_shows_events(self, seed_event):

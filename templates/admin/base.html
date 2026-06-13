@@ -4,14 +4,14 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>{% block title %}Admin Panel{% endblock %} — Voxbento</title>
-    <link rel="icon" type="image/x-icon" href="{{ url_for('static', path='favicon.ico') }}" />
+    <link rel="icon" type="image/x-icon" href="{{ url_for('static', path='img/favicon.ico') }}" />
     <link rel="stylesheet" href="{{ url_for('static', path='css/admin.css') }}" />
     {% block head %}{% endblock %}
   </head>
   <body>
     <header class="admin-header">
       <div class="header-left">
-        <a class="brand" href="/admin/">Voxbento</a>
+        <a class="brand" href="/admin/"><img src="{{ url_for('static', path='img/wordmark.png') }}" alt="Voxbento" style="height: 32px; vertical-align: middle;" /></a>
         <span class="header-badge">Admin</span>
       </div>
       <nav class="header-nav">
