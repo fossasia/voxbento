@@ -22,45 +22,48 @@
   data-display-name='{{ display_name | default("") }}'
   data-relay-whep-url='{{ relay_whep_url | default("") }}'
 >
+
+  <!-- ── Full-Width Header Bar ──────────────────────────────────────── -->
+  <header class='booth-header' id='booth-header'>
+    <!-- Far Left: Live Status Badge -->
+    <div class='header-left'>
+      <span id='live-badge' class='live-badge off'>
+        <span class='live-dot'>●</span> <span id='live-badge-text'>OFF LIVE</span>
+      </span>
+    </div>
+
+    <!-- Center: Handover + Mic Controls -->
+    <div class='header-center'>
+      <button id='handover-btn' type='button' class='header-btn header-btn--handover state-grey' disabled title='Mic handover'>
+        <svg class='header-btn-icon' viewBox='0 0 24 24' fill='currentColor' aria-hidden='true'><path d='M12 14c1.66 0 2.99-1.34 2.99-3L15 5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm5.3-3c0 3-2.54 5.1-5.3 5.1S6.7 14 6.7 11H5c0 3.41 2.72 6.23 6 6.72V21h2v-3.28C16.28 17.23 19 14.41 19 11h-1.7z'/></svg>
+        <span id='handover-label'>PASS MIC</span>
+      </button>
+
+      <button id='toggle-mic' type='button' class='header-btn header-btn--mic muted' title='Mute / Unmute (Space)' aria-label='Mute microphone'>
+        <svg class='header-btn-icon ctrl-icon--mic-on hidden' viewBox='0 0 24 24' fill='currentColor' aria-hidden='true'>
+          <path d='M12 14c1.66 0 2.99-1.34 2.99-3L15 5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm5.3-3c0 3-2.54 5.1-5.3 5.1S6.7 14 6.7 11H5c0 3.41 2.72 6.23 6 6.72V21h2v-3.28C16.28 17.23 19 14.41 19 11h-1.7z'/>
+        </svg>
+        <svg class='header-btn-icon ctrl-icon--mic-off' viewBox='0 0 24 24' fill='currentColor' aria-hidden='true'>
+          <path d='M19 11h-1.7c0 .74-.16 1.43-.43 2.05l1.23 1.23c.56-.98.9-2.09.9-3.28zm-4.02.17c0-.06.02-.11.02-.17V5c0-1.66-1.34-3-3-3S9 3.34 9 5v.18l5.98 5.99zM4.27 3 3 4.27l6.01 6.01V11c0 1.66 1.33 3 2.99 3 .22 0 .44-.03.65-.08l1.66 1.66c-.71.33-1.5.52-2.31.52-2.76 0-5.3-2.1-5.3-5.1H5c0 3.41 2.72 6.23 6 6.72V21h2v-3.28c.91-.13 1.77-.45 2.54-.9L19.73 21 21 19.73 4.27 3z'/>
+        </svg>
+        <span class='header-btn-label' id='mute-label'>UNMUTE</span>
+      </button>
+    </div>
+
+    <!-- Far Right: Leave Booth -->
+    <div class='header-right'>
+      <a href='/' id='leave-booth' class='header-btn header-btn--leave' title='Leave booth and return home'>
+        <svg class='header-btn-icon' viewBox='0 0 24 24' fill='currentColor' aria-hidden='true'><path d='M10.09 15.59L11.5 17l5-5-5-5-1.41 1.41L12.67 11H3v2h9.67l-2.58 2.59zM19 3H5c-1.11 0-2 .9-2 2v4h2V5h14v14H5v-4H3v4c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2z'/></svg>
+        <span class='header-btn-label'>LEAVE BOOTH</span>
+      </a>
+    </div>
+  </header>
+
   <!-- ── Main 2-Column Grid ────────────────────────────────────────────── -->
   <div class='booth-columns'>
     
-    <!-- LEFT COLUMN: Top Bar & Video -->
+    <!-- LEFT COLUMN: Video -->
     <div class='booth-main-col'>
-      
-      <!-- Top Bar: Controls -->
-      <div class='booth-controls-header'>
-        <!-- Google Meet–style control bar -->
-        <div class='control-bar' id='main-control-bar'>
-          <div class='ctrl-row'>
-            <!-- Mic button -->
-            <div class='ctrl-compound'>
-              <button id='toggle-mic' type='button' class='ctrl-btn ctrl-btn--mic' title='Mute / Unmute (Space)' aria-label='Mute microphone'>
-                <svg class='ctrl-icon ctrl-icon--mic-on' viewBox='0 0 24 24' fill='currentColor' aria-hidden='true'>
-                  <path d='M12 14c1.66 0 2.99-1.34 2.99-3L15 5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm5.3-3c0 3-2.54 5.1-5.3 5.1S6.7 14 6.7 11H5c0 3.41 2.72 6.23 6 6.72V21h2v-3.28C16.28 17.23 19 14.41 19 11h-1.7z'/>
-                </svg>
-                <svg class='ctrl-icon ctrl-icon--mic-off hidden' viewBox='0 0 24 24' fill='currentColor' aria-hidden='true'>
-                  <path d='M19 11h-1.7c0 .74-.16 1.43-.43 2.05l1.23 1.23c.56-.98.9-2.09.9-3.28zm-4.02.17c0-.06.02-.11.02-.17V5c0-1.66-1.34-3-3-3S9 3.34 9 5v.18l5.98 5.99zM4.27 3 3 4.27l6.01 6.01V11c0 1.66 1.33 3 2.99 3 .22 0 .44-.03.65-.08l1.66 1.66c-.71.33-1.5.52-2.31.52-2.76 0-5.3-2.1-5.3-5.1H5c0 3.41 2.72 6.23 6 6.72V21h2v-3.28c.91-.13 1.77-.45 2.54-.9L19.73 21 21 19.73 4.27 3z'/>
-                </svg>
-                <span class='ctrl-label' id='mute-label'>MUTE</span>
-              </button>
-            </div>
-            <!-- Go Live -->
-            <button id='go-live' type='button' class='ctrl-btn' title='Go Live / Stop Live' aria-label='Go live'>
-              <svg class='ctrl-icon' viewBox='0 0 24 24' fill='currentColor' aria-hidden='true'><path d='M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 14.5v-9l6 4.5-6 4.5z'/></svg>
-              <span class='ctrl-label' id='live-label'>GO LIVE</span>
-            </button>
-
-            <!-- Join / Leave -->
-            <button id='join-leave-btn' type='button' class='ctrl-btn ctrl-btn--primary' title='Join booth' aria-label='Join booth'>
-              <svg class='ctrl-icon' viewBox='0 0 24 24' fill='currentColor' aria-hidden='true'><path d='M10.09 15.59L11.5 17l5-5-5-5-1.41 1.41L12.67 11H3v2h9.67l-2.58 2.59zM19 3H5c-1.11 0-2 .9-2 2v4h2V5h14v14H5v-4H3v4c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2z'/></svg>
-              <span class='ctrl-label' id='join-leave-label'>JOIN</span>
-            </button>
-          </div>
-          <p class='ctrl-shortcut-hint'>Press <kbd>Space</kbd> to mute / unmute</p>
-        </div>
-      </div>
-
       <!-- Video Feed -->
       <section class='panel panel--jitsi'>
         <div class='panel-body monitoring-body'>
@@ -69,16 +72,15 @@
           </div>
         </div>
       </section>
-
     </div>
 
-    <!-- RIGHT COLUMN: Sidebar (Collapsible Accordions) -->
+    <!-- RIGHT COLUMN: Sidebar -->
     <div class='booth-sidebar-col sidebar-scrollable'>
       
-      <!-- Participants (Collapsible, Open by default) -->
-      <details class='panel panel-details'>
+      <!-- 1. Participants (Collapsible, Open by default) -->
+      <details class='panel panel-details' open>
         <summary class='panel-header panel-header-details'>
-          <h2>Participants</h2>
+          <h2><span class='participants-dot'>●</span> Participants (<span id='participant-count'>0</span>)</h2>
           <div style="display: flex; gap: 0.5rem; align-items: center;">
             <span id='connection-status' class='status-badge'>Disconnected</span>
             <span id='active-indicator' class='status-badge'>No active interpreter</span>
@@ -89,25 +91,41 @@
         </div>
       </details>
 
-      <!-- Chat (Collapsible, Open by default) -->
-      <details class='panel panel-details'>
-        <summary class='panel-header panel-header-details'>
-          <h2>Booth Chat</h2>
+      <!-- 2. Booth Audio Volume Slider (Always visible) -->
+      <div class='panel sidebar-panel'>
+        <div class='panel-header'>
+          <h2>BOOTH AUDIO VOLUME</h2>
+          <span class='info-tooltip' title='Controls the volume of your boothmate&#39;s audio. Active interpreters default to 0% to prevent echo. Passive interpreters default to 80% to monitor.'>ⓘ</span>
+        </div>
+        <div class='panel-body'>
+          <div class='volume-slider-row'>
+            <span class='volume-icon'>🔊</span>
+            <input type='range' id='booth-volume' class='volume-slider' min='0' max='100' step='1' value='0'>
+            <span id='booth-volume-label' class='volume-label'>0%</span>
+          </div>
+          <audio id='booth-audio' autoplay hidden></audio>
+        </div>
+      </div>
+
+      <!-- 3. Booth Chat (Pinned open — not collapsible) -->
+      <div class='panel sidebar-panel panel--chat'>
+        <div class='panel-header'>
+          <h2>💬 Booth Chat</h2>
           <span class='status-badge'>Internal</span>
-        </summary>
+        </div>
         <div class='panel-body chat-body'>
           <div id='chat-log' class='chat-log'></div>
           <form id='chat-form' class='chat-form'>
-            <input id='chat-input' class='input' type='text' placeholder='Message...' />
+            <input id='chat-input' class='input' type='text' placeholder='Type a message...' />
             <button type='submit' class='btn btn-primary'>Send</button>
           </form>
         </div>
-      </details>
+      </div>
 
-      <!-- Relay Audio (Collapsible, Open by default) -->
+      <!-- 4. Relay Audio (Collapsed by default) -->
       <details class='panel panel-details'>
         <summary class='panel-header panel-header-details'>
-          <h2>Relay Audio</h2>
+          <h2>🔊 Relay Audio</h2>
           {% if relay_whep_url %}
             <span id='relay-status' class='status-badge'>Not Listening</span>
           {% else %}
@@ -141,37 +159,10 @@
         </div>
       </details>
       
-      <!-- Booth Audio (Collapsible, Closed by default) -->
+      <!-- 5. Diagnostics (Collapsed by default) -->
       <details class='panel panel-details'>
         <summary class='panel-header panel-header-details'>
-          <h2>Booth Audio</h2>
-          <span id='booth-audio-status' class='status-badge'>Not Listening</span>
-        </summary>
-        <div class='panel-body'>
-          <div class='form-group' style='margin-bottom: 0.5rem;'>
-            <button id='listen-booth-btn' type='button' class='btn' style='width: 100%; margin-bottom: 0.5rem;' title='Listen to Booth'>
-              Listen to Booth ({{ booth_language }})
-            </button>
-          </div>
-          <div class='form-group' style='margin-bottom: 0.5rem;'>
-            <label for='booth-device-select' style='font-size: 0.85rem;'>Output Device</label>
-            <select id='booth-device-select' class='input device-select' style='width: 100%; font-size: 0.8rem; padding: 0.25rem;'><option value=''>Default output</option></select>
-            <div style='display: flex; align-items: center; gap: 0.3rem; margin-top: 0.2rem;'>
-              <input type='checkbox' id='show-virtual-booth-devices' style='margin: 0;'>
-              <label for='show-virtual-booth-devices' style='font-size: 0.7rem; color: var(--color-muted); cursor: pointer;'>Show virtual devices</label>
-            </div>
-          </div>
-          <div class='form-group'>
-            <label for='booth-volume' style='font-size: 0.85rem;'>Volume</label>
-            <input type='range' id='booth-volume' min='0' max='1' step='0.01' value='0.8' style='width: 100%;'>
-          </div>
-        </div>
-      </details>
-      
-      <!-- Diagnostics (Collapsible, Closed by default) -->
-      <details class='panel panel-details'>
-        <summary class='panel-header panel-header-details'>
-          <h2>Diagnostics</h2>
+          <h2>⚙ Diagnostics</h2>
           <span id='ingest-status' class='status-badge'>Disconnected</span>
         </summary>
         <div class='panel-body panel-body-sm'>
@@ -227,7 +218,6 @@
 </div>
 
 <audio id='relay-audio' autoplay hidden></audio>
-<audio id='booth-audio' autoplay hidden></audio>
 
 <script src="{{ url_for('static', path='js/whep-listener.js') }}?v={{ js_version }}"></script>
 <script type='module' src="{{ url_for('static', path='js/interpreter-booth.js') }}?v={{ js_version }}"></script>

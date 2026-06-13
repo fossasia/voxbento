@@ -929,7 +929,46 @@ async def _handle_update_state(ws: WebSocket, session: Session, data: dict) -> N
     await manager.broadcast(session.booth_id, {'type': 'booth:state', 'state': state})
 
 
-# ── User registration & login routes ─────────────────────────────────────────
+async def _handle_initiate_handoff(ws: WebSocket, session: Session, _data: dict) -> None:
+    if not session.participant_id:
+        await ws.send_text(json.dumps({'type': 'booth:error', 'message': 'Join the booth first.'}))
+        return
+    try:
+        state = await booths.initiate_handoff(
+            session.booth_id, session.participant_id, session.language, session.channel_id,
+        )
+    except (ValueError, PermissionError) as exc:
+        await ws.send_text(json.dumps({'type': 'booth:error', 'message': str(exc)}))
+        return
+    await manager.broadcast(session.booth_id, {'type': 'booth:state', 'state': state})
+
+
+async def _handle_accept_handoff(ws: WebSocket, session: Session, _data: dict) -> None:
+    if not session.participant_id:
+        await ws.send_text(json.dumps({'type': 'booth:error', 'message': 'Join the booth first.'}))
+        return
+    try:
+        state = await booths.accept_handoff(
+            session.booth_id, session.participant_id, session.language, session.channel_id,
+        )
+    except (ValueError, PermissionError) as exc:
+        await ws.send_text(json.dumps({'type': 'booth:error', 'message': str(exc)}))
+        return
+    await manager.broadcast(session.booth_id, {'type': 'booth:state', 'state': state})
+
+
+async def _handle_cancel_handoff(ws: WebSocket, session: Session, _data: dict) -> None:
+    if not session.participant_id:
+        await ws.send_text(json.dumps({'type': 'booth:error', 'message': 'Join the booth first.'}))
+        return
+    try:
+        state = await booths.cancel_handoff(
+            session.booth_id, session.participant_id, session.language, session.channel_id,
+        )
+    except (ValueError, PermissionError) as exc:
+        await ws.send_text(json.dumps({'type': 'booth:error', 'message': str(exc)}))
+        return
+    await manager.broadcast(session.booth_id, {'type': 'booth:state', 'state': state})
 
 
 @app.get('/register')
@@ -2230,6 +2269,12 @@ async def ws_booth(websocket: WebSocket, booth_id: str) -> None:
                 await _handle_set_active(websocket, session, data)
             elif msg_type == 'booth:update-state':
                 await _handle_update_state(websocket, session, data)
+            elif msg_type == 'booth:initiate-handoff':
+                await _handle_initiate_handoff(websocket, session, data)
+            elif msg_type == 'booth:accept-handoff':
+                await _handle_accept_handoff(websocket, session, data)
+            elif msg_type == 'booth:cancel-handoff':
+                await _handle_cancel_handoff(websocket, session, data)
             else:
                 await websocket.send_text(
                     json.dumps({'type': 'booth:error', 'message': f'Unknown message type: {msg_type}'})
