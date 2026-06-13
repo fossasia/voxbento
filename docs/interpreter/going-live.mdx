@@ -1,0 +1,120 @@
+---
+title: "Go Live as an Interpreter in Voxbento"
+sidebarTitle: "Going Live"
+description: "Start broadcasting your interpretation to all listeners by publishing audio through Voxbento's real-time interpreter console in just a few steps."
+---
+
+import Tabs from "@theme/Tabs";
+import TabItem from "@theme/TabItem";
+
+
+Going live in Voxbento means your microphone audio is published via WebRTC to the media relay, where listeners receive it in near real-time. The process is designed to be fast — from clicking **Go Live** to listeners hearing you takes only a fraction of a second. This page walks you through the preflight check, the controls available while you're on air, and how to hand back gracefully when your shift ends.
+
+## Prerequisites
+
+Before you attempt to go live, make sure the following are in place:
+
+### Joined the Booth
+
+    You have opened the booth via an invite link or your registered account dashboard. See [Joining a Booth](/interpreter/joining-a-booth) if you haven't done this yet.
+  
+
+  ### Mic Permission Granted
+
+    Your browser has been given permission to access your microphone and the VU meter responds when you speak.
+  
+
+  ### Interpreter or Coordinator Role
+
+    Your session token or account assignment grants you the `interpreter` or `coordinator` role. Listeners cannot go live.
+  
+
+## Preflight Check
+
+When you first open the booth, Voxbento automatically runs a preflight check before you can go live.
+
+<details>
+<summary>What the preflight check verifies</summary>
+
+Voxbento automatically confirms two things before you can go live:
+
+  1. **Mic accessibility** — your browser can open your selected audio input device.
+  2. **Media relay reachability** — the streaming endpoint for your language channel is reachable from your browser.
+
+  If either check fails, the Audio Status panel shows an **Error** badge with a short description. Resolve the issue (check your mic, your network connection, or ask your admin to verify the media relay is running) before proceeding.
+
+</details>
+
+## Steps to Go Live
+
+### Unmute your microphone
+
+Check the mic toggle in the toolbar. If it shows a muted icon, click it to unmute. Watch the VU meter — you should see the bars respond as you speak.
+  ### Click Go Live
+
+Click the **Go Live** button. Voxbento establishes a WebRTC connection to the media relay in the background. This takes only a moment.
+  ### Confirm Streaming status
+
+The Audio Status panel changes to **Streaming**. This confirms the media relay is receiving your audio and listeners can hear you.
+  ### Begin your interpretation
+
+Start speaking. The floor audio from the Jitsi iframe plays in your headset so you can follow the session. Listeners hear only your mic — not the floor audio.
+
+## Audio Controls While Live
+
+### Mic Mute / Unmute
+
+    Toggle your mic on or off at any time without stopping the stream. Use this for brief pauses — coughing, notes, transitions — without going fully offline.
+  
+
+  ### VU Meter
+
+    A volume unit meter shows your current microphone level in real time. Keep levels out of the red to avoid clipping.
+  
+
+  ### Floor Audio Volume
+
+    Adjust the volume of the Jitsi floor monitor in your headset independently. Turning this down helps reduce cognitive load during dense speech segments.
+  
+
+## What Listeners Hear
+
+Understanding the audio routing helps you interpret with confidence:
+
+<Tabs>
+  <TabItem value="what-listeners-receive" label="What listeners receive">
+
+Listeners connect to Voxbento via a real-time audio stream. They receive your microphone audio directly from the media relay. The latency from your voice to their ears is typically under one second on a well-configured network.
+
+</TabItem>
+  <TabItem value="what-you-hear" label="What you hear">
+
+You hear the Jitsi floor session audio in your headset — the speakers, panellists, and any floor audio from the event. This feed is local only and is never forwarded to listeners.
+
+</TabItem>
+  <TabItem value="why-floor-audio-is-kept-separate" label="Why floor audio is kept separate">
+
+Routing the Jitsi floor audio to listeners would create a feedback loop and result in double-audio (both the raw event stream and your interpretation). Voxbento isolates the two intentionally. Your mic is the only source listeners receive.
+
+</TabItem>
+</Tabs>
+
+:::info
+The Jitsi floor monitor audio plays in your headset only. Listeners hear your mic, not the floor audio. This is by design to prevent feedback loops.
+:::
+
+## Stopping the Stream
+
+### Click Go Offline
+
+Click the **Go Offline** button in the toolbar. Voxbento closes your WebRTC connection and the media relay stops receiving your audio.
+  ### Listeners stay connected
+
+Listener connections remain open. They will hear silence until a backup interpreter goes live or a handoff is triggered. No reconnection is required on the listener side.
+  ### Booth returns to idle
+
+The Audio Status panel returns to **Idle**. You remain in the booth as a participant and can go live again at any time.
+
+:::warning
+Do not refresh the page while live — this will briefly interrupt the stream. If you need to recover, click **Go Live** again after the page reloads. Coordinators can reassign the active interpreter if an unexpected disconnection occurs.
+:::

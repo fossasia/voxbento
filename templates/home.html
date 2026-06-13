@@ -3,13 +3,13 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Voxbento Interpretation Portal</title>
-    <link rel="icon" type="image/x-icon" href="{{ url_for('static', path='favicon.ico') }}" />
+    <title>VoxBento</title>
+    <link rel="icon" type="image/x-icon" href="{{ url_for('static', path='img/favicon.ico') }}" />
     <link rel="stylesheet" href="{{ url_for('static', path='css/admin.css') }}" />
   </head>
   <body>
     <header class="portal-home-header">
-      <a class="brand" href="/">Voxbento</a>
+      <a class="brand" href="/"><img src="{{ url_for('static', path='img/wordmark.png') }}" alt="Voxbento" style="height: 32px; vertical-align: middle;" /></a>
       <nav class="header-nav">
         {% if current_user %}
         <a href="/account">My Account</a>
@@ -24,8 +24,8 @@
 
     <main class="home-main">
       <section class="hero">
-        <h1>Interpretation Portal</h1>
-        <p class="hero-subtitle">Real-time multilingual interpretation for live events — browser-first, no external software required.</p>
+        <h1>VoxBento</h1>
+        <p class="hero-subtitle">Open-source, AI-powered real-time Speech-to-Text (STT), Translation, and Text-to-Speech (TTS) for live events — browser-first, no external software required.</p>
       </section>
 
       {% if my_booths %}
@@ -44,7 +44,7 @@
               <p style="margin-bottom: 0;">Role: <span class="badge badge-role badge-{{ b.membership.role }}">{{ b.membership.role }}</span></p>
             </div>
             <div class="card-footer">
-              <a href="/interpreter/{{ b.event_slug }}/{{ b.language_code }}" class="btn btn-primary" style="width: 100%; text-align: center;">Open Booth ↗</a>
+              <a href="/interpreter" class="btn btn-primary" style="width: 100%; text-align: center;">Go to Lobby ↗</a>
             </div>
           </div>
           {% endfor %}
@@ -89,7 +89,7 @@
                     <td>
                       {% if bs.can_interpret %}
                       <div style="display: flex; gap: 0.5rem; align-items: center;">
-                        <a href="/interpreter/{{ ed.event.slug }}/{{ bs.db.language_code }}" class="btn btn-sm btn-outline" style="border-color: #007bff; color: #007bff; background: transparent;">Open Booth ↗</a>
+                        <a href="/interpreter" class="btn btn-sm btn-outline" style="border-color: #007bff; color: #007bff; background: transparent;">Go to Lobby ↗</a>
                       </div>
                       {% else %}
                       <span class="muted">—</span>

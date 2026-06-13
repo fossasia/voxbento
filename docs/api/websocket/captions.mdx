@@ -1,0 +1,185 @@
+---
+title: "Live Captions WebSocket Feed — Voxbento API Reference"
+sidebarTitle: "Captions WS"
+description: "Stream real-time AI-generated captions from Voxbento's transcription pipeline to listener pages, subtitle overlays, and accessibility widgets."
+---
+
+import Tabs from "@theme/Tabs";
+import TabItem from "@theme/TabItem";
+
+
+The Voxbento captions WebSocket delivers a continuous stream of AI-generated transcriptions produced by the active interpreter's audio feed. By connecting to `/ws/captions/{booth_id}`, your client receives partial captions as words arrive, final captions when a sentence completes, and clear signals during silence — giving you everything you need to power subtitle overlays, live-broadcast tools, or accessibility widgets without any authentication overhead.
+
+## Connection URL
+
+```text
+ws://voxbento.com/ws/captions/{booth_id}
+```
+
+:::info
+Always use `wss://` (TLS) in production to protect the integrity of the data stream, even though this endpoint requires no authentication token.
+:::
+
+The `booth_id` path parameter uses the same `{event_slug}-{language_code}` format as the rest of the Voxbento API.
+
+**Example:** `wss://voxbento.com/ws/captions/pycon2026-en`
+
+## Authentication
+
+No authentication is required. This endpoint is intentionally public so that listener pages, browser extensions, and broadcast tools can subscribe without managing credentials.
+
+## Messages Received from the Server
+
+After connecting, you will receive two types of server-pushed messages. No client-to-server messages are defined for this endpoint — it is a receive-only feed.
+
+| `type` | Description |
+| --- | --- |
+| `booth:state` | Full booth state object (identical to the one sent on `/ws/booth/{booth_id}`). Delivered once immediately on connect and again whenever booth state changes. |
+| `caption` | A caption event containing a `status` field (`partial`, `final`, or `clear`) and, for non-clear events, a `text` field with the transcribed content. |
+
+## Caption Message Format
+
+The three caption status values represent distinct moments in the transcription lifecycle. Each arrives as a JSON object on the WebSocket connection.
+
+```json
+{ "type": "caption", "status": "partial", "text": "Good morning everyone, today we" }
+{ "type": "caption", "status": "final",   "text": "Good morning everyone, today we will discuss the agenda." }
+{ "type": "caption", "status": "clear" }
+```
+
+## Caption Status Reference
+
+<Tabs>
+  <TabItem value="partial" label="partial">
+
+The interpreter is still speaking. The `text` field contains the words recognised so far in the current utterance. Expect this message to arrive multiple times in quick succession as the transcription engine processes each audio chunk. You should overwrite your previous partial caption display with the new `text` value on every update.
+
+    :::tip
+Display `partial` captions with lower opacity or a distinct style (e.g. italics, a muted colour) to signal to viewers that the text may still change before it is finalised.
+:::
+
+</TabItem>
+  <TabItem value="final" label="final">
+
+A complete sentence has been detected. The `text` field contains the finished, stable transcription. Display this prominently and with full visual weight. After showing a `final` caption you can safely discard any preceding `partial` state for the same utterance.
+
+</TabItem>
+  <TabItem value="clear" label="clear">
+
+Silence or end of utterance detected. No `text` field is present. Clear the caption display area. This event is also sent when the active interpreter stops streaming.
+
+</TabItem>
+</Tabs>
+
+## How Captions Are Produced
+
+Understanding how captions flow from the interpreter to your client helps you set appropriate expectations for latency and delivery.
+
+### Interpreter goes live
+
+The active interpreter's browser publishes audio via WebRTC/WHIP. The `mic_active` and `ingest_connected` flags in `booth:state` turn `true`.
+  ### Audio is captured and converted
+
+Voxbento captures the interpreter's audio stream and converts it to the format expected by the configured transcription provider.
+  ### Transcription provider processes audio
+
+Audio is chunked and passed to the configured transcription provider — options include a local model, OpenAI Whisper, Deepgram, NVIDIA Riva, or ElevenLabs. Each chunk produces a text result.
+  ### Caption events are generated
+
+Completed sentences produce `final` caption events. Any in-progress fragment produces a `partial` event. Silence produces a `clear` event.
+  ### Events are delivered to subscribers
+
+Each caption event is pushed in real time to every client connected to `/ws/captions/{booth_id}`.
+
+:::info
+Captions are only produced when transcription is enabled for the booth by the event admin, and when an interpreter is actively streaming. If no active interpreter is present, you will only receive `booth:state` messages.
+:::
+
+## Message Field Reference
+
+<details>
+<summary>caption (server → client)</summary>
+
+**`type`** *(string)* — Always `"caption"`.
+
+  **`status`** *(string)* — One of `"partial"`, `"final"`, or `"clear"`. Determines how your UI should handle the message.
+
+  **`text`** *(string)* — The transcribed text. Present for `partial` and `final` status values. Omitted for `clear`.
+
+</details>
+
+<details>
+<summary>booth:state (server → client)</summary>
+
+**`type`** *(string)* — Always `"booth:state"`.
+
+  **`booth_id`** *(string)* — The booth identifier in `{event_slug}-{language_code}` format.
+
+  **`active_interpreter_id`** *(string | null)* — The `user_id` of the currently active interpreter, or `null` if no interpreter is streaming.
+
+  **`mic_active`** *(boolean)* — Whether the active interpreter's microphone is live. Use this to show or hide a "live" indicator in your UI.
+
+  **`ingest_connected`** *(boolean)* — Whether the WHIP stream is successfully connected. If `false` while `active_interpreter_id` is set, the interpreter is connected to the booth but audio is not yet flowing.
+
+</details>
+
+## Example: JavaScript Caption Client
+
+The snippet below demonstrates a minimal caption subscriber that renders partial and final captions in separate styles and clears the display on a `clear` event.
+
+```javascript
+const ws = new WebSocket('wss://voxbento.com/ws/captions/pycon2026-en');
+
+const captionEl = document.getElementById('caption');
+
+function showCaption(text, status) {
+  captionEl.textContent = text;
+  captionEl.className   = status === 'final' ? 'caption--final' : 'caption--partial';
+}
+
+function clearCaption() {
+  captionEl.textContent = '';
+  captionEl.className   = '';
+}
+
+ws.onmessage = (e) => {
+  const msg = JSON.parse(e.data);
+
+  if (msg.type === 'caption') {
+    if (msg.status === 'clear') {
+      clearCaption();
+    } else {
+      showCaption(msg.text, msg.status);
+    }
+  }
+
+  if (msg.type === 'booth:state') {
+    // Update live indicator, interpreter name, etc.
+    console.log('[captions] booth state', msg);
+  }
+};
+
+ws.onerror = (err) => console.error('[captions ws] error', err);
+ws.onclose = (e)  => console.warn('[captions ws] closed', e.code, e.reason);
+```
+
+:::tip
+Display `partial` captions with lower opacity or in a different style than `final` captions to signal to viewers that the text may still change.
+:::
+
+## Use Cases
+
+### Subtitle Overlays
+
+    Embed this WebSocket in a browser-based subtitle overlay rendered on top of your event stream. Use `partial` for live-typing effect and `final` for stable display.
+  
+
+  ### Broadcast Tools
+
+    Push caption events to OBS, vMix, or any streaming encoder that accepts WebSocket data sources to add real-time subtitles to your live stream output.
+  
+
+  ### Accessibility Widgets
+
+    Integrate captions into screen-reader-friendly widgets or ARIA live regions so attendees who are deaf or hard of hearing can follow interpretation in real time.
+  

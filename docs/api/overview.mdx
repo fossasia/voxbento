@@ -1,0 +1,91 @@
+---
+title: "Voxbento REST API: Manage Booths, Events, and Streams"
+sidebarTitle: "API Overview"
+description: "Explore every REST and WebSocket endpoint in the Voxbento API — manage booths, query live state, and retrieve WHIP stream URLs from any integration."
+---
+
+The Voxbento REST API gives you programmatic control over booths and events, lets you query live booth state, and surfaces the WHIP and WHEP stream URLs your interpreter and listener clients need. Whether you're building an event platform integration, a custom booth dashboard, or an automated provisioning script, every operation described in this guide is available over plain HTTPS with JSON.
+
+## Base URL
+
+All API requests for Voxbento services target the official `voxbento.com` domain. 
+
+```text
+https://voxbento.com
+```
+
+Every REST endpoint is prefixed with `/api/`. For example, the token endpoint is reachable at `https://voxbento.com/api/auth/token`.
+
+## Content Type
+
+All request bodies must be sent as `application/json`, and all successful responses are returned as `application/json`. Make sure to include the `Content-Type: application/json` header on any request that carries a body.
+
+## Available Endpoints
+
+The tables below list every REST and WebSocket endpoint exposed by the Voxbento API. Endpoints marked **Bearer** require an `Authorization: Bearer {token}` header — see [Authentication](/api/authentication) for details.
+
+### REST Endpoints
+
+| Endpoint | Method | Auth | Description |
+| --- | --- | --- | --- |
+| `/api/auth/token` | `POST` | Open | Issue a bearer JWT |
+| `/api/booth/{booth_id}/state` | `GET` | Bearer | Get booth state (legacy, no event scope) |
+| `/api/booth/{booth_id}/whip-url` | `GET` | Bearer | Get WHIP URL for the active interpreter |
+| `/api/events/{event_slug}/booths` | `POST` | Bearer | Create an in-memory booth for an event |
+| `/api/events/{event_slug}/booths` | `GET` | Bearer | List all booths for an event |
+| `/api/events/{event_slug}/booths/{language_code}/state` | `GET` | Bearer | Get event-scoped booth state |
+| `/api/events/{event_slug}/booths/{language_code}/whip-url` | `GET` | Bearer | Get event-scoped WHIP URL |
+| `/api/interpreter/status/{channel_id}` | `GET` | Open | Check MediaMTX stream reachability |
+
+### WebSocket Endpoints
+
+| Endpoint | Auth | Description |
+| --- | --- | --- |
+| `/ws/booth/{booth_id}` | Optional JWT via `?token=` query parameter | Real-time booth coordination — join, leave, chat, and state updates |
+| `/ws/captions/{booth_id}` | Open (no auth required) | Live caption feed for listeners |
+
+## Health Check
+
+Before making API calls you can verify that both the Voxbento portal and the underlying MediaMTX media server are reachable by hitting the health endpoint. This endpoint requires no authentication.
+
+```text
+GET /healthz
+```
+
+A healthy response looks like this:
+
+```json
+{
+  "ok": true,
+  "server": "fastapi",
+  "mediamtx_ok": true
+}
+```
+
+If `mediamtx_ok` is `false`, interpreter ingest and listener playback will be unavailable even if the portal itself is running.
+
+:::info
+Use `mediamtx_ok` to determine whether the media server is reachable before starting a stream. If it is `false`, the underlying media services may be unavailable.
+:::
+
+## Explore the API
+
+### [Authentication](/api/authentication)
+
+    Learn how to obtain a bearer JWT and include it in your API requests.
+  
+
+  ### [Booth State](/api/booths/state)
+
+    Query the live state of any interpreter booth, including participant list and active interpreter.
+  
+
+  ### [WHIP & WHEP URLs](/api/booths/whip-whep)
+
+    Retrieve the WHIP ingest and WHEP playback URLs for a booth's audio channel.
+  
+
+  ### [Events & Booths](/api/booths/events)
+
+    Create and list in-memory booths scoped to a specific event slug.
+  

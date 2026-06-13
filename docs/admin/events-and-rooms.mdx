@@ -1,0 +1,93 @@
+---
+title: "Create and Manage Events and Rooms — Voxbento Admin"
+sidebarTitle: "Events & Rooms"
+description: "Learn how to create events with unique slugs, configure rooms per stage or track, and organize live interpretation channels in the Voxbento admin panel."
+---
+
+The Voxbento admin panel gives you full control over the hierarchy of your live interpretation setup — from top-level events down to individual rooms and booths. Before you can assign interpreters or generate invite links, you need to build out this structure. This guide walks you through accessing the panel, creating events, and adding rooms inside them.
+
+## Accessing the Admin Panel
+
+You can reach the admin panel at `/admin/`. If you haven't already authenticated, navigate to `/admin/login` and enter the `ADMIN_PASSWORD` you configured in your environment. Successful login sets a session cookie that grants access to all admin routes.
+
+:::info
+The admin panel also accepts login via a registered user account that has been granted site-wide admin access. These users share the same panel access as the `ADMIN_PASSWORD` login.
+:::
+
+## Dashboard Overview
+
+After logging in, the dashboard at `/admin/` displays all your events in a summary list. For each event you can see live booth counts — how many booths are currently broadcasting — along with a MediaMTX health indicator that confirms your media server is reachable. Use this view as your at-a-glance monitoring screen during a live event.
+
+## Event and Room Structure
+
+Every piece of content in Voxbento hangs off a strict three-level hierarchy:
+
+| Level | Description |
+| --- | --- |
+| **Event** | The top-level container — represents a conference, summit, or any named occasion. Has a unique slug used in all URLs. |
+| **Room** | A stage or track inside the event — e.g. "Main Hall" or "Workshop Track A". Groups related booths together. |
+| **Booth** | A single language interpretation channel inside a room — e.g. the French booth in the Main Hall. |
+
+## Creating an Event
+
+### Open the Events list
+
+From the dashboard, click **Events** in the admin navigation, or go directly to `/admin/events/`.
+  ### Fill in the event details
+
+Enter a **slug** and a **display name** in the creation form.
+
+    - **Slug** — URL-safe identifier: lowercase alphanumeric characters and hyphens only, maximum 64 characters. For example: `pycon2026`, `summit-2026`, `open-source-day`. Choose it carefully — the slug appears in every booth URL and invite link you share.
+    - **Display name** — the human-readable label shown on the home page and in the dashboard.
+  ### Submit
+
+Click **Create Event**. You are redirected to the new event's detail page.
+  ### Add rooms
+
+From the event detail page, proceed to create rooms as described in the next section.
+
+:::info
+Each event has a unique slug used in all URLs. Choose it carefully — changing it later requires updating all shared links.
+:::
+
+## Creating a Room
+
+Rooms represent physical or logical spaces within your event — typically one room per stage or conference track. Each room can contain multiple language booths.
+
+### Open the event
+
+Navigate to `/admin/events/` and click the event you want to add a room to.
+  ### Go to Rooms
+
+Click **Rooms** on the event detail page, or navigate to `/admin/events/{event_id}/rooms/`.
+  ### Enter the room name
+
+Type the room name into the **Add Room** form — for example, `Main Stage` or `Track B`.
+  ### Submit
+
+Click **Add Room**. Voxbento automatically generates a Jitsi Meet URL for the room based on your configured `JITSI_DOMAIN`.
+
+## Editing a Room
+
+After creation you can update a room's Jitsi URL or set its relay booth ID. This is useful if you need to point the room at a different Jitsi conference or configure audio relay between booths.
+
+### Open the room
+
+From the event detail page, click the room you want to edit.
+  ### Edit room settings
+
+On the room detail page, update the **Jitsi URL** field to a custom meeting link, or set the **Relay Booth ID** to specify which booth should act as the relay source.
+  ### Save
+
+Click **Save** on the room detail page to apply your changes.
+
+## Deleting Events and Rooms
+
+:::warning
+Deleting an event or room is **permanent and irreversible** — all nested records are removed along with it. For an event, this includes all rooms, booths, members, invite tokens, and transcription settings.
+:::
+
+- **Delete an event** — open the event detail page and click **Delete Event**. All rooms, booths, memberships, and tokens under the event are removed.
+- **Delete a room** — open the room detail page and click **Delete Room**. All booths inside the room, along with their members and tokens, are removed.
+
+Deletions cannot be undone, so make sure you no longer need any of the child records before proceeding.

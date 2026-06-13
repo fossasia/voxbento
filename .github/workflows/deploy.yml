@@ -13,6 +13,9 @@ concurrency:
   group: deploy-production
   cancel-in-progress: false   # Never cancel a running deploy — finish it
 
+permissions:
+  contents: read
+
 jobs:
   deploy:
     name: SSH deploy → voxbento.com

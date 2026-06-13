@@ -1,181 +1,228 @@
-# Eventyay Interpretation Portal — Agent Guide
+# VoxBento — Agent Guide
 
-This file defines implementation guardrails for contributors and coding agents working inside `eventyay-interpretation-portal/`.
-
-Read this file in full before making changes. The constraints here are non-negotiable.
-
----
-Follow Eventyay backend patterns wherever applicable. Reuse naming conventions, validation style, dataclass/model structure, route organization, API response patterns, testing conventions, and documentation style. Do not directly couple the interpretation portal to Eventyay yet. Only mirror architectural patterns to maintain consistency for future integration.
----
-
-## Product intent
-
-Build a production-oriented interpretation subsystem that is:
-
-- **Eventyay-native** in UI and architecture
-- **Browser-first** for interpreter operations — no OBS, no RTMP, no external encoder
-- **Collaborative** for booth teams (active interpreter, backup, coordinator, listener)
-- **Extensible** for future multilingual, relay, and sign-language workflows
-
-**Current stack:** FastAPI (ASGI/uvicorn) + MediaMTX (WHIP/WHEP) + self-hosted Jitsi Meet.
-No Flask, no Socket.IO, no aiortc.
+> **Primary context file for coding agents.** Read this entire file before making changes.
+> All implementation details are derived from the live codebase. Constraints below are non-negotiable.
 
 ---
 
-## Core design constraints
+## Quick-Start Context
 
-1. **Single-tab workflow:** no OBS/RTMP/external encoder requirements.
-2. **Separation of concerns:**
-   - Jitsi = monitoring the floor session (self-hosted, receive-only)
-   - WebRTC/WHIP = interpreter audio uplink directly to MediaMTX
-   - WHEP = attendee audio delivery via MediaMTX (sub-second latency)
-   - FastAPI = coordination only (booth state, roles, chat, auth, dynamic MediaMTX path management)
-3. **One active publisher per language channel at all times.**
-4. **No local audio loopback.** Interpreter mic audio never routes to `AudioContext.destination`.
-5. **UI consistency:** match Eventyay visual language (CSS variables, card-based layout).
+Read these files in order before any task:
+
+1. **This file** — guardrails, invariants, ownership
+2. [`.github/.agents/context/REPOSITORY_CONTEXT.md`](.github/.agents/context/REPOSITORY_CONTEXT.md) — stack, auth, booth identity, ports, role hierarchy
+3. [`.github/.agents/context/CHANGE_IMPACT_MAP.md`](.github/.agents/context/CHANGE_IMPACT_MAP.md) — which files to touch for your specific task
+4. [`.github/.agents/context/ROUTE_MAP.md`](.github/.agents/context/ROUTE_MAP.md) — all HTTP + WS routes
+5. [`.github/.agents/context/DATABASE_MAP.md`](.github/.agents/context/DATABASE_MAP.md) — table schemas, migrations, CRUD helpers
+6. [`.github/.agents/context/TRANSCRIPTION_MAP.md`](.github/.agents/context/TRANSCRIPTION_MAP.md) — provider architecture, audio pipeline
+7. [`.github/.agents/context/AI_WORKFLOWS.md`](.github/.agents/context/AI_WORKFLOWS.md) — step-by-step task playbooks
+8. [`.github/.agents/context/TECHNICAL_DEBT_REPORT.md`](.github/.agents/context/TECHNICAL_DEBT_REPORT.md) — known issues and gaps
+
+### File-Specific Instructions (apply when editing)
+
+| File pattern | Instruction file |
+|---|---|
+| `**/*.py` | [`.github/instructions/python.instructions.md`](.github/instructions/python.instructions.md) |
+| `**/*.{js,ts,vue}` | [`.github/instructions/js.instructions.md`](.github/instructions/js.instructions.md) |
+| `**/jinja-templates/**/*.jinja` | [`.github/instructions/jinja.instructions.md`](.github/instructions/jinja.instructions.md) |
+
+### Skills (use for specialised tasks)
+
+| Task | Skill |
+|---|---|
+| Navigate codebase | [`.github/.agents/skills/repo-navigation/SKILL.md`](.github/.agents/skills/repo-navigation/SKILL.md) |
+| Architecture review | [`.github/.agents/skills/architecture-review/SKILL.md`](.github/.agents/skills/architecture-review/SKILL.md) |
+| Route analysis | [`.github/.agents/skills/route-analysis/SKILL.md`](.github/.agents/skills/route-analysis/SKILL.md) |
+| Database analysis | [`.github/.agents/skills/database-analysis/SKILL.md`](.github/.agents/skills/database-analysis/SKILL.md) |
+| Transcription changes | [`.github/.agents/skills/transcription-analysis/SKILL.md`](.github/.agents/skills/transcription-analysis/SKILL.md) |
+| Provider integration | [`.github/.agents/skills/provider-analysis/SKILL.md`](.github/.agents/skills/provider-analysis/SKILL.md) |
+| PR review | [`.github/.agents/skills/pr-review/SKILL.md`](.github/.agents/skills/pr-review/SKILL.md) |
+| Security audit | [`.github/.agents/skills/security-audit/SKILL.md`](.github/.agents/skills/security-audit/SKILL.md) |
+| Docker / infra | [`.github/.agents/skills/docker-review/SKILL.md`](.github/.agents/skills/docker-review/SKILL.md) |
+| Deployment | [`.github/.agents/skills/deployment-review/SKILL.md`](.github/.agents/skills/deployment-review/SKILL.md) |
+| Incident response | [`.github/.agents/skills/incident-investigation/SKILL.md`](.github/.agents/skills/incident-investigation/SKILL.md) |
+| Writing tests | [`.github/.agents/skills/test-generation/SKILL.md`](.github/.agents/skills/test-generation/SKILL.md) |
+| Production readiness | [`.github/.agents/skills/production-readiness-review/SKILL.md`](.github/.agents/skills/production-readiness-review/SKILL.md) |
 
 ---
 
-## Role model
+## Product Intent
 
-Supported booth roles:
+VoxBento is a production-grade **browser-first interpretation booth console** for Eventyay live events.
 
-| Role | Publishing rights | Assignment authority |
+- Interpreters monitor the floor session via a self-hosted Jitsi iframe (receive-only).
+- Interpreters publish audio via browser WebRTC → WHIP → MediaMTX.
+- Attendees receive sub-second audio via WHEP from MediaMTX.
+- All coordination (booth state, roles, chat, handoff) flows through FastAPI WebSockets.
+
+**Stack:** FastAPI (ASGI/uvicorn) + MediaMTX (WHIP/WHEP/RTSP) + self-hosted Jitsi Meet (stable-9823).
+**No** Flask, Socket.IO, aiortc.
+
+---
+
+## Module Ownership
+
+| File / Directory | Owns |
+|---|---|
+| `fastapi_app.py` | All routes (pages, admin, REST API, WebSocket), Jinja2 template rendering, lifespan |
+| `portal/booth_state.py` | In-memory `BoothRegistry`, `Booth`, `Participant`, handoff policy, chat history |
+| `portal/auth.py` | JWT create/decode, bcrypt password, `require_admin`, `require_user`, `resolve_booth_role`, `can_perform_role` |
+| `portal/config.py` | `Settings` — pydantic-settings; all env vars / `.env` |
+| `portal/models.py` | SQLAlchemy declarative models: `Event`, `Room`, `DBBooth`, `InviteToken`, `User`, `EventMembership`, `BoothMembership` |
+| `portal/database.py` | Async engine, session factory (`get_session`), all CRUD helpers |
+| `portal/booth_identity.py` | `make_booth_id`, `make_mediamtx_path`, `parse_booth_id`, `validate_event_slug`, `validate_language_code` |
+| `portal/roles.py` | `Permission` enum, `ROLE_PERMISSIONS` dict, `ALL_ROLES` set, `_ROLE_RANK` |
+| `portal/crypto.py` | `encrypt_val` / `decrypt_val` (Fernet, SHA-256 key derivation) |
+| `portal/transcription/` | Transcription subsystem — see `TRANSCRIPTION_MAP.md` |
+| `templates/` | Jinja2 HTML — `base.html`, `interpreter_booth.html`, `listener-event.html`, `admin/` |
+| `static/js/interpreter-booth.js` | Booth UI — WebRTC/WHIP, WebSocket, Jitsi iframe, mic controls, level meter |
+| `static/js/whep-listener.js` | WHEP playback client — RTCPeerConnection, auto-reconnect with exponential back-off |
+| `static/js/admin.js` | Admin panel JS helpers |
+| `mediamtx.yml` | MediaMTX config — WHIP/WHEP paths, RTSP, Control API, `overridePublisher` |
+| `docker-compose.yml` | portal + mediamtx + jitsi-web/prosody/jicofo/jvb |
+| `alembic/versions/` | 8 migrations (001–008); run `uv run alembic upgrade head` |
+
+---
+
+## Core Invariants (Non-Negotiable)
+
+1. **One active publisher per language channel.** MediaMTX enforces `overridePublisher: yes`; Python enforces via `BoothRegistry`.
+2. **Interpreter mic audio never routes to `AudioContext.destination`.** No local loopback.
+3. **No OBS/RTMP/external encoder.** Browser-only ingest via WHIP.
+4. **Jitsi is monitoring only** — receive-only iframe. Not the ingest transport.
+5. **No framework.** Frontend is plain ES modules in `static/js/`. No Vue, React, jQuery, inline `<script>` blocks.
+6. **No Flask, Socket.IO, aiortc.**
+7. **`uv.lock` is the dependency source of truth.** Never modify without running `uv sync --python 3.13 --dev` and confirming tests pass.
+8. **`from __future__ import annotations`** at the top of every Python file.
+9. **`portal.*` imports for all new Python code.**
+10. **Role is never trusted from client data.** WS handler reads `Session.granted_role` (derived from cookies at connect time).
+11. **No open redirects.** All redirects use `safe_redirect()` which validates path starts with `/` and has no netloc.
+
+---
+
+## Role Model
+
+```
+super_admin > event_admin > coordinator > interpreter > listener
+```
+
+| Role | Go Live (WHIP) | Set Active | Chat | Manage Booths/Events |
+|---|---|---|---|---|
+| `super_admin` | ✓ | ✓ | ✓ | ✓ |
+| `event_admin` | ✓ | ✓ | ✓ | booths only |
+| `coordinator` | ✓ | ✓ | ✓ | — |
+| `interpreter` | ✓ (active only) | — | ✓ | — |
+| `listener` | — | — | — | — |
+
+Defined in: `portal/roles.py`
+Enforced in: `fastapi_app.py` (`_handle_join`, WHIP URL endpoints), `portal/booth_state.py` (`set_active_interpreter`)
+
+---
+
+## Auth System
+
+| Purpose | Token type | Cookie name | Key claims |
+|---|---|---|---|
+| Invite-link participant | `create_participant_token()` | `session_token` | `booth_id`, `role`, `event_slug`, `language_code` |
+| Registered user | `create_user_token()` | `user_token` | `sub` (user_id), `email`, `is_admin`, `user=True` |
+| Admin panel | `create_admin_token()` | `admin_token` | `admin=True` |
+
+All tokens: HS256, `settings.effective_jwt_secret`, expiry = `jwt_expiry_seconds`.
+Password hashing: bcrypt (`portal/auth.py` `hash_password` / `verify_password`).
+API key storage: Fernet-encrypted in DB (`portal/crypto.py`).
+
+---
+
+## Booth Identity
+
+```python
+booth_id  = make_booth_id("pycon2026", "en")   # → "pycon2026-en"
+mtx_path  = make_mediamtx_path("pycon2026", "en")  # → "pycon2026/en"
+whip_url  = f"{settings.mediamtx_whip_base}/{mtx_path}/whip"
+whep_url  = f"{settings.mediamtx_whip_base}/{mtx_path}/whep"
+rtsp_url  = f"rtsp://mediamtx:8554/{mtx_path}"   # transcription only
+```
+
+Validation: `portal/booth_identity.py` — slug: `^[a-z0-9]+(?:-[a-z0-9]+)*$`; language: ISO 639-1.
+
+---
+
+## WebSocket Protocol (`/ws/booth/{booth_id}`)
+
+| Client → Server | Handler | Trusted fields |
 |---|---|---|
-| Active Interpreter | Yes — only one per channel | Coordinator or self-assign on join |
-| Backup Interpreter | No — standby only | Coordinator or current active |
-| Coordinator | No — supervisory role | Fixed on join |
-| Listener | No | Fixed on join |
+| `booth:join` | `_handle_join` | role overridden from `session.granted_role` |
+| `booth:leave` | `_handle_leave` | — |
+| `booth:chat` | `_handle_chat` | `body` only |
+| `booth:set-active` | `_handle_set_active` | `target_id` |
+| `booth:update-state` | `_handle_update_state` | `mic_active`, `ingest_connected` |
 
-Enforcement rules:
+Server → Client: `booth:joined`, `booth:state`, `booth:chat`, `booth:error`
 
-- Only the active interpreter can go live (WHIP publish to MediaMTX).
-- Coordinator or active interpreter may call `booth:set-active` via WebSocket.
-- Non-interpreter roles cannot be promoted to active.
-- MediaMTX enforces single-publisher per path (`overridePublisher: yes` for handoff).
+Caption feed: `/ws/captions/{booth_id}` (no auth) — receives `caption` + `booth:state` messages.
 
 ---
 
-## Module ownership
+## Transcription Pipeline (summary)
 
-| File / directory | Owns |
-|---|---|
-| `fastapi_app.py` | FastAPI routes, WebSocket handler, JWT auth, Jinja2 templates |
-| `portal/booth_state.py` | In-memory booth registry, participant roles, handoff policy, chat |
-| `portal/auth.py` | JWT token creation and validation, participant token issuance with role claims |
-| `portal/config.py` | pydantic-settings (env vars / .env) |
-| `templates/` | Server-rendered HTML (base shell, booth page, WHEP listener page) |
-| `static/js/interpreter-booth.js` | Plain browser JS — WebRTC/WHIP, WebSocket, mic controls, Jitsi embed |
-| `static/js/whep-listener.js` | WHEP WebRTC listener client |
-| `static/css/interpreter.css` | Booth UI styles |
-| `mediamtx.yml` | MediaMTX config (WHIP ingest, WHEP playback, Control API, overridePublisher) |
-| `docker-compose.yml` | Portal + MediaMTX + Jitsi services |
+```
+MediaMTX RTSP (8554) → ffmpeg PCM → TranscriptionProvider → CaptionAggregator → WebSocket broadcast
+```
+
+Providers: `local` (faster-whisper, CPU), `openai` (whisper-1/realtime), `deepgram` (nova-2), `nvidia` (Parakeet), `elevenlabs` (scribe_v2).
+Worker lifecycle: `start_transcription_worker` / `stop_transcription_worker` in `portal/transcription/worker.py`.
+Max concurrent workers: 10 (`MAX_TOTAL_WORKERS`).
 
 ---
 
-## Flow summary
+## Services & Ports
 
-### Interpreter flow
-
-```
-Open booth URL → preflight → mic test → active assignment → Go Live
-     │                                                    │
-     ▼                                                    ▼
-Jitsi iframe loads (receive-only)            WHIP POST → MediaMTX
-Monitoring floor audio/video                 MediaMTX → WHEP stream
-```
-
-### Coordinator flow
-
-```
-Open booth URL → monitor participant grid → assign active interpreter
-```
-
-### Attendee flow
-
-```
-Open /listener-webrtc/{booth_id} → WHEP WebRTC connects → sub-second audio
-```
-
-### Invite-token join flow
-
-```
-Receive invite link → GET /join/{token} → validate & redeem → JWT cookie → redirect to booth
-     │                                         │
-     ▼                                         ▼
-Token invalid/expired/used → 4xx error    /interpreter/{event_slug}/{language_code}
-```
+| Service | Port | Protocol |
+|---|---|---|
+| FastAPI portal | 8000 | HTTP / WS |
+| MediaMTX WHIP/WHEP | 8889 | WebRTC HTTP |
+| MediaMTX Control API | 9997 | HTTP (path management) |
+| MediaMTX RTSP | 8554 | RTSP (transcription) |
+| MediaMTX ICE/UDP | 8189 | UDP |
+| Jitsi Web | 8443 / 8080 | HTTPS / HTTP |
+| JVB | 10000 | UDP |
 
 ---
 
-## Media pipeline responsibilities
-
-| Component | Responsibility |
-|---|---|
-| Self-hosted Jitsi Meet | Monitor floor audio/video; booth communication context |
-| Browser `getUserMedia` | Capture interpreter mic (echoCancellation, noiseSuppression, autoGainControl) |
-| `RTCPeerConnection` + WHIP | Send audio track as Opus/RTP directly to MediaMTX |
-| MediaMTX | Terminate WebRTC, serve WHEP for low-latency playback |
-| WHEP (listener-webrtc page) | Play WebRTC stream with sub-second latency and automatic handoff recovery |
-
----
-
-## Realtime transport
-
-- FastAPI native WebSocket with in-memory booth state (`asyncio.Lock`)
-- JWT auth (PyJWT) with configurable expiry
-- All booth coordination messages flow over `/ws/booth/{booth_id}`
-- Audio never touches the Python process — browser talks directly to MediaMTX
-
----
-
-## What agents must not do
-
-- Do not introduce jQuery or inline `<script>` blocks.
-- Do not add a second client-side router or a new state management store.
-- Do not replace `uv` with `pip` or `requirements.txt`.
-- Do not import `pretix.*`, `pretalx.*`, or `venueless.*` namespaces.
-- Do not modify `uv.lock` without re-running `uv sync --python 3.13 --dev` and confirming tests pass.
-- Do not add any code that routes interpreter mic audio back to `AudioContext.destination`.
-- Do not add Vue, React, or any frontend framework. The frontend is plain browser JS.
-- Do not add Flask, Socket.IO, or aiortc — these have been removed.
-
----
-
-## Validation before submitting changes
+## Validation Before Submitting Changes
 
 ```bash
 uv sync --python 3.13 --dev
 uv run pytest tests/ -v
 node --check static/js/interpreter-booth.js
+node --check static/js/whep-listener.js
+uv run alembic upgrade head   # if DB schema changed
 ```
 
 Manual browser check:
-
-1. Open two interpreter tabs (active + backup).
-2. Open one coordinator tab.
-3. Confirm only one tab shows the active publisher state.
-4. Confirm mic test and level meter work on the active tab.
-5. Confirm coordinator can reassign active role.
-6. Open `/listener-webrtc/demo-booth` and verify WHEP playback + handoff recovery.
+1. Two interpreter tabs (active + backup) → only one shows active state.
+2. Coordinator tab → can reassign active.
+3. Mic test + level meter work on active tab.
+4. `/listener/{event_slug}` shows correct WHEP stream.
+5. Transcription caption overlay appears on listener page when enabled.
 
 ---
 
-## Dependency invariants
+## Dependency Invariants
 
-- Python runtime: `3.13.x`
+- Python runtime: `3.13.x` (enforced in `pyproject.toml`)
 - `uv.lock` is the source of truth for all Python dependencies.
 - Docker images: `bluenviron/mediamtx:1`, `jitsi/*:stable-9823`
-- Dependabot monitors Python, GitHub Actions, and Docker image updates.
 
 ---
 
-## Documentation requirements
+## Documentation Requirements
 
-When changing architecture or behavior, update:
+Every PR that adds, removes, or changes a feature **must** update these files in the same commit:
 
-- `README.md` for operational usage and setup
-- `ARCHITECTURE.md` for system design
-- `agents.md` (this file) for guardrails
+- `README.md` — operational usage and setup
+- `ARCHITECTURE.md` — system design
+- `agents.md` (this file) — guardrails, if they changed
+- Relevant context file in `.github/.agents/context/` — if the change affects routes, DB schema, or transcription
 
-**Every PR that adds, removes, or changes a feature must update the relevant documentation files above as part of the same commit.** Do not defer documentation to a follow-up PR.
+Do not defer documentation to a follow-up PR.

@@ -1,0 +1,151 @@
+---
+title: "Security Best Practices for Your Voxbento Instance"
+sidebarTitle: "Security"
+description: "Secure your Voxbento deployment by setting strong secrets, enabling TLS, practicing good token hygiene, and following least-privilege role assignment."
+---
+
+import Tabs from "@theme/Tabs";
+import TabItem from "@theme/TabItem";
+
+
+Securing your Voxbento deployment involves more than setting a strong admin password. You need to protect secrets at rest, encrypt media in transit, limit what each user can do, and keep invite tokens under active management. This page walks you through the key controls available to you as a self-hosted operator.
+
+## Secrets Checklist
+
+Before exposing your Voxbento instance to the internet, verify each of the following. These are the most critical configuration steps and the most common sources of security incidents on self-hosted platforms.
+
+- Set `ADMIN_PASSWORD` to a strong, randomly generated password of 16 or more characters
+- Generate `SECRET_KEY` with `openssl rand -hex 32` — never use the default `change-me` value
+- Generate `API_KEY_ENCRYPTION_KEY` with `openssl rand -hex 32` — required if you store any third-party API credentials
+- Change `JVB_AUTH_PASSWORD` and `JICOFO_AUTH_PASSWORD` from `changeme` to strong random values
+- Never commit `.env` to source control — add it to `.gitignore` and use environment variable injection in your deployment platform instead
+
+:::warning
+The default `SECRET_KEY` value is `change-me`, which is publicly known. Any deployment that ships with this value can have its JWT session tokens forged by anyone who knows it. Generate a new key before accepting any user sessions.
+:::
+
+## TLS and HTTPS
+
+WebRTC requires a secure context (HTTPS or localhost) to access microphone hardware in modern browsers. In production, **every component that browsers connect to must be served over HTTPS** — including the portal and the MediaMTX WHIP/WHEP endpoints.
+
+Use a reverse proxy such as [Caddy](https://caddyserver.com/) or nginx with [Let's Encrypt](https://letsencrypt.org/) to terminate TLS in front of your services:
+
+<Tabs>
+  <TabItem value="caddy" label="Caddy">
+
+```caddy
+    your-domain.com {
+        reverse_proxy localhost:8000
+    }
+    
+    jitsi.your-domain.com {
+        reverse_proxy localhost:8080
+    }
+    ```
+
+    Caddy provisions and renews Let's Encrypt certificates automatically. No additional configuration is needed for HTTPS.
+
+</TabItem>
+  <TabItem value="nginx" label="nginx">
+
+```nginx
+    server {
+        listen 443 ssl;
+        server_name your-domain.com;
+    
+        ssl_certificate     /etc/letsencrypt/live/your-domain.com/fullchain.pem;
+        ssl_certificate_key /etc/letsencrypt/live/your-domain.com/privkey.pem;
+    
+        location / {
+            proxy_pass http://localhost:8000;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_http_version 1.1;
+            proxy_set_header Upgrade $http_upgrade;
+            proxy_set_header Connection "upgrade";
+        }
+    }
+    ```
+
+    Use `certbot --nginx` to obtain and install a Let's Encrypt certificate automatically.
+
+</TabItem>
+</Tabs>
+
+After setting up TLS, update `MEDIAMTX_WHIP_BASE` in your `.env` to use `https://` — the portal injects this URL into interpreter booth pages, so it must be the browser-reachable HTTPS address.
+
+## Token Hygiene
+
+Invite tokens are the primary way interpreters and listeners join a booth without a registered account. Treat them like passwords.
+
+- **Revoke tokens as soon as they are no longer needed.** A token for a past event that remains active is an open door to your audio streams.
+- **Set an expiry when generating tokens.** The **Expires in (hours)** field on the booth detail page limits how long a token can be used. For a one-day event, set expiry to 24 hours or less.
+- **Prefer registered user accounts and event memberships for recurring interpreters.** A named account with an assigned role is easier to audit and revoke than a static token shared over email or chat.
+- **Use descriptive labels.** When generating a token, fill in the **Label** field (e.g. `Alice — Spanish interpreter, Day 1`). This makes it straightforward to identify and revoke specific tokens later.
+
+:::tip
+You can revoke a token at any time from the booth detail page by clicking **Revoke** next to the token entry. Revoked tokens are marked and immediately stop working — there is no delay.
+:::
+
+## Role Scoping
+
+Roles in Voxbento are scoped per event, and each role carries a distinct set of permissions. Assign the least-privileged role that allows a user to do their job — do not grant coordinator or admin access to users who only need to listen or interpret.
+
+| Role | What they can do |
+| --- | --- |
+| `listener` | View booths, listen to audio streams, send chat messages |
+| `interpreter` | All listener permissions, plus go live and publish audio via WHIP |
+| `coordinator` | All listener permissions, plus go live, assign the active interpreter, and manage handoffs |
+| `event_admin` | All coordinator permissions, plus manage booths and generate invite tokens |
+
+:::tip
+Assign `interpreter` to interpreters, `coordinator` only to the booth coordinator managing handoffs, and `event_admin` only to the person responsible for setting up the event. Listeners do not need any elevated role.
+:::
+
+To remove a role, go to the event or booth detail page, find the user in the **Members** section, and click **Remove**.
+
+## API Key Rotation
+
+If you use cloud transcription providers, Voxbento stores their API keys encrypted at rest using `API_KEY_ENCRYPTION_KEY`. You should rotate this key periodically and whenever you suspect a compromise.
+
+Voxbento supports zero-downtime rotation by accepting a comma-separated list of keys in `API_KEY_ENCRYPTION_KEY`:
+
+### Generate a new encryption key
+
+```bash
+    openssl rand -hex 32
+    ```
+  ### Prepend the new key to your existing key
+
+Set the variable to `NEW_KEY,OLD_KEY` in your `.env`. The first key is used for all new encryptions; all keys are tried for decryption. Existing data continues to work.
+
+    ```bash
+    API_KEY_ENCRYPTION_KEY=new-key-here,old-key-here
+    ```
+  ### Redeploy and re-encrypt
+
+Restart your services with the updated variable. Then trigger a re-encryption of all stored API keys so they are migrated to the new key.
+  ### Remove the old key
+
+Once all stored keys have been re-encrypted, update `API_KEY_ENCRYPTION_KEY` to contain only the new key and redeploy.
+
+    ```bash
+    API_KEY_ENCRYPTION_KEY=new-key-here
+    ```
+
+## WebRTC Security
+
+By default, MediaMTX in local development does not enforce DTLS-SRTP media encryption. In production, you must enable it explicitly in `mediamtx.yml`:
+
+```yaml
+# mediamtx.yml — production settings
+webrtcEncryption: yes
+webrtcAllowOrigins:
+  - https://your-domain.com
+```
+
+Setting `webrtcEncryption: yes` enables DTLS-SRTP, which encrypts the audio stream between the browser and MediaMTX. Setting `webrtcAllowOrigins` restricts which origins (domains) may initiate WHIP/WHEP connections, preventing unauthorized sites from embedding or accessing your media endpoints.
+
+:::warning
+WebRTC audio streams are **not encrypted by default** in local development. Always enable DTLS-SRTP (`webrtcEncryption: yes`) in production to prevent audio from being intercepted on the network.
+:::

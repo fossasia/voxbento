@@ -1,3 +1,13 @@
+# Node.js
+/node_modules
+/build
+.docusaurus
+.cache-loader
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Python
 .venv/
 __pycache__/
 *.pyc
@@ -5,13 +15,18 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
-.DS_Store
 .env
 instance/
 hls-output/
 *.egg-info/
 *.db
 
-# MediaMTX binary (download locally, do not commit)
+# OS
+.DS_Store
+
+# MediaMTX binary
 mediamtx
 mediamtx_v*
+
+# Documentation
+export.zip

@@ -1,0 +1,113 @@
+---
+title: "Authenticating with the Voxbento API Using Bearer Tokens"
+sidebarTitle: "Authentication"
+description: "Obtain a short-lived bearer JWT from the Voxbento token endpoint and attach it to every REST API request using the Authorization header."
+---
+
+import Tabs from "@theme/Tabs";
+import TabItem from "@theme/TabItem";
+
+
+The Voxbento API uses bearer token authentication. You call the `voxbento.com` token endpoint once with your booth access token, receive a signed JWT in return, and then include that JWT as an `Authorization: Bearer {token}` header on every subsequent request. Tokens expire after 24 hours by default, at which point you request a fresh one.
+
+## Obtaining a Token
+
+Send a `POST` request to the Voxbento token endpoint with a JSON body containing the `token` field set to your booth access token. The `BOOTH_ACCESS_TOKEN` value is provided by the Voxbento platform.
+
+**Endpoint**
+
+```
+POST /api/auth/token
+```
+
+**Request body**
+
+```json
+{
+  "token": "your-booth-access-token"
+}
+```
+
+**Response**
+
+```json
+{
+  "access_token": "eyJ...",
+  "token_type": "bearer"
+}
+```
+
+**Example request**
+
+<Tabs>
+<TabItem value="curl" label="cURL">
+
+```bash
+curl -X POST https://voxbento.com/api/auth/token \
+  -H 'Content-Type: application/json' \
+  -d '{"token": "your-booth-access-token"}'
+```
+
+</TabItem>
+<TabItem value="python" label="Python">
+
+```python
+import httpx
+
+response = httpx.post(
+    "https://voxbento.com/api/auth/token",
+    json={"token": "your-booth-access-token"},
+)
+token = response.json()["access_token"]
+```
+
+</TabItem>
+<TabItem value="javascript" label="JavaScript">
+
+```javascript
+const response = await fetch("https://voxbento.com/api/auth/token", {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ token: "your-booth-access-token" }),
+});
+const { access_token } = await response.json();
+```
+
+</TabItem>
+</Tabs>
+
+:::info
+The `BOOTH_ACCESS_TOKEN` is provided by the Voxbento platform. Ensure you have the correct credentials before attempting to authenticate.
+:::
+
+## Using the Token
+
+Include the token you received as a bearer credential in the `Authorization` header of every subsequent API request.
+
+```
+Authorization: Bearer eyJ...
+```
+
+**Example — listing booths for an event**
+
+```bash
+curl https://voxbento.com/api/events/pycon2026/booths \
+  -H 'Authorization: Bearer eyJ...'
+```
+
+Store the token in a secure location such as an environment variable or a secrets manager. Do not embed it in client-side code or version-control it.
+
+## Token Lifetime
+
+:::tip
+Request a new token proactively before your current one expires to avoid a gap in service. Checking the response status on each request and refreshing on a `401` is a safe fallback strategy.
+:::
+
+Tokens expire after 86400 seconds (24 hours) by default. When a token expires, the API returns a `401 Unauthorized` response — simply call `POST /api/auth/token` again to obtain a fresh token and retry the original request.
+
+## Error Responses
+
+| Status | Meaning |
+|---|---|
+| `401 Unauthorized` | The `Authorization` header is missing, the token is malformed, or the token has expired. Request a new token and retry. |
+| `403 Forbidden` | The token is structurally valid but the request targets a resource you are not permitted to access. |

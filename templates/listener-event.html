@@ -25,17 +25,59 @@
   .status-badge.recovering  { background: #cce5ff; color: #004085; }
 
   /* Captions Box */
-  .captions-box {
-    margin: 1rem auto;
-    width: 100%;
+  .captions-container {
+    margin-top: 2rem;
     max-width: 640px;
-    height: 150px;
+    margin-left: auto;
+    margin-right: auto;
+    display: flex;
+    flex-direction: column;
+    transition: all 0.3s ease;
+  }
+  .captions-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 0.5rem;
+    padding: 0 0.5rem;
+  }
+  .captions-header h3 {
+    margin: 0;
+    font-size: 1.1rem;
+    color: #444;
+  }
+  .toggle-btn {
+    background: none;
+    border: none;
+    font-size: 1.2rem;
+    cursor: pointer;
+    color: #666;
+  }
+  .toggle-btn:hover {
+    color: #000;
+  }
+  .captions-box {
+    margin: 0 auto;
+    width: 100%;
+    height: 40vh;
+    min-height: 200px;
+    max-height: 500px;
     background: #222;
     color: #fff;
     border-radius: 8px;
     padding: 1rem;
     overflow-y: auto;
     text-align: left;
+    transition: all 0.3s ease;
+  }
+  .captions-container.minimized .captions-box {
+    height: 0;
+    min-height: 0;
+    padding-top: 0;
+    padding-bottom: 0;
+    overflow: hidden;
+    opacity: 0;
+  }
     font-size: 1.1rem;
     line-height: 1.5;
     box-shadow: inset 0 2px 4px rgba(0,0,0,0.5);
@@ -47,6 +89,17 @@
     margin: 0;
     color: #eee;
     animation: fadeIn 0.3s ease-in-out;
+  }
+  .caption-history {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    color: #ccc;
+  }
+  .caption-current {
+    color: #fff;
+    font-weight: 500;
+    min-height: 1.5em;
   }
   @keyframes fadeIn {
     from { opacity: 0; transform: translateY(5px); }
@@ -100,24 +153,67 @@
   <div id="status"><span class="status-badge waiting">Waiting for selection...</span></div>
   <audio id="audio-player" controls autoplay></audio>
 
-  <div class="captions-container" style="margin-top: 2rem;">
-    <h3 style="text-align: left; margin-bottom: 0.5rem; font-size: 1.1rem; color: #444; max-width: 640px; margin-left: auto; margin-right: auto;">Live Captions</h3>
+  <div class="captions-container" id="captions-container">
+    <div class="captions-header" style="justify-content: space-between; align-items: flex-end;">
+      <div class="selectors-container" style="margin-bottom: 0; gap: 1rem;">
+        <div class="selector-group">
+          <label for="caption-mode-select">Captions Mode</label>
+          <select id="caption-mode-select" class="input" disabled>
+            <option value="original">Original</option>
+            <option value="translated">Translated</option>
+            <option value="side-by-side">Side-by-Side</option>
+          </select>
+        </div>
+        <div class="selector-group" id="translation-lang-group" style="display: none;">
+          <label for="translation-lang-select">Target Language</label>
+          <select id="translation-lang-select" class="input">
+            <!-- Populated dynamically via JS based on room settings -->
+          </select>
+        </div>
+      </div>
+      <button id="toggle-captions-btn" class="toggle-btn" title="Minimize/Maximize Captions" style="margin-bottom: 0.5rem;">▼</button>
+    </div>
     <div id="live-captions" class="captions-box">
-      <!-- Captions will appear here -->
-      <p style="color: #888; font-style: italic; font-size: 0.95rem;">Waiting for interpreter...</p>
+      <div id="captions-content-area" class="captions-content" style="display: flex; gap: 20px;">
+        <div id="captions-col-original" style="flex: 1; display: flex; flex-direction: column;">
+          <div class="caption-history" id="caption-history"></div>
+          <div class="caption-current" id="caption-current"></div>
+        </div>
+        <div id="captions-col-translated" style="flex: 1; display: none; flex-direction: column; border-left: 1px solid #444; padding-left: 20px;">
+          <div class="caption-history" id="translation-history"></div>
+          <div class="caption-current" id="translation-current"></div>
+        </div>
+      </div>
+      <p id="waiting-text" style="color: #888; font-style: italic; font-size: 0.95rem;">Waiting for interpreter...</p>
     </div>
   </div>
 
-
 </div>
+
+<script>
+  document.getElementById('toggle-captions-btn').addEventListener('click', function() {
+    var container = document.getElementById('captions-container');
+    container.classList.toggle('minimized');
+    if (container.classList.contains('minimized')) {
+      this.textContent = '▲';
+    } else {
+      this.textContent = '▼';
+    }
+  });
+</script>
 
 <script src="{{ url_for('static', path='js/whep-listener.js') }}?v={{ js_version }}"></script>
 <script>
 (function () {
   var boothsData = {{ booths_json | safe }};
   
+  var roomsData = {{ rooms_json | safe }};
+  
   var roomSelect = document.getElementById('room-select');
   var languageSelect = document.getElementById('language-select');
+  var captionModeSelect = document.getElementById('caption-mode-select');
+  var translationLangSelect = document.getElementById('translation-lang-select');
+  
   var audioEl = document.getElementById('audio-player');
   var statusEl = document.getElementById('status');
   var captionsBox = document.getElementById('live-captions');
@@ -147,9 +243,41 @@
       captionsWs.close();
       captionsWs = null;
     }
-    captionsBox.innerHTML = '';
+    
+    document.getElementById('caption-history').innerHTML = '';
+    document.getElementById('caption-current').innerHTML = '';
+    document.getElementById('translation-history').innerHTML = '';
+    document.getElementById('translation-current').innerHTML = '';
+    
     setStatus('Waiting for selection...', 'waiting');
   }
+
+  function updateCaptionLayout() {
+    var mode = captionModeSelect.value;
+    var colOrig = document.getElementById('captions-col-original');
+    var colTrans = document.getElementById('captions-col-translated');
+    var transGroup = document.getElementById('translation-lang-group');
+    
+    if (mode === 'original') {
+      colOrig.style.display = 'flex';
+      colTrans.style.display = 'none';
+      transGroup.style.display = 'none';
+    } else if (mode === 'translated') {
+      colOrig.style.display = 'none';
+      colTrans.style.display = 'flex';
+      colTrans.style.borderLeft = 'none';
+      colTrans.style.paddingLeft = '0';
+      transGroup.style.display = 'flex';
+    } else if (mode === 'side-by-side') {
+      colOrig.style.display = 'flex';
+      colTrans.style.display = 'flex';
+      colTrans.style.borderLeft = '1px solid #444';
+      colTrans.style.paddingLeft = '20px';
+      transGroup.style.display = 'flex';
+    }
+  }
+
+  captionModeSelect.addEventListener('change', updateCaptionLayout);
 
   roomSelect.addEventListener('change', function() {
     var roomId = parseInt(this.value, 10);
@@ -159,6 +287,9 @@
 
     if (!roomId) {
       languageSelect.disabled = true;
+      captionModeSelect.disabled = true;
+      captionModeSelect.value = 'original';
+      updateCaptionLayout();
       return;
     }
     
@@ -169,9 +300,21 @@
       var opt = document.createElement('option');
       opt.value = b.whep_url;
       opt.textContent = b.language_name;
-      opt.dataset.boothId = '{{ event.slug }}-' + b.language_code;
+      // b.language_code here is "floor" for floor audio
+      if (b.language_code === 'floor') {
+        opt.dataset.boothId = '{{ event.slug }}-floor';
+      } else {
+        opt.dataset.boothId = '{{ event.slug }}-' + b.language_code;
+      }
+      opt.dataset.boothObjId = b.id;
       languageSelect.appendChild(opt);
     });
+    
+    // Reset translation dropdown until language is selected
+    captionModeSelect.disabled = true;
+    captionModeSelect.value = 'original';
+    translationLangSelect.innerHTML = '';
+    updateCaptionLayout();
   });
 
   languageSelect.addEventListener('change', function() {
@@ -179,6 +322,31 @@
     var whepUrl = this.value;
     var selectedOpt = this.options[this.selectedIndex];
     var boothId = selectedOpt ? selectedOpt.dataset.boothId : null;
+    var boothObjId = selectedOpt ? selectedOpt.dataset.boothObjId : null;
+    
+    // Setup translation options based on the selected audio source
+    if (boothObjId) {
+      var bData = boothsData.find(b => b.id.toString() === boothObjId.toString());
+      if (bData && bData.translation_enabled && bData.translation_languages && bData.translation_languages.length > 0) {
+        captionModeSelect.disabled = false;
+        translationLangSelect.innerHTML = '';
+        bData.translation_languages.forEach(lang => {
+          var opt = document.createElement('option');
+          opt.value = lang.code;
+          opt.textContent = lang.name;
+          translationLangSelect.appendChild(opt);
+        });
+      } else {
+        captionModeSelect.disabled = true;
+        captionModeSelect.value = 'original';
+        translationLangSelect.innerHTML = '';
+      }
+    } else {
+      captionModeSelect.disabled = true;
+      captionModeSelect.value = 'original';
+      translationLangSelect.innerHTML = '';
+    }
+    updateCaptionLayout();
     
     if (whepUrl) {
       setStatus('Connecting...', 'recovering');
@@ -194,14 +362,36 @@
         captionsWs.onmessage = function(event) {
           try {
             var data = JSON.parse(event.data);
-            if (data.type === 'transcription') {
-              if (data.text) {
-                var p = document.createElement('p');
+            var waitingText = document.getElementById('waiting-text');
+            if (waitingText) waitingText.remove();
+
+            if (data.type === 'caption') {
+              var historyBox = document.getElementById('caption-history');
+              var currentBox = document.getElementById('caption-current');
+              
+              if (data.status === 'partial') {
+                currentBox.textContent = data.text || '';
+              } else if (data.status === 'final') {
+                if (data.text) {
+                  var p = document.createElement('div');
+                  p.textContent = data.text;
+                  historyBox.appendChild(p);
+                  while (historyBox.children.length > 50) historyBox.removeChild(historyBox.firstChild);
+                }
+                currentBox.textContent = '';
+              } else if (data.status === 'clear') {
+                currentBox.textContent = '';
+              }
+              captionsBox.scrollTop = captionsBox.scrollHeight;
+              
+            } else if (data.type === 'translation') {
+              if (data.language_code === translationLangSelect.value) {
+                var tHistoryBox = document.getElementById('translation-history');
+                var p = document.createElement('div');
                 p.textContent = data.text;
-                captionsBox.appendChild(p);
+                tHistoryBox.appendChild(p);
+                while (tHistoryBox.children.length > 50) tHistoryBox.removeChild(tHistoryBox.firstChild);
                 captionsBox.scrollTop = captionsBox.scrollHeight;
-              } else {
-                captionsBox.innerHTML = '';
               }
             }
           } catch (e) {

@@ -18,16 +18,21 @@ class Settings(BaseSettings):
     port: int = 8000
     debug: bool = Field(default=True)
     secret_key: str = 'change-me'
+    api_key_encryption_key: str | None = Field(default=None)
     booth_access_token: str = ''
     default_jitsi_room: str = 'eventyay-stage-room'
     jitsi_domain: str = 'jitsi.voxbento.com'
     # Full Jitsi base URL including scheme. When empty, defaults to
     # http://{jitsi_domain}. Set to https://... for production HTTPS.
     jitsi_base_url: str = ''
+    jitsi_internal_base: str = ''
     mediamtx_whip_base: str = 'http://localhost:8889'
     # MediaMTX Control API (port 9997). Used to dynamically create named
     # paths with alwaysAvailable so WHEP readers survive publisher handoffs.
     mediamtx_api_base: str = 'http://localhost:9997'
+    mediamtx_rtsp_base: str = 'rtsp://mediamtx:8554'
+    floor_bot_base: str = 'http://floor-bot:8080'
+
 
     @property
     def effective_mediamtx_internal_base(self) -> str:
@@ -36,6 +41,10 @@ class Settings(BaseSettings):
     @property
     def effective_jitsi_base_url(self) -> str:
         return self.jitsi_base_url or f'http://{self.jitsi_domain}'
+        
+    @property
+    def effective_jitsi_internal_base(self) -> str:
+        return self.jitsi_internal_base or self.effective_jitsi_base_url
 
     @property
     def effective_jitsi_domain(self) -> str:
@@ -57,6 +66,9 @@ class Settings(BaseSettings):
     @property
     def effective_jwt_secret(self) -> str:
         return self.jwt_secret or self.secret_key
+
+    # Transcription Settings
+    nvidia_function_id: str = ''
 
 
 settings = Settings()

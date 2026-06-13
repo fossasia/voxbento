@@ -64,6 +64,7 @@ class Booth:
     room_id: int | None = None
     active_interpreter_id: str | None = None
     handoff_state: str = 'idle'
+    handoff_initiator_id: str | None = None
     participants: dict[str, Participant] = field(default_factory=dict)
     chat_messages: list[ChatMessage] = field(default_factory=list)
     ingest_status: str = 'disconnected'
@@ -87,6 +88,7 @@ class Booth:
             'channel_id': self.channel_id,
             'active_interpreter_id': self.active_interpreter_id,
             'handoff_state': self.handoff_state,
+            'handoff_initiator_id': self.handoff_initiator_id,
             'ingest_status': self.ingest_status,
             'participants': [asdict(p) for p in self.participants.values()],
             'chat_messages': [asdict(m) for m in self.chat_messages[-100:]],
@@ -264,6 +266,117 @@ class BoothRegistry:
             booth.ingest_status = (
                 'connected' if any(p.ingest_connected for p in booth.participants.values()) else 'disconnected'
             )
+            return booth.as_public_dict()
+
+    async def initiate_handoff(
+        self,
+        booth_id: str,
+        requester_id: str,
+        language: str,
+        channel_id: str,
+    ) -> dict:
+        """Begin a mic handoff negotiation.
+
+        If the requester is the active interpreter the state becomes
+        ``'offered'`` (Active offers the mic).  If the requester is a
+        passive interpreter the state becomes ``'requested'`` (Passive
+        asks for the mic).  A handoff can only be initiated from the
+        ``'idle'`` state.
+        """
+        async with self._lock:
+            booth = self._get_or_create_booth(booth_id, language, channel_id)
+            requester = booth.participants.get(requester_id)
+            if requester is None:
+                raise ValueError('Requester is not in this booth.')
+            if requester.role != 'interpreter':
+                raise PermissionError('Only interpreters can initiate handoffs.')
+            if booth.handoff_state != 'idle':
+                raise ValueError('A handoff is already in progress.')
+            # Need at least one other interpreter to hand off to
+            other_interpreters = [
+                p for p in booth.participants.values()
+                if p.role == 'interpreter' and p.participant_id != requester_id
+            ]
+            if not other_interpreters:
+                raise ValueError('No other interpreter in the booth to hand off to.')
+            is_active = booth.active_interpreter_id == requester_id
+            booth.handoff_state = 'offered' if is_active else 'requested'
+            booth.handoff_initiator_id = requester_id
+            return booth.as_public_dict()
+
+    async def accept_handoff(
+        self,
+        booth_id: str,
+        acceptor_id: str,
+        language: str,
+        channel_id: str,
+    ) -> dict:
+        """Complete a pending mic handoff.
+
+        The acceptor must be the *other* side of the negotiation:
+        - If ``handoff_state == 'offered'`` the acceptor must be a passive
+          interpreter (they click TAKE OVER to accept).
+        - If ``handoff_state == 'requested'`` the acceptor must be the
+          active interpreter (they click PASS MIC to yield).
+
+        On success the active interpreter flips and the handoff resets to
+        ``'idle'``.
+        """
+        async with self._lock:
+            booth = self._get_or_create_booth(booth_id, language, channel_id)
+            acceptor = booth.participants.get(acceptor_id)
+            if acceptor is None:
+                raise ValueError('Acceptor is not in this booth.')
+            if booth.handoff_state == 'idle':
+                raise ValueError('No handoff is in progress.')
+            initiator_id = booth.handoff_initiator_id
+            if acceptor_id == initiator_id:
+                raise ValueError('The initiator cannot accept their own handoff.')
+
+            if booth.handoff_state == 'offered':
+                # Active offered → passive accepts → passive becomes active
+                if booth.active_interpreter_id == acceptor_id:
+                    raise ValueError('Active interpreter cannot accept an offer they did not initiate.')
+                new_active = acceptor_id
+            elif booth.handoff_state == 'requested':
+                # Passive requested → active accepts (yields) → requester becomes active
+                if booth.active_interpreter_id != acceptor_id:
+                    raise ValueError('Only the active interpreter can yield the mic.')
+                new_active = initiator_id
+            else:
+                raise ValueError(f'Unexpected handoff state: {booth.handoff_state}')
+
+            # Flip active interpreter
+            booth.active_interpreter_id = new_active
+            booth.handoff_state = 'idle'
+            booth.handoff_initiator_id = None
+
+            # Reset ingest/mic flags: only the new active keeps them
+            for p in booth.participants.values():
+                p.ingest_connected = p.participant_id == new_active and p.ingest_connected
+                p.mic_active = p.participant_id == new_active and p.mic_active
+                p.updated_at = utc_now_iso()
+            booth.ingest_status = (
+                'connected' if any(p.ingest_connected for p in booth.participants.values()) else 'disconnected'
+            )
+            return booth.as_public_dict()
+
+    async def cancel_handoff(
+        self,
+        booth_id: str,
+        requester_id: str,
+        language: str,
+        channel_id: str,
+    ) -> dict:
+        """Cancel an in-progress handoff (only the initiator can cancel)."""
+        async with self._lock:
+            booth = self._get_or_create_booth(booth_id, language, channel_id)
+            if booth.handoff_state == 'idle':
+                return booth.as_public_dict()
+            if booth.handoff_initiator_id != requester_id:
+                raise PermissionError('Only the handoff initiator can cancel.')
+            booth.handoff_state = 'idle'
+            booth.handoff_initiator_id = None
             return booth.as_public_dict()
 
     async def add_chat_message(

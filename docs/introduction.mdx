@@ -1,0 +1,80 @@
+---
+title: "Voxbento: Real-Time Browser Interpretation Platform"
+sidebarTitle: "Introduction"
+description: "Voxbento is a browser-first real-time interpretation platform — zero installs, sub-second WebRTC audio, multi-language booths, and live captions."
+---
+
+Voxbento brings professional simultaneous interpretation to any live event directly inside the browser. Whether you are running a global conference, a hybrid town hall, or a multi-track summit, Voxbento lets interpreters monitor floor audio, speak into their microphone, and reach listeners in sub-second time — all without asking anyone to install software or browser extensions.
+
+## Who Uses Voxbento
+
+Voxbento serves four distinct groups at every event:
+
+### Event Organizers
+
+Create events, rooms, and language booths from the admin panel. Assign roles, generate invite tokens, and monitor live booth status from a single dashboard.
+  
+
+  ### Interpreters
+
+    Open a booth link in any modern browser, monitor floor audio through an embedded Jitsi window, and go live with one click — no headset drivers, no plugin installs.
+  
+
+  ### Coordinators
+
+    Manage interpreter handoffs in real time. Switch the active interpreter for a booth without disconnecting a single listener.
+  
+
+  ### Listeners / Attendees
+
+    Visit the listener page for an event, choose a language, and hear the interpreted audio stream instantly via WebRTC — or fall back to HLS on older devices.
+  
+
+## Key Capabilities
+
+Voxbento is built around a small set of guarantees that matter most in live interpretation:
+
+- **Sub-second latency** — WebRTC delivery via WHEP keeps the gap between the interpreter's voice and the listener's earphones under one second in normal network conditions.
+- **Seamless interpreter handoff** — coordinators switch the active interpreter without breaking listener connections. MediaMTX routes the incoming publisher's audio to all existing WHEP sessions within one to two seconds.
+- **Live captions** — when transcription is enabled, the active interpreter's audio is transcribed in real time (via Whisper, OpenAI, Deepgram, ElevenLabs, or NVIDIA Riva) and broadcast to listeners over a WebSocket connection.
+- **Multi-language booths** — each booth maps to an ISO 639-1 language code (for example `en`, `fr`, `es`). Multiple booths can run in parallel inside the same event, each serving its own independent audio stream.
+- **Role-based access** — every participant carries a JWT that encodes their role (`interpreter`, `coordinator`, `listener`, `event_admin`). The portal enforces permissions at the API, WebSocket, and media-server layers.
+
+- **API-First Design** — every coordination feature in Voxbento is exposed via the official **voxbento.com** REST and WebSocket APIs, enabling deep integration with third-party event platforms.
+
+## How Audio Gets from Interpreter to Listener
+
+The pipeline that carries interpretation audio never touches the Python server. Here is the high-level path:
+
+1. **Floor audio** — the speaker or presenter is in a Jitsi Meet session. Interpreters monitor that session through an embedded Jitsi iframe inside their booth page.
+2. **Interpreter mic** — when an interpreter clicks Go Live, the browser captures microphone audio via WebRTC and publishes it to MediaMTX using the WHIP protocol (WebRTC HTTP Ingest Protocol).
+3. **MediaMTX** — the media server terminates the WebRTC connection, remuxes the audio, and makes it available to listeners.
+4. **Listener delivery** — attendees connect to MediaMTX's WHEP endpoint (WebRTC HTTP Egress Protocol) for sub-second playback, or to HLS segments (roughly three seconds of latency) as a fallback.
+
+The Voxbento coordination portal handles booth state, participant rosters, handoff signals, invite tokens, and captions — but is never in the audio path itself.
+
+:::info
+Python is never in the audio path. MediaMTX handles all WebRTC termination and playback directly between browsers.
+:::
+
+## Explore Voxbento
+
+### [Quickstart](/quickstart)
+
+Set up your first event and get an interpreter live in under ten minutes.
+  
+
+  ### [How It Works](/how-it-works)
+
+    Understand the full WebRTC pipeline from interpreter mic to listener playback.
+  
+
+  ### [Events & Rooms](/admin/events-and-rooms)
+
+    Learn how to create and manage events, rooms, and language booths.
+  
+
+  ### [API Overview](/api/overview)
+
+    Explore the REST and WebSocket APIs that power Voxbento's coordination layer.
+  

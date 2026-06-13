@@ -1,0 +1,103 @@
+---
+title: "Set Up and Configure Language Booths — Voxbento Admin"
+sidebarTitle: "Booths"
+description: "Create and configure interpretation booths, assign ISO 639-1 language codes, and understand WHIP publish and WHEP playback stream URLs in Voxbento."
+---
+
+import Tabs from "@theme/Tabs";
+import TabItem from "@theme/TabItem";
+
+A booth is the core unit of interpretation in Voxbento — it represents a single language channel within a room. Every booth has its own WebRTC publish (WHIP) and playback (WHEP) endpoint, so interpreters can go live in their language while listeners tune in independently. This guide explains how to create booths, what the booth detail page exposes, and how the stream URLs work.
+
+## What Is a Booth?
+
+Each booth maps one language to one room inside an event. Voxbento identifies booths by combining the event slug and the language code:
+
+```text
+booth_id = {event_slug}-{language_code}
+```
+
+For example, the English booth for `pycon2026` has the ID `pycon2026-en`. This ID is used internally and in API routes. The language code must be a two-letter [ISO 639-1](https://en.wikipedia.org/wiki/List_of_ISO_639-1_codes) code in lowercase — for example `en`, `fr`, `es`, `de`, `zh`.
+
+## Creating a Booth
+
+### 1. Open the room
+In the admin panel, navigate to your event, then open the room where you want to add a booth. Go to **Booths** on the room detail page, or navigate to `/admin/events/{event_id}/rooms/{room_id}/booths/`.
+
+### 2. Enter the language details
+Fill in the booth creation form:
+
+- **Language code** — two-letter ISO 639-1 code, e.g. `en` for English, `fr` for French, `es` for Spanish, `de` for German, `zh` for Chinese.
+- **Language name** — the display label shown to listeners, e.g. `English`, `Français`, `Español`.
+
+### 3. Submit
+Click **Add Booth**. Voxbento creates the booth record and generates the WHIP/WHEP URLs automatically.
+
+### 4. Open the booth detail page
+Click the newly created booth to open its detail page, where you can copy stream URLs, manage members, generate invite tokens, and configure transcription.
+
+## Booth Detail Page
+
+The booth detail page is your primary control panel for a single language channel. It shows the following information:
+
+| Field | Description |
+| --- | --- |
+| **Interpreter Page URL** | The URL you share with interpreters — e.g. `/interpreter/pycon2026/en`. Opening it launches the interpreter booth console. |
+| **WHEP Listener URL** | The WebRTC playback endpoint for attendees. Copy this to embed in a listener page or share directly. |
+| **MediaMTX Stream Path** | The stream path on your MediaMTX server — e.g. `pycon2026/en`. Used internally for live captions and monitoring. |
+| **Live Status** | Whether an interpreter is currently broadcasting on this booth. |
+| **Active Interpreter** | The display name of the interpreter currently marked as active. |
+| **Participant Roster** | All users currently connected to the booth WebSocket, with their roles. |
+| **Assigned Members** | Registered users who have been given a role on this specific booth. |
+| **Invite Tokens** | Tokens you have generated for this booth, with options to copy or revoke them. |
+
+## WHIP and WHEP URLs
+
+Voxbento uses two WebRTC signalling endpoints for each booth:
+
+:::tip WHIP — Publish Endpoint
+Used by the interpreter's browser to push audio to MediaMTX. The interpreter page handles this automatically — you do not need to share the WHIP URL with interpreters.
+:::
+
+:::tip WHEP — Playback Endpoint
+Used by listeners (and third-party players) to pull the audio stream. Share this URL or embed it in a listener page.
+:::
+
+The URL format for both endpoints follows the booth identity scheme:
+
+<Tabs>
+  <TabItem value="whip" label="WHIP (publish)">
+
+```text
+{MEDIAMTX_WHIP_BASE}/{event_slug}/{language_code}/whip
+
+# Example
+https://voxbento.com/pycon2026/en/whip
+```
+
+  </TabItem>
+  <TabItem value="whep" label="WHEP (playback)">
+
+```text
+{MEDIAMTX_WHIP_BASE}/{event_slug}/{language_code}/whep
+
+# Example
+https://voxbento.com/pycon2026/en/whep
+```
+
+  </TabItem>
+</Tabs>
+
+`MEDIAMTX_WHIP_BASE` is the browser-facing base URL for your MediaMTX server. In development it defaults to `http://localhost:8889`. In production, set it to your public MediaMTX URL — for example `https://voxbento.com`.
+
+:::note
+Booth WHEP URLs can be embedded in third-party player pages. The stream stays available even when no interpreter is active — listeners simply hear silence until an interpreter goes live.
+:::
+
+## Deleting a Booth
+
+:::warning
+Deleting a booth is permanent and irreversible — all associated memberships, invite tokens, and transcription settings are removed along with it.
+:::
+
+To delete a booth, open the booth detail page and click **Delete Booth**. Confirm the action in the prompt. Active streams on MediaMTX are not affected by a booth deletion — if an interpreter is live when you delete the booth, the media path remains on MediaMTX until the interpreter disconnects.

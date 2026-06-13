@@ -19,7 +19,15 @@ dependencies = [
     "bcrypt>=5.0.0",
     "faster-whisper>=1.2.1",
     "numpy>=2.4.6",
+    "websockets>=16.0",
+    "cryptography>=48.0.0",
+    "tenacity>=9.1.4",
+    "langcodes>=3.5.1",
+    "pycountry>=26.2.16",
 ]
+
+[project.optional-dependencies]
+nvidia = ["nvidia-riva-client>=2.21.1"]
 
 [dependency-groups]
 dev = [

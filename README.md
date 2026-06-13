@@ -2,6 +2,8 @@
 
 Voxbento is a real-time interpretation platform for live events. It provides a browser-first, zero-install experience for simultaneous interpreters, allowing them to monitor the main floor video via Jitsi and broadcast translated audio to attendees with low latency.
 
+**Official Documentation:** [docs.voxbento.com](https://docs.voxbento.com)
+
 Interpreters stream live audio via WebRTC/WHIP → MediaMTX → WHEP (WebRTC playback).
 Booth coordination (who is active, relay handoff, chat) runs over WebSocket.
 
@@ -22,6 +24,13 @@ Interpreter / Coordinator browser
   │  WebSocket /ws/booth/{booth_id}
   ▼
 FastAPI portal :8000 (coordination, state, JWT, REST)
+  │
+  ├──► Background Transcription (ffmpeg → Deepgram/OpenAI/Local)
+  └──► Background Translation (Groq/Anthropic/Gemini)
+
+Floor Audio Bot (floor-bot)
+  │  Headless Chromium → Joins Jitsi Meeting
+  └──► ffmpeg → RTSP → MediaMTX → Transcription/Translation
 ```
 
 
@@ -62,4 +71,19 @@ docker compose up --build
 
 Open http://localhost:8000 — all services are running.
 
-For detailed API documentation, environment variables, port mappings, and native development setup, please see [CONTRIBUTING.md](CONTRIBUTING.md).
+For detailed API documentation, environment variables, and configuration, visit [docs.voxbento.com](https://docs.voxbento.com). Native development setup details can also be found in [CONTRIBUTING.md](CONTRIBUTING.md).
+
+---
+
+## Upgrade Notes
+
+### API Key Encryption & Rotation
+A mandatory environment variable `API_KEY_ENCRYPTION_KEY` securely encrypts third-party API keys in the database. 
+- You must generate a secure key (e.g., using `openssl rand -hex 32`) and add it to your `.env` file before starting the application. 
+- **Rotation**: To rotate keys without breaking existing database entries, provide a comma-separated list of keys. Voxbento will encrypt new tokens using the *first* key, but will use *all* keys to attempt decryption.
+
+### Optional NVIDIA Transcription
+NVIDIA Riva support is now an optional dependency to reduce the default installation footprint. If you intend to run NVIDIA transcription models, you must explicitly install the optional package:
+```bash
+uv pip install -e .[nvidia]
+```

@@ -1,0 +1,90 @@
+---
+title: "Join and Listen to Live Interpretation at an Event"
+sidebarTitle: "Attending an Event"
+description: "Learn how to join a Voxbento event, select your language booth, and hear live interpretation audio in your browser — no account or app required."
+---
+
+Voxbento lets you listen to live interpretation in your preferred language directly from a browser tab — no app download, no account sign-up, and no special hardware. All you need is the link your event organizer shared with you (or the public event URL) and a modern browser. Audio is delivered over WebRTC for near-instant playback, with an automatic fallback to HLS if your network or browser needs it.
+
+## Accessing the Listener Page
+
+Every Voxbento event has a dedicated listener page at `/listener/{event_slug}`. For example, the listener page for an event with the slug `pycon2026` would be:
+
+```
+https://voxbento.com/listener/pycon2026
+```
+
+This page lists every language booth that is active for the event. No login is required as long as you have a valid session — either from your invite link or from a publicly accessible event URL.
+
+### Using an Invite Link
+
+If your organizer sent you a personal invite link, it follows the format `/join/{token}`. Clicking that link validates your token and drops you directly onto the listener page, so you never need to type in a URL manually.
+
+:::info
+Your invite token is single-use or time-limited depending on how your organizer configured it. If your link has expired, contact the event organizer for a new one.
+:::
+
+## How Audio Delivery Works
+
+Voxbento uses **WebRTC (WHEP)** as the primary audio delivery method, achieving under one second of end-to-end latency. If WebRTC is unavailable in your environment — for example, due to a restrictive corporate firewall — Voxbento automatically falls back to an **HLS stream** with roughly three to six seconds of delay. You do not need to choose between protocols; the switch happens transparently.
+
+:::tip
+For the lowest possible latency, use a Chromium-based browser (Chrome, Edge, Brave) or Firefox on a device connected to Wi-Fi or a wired network.
+:::
+
+### Browser Autoplay and the "Click to Play" Prompt
+
+Browsers enforce an autoplay policy that prevents audio from starting without a user gesture. If you land on the listener page and audio does not begin immediately, you will see a **Play** button. Clicking it once is enough — this is a standard browser behaviour, not a Voxbento error.
+
+### Automatic Reconnection
+
+If the stream briefly drops — for example, during an interpreter handoff between shifts — Voxbento reconnects automatically within a few seconds. You will see the status badge change to **Connecting…** and then return to **Live (WebRTC)** without any action from you.
+
+---
+
+## Step-by-Step: Joining a Live Event
+
+### Get your listener link from the event organizer
+
+Ask your organizer for either the public event URL (`/listener/{event_slug}`) or a personal invite link (`/join/{token}`). Both take you to the same listener page.
+  ### Open the link in your browser
+
+Paste or click the link in any modern browser — Chrome, Firefox, Safari, or Edge. No extension or plugin is needed.
+  ### Pick your language on the listener page
+
+The listener page shows all available language booths for this event. Click the language you want to hear to connect to that booth's audio stream.
+  ### Click Play if prompted
+
+If your browser's autoplay policy prevents audio from starting automatically, a **Play** button appears. Click it once to begin playback.
+  ### Hear live interpretation
+
+Audio starts within a second over WebRTC. You are now listening to live interpretation. Leave this tab open for the duration of the session.
+
+---
+
+## Frequently Asked Questions
+
+<details>
+<summary>Why is there a short delay between the speaker and what I hear?</summary>
+
+A small amount of latency is unavoidable in any live-streaming system. When Voxbento uses WebRTC (WHEP), the delay is typically under one second. If your browser falls back to HLS, you will notice a delay of around three to six seconds. This is expected behaviour — it does not indicate a problem with your connection or the event.
+
+</details>
+  <details>
+<summary>Why can I hear static or silence instead of interpretation?</summary>
+
+The interpreter may be between shifts, preparing to go live, or there may be a momentary gap during a handoff. Try waiting a few seconds and refreshing the page if silence persists. If the issue continues, contact the event organizer to confirm that a booth is actively staffed.
+
+</details>
+  <details>
+<summary>Can I listen on my phone or tablet?</summary>
+
+Yes. Voxbento works in mobile browsers without any app download. Use **Safari** on iOS (iPhone and iPad) or **Chrome** on Android for the best experience. Make sure your device volume is turned up and that your browser has not muted the tab.
+
+</details>
+  <details>
+<summary>Do I need to create a Voxbento account?</summary>
+
+No. Listener access does not require an account. You only need your invite link or the public event URL. Account creation is reserved for interpreters and event organizers.
+
+</details>

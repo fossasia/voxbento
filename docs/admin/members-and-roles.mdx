@@ -1,0 +1,121 @@
+---
+title: "Manage Event Members and Permissions — Voxbento Admin"
+sidebarTitle: "Roles"
+description: "Assign and remove roles for events and booths, understand the full role hierarchy, and manage user permissions and admin flags in Voxbento."
+---
+
+Voxbento uses a role-based permission system that lets you grant each participant exactly the access they need — no more, no less. Roles are scoped per event, so the same person can be an interpreter at one conference and a listener at another. This guide covers the full role hierarchy, how to assign roles at both the event and booth level, and how to manage user account flags.
+
+## Role Hierarchy
+
+Voxbento defines five roles, ordered from most to least privileged:
+
+```text
+super_admin > event_admin > coordinator > interpreter > listener
+```
+
+| Role | Description |
+| --- | --- |
+| **super\_admin** | Site-wide admin access. Can manage all events, users, and system settings. |
+| **event\_admin** | Full control over a specific event — manages booths, generates tokens, and can go live. |
+| **coordinator** | Can go live, reassign the active interpreter, and manage handoffs during a session. |
+| **interpreter** | Can go live (publish audio via WHIP) and participate in booth chat. |
+| **listener** | Read-only access — can listen to streams and send chat messages, but cannot go live. |
+
+## Permission Matrix
+
+The table below shows which actions each role can perform within a booth or event:
+
+| Permission | super\_admin | event\_admin | coordinator | interpreter | listener |
+| --- | :-: | :-: | :-: | :-: | :-: |
+| Go Live (publish audio) | ✓ | ✓ | ✓ | ✓ | — |
+| Set Active Interpreter | ✓ | ✓ | ✓ | — | — |
+| Chat | ✓ | ✓ | ✓ | ✓ | — |
+| Manage Booths | ✓ | ✓ | — | — | — |
+| Manage Events | ✓ | — | — | — | — |
+
+## Event-Scoped Roles
+
+Roles in Voxbento are always **per-event**, not global. A user you assign as an interpreter for `pycon2026` has no special permissions on any other event. This design lets you safely reuse the same user accounts across multiple events without worrying about permission bleed.
+
+:::tip
+For interpreters who cover multiple events, assigning them at the event level saves time versus booth-by-booth assignment. Event-level roles apply to all booths within that event.
+:::
+
+## Assigning Event-Level Roles
+
+Use event-level role assignment when a user needs access to an entire event — for example, a coordinator who manages multiple rooms, or an interpreter who will work across several booths.
+
+### Open the admin panel
+
+Log in at `/admin/login` and navigate to `/admin/events/`.
+  ### Open the event
+
+Click the event you want to manage.
+  ### Go to Manage Members
+
+Click **Manage Members** on the event detail page, or navigate to `/admin/events/{event_id}/members/`.
+  ### Enter the user's email
+
+In the **Assign Member** form, type the registered email address of the user you want to add.
+  ### Select a role
+
+Choose the appropriate role from the dropdown — `listener`, `interpreter`, `coordinator`, or `event_admin`.
+  ### Submit
+
+Click **Assign Role**. The user now appears in the members list and gains the selected permissions for the entire event.
+
+## Assigning Booth-Level Roles
+
+For stricter access control, you can assign a user to a specific booth rather than the whole event. This is useful when an interpreter should only access one language channel and should not see other booths.
+
+### Navigate to the booth
+
+From the admin panel, go to your event → **Rooms** → select a room → **Booths** → open the target booth.
+  ### Scroll to Assigned Members
+
+Find the **Assigned Members** section on the booth detail page.
+  ### Enter the user's email
+
+Under **Assign Member**, type the registered email address of the user.
+  ### Select a role
+
+Choose a role from the dropdown — typically `interpreter` for booth-level assignments.
+  ### Submit
+
+Click **Assign Member**. When the interpreter logs in, they will see an **Open Booth** button on their home dashboard that links directly to this booth.
+
+## Removing a Role
+
+To remove a role from a user at either the event or booth level:
+
+1. Open the **Members** section of the relevant event or booth.
+2. Find the user in the list.
+3. Click **Remove** next to their name.
+
+The change takes effect immediately. The user loses the associated permissions on their next action or page load.
+
+## User Admin Flags
+
+The **Users** page at `/admin/users/` lists all registered users and exposes account-level controls that are separate from event roles:
+
+<details>
+<summary>Admin badge</summary>
+
+Users with the **Admin** badge have site-wide admin panel access — equivalent to logging in with `ADMIN_PASSWORD`. You can toggle this flag from the user detail page at `/admin/users/{user_id}/` using the **Toggle Admin** action.
+
+</details>
+
+<details>
+<summary>Active / Deactivated status</summary>
+
+The **Status** column shows whether a user can log in. Clicking **Deactivate** immediately prevents the user from authenticating. Click **Activate** to restore access. Deactivated users who are already logged in will be rejected on their next authenticated request.
+
+</details>
+
+<details>
+<summary>Deleting a user</summary>
+
+Clicking **Delete** on the user detail page permanently removes the account and all associated memberships. This cannot be undone. Consider deactivating the account instead if you may need to restore access later.
+
+</details>

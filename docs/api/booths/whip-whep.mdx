@@ -1,0 +1,144 @@
+---
+title: "WHIP and WHEP Stream URLs — Voxbento API Reference"
+sidebarTitle: "Stream URLs"
+description: "Retrieve WHIP publishing and WHEP playback URLs for a Voxbento interpretation booth to build custom interpreter or listener pages."
+---
+
+Use these endpoints to programmatically retrieve the WHIP (publishing) and WHEP (playback) URLs for a booth. This is useful when building custom listener or interpreter pages that need to construct WebRTC connections without relying on the Voxbento interpreter UI.
+
+## WHIP URL — Interpreter Publishing
+
+The WHIP URL is the endpoint your interpreter client POSTs a WebRTC SDP offer to in order to begin publishing audio.
+
+### Endpoints
+
+| Variant | Method \+ Path |
+| --- | --- |
+| Event-scoped _(preferred)_ | `GET /api/events/{event_slug}/booths/{language_code}/whip-url` |
+| Legacy | `GET /api/booth/{booth_id}/whip-url` |
+
+### Authentication
+
+Both WHIP URL endpoints require a Bearer token. See the [Authentication guide](/api/authentication) for details on obtaining a token.
+
+:::warning
+This endpoint enforces the active-interpreter rule. Only the participant currently designated as the active interpreter receives a successful response. All other callers receive `403 Forbidden`.
+:::
+
+### Path Parameters
+
+**`event_slug`** *(string)* — The event's URL slug, e.g. `pycon2026`.
+
+**`language_code`** *(string)* — ISO 639-1 two-letter language code in lowercase, e.g. `en`.
+
+### Query Parameters
+
+
+  The caller's participant ID. This is validated server-side against the booth's current active interpreter record.
+
+
+### Example Request
+
+```bash
+curl https://voxbento.com/api/events/pycon2026/booths/en/whip-url \
+  -H 'Authorization: Bearer eyJ...'
+```
+
+### Example Response
+
+```json
+{
+  "whip_url": "https://voxbento.com/pycon2026/en/whip",
+  "channel_id": "pycon2026/en",
+  "booth_id": "pycon2026-en"
+}
+```
+
+### Response Fields
+
+**`whip_url`** *(string)* — The full WHIP ingest URL. POST a WebRTC SDP offer to this URL to begin publishing audio.
+
+**`channel_id`** *(string)* — The media channel path for this booth, in the format `{event_slug}/{language_code}`.
+
+**`booth_id`** *(string)* — The canonical booth identifier, in the format `{event_slug}-{language_code}`.
+
+---
+
+## WHEP URL — Listener Playback
+
+WHEP URLs follow a deterministic pattern and do not require an API call to construct. You can build the WHEP URL directly using the event slug and language code.
+
+### URL Format
+
+```text
+{MEDIAMTX_WHIP_BASE}/{event_slug}/{language_code}/whep
+```
+
+### Example
+
+```text
+https://voxbento.com/pycon2026/en/whep
+```
+
+To start a WHEP session, send a `POST` request to the WHEP URL with a WebRTC SDP offer body. The response contains the SDP answer, and the `Location` response header provides the session resource URL for subsequent ICE candidate exchanges and teardown.
+
+:::tip
+Build your custom listener by POSTing a WebRTC SDP offer to the WHEP URL. The response body contains the SDP answer. Use the returned `Location` header for the session resource URL to send ICE candidates and eventually DELETE the session when playback ends.
+:::
+
+---
+
+## Interpreter Status — Preflight Check
+
+Before your interpreter client attempts to publish, use this open endpoint to verify that the media server is reachable for the target channel.
+
+### Endpoint
+
+```text
+GET /api/interpreter/status/{channel_id}
+```
+
+### Authentication
+
+No authentication required. Use this as a lightweight preflight check before initiating a WHIP session.
+
+### Path Parameters
+
+**`channel_id`** *(string)* — The channel path in the format `{event_slug}/{language_code}`, e.g. `pycon2026/en`. Note that this parameter uses a forward slash, not a hyphen.
+
+### Example Request
+
+```bash
+curl https://voxbento.com/api/interpreter/status/pycon2026/en
+```
+
+### Example Response
+
+```json
+{
+  "channel_id": "pycon2026/en",
+  "state": "mediamtx",
+  "reachable": true
+}
+```
+
+### Response Fields
+
+**`channel_id`** *(string)* — The channel ID that was checked, echoed back from the request path.
+
+**`state`** *(string)* — A descriptive state label. Returns `"mediamtx"` when the check runs successfully.
+
+**`reachable`** *(boolean)* — `true` if the media server responded within the timeout window, `false` if it was unreachable or timed out.
+
+---
+
+## Channel ID and URL Summary
+
+The table below shows how the three URL types relate for a given event and language.
+
+| URL type | Format | Example |
+| --- | --- | --- |
+| `channel_id` | `{event_slug}/{language_code}` | `pycon2026/en` |
+| WHIP ingest | `{MEDIAMTX_WHIP_BASE}/{channel_id}/whip` | `https://voxbento.com/pycon2026/en/whip` |
+| WHEP playback | `{MEDIAMTX_WHIP_BASE}/{channel_id}/whep` | `https://voxbento.com/pycon2026/en/whep` |
+| `booth_id` | `{event_slug}-{language_code}` | `pycon2026-en` |

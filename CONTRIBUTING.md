@@ -1,4 +1,4 @@
-# Contributing to Eventyay Interpretation Portal
+# Contributing to Voxbento
 
 ## Running tests
 
@@ -79,6 +79,31 @@ a real MediaMTX instance to verify WHEP continuity.
 WHEP listeners recover in ~1.5–3 s (RTCPeerConnection stays open via
 `alwaysAvailable` paths).
 
+## Transcription, Translation, and AI Services
+
+Voxbento provides real-time transcription (Speech-to-Text) and multilingual translation (Text-to-Text) using various AI providers.
+
+### Architecture
+
+1. **Audio Sources:** 
+   - **Booth Audio:** Interpreters speak into their microphones, which pushes audio via WebRTC WHIP.
+   - **Floor Audio:** A headless Chromium browser (`floor-bot`) secretly joins the Jitsi meeting, captures the floor audio, and pushes it via RTSP to MediaMTX.
+2. **Worker (`portal/transcription/worker.py`):** Spawns an FFmpeg process that pulls audio from MediaMTX via RTSP, transcodes it to PCM S16LE, and pipes it to a `TranscriptionProvider`.
+3. **Provider (`portal/transcription/providers/`):** Handles communication with AI speech-to-text services (OpenAI, Deepgram, ElevenLabs, NVIDIA, or Local Faster-Whisper).
+4. **Aggregator (`portal/transcription/aggregator.py`):** Collects partial/final transcripts, broadcasts partials via WebSockets (`/ws/captions/{channel_id}`), and saves finalized sentences to the `transcript_segments` database table.
+5. **Translation (`portal/translations/worker.py`):** Once a transcript segment is finalized, the translation worker spins up concurrent LLM requests (Anthropic, Groq, Gemini) to translate the text into all enabled target languages. Translations are saved to `transcript_translations` and broadcast via WebSockets.
+
+### Implementing a New Provider
+
+Inherit from `TranscriptionProvider` in `portal/transcription/providers/base.py`:
+
+- `process_chunk`: For providers that accept discrete audio chunks (REST).
+- `run_stream`: For providers that support streaming via WebSockets.
+
+### Configuration
+
+API keys for third-party transcription and translation providers are stored encrypted in the database and managed via the Admin Panel under **Global API Integrations**. Each Booth and Room can independently toggle transcription and translation on or off, and select their preferred models.
+
 ## Dependency management
 
 ```bash
@@ -92,6 +117,44 @@ uv add --dev <package>
 uv sync --all-groups --python 3.13   # regenerate lock
 git add pyproject.toml uv.lock
 ```
+
+## Contributing to Documentation 
+
+Our documentation is built with [Docusaurus](https://docusaurus.io/) and is located in the `docs/` folder (content) and the root directory (configuration). 
+
+### Running documentation locally 
+
+1.  Navigate to the root directory. 
+2.  Install dependencies: `npm install` 
+3.  Start the dev server: `npm start` 
+4.  The documentation will be available at `http://localhost:3000/voxbento/`. 
+
+### Editing Content 
+
+Documentation is written in [MDX](https://mdxjs.com/). You can find the source files in the `docs/` directory. 
+
+-   **Adding a page:** Create a new `.mdx` file in the appropriate subdirectory of `docs/`. 
+-   **Updating the sidebar:** Edit `sidebars.ts` in the root directory to include your new page. 
+
+### Adding Images 
+
+1.  Place your image files in the `static/img/` directory. 
+2.  Reference the image in your MDX file using standard Markdown syntax: 
+    ```markdown 
+    ![Description](/img/your-image.png) 
+    ``` 
+3.  **Pasting Images:** If you have an image in your clipboard, save it to `static/img/` first, give it a descriptive name (lowercase, hyphens), and then reference it as shown above. 
+
+### Documentation Standards 
+
+-   Use clear, concise language. 
+-   Use Docusaurus [admonitions](https://docusaurus.io/docs/markdown-features/admonitions) for notes, tips, and warnings: 
+    ```markdown 
+    :::note 
+    This is a note. 
+    ::: 
+    ``` 
+-   Ensure all links are relative and functional. 
 
 ## Security
 
@@ -284,6 +347,8 @@ Copy `.env.example` → `.env` and adjust as needed:
 | `DATABASE_URL` | `sqlite+aiosqlite:///./interpretation.db` | Database (PostgreSQL for production) |
 | `JVB_AUTH_PASSWORD` | `changeme` | Jitsi JVB auth (change in production) |
 | `JICOFO_AUTH_PASSWORD` | `changeme` | Jitsi Jicofo auth (change in production) |
+| `FLOOR_BOT_BASE` | `http://floor-bot:8080` | URL for the floor-bot container to extract Jitsi audio |
+| `MEDIAMTX_RTSP_BASE` | `rtsp://mediamtx:8554` | Internal MediaMTX RTSP URL for floor audio transcription |
 
 ### Stopping services
 

@@ -1,0 +1,176 @@
+---
+title: "Create and List Event Booths — Voxbento API Guide"
+sidebarTitle: "Event Booths"
+description: "Create interpretation booths and list all active booths for an event using the Voxbento REST API to support dynamic, runtime-provisioned event platforms."
+---
+
+These endpoints let you programmatically create booths and list all active booths for an event. This is useful for event platforms that provision booths dynamically at runtime rather than pre-configuring them through the admin panel.
+
+## Create a Booth
+
+Use this endpoint to create an interpretation booth for an event. Voxbento registers the booth in its live state registry so listeners can connect immediately.
+
+```text
+POST /api/events/{event_slug}/booths
+```
+
+### Authentication
+
+A Bearer token is required. See the [Authentication guide](/api/authentication) for details on obtaining a token.
+
+### Path Parameters
+
+**`event_slug`** *(string)* — The URL slug of the event under which the booth is created, e.g. `pycon2026`. The event must already exist before you can create booths for it.
+
+### Request Body
+
+
+  ISO 639-1 two-letter language code in lowercase, e.g. `en`. Combined with the event slug to derive the `booth_id` and channel path.
+
+
+
+  Human-readable language name displayed in the UI, e.g. `"English"`. Defaults to the uppercased `language_code` if omitted.
+
+
+### Example Request
+
+```bash
+curl -X POST https://voxbento.com/api/events/pycon2026/booths \
+  -H 'Authorization: Bearer eyJ...' \
+  -H 'Content-Type: application/json' \
+  -d '{"language_code": "en", "language_name": "English"}'
+```
+
+### Example Response
+
+A successful creation returns HTTP `201 Created` with the booth state object, including the derived WHIP and WHEP URLs.
+
+```json
+{
+  "booth_id": "pycon2026-en",
+  "event_slug": "pycon2026",
+  "language_code": "en",
+  "language_name": "English",
+  "mediamtx_path": "pycon2026/en",
+  "whip_url": "https://voxbento.com/pycon2026/en/whip",
+  "whep_url": "https://voxbento.com/pycon2026/en/whep",
+  "active_interpreter_id": null,
+  "active_interpreter_name": null,
+  "mic_active": false,
+  "ingest_connected": false,
+  "participants": []
+}
+```
+
+### Error Responses
+
+| Status | Condition |
+| --- | --- |
+| `400 Bad Request` | Invalid `language_code` format, or a booth for this language already exists for the event. |
+| `403 Forbidden` | Bearer token is missing or invalid. |
+
+---
+
+## List Booths for an Event
+
+Use this endpoint to retrieve all active booths currently registered for an event. The response includes both WHIP and WHEP URLs for each booth.
+
+```text
+GET /api/events/{event_slug}/booths
+```
+
+### Authentication
+
+A Bearer token is required.
+
+### Path Parameters
+
+**`event_slug`** *(string)* — The URL slug of the event whose booths you want to list.
+
+### Example Request
+
+```bash
+curl https://voxbento.com/api/events/pycon2026/booths \
+  -H 'Authorization: Bearer eyJ...'
+```
+
+### Example Response
+
+```json
+{
+  "event_slug": "pycon2026",
+  "booths": [
+    {
+      "booth_id": "pycon2026-en",
+      "event_slug": "pycon2026",
+      "language_code": "en",
+      "language_name": "English",
+      "mediamtx_path": "pycon2026/en",
+      "whip_url": "https://voxbento.com/pycon2026/en/whip",
+      "whep_url": "https://voxbento.com/pycon2026/en/whep",
+      "active_interpreter_id": "user-abc123",
+      "active_interpreter_name": "Alice",
+      "mic_active": true,
+      "ingest_connected": true,
+      "participants": [
+        {"id": "user-abc123", "name": "Alice", "role": "interpreter"}
+      ]
+    },
+    {
+      "booth_id": "pycon2026-es",
+      "event_slug": "pycon2026",
+      "language_code": "es",
+      "language_name": "Spanish",
+      "mediamtx_path": "pycon2026/es",
+      "whip_url": "https://voxbento.com/pycon2026/es/whip",
+      "whep_url": "https://voxbento.com/pycon2026/es/whep",
+      "active_interpreter_id": null,
+      "active_interpreter_name": null,
+      "mic_active": false,
+      "ingest_connected": false,
+      "participants": []
+    }
+  ]
+}
+```
+
+### Response Fields
+
+**`event_slug`** *(string)* — The event slug echoed from the request path.
+
+**`booths`** *(array)* — An array of booth state objects. Each object has the same shape as the response from [GET booth state](/api/booths/state).
+
+  <details>
+<summary>Booth object fields</summary>
+
+
+      Canonical booth identifier in the format `{event_slug}-{language_code}`.
+
+    **`mediamtx_path`** *(string)* — The channel path in the format `{event_slug}/{language_code}`.
+
+    **`whip_url`** *(string)* — The WHIP ingest URL for the active interpreter to publish audio.
+
+    **`whep_url`** *(string)* — The WHEP playback URL for listeners to receive audio.
+
+    **`active_interpreter_id`** *(string | null)* — Participant ID of the currently active interpreter, or `null`.
+
+    **`mic_active`** *(boolean)* — Whether the active interpreter's microphone is currently transmitting.
+
+    **`ingest_connected`** *(boolean)* — Whether the WHIP ingest connection is established.
+
+    **`participants`** *(array)* — All participants currently connected to the booth WebSocket.
+
+</details>
+
+
+---
+
+## Prerequisites and Behaviour Notes
+
+:::info
+The event must exist — created via the admin panel — before you can create or list booths for it via the API. Attempting to create a booth for a non-existent event slug returns a `400 Bad Request`.
+:::
+
+:::info
+Booths created via this API endpoint are held in live memory only and do not survive a server restart. Booths created through the admin panel are persisted to the database. Both types appear in the list returned by `GET /api/events/{event_slug}/booths`.
+:::

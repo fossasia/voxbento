@@ -1,0 +1,128 @@
+{% extends "base.html" %}
+
+{% block title %}Interpreter Lobby - VoxBento{% endblock %}
+
+{% block head %}
+<link rel="stylesheet" href="{{ url_for('static', path='css/landing.css') }}?v={{ js_version }}" />
+{% endblock %}
+
+{% block content %}
+<div class="lobby-container">
+  <header class="lobby-header">
+    <div class="header-left">
+      <img src="{{ url_for('static', path='img/wordmark.png') }}" alt="VoxBento" class="lobby-logo" />
+      <h1 class="lobby-title">Interpreter Lobby</h1>
+    </div>
+    <div class="header-right">
+      <a href="/" class="btn btn-outline">Back to Home</a>
+    </div>
+  </header>
+
+  <div class="lobby-content">
+    
+    <!-- Left Column: Pre-Flight Checks -->
+    <section class="lobby-section preflight-panel">
+      <h2>Pre-Flight Checks</h2>
+      <p class="section-desc">Ensure your hardware and network are ready before entering the booth.</p>
+      
+      <div class="check-group">
+        <label for="mic-device-select">Microphone</label>
+        <div class="input-group">
+          <select id="mic-device-select" class="form-select">
+            <option value="">Loading devices...</option>
+          </select>
+          <button id="mic-test-btn" type="button" class="btn btn-outline" title="Test Microphone">⚙ Test</button>
+        </div>
+        
+        <div id="meter-row" class="meter-row hidden" style="margin-top: 0.5rem;">
+          <span class="meter-label">Input level</span>
+          <canvas id="mic-meter" class="mic-meter" width="400" height="10"></canvas>
+        </div>
+
+        <div class="checkbox-row" style="margin-top: 0.5rem; display: flex; align-items: center; gap: 0.5rem;">
+          <input type="checkbox" id="show-virtual-devices" />
+          <label for="show-virtual-devices" style="font-size: 0.8rem; margin: 0; font-weight: normal; color: var(--color-muted);">Show virtual devices (Zoom, OBS, etc.)</label>
+        </div>
+      </div>
+
+      <div class="check-group" style="margin-top: 1.5rem;">
+        <div style="display: flex; justify-content: space-between; align-items: center;">
+          <label style="margin: 0;">Loopback Audio Test</label>
+          <button id="loopback-test-btn" type="button" class="btn btn-outline btn-sm">🎙️ Record & Play</button>
+        </div>
+        <p style="font-size: 0.8rem; color: var(--color-muted); margin-top: 0.25rem;">Record 5 seconds of audio to hear how you will sound in the booth.</p>
+        <div id="loopback-progress-row" class="hidden" style="margin-top: 0.5rem;">
+          <progress id="loopback-progress" value="0" max="100" style="width: 100%; height: 8px;"></progress>
+          <div id="loopback-status" style="font-size: 0.75rem; color: var(--color-muted); text-align: center; margin-top: 4px;">Recording...</div>
+        </div>
+      </div>
+
+      <div class="check-group" style="margin-top: 1.5rem;">
+        <label>System Diagnostics</label>
+        <ul class="preflight-list">
+          <li id="check-mic-permission" class="preflight-item preflight--pending">
+            <div class="preflight-icon">⏳</div>
+            <div class="preflight-info">
+              <div class="preflight-name">Microphone Permission</div>
+              <div class="preflight-msg">Checking...</div>
+            </div>
+          </li>
+          <li id="check-network" class="preflight-item preflight--pending">
+            <div class="preflight-icon">⏳</div>
+            <div class="preflight-info">
+              <div class="preflight-name">Media Server Connection</div>
+              <div class="preflight-msg">Checking...</div>
+            </div>
+          </li>
+        </ul>
+        <button id="preflight-retry" type="button" class="btn btn-outline btn-sm" style="margin-top: 0.75rem; width: 100%;">Retry Diagnostics</button>
+      </div>
+      
+    </section>
+
+    <!-- Right Column: Assigned Booths -->
+    <section class="lobby-section assignments-panel">
+      <h2>Your Assigned Booths</h2>
+      <p class="section-desc">Select a booth to join the live session.</p>
+
+      {% if my_booths %}
+        <div class="booth-cards">
+        {% for b in my_booths %}
+          <div class="card booth-card">
+            <div class="card-header">
+              <div class="card-title-group">
+                <h3>{{ b.language_name }}</h3>
+                <span class="event-name">{{ b.event_name }}</span>
+                {% if b.room_name %}
+                  <span class="room-name">· {{ b.room_name }}</span>
+                {% endif %}
+              </div>
+              {% if b.is_live %}
+                <span class="status-badge live">● LIVE</span>
+              {% else %}
+                <span class="status-badge offline">○ OFFLINE</span>
+              {% endif %}
+            </div>
+            
+            <div class="card-body">
+              <div class="role-badge">Role: <strong>{{ b.role }}</strong></div>
+            </div>
+
+            <div class="card-footer">
+              <a href="/interpreter/{{ b.event_slug }}/{{ b.language_code }}" class="btn btn-primary enter-btn">Enter Booth ↗</a>
+            </div>
+          </div>
+        {% endfor %}
+        </div>
+      {% else %}
+        <div class="empty-state">
+          <p>You have no assigned booths at this time.</p>
+        </div>
+      {% endif %}
+    </section>
+
+  </div>
+</div>
+
+<script type="module" src="{{ url_for('static', path='js/interpreter-landing.js') }}?v={{ js_version }}"></script>
+{% endblock %}

@@ -154,13 +154,15 @@ async def create_room(
 
 
 async def get_room_by_id(session: AsyncSession, room_id: int) -> Room | None:
-    result = await session.execute(select(Room).where(Room.id == room_id))
+    from sqlalchemy.orm import selectinload
+    result = await session.execute(select(Room).options(selectinload(Room.translation_languages)).where(Room.id == room_id))
     return result.scalar_one_or_none()
 
 
 async def list_rooms_for_event(session: AsyncSession, event_id: int) -> list[Room]:
+    from sqlalchemy.orm import selectinload
     result = await session.execute(
-        select(Room).where(Room.event_id == event_id).order_by(Room.created_at),
+        select(Room).options(selectinload(Room.translation_languages)).where(Room.event_id == event_id).order_by(Room.created_at),
     )
     return list(result.scalars().all())
 
@@ -199,16 +201,18 @@ async def create_booth(
 
 
 async def get_booth_by_id(session: AsyncSession, booth_id: int) -> DBBooth | None:
+    from sqlalchemy.orm import selectinload
     result = await session.execute(
-        select(DBBooth).options(joinedload(DBBooth.event)).where(DBBooth.id == booth_id),
+        select(DBBooth).options(joinedload(DBBooth.event), selectinload(DBBooth.translation_languages)).where(DBBooth.id == booth_id),
     )
     return result.scalar_one_or_none()
 
 
 async def list_booths_for_event(session: AsyncSession, event_id: int) -> list[DBBooth]:
+    from sqlalchemy.orm import selectinload
     result = await session.execute(
         select(DBBooth)
-        .options(joinedload(DBBooth.event))
+        .options(joinedload(DBBooth.event), selectinload(DBBooth.translation_languages))
         .where(DBBooth.event_id == event_id)
         .order_by(DBBooth.language_code),
     )
@@ -216,9 +220,10 @@ async def list_booths_for_event(session: AsyncSession, event_id: int) -> list[DB
 
 
 async def list_booths_for_room(session: AsyncSession, room_id: int) -> list[DBBooth]:
+    from sqlalchemy.orm import selectinload
     result = await session.execute(
         select(DBBooth)
-        .options(joinedload(DBBooth.event))
+        .options(joinedload(DBBooth.event), selectinload(DBBooth.translation_languages))
         .where(DBBooth.room_id == room_id)
         .order_by(DBBooth.language_code),
     )
@@ -468,7 +473,7 @@ async def list_memberships_for_booth(session: AsyncSession, booth_id: int) -> li
 async def list_booth_memberships_for_user(session: AsyncSession, user_id: int) -> list[BoothMembership]:
     result = await session.execute(
         select(BoothMembership)
-        .options(joinedload(BoothMembership.booth).joinedload(DBBooth.event))
+        .options(joinedload(BoothMembership.booth).joinedload(DBBooth.event), joinedload(BoothMembership.booth).joinedload(DBBooth.room))
         .where(BoothMembership.user_id == user_id)
         .order_by(BoothMembership.created_at),
     )
@@ -488,3 +493,42 @@ async def revoke_invite_token(session: AsyncSession, token_str: str) -> InviteTo
     tok.used_at = utc_now()
     await session.flush()
     return tok
+
+# ---------------------------------------------------------------------------
+# Transcripts
+# ---------------------------------------------------------------------------
+
+async def save_transcript_segment(booth_id_str: str, text: str, room_id: int | None = None) -> int | None:
+    """Save a finalized transcript segment to the database asynchronously and return its ID."""
+    from portal.models import TranscriptSegment, DBBooth, Event
+    from sqlalchemy import select
+
+    parts = booth_id_str.split('-')
+    if len(parts) < 2:
+        return None
+        
+    language_code = parts[-1]
+    event_slug = "-".join(parts[:-1])
+
+    try:
+        async with get_session() as session:
+            booth_id = None
+            if language_code != "floor":
+                stmt = select(DBBooth.id).join(Event).where(
+                    Event.slug == event_slug,
+                    DBBooth.language_code == language_code
+                )
+                booth_id = await session.scalar(stmt)
+
+            segment = TranscriptSegment(
+                room_id=room_id,
+                booth_id=booth_id,
+                language_code=language_code,
+                text=text
+            )
+            session.add(segment)
+            await session.commit()
+            return segment.id
+    except Exception as e:
+        logger.error(f"Failed to save transcript segment: {e}")
+        return None

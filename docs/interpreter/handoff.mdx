@@ -1,0 +1,92 @@
+---
+title: "Interpreter Handoff and Booth Coordination"
+sidebarTitle: "Handoff"
+description: "Switch the active interpreter mid-event without dropping listener connections — coordinators and interpreters both have tools for smooth audio handoffs."
+---
+
+Interpretation at live events rarely runs on a single interpreter for the entire duration. Voxbento is built for real-world shifts: you can replace the active publisher with a backup interpreter in roughly one to two seconds, and listeners never lose their connection or need to refresh. This page explains how handoff works under the hood, who can trigger one, and the exact steps for both the outgoing and incoming interpreter.
+
+## How Handoff Works
+
+When a coordinator or active interpreter triggers a handoff, Voxbento immediately updates the active interpreter and broadcasts the new roster to all participants in the booth. On the media side, the moment the incoming interpreter clicks **Go Live**, the media relay switches the source automatically. Listeners receive the new stream within approximately one to two seconds. No reconnection, no page refresh, no audible silence gap beyond the natural transition.
+
+## Who Can Trigger a Handoff
+
+### Coordinators
+
+    Anyone with the `coordinator` role can set any interpreter in the roster as the active publisher at any time. This is the primary handoff mechanism during structured shifts.
+  
+  ### Active Interpreter
+
+    The currently active interpreter can voluntarily hand off to a backup interpreter in the roster, even without a coordinator present.
+  
+  ### Event Admins
+
+    Event admins have all coordinator permissions and can manage handoffs across every booth in their event.
+  
+  ### Super Admins
+
+    Super admins have global handoff rights across every event and booth in the Voxbento instance.
+  
+
+## Steps to Hand Off (Coordinator Perspective)
+
+As a coordinator, you initiate the handoff from the participant roster panel inside the booth.
+
+### Locate the incoming interpreter in the roster
+
+Open the **Participant Roster** panel. You'll see all connected participants with their role labels. Find the backup interpreter you want to promote — they should already be joined and in an idle state.
+  ### Click Set Active
+
+Click **Set Active** next to the interpreter's name. Voxbento immediately designates them as the active interpreter and broadcasts the updated roster to everyone in the booth.
+  ### Old stream is replaced
+
+Within approximately one to two seconds, the media relay switches to the new publisher and stops forwarding the old stream. The outgoing interpreter sees their Audio Status change to **Idle**.
+  ### New interpreter begins speaking
+
+Signal the incoming interpreter (via chat or a pre-agreed cue) to click **Go Live** and begin. Listeners hear the transition as a brief natural pause.
+
+## Steps for the Incoming Interpreter
+
+Smooth handoffs depend on the incoming interpreter being ready before the coordinator clicks **Set Active**.
+
+### Join the booth before your shift starts
+
+Open the booth URL and join as a participant well ahead of your scheduled slot. Stay in idle — do not click **Go Live** yet. This ensures you're visible in the coordinator's roster.
+  ### Watch for your Go Live button to activate
+
+When the coordinator designates you as the active interpreter, your **Go Live** button becomes enabled and the Audio Status panel shows **Ready**.
+  ### Click Go Live immediately
+
+Click **Go Live** as soon as your button activates. Every second of delay is a second of silence for listeners. Speak your first word within one to two seconds of clicking.
+
+:::tip
+Agree on a hand signal or chat message before the event to coordinate smooth handoffs. A simple "ready in 30 seconds" in the booth chat gives the outgoing interpreter a clear countdown and prevents premature transitions.
+:::
+
+## Using the Chat Panel for Coordination
+
+All participants in a booth — interpreters, coordinators, and any joined listeners with appropriate roles — can send text messages using the **Chat** panel. The chat is separate from the audio stream and is never heard by listeners.
+
+<details>
+<summary>Suggested chat conventions for handoffs</summary>
+
+Consistent shorthand makes real-time coordination faster under pressure. Consider agreeing on these phrases before your event:
+
+  | Message | Meaning |
+  |---|---|
+  | `ready` | Incoming interpreter is joined and ready to go live |
+  | `go` | Coordinator confirms: click Go Live now |
+  | `hold` | Do not go live yet — coordinator is resolving an issue |
+  | `back` | Outgoing interpreter is going offline (voluntary handoff) |
+  | `check` | Request a mic level check from the incoming interpreter |
+
+</details>
+
+## If There Is No Coordinator in the Booth
+
+:::info
+If the coordinator role is not filled, the currently active interpreter can designate a new active interpreter from the roster. Any participant with the `interpreter` role who is currently set as active has permission to use the **Set Active** control — they do not need a coordinator to be present.
+:::
+
+In this case, the outgoing interpreter clicks **Set Active** next to the incoming interpreter's name in the roster, then clicks **Go Offline** after the new stream is confirmed live. The media relay switches sources within approximately two seconds, so listeners hear no gap provided the incoming interpreter clicks **Go Live** promptly.

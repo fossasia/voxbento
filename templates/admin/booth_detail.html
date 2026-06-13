@@ -91,8 +91,38 @@
   </div>
 </div>
 
+<!-- Booth Settings Form -->
+<form method="post" action="{{ url_for('admin_edit_booth', event_id=event.id, room_id=room.id, booth_id=booth.id) }}" class="token-form">
+  <div class="token-form-card" style="margin-bottom: 2rem;">
+    <h3>Booth Settings</h3>
+    <div class="form-row">
+      <div class="form-group" style="flex: 1;">
+        <label for="language_name">Language Name</label>
+        <input type="text" id="language_name" name="language_name" class="input" value="{{ booth.language_name }}">
+      </div>
+      <div class="form-group" style="flex: 1;">
+        <label for="language_code">Language Code</label>
+        <input type="text" id="language_code" name="language_code" class="input" value="{{ booth.language_code }}">
+      </div>
+      <div class="form-group form-group-btn" style="flex: 0; align-self: flex-end;">
+        <button type="submit" class="btn btn-primary">Save Settings</button>
+      </div>
+    </div>
+  </div>
+</form>
+
 <!-- Transcription Settings Form -->
 <form method="post" action="/admin/events/{{ event.id }}/rooms/{{ room.id }}/booths/{{ booth.id }}/transcription-settings" class="token-form">
+  <div class="token-form-card" style="margin-bottom: 2rem;">
+    <div style="display: flex; justify-content: space-between; align-items: center;">
+      <div>
+        <h3 style="margin: 0;">Stored Transcripts</h3>
+        <p class="form-help" style="margin-top: 0.25rem; font-size: 0.85rem; color: #666;">View and download past transcripts and translations generated for this booth.</p>
+      </div>
+      <a href="/admin/events/{{ event.id }}/rooms/{{ room.id }}/transcripts/" class="btn btn-primary">View Transcripts</a>
+    </div>
+  </div>
+
   <div class="token-form-card" style="margin-bottom: 2rem;">
     <h3>Transcription Settings</h3>
     <div class="form-row">
@@ -106,14 +136,38 @@
         </p>
       </div>
       <div class="form-group" style="flex: 1;">
-        <label for="transcription_model">Whisper Model Size</label>
+        <label for="transcription_provider">Transcription Provider</label>
+        <select id="transcription_provider" name="transcription_provider" class="input">
+          <option value="local" {% if booth.transcription_provider == 'local' %}selected{% endif %}>Local CPU (Faster-Whisper)</option>
+          {% if event.transcription_api_enabled %}
+          <option value="openai" {% if booth.transcription_provider == 'openai' %}selected{% endif %}>OpenAI</option>
+          <option value="deepgram" {% if booth.transcription_provider == 'deepgram' %}selected{% endif %}>Deepgram</option>
+          <option value="nvidia" {% if booth.transcription_provider == 'nvidia' %}selected{% endif %}>NVIDIA Parakeet</option>
+          <option value="elevenlabs" {% if booth.transcription_provider == 'elevenlabs' %}selected{% endif %}>ElevenLabs</option>
+          {% else %}
+          <option disabled>External APIs disabled in Event settings</option>
+          {% endif %}
+        </select>
+      </div>
+      <div class="form-group" style="flex: 1;">
+        <label for="transcription_model">Model Variant</label>
         <select id="transcription_model" name="transcription_model" class="input">
-          <option value="tiny" {% if booth.transcription_model == 'tiny' %}selected{% endif %}>tiny (Fastest, low CPU)</option>
-          <option value="base" {% if booth.transcription_model == 'base' %}selected{% endif %}>base</option>
-          <option value="small" {% if booth.transcription_model == 'small' %}selected{% endif %}>small</option>
-          <option value="medium" {% if booth.transcription_model == 'medium' %}selected{% endif %}>medium</option>
-          <option value="large-v2" {% if booth.transcription_model == 'large-v2' %}selected{% endif %}>large-v2</option>
-          <option value="large-v3" {% if booth.transcription_model == 'large-v3' %}selected{% endif %}>large-v3 (Most accurate, high CPU/RAM)</option>
+          <option value="tiny" data-provider="local" {% if booth.transcription_model == 'tiny' %}selected{% endif %}>Local: tiny (Fastest)</option>
+          <option value="base" data-provider="local" {% if booth.transcription_model == 'base' %}selected{% endif %}>Local: base</option>
+          <!-- Temporarily disabled per user request: only show tiny and base
+          <option value="small" data-provider="local" {% if booth.transcription_model == 'small' %}selected{% endif %}>Local: small</option>
+          <option value="medium" data-provider="local" {% if booth.transcription_model == 'medium' %}selected{% endif %}>Local: medium</option>
+          <option value="large-v2" data-provider="local" {% if booth.transcription_model == 'large-v2' %}selected{% endif %}>Local: large-v2</option>
+          <option value="large-v3" data-provider="local" {% if booth.transcription_model == 'large-v3' %}selected{% endif %}>Local: large-v3 (Accurate/Slow)</option>
+          -->
+          <option value="gpt-realtime-whisper" data-provider="openai" {% if booth.transcription_model == 'gpt-realtime-whisper' %}selected{% endif %}>OpenAI: gpt-realtime-whisper</option>
+          <option value="gpt-4o-transcribe" data-provider="openai" {% if booth.transcription_model == 'gpt-4o-transcribe' %}selected{% endif %}>OpenAI: gpt-4o-transcribe</option>
+          <option value="gpt-4o-mini-transcribe" data-provider="openai" {% if booth.transcription_model == 'gpt-4o-mini-transcribe' %}selected{% endif %}>OpenAI: gpt-4o-mini-transcribe</option>
+          <option value="whisper-1" data-provider="openai" {% if booth.transcription_model == 'whisper-1' %}selected{% endif %}>OpenAI: whisper-1</option>
+          <option value="nova-2" data-provider="deepgram" {% if booth.transcription_model == 'nova-2' %}selected{% endif %}>Deepgram: nova-2</option>
+          <option value="parakeet-rnnt" data-provider="nvidia" {% if booth.transcription_model == 'parakeet-rnnt' %}selected{% endif %}>NVIDIA: parakeet-rnnt</option>
+          <option value="parakeet-ctc" data-provider="nvidia" {% if booth.transcription_model == 'parakeet-ctc' %}selected{% endif %}>NVIDIA: parakeet-ctc</option>
+          <option value="scribe_v2_realtime" data-provider="elevenlabs" {% if booth.transcription_model == 'scribe_v2_realtime' or booth.transcription_model == 'scribe_v2' %}selected{% endif %}>ElevenLabs: scribe_v2_realtime (Streaming)</option>
         </select>
       </div>
       <div class="form-group form-group-btn">
@@ -122,6 +176,132 @@
     </div>
   </div>
 </form>
+
+<!-- Translation Settings Form -->
+<form method="post" action="/admin/events/{{ event.id }}/rooms/{{ room.id }}/booths/{{ booth.id }}/translation-settings" class="token-form">
+  <div class="token-form-card" style="margin-bottom: 2rem;">
+    <h3>Translation Settings</h3>
+    <div class="form-row">
+      <div class="form-group" style="flex: 1;">
+        <label for="translation_enabled" style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer;">
+          <input type="checkbox" id="translation_enabled" name="translation_enabled" value="true" {% if booth.translation_enabled %}checked{% endif %}>
+          <strong>Enable Live Translation</strong>
+        </label>
+        <p class="form-help" style="margin-top: 0.5rem; font-size: 0.85rem; color: #666;">
+          When enabled, the transcripts generated by this booth will be automatically translated into the target languages selected below.
+        </p>
+      </div>
+      <div class="form-group" style="flex: 1;">
+        <label for="translation_provider">Translation Provider</label>
+        <select id="translation_provider" name="translation_provider" class="input">
+          <option value="openai" {% if booth.translation_provider == 'openai' %}selected{% endif %}>OpenAI</option>
+          <option value="anthropic" {% if booth.translation_provider == 'anthropic' %}selected{% endif %}>Anthropic</option>
+          <option value="gemini" {% if booth.translation_provider == 'gemini' %}selected{% endif %}>Gemini</option>
+          <option value="groq" {% if booth.translation_provider == 'groq' %}selected{% endif %}>Groq</option>
+          <option value="openrouter" {% if booth.translation_provider == 'openrouter' %}selected{% endif %}>OpenRouter</option>
+          <option value="local" {% if booth.translation_provider == 'local' %}selected{% endif %}>Local LLM</option>
+        </select>
+      </div>
+      <div class="form-group" style="flex: 1;">
+        <label for="translation_model">Model Variant</label>
+        <select id="translation_model" name="translation_model" class="input">
+          <option value="gpt-4o-mini" data-trans-provider="openai" {% if booth.translation_model == 'gpt-4o-mini' %}selected{% endif %}>OpenAI: gpt-4o-mini</option>
+          <option value="gpt-4o" data-trans-provider="openai" {% if booth.translation_model == 'gpt-4o' %}selected{% endif %}>OpenAI: gpt-4o</option>
+          <option value="claude-3-haiku-20240307" data-trans-provider="anthropic" {% if booth.translation_model == 'claude-3-haiku-20240307' %}selected{% endif %}>Anthropic: claude-3-haiku</option>
+          <option value="claude-3-5-sonnet-20240620" data-trans-provider="anthropic" {% if booth.translation_model == 'claude-3-5-sonnet-20240620' %}selected{% endif %}>Anthropic: claude-3.5-sonnet</option>
+          <option value="gemini-1.5-flash" data-trans-provider="gemini" {% if booth.translation_model == 'gemini-1.5-flash' %}selected{% endif %}>Gemini: 1.5 Flash</option>
+          <option value="llama-3.1-8b-instant" data-trans-provider="groq" {% if booth.translation_model == 'llama-3.1-8b-instant' %}selected{% endif %}>Groq: LLaMA 3.1 8B</option>
+          <option value="llama-3.3-70b-versatile" data-trans-provider="groq" {% if booth.translation_model == 'llama-3.3-70b-versatile' %}selected{% endif %}>Groq: LLaMA 3.3 70B</option>
+          <option value="mixtral-8x7b-32768" data-trans-provider="groq" {% if booth.translation_model == 'mixtral-8x7b-32768' %}selected{% endif %}>Groq: Mixtral 8x7B</option>
+          <option value="anthropic/claude-3-haiku" data-trans-provider="openrouter" {% if booth.translation_model == 'anthropic/claude-3-haiku' %}selected{% endif %}>OpenRouter: Claude 3 Haiku</option>
+          <option value="meta-llama/llama-3-8b-instruct" data-trans-provider="openrouter" {% if booth.translation_model == 'meta-llama/llama-3-8b-instruct' %}selected{% endif %}>OpenRouter: LLaMA 3 8B</option>
+          <option value="google/gemma-7b-it" data-trans-provider="openrouter" {% if booth.translation_model == 'google/gemma-7b-it' %}selected{% endif %}>OpenRouter: Gemma 7B</option>
+          <option value="local-model" data-trans-provider="local" {% if booth.translation_model == 'local-model' %}selected{% endif %}>Local: default model</option>
+        </select>
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group" style="flex: 1;">
+        <label for="translation_languages">Target Languages</label>
+        <select id="translation_languages" name="translation_languages" class="input" multiple style="height: 120px;">
+          {% for lang in translation_languages_dataset %}
+          <option value="{{ lang.code }}" {% if lang.code in enabled_translation_language_codes %}selected{% endif %}>
+            {{ lang.name }} ({{ lang.code }})
+          </option>
+          {% endfor %}
+        </select>
+        <p class="form-help" style="margin-top: 0.5rem; font-size: 0.85rem; color: #666;">Hold Cmd/Ctrl to select multiple. Only selected languages will be available to listeners.</p>
+      </div>
+      <div class="form-group form-group-btn" style="flex: 0; align-self: flex-end;">
+        <button type="submit" class="btn btn-primary">Save Settings</button>
+      </div>
+    </div>
+  </div>
+</form>
+
+<script>
+  document.addEventListener('DOMContentLoaded', function() {
+    const providerSelect = document.getElementById('transcription_provider');
+    const modelSelect = document.getElementById('transcription_model');
+    const allOptions = Array.from(modelSelect.options);
+
+    function filterModels() {
+      const selectedProvider = providerSelect.value;
+      let firstVisible = null;
+      let currentSelectedStillVisible = false;
+
+      allOptions.forEach(opt => {
+        if (opt.getAttribute('data-provider') === selectedProvider) {
+          opt.style.display = '';
+          opt.disabled = false;
+          if (!firstVisible) firstVisible = opt;
+          if (opt.selected) currentSelectedStillVisible = true;
+        } else {
+          opt.style.display = 'none';
+          opt.disabled = true;
+        }
+      });
+
+      if (!currentSelectedStillVisible && firstVisible) {
+        firstVisible.selected = true;
+      }
+    }
+
+    providerSelect.addEventListener('change', filterModels);
+    // Run once on load
+    filterModels();
+    
+    // Translation Model Filtering
+    const transProviderSelect = document.getElementById('translation_provider');
+    const transModelSelect = document.getElementById('translation_model');
+    const allTransOptions = Array.from(transModelSelect.options);
+
+    function filterTransModels() {
+      const selectedProvider = transProviderSelect.value;
+      let firstVisible = null;
+      let currentSelectedStillVisible = false;
+
+      allTransOptions.forEach(opt => {
+        if (opt.getAttribute('data-trans-provider') === selectedProvider) {
+          opt.style.display = '';
+          opt.disabled = false;
+          if (!firstVisible) firstVisible = opt;
+          if (opt.selected) currentSelectedStillVisible = true;
+        } else {
+          opt.style.display = 'none';
+          opt.disabled = true;
+        }
+      });
+
+      if (!currentSelectedStillVisible && firstVisible) {
+        firstVisible.selected = true;
+      }
+    }
+
+    transProviderSelect.addEventListener('change', filterTransModels);
+    filterTransModels();
+  });
+</script>
 
 <!-- Participant Roster -->
 <div class="section-card">
@@ -182,11 +362,11 @@
       <div class="form-row">
         <div class="form-group">
           <label for="member_email">User Email</label>
-          <input type="email" name="email" id="member_email" placeholder="user@example.com" required />
+          <input type="email" name="email" id="member_email" class="input" placeholder="user@example.com" required />
         </div>
         <div class="form-group">
           <label for="member_role">Role</label>
-          <select name="role" id="member_role" required>
+          <select name="role" id="member_role" class="input" required>
             <option value="listener">listener</option>
             <option value="interpreter" selected>interpreter</option>
             <option value="coordinator">coordinator</option>
@@ -263,7 +443,7 @@
       <div class="form-row">
         <div class="form-group">
           <label for="role">Role</label>
-          <select name="role" id="role" required>
+          <select name="role" id="role" class="input" required>
             <option value="listener">listener</option>
             <option value="interpreter" selected>interpreter</option>
             <option value="coordinator">coordinator</option>
@@ -271,11 +451,11 @@
         </div>
         <div class="form-group">
           <label for="label">Label</label>
-          <input type="text" name="label" id="label" placeholder="e.g. Alice — Spanish interpreter" />
+          <input type="text" name="label" id="label" class="input" placeholder="e.g. Alice — Spanish interpreter" />
         </div>
         <div class="form-group">
           <label for="expires_hours">Expires in (hours)</label>
-          <input type="number" name="expires_hours" id="expires_hours" placeholder="Empty = never" min="1" />
+          <input type="number" name="expires_hours" id="expires_hours" class="input" placeholder="Empty = never" min="1" />
         </div>
         <div class="form-group form-group-btn">
           <button type="submit" class="btn btn-primary">Generate Token</button>

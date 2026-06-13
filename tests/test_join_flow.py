@@ -240,7 +240,7 @@ class TestJoinRoute:
         ) as client:
             resp = await client.get(f'/join/{token_str}', follow_redirects=False)
         assert resp.status_code == 303
-        assert resp.headers['location'] == '/interpreter/pycon2026/en'
+        assert resp.headers['location'] == '/interpreter'
 
     @pytest.mark.anyio
     async def test_valid_token_sets_cookie(self, _seed):
@@ -345,8 +345,8 @@ class TestJoinRoute:
         assert resp.status_code == 303
 
     @pytest.mark.anyio
-    async def test_redirect_url_uses_event_slug_and_language(self, _seed):
-        """Ensure redirect uses /interpreter/{event_slug}/{language_code} pattern."""
+    async def test_redirect_routes_to_lobby(self, _seed):
+        """Ensure redirect routes to the interpreter lobby."""
         _, _, booth = _seed
         token_str = await self._make_token(booth.id)
 
@@ -358,14 +358,11 @@ class TestJoinRoute:
         ) as client:
             resp = await client.get(f'/join/{token_str}', follow_redirects=False)
         loc = resp.headers['location']
-        assert loc.startswith('/interpreter/')
-        parts = loc.split('/')
-        assert parts[2] == 'pycon2026'  # event_slug
-        assert parts[3] == 'en'         # language_code
+        assert loc == '/interpreter'
 
     @pytest.mark.anyio
     async def test_multiple_booths_redirect_correctly(self):
-        """Tokens for different booths redirect to their respective URLs."""
+        """Tokens for different booths redirect to the lobby."""
         from portal.database import (
             create_booth,
             create_event,
@@ -396,7 +393,7 @@ class TestJoinRoute:
             base_url='http://test',
         ) as client:
             resp_en = await client.get(f'/join/{tok_en}', follow_redirects=False)
-            assert resp_en.headers['location'] == '/interpreter/multi-event/en'
+            assert resp_en.headers['location'] == '/interpreter'
 
             resp_fr = await client.get(f'/join/{tok_fr}', follow_redirects=False)
-            assert resp_fr.headers['location'] == '/interpreter/multi-event/fr'
+            assert resp_fr.headers['location'] == '/interpreter'

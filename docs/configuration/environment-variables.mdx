@@ -1,0 +1,108 @@
+---
+title: "Voxbento Environment Variables: Complete Reference"
+sidebarTitle: "Environment Variables"
+description: "Configure your Voxbento deployment by setting environment variables for authentication, media routing, database connections, and Jitsi integration."
+---
+
+Voxbento is configured entirely through environment variables. Before starting any service, copy `.env.example` to `.env` in the project root and set the values appropriate for your environment. Variables marked as required must be set before the portal will function correctly in production.
+
+:::info
+Never commit your `.env` file to source control. Use environment variable injection in your container orchestration platform (e.g. Docker secrets, Kubernetes Secrets, or a managed secrets manager) instead.
+:::
+
+## Required Variables
+
+These variables must be set before running Voxbento in any non-trivial environment. The portal will start without them, but authentication and encryption will be broken or disabled.
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `ADMIN_PASSWORD` | _(none)_ | Password for the admin panel at `/admin/login`. Leave empty to disable admin login entirely. Required to access all admin features. |
+| `SECRET_KEY` | `change-me` | JWT signing key used to sign and verify session tokens. Use 64 or more random characters in production. Never use the default value in a live deployment. |
+| `API_KEY_ENCRYPTION_KEY` | _(none)_ | 32-character minimum key used to encrypt third-party API keys (e.g. cloud transcription credentials) at rest in the database. Required if you use any cloud transcription provider. |
+
+:::warning
+The default `SECRET_KEY` value (`change-me`) is publicly known. Any deployment that uses it can have its session tokens forged. Always replace it before going live.
+:::
+
+## Authentication Variables
+
+These variables control JWT token behavior and legacy endpoint access.
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `JWT_SECRET` | _(falls back to `SECRET_KEY`)_ | A separate JWT signing secret. Leave this empty to reuse `SECRET_KEY` for JWT signing — the recommended approach unless you need independent rotation. |
+| `JWT_EXPIRY_SECONDS` | `86400` | Session token lifetime in seconds. The default is 24 hours. Reduce this value for higher-security deployments or increase it for longer interpreter sessions. |
+| `BOOTH_ACCESS_TOKEN` | _(none)_ | Static bearer token for the legacy `/api/auth/token` endpoint. Only set this if you are integrating an older client that cannot use the standard invite-token flow. |
+
+## Media Server Variables
+
+These variables tell Voxbento where MediaMTX is running and how attendee browsers should reach it. Getting these right is critical for WebRTC audio to work.
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `MEDIAMTX_WHIP_BASE` | `http://localhost:8889` | The browser-facing base URL for WHIP ingest and WHEP playback. This URL must be reachable from attendee browsers — not just from inside Docker. In production, set this to your public domain with `https://`. |
+| `DOCKER_HOST_ADDRESS` | _(none)_ | Your server's public IP address. Required for WebRTC ICE candidates to be advertised correctly to browsers outside the local network. Without this, WebRTC connections will fail for anyone not on the same machine. |
+
+:::tip
+To find your public IP on Linux, run `hostname -I | awk '{print $1}'`. On macOS, run `ipconfig getifaddr en0`. Set the result as `DOCKER_HOST_ADDRESS` in your `.env` file.
+:::
+
+## Database Variables
+
+Voxbento uses SQLite by default for zero-configuration local development. For any production deployment you should switch to PostgreSQL.
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `DATABASE_URL` | `sqlite+aiosqlite:///./interpretation.db` | Database connection string. For production PostgreSQL, use the format: `postgresql+asyncpg://user:pass@host:5432/dbname`. Database migrations run automatically on startup — no manual steps needed when using Docker Compose. |
+
+## Jitsi Variables
+
+Voxbento embeds a Jitsi Meet instance so interpreters can monitor the conference floor. These variables configure how the portal connects to and displays Jitsi.
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `JITSI_BASE_URL` | `https://jitsi.voxbento.com` | The public-facing base URL of your Jitsi instance, used to construct embed URLs for the interpreter booth UI. In local development, set this to `http://localhost:8080`. |
+| `JITSI_DOMAIN` | `localhost:8080` | The internal Jitsi domain used for API calls from the portal backend. In production with a reverse proxy, set this to your Jitsi subdomain (e.g. `jitsi.your-domain.com`). |
+| `JITSI_PUBLIC_URL` | `http://localhost:8080` | The browser-accessible URL for the Jitsi interface. In production, set this to your full Jitsi HTTPS address (e.g. `https://jitsi.your-domain.com`). |
+| `DEFAULT_JITSI_ROOM` | `eventyay-stage-room` | The Jitsi room name used when a new booth is created without an explicit room name. Change this to match your event's main stage room. |
+
+## Jitsi Internal Auth Variables
+
+These variables set the passwords used internally between Jitsi components. **You must change these in any production deployment.**
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `JVB_AUTH_PASSWORD` | `changeme` | Password for the Jitsi Video Bridge (JVB) component. Use a strong random password in production. |
+| `JICOFO_AUTH_PASSWORD` | `changeme` | Password for the Jitsi Conference Focus (Jicofo) component. Use a strong random password in production. |
+
+## API Key Rotation
+
+The `API_KEY_ENCRYPTION_KEY` variable supports zero-downtime key rotation by accepting a comma-separated list of keys.
+
+When you provide multiple keys, Voxbento applies the following rules:
+
+- **Encryption** always uses the **first** key in the list for any newly stored data.
+- **Decryption** tries **all** keys in the list until one succeeds, so existing data encrypted under an old key continues to work.
+
+To rotate your encryption key without service interruption:
+
+### Generate a new key
+
+```bash
+    openssl rand -hex 32
+    ```
+
+    Copy the output — this is your new key.
+  ### Prepend the new key to the list
+
+Update `API_KEY_ENCRYPTION_KEY` in your `.env` to `NEW_KEY,OLD_KEY`. Deploy this change. New data is encrypted with the new key; old data still decrypts with the old key.
+  ### Re-encrypt existing data
+
+Trigger a re-encryption pass for all stored API keys (via the admin panel or the relevant management command). Once complete, all data is encrypted under the new key.
+  ### Remove the old key
+
+Update `API_KEY_ENCRYPTION_KEY` to contain only `NEW_KEY` and redeploy. The old key is no longer needed.
+
+:::tip
+Generate any secret key with `openssl rand -hex 32`. This produces a 64-character hexadecimal string, which meets the 32-character minimum and is suitable for production use.
+:::

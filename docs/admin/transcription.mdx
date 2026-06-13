@@ -1,0 +1,198 @@
+---
+title: "Configure Live Transcription and Captions — Voxbento"
+sidebarTitle: "Transcription"
+description: "Enable AI-powered live captions for interpreter booths in Voxbento using local Whisper, OpenAI, Deepgram, ElevenLabs, or NVIDIA Riva transcription."
+---
+
+import Tabs from "@theme/Tabs";
+import TabItem from "@theme/TabItem";
+
+
+Voxbento can transcribe the active interpreter's audio in real time and broadcast the resulting captions to all listeners automatically. You choose a transcription provider and model on a per-booth basis, and you store any required API keys at the event level. This guide explains how captions work, what providers are available, and how to configure everything through the admin panel.
+
+## How Transcription Works
+
+When a transcription provider is configured for a booth and an interpreter goes live, Voxbento's transcription worker pulls the interpreter's audio stream from MediaMTX via RTSP and sends it to the selected provider. The provider returns text — either partial (in-progress) or final (committed) — and Voxbento broadcasts each caption update to all listeners connected to the booth's captions WebSocket at `/ws/captions/{booth_id}`.
+
+Listeners receive caption messages automatically with no extra configuration. The captions WebSocket requires no authentication, so any client — including embedded third-party players — can subscribe.
+
+## Available Transcription Providers
+
+<Tabs>
+  <TabItem value="local-whisper" label="Local Whisper">
+
+Runs the [faster-whisper](https://github.com/SYSTRAN/faster-whisper) engine directly on your server. No external API call is made, and no API key is required.
+
+**Models available:** `tiny`, `base`, `small`, `medium`, `large-v2`, `large-v3`
+
+Larger models produce more accurate transcriptions but require more CPU and memory. The `base` or `small` models are a good starting point for most deployments.
+
+:::info
+Local Whisper transcription runs entirely on your server with no external API calls. It requires more CPU but has no per-minute cost.
+:::
+
+</TabItem>
+  <TabItem value="openai" label="OpenAI">
+
+Uses OpenAI's speech transcription API. Requires an OpenAI API key stored in the event's API settings.
+
+**Models available:** `whisper-1`, `gpt-4o-realtime-preview`, `gpt-4o-mini-realtime-preview`
+
+The `gpt-4o-realtime-preview` and `gpt-4o-mini-realtime-preview` models use OpenAI's real-time streaming API and deliver very low-latency captions.
+
+:::tip
+For the lowest latency captions, use `gpt-4o-realtime-preview` when budget allows.
+:::
+
+</TabItem>
+  <TabItem value="deepgram" label="Deepgram">
+
+Uses Deepgram's WebSocket streaming API. Requires a Deepgram API key stored in the event's API settings.
+
+**Models available:** `nova-2`
+
+Deepgram streams partial and final transcripts over a persistent WebSocket connection, making it one of the fastest options for near-real-time captions.
+
+:::tip
+For the lowest latency captions, Deepgram `nova-2` (WebSocket streaming) is an excellent choice alongside OpenAI real-time models.
+:::
+
+</TabItem>
+  <TabItem value="elevenlabs" label="ElevenLabs">
+
+Uses ElevenLabs' **Speech-to-Text** (Scribe) service. Requires an ElevenLabs API key stored in the event's API settings.
+
+**Models available:** `scribe_v2_realtime`
+
+ElevenLabs Scribe provides high-accuracy transcription for various languages and supports low-latency streaming.
+
+:::info
+While ElevenLabs is widely known for Text-to-Speech, Voxbento utilizes their **Scribe** service specifically for high-quality **Speech-to-Text** (transcription).
+:::
+
+</TabItem>
+  <TabItem value="nvidia-riva" label="NVIDIA Riva">
+
+Uses NVIDIA's Riva speech recognition service. Requires an NVIDIA API key and the optional `nvidia-riva` Python dependency installed in your environment.
+
+**Models available:** `parakeet-rnnt`, `parakeet-ctc`
+
+Best suited for deployments that already operate NVIDIA GPU infrastructure.
+
+</TabItem>
+</Tabs>
+
+## Provider Summary Table
+
+| Provider | Models | Notes |
+| --- | --- | --- |
+| Local (Whisper) | `tiny`, `base`, `small`, `medium`, `large-v2`, `large-v3` | Runs on-server, no API key needed |
+| OpenAI | `whisper-1`, `gpt-4o-realtime-preview`, `gpt-4o-mini-realtime-preview` | Requires OpenAI API key |
+| Deepgram | `nova-2` | Requires Deepgram API key, WebSocket streaming |
+| ElevenLabs | `scribe_v2` | Requires ElevenLabs API key |
+| NVIDIA Riva | `parakeet-rnnt`, `parakeet-ctc` | Requires NVIDIA API key and optional dependency |
+
+## Storing API Keys per Event
+
+API keys are stored at the event level and shared across all booths in that event. Voxbento encrypts them at rest before saving — keys are never stored in plain text.
+
+### Open the event
+
+In the admin panel, navigate to `/admin/events/` and click the event you want to configure.
+  ### Go to API Settings
+
+Click **API Settings** on the event detail page, or navigate to `/admin/events/{event_id}/api-settings/`.
+  ### Enter API keys
+
+Fill in the API key fields for the providers you intend to use — OpenAI, Deepgram, ElevenLabs, or NVIDIA. Leave fields blank for providers you are not using.
+  ### Save
+
+Click **Save**. Voxbento encrypts each key and stores it. The keys are never displayed in plain text after saving.
+
+## Configuring Transcription per Booth
+
+Each booth can use a different provider and model. You configure transcription on the booth detail page.
+
+### Open the booth detail page
+
+In the admin panel, navigate to your event → **Rooms** → select a room → **Booths** → click the target booth.
+  ### Find Transcription Settings
+
+Scroll to the **Transcription Settings** section on the booth detail page.
+  ### Select provider and model
+
+Choose a **Provider** from the dropdown — for example, `deepgram`. Then select the **Model** for that provider — for example, `nova-2`.
+  ### Save
+
+Click **Save**. If the booth is currently live (an interpreter is broadcasting), the transcription worker restarts immediately with the new settings. There is no need to wait for the next session.
+
+## Caption Logic and Finalization
+
+Voxbento's caption aggregator applies several rules to ensure captions are readable and delivered efficiently:
+
+- **Sentence Splitting:** For batch providers (like Local Whisper), Voxbento automatically splits transcripts into sentences based on punctuation (`.`, `?`, `!`) to deliver stable, finalized text as soon as a thought is complete.
+- **Forced Finalization:** To prevent captions from staying in a "partial" state too long, Voxbento forces a finalization if a single utterance exceeds **15 seconds** or **50 words**.
+- **Silence Detection:** If the provider detects a significant pause in speech, the current partial caption is automatically finalized and cleared to prepare for the next sentence.
+
+:::info
+All caption coordination and delivery is handled via the official `voxbento.com` WebSocket endpoints, ensuring a consistent experience for all listeners.
+:::
+
+## Caption Delivery and Message Format
+
+Listeners receive captions by connecting to the captions WebSocket:
+
+```text
+/ws/captions/{booth_id}
+```
+
+For example:
+
+```text
+wss://voxbento.com/ws/captions/pycon2026-en
+```
+
+This endpoint requires no authentication and sends JSON messages in the following format:
+
+<Tabs>
+<TabItem value="partial-caption-in-progress" label="Partial caption (in-progress)">
+
+```json
+{
+  "status": "partial",
+  "text": "Hello and welcome to the session on"
+}
+```
+
+</TabItem>
+<TabItem value="final-caption-committed" label="Final caption (committed)">
+
+```json
+{
+  "status": "final",
+  "text": "Hello and welcome to the session on open-source tooling."
+}
+```
+
+</TabItem>
+<TabItem value="clear-signal" label="Clear signal">
+
+```json
+{
+  "status": "clear",
+  "text": ""
+}
+```
+
+</TabItem>
+</Tabs>
+
+
+  One of `partial`, `final`, or `clear`. Use `partial` to show in-progress text, `final` to commit the line, and `clear` to reset the caption display.
+
+
+
+  The transcribed text for this caption update. Empty string when `status` is `clear`.
+
+
+Your listener UI can subscribe to this WebSocket and render captions in real time with no additional backend work required.

@@ -1,0 +1,110 @@
+---
+title: "Live Captions for Your Voxbento Interpretation Session"
+sidebarTitle: "Live Captions"
+description: "Understand how live captions work in Voxbento — real-time AI transcription appears automatically alongside interpretation audio in your browser."
+---
+
+import Tabs from "@theme/Tabs";
+import TabItem from "@theme/TabItem";
+
+
+Voxbento can display live captions alongside the audio stream for any interpretation booth where the event organizer has enabled transcription. Captions are generated automatically by an AI speech-recognition service and appear as on-screen text below the audio player — no extra steps required on your end. This guide explains how captions work, what you will see on screen, and what to do if captions are missing or behaving unexpectedly.
+
+## How Live Captions Are Delivered
+
+Captions arrive through a persistent connection that the listener page opens automatically when you select a language booth. You do not need to enable, install, or configure anything. If transcription is active for a booth, captions simply appear; if it is not enabled, the caption area stays hidden.
+
+Two types of messages carry caption updates alongside the audio stream:
+
+- **`booth:state`** — signals changes in booth status (for example, an interpreter going live or offline).
+- **`caption`** — carries the transcribed text with a status field that tells the page how to display it.
+
+## Caption Types
+
+Voxbento distinguishes three caption states, each serving a different display purpose:
+
+### Partial
+
+    Updated word by word as the interpreter speaks. These captions are in progress and may change. They give you the fastest possible view of what is being said.
+  
+  ### Final
+
+    A completed sentence or natural phrase, displayed after a speech boundary is detected. Final captions are stable and will not change after they appear.
+  
+  ### Cleared
+
+    The caption area is cleared between utterances — for example, during a pause or at the end of a sentence group. This keeps the display clean and readable.
+  
+
+:::info
+Partial captions may flicker or update rapidly while the interpreter is mid-sentence. This is normal. If you find partial captions distracting, ask your event organizer whether the booth can be configured to show final captions only.
+:::
+
+## Supported Caption Providers
+
+Your event organizer selects a transcription provider when they configure each booth. As a listener, you see the same captions regardless of which provider is running — the difference is in latency and accuracy. The providers available in Voxbento are:
+
+<Tabs>
+  <TabItem value="local-whisper" label="Local Whisper">
+
+Runs OpenAI's Whisper model entirely on the event server — no external API key required. Best suited for privacy-sensitive events or deployments without internet access. Captions are produced in short batches, so they may appear slightly later than with streaming providers.
+
+</TabItem>
+  <TabItem value="openai-whisper--gpt-4o-realtime" label="OpenAI Whisper / GPT-4o Realtime">
+
+Two modes are available: a batch mode using OpenAI's `whisper-1` model (similar latency to Local Whisper) and a streaming mode using `gpt-4o-realtime-preview` or `gpt-4o-mini-realtime-preview` (lower latency with partial caption support). Requires an OpenAI API key configured by the event admin.
+
+</TabItem>
+  <TabItem value="deepgram-nova-2" label="Deepgram Nova-2">
+
+Streams audio to Deepgram's `nova-2` model, providing real-time partial and final captions with some of the lowest caption latency available. Requires a Deepgram API key.
+
+</TabItem>
+  <TabItem value="elevenlabs-scribe" label="ElevenLabs Scribe">
+
+Uses ElevenLabs' `scribe_v2` model for transcription. Requires an ElevenLabs API key configured by the event admin.
+
+</TabItem>
+  <TabItem value="nvidia-riva-parakeet" label="NVIDIA Riva Parakeet">
+
+Transcribes audio using NVIDIA's Parakeet speech recognition models. Best suited for deployments with GPU infrastructure. Requires an NVIDIA API key.
+
+</TabItem>
+</Tabs>
+
+## Accessibility
+
+Caption text is delivered as plain text content and is fully compatible with screen readers and browser accessibility tools. If you use a screen reader, captions are read out as they update. Because partial captions change frequently, some screen reader users may prefer to wait for final captions, which are stable.
+
+:::tip
+If you rely on captions for accessibility, let your event organizer know in advance. They can verify that transcription is enabled and select a provider with lower caption latency (such as Deepgram or OpenAI Realtime) to give you the best experience.
+:::
+
+---
+
+## Frequently Asked Questions
+
+<details>
+<summary>Why are captions delayed compared to the audio?</summary>
+
+Transcription adds processing time on top of the audio delivery delay. Streaming providers such as Deepgram Nova-2 and OpenAI GPT-4o Realtime keep caption latency low — typically one to two seconds behind the audio. Batch providers such as Local Whisper or OpenAI Whisper-1 process audio in short segments before producing output, so captions may lag a few seconds beyond the audio delay. Some delay is inherent to speech recognition and cannot be fully eliminated.
+
+</details>
+  <details>
+<summary>Why do I see partial captions flickering or changing rapidly?</summary>
+
+Partial captions are intentionally updated as the interpreter speaks — word by word or phrase by phrase — so they reflect speech in progress and will change until a sentence is complete. Final captions, which appear after a natural speech boundary, are stable. If the flickering is distracting, your event organizer can configure the booth to suppress partial captions and display final captions only.
+
+</details>
+  <details>
+<summary>Why are there no captions on the listener page?</summary>
+
+Transcription must be explicitly enabled per booth by the event admin. If you are on the listener page and the caption area is absent or blank, it is most likely because transcription has not been activated for that booth. Contact your event organizer and ask them to verify that a transcription provider is configured and running for the language booth you are using.
+
+</details>
+  <details>
+<summary>Are captions recorded or saved anywhere?</summary>
+
+Captions are generated and streamed in real time. Voxbento does not store or archive caption data by default — once an utterance is broadcast to listeners, it is not persisted on the server. If your event requires a transcript or recording, ask your event organizer, as they may have separate archiving arrangements in place.
+
+</details>

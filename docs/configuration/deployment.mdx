@@ -1,0 +1,210 @@
+---
+title: "Deploying Voxbento in Production with Docker Compose"
+sidebarTitle: "Deployment"
+description: "Run Voxbento in production using Docker Compose to orchestrate the portal, MediaMTX media server, and Jitsi Meet services together."
+---
+
+Voxbento runs as a coordinated set of Docker Compose services: the **portal** (a FastAPI application), **MediaMTX** (the WebRTC media server that handles WHIP ingest and WHEP playback), and **Jitsi Meet** (used by interpreters to monitor the conference floor). All three services must be running for interpretation to work end to end. Docker Compose starts them together with a single command.
+
+## Prerequisites
+
+Before deploying, confirm that your server meets the following requirements:
+
+### Docker & Docker Compose
+
+    Install the latest stable versions of Docker Engine and the Docker Compose plugin. Voxbento uses Compose v2 syntax (`docker compose`, not `docker-compose`).
+  
+  ### Public IP or Domain
+
+    WebRTC requires that media endpoints be reachable from attendee browsers. Your server needs a public IP address, and optionally a domain name for TLS.
+  
+  ### Open Ports
+
+    Ensure the following ports are open in your firewall and any cloud security groups before starting services.
+  
+  ### Server Resources
+
+    Recommended minimum: 2 vCPUs, 4 GB RAM. Jitsi and MediaMTX together are the most resource-intensive components.
+  
+
+### Required Open Ports
+
+| Port | Protocol | Service | Purpose |
+|------|----------|---------|---------|
+| `8000` | TCP | Portal | Main web interface and REST API |
+| `8080` | TCP | Jitsi | Jitsi Meet HTTP interface |
+| `8443` | TCP | Jitsi | Jitsi Meet HTTPS interface |
+| `8889` | TCP | MediaMTX | WHIP ingest and WHEP playback |
+| `8189` | UDP | MediaMTX | WebRTC ICE (media transport) |
+
+## Deploy with Docker Compose
+
+### Clone the repository
+
+Download the Voxbento source code and enter the project directory:
+
+    ```bash
+    git clone https://github.com/fossasia/voxbento.git
+    cd voxbento
+    ```
+
+  ### Create your environment file
+
+Copy the example environment file to create your local configuration:
+
+    ```bash
+    cp .env.example .env
+    ```
+
+  ### Set required environment variables
+
+Open `.env` in a text editor and configure at minimum the following four variables before starting any service:
+
+    ```bash
+    # Strong password for /admin/login
+    ADMIN_PASSWORD=your-strong-admin-password
+
+    # JWT signing key — generate with: openssl rand -hex 32
+    SECRET_KEY=your-64-char-random-string
+
+    # API key encryption — generate with: openssl rand -hex 32
+    API_KEY_ENCRYPTION_KEY=your-32-char-minimum-key
+
+    # Your server's public IP — required for WebRTC ICE
+    # Linux:  hostname -I | awk '{print $1}'
+    # macOS:  ipconfig getifaddr en0
+    DOCKER_HOST_ADDRESS=203.0.113.10
+    ```
+
+    Without `DOCKER_HOST_ADDRESS`, WebRTC ICE candidates will not be reachable from attendee browsers outside the local machine.
+
+  ### Start all services
+
+Build images and start the full stack in the foreground:
+
+    ```bash
+    docker compose up --build
+    ```
+
+    To run in the background (detached mode), add the `-d` flag:
+
+    ```bash
+    docker compose up --build -d
+    ```
+
+  ### Verify the portal is running
+
+Open your browser and navigate to your server's address on port 8000:
+
+    ```
+    http://your-server-ip:8000
+    ```
+
+    You should see the Voxbento home page. All three services are running when this page loads.
+
+  ### Access the admin panel
+
+Log in to the admin panel to create events, rooms, and booths:
+
+    ```
+    http://your-server-ip:8000/admin/login
+    ```
+
+    Enter the `ADMIN_PASSWORD` you set in `.env`.
+
+## Health Check
+
+Voxbento exposes a health endpoint at `/healthz` that you can use to verify the portal and its MediaMTX dependency are both reachable. Poll this endpoint from your load balancer or uptime monitor.
+
+```bash
+curl http://your-server-ip:8000/healthz
+```
+
+A healthy response looks like this:
+
+```json
+{
+  "ok": true,
+  "server": "voxbento",
+  "mediamtx_ok": true
+}
+```
+
+If `mediamtx_ok` is `false`, the portal is running but MediaMTX is not reachable. Interpreters will be unable to go live until MediaMTX is restored. Check the `mediamtx` container logs with `docker compose logs mediamtx`.
+
+:::info
+Database migrations run automatically on container startup. You do not need to run any migration commands manually when using Docker Compose.
+:::
+
+## Production Considerations
+
+A default `docker compose up` is sufficient to verify that everything works, but you should address the following before accepting real traffic.
+
+<details>
+<summary>Switch from SQLite to PostgreSQL</summary>
+
+The default `DATABASE_URL` uses SQLite, which stores data in a single file on the container filesystem. This is not suitable for production because the file is lost if the container is recreated, and SQLite does not support concurrent writes well under load.
+
+  Set `DATABASE_URL` in your `.env` to a PostgreSQL connection string:
+
+  ```bash
+  DATABASE_URL=postgresql+asyncpg://user:pass@host:5432/voxbento
+  ```
+
+  Make sure your PostgreSQL instance is running and the database exists before starting Voxbento. Database migrations apply automatically on startup.
+
+</details>
+
+<details>
+<summary>Put a reverse proxy in front for TLS</summary>
+
+WebRTC **requires HTTPS** in production browsers — Chrome and Firefox will not allow microphone access over plain HTTP from a non-localhost origin. Put a reverse proxy in front of the portal and MediaMTX to terminate TLS.
+
+  [Caddy](https://caddyserver.com/) is the simplest option because it provisions Let's Encrypt certificates automatically:
+
+  ```caddy
+  your-domain.com {
+      reverse_proxy localhost:8000
+  }
+
+  jitsi.your-domain.com {
+      reverse_proxy localhost:8080
+  }
+  ```
+
+  After setting up TLS, update `MEDIAMTX_WHIP_BASE` to use `https://` and update `JITSI_BASE_URL` to your Jitsi subdomain.
+
+</details>
+
+<details>
+<summary>Set DOCKER_HOST_ADDRESS for WebRTC</summary>
+
+WebRTC uses ICE (Interactive Connectivity Establishment) to negotiate a direct media path between the interpreter's browser and MediaMTX. For ICE to work, MediaMTX must advertise a reachable IP address in its ICE candidates.
+
+  Set `DOCKER_HOST_ADDRESS` to your server's **public** IP address:
+
+  ```bash
+  # Find your public IP on Linux
+  hostname -I | awk '{print $1}'
+
+  # Set in .env
+  DOCKER_HOST_ADDRESS=203.0.113.10
+  ```
+
+  Without this, WebRTC audio will only work for browsers on the same machine as the server.
+
+</details>
+
+<details>
+<summary>Change all default Jitsi passwords</summary>
+
+The `.env.example` file ships with `changeme` as the password for Jitsi's internal components (`JVB_AUTH_PASSWORD` and `JICOFO_AUTH_PASSWORD`). Replace both with strong random passwords before exposing Jitsi to the internet:
+
+  ```bash
+  JVB_AUTH_PASSWORD=$(openssl rand -hex 24)
+  JICOFO_AUTH_PASSWORD=$(openssl rand -hex 24)
+  ```
+
+  These passwords are only used internally between Jitsi services — you do not need to share them with anyone.
+
+</details>
