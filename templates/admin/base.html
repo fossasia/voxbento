@@ -29,6 +29,23 @@
       {% block content %}{% endblock %}
     </main>
 
+    <!-- Custom Confirm Modal -->
+    <div id="custom-confirm-modal" class="custom-modal-overlay" style="display: none;">
+      <div class="custom-modal">
+        <div class="custom-modal-header" style="margin-bottom: 1rem;">
+          <img src="{{ url_for('static', path='img/wordmark.png') }}" alt="Voxbento" style="height: 24px; vertical-align: middle;" />
+        </div>
+        <div class="custom-modal-body">
+          <p id="custom-confirm-message" style="margin-bottom: 1rem; font-weight: 500;"></p>
+          <p id="custom-confirm-funny" class="muted" style="font-size: 0.85rem; font-style: italic; margin-bottom: 1.5rem;"></p>
+        </div>
+        <div class="custom-modal-footer" style="display: flex; gap: 1rem; justify-content: flex-end;">
+          <button id="custom-confirm-cancel" class="btn btn-outline" type="button">Cancel</button>
+          <button id="custom-confirm-ok" class="btn btn-danger" type="button">Confirm</button>
+        </div>
+      </div>
+    </div>
 
+    <script type="module" src="{{ url_for('static', path='js/admin.js') }}"></script>
   </body>
 </html>

@@ -57,7 +57,7 @@
 
 ## Admin Panel (`/admin/*`)
 
-All admin routes require `admin_token` cookie (or `user_token` with `is_admin=True` or `event_admin` membership for event-scoped routes).
+All admin routes require `admin_token` cookie (or `user_token` with `is_admin=True` or `event_owner` membership for event-scoped routes).
 
 | Method | Path | Template | Notes |
 |---|---|---|---|
@@ -93,7 +93,7 @@ All admin routes require `admin_token` cookie (or `user_token` with `is_admin=Tr
 | POST | `/admin/users/{user_id}/toggle-active` | — | Flips `is_active` |
 | POST | `/admin/users/{user_id}/delete` | — | Deletes user |
 | POST | `/admin/users/{user_id}/toggle-admin` | — | Flips `is_admin` |
-| POST | `/admin/users/{user_id}/events/{event_id}/toggle-admin` | — | Grants/revokes `event_admin` membership |
+| POST | `/admin/users/{user_id}/events/{event_id}/toggle-admin` | — | Grants/revokes `event_owner` membership |
 
 ---
 

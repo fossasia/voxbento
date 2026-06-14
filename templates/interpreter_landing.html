@@ -109,7 +109,11 @@
             </div>
 
             <div class="card-footer">
-              <a href="/interpreter/{{ b.event_slug }}/{{ b.language_code }}" class="btn btn-primary enter-btn">Enter Booth ↗</a>
+              {% if b.role in ['coordinator', 'event_admin', 'super_admin'] %}
+                <a href="/mission-control/{{ b.event_slug }}/" class="btn btn-primary enter-btn">Go to Mission Control ↗</a>
+              {% else %}
+                <a href="/interpreter/{{ b.event_slug }}/{{ b.language_code }}" class="btn btn-primary enter-btn">Enter Booth ↗</a>
+              {% endif %}
             </div>
           </div>
         {% endfor %}

@@ -87,7 +87,7 @@ class TestCreateParticipantToken:
     def test_sub_is_uuid(self):
         import uuid
         token = create_participant_token(
-            booth_id=1, role='listener',
+            booth_id=1, role='room_coordinator',
             event_slug='ev', language_code='de',
         )
         payload = decode_token(token)
@@ -105,7 +105,7 @@ class TestCreateParticipantToken:
         assert decode_token(t1)['sub'] != decode_token(t2)['sub']
 
     @pytest.mark.parametrize('role', [
-        'interpreter', 'coordinator', 'listener', 'event_admin', 'super_admin',
+        'interpreter', 'room_coordinator', 'event_owner', 'super_admin',
     ])
     def test_all_roles_accepted(self, role):
         token = create_participant_token(
@@ -133,7 +133,7 @@ class TestTokenRedemption:
     @pytest.mark.anyio
     async def test_redeem_sets_used_at(self, db, sample_booth):
         booth, _ = sample_booth
-        tok = await create_invite_token(db, booth_id=booth.id, role='listener')
+        tok = await create_invite_token(db, booth_id=booth.id, role=)
         before = utc_now()
         redeemed = await redeem_invite_token(db, tok.token)
         assert redeemed.used_at is not None
@@ -164,7 +164,7 @@ class TestTokenRedemption:
     @pytest.mark.anyio
     async def test_redeemed_token_has_booth_and_event_loaded(self, db, sample_booth):
         booth, event = sample_booth
-        tok = await create_invite_token(db, booth_id=booth.id, role='coordinator')
+        tok = await create_invite_token(db, booth_id=booth.id, role='room_coordinator')
         redeemed = await redeem_invite_token(db, tok.token)
         assert redeemed.booth.event.slug == 'testcon2026'
         assert redeemed.booth.language_code == 'fr'
@@ -174,7 +174,7 @@ class TestTokenRedemption:
         booth, _ = sample_booth
         future = datetime.now(tz=timezone.utc) + timedelta(hours=24)
         tok = await create_invite_token(
-            db, booth_id=booth.id, role='listener', expires_at=future,
+            db, booth_id=booth.id, role=expires_at=future,
         )
         redeemed = await redeem_invite_token(db, tok.token)
         assert redeemed is not None
@@ -245,7 +245,7 @@ class TestJoinRoute:
     @pytest.mark.anyio
     async def test_valid_token_sets_cookie(self, _seed):
         event, _, booth = _seed
-        token_str = await self._make_token(booth.id, role='coordinator')
+        token_str = await self._make_token(booth.id, role='room_coordinator')
 
         from httpx import ASGITransport, AsyncClient
         from fastapi_app import app
@@ -259,7 +259,7 @@ class TestJoinRoute:
         assert cookie is not None
 
         payload = decode_token(cookie)
-        assert payload['role'] == 'coordinator'
+        assert payload['role'] == 'room_coordinator'
         assert payload['event_slug'] == 'pycon2026'
         assert payload['language_code'] == 'en'
         assert payload['booth_id'] == booth.id
@@ -314,7 +314,7 @@ class TestJoinRoute:
     @pytest.mark.anyio
     async def test_token_with_different_roles(self, _seed):
         _, _, booth = _seed
-        for role in ['interpreter', 'coordinator', 'listener', 'event_admin', 'super_admin']:
+        for role in ['interpreter', 'room_coordinator', 'event_owner', 'super_admin']:
             token_str = await self._make_token(booth.id, role=role)
 
             from httpx import ASGITransport, AsyncClient

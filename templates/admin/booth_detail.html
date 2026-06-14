@@ -354,7 +354,11 @@
     <strong>Error:</strong> User with that email address was not found. They must register first.
   </div>
   {% endif %}
-
+  {% if request.query_params.get('error') == 'invalid_role' %}
+  <div class="alert alert-danger" style="margin-bottom: 1rem; color: #d32f2f; background-color: #fde0e0; padding: 10px; border-radius: 4px;">
+    <strong>Error:</strong> Invalid role selected for a booth. Only interpreters are allowed.
+  </div>
+  {% endif %}
   <!-- Assign Member Form -->
   <div class="token-form-card" style="margin-bottom: 1.5rem;">
     <h3>Assign Member</h3>
@@ -367,9 +371,7 @@
         <div class="form-group">
           <label for="member_role">Role</label>
           <select name="role" id="member_role" class="input" required>
-            <option value="listener">listener</option>
             <option value="interpreter" selected>interpreter</option>
-            <option value="coordinator">coordinator</option>
           </select>
         </div>
         <div class="form-group form-group-btn">
@@ -415,7 +417,7 @@
           <form method="post"
                 action="/admin/events/{{ event.id }}/rooms/{{ room.id }}/booths/{{ booth.id }}/members/{{ m.id }}/delete"
                 class="inline-form"
-                onsubmit="return confirm('Remove {{ u.display_name }} from this booth?')">
+                data-confirm="Remove {{ u.display_name }} from this booth?">
             <button type="submit" class="btn btn-sm btn-danger">Remove</button>
           </form>
         </td>
@@ -444,9 +446,7 @@
         <div class="form-group">
           <label for="role">Role</label>
           <select name="role" id="role" class="input" required>
-            <option value="listener">listener</option>
             <option value="interpreter" selected>interpreter</option>
-            <option value="coordinator">coordinator</option>
           </select>
         </div>
         <div class="form-group">
@@ -508,7 +508,7 @@
           <form method="post"
                 action="/admin/events/{{ event.id }}/rooms/{{ room.id }}/booths/{{ booth.id }}/tokens/{{ tok.token }}/revoke"
                 class="inline-form"
-                onsubmit="return confirm('Revoke this token? It cannot be used to join after revocation.')">
+                data-confirm="Revoke this token? It cannot be used to join after revocation.">
             <button type="submit" class="btn btn-sm btn-danger">Revoke</button>
           </form>
           {% else %}
@@ -530,7 +530,7 @@
   <h3>Danger Zone</h3>
   <form method="post" action="/admin/events/{{ event.id }}/rooms/{{ room.id }}/booths/{{ booth.id }}/delete"
         class="inline-delete"
-        onsubmit="return confirm('Delete the {{ booth.language_name }} booth? All invite tokens will be removed.')">
+        data-confirm="Delete the {{ booth.language_name }} booth? All invite tokens will be removed.">
     <button type="submit" class="btn btn-danger">Delete Booth</button>
     <span class="danger-text">This removes all invite tokens for this booth.</span>
   </form>

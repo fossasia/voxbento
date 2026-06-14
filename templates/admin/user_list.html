@@ -55,7 +55,7 @@
           </button>
         </form>
         <form method="post" action="/admin/users/{{ user.id }}/delete" class="inline-form"
-              onsubmit="return confirm('Delete user {{ user.email }}? This cannot be undone.')">
+              data-confirm="Delete user {{ user.email }}? This cannot be undone.">
           <button type="submit" class="btn btn-sm btn-danger">Delete</button>
         </form>
       </td>

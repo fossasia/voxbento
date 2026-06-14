@@ -23,7 +23,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import joinedload
 
-from portal.models import Base, BoothMembership, DBBooth, Event, EventMembership, InviteToken, Room, User, generate_token, utc_now
+from portal.models import Base, BoothMembership, DBBooth, Event, EventMembership, InviteToken, Room, RoomMembership, User, generate_token, utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -418,7 +418,65 @@ async def list_memberships_for_user(session: AsyncSession, user_id: int) -> list
     )
     return list(result.scalars().all())
 
+# ---------------------------------------------------------------------------
+# RoomMembership CRUD
+# ---------------------------------------------------------------------------
 
+
+async def set_room_membership(
+    session: AsyncSession,
+    *,
+    user_id: int,
+    room_id: int,
+    role: str,
+) -> RoomMembership:
+    """Create or update a user's role for a room."""
+    result = await session.execute(
+        select(RoomMembership).where(
+            RoomMembership.user_id == user_id,
+            RoomMembership.room_id == room_id,
+        ),
+    )
+    membership = result.scalar_one_or_none()
+    if membership:
+        membership.role = role
+    else:
+        membership = RoomMembership(user_id=user_id, room_id=room_id, role=role)
+        session.add(membership)
+    await session.flush()
+    return membership
+
+
+async def remove_room_membership(session: AsyncSession, membership_id: int) -> bool:
+    result = await session.execute(
+        select(RoomMembership).where(RoomMembership.id == membership_id),
+    )
+    membership = result.scalar_one_or_none()
+    if membership is None:
+        return False
+    await session.delete(membership)
+    await session.flush()
+    return True
+
+
+async def list_memberships_for_room(session: AsyncSession, room_id: int) -> list[RoomMembership]:
+    result = await session.execute(
+        select(RoomMembership)
+        .options(joinedload(RoomMembership.user))
+        .where(RoomMembership.room_id == room_id)
+        .order_by(RoomMembership.created_at),
+    )
+    return list(result.scalars().all())
+
+
+async def list_room_memberships_for_user(session: AsyncSession, user_id: int) -> list[RoomMembership]:
+    result = await session.execute(
+        select(RoomMembership)
+        .options(joinedload(RoomMembership.room).joinedload(Room.event))
+        .where(RoomMembership.user_id == user_id)
+        .order_by(RoomMembership.created_at),
+    )
+    return list(result.scalars().all())
 # ---------------------------------------------------------------------------
 # BoothMembership CRUD
 # ---------------------------------------------------------------------------

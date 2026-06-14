@@ -95,9 +95,9 @@ These two values combine to form the **MediaMTX path** (`pycon2026/en`) and the 
 
 In a professional interpretation setting, interpreters rotate every 20–30 minutes to prevent fatigue. Voxbento handles this transition without interrupting listeners.
 
-Here is what happens when a coordinator switches the active interpreter:
+Here is what happens when a room_room_coordinator switches the active interpreter:
 
-1. The coordinator clicks **Set Active** next to the incoming interpreter in the booth.
+1. The room_room_coordinator clicks **Set Active** next to the incoming interpreter in the booth.
 2. The portal updates the active interpreter state and notifies all booth participants over WebSocket.
 3. The incoming interpreter's browser calls the gated `/api/booth/{booth_id}/whip-url` endpoint, receives the WHIP URL, and begins publishing.
 4. MediaMTX is configured with `overridePublisher: yes` — it immediately accepts the new publisher and disconnects the outgoing interpreter's WHIP session.

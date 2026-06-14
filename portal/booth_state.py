@@ -18,10 +18,9 @@ from portal.booth_identity import (
 
 ParticipantRole = Literal[
     'super_admin',
-    'event_admin',
-    'coordinator',
+    'event_owner',
+    'room_coordinator',
     'interpreter',
-    'listener',
 ]
 
 
@@ -65,6 +64,7 @@ class Booth:
     active_interpreter_id: str | None = None
     handoff_state: str = 'idle'
     handoff_initiator_id: str | None = None
+    broadcast_unlocked: bool = False
     participants: dict[str, Participant] = field(default_factory=dict)
     chat_messages: list[ChatMessage] = field(default_factory=list)
     ingest_status: str = 'disconnected'
@@ -89,6 +89,7 @@ class Booth:
             'active_interpreter_id': self.active_interpreter_id,
             'handoff_state': self.handoff_state,
             'handoff_initiator_id': self.handoff_initiator_id,
+            'broadcast_unlocked': self.broadcast_unlocked,
             'ingest_status': self.ingest_status,
             'participants': [asdict(p) for p in self.participants.values()],
             'chat_messages': [asdict(m) for m in self.chat_messages[-100:]],
@@ -97,7 +98,7 @@ class Booth:
 
 def _pick_next_interpreter(booth: Booth) -> str | None:
     for p in booth.participants.values():
-        if p.role == 'interpreter':
+        if p.role in ('interpreter', 'room_coordinator', 'event_owner', 'super_admin'):
             return p.participant_id
     return None
 
@@ -218,7 +219,7 @@ class BoothRegistry:
                 channel_id=channel_id.strip() or booth.channel_id,
             )
             booth.participants[participant.participant_id] = participant
-            if participant.role == 'interpreter' and booth.active_interpreter_id is None:
+            if participant.role in ('interpreter', 'room_coordinator', 'event_owner', 'super_admin') and booth.active_interpreter_id is None:
                 booth.active_interpreter_id = participant.participant_id
             return participant, booth.as_public_dict()
 
@@ -236,6 +237,18 @@ class BoothRegistry:
                 booth.handoff_state = 'idle'
             return booth.as_public_dict()
 
+    async def set_broadcast_unlocked(
+        self,
+        booth_id: str,
+        unlocked: bool,
+        language: str,
+        channel_id: str,
+    ) -> dict:
+        async with self._lock:
+            booth = self._get_or_create_booth(booth_id, language, channel_id)
+            booth.broadcast_unlocked = unlocked
+            return booth.as_public_dict()
+
     async def set_active_interpreter(
         self,
         booth_id: str,
@@ -250,13 +263,13 @@ class BoothRegistry:
             target = booth.participants.get(target_id)
             if requester is None or target is None:
                 raise ValueError('Requester or target participant does not exist in this booth.')
-            if target.role != 'interpreter':
-                raise ValueError('Only participants with interpreter role can be set active.')
-            requester_is_coordinator = requester.role == 'coordinator'
+            if target.role not in ('interpreter', 'room_coordinator', 'event_owner', 'super_admin'):
+                raise ValueError('Only interpreters or admins can be set active.')
+            requester_is_admin = requester.role in ('room_coordinator', 'event_owner', 'super_admin')
             requester_is_active = booth.active_interpreter_id == requester_id
             requester_is_target = requester_id == target_id
-            if not requester_is_coordinator and not requester_is_active and not requester_is_target:
-                raise PermissionError('Only coordinators or the active interpreter can reassign another interpreter.')
+            if not requester_is_admin and not requester_is_active and not requester_is_target:
+                raise PermissionError('Only coordinators/admins or the active interpreter can reassign another interpreter.')
             booth.active_interpreter_id = target_id
             booth.handoff_state = 'completed'
             for p in booth.participants.values():

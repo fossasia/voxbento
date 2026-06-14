@@ -413,7 +413,7 @@ def test_ws_three_way_coordinator_flow():
         ws_a.receive_text()   # booth:state broadcast to ws_a when IntB joined
 
         # Coordinator joins (2 pending from IntA + IntB joins; ws_a + ws_b queue 1 more)
-        _pid_coord = ws_join(ws_coord, 'Coord', 'coordinator', n_pending=2)
+        _pid_coord = ws_join(ws_coord, 'Coord', 'room_coordinator', n_pending=2)
         ws_a.receive_text()   # booth:state broadcast to ws_a when coordinator joined
         ws_b.receive_text()   # booth:state broadcast to ws_b when coordinator joined
 
@@ -524,7 +524,7 @@ def test_ws_coordinator_can_switch_active_interpreter():
         # Coordinator joins; IntA gets a state broadcast
         ws_coord.send_text(json.dumps({
             'type': 'booth:join', 'display_name': 'Coord',
-            'role': 'coordinator', 'language': 'French', 'channel_id': 'switch-booth-audio',
+            'role': 'room_coordinator', 'language': 'French', 'channel_id': 'switch-booth-audio',
         }))
         joined_coord = json.loads(ws_coord.receive_text())
         if joined_coord['type'] != 'booth:joined':
@@ -621,7 +621,7 @@ def test_whip_url_coordinator_rejected():
     with client.websocket_connect(f'/ws/booth/{booth}', cookies=_ws_auth()) as ws:
         ws.send_text(json.dumps({
             'type': 'booth:join', 'display_name': 'Coord',
-            'role': 'coordinator', 'language': 'English', 'channel_id': channel,
+            'role': 'room_coordinator', 'language': 'English', 'channel_id': channel,
         }))
         joined = json.loads(ws.receive_text())
         if joined['type'] != 'booth:joined':
@@ -764,7 +764,7 @@ def test_interpreter_booth_admin_user_gets_event_admin_role():
     """A user with is_admin=True gets event_admin role without needing a membership."""
     res = client.get('/interpreter/myevent/en', cookies=_admin_user_cookie())
     assert res.status_code == 200
-    assert b"data-granted-role='event_admin'" in res.content
+    assert b"data-granted-role='event_owner'" in res.content
 
 
 def test_legacy_interpreter_booth_requires_auth():

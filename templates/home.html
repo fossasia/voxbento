@@ -18,7 +18,7 @@
         <a href="/login">Sign In</a>
         <a href="/register">Register</a>
         {% endif %}
-        <a href="/admin/login">Admin Panel</a>
+        <a href="/admin/">Admin Panel</a>
       </nav>
     </header>
 
@@ -44,7 +44,11 @@
               <p style="margin-bottom: 0;">Role: <span class="badge badge-role badge-{{ b.membership.role }}">{{ b.membership.role }}</span></p>
             </div>
             <div class="card-footer">
-              <a href="/interpreter" class="btn btn-primary" style="width: 100%; text-align: center;">Go to Lobby ↗</a>
+              {% if b.membership.role in ['room_coordinator', 'event_owner', 'super_admin'] %}
+                <a href="/mission-control/{{ b.event_slug }}/" class="btn btn-primary" style="width: 100%; text-align: center;">Go to Mission Control ↗</a>
+              {% else %}
+                <a href="/interpreter" class="btn btn-primary" style="width: 100%; text-align: center;">Go to Lobby ↗</a>
+              {% endif %}
             </div>
           </div>
           {% endfor %}
@@ -118,7 +122,7 @@
           {% if current_user %}
           <p>No events are currently configured. Admins can create events in the <a href="/admin/">Admin Panel</a>.</p>
           {% else %}
-          <p>No events are currently configured. Admins can <a href="/admin/login">sign in</a> to set up events and booths.</p>
+          <p>No events are currently configured. Admins can <a href="/admin/">sign in</a> to set up events and booths.</p>
           {% endif %}
         </div>
       </section>

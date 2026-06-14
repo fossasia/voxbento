@@ -393,6 +393,18 @@
                 while (tHistoryBox.children.length > 50) tHistoryBox.removeChild(tHistoryBox.firstChild);
                 captionsBox.scrollTop = captionsBox.scrollHeight;
               }
+            } else if (data.type === 'booth:state') {
+              if (data.state && data.state.broadcast_unlocked === false) {
+                WhepListener.stop();
+                setStatus('Broadcast is currently locked by the organizers.', 'error');
+                roomSelect.value = "";
+                languageSelect.innerHTML = '<option value="">-- Select Language --</option>';
+                languageSelect.disabled = true;
+                captionModeSelect.disabled = true;
+                captionModeSelect.value = 'original';
+                translationLangSelect.innerHTML = '';
+                updateCaptionLayout();
+              }
             }
           } catch (e) {
             console.error('Failed to parse caption data', e);

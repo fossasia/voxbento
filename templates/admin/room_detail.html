@@ -21,6 +21,7 @@
 </div>
 
 <!-- Room Settings Form -->
+{% if is_event_owner %}
 <form method="post" action="/admin/events/{{ event.id }}/rooms/{{ room.id }}/edit" class="token-form">
   <div class="token-form-card" style="margin-bottom: 1.5rem;">
     <h3>Room Settings</h3>
@@ -178,10 +179,12 @@
     </div>
   </div>
 </form>
+{% endif %}
 
 <script>
   document.addEventListener('DOMContentLoaded', function() {
     const providerSelect = document.getElementById('floor_transcription_provider');
+    if (!providerSelect) return;
     const modelSelect = document.getElementById('floor_transcription_model');
     const allOptions = Array.from(modelSelect.options);
 
@@ -356,12 +359,99 @@ async function stopFloorTranscription(roomId) {
   {% endif %}
 </div>
 
+<!-- Assigned Members -->
+<div class="section-card">
+  <div class="section-header">
+    <h2>Assigned Room Coordinators</h2>
+  </div>
+  
+  {% if request.query_params.get('error') == 'user_not_found' %}
+  <div class="alert alert-danger" style="margin-bottom: 1rem; color: #d32f2f; background-color: #fde0e0; padding: 10px; border-radius: 4px;">
+    <strong>Error:</strong> User with that email address was not found. They must register first.
+  </div>
+  {% endif %}
+  {% if request.query_params.get('error') == 'invalid_role' %}
+  <div class="alert alert-danger" style="margin-bottom: 1rem; color: #d32f2f; background-color: #fde0e0; padding: 10px; border-radius: 4px;">
+    <strong>Error:</strong> Invalid role selected. Only room_coordinator is allowed.
+  </div>
+  {% endif %}
+
+  <!-- Assign Member Form -->
+  <div class="token-form-card" style="margin-bottom: 1.5rem;">
+    <h3>Assign Coordinator</h3>
+    <form method="post" action="/admin/events/{{ event.id }}/rooms/{{ room.id }}/members/" class="token-form">
+      <div class="form-row">
+        <div class="form-group">
+          <label for="member_email">User Email</label>
+          <input type="email" name="email" id="member_email" class="input" placeholder="user@example.com" required />
+        </div>
+        <div class="form-group">
+          <label for="member_role">Role</label>
+          <select name="role" id="member_role" class="input" required>
+            <option value="room_coordinator" selected>room_coordinator</option>
+          </select>
+        </div>
+        <div class="form-group form-group-btn">
+          <button type="submit" class="btn btn-primary">Assign</button>
+        </div>
+      </div>
+    </form>
+  </div>
+
+  {% if memberships %}
+  <table class="data-table">
+    <thead>
+      <tr>
+        <th>Email</th>
+        <th>Display Name</th>
+        <th>Account Status</th>
+        <th>Room Role</th>
+        <th>Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for m in memberships %}
+      {% set u = m.user %}
+      <tr class="row-assigned">
+        <td>{{ u.email }}</td>
+        <td>{{ u.display_name }}</td>
+        <td>
+          {% if u.is_active %}
+          <span class="status-live">● Active</span>
+          {% else %}
+          <span class="status-offline">○ Inactive</span>
+          {% endif %}
+        </td>
+        <td>
+          <span class="badge badge-role badge-{{ m.role }}">{{ m.role }}</span>
+        </td>
+        <td class="actions-cell">
+          <form method="post"
+                action="/admin/events/{{ event.id }}/rooms/{{ room.id }}/members/{{ m.id }}/delete"
+                class="inline-form"
+                data-confirm="Remove {{ u.display_name }} from this room?">
+            <button type="submit" class="btn btn-sm btn-danger">Remove</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <div class="empty-state">
+    <p>No coordinators are assigned to this room yet.</p>
+  </div>
+  {% endif %}
+</div>
+
+{% if is_event_owner %}
 <div class="danger-zone">
   <h3>Danger Zone</h3>
   <form method="post" action="/admin/events/{{ event.id }}/rooms/{{ room.id }}/delete" class="inline-delete"
-        onsubmit="return confirm('Delete room \'{{ room.display_name }}\'? All booths in this room will be removed.')">
+        data-confirm="Delete room '{{ room.display_name }}'? All booths in this room will be removed.">
     <button type="submit" class="btn btn-danger">Delete Room</button>
     <span class="danger-text">This removes all booths and their invite tokens.</span>
   </form>
 </div>
+{% endif %}
 {% endblock %}

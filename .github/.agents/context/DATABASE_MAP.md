@@ -113,7 +113,7 @@ Properties: `is_expired` (compares UTC), `is_used` (used_at is not None).
 | `id` | Integer PK | — |
 | `user_id` | FK → users.id CASCADE | — |
 | `event_id` | FK → events.id CASCADE | — |
-| `role` | String(20) | e.g. `event_admin`, `coordinator`, `interpreter`, `listener` |
+| `role` | String(20) | e.g. `event_owner`, `room_room_coordinator`, `interpreter` |
 
 Unique on `(user_id, event_id)` — one role per user per event.
 
@@ -126,7 +126,7 @@ Unique on `(user_id, event_id)` — one role per user per event.
 | `id` | Integer PK | — |
 | `user_id` | FK → users.id CASCADE | — |
 | `booth_id` | FK → booths.id CASCADE | — |
-| `role` | String(20) | e.g. `interpreter`, `coordinator` |
+| `role` | String(20) | e.g. `interpreter`, `room_room_coordinator` |
 
 Unique on `(user_id, booth_id)`.
 

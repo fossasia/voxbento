@@ -383,7 +383,7 @@ async def test_get_invite_token(db: AsyncSession):
         db, event_id=ev.id, room_id=room.id,
         language_code='en', language_name='English',
     )
-    tok = await create_invite_token(db, booth_id=booth.id, role='listener')
+    tok = await create_invite_token(db, booth_id=booth.id, role=)
     found = await get_invite_token(db, tok.token)
     assert found is not None
     assert found.token == tok.token
@@ -461,7 +461,7 @@ async def test_invite_token_not_expired_when_no_expiry(db: AsyncSession):
         db, event_id=ev.id, room_id=room.id,
         language_code='en', language_name='English',
     )
-    tok = await create_invite_token(db, booth_id=booth.id, role='listener')
+    tok = await create_invite_token(db, booth_id=booth.id, role=)
     assert tok.is_expired is False
 
 
@@ -475,7 +475,7 @@ async def test_invite_token_not_expired_when_future(db: AsyncSession):
     )
     future = datetime.now(tz=timezone.utc) + timedelta(hours=24)
     tok = await create_invite_token(
-        db, booth_id=booth.id, role='listener', expires_at=future,
+        db, booth_id=booth.id, role=expires_at=future,
     )
     assert tok.is_expired is False
 
@@ -489,7 +489,7 @@ async def test_list_tokens_for_booth(db: AsyncSession):
         language_code='en', language_name='English',
     )
     await create_invite_token(db, booth_id=booth.id, role='interpreter')
-    await create_invite_token(db, booth_id=booth.id, role='listener')
+    await create_invite_token(db, booth_id=booth.id, role=)
     tokens = await list_tokens_for_booth(db, booth.id)
     assert len(tokens) == 2
 
@@ -507,7 +507,7 @@ async def test_cascade_delete_event_removes_rooms_and_booths(db: AsyncSession):
         db, event_id=ev.id, room_id=room.id,
         language_code='en', language_name='English',
     )
-    await create_invite_token(db, booth_id=booth.id, role='listener')
+    await create_invite_token(db, booth_id=booth.id, role=)
 
     await delete_event(db, ev.id)
     assert await get_room_by_id(db, room.id) is None

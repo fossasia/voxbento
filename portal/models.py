@@ -73,6 +73,7 @@ class Event(Base):
     encrypted_gemini_api_key: Mapped[str | None] = mapped_column("gemini_api_key", Text, nullable=True, default=None)
     encrypted_anthropic_api_key: Mapped[str | None] = mapped_column("anthropic_api_key", Text, nullable=True, default=None)
     encrypted_groq_api_key: Mapped[str | None] = mapped_column("groq_api_key", Text, nullable=True, default=None)
+    listener_join_code: Mapped[str | None] = mapped_column(String(64), nullable=True, default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
     rooms: Mapped[list[Room]] = relationship(back_populates='event', cascade='all, delete-orphan')
@@ -146,6 +147,9 @@ class DBBooth(Base):
     transcription_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default='0')
     transcription_provider: Mapped[str] = mapped_column(String(20), default='local', server_default=sa.text("'local'"))
     transcription_model: Mapped[str] = mapped_column(String(20), default='tiny', server_default=sa.text("'tiny'"))
+    
+    # Broadcast Lock
+    broadcast_unlocked: Mapped[bool] = mapped_column(Boolean, default=False, server_default='0')
     
     # Translation Settings
     translation_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default='0')
@@ -331,6 +335,9 @@ class User(Base):
     memberships: Mapped[list[EventMembership]] = relationship(
         back_populates='user', cascade='all, delete-orphan',
     )
+    room_memberships: Mapped[list['RoomMembership']] = relationship(
+        back_populates='user', cascade='all, delete-orphan',
+    )
     booth_memberships: Mapped[list[BoothMembership]] = relationship(
         back_populates='user', cascade='all, delete-orphan',
     )
@@ -350,9 +357,9 @@ class User(Base):
 # EventMembership
 # ---------------------------------------------------------------------------
 
-# Roles valid for event memberships (no super_admin — that's system-level)
-EVENT_ROLES = frozenset({'listener', 'interpreter', 'coordinator', 'event_admin'})
-BOOTH_ROLES = frozenset({'listener', 'interpreter', 'coordinator'})
+EVENT_ROLES = frozenset({'interpreter', 'room_coordinator', 'event_owner'})
+ROOM_ROLES = frozenset({'room_coordinator'})
+BOOTH_ROLES = frozenset({'interpreter', 'room_coordinator'})
 
 
 class EventMembership(Base):
@@ -419,3 +426,38 @@ class BoothMembership(Base):
 
     def __repr__(self) -> str:
         return f'<BoothMembership user={self.user_id} booth={self.booth_id} role={self.role!r}>'
+
+
+# ---------------------------------------------------------------------------
+# RoomMembership
+# ---------------------------------------------------------------------------
+
+
+class RoomMembership(Base):
+    """Per-room role assignment for a user.
+
+    Used to assign specific coordinators to specific rooms.
+    """
+
+    __tablename__ = 'room_memberships'
+    __table_args__ = (
+        Index('ix_membership_user_room', 'user_id', 'room_id', unique=True),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey('users.id', ondelete='CASCADE'))
+    room_id: Mapped[int] = mapped_column(ForeignKey('rooms.id', ondelete='CASCADE'))
+    role: Mapped[str] = mapped_column(String(20))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+    user: Mapped[User] = relationship(back_populates='room_memberships')
+    room: Mapped[Room] = relationship()
+
+    @validates('role')
+    def _validate_role(self, _key: str, value: str) -> str:
+        if value not in ROOM_ROLES:
+            raise ValueError(f"Invalid room role '{value}'. Must be one of: {', '.join(sorted(ROOM_ROLES))}")
+        return value
+
+    def __repr__(self) -> str:
+        return f'<RoomMembership user={self.user_id} room={self.room_id} role={self.role!r}>'

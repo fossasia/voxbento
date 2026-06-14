@@ -11,5 +11,37 @@
   <body>
 
     <main>{% block content %}{% endblock %}</main>
+    
+    <!-- Toast Container -->
+    <div id="toast-container" style="position: fixed; bottom: 20px; right: 20px; z-index: 9999; display: flex; flex-direction: column; gap: 10px;"></div>
+    
+    <script>
+      window.showToast = function(message, type = 'error') {
+        const container = document.getElementById('toast-container');
+        const toast = document.createElement('div');
+        toast.style.padding = '12px 20px';
+        toast.style.borderRadius = '8px';
+        toast.style.color = 'white';
+        toast.style.fontFamily = 'Inter, sans-serif';
+        toast.style.fontSize = '14px';
+        toast.style.fontWeight = '500';
+        toast.style.boxShadow = '0 4px 12px rgba(0,0,0,0.15)';
+        toast.style.backgroundColor = type === 'error' ? '#e53e3e' : '#3182ce';
+        toast.style.transition = 'opacity 0.3s ease-in-out';
+        toast.textContent = message;
+        
+        container.appendChild(toast);
+        
+        setTimeout(() => {
+          toast.style.opacity = '0';
+          setTimeout(() => toast.remove(), 300);
+        }, 4000);
+      };
+      
+      // Override alert to use toasts globally
+      window.alert = function(msg) {
+        window.showToast(msg, 'error');
+      };
+    </script>
   </body>
 </html>

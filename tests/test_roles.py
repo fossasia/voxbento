@@ -27,17 +27,16 @@ from portal.roles import (
 # ── Role type completeness ──────────────────────────────────────────────
 
 
-def test_all_roles_has_five_entries():
-    assert len(ALL_ROLES) == 5
+def test_all_roles_has_four_entries():
+    assert len(ALL_ROLES) == 4
 
 
 def test_all_roles_values():
     assert ALL_ROLES == frozenset({
         'super_admin',
-        'event_admin',
-        'coordinator',
+        'event_owner',
+        'room_coordinator',
         'interpreter',
-        'listener',
     })
 
 
@@ -98,8 +97,8 @@ def test_super_admin_has_all_permissions():
 # ── can_go_live ──────────────────────────────────────────────────────────
 
 
-ROLES_THAT_CAN_GO_LIVE = {'coordinator', 'interpreter', 'event_admin', 'super_admin'}
-ROLES_THAT_CANNOT_GO_LIVE = {'listener'}
+ROLES_THAT_CAN_GO_LIVE = {'room_coordinator', 'interpreter', 'event_owner', 'super_admin'}
+ROLES_THAT_CANNOT_GO_LIVE = set()
 
 
 @pytest.mark.parametrize('role', list(ROLES_THAT_CAN_GO_LIVE))
@@ -107,16 +106,11 @@ def test_can_go_live_granted(role: ParticipantRole):
     assert can_go_live(role) is True
 
 
-@pytest.mark.parametrize('role', list(ROLES_THAT_CANNOT_GO_LIVE))
-def test_can_go_live_denied(role: ParticipantRole):
-    assert can_go_live(role) is False
-
-
 # ── can_set_active ───────────────────────────────────────────────────────
 
 
-ROLES_THAT_CAN_SET_ACTIVE = {'coordinator', 'event_admin', 'super_admin'}
-ROLES_THAT_CANNOT_SET_ACTIVE = {'interpreter', 'listener'}
+ROLES_THAT_CAN_SET_ACTIVE = {'room_coordinator', 'event_owner', 'super_admin'}
+ROLES_THAT_CANNOT_SET_ACTIVE = {'interpreter'}
 
 
 @pytest.mark.parametrize('role', list(ROLES_THAT_CAN_SET_ACTIVE))
@@ -132,8 +126,8 @@ def test_can_set_active_denied(role: ParticipantRole):
 # ── can_manage_booths ────────────────────────────────────────────────────
 
 
-ROLES_THAT_CAN_MANAGE_BOOTHS = {'event_admin', 'super_admin'}
-ROLES_THAT_CANNOT_MANAGE_BOOTHS = {'coordinator', 'interpreter', 'listener'}
+ROLES_THAT_CAN_MANAGE_BOOTHS = {'event_owner', 'super_admin', 'room_coordinator'}
+ROLES_THAT_CANNOT_MANAGE_BOOTHS = {'interpreter'}
 
 
 @pytest.mark.parametrize('role', list(ROLES_THAT_CAN_MANAGE_BOOTHS))
@@ -153,7 +147,7 @@ def test_can_manage_events_super_admin():
     assert can_manage_events('super_admin') is True
 
 
-@pytest.mark.parametrize('role', ['event_admin', 'coordinator', 'interpreter', 'listener'])
+@pytest.mark.parametrize('role', ['event_owner', 'room_coordinator', 'interpreter'])
 def test_can_manage_events_denied(role: ParticipantRole):
     assert can_manage_events(role) is False
 
@@ -161,12 +155,12 @@ def test_can_manage_events_denied(role: ParticipantRole):
 # ── is_admin_role ────────────────────────────────────────────────────────
 
 
-@pytest.mark.parametrize('role', ['super_admin', 'event_admin'])
+@pytest.mark.parametrize('role', ['super_admin', 'event_owner', 'room_coordinator'])
 def test_is_admin_role_true(role: ParticipantRole):
     assert is_admin_role(role) is True
 
 
-@pytest.mark.parametrize('role', ['coordinator', 'interpreter', 'listener'])
+@pytest.mark.parametrize('role', ['interpreter'])
 def test_is_admin_role_false(role: ParticipantRole):
     assert is_admin_role(role) is False
 
@@ -182,27 +176,25 @@ def test_role_permissions_are_frozensets():
 def test_privilege_escalation_hierarchy():
     """Higher-privilege roles must be a superset of lower-privilege roles.
 
-    super_admin ⊇ event_admin ⊇ coordinator (for booth-level permissions).
+    super_admin ⊇ event_owner ⊇ room_coordinator (for booth-level permissions).
     """
     sa = ROLE_PERMISSIONS['super_admin']
-    ea = ROLE_PERMISSIONS['event_admin']
-    coord = ROLE_PERMISSIONS['coordinator']
-    listener = ROLE_PERMISSIONS['listener']
+    ea = ROLE_PERMISSIONS['event_owner']
+    coord = ROLE_PERMISSIONS['room_coordinator']
 
-    assert listener.issubset(coord), 'listener perms must be subset of coordinator'
-    assert ROLE_PERMISSIONS['interpreter'].issubset(coord), 'interpreter perms must be subset of coordinator'
-    assert coord.issubset(ea), 'coordinator perms must be subset of event_admin'
-    assert coord.issubset(ea), 'coordinator perms must be subset of event_admin'
-    assert ea.issubset(sa), 'event_admin perms must be subset of super_admin'
+    assert ROLE_PERMISSIONS['interpreter'].issubset(coord), 'interpreter perms must be subset of room_coordinator'
+    assert coord.issubset(ea), 'room_coordinator perms must be subset of event_owner'
+    assert coord.issubset(ea), 'room_coordinator perms must be subset of event_owner'
+    assert ea.issubset(sa), 'event_owner perms must be subset of super_admin'
 
 
 def test_interpreter_is_subset_of_coordinator():
-    """Interpreter has BOOTH_GO_LIVE, which coordinator now also has.
+    """Interpreter has BOOTH_GO_LIVE, which room_coordinator now also has.
 
-    This means interpreter permissions are a strict subset of coordinator permissions.
+    This means interpreter permissions are a strict subset of room_coordinator permissions.
     """
     interp = ROLE_PERMISSIONS['interpreter']
-    coord = ROLE_PERMISSIONS['coordinator']
+    coord = ROLE_PERMISSIONS['room_coordinator']
     assert interp.issubset(coord)
     assert not coord.issubset(interp)
 
@@ -211,13 +203,14 @@ def test_interpreter_is_subset_of_coordinator():
 
 
 def test_existing_booth_roles_still_valid():
-    """The three original booth roles must remain valid ParticipantRole values."""
-    original_roles = ['interpreter', 'coordinator', 'listener']
+    """The original booth role must remain valid ParticipantRole values."""
+    original_roles = ['interpreter']
     for role in original_roles:
         assert role in ALL_ROLES
 
 
 def test_new_admin_roles_are_valid():
-    """The two new admin roles must be valid ParticipantRole values."""
-    assert 'event_admin' in ALL_ROLES
+    """The new admin roles must be valid ParticipantRole values."""
+    assert 'event_owner' in ALL_ROLES
     assert 'super_admin' in ALL_ROLES
+    assert 'room_coordinator' in ALL_ROLES

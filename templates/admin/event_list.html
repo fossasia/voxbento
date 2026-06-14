@@ -40,7 +40,7 @@
       <td>
         <a href="/admin/events/{{ ev.id }}/" class="btn btn-sm">View</a>
         <form method="post" action="/admin/events/{{ ev.id }}/delete" class="inline-delete"
-              onsubmit="return confirm('Delete event \'{{ ev.display_name }}\'? This will remove all rooms, booths, and tokens.')">
+              data-confirm="Delete event '{{ ev.display_name }}'? This will remove all rooms, booths, and tokens.">
           <button type="submit" class="btn btn-sm btn-danger">Delete</button>
         </form>
       </td>

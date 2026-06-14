@@ -105,7 +105,7 @@
 
 <div style="margin-top: 3rem;">
   <form method="post" action="/admin/users/{{ user_detail.id }}/delete"
-        onsubmit="return confirm('Delete user {{ user_detail.email }}? This cannot be undone.')">
+        data-confirm="Delete user {{ user_detail.email }}? This cannot be undone.">
     <button type="submit" class="btn btn-danger">Delete User Account</button>
   </form>
 </div>

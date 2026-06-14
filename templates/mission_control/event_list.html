@@ -1,0 +1,33 @@
+{% extends 'admin/base.html' %}
+
+{% block title %}Mission Control Events | Voxbento{% endblock %}
+
+{% block content %}
+<div class="container" style="margin-top: 2rem;">
+  <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem;">
+    <h2>Mission Control</h2>
+  </div>
+  
+  <p style="margin-bottom: 1.5rem; color: var(--color-muted);">
+    Select an event to open the Mission Control dashboard. You can monitor and control all active booths in real-time.
+  </p>
+
+  {% if events %}
+  <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 1rem;">
+    {% for ev in events %}
+    <div class="card" style="padding: 1.5rem;">
+      <h3 style="margin-top: 0;">{{ ev.display_name }}</h3>
+      <p style="color: var(--color-muted); font-size: 0.9rem;">Slug: {{ ev.slug }}</p>
+      <a href="/mission-control/{{ ev.slug }}/" class="btn btn-primary" style="display: inline-block; margin-top: 1rem;">
+        Open Dashboard
+      </a>
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="card" style="padding: 2rem; text-align: center;">
+    <p style="color: var(--color-muted); margin: 0;">You are not assigned as a Room Coordinator or Admin to any events.</p>
+  </div>
+  {% endif %}
+</div>
+{% endblock %}

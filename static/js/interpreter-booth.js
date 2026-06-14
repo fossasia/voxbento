@@ -461,11 +461,14 @@ async function fetchIngestReachability() {
 
 function applyBoothState(payload, { skipAutoStart = false } = {}) {
   const previousActiveInterpreterId = state.activeInterpreterId
+  const previousBroadcastUnlocked = state.broadcastUnlocked
+
   state.participants = payload.participants || []
   state.activeInterpreterId = payload.active_interpreter_id || null
   state.chatMessages = payload.chat_messages || []
   state.handoffState = payload.handoff_state || 'idle'
   state.handoffInitiatorId = payload.handoff_initiator_id || null
+  state.broadcastUnlocked = payload.broadcast_unlocked || false
 
   // Ensure non-active interpreters are always muted locally
   if (state.participantId && state.activeInterpreterId !== state.participantId) {
@@ -495,7 +498,13 @@ function applyBoothState(payload, { skipAutoStart = false } = {}) {
     state.activeInterpreterId !== state.participantId &&
     previousActiveInterpreterId === state.participantId
 
-  if (lostActivePublisher) {
+  const becameUnlocked = state.broadcastUnlocked && !previousBroadcastUnlocked
+  const becameLocked = !state.broadcastUnlocked && previousBroadcastUnlocked
+
+  const lostPublishingRights = 
+    lostActivePublisher || (becameLocked && state.activeInterpreterId === state.participantId)
+
+  if (lostPublishingRights) {
     state.relayingOut = true
     if (state.micStream) {
       state.micStream.getAudioTracks().forEach((t) => { t.enabled = false })
@@ -508,8 +517,10 @@ function applyBoothState(payload, { skipAutoStart = false } = {}) {
     })
   }
 
-  // Auto-start ingest when becoming active
-  if (!skipAutoStart && becameActive && !state.ingestConnected && state.ingestReachable) {
+  // Auto-start ingest when becoming active or when broadcast unlocks
+  const shouldStartIngest = (becameActive || becameUnlocked) && state.activeInterpreterId === state.participantId && state.broadcastUnlocked
+
+  if (!skipAutoStart && shouldStartIngest && !state.ingestConnected && state.ingestReachable) {
     if (state.micMuted) {
       state.micMuted = false
       if (state.micStream) {
@@ -588,8 +599,8 @@ function joinMonitoringFeed() {
       'config.prejoinPageEnabled': 'false',
       'config.disableInitialGUM': 'false',
       'config.disableDeepLinking': 'true',
-      'config.toolbarButtons': '["microphone", "camera", "chat", "participants-pane", "tileview", "fullscreen", "settings"]',
-      'interfaceConfig.TOOLBAR_BUTTONS': '["microphone", "camera", "chat", "participants-pane", "tileview", "fullscreen", "settings"]',
+      'config.toolbarButtons': '["microphone","camera","chat","participants-pane","tileview","fullscreen","settings"]',
+      'interfaceConfig.TOOLBAR_BUTTONS': '["microphone","camera","chat","participants-pane","tileview","fullscreen","settings"]',
     })
     
     const dName = portal.dataset.displayName || 'Interpreter'
@@ -1215,7 +1226,7 @@ function renderRoleControls() {
 function renderParticipants() {
   const currentParticipant = state.participants.find((p) => p.participant_id === state.participantId)
   const isActiveInterpreter = state.activeInterpreterId === state.participantId
-  const canReassign = currentParticipant?.role === 'coordinator' || isActiveInterpreter
+  const canReassign = ['room_coordinator', 'event_owner', 'super_admin'].includes(currentParticipant?.role) || isActiveInterpreter
   const activeParticipant = state.participants.find((p) => p.participant_id === state.activeInterpreterId)
   setBadge(
     elements.activeIndicator,
@@ -1231,7 +1242,7 @@ function renderParticipants() {
       tile.classList.add('active')
     }
     const canActivateSelf = participant.participant_id === state.participantId
-    const canActivate = participant.role === 'interpreter' && (canReassign || canActivateSelf)
+    const canActivate = ['interpreter', 'room_coordinator', 'event_owner', 'super_admin'].includes(participant.role) && (canReassign || canActivateSelf)
     const isThisActive = participant.participant_id === state.activeInterpreterId
 
     const top = document.createElement('div')
@@ -1243,7 +1254,14 @@ function renderParticipants() {
     }
     const rolePill = document.createElement('span')
     rolePill.className = `participant-pill${isThisActive ? ' live' : ''}`
-    rolePill.textContent = isThisActive ? 'Active' : 'Passive'
+    
+    if (participant.role === 'interpreter') {
+      rolePill.textContent = isThisActive ? 'Active' : 'Passive'
+    } else {
+      rolePill.textContent = participant.role.replace('_', ' ')
+      rolePill.style.textTransform = 'capitalize'
+    }
+    
     top.append(nameEl, rolePill)
 
     const meta = document.createElement('div')
@@ -1262,7 +1280,7 @@ function renderParticipants() {
     pillGroup.append(micPill, ingestPill)
     bottom.append(pillGroup)
 
-    if (participant.role === 'interpreter') {
+    if (['interpreter', 'room_coordinator', 'event_owner', 'super_admin'].includes(participant.role)) {
       const btn = document.createElement('button')
       btn.type = 'button'
       if (isThisActive) {
@@ -1326,6 +1344,9 @@ function renderMicControls() {
   elements.toggleMic.setAttribute('title', state.micMuted ? 'Unmute (Space)' : 'Mute (Space)')
 
   elements.toggleMic.disabled = !isActive
+  if (!state.broadcastUnlocked) {
+    elements.toggleMic.setAttribute('title', 'Broadcast locked by Coordinator (Local test only)')
+  }
   elements.micDeviceSelect.disabled = state.ingestConnected
 
   if (state.ingestConnected && portal.dataset.eventSlug) {
@@ -1364,7 +1385,7 @@ function renderHandoverButton() {
   const isActive = state.activeInterpreterId === state.participantId
   const hState = state.handoffState
   const iAmInitiator = state.handoffInitiatorId === state.participantId
-  const hasPartner = state.participants.filter(p => p.role === 'interpreter').length > 1
+  const hasPartner = state.participants.filter(p => ['interpreter', 'room_coordinator', 'event_owner', 'super_admin'].includes(p.role)).length > 1
 
   // Remove all state classes
   elements.handoverBtn.classList.remove('state-grey', 'state-green', 'state-flash-yellow')
