@@ -4,13 +4,13 @@ sidebarTitle: "Joining a Booth"
 description: "Learn how to access your assigned Voxbento interpretation booth — either through a coordinator-issued invite link or your registered account dashboard."
 ---
 
-Before you can start interpreting, you need to access the booth assigned to your language channel. Voxbento gives you two ways to do this: your coordinator can send you a one-click invite link that requires no account, or you can log in with a registered account and open the booth directly from your home dashboard. Both paths land you in the same interpreter console.
+Before you can start interpreting, you need to access the booth assigned to your language channel. Voxbento gives you two ways to do this: your room_coordinator can send you a one-click invite link that requires no account, or you can log in with a registered account and open the booth directly from your home dashboard. Both paths land you in the same interpreter console.
 
 ## Two Ways to Join
 
 ### Invite Link
 
-    Your coordinator shares a `/join/{token}` URL. Click it and you're in — no registration needed. Your role is already baked into the token.
+    Your room_coordinator shares a `/join/{token}` URL. Click it and you're in — no registration needed. Your role is already baked into the token.
   
   ### Registered Account
 
@@ -19,11 +19,11 @@ Before you can start interpreting, you need to access the booth assigned to your
 
 ## Using an Invite Link
 
-Your coordinator generates a token-based invite link from the booth detail page in the admin panel and shares it with you directly.
+Your room_coordinator generates a token-based invite link from the booth detail page in the admin panel and shares it with you directly.
 
 ### Click the invite link
 
-Open the link your coordinator shared — it looks like `https://voxbento-instance.com/join/{token}`. You don't need an account or a password.
+Open the link your room_coordinator shared — it looks like `https://voxbento-instance.com/join/{token}`. You don't need an account or a password.
   ### Browser opens the booth
 
 Voxbento validates the token, sets a secure session cookie, and redirects you straight to the interpreter booth for your assigned language channel.
@@ -32,19 +32,19 @@ Voxbento validates the token, sets a secure session cookie, and redirects you st
 Your role (interpreter or coordinator) is granted automatically from the token. You'll see the full interpreter console immediately.
 
 :::info
-Invite tokens can be set to expire after a number of hours. If you see an "invalid or expired token" message, ask your coordinator to generate a fresh link.
+Invite tokens can be set to expire after a number of hours. If you see an "invalid or expired token" message, ask your room_coordinator to generate a fresh link.
 :::
 
 ## Using a Registered Account
 
-If your organisation uses persistent accounts, your coordinator assigns you to a specific booth by email address rather than issuing a one-time token.
+If your organisation uses persistent accounts, your room_coordinator assigns you to a specific booth by email address rather than issuing a one-time token.
 
 ### Register for an account
 
 Go to `/register` and fill in your email address, display name, and a password of at least eight characters. You'll be redirected to your account page on success.
-  ### Wait for your coordinator to assign you
+  ### Wait for your room_coordinator to assign you
 
-Your coordinator opens the booth detail page in the admin panel, enters your email under **Assigned Members**, selects the `interpreter` role, and clicks **Assign Member**.
+Your room_coordinator opens the booth detail page in the admin panel, enters your email under **Assigned Members**, selects the `interpreter` role, and clicks **Assign Member**.
   ### Log in and open the booth
 
 Go to `/login` and sign in. Your home page lists every booth you've been assigned to. Click **Open Booth** next to the language channel you're interpreting for.
@@ -93,7 +93,7 @@ Use a modern browser — Chrome or Edge is recommended — for the best WebRTC a
 
 ## Joining as a Backup Interpreter
 
-You don't have to go live the moment you join. You can enter the booth, monitor the floor audio through the Jitsi iframe, and stay silent until the coordinator sets you as the active interpreter.
+You don't have to go live the moment you join. You can enter the booth, monitor the floor audio through the Jitsi iframe, and stay silent until the room_coordinator sets you as the active interpreter.
 
 :::info
 You can join as a backup interpreter (not active) and monitor the floor without going live. The active interpreter is shown in the participant roster so you always know who is currently on air.

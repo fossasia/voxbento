@@ -1,12 +1,16 @@
 """Persistence verification script — run after docker compose down/up."""
 import asyncio
 import sys
+
 sys.path.insert(0, '/app')
 
 async def check():
     from portal.database import (
-        get_session, list_events, list_rooms_for_event,
-        list_booths_for_event, list_tokens_for_booth,
+        get_session,
+        list_booths_for_event,
+        list_events,
+        list_rooms_for_event,
+        list_tokens_for_booth,
     )
     print('=== PERSISTENCE TEST AFTER docker compose down/up ===')
     print()

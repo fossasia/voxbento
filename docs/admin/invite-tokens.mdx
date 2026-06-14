@@ -15,7 +15,7 @@ Invite tokens let you bring participants into a booth without requiring them to 
 An invite token is a single-use credential tied to a specific booth and role. It contains:
 
 - The **booth** the token grants access to.
-- The **role** the bearer receives when they join — `listener`, `interpreter`, or `coordinator`.
+- The **role** the bearer receives when they join — `listener`, `interpreter`, or `room_coordinator`.
 - An optional **expiry time** after which the token can no longer be used.
 - A human-readable **label** you assign to help you track who the token was shared with.
 
@@ -29,8 +29,8 @@ Quickly onboard interpreters who don't have a registered account. Generate an in
 ### One-Time Attendees
 For events where listeners don't need persistent accounts, issue listener tokens and distribute them alongside your event registration materials.
 
-### Coordinator Access
-Give a coordinator temporary access to a specific booth without granting them a full event-level role.
+### Room Coordinator Access
+Give a room_coordinator temporary access to a specific booth without granting them a full event-level role.
 
 ### Testing Booths
 Generate a short-lived token to verify a booth is working before the event starts, then revoke it immediately after.
@@ -46,7 +46,7 @@ Scroll down to the **Invite Tokens** section on the booth detail page.
 ### 3. Fill in the token form
 Complete the three fields:
 
-- **Role** — select `listener`, `interpreter`, or `coordinator` from the dropdown.
+- **Role** — select `listener`, `interpreter`, or `room_coordinator` from the dropdown.
 - **Label** — a short note to help you remember who this token is for, e.g. `Alice — French interpreter` or `Press listener seat 12`.
 - **Expires in (hours)** — how many hours until the token becomes invalid. Leave this blank to create a token that never expires.
 

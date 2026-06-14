@@ -496,3 +496,36 @@ code { font-family: var(--font-mono); font-size: 0.875em; background: #f0f1f3; p
 
 /* Highlight rows with an assigned event role */
 .row-assigned { background: rgba(34, 197, 94, 0.06); }
+
+/* ── Custom Confirm Modal ────────────────────────────────────────────────── */
+
+.custom-modal-overlay {
+  position: fixed;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(0, 0, 0, 0.6);
+  backdrop-filter: blur(4px);
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.2s ease;
+}
+.custom-modal-overlay.active {
+  opacity: 1;
+  pointer-events: auto;
+}
+.custom-modal {
+  background: var(--color-surface);
+  border-radius: var(--radius);
+  width: 90%;
+  max-width: 400px;
+  padding: 24px;
+  box-shadow: 0 10px 25px rgba(0, 0, 0, 0.2);
+  transform: translateY(20px) scale(0.95);
+  transition: transform 0.2s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+}
+.custom-modal-overlay.active .custom-modal {
+  transform: translateY(0) scale(1);
+}

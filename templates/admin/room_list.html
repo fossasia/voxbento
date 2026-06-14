@@ -43,7 +43,7 @@
         <a href="/admin/events/{{ event.id }}/rooms/{{ rd.room.id }}/" class="btn btn-sm">View</a>
         <a href="/admin/events/{{ event.id }}/rooms/{{ rd.room.id }}/booths/" class="btn btn-sm">Booths</a>
         <form method="post" action="/admin/events/{{ event.id }}/rooms/{{ rd.room.id }}/delete" class="inline-delete"
-              onsubmit="return confirm('Delete room \'{{ rd.room.display_name }}\'? This will remove all booths in this room.')">
+              data-confirm="Delete room '{{ rd.room.display_name }}'? This will remove all booths in this room.">
           <button type="submit" class="btn btn-sm btn-danger">Delete</button>
         </form>
       </td>

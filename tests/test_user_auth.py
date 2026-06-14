@@ -11,7 +11,6 @@ import pytest
 
 from portal.auth import create_admin_token, create_user_token, hash_password, verify_password
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -33,6 +32,7 @@ def admin_cookie():
 
 def _client():
     from httpx import ASGITransport, AsyncClient
+
     from fastapi_app import app
     return AsyncClient(transport=ASGITransport(app=app), base_url='http://test')
 

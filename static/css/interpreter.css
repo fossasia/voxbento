@@ -60,14 +60,15 @@ body {
 .booth-layout {
   display: flex;
   flex-direction: column;
-  gap: 0.9rem;
-  height: calc(100vh - 80px);
+  gap: 0;
+  height: 100vh;
+  overflow: hidden;
 }
 
 .booth-columns {
   display: grid;
   grid-template-columns: 1fr 340px;
-  gap: 0.9rem;
+  gap: 0;
   flex-grow: 1;
   min-height: 0;
 }
@@ -75,15 +76,16 @@ body {
 .booth-main-col {
   display: flex;
   flex-direction: column;
-  gap: 0.9rem;
   min-height: 0;
 }
 
 .booth-sidebar-col {
   display: flex;
   flex-direction: column;
-  gap: 0.9rem;
+  gap: 0;
   min-height: 0;
+  border-left: 1px solid var(--color-panel-border);
+  background: #fafbfc;
 }
 
 /* ── Inline Setup Panel ────────────────────────────────── */
@@ -127,13 +129,13 @@ body {
 }
 
 /* ── Main Column Sections ──────────────────────────────── */
-.booth-controls-header {
-  flex-shrink: 0;
-}
 .panel--jitsi {
   flex-grow: 1;
   display: flex;
   flex-direction: column;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
 }
 .panel--jitsi .panel-body {
   flex-grow: 1;
@@ -146,13 +148,7 @@ body {
   height: auto;
   min-height: 300px;
   border: none;
-  border-radius: 0 0 var(--radius) var(--radius);
-}
-.panel--jitsi .monitor-controls {
-  padding: 0.5rem 0.9rem;
-  background: #f8f9fa;
-  border-bottom: 1px solid var(--color-panel-border);
-  border-radius: var(--radius) var(--radius) 0 0;
+  border-radius: 0;
 }
 
 .panel {
@@ -493,21 +489,253 @@ label {
   flex-shrink: 0;
 }
 
-/* ── Google Meet–style control bar ───────────────────────── */
-.sidebar-body-scroll {
-  overflow-y: auto;
-}
-.panel--chat .chat-body {
-  flex-grow: 1;
+/* ── Full-width Header Bar ───────────────────────────────── */
+.booth-header {
   display: flex;
-  flex-direction: column;
-  padding: 0.7rem;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 0.5rem 1rem;
+  background: #ffffff;
+  border-bottom: 1px solid var(--color-panel-border);
+  flex-shrink: 0;
+  z-index: 100;
+  min-height: 52px;
+}
+
+.header-left,
+.header-right {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-shrink: 0;
+}
+
+.header-center {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+}
+
+/* ── Live Badge ──────────────────────────────────────────── */
+.live-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.3rem 0.75rem;
+  border-radius: 999px;
+  font-size: 0.82rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  border: 1px solid transparent;
+}
+
+.live-badge.off {
+  color: #6b7280;
+  background: #f3f4f6;
+  border-color: #e5e7eb;
+}
+
+.live-badge.on {
+  color: #16a34a;
+  background: rgb(22 163 74 / 0.1);
+  border-color: rgb(22 163 74 / 0.3);
+}
+
+.live-dot {
+  font-size: 0.9rem;
+  line-height: 1;
+}
+
+.live-badge.on .live-dot {
+  animation: pulse-live 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse-live {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
+/* ── Header Buttons (shared) ────────────────────────────── */
+.header-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.45rem 1rem;
+  border-radius: 0.5rem;
+  border: 1px solid var(--color-border);
+  background: #f3f4f6;
+  color: #374151;
+  font-size: 0.82rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  cursor: pointer;
+  text-decoration: none;
+  transition: background 0.15s, border-color 0.15s, box-shadow 0.15s;
+  white-space: nowrap;
+}
+
+.header-btn:hover:not(:disabled) {
+  border-color: #9ca3af;
+  background: #e5e7eb;
+}
+
+.header-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.header-btn-icon {
+  width: 1.1rem;
+  height: 1.1rem;
+  flex-shrink: 0;
+}
+
+.header-btn-label {
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  line-height: 1;
+}
+
+/* ── Handover Button States ─────────────────────────────── */
+.header-btn--handover.state-grey {
+  background: #f3f4f6;
+  color: #374151;
+  border-color: var(--color-border);
+}
+
+.header-btn--handover.state-green {
+  background: #22c55e;
+  color: #fff;
+  border-color: #16a34a;
+}
+
+.header-btn--handover.state-flash-yellow {
+  animation: flash-yellow 0.7s ease-in-out infinite;
+  color: #1c1e21;
+  border-color: #d97706;
+  font-weight: 700;
+}
+
+@keyframes flash-yellow {
+  0%, 100% { background: #fbbf24; box-shadow: 0 0 0 0 rgb(251 191 36 / 0.5); }
+  50% { background: #f59e0b; box-shadow: 0 0 8px 2px rgb(251 191 36 / 0.4); }
+}
+
+/* ── Mic Button (header version) ────────────────────────── */
+.header-btn--mic {
+  background: #f3f4f6;
+}
+
+.header-btn--mic.muted {
+  background: rgb(226 14 58 / 0.12);
+  color: #c0163e;
+  border-color: rgb(226 14 58 / 0.3);
+}
+
+.header-btn--mic.muted:hover {
+  background: rgb(226 14 58 / 0.2);
+}
+
+.header-btn--mic.unmuted {
+  background: rgb(22 163 74 / 0.1);
+  color: #16a34a;
+  border-color: rgb(22 163 74 / 0.3);
+}
+
+/* ── Leave Booth Button ─────────────────────────────────── */
+.header-btn--leave {
+  background: #dc2626;
+  color: #fff;
+  border-color: #b91c1c;
+}
+
+.header-btn--leave:hover {
+  background: #b91c1c;
+  border-color: #991b1b;
+  color: #fff;
+}
+
+/* ── Volume Slider Row ──────────────────────────────────── */
+.volume-slider-row {
+  display: flex;
+  align-items: center;
   gap: 0.6rem;
 }
-.panel--chat .chat-log {
+
+.volume-icon {
+  font-size: 1.1rem;
+  flex-shrink: 0;
+}
+
+.volume-slider {
   flex-grow: 1;
-  min-height: 0;
-  max-height: none;
+  height: 6px;
+  -webkit-appearance: none;
+  appearance: none;
+  background: #e5e7eb;
+  border-radius: 3px;
+  outline: none;
+}
+
+.volume-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--color-primary);
+  cursor: pointer;
+}
+
+.volume-slider::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: var(--color-primary);
+  cursor: pointer;
+  border: none;
+}
+
+.volume-label {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--color-text);
+  min-width: 2.5rem;
+  text-align: right;
+}
+
+/* ── Info tooltip icon ──────────────────────────────────── */
+.info-tooltip {
+  cursor: help;
+  color: var(--color-muted);
+  font-size: 0.9rem;
+}
+
+/* ── Participants dot ───────────────────────────────────── */
+.participants-dot {
+  color: #22c55e;
+  font-size: 0.75rem;
+}
+
+/* ── Keyboard shortcut hint ──────────────────────────────── */
+.ctrl-shortcut-hint {
+  margin: 0;
+  font-size: 0.72rem;
+  color: var(--color-muted);
+}
+
+.ctrl-shortcut-hint kbd {
+  display: inline-block;
+  border: 1px solid var(--color-border);
+  border-radius: 3px;
+  padding: 0 0.3em;
+  font-size: 0.7rem;
+  font-family: inherit;
+  background: #fff;
+  color: var(--color-text);
+  line-height: 1.4;
 }
 
 /* ── Collapsible Accordions (Details/Summary) ──────────── */
@@ -517,7 +745,7 @@ label {
 }
 .panel-header-details {
   cursor: pointer;
-  list-style: none; /* Hide native arrow */
+  list-style: none;
   user-select: none;
 }
 .panel-header-details::-webkit-details-marker {
@@ -540,167 +768,43 @@ label {
 }
 .sidebar-scrollable {
   overflow-y: auto;
-  padding-right: 0.2rem;
+  padding-right: 0;
   align-content: flex-start;
 }
-.setup-sidebar {
-  display: flex;
-  flex-direction: column;
-  gap: 0.8rem;
-}
-.control-bar {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 0.4rem;
-  padding: 0.65rem 1rem;
-  background: #f8f9fa;
-  border-top: 1px solid var(--color-panel-border);
+
+/* Sidebar panels (non-collapsible) */
+.sidebar-panel {
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
   border-bottom: 1px solid var(--color-panel-border);
-  border-radius: var(--radius);
-  box-shadow: var(--shadow-lightest);
 }
 
-.ctrl-row {
-  display: flex;
-  align-items: center;
-  gap: 0.65rem;
+.sidebar-panel .panel-header {
+  border-bottom: none;
+  padding: 0.6rem 0.9rem;
 }
 
-/* Compound button wrapper (mic toggle + chevron arrow) */
-.ctrl-compound {
-  display: flex;
-  align-items: stretch;
-  gap: 2px;
+/* Sidebar details panels */
+.booth-sidebar-col .panel-details {
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+  border-bottom: 1px solid var(--color-panel-border);
 }
 
-/* Base icon button */
-.ctrl-btn {
+/* Chat pinned open styling */
+.panel--chat .chat-body {
+  flex-grow: 1;
   display: flex;
   flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 0.18rem;
-  min-width: 3.2rem;
-  padding: 0.55rem 0.7rem;
-  border-radius: 0.6rem;
-  border: none;
-  background: #e4e6e8;
-  color: #1c1e21;
-  cursor: pointer;
-  transition:
-    background 0.15s,
-    box-shadow 0.15s;
+  padding: 0.7rem;
+  gap: 0.6rem;
 }
-
-.ctrl-btn:hover:not(:disabled) {
-  background: #d0d2d5;
-}
-
-.ctrl-btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-
-/* Left side of compound: same radius but square on the right */
-.ctrl-btn--mic {
-  border-radius: 0.6rem 0 0 0.6rem;
-}
-
-/* Right side of compound: the chevron arrow */
-.ctrl-chevron {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0 0.45rem;
-  border: none;
-  background: #e4e6e8;
-  border-radius: 0 0.6rem 0.6rem 0;
-  cursor: pointer;
-  color: #444;
-  transition: background 0.15s;
-}
-
-.ctrl-chevron:hover {
-  background: #d0d2d5;
-}
-
-/* SVG icon inside a ctrl-btn */
-.ctrl-icon {
-  width: 1.3rem;
-  height: 1.3rem;
-  flex-shrink: 0;
-}
-
-/* Small text label under icon */
-.ctrl-label {
-  font-size: 0.6rem;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  color: inherit;
-  line-height: 1;
-}
-
-/* ── Muted state ─────────────────────────────────────────── */
-.ctrl-btn--mic.muted,
-.ctrl-compound.muted .ctrl-btn--mic,
-.ctrl-compound.muted .ctrl-chevron {
-  background: rgb(226 14 58 / 0.14);
-  color: #c0163e;
-}
-
-.ctrl-btn--mic.muted:hover,
-.ctrl-compound.muted .ctrl-btn--mic:hover {
-  background: rgb(226 14 58 / 0.22);
-}
-
-@keyframes pulse-muted {
-  0%, 100% { box-shadow: 0 0 0 0 rgb(192 22 62 / 0.45); }
-  50%       { box-shadow: 0 0 0 7px rgb(192 22 62 / 0); }
-}
-
-.ctrl-btn--mic.muted {
-  animation: pulse-muted 1.6s ease-in-out infinite;
-}
-
-/* ── Live state ──────────────────────────────────────────── */
-#go-live.live {
-  background: var(--color-primary);
-  color: #fff;
-}
-
-#go-live.live:hover {
-  background: var(--color-primary-text);
-}
-
-/* ── Danger button (leave) ──────────────────────────────── */
-.ctrl-btn--danger {
-  background: #c0392b;
-  color: #fff;
-}
-
-.ctrl-btn--danger:hover:not(:disabled) {
-  background: #a93226;
-}
-
-/* ── Keyboard shortcut hint ──────────────────────────────── */
-.ctrl-shortcut-hint {
-  margin: 0;
-  font-size: 0.72rem;
-  color: var(--color-muted);
-}
-
-.ctrl-shortcut-hint kbd {
-  display: inline-block;
-  border: 1px solid var(--color-border);
-  border-radius: 3px;
-  padding: 0 0.3em;
-  font-size: 0.7rem;
-  font-family: inherit;
-  background: #fff;
-  color: var(--color-text);
-  line-height: 1.4;
+.panel--chat .chat-log {
+  flex-grow: 1;
+  min-height: 120px;
+  max-height: 200px;
 }
 
 /* ── Mic device picker popup ────────────────────────────── */
@@ -730,59 +834,6 @@ label {
   margin-top: 0.55rem;
 }
 
-/* ── Preflight checklist ─────────────────────────────────── */
-.preflight-list {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: grid;
-  gap: 0.5rem;
-}
-
-.preflight-item {
-  display: flex;
-  align-items: flex-start;
-  gap: 0.6rem;
-  padding: 0.45rem 0.55rem;
-  border-radius: var(--radius);
-  transition: background 0.15s;
-}
-
-.preflight-icon {
-  font-size: 1rem;
-  line-height: 1.35;
-  flex-shrink: 0;
-  width: 1.4rem;
-  text-align: center;
-}
-
-.preflight-info {
-  display: grid;
-  gap: 0.1rem;
-}
-
-.preflight-name {
-  font-size: 0.88rem;
-  font-weight: 500;
-  color: var(--color-text);
-}
-
-.preflight-msg {
-  font-size: 0.78rem;
-  color: var(--color-muted);
-}
-
-.preflight--pending { background: rgb(108 117 125 / 0.06); }
-
-.preflight--pass { background: rgb(42 143 76 / 0.08); }
-.preflight--pass .preflight-name { color: var(--color-success); }
-
-.preflight--fail { background: rgb(178 62 101 / 0.08); }
-.preflight--fail .preflight-name { color: var(--color-danger); }
-
-.preflight--warn { background: rgb(209 133 56 / 0.08); }
-.preflight--warn .preflight-name { color: var(--color-warning); }
-
 /* ── Utility ─────────────────────────────────────────────── */
 .hidden {
   display: none !important;
@@ -794,7 +845,7 @@ label {
   }
   .booth-layout {
     height: auto;
-    min-height: calc(100vh - 80px);
+    min-height: 100vh;
   }
   .panel--jitsi .monitor-frame {
     height: 40vh;
@@ -805,5 +856,11 @@ label {
   }
   .booth-sidebar-col {
     order: 2;
+    border-left: none;
+    border-top: 1px solid var(--color-panel-border);
+  }
+  .booth-header {
+    flex-wrap: wrap;
+    gap: 0.5rem;
   }
 }

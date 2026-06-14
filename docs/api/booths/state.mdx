@@ -4,7 +4,7 @@ sidebarTitle: "Booth State"
 description: "Retrieve the live state of an interpretation booth, including the active interpreter, connected participants, mic status, and stream health."
 ---
 
-The booth state endpoints return the live state of an interpretation booth — active interpreter, connected participants, mic status, and stream health. Use this data to power monitoring dashboards, coordinator UIs, or any integration that needs to know who is currently active in a booth.
+The booth state endpoints return the live state of an interpretation booth — active interpreter, connected participants, mic status, and stream health. Use this data to power monitoring dashboards, room_coordinator UIs, or any integration that needs to know who is currently active in a booth.
 
 ## Endpoints
 
@@ -80,7 +80,7 @@ curl https://voxbento.com/api/events/pycon2026/booths/en/state \
 
       The participant's unique ID within this booth session.
     **`name`** *(string)* — The participant's display name.
-    **`role`** *(string)* — The role granted to this participant: `interpreter`, `coordinator`, `event_admin`, or `listener`.
+    **`role`** *(string)* — The role granted to this participant: `interpreter`, `room_coordinator`, `event_owner`, or `listener`.
 
 </details>
 

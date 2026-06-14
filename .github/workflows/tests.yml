@@ -52,6 +52,9 @@ jobs:
       - name: Sync dependencies (including dev)
         run: uv sync --all-groups
 
+      - name: Lint (ruff)
+        run: uv run ruff check .
+
       - name: Validate JS syntax
         run: |
           node --check static/js/interpreter-booth.js

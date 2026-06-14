@@ -24,6 +24,13 @@ Interpreter / Coordinator browser
   │  WebSocket /ws/booth/{booth_id}
   ▼
 FastAPI portal :8000 (coordination, state, JWT, REST)
+  │
+  ├──► Background Transcription (ffmpeg → Deepgram/OpenAI/Local)
+  └──► Background Translation (Groq/Anthropic/Gemini)
+
+Floor Audio Bot (floor-bot)
+  │  Headless Chromium → Joins Jitsi Meeting
+  └──► ffmpeg → RTSP → MediaMTX → Transcription/Translation
 ```
 
 

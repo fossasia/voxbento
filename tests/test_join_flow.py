@@ -29,7 +29,6 @@ from portal.database import (
 )
 from portal.models import Base, utc_now
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -87,7 +86,7 @@ class TestCreateParticipantToken:
     def test_sub_is_uuid(self):
         import uuid
         token = create_participant_token(
-            booth_id=1, role='listener',
+            booth_id=1, role='room_coordinator',
             event_slug='ev', language_code='de',
         )
         payload = decode_token(token)
@@ -105,7 +104,7 @@ class TestCreateParticipantToken:
         assert decode_token(t1)['sub'] != decode_token(t2)['sub']
 
     @pytest.mark.parametrize('role', [
-        'interpreter', 'coordinator', 'listener', 'event_admin', 'super_admin',
+        'interpreter', 'room_coordinator', 'event_owner', 'super_admin',
     ])
     def test_all_roles_accepted(self, role):
         token = create_participant_token(
@@ -133,8 +132,8 @@ class TestTokenRedemption:
     @pytest.mark.anyio
     async def test_redeem_sets_used_at(self, db, sample_booth):
         booth, _ = sample_booth
-        tok = await create_invite_token(db, booth_id=booth.id, role='listener')
-        before = utc_now()
+        tok = await create_invite_token(db, booth_id=booth.id, role='interpreter')
+
         redeemed = await redeem_invite_token(db, tok.token)
         assert redeemed.used_at is not None
 
@@ -164,7 +163,7 @@ class TestTokenRedemption:
     @pytest.mark.anyio
     async def test_redeemed_token_has_booth_and_event_loaded(self, db, sample_booth):
         booth, event = sample_booth
-        tok = await create_invite_token(db, booth_id=booth.id, role='coordinator')
+        tok = await create_invite_token(db, booth_id=booth.id, role='room_coordinator')
         redeemed = await redeem_invite_token(db, tok.token)
         assert redeemed.booth.event.slug == 'testcon2026'
         assert redeemed.booth.language_code == 'fr'
@@ -174,7 +173,7 @@ class TestTokenRedemption:
         booth, _ = sample_booth
         future = datetime.now(tz=timezone.utc) + timedelta(hours=24)
         tok = await create_invite_token(
-            db, booth_id=booth.id, role='listener', expires_at=future,
+            db, booth_id=booth.id, role='interpreter', expires_at=future,
         )
         redeemed = await redeem_invite_token(db, tok.token)
         assert redeemed is not None
@@ -233,6 +232,7 @@ class TestJoinRoute:
         token_str = await self._make_token(booth.id)
 
         from httpx import ASGITransport, AsyncClient
+
         from fastapi_app import app
         async with AsyncClient(
             transport=ASGITransport(app=app),
@@ -240,14 +240,15 @@ class TestJoinRoute:
         ) as client:
             resp = await client.get(f'/join/{token_str}', follow_redirects=False)
         assert resp.status_code == 303
-        assert resp.headers['location'] == '/interpreter/pycon2026/en'
+        assert resp.headers['location'] == '/interpreter'
 
     @pytest.mark.anyio
     async def test_valid_token_sets_cookie(self, _seed):
         event, _, booth = _seed
-        token_str = await self._make_token(booth.id, role='coordinator')
+        token_str = await self._make_token(booth.id, role='room_coordinator')
 
         from httpx import ASGITransport, AsyncClient
+
         from fastapi_app import app
         async with AsyncClient(
             transport=ASGITransport(app=app),
@@ -259,7 +260,7 @@ class TestJoinRoute:
         assert cookie is not None
 
         payload = decode_token(cookie)
-        assert payload['role'] == 'coordinator'
+        assert payload['role'] == 'room_coordinator'
         assert payload['event_slug'] == 'pycon2026'
         assert payload['language_code'] == 'en'
         assert payload['booth_id'] == booth.id
@@ -267,6 +268,7 @@ class TestJoinRoute:
     @pytest.mark.anyio
     async def test_invalid_token_returns_404(self, _seed):
         from httpx import ASGITransport, AsyncClient
+
         from fastapi_app import app
         async with AsyncClient(
             transport=ASGITransport(app=app),
@@ -282,6 +284,7 @@ class TestJoinRoute:
         token_str = await self._make_token(booth.id, expires_at=past)
 
         from httpx import ASGITransport, AsyncClient
+
         from fastapi_app import app
         async with AsyncClient(
             transport=ASGITransport(app=app),
@@ -297,6 +300,7 @@ class TestJoinRoute:
         token_str = await self._make_token(booth.id)
 
         from httpx import ASGITransport, AsyncClient
+
         from fastapi_app import app
         async with AsyncClient(
             transport=ASGITransport(app=app),
@@ -314,10 +318,11 @@ class TestJoinRoute:
     @pytest.mark.anyio
     async def test_token_with_different_roles(self, _seed):
         _, _, booth = _seed
-        for role in ['interpreter', 'coordinator', 'listener', 'event_admin', 'super_admin']:
+        for role in ['interpreter', 'room_coordinator', 'event_owner', 'super_admin']:
             token_str = await self._make_token(booth.id, role=role)
 
             from httpx import ASGITransport, AsyncClient
+
             from fastapi_app import app
             async with AsyncClient(
                 transport=ASGITransport(app=app),
@@ -336,6 +341,7 @@ class TestJoinRoute:
         token_str = await self._make_token(booth.id, expires_at=future)
 
         from httpx import ASGITransport, AsyncClient
+
         from fastapi_app import app
         async with AsyncClient(
             transport=ASGITransport(app=app),
@@ -345,12 +351,13 @@ class TestJoinRoute:
         assert resp.status_code == 303
 
     @pytest.mark.anyio
-    async def test_redirect_url_uses_event_slug_and_language(self, _seed):
-        """Ensure redirect uses /interpreter/{event_slug}/{language_code} pattern."""
+    async def test_redirect_routes_to_lobby(self, _seed):
+        """Ensure redirect routes to the interpreter lobby."""
         _, _, booth = _seed
         token_str = await self._make_token(booth.id)
 
         from httpx import ASGITransport, AsyncClient
+
         from fastapi_app import app
         async with AsyncClient(
             transport=ASGITransport(app=app),
@@ -358,14 +365,11 @@ class TestJoinRoute:
         ) as client:
             resp = await client.get(f'/join/{token_str}', follow_redirects=False)
         loc = resp.headers['location']
-        assert loc.startswith('/interpreter/')
-        parts = loc.split('/')
-        assert parts[2] == 'pycon2026'  # event_slug
-        assert parts[3] == 'en'         # language_code
+        assert loc == '/interpreter'
 
     @pytest.mark.anyio
     async def test_multiple_booths_redirect_correctly(self):
-        """Tokens for different booths redirect to their respective URLs."""
+        """Tokens for different booths redirect to the lobby."""
         from portal.database import (
             create_booth,
             create_event,
@@ -390,13 +394,14 @@ class TestJoinRoute:
         tok_fr = await self._make_token(booth_fr.id)
 
         from httpx import ASGITransport, AsyncClient
+
         from fastapi_app import app
         async with AsyncClient(
             transport=ASGITransport(app=app),
             base_url='http://test',
         ) as client:
             resp_en = await client.get(f'/join/{tok_en}', follow_redirects=False)
-            assert resp_en.headers['location'] == '/interpreter/multi-event/en'
+            assert resp_en.headers['location'] == '/interpreter'
 
             resp_fr = await client.get(f'/join/{tok_fr}', follow_redirects=False)
-            assert resp_fr.headers['location'] == '/interpreter/multi-event/fr'
+            assert resp_fr.headers['location'] == '/interpreter'

@@ -80,6 +80,68 @@
       </div>
     </div>
 
+    <div class="section-header" style="margin-top: 40px; padding-top: 30px; border-top: 1px solid #e5e7eb;">
+      <h2>Translation Providers</h2>
+    </div>
+    <p class="muted" style="margin-bottom: 20px;">
+      Configure third-party LLM provider API keys for real-time translation of Floor Audio.
+    </p>
+
+    <div class="form-group" style="margin-bottom: 24px;">
+      <label for="translation_openai_api_key" style="display: block; font-weight: 600; margin-bottom: 8px; color: #374151;">OpenAI API Key (Translation)</label>
+      <input type="password" id="translation_openai_api_key" name="translation_openai_api_key" placeholder="{{ 'Configured' if event.encrypted_translation_openai_api_key else 'sk-...' }}" value="" class="input" style="width: 100%; padding: 10px 12px; border: 1px solid #d1d5db; border-radius: 6px; box-sizing: border-box; font-family: monospace; font-size: 14px;">
+      <div style="margin-top: 6px; display: flex; align-items: center; justify-content: space-between;">
+        <p class="form-help" style="font-size: 0.85rem; color: #6b7280; margin: 0;">Required for OpenAI GPT models (gpt-4o, gpt-4o-mini)</p>
+        <label style="font-size: 0.85rem; color: #ef4444; display: flex; align-items: center; gap: 4px; cursor: pointer;">
+          <input type="checkbox" name="clear_translation_openai_api_key" value="1"> Clear Key
+        </label>
+      </div>
+    </div>
+
+    <div class="form-group" style="margin-bottom: 24px;">
+      <label for="openrouter_api_key" style="display: block; font-weight: 600; margin-bottom: 8px; color: #374151;">OpenRouter API Key</label>
+      <input type="password" id="openrouter_api_key" name="openrouter_api_key" placeholder="{{ 'Configured' if event.encrypted_openrouter_api_key else 'sk-or-v1-...' }}" value="" class="input" style="width: 100%; padding: 10px 12px; border: 1px solid #d1d5db; border-radius: 6px; box-sizing: border-box; font-family: monospace; font-size: 14px;">
+      <div style="margin-top: 6px; display: flex; align-items: center; justify-content: space-between;">
+        <p class="form-help" style="font-size: 0.85rem; color: #6b7280; margin: 0;">Required for OpenRouter hosted models (Llama 3, Claude 3.5, Gemini 1.5)</p>
+        <label style="font-size: 0.85rem; color: #ef4444; display: flex; align-items: center; gap: 4px; cursor: pointer;">
+          <input type="checkbox" name="clear_openrouter_api_key" value="1"> Clear Key
+        </label>
+      </div>
+    </div>
+
+    <div class="form-group" style="margin-bottom: 24px;">
+      <label for="gemini_api_key" style="display: block; font-weight: 600; margin-bottom: 8px; color: #374151;">Google Gemini API Key</label>
+      <input type="password" id="gemini_api_key" name="gemini_api_key" placeholder="{{ 'Configured' if event.encrypted_gemini_api_key else 'AIza...' }}" value="" class="input" style="width: 100%; padding: 10px 12px; border: 1px solid #d1d5db; border-radius: 6px; box-sizing: border-box; font-family: monospace; font-size: 14px;">
+      <div style="margin-top: 6px; display: flex; align-items: center; justify-content: space-between;">
+        <p class="form-help" style="font-size: 0.85rem; color: #6b7280; margin: 0;">Required for Google Gemini models (Gemini 2.5 Flash, Gemini 1.5 Pro)</p>
+        <label style="font-size: 0.85rem; color: #ef4444; display: flex; align-items: center; gap: 4px; cursor: pointer;">
+          <input type="checkbox" name="clear_gemini_api_key" value="1"> Clear Key
+        </label>
+      </div>
+    </div>
+
+    <div class="form-group" style="margin-bottom: 24px;">
+      <label for="anthropic_api_key" style="display: block; font-weight: 600; margin-bottom: 8px; color: #374151;">Anthropic API Key</label>
+      <input type="password" id="anthropic_api_key" name="anthropic_api_key" placeholder="{{ 'Configured' if event.encrypted_anthropic_api_key else 'sk-ant-...' }}" value="" class="input" style="width: 100%; padding: 10px 12px; border: 1px solid #d1d5db; border-radius: 6px; box-sizing: border-box; font-family: monospace; font-size: 14px;">
+      <div style="margin-top: 6px; display: flex; align-items: center; justify-content: space-between;">
+        <p class="form-help" style="font-size: 0.85rem; color: #6b7280; margin: 0;">Required for Anthropic models (Claude 3.5 Sonnet, Claude 3.5 Haiku)</p>
+        <label style="font-size: 0.85rem; color: #ef4444; display: flex; align-items: center; gap: 4px; cursor: pointer;">
+          <input type="checkbox" name="clear_anthropic_api_key" value="1"> Clear Key
+        </label>
+      </div>
+    </div>
+
+    <div class="form-group" style="margin-bottom: 30px;">
+      <label for="groq_api_key" style="display: block; font-weight: 600; margin-bottom: 8px; color: #374151;">Groq API Key</label>
+      <input type="password" id="groq_api_key" name="groq_api_key" placeholder="{{ 'Configured' if event.encrypted_groq_api_key else 'gsk_...' }}" value="" class="input" style="width: 100%; padding: 10px 12px; border: 1px solid #d1d5db; border-radius: 6px; box-sizing: border-box; font-family: monospace; font-size: 14px;">
+      <div style="margin-top: 6px; display: flex; align-items: center; justify-content: space-between;">
+        <p class="form-help" style="font-size: 0.85rem; color: #6b7280; margin: 0;">Required for Groq hosted models (Llama 3.3 70B, Mixtral 8x7B)</p>
+        <label style="font-size: 0.85rem; color: #ef4444; display: flex; align-items: center; gap: 4px; cursor: pointer;">
+          <input type="checkbox" name="clear_groq_api_key" value="1"> Clear Key
+        </label>
+      </div>
+    </div>
+
     <div class="form-actions" style="margin-top: 20px; padding-top: 20px; border-top: 1px solid #e5e7eb; display: flex; align-items: center;">
       <button type="submit" class="btn btn-primary" style="padding: 10px 20px; font-size: 14px;">Save API Settings</button>
       <a href="/admin/events/{{ event.id }}/" class="btn" style="background: white; border: 1px solid #d1d5db; color: #374151; margin-left: 12px; padding: 10px 20px; font-size: 14px;">Cancel</a>

@@ -43,8 +43,8 @@ You send JSON objects with a `type` field. The table below lists every supported
 | --- | --- | --- |
 | `booth:join` | Join the booth. The first interpreter to join is automatically assigned as the active interpreter. | Anyone with a valid token |
 | `booth:leave` | Leave the booth. If the active interpreter leaves, an automatic handoff is triggered. | Anyone |
-| `booth:chat` | Send a text message to all booth participants. | `interpreter`, `coordinator`, `event_admin` |
-| `booth:set-active` | Promote a specific interpreter to the active role. | `coordinator`, `event_admin`, or the currently active interpreter |
+| `booth:chat` | Send a text message to all booth participants. | `interpreter`, `room_coordinator`, `event_owner` |
+| `booth:set-active` | Promote a specific interpreter to the active role. | `room_coordinator`, `event_owner`, or the currently active interpreter |
 | `booth:update-state` | Update the `mic_active` and `ingest_connected` flags for the sending interpreter. | `interpreter` |
 
 ## Server → Client Messages
@@ -224,7 +224,7 @@ The examples below show the exact JSON structure for the most common messages.
 
 **`type`** *(string)* — Always `"booth:joined"`.
 
-  **`role`** *(string)* — The server-assigned role for this participant: `interpreter`, `coordinator`, `event_admin`, or `listener`.
+  **`role`** *(string)* — The server-assigned role for this participant: `interpreter`, `room_coordinator`, `event_owner`, or `listener`.
 
 </details>
 
@@ -297,9 +297,9 @@ Your token's server-assigned role gates which messages you can send. Attempting 
     Can do everything an interpreter can, plus promote any booth participant to the active interpreter role.
   
 
-  ### event_admin
+  ### event_owner
 
-    Full control over the booth, including active-interpreter assignment and all coordinator capabilities.
+    Full control over the booth, including active-interpreter assignment and all room_coordinator capabilities.
   
 
   ### listener

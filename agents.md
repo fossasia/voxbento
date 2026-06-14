@@ -10,13 +10,13 @@
 Read these files in order before any task:
 
 1. **This file** — guardrails, invariants, ownership
-2. [`.github/.agents/context/REPOSITORY_CONTEXT.md`](.github/.agents/context/REPOSITORY_CONTEXT.md) — stack, auth, booth identity, ports, role hierarchy
-3. [`.github/.agents/context/CHANGE_IMPACT_MAP.md`](.github/.agents/context/CHANGE_IMPACT_MAP.md) — which files to touch for your specific task
-4. [`.github/.agents/context/ROUTE_MAP.md`](.github/.agents/context/ROUTE_MAP.md) — all HTTP + WS routes
-5. [`.github/.agents/context/DATABASE_MAP.md`](.github/.agents/context/DATABASE_MAP.md) — table schemas, migrations, CRUD helpers
-6. [`.github/.agents/context/TRANSCRIPTION_MAP.md`](.github/.agents/context/TRANSCRIPTION_MAP.md) — provider architecture, audio pipeline
-7. [`.github/.agents/context/AI_WORKFLOWS.md`](.github/.agents/context/AI_WORKFLOWS.md) — step-by-step task playbooks
-8. [`.github/.agents/context/TECHNICAL_DEBT_REPORT.md`](.github/.agents/context/TECHNICAL_DEBT_REPORT.md) — known issues and gaps
+2. [`.agents/context/REPOSITORY_CONTEXT.md`](.agents/context/REPOSITORY_CONTEXT.md) — stack, auth, booth identity, ports, role hierarchy
+3. [`.agents/context/CHANGE_IMPACT_MAP.md`](.agents/context/CHANGE_IMPACT_MAP.md) — which files to touch for your specific task
+4. [`.agents/context/ROUTE_MAP.md`](.agents/context/ROUTE_MAP.md) — all HTTP + WS routes
+5. [`.agents/context/DATABASE_MAP.md`](.agents/context/DATABASE_MAP.md) — table schemas, migrations, CRUD helpers
+6. [`.agents/context/TRANSCRIPTION_MAP.md`](.agents/context/TRANSCRIPTION_MAP.md) — provider architecture, audio pipeline
+7. [`.agents/context/AI_WORKFLOWS.md`](.agents/context/AI_WORKFLOWS.md) — step-by-step task playbooks
+8. [`.agents/context/TECHNICAL_DEBT_REPORT.md`](.agents/context/TECHNICAL_DEBT_REPORT.md) — known issues and gaps
 
 ### File-Specific Instructions (apply when editing)
 
@@ -30,19 +30,19 @@ Read these files in order before any task:
 
 | Task | Skill |
 |---|---|
-| Navigate codebase | [`.github/.agents/skills/repo-navigation/SKILL.md`](.github/.agents/skills/repo-navigation/SKILL.md) |
-| Architecture review | [`.github/.agents/skills/architecture-review/SKILL.md`](.github/.agents/skills/architecture-review/SKILL.md) |
-| Route analysis | [`.github/.agents/skills/route-analysis/SKILL.md`](.github/.agents/skills/route-analysis/SKILL.md) |
-| Database analysis | [`.github/.agents/skills/database-analysis/SKILL.md`](.github/.agents/skills/database-analysis/SKILL.md) |
-| Transcription changes | [`.github/.agents/skills/transcription-analysis/SKILL.md`](.github/.agents/skills/transcription-analysis/SKILL.md) |
-| Provider integration | [`.github/.agents/skills/provider-analysis/SKILL.md`](.github/.agents/skills/provider-analysis/SKILL.md) |
-| PR review | [`.github/.agents/skills/pr-review/SKILL.md`](.github/.agents/skills/pr-review/SKILL.md) |
-| Security audit | [`.github/.agents/skills/security-audit/SKILL.md`](.github/.agents/skills/security-audit/SKILL.md) |
-| Docker / infra | [`.github/.agents/skills/docker-review/SKILL.md`](.github/.agents/skills/docker-review/SKILL.md) |
-| Deployment | [`.github/.agents/skills/deployment-review/SKILL.md`](.github/.agents/skills/deployment-review/SKILL.md) |
-| Incident response | [`.github/.agents/skills/incident-investigation/SKILL.md`](.github/.agents/skills/incident-investigation/SKILL.md) |
-| Writing tests | [`.github/.agents/skills/test-generation/SKILL.md`](.github/.agents/skills/test-generation/SKILL.md) |
-| Production readiness | [`.github/.agents/skills/production-readiness-review/SKILL.md`](.github/.agents/skills/production-readiness-review/SKILL.md) |
+| Navigate codebase | [`.agents/skills/repo-navigation/SKILL.md`](.agents/skills/repo-navigation/SKILL.md) |
+| Architecture review | [`.agents/skills/architecture-review/SKILL.md`](.agents/skills/architecture-review/SKILL.md) |
+| Route analysis | [`.agents/skills/route-analysis/SKILL.md`](.agents/skills/route-analysis/SKILL.md) |
+| Database analysis | [`.agents/skills/database-analysis/SKILL.md`](.agents/skills/database-analysis/SKILL.md) |
+| Transcription changes | [`.agents/skills/transcription-analysis/SKILL.md`](.agents/skills/transcription-analysis/SKILL.md) |
+| Provider integration | [`.agents/skills/provider-analysis/SKILL.md`](.agents/skills/provider-analysis/SKILL.md) |
+| PR review | [`.agents/skills/pr-review/SKILL.md`](.agents/skills/pr-review/SKILL.md) |
+| Security audit | [`.agents/skills/security-audit/SKILL.md`](.agents/skills/security-audit/SKILL.md) |
+| Docker / infra | [`.agents/skills/docker-review/SKILL.md`](.agents/skills/docker-review/SKILL.md) |
+| Deployment | [`.agents/skills/deployment-review/SKILL.md`](.agents/skills/deployment-review/SKILL.md) |
+| Incident response | [`.agents/skills/incident-investigation/SKILL.md`](.agents/skills/incident-investigation/SKILL.md) |
+| Writing tests | [`.agents/skills/test-generation/SKILL.md`](.agents/skills/test-generation/SKILL.md) |
+| Production readiness | [`.agents/skills/production-readiness-review/SKILL.md`](.agents/skills/production-readiness-review/SKILL.md) |
 
 ---
 
@@ -223,6 +223,6 @@ Every PR that adds, removes, or changes a feature **must** update these files in
 - `README.md` — operational usage and setup
 - `ARCHITECTURE.md` — system design
 - `agents.md` (this file) — guardrails, if they changed
-- Relevant context file in `.github/.agents/context/` — if the change affects routes, DB schema, or transcription
+- Relevant context file in `.agents/context/` — if the change affects routes, DB schema, or transcription
 
 Do not defer documentation to a follow-up PR.

@@ -36,14 +36,14 @@
       <td>
         {% if user.is_admin %}
         <span class="badge badge-role badge-event_admin">Admin</span>
-        {% else %}
+{% else %}
         <span class="muted">—</span>
         {% endif %}
       </td>
       <td>
         {% if user.is_active %}
         <span class="status-live">● Active</span>
-        {% else %}
+{% else %}
         <span class="status-offline">○ Inactive</span>
         {% endif %}
       </td>
@@ -55,7 +55,7 @@
           </button>
         </form>
         <form method="post" action="/admin/users/{{ user.id }}/delete" class="inline-form"
-              onsubmit="return confirm('Delete user {{ user.email }}? This cannot be undone.')">
+              data-confirm="Delete user {{ user.email }}? This cannot be undone.">
           <button type="submit" class="btn btn-sm btn-danger">Delete</button>
         </form>
       </td>
@@ -63,6 +63,7 @@
     {% endfor %}
   </tbody>
 </table>
+  {% include 'admin/pagination.html' %}
 {% else %}
 <div class="empty-state">
   <p>No registered users yet. Users can sign up at <a href="/register">/register</a>.</p>
