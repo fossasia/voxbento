@@ -1268,40 +1268,14 @@ async def account_page(request: Request):
 async def mission_control_list(request: Request, user=Depends(require_user), page: int = 1):
     import math
 
-    import jwt
+    from portal.auth import get_accessible_event_ids
+    from portal.database import count_events, get_session, list_events
 
-    from portal.auth import decode_token
-    from portal.database import count_events, get_session, list_events, list_memberships_for_user
-
-    is_super_admin = False
-    admin_cookie = request.cookies.get('admin_token', '')
-    if admin_cookie:
-        try:
-            payload = decode_token(admin_cookie)
-            if payload.get('admin'):
-                is_super_admin = True
-        except jwt.InvalidTokenError:
-            pass
-
-    user_cookie = request.cookies.get('user_token', '')
-    if user_cookie:
-        try:
-            payload = decode_token(user_cookie)
-            if payload.get('is_admin'):
-                is_super_admin = True
-        except jwt.InvalidTokenError:
-            pass
+    is_super_admin, allowed_event_ids = await get_accessible_event_ids(
+        request, user_id=int(user['sub'])
+    )
 
     async with get_session() as session:
-        allowed_event_ids = None
-        if not is_super_admin:
-            from portal.database import list_room_memberships_for_user
-            memberships = await list_memberships_for_user(session, int(user['sub']))
-            room_memberships = await list_room_memberships_for_user(session, int(user['sub']))
-
-            allowed_event_ids = {m.event_id for m in memberships if m.role == 'event_owner'}
-            allowed_event_ids.update({rm.room.event_id for rm in room_memberships if rm.role == 'room_coordinator'})
-
         limit = 20
         offset = (page - 1) * limit
         total_events = await count_events(session, allowed_event_ids=allowed_event_ids)
@@ -1323,29 +1297,12 @@ async def mission_control_list(request: Request, user=Depends(require_user), pag
 
 @app.get('/mission-control/{event_slug}/')
 async def mission_control_grid(request: Request, event_slug: str, user=Depends(require_user)):
-    import jwt
+    from portal.auth import get_accessible_event_ids
+    from portal.database import get_event_by_slug, get_session
 
-    from portal.auth import decode_token
-    from portal.database import get_event_by_slug, get_session, list_memberships_for_user
-
-    is_super_admin = False
-    admin_cookie = request.cookies.get('admin_token', '')
-    if admin_cookie:
-        try:
-            payload = decode_token(admin_cookie)
-            if payload.get('admin'):
-                is_super_admin = True
-        except jwt.InvalidTokenError:
-            pass
-
-    user_cookie = request.cookies.get('user_token', '')
-    if user_cookie:
-        try:
-            payload = decode_token(user_cookie)
-            if payload.get('is_admin'):
-                is_super_admin = True
-        except jwt.InvalidTokenError:
-            pass
+    is_super_admin, _ = await get_accessible_event_ids(
+        request, user_id=int(user['sub'])
+    )
 
     async with get_session() as session:
         event = await get_event_by_slug(session, event_slug)
@@ -1354,7 +1311,7 @@ async def mission_control_grid(request: Request, event_slug: str, user=Depends(r
 
         allowed_room_ids = None
         if not is_super_admin:
-            from portal.database import list_room_memberships_for_user
+            from portal.database import list_memberships_for_user, list_room_memberships_for_user
             memberships = await list_memberships_for_user(session, int(user['sub']))
             room_memberships = await list_room_memberships_for_user(session, int(user['sub']))
 
@@ -1434,31 +1391,23 @@ async def admin_logout():
 async def admin_dashboard(request: Request, page: int = 1):
     import math
 
-    from portal.auth import get_admin_flags, get_current_user
+    from portal.auth import get_accessible_event_ids, get_admin_flags, get_current_user
     from portal.database import (
         count_events,
         get_session,
         list_booths_for_event,
         list_events,
-        list_memberships_for_user,
-        list_room_memberships_for_user,
     )
+
+    admin_flags = await get_admin_flags(request)
+    user = await get_current_user(request)
+    user_id = int(user['sub']) if user and user.get('sub') else None
+    _, allowed_event_ids = await get_accessible_event_ids(request, user_id=user_id)
 
     limit = 20
     offset = (page - 1) * limit
 
     async with get_session() as session:
-        admin_flags = await get_admin_flags(request)
-        user = await get_current_user(request)
-
-        allowed_event_ids = None
-        if not admin_flags.get('is_super_admin') and user:
-            memberships = await list_memberships_for_user(session, int(user['sub']))
-            rms = await list_room_memberships_for_user(session, int(user['sub']))
-
-            allowed_event_ids = {m.event_id for m in memberships}
-            allowed_event_ids.update({rm.room.event_id for rm in rms})
-
         total_events = await count_events(session, allowed_event_ids=allowed_event_ids)
         events = await list_events(session, limit=limit, offset=offset, allowed_event_ids=allowed_event_ids)
 
@@ -1504,29 +1453,18 @@ async def admin_dashboard(request: Request, page: int = 1):
 async def admin_event_list(request: Request, page: int = 1):
     import math
 
-    from portal.auth import get_admin_flags, get_current_user
-    from portal.database import (
-        count_events,
-        get_session,
-        list_events,
-        list_memberships_for_user,
-        list_room_memberships_for_user,
-    )
+    from portal.auth import get_accessible_event_ids, get_admin_flags, get_current_user
+    from portal.database import count_events, get_session, list_events
+
     admin_flags = await get_admin_flags(request)
     user = await get_current_user(request)
+    user_id = int(user['sub']) if user and user.get('sub') else None
+    _, allowed_event_ids = await get_accessible_event_ids(request, user_id=user_id)
 
     limit = 20
     offset = (page - 1) * limit
 
     async with get_session() as session:
-        allowed_event_ids = None
-        if not admin_flags.get('is_super_admin') and user:
-            memberships = await list_memberships_for_user(session, int(user['sub']))
-            rms = await list_room_memberships_for_user(session, int(user['sub']))
-
-            allowed_event_ids = {m.event_id for m in memberships}
-            allowed_event_ids.update({rm.room.event_id for rm in rms})
-
         total_events = await count_events(session, allowed_event_ids=allowed_event_ids)
         events = await list_events(session, limit=limit, offset=offset, allowed_event_ids=allowed_event_ids)
 

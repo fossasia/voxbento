@@ -245,6 +245,60 @@ async def get_current_user(request: Request) -> dict | None:
     return payload
 
 
+async def get_accessible_event_ids(
+    request: Request,
+    *,
+    user_id: int | None,
+) -> tuple[bool, set[int] | None]:
+    """Return (is_super_admin, allowed_event_ids) for the current request.
+
+    Checks admin_token and user_token cookies to determine super-admin status.
+    For non-super-admins with a user_id, returns the set of event IDs the user
+    may access (as event_owner or room_coordinator). Super-admins get None,
+    meaning "all events".
+
+    Args:
+        request: The FastAPI Request (used to read cookies).
+        user_id: The authenticated user's ID, or None for anonymous callers.
+
+    Returns:
+        (is_super_admin, allowed_event_ids) where allowed_event_ids is None for
+        super-admins (unrestricted) or a set[int] for regular users.
+    """
+    from portal.database import get_session, list_memberships_for_user, list_room_memberships_for_user
+
+    is_super_admin = False
+
+    admin_cookie = request.cookies.get('admin_token', '')
+    if admin_cookie:
+        try:
+            payload = decode_token(admin_cookie)
+            if payload.get('admin'):
+                is_super_admin = True
+        except jwt.InvalidTokenError:
+            pass
+
+    user_cookie = request.cookies.get('user_token', '')
+    if user_cookie:
+        try:
+            payload = decode_token(user_cookie)
+            if payload.get('is_admin'):
+                is_super_admin = True
+        except jwt.InvalidTokenError:
+            pass
+
+    if is_super_admin or user_id is None:
+        return is_super_admin, None
+
+    async with get_session() as session:
+        memberships = await list_memberships_for_user(session, user_id)
+        room_memberships = await list_room_memberships_for_user(session, user_id)
+
+    allowed_event_ids: set[int] = {m.event_id for m in memberships if m.role == 'event_owner'}
+    allowed_event_ids.update({rm.room.event_id for rm in room_memberships if rm.role == 'room_coordinator'})
+    return False, allowed_event_ids
+
+
 async def require_user(request: Request) -> dict:
     """FastAPI dependency that requires a logged-in user.
 
