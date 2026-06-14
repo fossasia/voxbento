@@ -1,3 +1,8 @@
+---
+name: provider-analysis
+description: Use this skill when integrating, debugging, or auditing third-party provider integrations (transcription APIs, MediaMTX, Jitsi, future Eventyay API integration).
+---
+
 # Skill: Provider Analysis
 
 > Use this skill when integrating, debugging, or auditing third-party provider integrations

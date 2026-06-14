@@ -1,3 +1,8 @@
+---
+name: docker-review
+description: Use this skill to review, debug, or modify VoxBento's Docker configuration. Files: `docker-compose.yml`, `Dockerfile`, `mediamtx.yml`.
+---
+
 # Skill: Docker Review
 
 > Use this skill to review, debug, or modify VoxBento's Docker configuration.

@@ -1,3 +1,8 @@
+---
+name: floor-bot-analysis
+description: Use this skill for floor bot analysis.
+---
+
 # Skill: Floor Bot Analysis
 
 This skill explains how to debug and analyze the Floor Bot feature in VoxBento, which bridges the Jitsi WebRTC audio floor track to the RTSP/MediaMTX infrastructure for transcription.

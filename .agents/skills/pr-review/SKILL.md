@@ -1,3 +1,8 @@
+---
+name: pr-review
+description: Use this skill to review pull requests for VoxBento. Covers correctness, security, architecture compliance, and testing.
+---
+
 # Skill: PR Review
 
 > Use this skill to review pull requests for VoxBento.

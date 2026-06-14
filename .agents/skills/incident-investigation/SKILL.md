@@ -1,3 +1,8 @@
+---
+name: incident-investigation
+description: Use this skill to diagnose and resolve production incidents in VoxBento.
+---
+
 # Skill: Incident Investigation
 
 > Use this skill to diagnose and resolve production incidents in VoxBento.

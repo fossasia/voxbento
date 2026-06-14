@@ -1,3 +1,8 @@
+---
+name: security-audit
+description: Use this skill for security reviews of VoxBento code. Covers OWASP Top 10 and VoxBento-specific threat model.
+---
+
 # Skill: Security Audit
 
 > Use this skill for security reviews of VoxBento code.
