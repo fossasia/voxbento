@@ -1,3 +1,8 @@
+---
+name: database-analysis
+description: Use this skill to analyse, audit, or modify database models, migrations, and CRUD helpers. Reference: `portal/models.py`, `portal/database.py`, `alembic/versions/`.
+---
+
 # Skill: Database Analysis
 
 > Use this skill to analyse, audit, or modify database models, migrations, and CRUD helpers.

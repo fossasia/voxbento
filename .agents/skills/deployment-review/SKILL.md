@@ -1,3 +1,8 @@
+---
+name: deployment-review
+description: Use this skill to review deployments, validate production readiness, or assist with deployment procedures. Reference: `DEPLOYMENT_GUIDE.md`, `docker-compose.yml`, `Caddyfile`, `Dockerfile`.
+---
+
 # Skill: Deployment Review
 
 > Use this skill to review deployments, validate production readiness, or assist with deployment procedures.

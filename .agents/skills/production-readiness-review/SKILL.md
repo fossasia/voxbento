@@ -1,3 +1,8 @@
+---
+name: production-readiness-review
+description: Use this skill to evaluate whether VoxBento is ready for production deployment. Combines security, deployment, and operational readiness checks.
+---
+
 # Skill: Production Readiness Review
 
 > Use this skill to evaluate whether VoxBento is ready for production deployment.

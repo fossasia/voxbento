@@ -1,3 +1,8 @@
+---
+name: repo-navigation
+description: Use this skill to find files, understand module ownership, and locate code in VoxBento.
+---
+
 # Skill: Repo Navigation
 
 > Use this skill to find files, understand module ownership, and locate code in VoxBento.

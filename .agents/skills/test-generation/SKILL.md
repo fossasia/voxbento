@@ -1,3 +1,8 @@
+---
+name: test-generation
+description: Use this skill to write tests for VoxBento features. All tests use `pytest` + `anyio`. Reference: `tests/conftest.py`.
+---
+
 # Skill: Test Generation
 
 > Use this skill to write tests for VoxBento features.
