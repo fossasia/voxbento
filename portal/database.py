@@ -17,13 +17,25 @@ from __future__ import annotations
 import logging
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import joinedload
 
-from portal.models import Base, BoothMembership, DBBooth, Event, EventMembership, InviteToken, Room, RoomMembership, User, generate_token, utc_now
+from portal.models import (
+    Base,
+    BoothMembership,
+    DBBooth,
+    Event,
+    EventMembership,
+    InviteToken,
+    Room,
+    RoomMembership,
+    User,
+    generate_token,
+    utc_now,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -616,13 +628,14 @@ async def revoke_invite_token(session: AsyncSession, token_str: str) -> InviteTo
 
 async def save_transcript_segment(booth_id_str: str, text: str, room_id: int | None = None) -> int | None:
     """Save a finalized transcript segment to the database asynchronously and return its ID."""
-    from portal.models import TranscriptSegment, DBBooth, Event
     from sqlalchemy import select
+
+    from portal.models import DBBooth, Event, TranscriptSegment
 
     parts = booth_id_str.split('-')
     if len(parts) < 2:
         return None
-        
+
     language_code = parts[-1]
     event_slug = "-".join(parts[:-1])
 

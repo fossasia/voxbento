@@ -41,7 +41,7 @@ class Settings(BaseSettings):
     @property
     def effective_jitsi_base_url(self) -> str:
         return self.jitsi_base_url or f'http://{self.jitsi_domain}'
-        
+
     @property
     def effective_jitsi_internal_base(self) -> str:
         return self.jitsi_internal_base or self.effective_jitsi_base_url

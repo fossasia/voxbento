@@ -25,9 +25,9 @@ from __future__ import annotations
 import secrets
 from datetime import datetime, timezone
 
+import sqlalchemy as sa
 from sqlalchemy import Boolean, DateTime, ForeignKey, Index, String, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, validates
-import sqlalchemy as sa
 
 from portal.booth_identity import make_mediamtx_path, validate_event_slug, validate_language_code
 from portal.roles import ALL_ROLES
@@ -105,13 +105,13 @@ class Room(Base):
     floor_transcription_provider: Mapped[str] = mapped_column(String(20), default='local', server_default=sa.text("'local'"))
     floor_transcription_model: Mapped[str] = mapped_column(String(40), default='tiny', server_default=sa.text("'tiny'"))
     floor_language_code: Mapped[str | None] = mapped_column(String(10), nullable=True, default=None)
-    
+
     # Translation Settings
     floor_translation_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default='0')
     floor_translation_provider: Mapped[str | None] = mapped_column(String(50), nullable=True, default=None)
     floor_translation_model: Mapped[str | None] = mapped_column(String(100), nullable=True, default=None)
     floor_source_language_code: Mapped[str] = mapped_column(String(20), default='en', server_default=sa.text("'en'"))
-    
+
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
     event: Mapped[Event] = relationship(back_populates='rooms')
@@ -147,15 +147,15 @@ class DBBooth(Base):
     transcription_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default='0')
     transcription_provider: Mapped[str] = mapped_column(String(20), default='local', server_default=sa.text("'local'"))
     transcription_model: Mapped[str] = mapped_column(String(20), default='tiny', server_default=sa.text("'tiny'"))
-    
+
     # Broadcast Lock
     broadcast_unlocked: Mapped[bool] = mapped_column(Boolean, default=False, server_default='0')
-    
+
     # Translation Settings
     translation_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default='0')
     translation_provider: Mapped[str | None] = mapped_column(String(50), nullable=True, default=None)
     translation_model: Mapped[str | None] = mapped_column(String(100), nullable=True, default=None)
-    
+
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
     event: Mapped[Event] = relationship(back_populates='booths')
@@ -225,7 +225,7 @@ class RoomTranslationLanguage(Base):
     language_code: Mapped[str] = mapped_column(String(20))
     language_name: Mapped[str] = mapped_column(String(100))
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default='1')
-    
+
     room: Mapped[Room] = relationship(back_populates='translation_languages')
 
 
@@ -244,7 +244,7 @@ class BoothTranslationLanguage(Base):
     language_code: Mapped[str] = mapped_column(String(20))
     language_name: Mapped[str] = mapped_column(String(100))
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default='1')
-    
+
     booth: Mapped['DBBooth'] = relationship(back_populates='translation_languages')
 
 

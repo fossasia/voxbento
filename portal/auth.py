@@ -103,7 +103,7 @@ async def require_admin(request: Request) -> None:
     """
     event_id_str = request.path_params.get('event_id')
     event_id = int(event_id_str) if event_id_str and event_id_str.isdigit() else None
-    
+
     room_id_str = request.path_params.get('room_id')
     room_id = int(room_id_str) if room_id_str and room_id_str.isdigit() else None
 
@@ -119,7 +119,7 @@ async def require_admin(request: Request) -> None:
                     async with get_session() as db_session:
                         memberships = await list_memberships_for_user(db_session, int(payload['sub']))
                         rms = await list_room_memberships_for_user(db_session, int(payload['sub']))
-                        
+
                         if room_id is not None:
                             if any(rm.room_id == room_id and rm.role == 'room_coordinator' for rm in rms):
                                 return
@@ -183,7 +183,7 @@ async def get_admin_flags(request: Request, event_id: int | None = None, room_id
                     async with get_session() as db_session:
                         memberships = await list_memberships_for_user(db_session, int(payload['sub']))
                         rms = await list_room_memberships_for_user(db_session, int(payload['sub']))
-                        
+
                         if event_id is not None:
                             if any(m.event_id == event_id and m.role == 'event_owner' for m in memberships):
                                 flags['is_event_owner'] = True
@@ -300,20 +300,26 @@ async def resolve_booth_role(payload: dict | None, booth_id: str | None = None) 
     if payload is None:
         return None
     from portal.roles import _ROLE_RANK
-    
+
     roles = []
-    
+
     # 1. Invite / participant token explicit role
     if 'role' in payload:
         roles.append(payload['role'])
 
     # 2. Database lookup for registered users
     if payload.get('sub') and booth_id:
-        from portal.booth_identity import parse_booth_id
-        from portal.database import get_session, list_memberships_for_user, list_booth_memberships_for_user, list_room_memberships_for_user
-        from portal.models import DBBooth, Event
         from sqlalchemy import select
-        
+
+        from portal.booth_identity import parse_booth_id
+        from portal.database import (
+            get_session,
+            list_booth_memberships_for_user,
+            list_memberships_for_user,
+            list_room_memberships_for_user,
+        )
+        from portal.models import DBBooth, Event
+
         try:
             event_slug, lang_code = parse_booth_id(booth_id)
             async with get_session() as db_session:
@@ -348,7 +354,7 @@ async def resolve_booth_role(payload: dict | None, booth_id: str | None = None) 
 
     if not roles:
         return None
-        
+
     return max(roles, key=lambda r: _ROLE_RANK.get(r, 0))
 
 

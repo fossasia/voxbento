@@ -12,8 +12,6 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from portal.models import Base, DBBooth, Event, InviteToken, Room, generate_token, utc_now
-
 # We import CRUD helpers and test them against our isolated test DB.
 # Because portal.database uses a module-level engine tied to settings,
 # we import the functions and call them with our test session.
@@ -22,6 +20,7 @@ from portal.database import (
     create_event,
     create_invite_token,
     create_room,
+    create_user,
     delete_booth,
     delete_event,
     delete_room,
@@ -36,11 +35,10 @@ from portal.database import (
     list_rooms_for_event,
     list_tokens_for_booth,
     list_users,
-    create_user,
     redeem_invite_token,
 )
+from portal.models import Base, DBBooth, Event, InviteToken, Room, generate_token, utc_now
 from portal.roles import ALL_ROLES
-
 
 # ---------------------------------------------------------------------------
 # Fixtures

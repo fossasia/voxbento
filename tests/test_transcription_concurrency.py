@@ -10,14 +10,14 @@ os.environ['API_KEY_ENCRYPTION_KEY'] = 'test-key-encryption-key-for-transcriptio
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from httpx import AsyncClient, ASGITransport
+from httpx import ASGITransport, AsyncClient
 
 from fastapi_app import app
-from portal.crypto import encrypt_val
-from portal.database import configure, dispose, init_db, get_session
-from portal.models import Event, DBBooth, Room
-from portal.transcription.worker import active_workers, active_processes
 from portal.auth import create_user_token
+from portal.crypto import encrypt_val
+from portal.database import configure, dispose, get_session, init_db
+from portal.models import DBBooth, Event, Room
+from portal.transcription.worker import active_processes, active_workers
 
 # Bypass token requirements for WS/REST endpoints where applicable,
 # and use an admin token to satisfy _require_access.
@@ -64,7 +64,7 @@ def patch_transcription_dependencies():
         mock_process = AsyncMock()
         mock_process.returncode = None
         mock_process.stderr.readline = AsyncMock(side_effect=[b"ffmpeg logs", b""])
-        
+
         with patch('asyncio.create_subprocess_exec', return_value=mock_process):
             yield
 
@@ -74,23 +74,23 @@ async def seed_data():
         e1.encrypted_openai_api_key = encrypt_val("openai-key-alpha")
         e1.encrypted_deepgram_api_key = encrypt_val("deepgram-key-alpha")
         session.add(e1)
-        
+
         e2 = Event(slug="event-beta", display_name="Event Beta", transcription_api_enabled=True)
         e2.encrypted_openai_api_key = encrypt_val("openai-key-beta")
         e2.encrypted_nvidia_api_key = encrypt_val("nvidia-key-beta")
         session.add(e2)
-        
+
         e3 = Event(slug="event-gamma", display_name="Event Gamma", transcription_api_enabled=False)
         session.add(e3)
-        
+
         await session.flush()
-        
+
         booths = []
-        
+
         openai_langs = ["en", "fr", "de", "es", "it", "pt"]
         nvidia_langs = ["ru", "zh", "ja", "ko", "ar", "hi"]
         local_langs = ["tr", "vi", "th", "nl"]
-        
+
         # Event 1: 6 OpenAI booths
         for i, lang_code in enumerate(openai_langs):
             r = Room(event_id=e1.id, display_name=f"Room {i}")
@@ -102,7 +102,7 @@ async def seed_data():
             )
             session.add(b)
             booths.append((e1.slug, b.language_code, f"{e1.slug}-{b.language_code}", "openai"))
-            
+
         # Event 2: 6 NVIDIA booths
         for i, lang_code in enumerate(nvidia_langs):
             r = Room(event_id=e2.id, display_name=f"Room {i+20}")
@@ -114,7 +114,7 @@ async def seed_data():
             )
             session.add(b)
             booths.append((e2.slug, b.language_code, f"{e2.slug}-{b.language_code}", "nvidia"))
-            
+
         # Event 3: 4 Local booths
         for i, lang_code in enumerate(local_langs):
             r = Room(event_id=e3.id, display_name=f"Room {i+40}")
@@ -126,7 +126,7 @@ async def seed_data():
             )
             session.add(b)
             booths.append((e3.slug, b.language_code, f"{e3.slug}-{b.language_code}", "local"))
-            
+
         await session.flush()
         return booths
 
@@ -140,7 +140,7 @@ async def test_high_concurrency_isolation_and_capacity_limits():
     3. API Key Isolation (Event A's worker gets Event A's decrypted key, no cross-contamination).
     """
     booths = await seed_data()
-    
+
     # Ensure fresh state
     active_workers.clear()
     active_processes.clear()
@@ -156,44 +156,44 @@ async def test_high_concurrency_isolation_and_capacity_limits():
         for slug, lang, booth_id, provider in booths:
             data = {"event_slug": slug, "language_code": lang}
             tasks.append(client.post(f"/api/booth/{booth_id}/transcription/start", json=data, cookies=cookies))
-            
+
         responses = await asyncio.gather(*tasks)
-        
+
     # Analyze Responses
     status_codes = [r.status_code for r in responses]
-    
+
     # 16 total booths were fired (6 OpenAI, 6 NVIDIA, 4 Local).
     # MAX_TOTAL_WORKERS = 10, so exactly 6 requests must hit 429 Too Many Requests.
     assert status_codes.count(429) == 6, "Exactly 6 booths should be rate-limited."
     assert status_codes.count(200) == 10, "Exactly 10 booths should succeed."
-    
+
     # Give the background tasks a tiny fraction of a second to spin up and populate the provider logs
     await asyncio.sleep(0.1)
-    
+
     # 1. Verify Global Locking limits worked
     assert len(active_processes) == 10
 
     # 2. Verify API Key Cross-Contamination did not occur
     openai_provider = mock_providers['openai']
     nvidia_provider = mock_providers['nvidia']
-    
+
     for config in openai_provider.received_configs:
         assert config["booth_id"].startswith("event-alpha")
         assert config["api_key"] == "openai-key-alpha", "OpenAI booth got incorrect key!"
-        
+
     for config in nvidia_provider.received_configs:
         assert config["booth_id"].startswith("event-beta")
         assert config["api_key"] == "nvidia-key-beta", "NVIDIA booth got incorrect key!"
-        
+
     # 3. Simulate Concurrent Shutdown
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         stop_tasks = []
         # Try to stop all 16 booths (the 2 rate-limited ones should just gracefully do nothing)
         for slug, lang, booth_id, provider in booths:
             stop_tasks.append(client.post(f"/api/booth/{booth_id}/transcription/stop", cookies=cookies))
-            
+
         await asyncio.gather(*stop_tasks)
-        
+
     # Verify cleanup is completely clean with no ProcessLookupErrors or deadlocks
     assert len(active_workers) == 0
     assert len(active_processes) == 0
