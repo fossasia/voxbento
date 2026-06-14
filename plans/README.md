@@ -20,7 +20,7 @@ conditions, run every verification command, and update your row when done.
 | [006](006-env-example-drift.md) | Fix `.env.example` drift (dead var, missing vars, latent AttributeError) | P1 | S | — | TODO |
 | [007](007-transcription-characterization-tests.md) | Add characterization tests for transcription providers and caption aggregator | P1 | M | — | DONE |
 | [008](008-admin-access-control-dedup.md) | Extract duplicated admin access-control logic into a shared helper | P2 | M | 007 | DONE |
-| [009](009-n1-booth-queries.md) | Fix N+1 queries in admin and home page route handlers | P2 | M | 007 | TODO |
+| [009](009-n1-booth-queries.md) | Fix N+1 queries in admin and home page route handlers | P2 | M | 007 | DONE |
 
 Status values: `TODO` | `IN PROGRESS` | `DONE` | `BLOCKED` (one-line reason) | `REJECTED` (one-line rationale)
 
