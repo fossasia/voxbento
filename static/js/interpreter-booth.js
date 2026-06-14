@@ -743,8 +743,7 @@ function toggleRelayAudio() {
           elements.relayStatus.textContent = 'Connecting...'
           elements.relayStatus.className = 'status-badge status-warning'
         }
-      },
-      onLog: (msg) => console.log('[Relay WHEP]', msg)
+      }
     })
   } else {
     if (elements.passRelay) {
@@ -772,8 +771,7 @@ function startBoothAudioListening() {
   boothWhep.start({
     whepUrl: whepUrl,
     audioEl: elements.boothAudio,
-    onState: () => {},
-    onLog: (msg) => console.log('[Booth WHEP]', msg)
+    onState: () => {}
   })
 }
 
