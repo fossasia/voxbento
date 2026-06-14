@@ -19,7 +19,7 @@ from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import joinedload
 
@@ -120,8 +120,25 @@ async def get_event_by_id(session: AsyncSession, event_id: int) -> Event | None:
     return result.scalar_one_or_none()
 
 
-async def list_events(session: AsyncSession) -> list[Event]:
-    result = await session.execute(select(Event).order_by(Event.created_at))
+async def count_events(session: AsyncSession, *, allowed_event_ids: set[int] | None = None) -> int:
+    stmt = select(func.count(Event.id))
+    if allowed_event_ids is not None:
+        stmt = stmt.where(Event.id.in_(allowed_event_ids))
+    result = await session.execute(stmt)
+    return result.scalar_one()
+
+
+async def list_events(
+    session: AsyncSession,
+    *,
+    limit: int = 100,
+    offset: int = 0,
+    allowed_event_ids: set[int] | None = None,
+) -> list[Event]:
+    stmt = select(Event).order_by(Event.created_at)
+    if allowed_event_ids is not None:
+        stmt = stmt.where(Event.id.in_(allowed_event_ids))
+    result = await session.execute(stmt.limit(limit).offset(offset))
     return list(result.scalars().all())
 
 
@@ -159,10 +176,26 @@ async def get_room_by_id(session: AsyncSession, room_id: int) -> Room | None:
     return result.scalar_one_or_none()
 
 
-async def list_rooms_for_event(session: AsyncSession, event_id: int) -> list[Room]:
+async def count_rooms_for_event(session: AsyncSession, event_id: int) -> int:
+    result = await session.execute(select(func.count(Room.id)).where(Room.event_id == event_id))
+    return result.scalar_one()
+
+
+async def list_rooms_for_event(
+    session: AsyncSession,
+    event_id: int,
+    *,
+    limit: int = 100,
+    offset: int = 0,
+) -> list[Room]:
     from sqlalchemy.orm import selectinload
     result = await session.execute(
-        select(Room).options(selectinload(Room.translation_languages)).where(Room.event_id == event_id).order_by(Room.created_at),
+        select(Room)
+        .options(selectinload(Room.translation_languages))
+        .where(Room.event_id == event_id)
+        .order_by(Room.created_at)
+        .limit(limit)
+        .offset(offset),
     )
     return list(result.scalars().all())
 
@@ -208,13 +241,26 @@ async def get_booth_by_id(session: AsyncSession, booth_id: int) -> DBBooth | Non
     return result.scalar_one_or_none()
 
 
-async def list_booths_for_event(session: AsyncSession, event_id: int) -> list[DBBooth]:
+async def count_booths_for_event(session: AsyncSession, event_id: int) -> int:
+    result = await session.execute(select(func.count(DBBooth.id)).where(DBBooth.event_id == event_id))
+    return result.scalar_one()
+
+
+async def list_booths_for_event(
+    session: AsyncSession,
+    event_id: int,
+    *,
+    limit: int = 100,
+    offset: int = 0,
+) -> list[DBBooth]:
     from sqlalchemy.orm import selectinload
     result = await session.execute(
         select(DBBooth)
         .options(joinedload(DBBooth.event), selectinload(DBBooth.translation_languages))
         .where(DBBooth.event_id == event_id)
-        .order_by(DBBooth.language_code),
+        .order_by(DBBooth.language_code)
+        .limit(limit)
+        .offset(offset),
     )
     return list(result.scalars().all())
 
@@ -335,8 +381,20 @@ async def get_user_by_id(session: AsyncSession, user_id: int) -> User | None:
     return result.scalar_one_or_none()
 
 
-async def list_users(session: AsyncSession) -> list[User]:
-    result = await session.execute(select(User).order_by(User.created_at))
+async def count_users(session: AsyncSession) -> int:
+    result = await session.execute(select(func.count(User.id)))
+    return result.scalar_one()
+
+
+async def list_users(
+    session: AsyncSession,
+    *,
+    limit: int = 100,
+    offset: int = 0,
+) -> list[User]:
+    result = await session.execute(
+        select(User).order_by(User.created_at).limit(limit).offset(offset)
+    )
     return list(result.scalars().all())
 
 

@@ -35,6 +35,8 @@ from portal.database import (
     list_events,
     list_rooms_for_event,
     list_tokens_for_booth,
+    list_users,
+    create_user,
     redeem_invite_token,
 )
 from portal.roles import ALL_ROLES
@@ -567,3 +569,62 @@ async def test_invite_token_repr(db: AsyncSession):
     r = repr(tok)
     assert 'interpreter' in r
     assert tok.token[:8] in r
+
+
+# ---------------------------------------------------------------------------
+# Pagination tests
+# ---------------------------------------------------------------------------
+
+@pytest.mark.anyio
+async def test_list_events_limit(db: AsyncSession):
+    for i in range(5):
+        await create_event(db, slug=f'ev-lim-{i}', display_name=f'Ev {i}')
+    events = await list_events(db, limit=2)
+    assert len(events) == 2
+
+
+@pytest.mark.anyio
+async def test_list_events_offset(db: AsyncSession):
+    for i in range(5):
+        await create_event(db, slug=f'ev-off-{i}', display_name=f'Ev {i}')
+    events = await list_events(db, limit=2, offset=3)
+    assert len(events) == 2
+    assert events[0].slug == 'ev-off-3'  # 4th created event
+
+
+@pytest.mark.anyio
+async def test_list_rooms_pagination(db: AsyncSession):
+    ev = await create_event(db, slug='ev-rm-pag', display_name='Ev')
+    for i in range(5):
+        await create_room(db, event_id=ev.id, display_name=f'Room {i}')
+    rooms = await list_rooms_for_event(db, ev.id, limit=3)
+    assert len(rooms) == 3
+
+
+@pytest.mark.anyio
+async def test_list_booths_pagination(db: AsyncSession):
+    ev = await create_event(db, slug='ev-bth-pag', display_name='Ev')
+    room = await create_room(db, event_id=ev.id, display_name='Room')
+    langs = ['en', 'fr', 'de', 'es', 'it']
+    for i, lang in enumerate(langs):
+        await create_booth(db, event_id=ev.id, room_id=room.id, language_code=lang, language_name=f'Lang {i}')
+    booths = await list_booths_for_event(db, ev.id, limit=2)
+    assert len(booths) == 2
+
+
+@pytest.mark.anyio
+async def test_list_users_pagination(db: AsyncSession):
+    for i in range(5):
+        await create_user(db, email=f'u{i}@test.com', display_name=f'U{i}', password_hash='x')
+    users = await list_users(db, limit=3, offset=1)
+    assert len(users) == 3
+    assert users[0].email == 'u1@test.com'
+
+
+@pytest.mark.anyio
+async def test_list_events_default_limit_does_not_break(db: AsyncSession):
+    for i in range(3):
+        await create_event(db, slug=f'ev-def-{i}', display_name=f'Ev {i}')
+    events = await list_events(db)
+    assert len(events) == 3
+

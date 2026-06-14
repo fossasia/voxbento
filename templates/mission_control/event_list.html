@@ -24,7 +24,8 @@
     </div>
     {% endfor %}
   </div>
-  {% else %}
+    {% include 'admin/pagination.html' %}
+{% else %}
   <div class="card" style="padding: 2rem; text-align: center;">
     <p style="color: var(--color-muted); margin: 0;">You are not assigned as a Room Coordinator or Admin to any events.</p>
   </div>

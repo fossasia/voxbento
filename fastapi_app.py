@@ -1245,10 +1245,11 @@ async def account_page(request: Request):
 # ---------------------------------------------------------------------------
 
 @app.get('/mission-control/')
-async def mission_control_list(request: Request, user=Depends(require_user)):
-    from portal.database import get_session, list_events, list_memberships_for_user
+async def mission_control_list(request: Request, user=Depends(require_user), page: int = 1):
+    from portal.database import get_session, list_events, count_events, list_memberships_for_user
     from portal.auth import decode_token
     import jwt
+    import math
     
     is_super_admin = False
     admin_cookie = request.cookies.get('admin_token', '')
@@ -1270,18 +1271,21 @@ async def mission_control_list(request: Request, user=Depends(require_user)):
             pass
 
     async with get_session() as session:
-        all_events = await list_events(session)
-        if is_super_admin:
-            accessible_events = all_events
-        else:
+        allowed_event_ids = None
+        if not is_super_admin:
             from portal.database import list_room_memberships_for_user
             memberships = await list_memberships_for_user(session, int(user['sub']))
             room_memberships = await list_room_memberships_for_user(session, int(user['sub']))
             
-            accessible_event_ids = {m.event_id for m in memberships if m.role == 'event_owner'}
-            accessible_event_ids.update({rm.room.event_id for rm in room_memberships if rm.role == 'room_coordinator'})
+            allowed_event_ids = {m.event_id for m in memberships if m.role == 'event_owner'}
+            allowed_event_ids.update({rm.room.event_id for rm in room_memberships if rm.role == 'room_coordinator'})
             
-            accessible_events = [e for e in all_events if e.id in accessible_event_ids]
+        limit = 20
+        offset = (page - 1) * limit
+        total_events = await count_events(session, allowed_event_ids=allowed_event_ids)
+        accessible_events = await list_events(session, limit=limit, offset=offset, allowed_event_ids=allowed_event_ids)
+
+    total_pages = max(1, math.ceil(total_events / limit))
     return templates.TemplateResponse(
         request,
         'mission_control/event_list.html',
@@ -1289,6 +1293,9 @@ async def mission_control_list(request: Request, user=Depends(require_user)):
             'events': accessible_events,
             'is_super_admin': is_super_admin,
             'active_nav': 'mission-control',
+            'page': page,
+            'total_pages': total_pages,
+
         }
     )
 
@@ -1401,15 +1408,19 @@ async def admin_logout():
 
 
 @app.get('/admin/', dependencies=[Depends(require_admin)])
-async def admin_dashboard(request: Request):
-    from portal.database import get_session, list_events, list_booths_for_event, list_memberships_for_user, list_room_memberships_for_user
+async def admin_dashboard(request: Request, page: int = 1):
+    from portal.database import get_session, list_events, count_events, list_booths_for_event, list_memberships_for_user, list_room_memberships_for_user
     from portal.auth import get_admin_flags, get_current_user
+    import math
+    
+    limit = 20
+    offset = (page - 1) * limit
 
     async with get_session() as session:
-        events = await list_events(session)
         admin_flags = await get_admin_flags(request)
         user = await get_current_user(request)
         
+        allowed_event_ids = None
         if not admin_flags.get('is_super_admin') and user:
             memberships = await list_memberships_for_user(session, int(user['sub']))
             rms = await list_room_memberships_for_user(session, int(user['sub']))
@@ -1417,8 +1428,11 @@ async def admin_dashboard(request: Request):
             allowed_event_ids = {m.event_id for m in memberships}
             allowed_event_ids.update({rm.room.event_id for rm in rms})
             
-            events = [e for e in events if e.id in allowed_event_ids]
-            if len(events) == 1:
+        total_events = await count_events(session, allowed_event_ids=allowed_event_ids)
+        events = await list_events(session, limit=limit, offset=offset, allowed_event_ids=allowed_event_ids)
+        
+        if not admin_flags.get('is_super_admin') and user:
+            if len(events) == 1 and total_events == 1:
                 return safe_redirect(url=f'/admin/events/{events[0].id}/', status_code=status.HTTP_303_SEE_OTHER)
 
         event_data = []
@@ -1445,23 +1459,29 @@ async def admin_dashboard(request: Request):
             })
 
     mediamtx_ok = await _check_mediamtx()
+    total_pages = max(1, math.ceil(total_events / limit))
     return templates.TemplateResponse(request, 'admin/dashboard.html', {
         'event_data': event_data,
         'mediamtx_ok': mediamtx_ok,
+        'page': page,
+        'total_pages': total_pages,
         **admin_flags,
     })
 
 
 @app.get('/admin/events/', dependencies=[Depends(require_admin)])
-async def admin_event_list(request: Request):
-    from portal.database import get_session, list_events, list_memberships_for_user, list_room_memberships_for_user
+async def admin_event_list(request: Request, page: int = 1):
+    from portal.database import get_session, list_events, count_events, list_memberships_for_user, list_room_memberships_for_user
     from portal.auth import get_admin_flags, get_current_user
+    import math
     admin_flags = await get_admin_flags(request)
     user = await get_current_user(request)
+    
+    limit = 20
+    offset = (page - 1) * limit
 
     async with get_session() as session:
-        events = await list_events(session)
-        
+        allowed_event_ids = None
         if not admin_flags.get('is_super_admin') and user:
             memberships = await list_memberships_for_user(session, int(user['sub']))
             rms = await list_room_memberships_for_user(session, int(user['sub']))
@@ -1469,10 +1489,14 @@ async def admin_event_list(request: Request):
             allowed_event_ids = {m.event_id for m in memberships}
             allowed_event_ids.update({rm.room.event_id for rm in rms})
             
-            events = [e for e in events if e.id in allowed_event_ids]
+        total_events = await count_events(session, allowed_event_ids=allowed_event_ids)
+        events = await list_events(session, limit=limit, offset=offset, allowed_event_ids=allowed_event_ids)
 
+    total_pages = max(1, math.ceil(total_events / limit))
     return templates.TemplateResponse(request, 'admin/event_list.html', {
         'events': events,
+        'page': page,
+        'total_pages': total_pages,
         **admin_flags,
     })
 
@@ -2422,12 +2446,23 @@ async def admin_transcription_settings(
 
 
 @app.get('/admin/users/', dependencies=[Depends(require_admin)])
-async def admin_user_list(request: Request):
-    from portal.database import get_session, list_users
+async def admin_user_list(request: Request, page: int = 1):
+    from portal.database import get_session, list_users, count_users
+    import math
+
+    limit = 20
+    offset = (page - 1) * limit
 
     async with get_session() as session:
-        users = await list_users(session)
-    return templates.TemplateResponse(request, 'admin/user_list.html', {'users': users})
+        total_users = await count_users(session)
+        users = await list_users(session, limit=limit, offset=offset)
+        
+    total_pages = max(1, math.ceil(total_users / limit))
+    return templates.TemplateResponse(request, 'admin/user_list.html', {
+        'users': users,
+        'page': page,
+        'total_pages': total_pages
+    })
 
 
 @app.post('/admin/users/{user_id}/toggle-active', dependencies=[Depends(require_admin)])
