@@ -277,6 +277,30 @@ async def list_booths_for_event(
     return list(result.scalars().all())
 
 
+async def list_all_booths_for_events(
+    session: AsyncSession,
+    event_ids: list[int],
+) -> dict[int, list[DBBooth]]:
+    """Return a mapping of event_id → list[DBBooth] for the given event IDs.
+
+    Executes a single query instead of one-per-event. Returns an empty list
+    for any event_id that has no booths.
+    """
+    if not event_ids:
+        return {}
+    from sqlalchemy.orm import selectinload
+    result = await session.execute(
+        select(DBBooth)
+        .options(joinedload(DBBooth.event), selectinload(DBBooth.translation_languages))
+        .where(DBBooth.event_id.in_(event_ids))
+        .order_by(DBBooth.event_id, DBBooth.language_code),
+    )
+    booths_by_event: dict[int, list[DBBooth]] = {eid: [] for eid in event_ids}
+    for booth in result.scalars().all():
+        booths_by_event[booth.event_id].append(booth)
+    return booths_by_event
+
+
 async def list_booths_for_room(session: AsyncSession, room_id: int) -> list[DBBooth]:
     from sqlalchemy.orm import selectinload
     result = await session.execute(
