@@ -1,12 +1,14 @@
-from portal.transcription.constants import ProviderEnum, ALLOWED_MODELS
+import httpx
+
+from portal.transcription.constants import ALLOWED_MODELS, ProviderEnum
 from portal.transcription.providers.base import ProviderConfig, get_api_key
 from portal.transcription.worker import (
-    active_workers,
     active_processes,
+    active_workers,
     start_transcription_worker,
     stop_transcription_worker,
 )
-import httpx
+
 shared_http_client: httpx.AsyncClient | None = None
 
 __all__ = [

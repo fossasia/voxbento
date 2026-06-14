@@ -18,7 +18,6 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from portal.models import Base, DBBooth, Event, InviteToken, Room
 from portal.database import (
     configure,
     create_booth,
@@ -43,7 +42,7 @@ from portal.database import (
     list_tokens_for_booth,
     redeem_invite_token,
 )
-
+from portal.models import Base, DBBooth, Event, InviteToken, Room
 
 # ---------------------------------------------------------------------------
 # Fixtures — file-backed SQLite for real persistence testing
@@ -119,7 +118,7 @@ async def test_full_multi_event_scenario(db: AsyncSession):
         db, event_id=pycon.id, room_id=pycon_main.id,
         language_code='fr', language_name='French',
     )
-    pycon_ws_de = await create_booth(
+    await create_booth(
         db, event_id=pycon.id, room_id=pycon_workshop.id,
         language_code='de', language_name='German',
     )
@@ -152,16 +151,16 @@ async def test_full_multi_event_scenario(db: AsyncSession):
         label='Alice Interpreter', created_by='admin@pycon.org',
     )
     tok_coord = await create_invite_token(
-        db, booth_id=pycon_en.id, role='coordinator',
+        db, booth_id=pycon_en.id, role='room_coordinator',
         label='Bob Coordinator', created_by='admin@pycon.org',
     )
-    tok_listener = await create_invite_token(
-        db, booth_id=pycon_fr.id, role='listener',
+    await create_invite_token(
+        db, booth_id=pycon_fr.id, role='room_coordinator',
         label='Charlie Listener',
     )
     future = datetime.now(tz=timezone.utc) + timedelta(hours=24)
     tok_expiring = await create_invite_token(
-        db, booth_id=foss_zh.id, role='event_admin',
+        db, booth_id=foss_zh.id, role='event_owner',
         label='Admin token', expires_at=future,
     )
     tok_super = await create_invite_token(
@@ -222,7 +221,7 @@ async def test_cascade_delete_event_removes_everything(db: AsyncSession):
         db, event_id=ev.id, room_id=room.id,
         language_code='en', language_name='English',
     )
-    tok = await create_invite_token(db, booth_id=booth.id, role='listener')
+    tok = await create_invite_token(db, booth_id=booth.id, role='interpreter')
 
     # Delete the event
     assert await delete_event(db, ev.id) is True
@@ -261,7 +260,7 @@ async def test_cascade_delete_booth_removes_tokens(db: AsyncSession):
         db, event_id=ev.id, room_id=room.id,
         language_code='es', language_name='Spanish',
     )
-    tok = await create_invite_token(db, booth_id=booth.id, role='coordinator')
+    tok = await create_invite_token(db, booth_id=booth.id, role='room_coordinator')
 
     assert await delete_booth(db, booth.id) is True
     assert await get_invite_token(db, tok.token) is None

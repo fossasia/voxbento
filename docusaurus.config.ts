@@ -3,7 +3,7 @@ import type {Config} from '@docusaurus/types';
 import type * as Preset from '@docusaurus/preset-classic';
 
 const config: Config = {
-  title: 'Voxbento',
+  title: 'VoxBento',
   tagline: 'Real-Time Browser Interpretation Platform',
   favicon: 'img/favicon.ico',
 
@@ -50,10 +50,10 @@ const config: Config = {
   themeConfig: {
     image: 'img/docusaurus-social-card.jpg',
     navbar: {
-      title: 'Voxbento',
+      title: 'VoxBento',
       logo: {
-        alt: 'Voxbento Logo',
-        src: 'img/logo.svg',
+        alt: 'VoxBento Logo',
+        src: 'img/icon_only.png',
       },
       items: [
         {
@@ -95,7 +95,7 @@ const config: Config = {
           ],
         },
       ],
-      copyright: `Copyright © ${new Date().getFullYear()} Voxbento. Built with Docusaurus.`,
+      copyright: `Copyright © ${new Date().getFullYear()} VoxBento.`,
     },
     prism: {
       theme: prismThemes.github,

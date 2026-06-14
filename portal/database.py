@@ -17,13 +17,25 @@ from __future__ import annotations
 import logging
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import joinedload
 
-from portal.models import Base, BoothMembership, DBBooth, Event, EventMembership, InviteToken, Room, User, generate_token, utc_now
+from portal.models import (
+    Base,
+    BoothMembership,
+    DBBooth,
+    Event,
+    EventMembership,
+    InviteToken,
+    Room,
+    RoomMembership,
+    User,
+    generate_token,
+    utc_now,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -120,8 +132,25 @@ async def get_event_by_id(session: AsyncSession, event_id: int) -> Event | None:
     return result.scalar_one_or_none()
 
 
-async def list_events(session: AsyncSession) -> list[Event]:
-    result = await session.execute(select(Event).order_by(Event.created_at))
+async def count_events(session: AsyncSession, *, allowed_event_ids: set[int] | None = None) -> int:
+    stmt = select(func.count(Event.id))
+    if allowed_event_ids is not None:
+        stmt = stmt.where(Event.id.in_(allowed_event_ids))
+    result = await session.execute(stmt)
+    return result.scalar_one()
+
+
+async def list_events(
+    session: AsyncSession,
+    *,
+    limit: int = 100,
+    offset: int = 0,
+    allowed_event_ids: set[int] | None = None,
+) -> list[Event]:
+    stmt = select(Event).order_by(Event.created_at)
+    if allowed_event_ids is not None:
+        stmt = stmt.where(Event.id.in_(allowed_event_ids))
+    result = await session.execute(stmt.limit(limit).offset(offset))
     return list(result.scalars().all())
 
 
@@ -154,13 +183,31 @@ async def create_room(
 
 
 async def get_room_by_id(session: AsyncSession, room_id: int) -> Room | None:
-    result = await session.execute(select(Room).where(Room.id == room_id))
+    from sqlalchemy.orm import selectinload
+    result = await session.execute(select(Room).options(selectinload(Room.translation_languages)).where(Room.id == room_id))
     return result.scalar_one_or_none()
 
 
-async def list_rooms_for_event(session: AsyncSession, event_id: int) -> list[Room]:
+async def count_rooms_for_event(session: AsyncSession, event_id: int) -> int:
+    result = await session.execute(select(func.count(Room.id)).where(Room.event_id == event_id))
+    return result.scalar_one()
+
+
+async def list_rooms_for_event(
+    session: AsyncSession,
+    event_id: int,
+    *,
+    limit: int = 100,
+    offset: int = 0,
+) -> list[Room]:
+    from sqlalchemy.orm import selectinload
     result = await session.execute(
-        select(Room).where(Room.event_id == event_id).order_by(Room.created_at),
+        select(Room)
+        .options(selectinload(Room.translation_languages))
+        .where(Room.event_id == event_id)
+        .order_by(Room.created_at)
+        .limit(limit)
+        .offset(offset),
     )
     return list(result.scalars().all())
 
@@ -199,26 +246,42 @@ async def create_booth(
 
 
 async def get_booth_by_id(session: AsyncSession, booth_id: int) -> DBBooth | None:
+    from sqlalchemy.orm import selectinload
     result = await session.execute(
-        select(DBBooth).options(joinedload(DBBooth.event)).where(DBBooth.id == booth_id),
+        select(DBBooth).options(joinedload(DBBooth.event), selectinload(DBBooth.translation_languages)).where(DBBooth.id == booth_id),
     )
     return result.scalar_one_or_none()
 
 
-async def list_booths_for_event(session: AsyncSession, event_id: int) -> list[DBBooth]:
+async def count_booths_for_event(session: AsyncSession, event_id: int) -> int:
+    result = await session.execute(select(func.count(DBBooth.id)).where(DBBooth.event_id == event_id))
+    return result.scalar_one()
+
+
+async def list_booths_for_event(
+    session: AsyncSession,
+    event_id: int,
+    *,
+    limit: int = 100,
+    offset: int = 0,
+) -> list[DBBooth]:
+    from sqlalchemy.orm import selectinload
     result = await session.execute(
         select(DBBooth)
-        .options(joinedload(DBBooth.event))
+        .options(joinedload(DBBooth.event), selectinload(DBBooth.translation_languages))
         .where(DBBooth.event_id == event_id)
-        .order_by(DBBooth.language_code),
+        .order_by(DBBooth.language_code)
+        .limit(limit)
+        .offset(offset),
     )
     return list(result.scalars().all())
 
 
 async def list_booths_for_room(session: AsyncSession, room_id: int) -> list[DBBooth]:
+    from sqlalchemy.orm import selectinload
     result = await session.execute(
         select(DBBooth)
-        .options(joinedload(DBBooth.event))
+        .options(joinedload(DBBooth.event), selectinload(DBBooth.translation_languages))
         .where(DBBooth.room_id == room_id)
         .order_by(DBBooth.language_code),
     )
@@ -330,8 +393,20 @@ async def get_user_by_id(session: AsyncSession, user_id: int) -> User | None:
     return result.scalar_one_or_none()
 
 
-async def list_users(session: AsyncSession) -> list[User]:
-    result = await session.execute(select(User).order_by(User.created_at))
+async def count_users(session: AsyncSession) -> int:
+    result = await session.execute(select(func.count(User.id)))
+    return result.scalar_one()
+
+
+async def list_users(
+    session: AsyncSession,
+    *,
+    limit: int = 100,
+    offset: int = 0,
+) -> list[User]:
+    result = await session.execute(
+        select(User).order_by(User.created_at).limit(limit).offset(offset)
+    )
     return list(result.scalars().all())
 
 
@@ -413,7 +488,65 @@ async def list_memberships_for_user(session: AsyncSession, user_id: int) -> list
     )
     return list(result.scalars().all())
 
+# ---------------------------------------------------------------------------
+# RoomMembership CRUD
+# ---------------------------------------------------------------------------
 
+
+async def set_room_membership(
+    session: AsyncSession,
+    *,
+    user_id: int,
+    room_id: int,
+    role: str,
+) -> RoomMembership:
+    """Create or update a user's role for a room."""
+    result = await session.execute(
+        select(RoomMembership).where(
+            RoomMembership.user_id == user_id,
+            RoomMembership.room_id == room_id,
+        ),
+    )
+    membership = result.scalar_one_or_none()
+    if membership:
+        membership.role = role
+    else:
+        membership = RoomMembership(user_id=user_id, room_id=room_id, role=role)
+        session.add(membership)
+    await session.flush()
+    return membership
+
+
+async def remove_room_membership(session: AsyncSession, membership_id: int) -> bool:
+    result = await session.execute(
+        select(RoomMembership).where(RoomMembership.id == membership_id),
+    )
+    membership = result.scalar_one_or_none()
+    if membership is None:
+        return False
+    await session.delete(membership)
+    await session.flush()
+    return True
+
+
+async def list_memberships_for_room(session: AsyncSession, room_id: int) -> list[RoomMembership]:
+    result = await session.execute(
+        select(RoomMembership)
+        .options(joinedload(RoomMembership.user))
+        .where(RoomMembership.room_id == room_id)
+        .order_by(RoomMembership.created_at),
+    )
+    return list(result.scalars().all())
+
+
+async def list_room_memberships_for_user(session: AsyncSession, user_id: int) -> list[RoomMembership]:
+    result = await session.execute(
+        select(RoomMembership)
+        .options(joinedload(RoomMembership.room).joinedload(Room.event))
+        .where(RoomMembership.user_id == user_id)
+        .order_by(RoomMembership.created_at),
+    )
+    return list(result.scalars().all())
 # ---------------------------------------------------------------------------
 # BoothMembership CRUD
 # ---------------------------------------------------------------------------
@@ -468,7 +601,7 @@ async def list_memberships_for_booth(session: AsyncSession, booth_id: int) -> li
 async def list_booth_memberships_for_user(session: AsyncSession, user_id: int) -> list[BoothMembership]:
     result = await session.execute(
         select(BoothMembership)
-        .options(joinedload(BoothMembership.booth).joinedload(DBBooth.event))
+        .options(joinedload(BoothMembership.booth).joinedload(DBBooth.event), joinedload(BoothMembership.booth).joinedload(DBBooth.room))
         .where(BoothMembership.user_id == user_id)
         .order_by(BoothMembership.created_at),
     )
@@ -488,3 +621,43 @@ async def revoke_invite_token(session: AsyncSession, token_str: str) -> InviteTo
     tok.used_at = utc_now()
     await session.flush()
     return tok
+
+# ---------------------------------------------------------------------------
+# Transcripts
+# ---------------------------------------------------------------------------
+
+async def save_transcript_segment(booth_id_str: str, text: str, room_id: int | None = None) -> int | None:
+    """Save a finalized transcript segment to the database asynchronously and return its ID."""
+    from sqlalchemy import select
+
+    from portal.models import DBBooth, Event, TranscriptSegment
+
+    parts = booth_id_str.split('-')
+    if len(parts) < 2:
+        return None
+
+    language_code = parts[-1]
+    event_slug = "-".join(parts[:-1])
+
+    try:
+        async with get_session() as session:
+            booth_id = None
+            if language_code != "floor":
+                stmt = select(DBBooth.id).join(Event).where(
+                    Event.slug == event_slug,
+                    DBBooth.language_code == language_code
+                )
+                booth_id = await session.scalar(stmt)
+
+            segment = TranscriptSegment(
+                room_id=room_id,
+                booth_id=booth_id,
+                language_code=language_code,
+                text=text
+            )
+            session.add(segment)
+            await session.commit()
+            return segment.id
+    except Exception as e:
+        logger.error(f"Failed to save transcript segment: {e}")
+        return None

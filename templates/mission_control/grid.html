@@ -1,0 +1,29 @@
+{% extends 'admin/base.html' %}
+
+{% block title %}Mission Control - {{ event.display_name }} | Voxbento{% endblock %}
+
+{% block content %}
+<div class="container" style="max-width: 1400px; padding: 1rem;">
+  <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem;">
+    <div>
+      <h2 style="margin: 0;">Mission Control: {{ event.display_name }}</h2>
+      <p style="margin: 0; color: var(--color-muted); font-size: 0.9rem;">Monitor and control booths in real-time.</p>
+    </div>
+    <a href="javascript:history.back()" class="btn btn-sm">Back to Events</a>
+  </div>
+
+  <div id="booth-grid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 1rem;">
+    <!-- Booth cards injected here by JS -->
+  </div>
+</div>
+
+<script>
+  window.MISSION_CONTROL_CONFIG = {
+    eventSlug: "{{ event.slug }}",
+    whipBase: "{{ whip_base }}",
+    initialBooths: {{ booths | tojson | safe }}
+  };
+</script>
+<script src="{{ url_for('static', path='js/whep-listener.js') }}?v={{ js_version }}"></script>
+<script type="module" src="{{ url_for('static', path='js/mission-control.js') }}?v={{ js_version }}"></script>
+{% endblock %}

@@ -7,11 +7,11 @@ Mirrors the Eventyay backend ``core/permissions.py`` pattern:
 
 The interpretation portal defines five roles ordered by privilege:
 
-    super_admin > event_admin > coordinator > interpreter > listener
+    super_admin > event_owner > room_coordinator > interpreter
 
-Booth-level roles (coordinator, interpreter, listener) govern in-booth
-actions.  Admin roles (event_admin, super_admin) govern administrative
-operations and inherit coordinator permissions within booths.
+Booth-level roles (interpreter) govern in-booth
+actions. Admin roles (event_owner, super_admin) govern administrative
+operations and inherit room_coordinator permissions within booths.
 """
 
 from __future__ import annotations
@@ -49,14 +49,14 @@ class Permission(Enum):
 
 ROLE_PERMISSIONS: dict[ParticipantRole, frozenset[Permission]] = {
     'super_admin': frozenset(Permission),
-    'event_admin': frozenset({
+    'event_owner': frozenset({
         Permission.BOOTH_GO_LIVE,
         Permission.BOOTH_SET_ACTIVE,
         Permission.BOOTH_CHAT_SEND,
         Permission.BOOTH_VIEW,
         Permission.ADMIN_MANAGE_BOOTHS,
     }),
-    'coordinator': frozenset({
+    'room_coordinator': frozenset({
         Permission.BOOTH_GO_LIVE,
         Permission.BOOTH_SET_ACTIVE,
         Permission.BOOTH_CHAT_SEND,
@@ -67,17 +67,20 @@ ROLE_PERMISSIONS: dict[ParticipantRole, frozenset[Permission]] = {
         Permission.BOOTH_CHAT_SEND,
         Permission.BOOTH_VIEW,
     }),
-    'listener': frozenset({
-        Permission.BOOTH_CHAT_SEND,
-        Permission.BOOTH_VIEW,
-    }),
 }
 
 # Roles considered administrative (mirrors Eventyay's ``ORGANIZER_ROLES``).
-ADMIN_ROLES: frozenset[ParticipantRole] = frozenset({'super_admin', 'event_admin'})
+ADMIN_ROLES: frozenset[ParticipantRole] = frozenset({'super_admin', 'event_owner'})
 
 # All valid role values as a frozenset for quick membership testing.
 ALL_ROLES: frozenset[ParticipantRole] = frozenset(ROLE_PERMISSIONS.keys())
+
+_ROLE_RANK = {
+    'super_admin': 50,
+    'event_owner': 40,
+    'room_coordinator': 30,
+    'interpreter': 20,
+}
 
 
 # ---------------------------------------------------------------------------

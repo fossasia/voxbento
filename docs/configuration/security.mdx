@@ -89,17 +89,17 @@ You can revoke a token at any time from the booth detail page by clicking **Revo
 
 ## Role Scoping
 
-Roles in Voxbento are scoped per event, and each role carries a distinct set of permissions. Assign the least-privileged role that allows a user to do their job — do not grant coordinator or admin access to users who only need to listen or interpret.
+Roles in Voxbento are scoped per event, and each role carries a distinct set of permissions. Assign the least-privileged role that allows a user to do their job — do not grant room_coordinator or admin access to users who only need to listen or interpret.
 
 | Role | What they can do |
 | --- | --- |
 | `listener` | View booths, listen to audio streams, send chat messages |
 | `interpreter` | All listener permissions, plus go live and publish audio via WHIP |
-| `coordinator` | All listener permissions, plus go live, assign the active interpreter, and manage handoffs |
-| `event_admin` | All coordinator permissions, plus manage booths and generate invite tokens |
+| `room_coordinator` | All listener permissions, plus go live, assign the active interpreter, and manage handoffs |
+| `event_owner` | All room_coordinator permissions, plus manage booths and generate invite tokens |
 
 :::tip
-Assign `interpreter` to interpreters, `coordinator` only to the booth coordinator managing handoffs, and `event_admin` only to the person responsible for setting up the event. Listeners do not need any elevated role.
+Assign `interpreter` to interpreters, `room_coordinator` only to the booth room_coordinator managing handoffs, and `event_owner` only to the person responsible for setting up the event. Listeners do not need any elevated role.
 :::
 
 To remove a role, go to the event or booth detail page, find the user in the **Members** section, and click **Remove**.

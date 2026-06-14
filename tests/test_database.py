@@ -12,8 +12,6 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from portal.models import Base, DBBooth, Event, InviteToken, Room, generate_token, utc_now
-
 # We import CRUD helpers and test them against our isolated test DB.
 # Because portal.database uses a module-level engine tied to settings,
 # we import the functions and call them with our test session.
@@ -22,6 +20,7 @@ from portal.database import (
     create_event,
     create_invite_token,
     create_room,
+    create_user,
     delete_booth,
     delete_event,
     delete_room,
@@ -35,10 +34,11 @@ from portal.database import (
     list_events,
     list_rooms_for_event,
     list_tokens_for_booth,
+    list_users,
     redeem_invite_token,
 )
+from portal.models import Base, DBBooth, Event, InviteToken, Room, generate_token, utc_now
 from portal.roles import ALL_ROLES
-
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -383,7 +383,7 @@ async def test_get_invite_token(db: AsyncSession):
         db, event_id=ev.id, room_id=room.id,
         language_code='en', language_name='English',
     )
-    tok = await create_invite_token(db, booth_id=booth.id, role='listener')
+    tok = await create_invite_token(db, booth_id=booth.id, role='interpreter')
     found = await get_invite_token(db, tok.token)
     assert found is not None
     assert found.token == tok.token
@@ -461,7 +461,7 @@ async def test_invite_token_not_expired_when_no_expiry(db: AsyncSession):
         db, event_id=ev.id, room_id=room.id,
         language_code='en', language_name='English',
     )
-    tok = await create_invite_token(db, booth_id=booth.id, role='listener')
+    tok = await create_invite_token(db, booth_id=booth.id, role='interpreter')
     assert tok.is_expired is False
 
 
@@ -475,7 +475,7 @@ async def test_invite_token_not_expired_when_future(db: AsyncSession):
     )
     future = datetime.now(tz=timezone.utc) + timedelta(hours=24)
     tok = await create_invite_token(
-        db, booth_id=booth.id, role='listener', expires_at=future,
+        db, booth_id=booth.id, role='interpreter', expires_at=future,
     )
     assert tok.is_expired is False
 
@@ -489,7 +489,7 @@ async def test_list_tokens_for_booth(db: AsyncSession):
         language_code='en', language_name='English',
     )
     await create_invite_token(db, booth_id=booth.id, role='interpreter')
-    await create_invite_token(db, booth_id=booth.id, role='listener')
+    await create_invite_token(db, booth_id=booth.id, role='interpreter')
     tokens = await list_tokens_for_booth(db, booth.id)
     assert len(tokens) == 2
 
@@ -507,7 +507,7 @@ async def test_cascade_delete_event_removes_rooms_and_booths(db: AsyncSession):
         db, event_id=ev.id, room_id=room.id,
         language_code='en', language_name='English',
     )
-    await create_invite_token(db, booth_id=booth.id, role='listener')
+    await create_invite_token(db, booth_id=booth.id, role='interpreter')
 
     await delete_event(db, ev.id)
     assert await get_room_by_id(db, room.id) is None
@@ -567,3 +567,62 @@ async def test_invite_token_repr(db: AsyncSession):
     r = repr(tok)
     assert 'interpreter' in r
     assert tok.token[:8] in r
+
+
+# ---------------------------------------------------------------------------
+# Pagination tests
+# ---------------------------------------------------------------------------
+
+@pytest.mark.anyio
+async def test_list_events_limit(db: AsyncSession):
+    for i in range(5):
+        await create_event(db, slug=f'ev-lim-{i}', display_name=f'Ev {i}')
+    events = await list_events(db, limit=2)
+    assert len(events) == 2
+
+
+@pytest.mark.anyio
+async def test_list_events_offset(db: AsyncSession):
+    for i in range(5):
+        await create_event(db, slug=f'ev-off-{i}', display_name=f'Ev {i}')
+    events = await list_events(db, limit=2, offset=3)
+    assert len(events) == 2
+    assert events[0].slug == 'ev-off-3'  # 4th created event
+
+
+@pytest.mark.anyio
+async def test_list_rooms_pagination(db: AsyncSession):
+    ev = await create_event(db, slug='ev-rm-pag', display_name='Ev')
+    for i in range(5):
+        await create_room(db, event_id=ev.id, display_name=f'Room {i}')
+    rooms = await list_rooms_for_event(db, ev.id, limit=3)
+    assert len(rooms) == 3
+
+
+@pytest.mark.anyio
+async def test_list_booths_pagination(db: AsyncSession):
+    ev = await create_event(db, slug='ev-bth-pag', display_name='Ev')
+    room = await create_room(db, event_id=ev.id, display_name='Room')
+    langs = ['en', 'fr', 'de', 'es', 'it']
+    for i, lang in enumerate(langs):
+        await create_booth(db, event_id=ev.id, room_id=room.id, language_code=lang, language_name=f'Lang {i}')
+    booths = await list_booths_for_event(db, ev.id, limit=2)
+    assert len(booths) == 2
+
+
+@pytest.mark.anyio
+async def test_list_users_pagination(db: AsyncSession):
+    for i in range(5):
+        await create_user(db, email=f'u{i}@test.com', display_name=f'U{i}', password_hash='x')
+    users = await list_users(db, limit=3, offset=1)
+    assert len(users) == 3
+    assert users[0].email == 'u1@test.com'
+
+
+@pytest.mark.anyio
+async def test_list_events_default_limit_does_not_break(db: AsyncSession):
+    for i in range(3):
+        await create_event(db, slug=f'ev-def-{i}', display_name=f'Ev {i}')
+    events = await list_events(db)
+    assert len(events) == 3
+

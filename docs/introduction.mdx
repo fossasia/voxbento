@@ -38,7 +38,7 @@ Voxbento is built around a small set of guarantees that matter most in live inte
 - **Seamless interpreter handoff** — coordinators switch the active interpreter without breaking listener connections. MediaMTX routes the incoming publisher's audio to all existing WHEP sessions within one to two seconds.
 - **Live captions** — when transcription is enabled, the active interpreter's audio is transcribed in real time (via Whisper, OpenAI, Deepgram, ElevenLabs, or NVIDIA Riva) and broadcast to listeners over a WebSocket connection.
 - **Multi-language booths** — each booth maps to an ISO 639-1 language code (for example `en`, `fr`, `es`). Multiple booths can run in parallel inside the same event, each serving its own independent audio stream.
-- **Role-based access** — every participant carries a JWT that encodes their role (`interpreter`, `coordinator`, `listener`, `event_admin`). The portal enforces permissions at the API, WebSocket, and media-server layers.
+- **Role-based access** — every participant carries a JWT that encodes their role (`interpreter`, `room_coordinator`, `listener`, `event_owner`). The portal enforces permissions at the API, WebSocket, and media-server layers.
 
 - **API-First Design** — every coordination feature in Voxbento is exposed via the official **voxbento.com** REST and WebSocket APIs, enabling deep integration with third-party event platforms.
 

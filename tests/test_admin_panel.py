@@ -20,6 +20,9 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from portal.auth import create_admin_token, decode_token
+from portal.config import settings
+
+settings.admin_password = 'test-admin-pass'
 
 
 # ---------------------------------------------------------------------------
@@ -65,6 +68,7 @@ async def seed_event():
 
 def _client():
     from httpx import ASGITransport, AsyncClient
+
     from fastapi_app import app
     return AsyncClient(transport=ASGITransport(app=app), base_url='http://test')
 
@@ -155,7 +159,7 @@ class TestHomePage:
         async with _client() as c:
             resp = await c.get('/')
         assert resp.status_code == 200
-        assert b'Interpretation Portal' in resp.content
+        assert b'VoxBento' in resp.content
 
     @pytest.mark.anyio
     async def test_home_shows_events(self, seed_event):
