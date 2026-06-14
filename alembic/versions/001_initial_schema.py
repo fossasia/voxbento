@@ -1,15 +1,15 @@
 """Initial schema: events, rooms, booths, invite_tokens
 
 Revision ID: 001
-Revises: 
+Revises:
 Create Date: 2026-05-31 23:56:47.542354
 
 """
 from typing import Sequence, Union
 
-from alembic import op
 import sqlalchemy as sa
 
+from alembic import op
 
 # revision identifiers, used by Alembic.
 revision: str = '001'

@@ -14,7 +14,6 @@ from portal.booth_identity import (
     validate_language_code,
 )
 
-
 # ── validate_event_slug ──────────────────────────────────────────────────────
 
 class TestValidateEventSlug:

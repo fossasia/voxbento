@@ -244,9 +244,9 @@ async def main() -> None:
     # Multiple tokens for same booth, different roles
     for role, label, booth_id, created_by in [
         ('interpreter', 'Alice Interpreter', pycon_en_id, 'admin@pycon.org'),
-        ('coordinator', 'Bob Coordinator', pycon_en_id, 'admin@pycon.org'),
-        ('listener', 'Charlie Listener', pycon_en_id, None),
-        ('event_admin', 'Dave Admin', pycon_en_id, 'super@pycon.org'),
+        ('room_coordinator', 'Bob Coordinator', pycon_en_id, 'admin@pycon.org'),
+        ('Charlie Listener', pycon_en_id, None),
+        ('event_owner', 'Dave Admin', pycon_en_id, 'super@pycon.org'),
         ('super_admin', 'Eve Super', foss_zh_id, None),
         ('interpreter', 'Fiona Interpreter', foss_zh_id, 'admin@fossasia.org'),
     ]:
@@ -262,7 +262,7 @@ async def main() -> None:
     async with get_session() as s:
         future = datetime.now(tz=timezone.utc) + timedelta(hours=24)
         tok_exp = await create_invite_token(
-            s, booth_id=pycon_en_id, role='listener',
+            s, booth_id=pycon_en_id, role='room_coordinator',
             label='Expiring token', expires_at=future,
         )
         token_values['Expiring token'] = tok_exp.token
@@ -272,7 +272,7 @@ async def main() -> None:
     async with get_session() as s:
         past = datetime.now(tz=timezone.utc) - timedelta(hours=1)
         tok_past = await create_invite_token(
-            s, booth_id=pycon_en_id, role='listener',
+            s, booth_id=pycon_en_id, role='room_coordinator',
             label='Past token', expires_at=past,
         )
         token_values['Past token'] = tok_past.token
@@ -343,7 +343,7 @@ async def main() -> None:
             language_code='de', language_name='German',
         )
         throwaway_tok = await create_invite_token(
-            s, booth_id=throwaway_booth.id, role='listener',
+            s, booth_id=throwaway_booth.id, role='room_coordinator',
         )
         tb_id = throwaway_booth.id
         tt_token = throwaway_tok.token

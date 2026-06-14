@@ -21,23 +21,58 @@
     <span class="status-offline">○ No booths live</span>
     {% endif %}
   </div>
+  <div style="margin-top: 1rem;">
+    <a href="/mission-control/{{ event.slug }}/" class="btn btn-success">Open Mission Control</a>
+  </div>
 </div>
 
 <div class="section-grid">
   <!-- Members section -->
+  {% if is_event_owner %}
   <div class="section-card">
     <div class="section-header">
       <h2>Members</h2>
       <a href="/admin/events/{{ event.id }}/members/" class="btn btn-sm btn-primary">Manage Members</a>
     </div>
-    <p class="muted">Assign per-event roles (listener, interpreter, coordinator, event_admin) to registered users.</p>
+    <p class="muted">Assign per-event roles to registered users.</p>
   </div>
+  {% endif %}
+
+  <!-- Listener Access -->
+  {% if is_event_owner %}
+  <div class="section-card">
+    <div class="section-header">
+      <h2>Listener Access</h2>
+    </div>
+    {% if event.listener_join_code %}
+    <div style="background: var(--bg-card); padding: 1rem; border-radius: var(--radius-md); border: 1px solid var(--border-color); display: flex; align-items: center; justify-content: space-between;">
+      <div>
+        <p style="margin: 0; font-weight: 500; font-size: 1.25rem; letter-spacing: 2px;">{{ event.listener_join_code }}</p>
+        <p class="muted" style="margin: 0.25rem 0 0 0; font-size: 0.875rem;">Share this code with listeners, or provide them with this link:</p>
+        <a href="/listener/{{ event.slug }}?code={{ event.listener_join_code }}" target="_blank" class="link-external" style="display: inline-block; margin-top: 0.5rem;">
+          /listener/{{ event.slug }}?code={{ event.listener_join_code }}
+        </a>
+      </div>
+      <form method="post" action="/admin/events/{{ event.id }}/regenerate_join_code/" data-confirm="Regenerate join code? This will invalidate the previous code.">
+        <button type="submit" class="btn btn-sm btn-outline">Regenerate</button>
+      </form>
+    </div>
+    {% else %}
+    <p class="muted">No join code set for this event.</p>
+    <form method="post" action="/admin/events/{{ event.id }}/regenerate_join_code/">
+      <button type="submit" class="btn btn-sm btn-primary">Generate Join Code</button>
+    </form>
+    {% endif %}
+  </div>
+  {% endif %}
 
   <!-- Rooms section -->
   <div class="section-card">
     <div class="section-header">
       <h2>Rooms ({{ rooms|length }})</h2>
+      {% if is_event_owner %}
       <a href="/admin/events/{{ event.id }}/rooms/" class="btn btn-sm">Manage Rooms</a>
+      {% endif %}
     </div>
     {% if rooms %}
     <ul class="item-list">
@@ -98,6 +133,7 @@
   </div>
 </div>
 
+{% if is_event_owner %}
 <div class="section-card">
   <div class="section-header">
     <h2>Global API Integrations</h2>
@@ -109,9 +145,10 @@
 <div class="danger-zone">
   <h3>Danger Zone</h3>
   <form method="post" action="/admin/events/{{ event.id }}/delete" class="inline-delete"
-        onsubmit="return confirm('Delete \'{{ event.display_name }}\'? This permanently removes all rooms, booths, and invite tokens.')">
+        data-confirm="Delete '{{ event.display_name }}'? This permanently removes all rooms, booths, and invite tokens.">
     <button type="submit" class="btn btn-danger">Delete Event</button>
     <span class="danger-text">This action cannot be undone.</span>
   </form>
 </div>
+{% endif %}
 {% endblock %}

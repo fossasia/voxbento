@@ -19,9 +19,10 @@ client = TestClient(app)
 
 @pytest.fixture(autouse=True)
 def setup_db():
-    from portal.database import configure, dispose, init_db
     import anyio
-    
+
+    from portal.database import configure, dispose, init_db
+
     configure('sqlite+aiosqlite://')
     anyio.run(init_db)
     yield
@@ -85,8 +86,8 @@ def test_interpreter_booth_jitsi_url_uses_base_url():
     a hard-coded http:// scheme, to avoid mixed-content on HTTPS deployments."""
     res = client.get('/interpreter/test-booth', cookies=_interpreter_cookie())
     assert res.status_code == 200
-    from portal.config import settings
     from fastapi_app import _make_jitsi_url
+    from portal.config import settings
     expected = _make_jitsi_url(settings.effective_jitsi_base_url, settings.default_jitsi_room)
     assert expected.encode() in res.content
 
@@ -112,6 +113,7 @@ def test_interpreter_booth_jitsi_domain_matches_base_url_host():
     If they differ the user's own pre-filled URL is rejected.
     """
     from urllib.parse import urlparse
+
     from portal.config import settings
     res = client.get('/interpreter/test-booth', cookies=_interpreter_cookie())
     assert res.status_code == 200
@@ -406,14 +408,14 @@ def test_ws_three_way_coordinator_flow():
          client.websocket_connect(f'/ws/booth/{booth}', cookies=_ws_auth()) as ws_coord:
 
         # IntA joins (no pending for ws_a; ws_b + ws_coord each queue 1 state msg)
-        pid_a = ws_join(ws_a, 'IntA', 'interpreter', n_pending=0)
+        ws_join(ws_a, 'IntA', 'interpreter', n_pending=0)
 
         # IntB joins (1 pending from IntA's join; ws_a + ws_coord queue 1 more)
         pid_b = ws_join(ws_b, 'IntB', 'interpreter', n_pending=1)
         ws_a.receive_text()   # booth:state broadcast to ws_a when IntB joined
 
         # Coordinator joins (2 pending from IntA + IntB joins; ws_a + ws_b queue 1 more)
-        _pid_coord = ws_join(ws_coord, 'Coord', 'coordinator', n_pending=2)
+        _pid_coord = ws_join(ws_coord, 'Coord', 'room_coordinator', n_pending=2)
         ws_a.receive_text()   # booth:state broadcast to ws_a when coordinator joined
         ws_b.receive_text()   # booth:state broadcast to ws_b when coordinator joined
 
@@ -524,7 +526,7 @@ def test_ws_coordinator_can_switch_active_interpreter():
         # Coordinator joins; IntA gets a state broadcast
         ws_coord.send_text(json.dumps({
             'type': 'booth:join', 'display_name': 'Coord',
-            'role': 'coordinator', 'language': 'French', 'channel_id': 'switch-booth-audio',
+            'role': 'room_coordinator', 'language': 'French', 'channel_id': 'switch-booth-audio',
         }))
         joined_coord = json.loads(ws_coord.receive_text())
         if joined_coord['type'] != 'booth:joined':
@@ -621,7 +623,7 @@ def test_whip_url_coordinator_rejected():
     with client.websocket_connect(f'/ws/booth/{booth}', cookies=_ws_auth()) as ws:
         ws.send_text(json.dumps({
             'type': 'booth:join', 'display_name': 'Coord',
-            'role': 'coordinator', 'language': 'English', 'channel_id': channel,
+            'role': 'room_coordinator', 'language': 'English', 'channel_id': channel,
         }))
         joined = json.loads(ws.receive_text())
         if joined['type'] != 'booth:joined':
@@ -760,11 +762,11 @@ def test_interpreter_booth_by_identity_no_role_returns_403():
     assert res.status_code == 403
 
 
-def test_interpreter_booth_admin_user_gets_event_admin_role():
-    """A user with is_admin=True gets event_admin role without needing a membership."""
+def test_interpreter_booth_admin_user_gets_super_admin_role():
+    """A user with is_admin=True gets super_admin role without needing a membership."""
     res = client.get('/interpreter/myevent/en', cookies=_admin_user_cookie())
     assert res.status_code == 200
-    assert b"data-granted-role='event_admin'" in res.content
+    assert b"data-granted-role='super_admin'" in res.content
 
 
 def test_legacy_interpreter_booth_requires_auth():

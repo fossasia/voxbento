@@ -37,52 +37,54 @@ const state = {
     audioDevice: 'pending',
     serverReachable: 'pending',
   },
+  /** Handoff protocol state from server */
+  handoffState: 'idle',       // 'idle' | 'offered' | 'requested'
+  handoffInitiatorId: null,
+  /** Track whether booth audio WHEP has been auto-started for passive */
+  boothAudioAutoStarted: false,
 }
 
 const elements = {
   connectionStatus: document.getElementById('connection-status'),
-  monitorStatus: document.getElementById('monitor-status'),
   activeIndicator: document.getElementById('active-indicator'),
   ingestStatus: document.getElementById('ingest-status'),
   micState: document.getElementById('mic-state'),
   errorBanner: document.getElementById('error-banner'),
   participantList: document.getElementById('participant-list'),
+  participantCount: document.getElementById('participant-count'),
   chatLog: document.getElementById('chat-log'),
   jitsiFrame: document.getElementById('jitsi-frame'),
-  jitsiUrl: document.getElementById('jitsi-url'),
-  joinJitsi: document.getElementById('join-jitsi'),
-  joinLeaveBtn: document.getElementById('join-leave-btn'),
-  joinLeaveLabel: document.getElementById('join-leave-label'),
   chatForm: document.getElementById('chat-form'),
   chatInput: document.getElementById('chat-input'),
   toggleMic: document.getElementById('toggle-mic'),
-  goLive: document.getElementById('go-live'),
+  handoverBtn: document.getElementById('handover-btn'),
+  handoverLabel: document.getElementById('handover-label'),
+  liveBadge: document.getElementById('live-badge'),
+  liveBadgeText: document.getElementById('live-badge-text'),
   passRelay: document.getElementById('pass-relay'),
   relayAudio: document.getElementById('relay-audio'),
   relayDeviceSelect: document.getElementById('relay-device-select'),
   showVirtualRelayDevices: document.getElementById('show-virtual-relay-devices'),
   relayVolume: document.getElementById('relay-volume'),
   relayStatus: document.getElementById('relay-status'),
-  
-  listenBoothBtn: document.getElementById('listen-booth-btn'),
+
   boothAudio: document.getElementById('booth-audio'),
-  boothDeviceSelect: document.getElementById('booth-device-select'),
-  showVirtualBoothDevices: document.getElementById('show-virtual-booth-devices'),
   boothVolume: document.getElementById('booth-volume'),
-  boothStatus: document.getElementById('booth-audio-status'),
+  boothVolumeLabel: document.getElementById('booth-volume-label'),
 
   micDeviceSelect: document.getElementById('mic-device-select'),
   showVirtualDevices: document.getElementById('show-virtual-devices'),
   micMeter: document.getElementById('mic-meter'),
   meterRow: document.getElementById('meter-row'),
   micTestBtn: document.getElementById('mic-test-btn'),
+  loopbackTestBtn: document.getElementById('loopback-test-btn'),
+  loopbackProgressRow: document.getElementById('loopback-progress-row'),
+  loopbackProgress: document.getElementById('loopback-progress'),
+  loopbackStatus: document.getElementById('loopback-status'),
   listenerUrlRow: document.getElementById('listener-url-row'),
   listenerUrlDisplay: document.getElementById('listener-url-display'),
   copyListenerUrl: document.getElementById('copy-listener-url'),
   muteLabel: document.getElementById('mute-label'),
-  liveLabel: document.getElementById('live-label'),
-  ctrlCompound: document.querySelector('.ctrl-compound'),
-  // leaveBooth removed
   preflightRetry: document.getElementById('preflight-retry'),
   checkMicPermission: document.getElementById('check-mic-permission'),
 }
@@ -92,6 +94,8 @@ let micTestStream = null
 let micAnimFrame = null
 let micAudioCtx = null
 let micAnalyser = null
+let loopbackRecorder = null
+let loopbackAudio = null
 
 
 boot().catch((error) => {
@@ -100,14 +104,12 @@ boot().catch((error) => {
 })
 
 async function boot() {
-  // Jitsi URL is set by the template — don't overwrite it
   await fetchBoothState()
   await fetchIngestReachability()
   await populateMicDevices()
   if (state.relayWhepUrl) {
     await populateRelayDevices()
   }
-  await populateBoothDevices()
 
   // Run preflights asynchronously before blocking on JWT/WS connection
   runPreflightChecks().catch((error) => {
@@ -117,6 +119,10 @@ async function boot() {
   await acquireJwt()
   await connectWebSocket()
   bindEventHandlers()
+
+  // Auto-join the booth immediately
+  joinBooth()
+
   render()
 }
 
@@ -190,9 +196,7 @@ function handleServerMessage(data) {
   if (type === 'booth:joined') {
     state.participantId = data.participant_id
     state.joined = true
-    // skipAutoStart: the server auto-sets the first interpreter as active on
-    // join, but the interpreter must press Go Live themselves.
-    applyBoothState(data.state, { skipAutoStart: true })
+    applyBoothState(data.state, { skipAutoStart: false })
     joinMonitoringFeed()
     render()
     showError('')
@@ -228,33 +232,28 @@ function authHeaders() {
 // ── Event binding ─────────────────────────────────────────────────────────────
 
 function bindEventHandlers() {
-  elements.joinLeaveBtn.addEventListener('click', async () => {
-    if (!state.joined) {
-      joinBooth()
-    } else {
-      if (state.ingestConnected) {
-        await stopLiveIngest()
-      }
-      if (state.micStream) {
-        state.micStream.getTracks().forEach((t) => t.stop())
-        state.micStream = null
-        stopMicMeter()
-      }
-      if (state.joined && state.participantId) {
-        wsSend({ type: 'booth:leave' })
-        state.joined = false
-        state.participantId = null
-        state.participants = []
-        state.activeInterpreterId = null
-        state.chatMessages = []
-        leaveMonitoringFeed()
-        render()
-      }
-    }
-  })
+  // Handover button click
+  elements.handoverBtn.addEventListener('click', () => {
+    if (!state.joined || !state.participantId) return
+    const isActive = state.activeInterpreterId === state.participantId
+    const hState = state.handoffState
 
-  elements.jitsiFrame.addEventListener('load', () => {
-    setBadge(elements.monitorStatus, 'Monitoring', 'success')
+    if (hState === 'idle') {
+      // Initiate a handoff
+      wsSend({ type: 'booth:initiate-handoff' })
+    } else if (hState === 'offered' && !isActive) {
+      // Passive accepts the offer (TAKE OVER flashing yellow → accept)
+      wsSend({ type: 'booth:accept-handoff' })
+    } else if (hState === 'requested' && isActive) {
+      // Active accepts the request (PASS MIC flashing yellow → yield)
+      wsSend({ type: 'booth:accept-handoff' })
+    } else if (hState === 'offered' && isActive && state.handoffInitiatorId === state.participantId) {
+      // Active clicks their own green button → cancel
+      wsSend({ type: 'booth:cancel-handoff' })
+    } else if (hState === 'requested' && !isActive && state.handoffInitiatorId === state.participantId) {
+      // Passive clicks their own green button → cancel
+      wsSend({ type: 'booth:cancel-handoff' })
+    }
   })
 
   elements.chatForm.addEventListener('submit', (event) => {
@@ -265,16 +264,6 @@ function bindEventHandlers() {
   elements.toggleMic.addEventListener('click', async () => {
     await toggleMicMute()
   })
-
-  elements.goLive.addEventListener('click', async () => {
-    if (state.ingestConnected) {
-      await stopLiveIngest()
-      return
-    }
-    await startLiveIngest()
-  })
-
-
 
   if (elements.passRelay) {
     elements.passRelay.addEventListener('click', toggleRelayAudio)
@@ -292,31 +281,13 @@ function bindEventHandlers() {
     })
   }
 
-  // Booth Audio Listeners
-  if (elements.boothDeviceSelect && elements.boothAudio) {
-    elements.boothDeviceSelect.addEventListener('change', async () => {
-      try {
-        if (typeof elements.boothAudio.setSinkId === 'function') {
-          await elements.boothAudio.setSinkId(elements.boothDeviceSelect.value)
-        }
-      } catch (e) {
-        console.warn('setSinkId failed for booth audio', e)
-      }
-    })
-  }
-
-  if (elements.showVirtualBoothDevices) {
-    elements.showVirtualBoothDevices.addEventListener('change', populateBoothDevices)
-  }
-
+  // Booth Audio Volume slider
   if (elements.boothVolume && elements.boothAudio) {
     elements.boothVolume.addEventListener('input', () => {
-      elements.boothAudio.volume = parseFloat(elements.boothVolume.value)
+      const val = parseInt(elements.boothVolume.value, 10)
+      elements.boothAudio.volume = val / 100
+      if (elements.boothVolumeLabel) elements.boothVolumeLabel.textContent = `${val}%`
     })
-  }
-
-  if (elements.listenBoothBtn) {
-    elements.listenBoothBtn.addEventListener('click', toggleBoothAudio)
   }
 
   if (elements.showVirtualRelayDevices) {
@@ -349,6 +320,16 @@ function bindEventHandlers() {
     }
   })
 
+  if (elements.loopbackTestBtn) {
+    elements.loopbackTestBtn.addEventListener('click', async () => {
+      if (loopbackRecorder || loopbackAudio) {
+        stopLoopbackTest()
+      } else {
+        await startLoopbackTest()
+      }
+    })
+  }
+
   if (elements.copyListenerUrl) {
     elements.copyListenerUrl.addEventListener('click', () => {
       const url = elements.listenerUrlDisplay.textContent
@@ -361,8 +342,6 @@ function bindEventHandlers() {
       }).catch(() => {})
     })
   }
-
-
 
   document.addEventListener('keydown', (event) => {
     if (event.code !== 'Space') return
@@ -377,8 +356,6 @@ function bindEventHandlers() {
       showError(`Preflight checks failed: ${error.message}`)
     })
   })
-
-
 
   if (navigator.mediaDevices) {
     navigator.mediaDevices.addEventListener('devicechange', () => {
@@ -409,8 +386,6 @@ function bindEventHandlers() {
 
 async function runPreflightChecks() {
   setPreflightStatus('micPermission', 'pending', 'Checking…')
-  setPreflightStatus('audioDevice', 'pending', 'Checking…')
-  setPreflightStatus('serverReachable', 'pending', 'Checking…')
 
   try {
     const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
@@ -423,7 +398,6 @@ async function runPreflightChecks() {
         : `Error: ${error.message}`
     setPreflightStatus('micPermission', 'fail', msg)
   }
-
 
   try {
     const resp = await fetch(`/api/interpreter/status/${encodeURIComponent(state.channelId)}`)
@@ -476,10 +450,6 @@ async function fetchBoothState() {
 }
 
 async function fetchIngestReachability() {
-  // Always query the backend status endpoint so the UI reflects actual
-  // MediaMTX availability rather than assuming reachable whenever whipBase
-  // is configured. The early-return that forced ingestReachable=true when
-  // whipBase was set has been removed.
   const response = await fetch(`/api/interpreter/status/${encodeURIComponent(state.channelId)}`)
   if (!response.ok) {
     state.ingestReachable = false
@@ -491,9 +461,14 @@ async function fetchIngestReachability() {
 
 function applyBoothState(payload, { skipAutoStart = false } = {}) {
   const previousActiveInterpreterId = state.activeInterpreterId
+  const previousBroadcastUnlocked = state.broadcastUnlocked
+
   state.participants = payload.participants || []
   state.activeInterpreterId = payload.active_interpreter_id || null
   state.chatMessages = payload.chat_messages || []
+  state.handoffState = payload.handoff_state || 'idle'
+  state.handoffInitiatorId = payload.handoff_initiator_id || null
+  state.broadcastUnlocked = payload.broadcast_unlocked || false
 
   // Ensure non-active interpreters are always muted locally
   if (state.participantId && state.activeInterpreterId !== state.participantId) {
@@ -511,18 +486,25 @@ function applyBoothState(payload, { skipAutoStart = false } = {}) {
     previousActiveInterpreterId === state.participantId &&
     state.activeInterpreterId !== state.participantId
 
-  // This client just became the active interpreter (e.g. coordinator switched)
   const becameActive =
     state.joined &&
     state.participantId &&
     state.activeInterpreterId === state.participantId &&
     previousActiveInterpreterId !== state.participantId
 
-  if (lostActivePublisher) {
-    // With overridePublisher enabled on MediaMTX, the incoming interpreter
-    // will take over the WHIP path immediately.  MediaMTX kicks our
-    // peer-connection and seamlessly continues the WHEP stream, so viewers
-    // never see a gap.  We just clean up our side.
+  const becamePassive =
+    state.joined &&
+    state.participantId &&
+    state.activeInterpreterId !== state.participantId &&
+    previousActiveInterpreterId === state.participantId
+
+  const becameUnlocked = state.broadcastUnlocked && !previousBroadcastUnlocked
+  const becameLocked = !state.broadcastUnlocked && previousBroadcastUnlocked
+
+  const lostPublishingRights = 
+    lostActivePublisher || (becameLocked && state.activeInterpreterId === state.participantId)
+
+  if (lostPublishingRights) {
     state.relayingOut = true
     if (state.micStream) {
       state.micStream.getAudioTracks().forEach((t) => { t.enabled = false })
@@ -535,8 +517,10 @@ function applyBoothState(payload, { skipAutoStart = false } = {}) {
     })
   }
 
-  if (!skipAutoStart && becameActive && !state.ingestConnected && state.ingestReachable) {
-    // Unmute immediately so audio is ready the moment WHIP connects.
+  // Auto-start ingest when becoming active or when broadcast unlocks
+  const shouldStartIngest = (becameActive || becameUnlocked) && state.activeInterpreterId === state.participantId && state.broadcastUnlocked
+
+  if (!skipAutoStart && shouldStartIngest && !state.ingestConnected && state.ingestReachable) {
     if (state.micMuted) {
       state.micMuted = false
       if (state.micStream) {
@@ -544,11 +528,40 @@ function applyBoothState(payload, { skipAutoStart = false } = {}) {
       }
       renderMicControls()
     }
-    // With overridePublisher enabled on MediaMTX, the first attempt succeeds
-    // immediately (no 409 Conflict). The retry logic is kept as a safety net
-    // for edge cases (network hiccups, slow ICE gathering).
     attemptRelayStart(0)
   }
+
+  // Booth Audio volume defaults: Active=0%, Passive=80%
+  if (becameActive) {
+    setBoothVolume(0)
+  } else if (becamePassive) {
+    setBoothVolume(80)
+    // Auto-start booth audio WHEP for passive interpreters
+    if (!state.boothAudioAutoStarted) {
+      state.boothAudioAutoStarted = true
+      startBoothAudioListening()
+    }
+  }
+
+  // If just joined as passive, also set default volume
+  if (state.joined && state.participantId && state.activeInterpreterId !== state.participantId && previousActiveInterpreterId === null) {
+    setBoothVolume(80)
+    if (!state.boothAudioAutoStarted) {
+      state.boothAudioAutoStarted = true
+      startBoothAudioListening()
+    }
+  }
+  // If just joined as active, set default volume
+  if (state.joined && state.participantId && state.activeInterpreterId === state.participantId && previousActiveInterpreterId === null) {
+    setBoothVolume(0)
+  }
+}
+
+/** Set booth audio volume slider + audio element */
+function setBoothVolume(pct) {
+  if (elements.boothVolume) elements.boothVolume.value = pct
+  if (elements.boothAudio) elements.boothAudio.volume = pct / 100
+  if (elements.boothVolumeLabel) elements.boothVolumeLabel.textContent = `${pct}%`
 }
 
 // ── Booth actions ─────────────────────────────────────────────────────────────
@@ -586,11 +599,10 @@ function joinMonitoringFeed() {
       'config.prejoinPageEnabled': 'false',
       'config.disableInitialGUM': 'false',
       'config.disableDeepLinking': 'true',
-      'config.toolbarButtons': '["microphone", "camera", "chat", "participants-pane", "tileview", "fullscreen", "settings"]',
-      'interfaceConfig.TOOLBAR_BUTTONS': '["microphone", "camera", "chat", "participants-pane", "tileview", "fullscreen", "settings"]',
+      'config.toolbarButtons': '["microphone","camera","chat","participants-pane","tileview","fullscreen","settings"]',
+      'interfaceConfig.TOOLBAR_BUTTONS': '["microphone","camera","chat","participants-pane","tileview","fullscreen","settings"]',
     })
     
-    // Add user info to Jitsi URL config
     const dName = portal.dataset.displayName || 'Interpreter'
     if (dName) {
       hashParams.set('userInfo.displayName', `"${dName}"`)
@@ -605,10 +617,7 @@ function joinMonitoringFeed() {
 }
 
 async function populateMicDevices() {
-  if (!navigator.mediaDevices) {
-    // Non-secure context or unsupported browser — skip device enumeration gracefully
-    return
-  }
+  if (!navigator.mediaDevices) return
   try {
     const tempStream = await navigator.mediaDevices.getUserMedia({ audio: true })
     tempStream.getTracks().forEach((t) => t.stop())
@@ -619,7 +628,6 @@ async function populateMicDevices() {
   try {
     devices = await navigator.mediaDevices.enumerateDevices()
   } catch {
-    // Cannot enumerate — proceed without device list
     return
   }
 
@@ -697,45 +705,6 @@ async function populateRelayDevices() {
   }
 }
 
-async function populateBoothDevices() {
-  if (!navigator.mediaDevices || !elements.boothDeviceSelect) return
-  let devices = []
-  try {
-    devices = await navigator.mediaDevices.enumerateDevices()
-  } catch {
-    return
-  }
-  let audioOutputs = devices.filter((d) => d.kind === 'audiooutput')
-
-  const includeVirtual = elements.showVirtualBoothDevices && elements.showVirtualBoothDevices.checked
-  if (!includeVirtual) {
-    const virtualKeywords = ['zoom', 'teams', 'nomachine', 'blackhole', 'loopback', 'soundflower', 'obs', 'virtual', 'webex', 'eqmac', 'epoccam']
-    audioOutputs = audioOutputs.filter((d) => {
-      const lower = d.label.toLowerCase()
-      return !virtualKeywords.some((keyword) => lower.includes(keyword))
-    })
-  }
-
-  const previous = elements.boothDeviceSelect.value
-  elements.boothDeviceSelect.innerHTML = ''
-
-  const defaultOpt = document.createElement('option')
-  defaultOpt.value = ''
-  defaultOpt.textContent = 'Default output'
-  elements.boothDeviceSelect.appendChild(defaultOpt)
-
-  for (const device of audioOutputs) {
-    const opt = document.createElement('option')
-    opt.value = device.deviceId
-    opt.textContent = device.label || `Speaker ${elements.boothDeviceSelect.options.length}`
-    elements.boothDeviceSelect.appendChild(opt)
-  }
-
-  if (previous && elements.boothDeviceSelect.querySelector(`option[value="${CSS.escape(previous)}"]`)) {
-    elements.boothDeviceSelect.value = previous
-  }
-}
-
 // ── WHEP Clients ──────────────────────────────────────────────────────────────
 const relayWhep = typeof createWhepClient === 'function' ? createWhepClient() : (typeof WhepListener !== 'undefined' ? WhepListener : null)
 const boothWhep = typeof createWhepClient === 'function' ? createWhepClient() : (typeof WhepListener !== 'undefined' ? WhepListener : null)
@@ -793,55 +762,25 @@ function toggleRelayAudio() {
 // ── Booth Audio Listening ─────────────────────────────────────────────────────
 
 let boothListening = false
-let boothDefaultText = ''
 
-function toggleBoothAudio() {
+function startBoothAudioListening() {
   const whepUrl = state.whepUrl || (state.whipBase && state.channelId ? `${state.whipBase}/${encodeURIComponent(state.channelId)}/whep` : '')
-  if (!whepUrl) {
-    console.warn('Cannot listen to booth: whepUrl is missing')
-    return
-  }
-  
-  if (!boothDefaultText && elements.listenBoothBtn) {
-    boothDefaultText = elements.listenBoothBtn.textContent.trim()
-  }
+  if (!whepUrl || !boothWhep) return
+  if (boothListening) return
 
-  boothListening = !boothListening
-  if (boothListening) {
-    if (elements.listenBoothBtn) {
-      elements.listenBoothBtn.classList.add('btn-primary')
-      elements.listenBoothBtn.textContent = 'Stop Listening to Booth'
-    }
-    if (elements.boothStatus) elements.boothStatus.textContent = 'Connecting...'
-    boothWhep.start({
-      whepUrl: whepUrl,
-      audioEl: elements.boothAudio,
-      onState: (st) => {
-        if (!elements.boothStatus) return
-        if (st.audioActive) {
-          elements.boothStatus.textContent = 'Listening'
-          elements.boothStatus.className = 'status-badge status-live'
-        } else if (st.peerConnection === 'failed') {
-          elements.boothStatus.textContent = 'Error'
-          elements.boothStatus.className = 'status-badge status-disconnected'
-        } else {
-          elements.boothStatus.textContent = 'Connecting...'
-          elements.boothStatus.className = 'status-badge status-warning'
-        }
-      },
-      onLog: (msg) => console.log('[Booth WHEP]', msg)
-    })
-  } else {
-    if (elements.listenBoothBtn) {
-      elements.listenBoothBtn.classList.remove('btn-primary')
-      elements.listenBoothBtn.textContent = boothDefaultText
-    }
-    if (elements.boothStatus) {
-      elements.boothStatus.textContent = 'Not Listening'
-      elements.boothStatus.className = 'status-badge'
-    }
-    boothWhep.stop()
-  }
+  boothListening = true
+  boothWhep.start({
+    whepUrl: whepUrl,
+    audioEl: elements.boothAudio,
+    onState: () => {},
+    onLog: (msg) => console.log('[Booth WHEP]', msg)
+  })
+}
+
+function stopBoothAudioListening() {
+  if (!boothListening) return
+  boothListening = false
+  if (boothWhep) boothWhep.stop()
 }
 
 // ── Microphone management ─────────────────────────────────────────────────────
@@ -954,6 +893,98 @@ function stopMicMeter() {
   elements.meterRow.classList.add('hidden')
 }
 
+// ── Loopback Test ─────────────────────────────────────────────────────────────
+
+async function startLoopbackTest() {
+  if (loopbackRecorder || loopbackAudio) stopLoopbackTest()
+  try {
+    const deviceId = state.micDeviceId
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        deviceId: deviceId ? { exact: deviceId } : undefined,
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+      },
+    })
+    
+    elements.loopbackTestBtn.textContent = '⏹ Stop Test'
+    elements.loopbackTestBtn.classList.add('btn-primary')
+    elements.loopbackProgressRow.classList.remove('hidden')
+    elements.loopbackStatus.textContent = 'Recording...'
+    elements.loopbackProgress.value = 0
+    
+    const chunks = []
+    loopbackRecorder = new MediaRecorder(stream)
+    loopbackRecorder.ondataavailable = (e) => chunks.push(e.data)
+    
+    const startTime = Date.now()
+    const durationMs = 5000
+    
+    const progressInterval = setInterval(() => {
+      const elapsed = Date.now() - startTime
+      const pct = Math.min(100, (elapsed / durationMs) * 100)
+      elements.loopbackProgress.value = pct
+    }, 50)
+    
+    loopbackRecorder.onstop = () => {
+      clearInterval(progressInterval)
+      stream.getTracks().forEach(t => t.stop())
+      if (!elements.loopbackTestBtn.classList.contains('btn-primary')) return // Was stopped manually
+      
+      const blob = new Blob(chunks, { type: 'audio/webm' })
+      const url = URL.createObjectURL(blob)
+      loopbackAudio = new Audio(url)
+      
+      elements.loopbackStatus.textContent = 'Playing...'
+      elements.loopbackProgress.value = 0
+      
+      loopbackAudio.onended = () => {
+        stopLoopbackTest()
+      }
+      
+      loopbackAudio.ontimeupdate = () => {
+        if (!loopbackAudio) return
+        const pct = (loopbackAudio.currentTime / loopbackAudio.duration) * 100
+        elements.loopbackProgress.value = pct
+      }
+      
+      loopbackAudio.play().catch(e => {
+        showError(`Failed to play loopback audio: ${e.message}`)
+        stopLoopbackTest()
+      })
+    }
+    
+    loopbackRecorder.start()
+    setTimeout(() => {
+      if (loopbackRecorder && loopbackRecorder.state === 'recording') {
+        loopbackRecorder.stop()
+      }
+    }, durationMs)
+    
+  } catch (error) {
+    showError(`Cannot access microphone: ${error.message}`)
+    stopLoopbackTest()
+  }
+}
+
+function stopLoopbackTest() {
+  if (loopbackRecorder && loopbackRecorder.state !== 'inactive') {
+    loopbackRecorder.stop()
+  }
+  loopbackRecorder = null
+  
+  if (loopbackAudio) {
+    loopbackAudio.pause()
+    loopbackAudio.src = ''
+    loopbackAudio = null
+  }
+  
+  elements.loopbackTestBtn.textContent = '🎙️ Record & Play'
+  elements.loopbackTestBtn.classList.remove('btn-primary')
+  elements.loopbackProgressRow.classList.add('hidden')
+}
+
 async function toggleMicMute() {
   if (!state.micStream) {
     await ensureMicStream()
@@ -984,9 +1015,6 @@ async function doWhipIngest(peerConnection) {
     const detail = await response.text().catch(() => response.statusText)
     throw new Error(`WHIP error ${response.status}: ${detail}`)
   }
-  // Save the WHIP resource URL so we can DELETE it for clean teardown.
-  // Explicit DELETE lets MediaMTX release the path immediately instead of
-  // waiting for ICE timeout (~5-10s), enabling fast relay handoff.
   const location = response.headers.get('Location')
   if (location) {
     state.whipResourceUrl = new URL(location, whipUrl).href
@@ -1011,9 +1039,6 @@ async function startLiveIngest() {
   }
   try {
     await ensureMicStream()
-    // Ensure track.enabled is consistent with micMuted before adding to the
-    // peer connection (guards against tracks being left disabled by a
-    // previous silence-mode handoff).
     if (state.micStream) {
       state.micStream.getAudioTracks().forEach((t) => { t.enabled = !state.micMuted })
     }
@@ -1021,8 +1046,6 @@ async function startLiveIngest() {
       state.peerConnection.close()
       state.peerConnection = null
     }
-    // Empty iceServers: skip STUN for local dev (browser defaults add
-    // Google STUN which adds 500ms+ to ICE gathering).
     const peerConnection = new RTCPeerConnection({ iceServers: [] })
     state.peerConnection = peerConnection
     state.micStream.getAudioTracks().forEach((track) => {
@@ -1074,10 +1097,6 @@ async function startLiveIngest() {
 }
 
 async function stopLiveIngest() {
-  // DELETE the WHIP session to release the MediaMTX path immediately.
-  // Use the resource URL from the Location header if captured; otherwise
-  // fall back to the standard WHIP endpoint for this channel.
-  // Only send DELETE if WHIP was actually connected (avoids spurious 404s).
   if (state.ingestConnected || state.whipResourceUrl) {
     const deleteUrl = state.whipResourceUrl
       || (state.whipBase && state.channelId
@@ -1090,9 +1109,6 @@ async function stopLiveIngest() {
     state.peerConnection.close()
     state.peerConnection = null
   }
-  // Keep the mic stream alive so a relay handoff can reuse it without
-  // requesting mic permission again. The stream is stopped only when the
-  // participant explicitly leaves the booth.
   if (!micTestStream && !state.micStream) {
     stopMicMeter()
   }
@@ -1115,20 +1131,17 @@ async function stopLiveIngest() {
 }
 
 // Retry intervals for WHIP on relay handoff (ms from previous attempt).
-// Outgoing interpreter stops at ~700ms, so the 800ms mark (2 × 400ms) wins.
 const _RELAY_RETRY_INTERVAL_MS = 200
 const _RELAY_MAX_ATTEMPTS = 8
 
 function attemptRelayStart(attempt) {
   if (attempt >= _RELAY_MAX_ATTEMPTS) return
   window.setTimeout(async () => {
-    // Bail if conditions changed while waiting
     if (!state.joined || !state.participantId) return
     if (state.activeInterpreterId !== state.participantId) return
     if (state.ingestConnected) return
     try {
       await ensureMicStream()
-      // Restore track.enabled (may have been muted during silence-mode handoff)
       if (state.micStream) {
         state.micStream.getAudioTracks().forEach((t) => { t.enabled = !state.micMuted })
       }
@@ -1161,7 +1174,6 @@ function attemptRelayStart(attempt) {
         state.peerConnection = null
       }
       state.whipResourceUrl = null
-      // 409 = path busy (outgoing interpreter still in silence mode); retry
       if (error.message.includes('409') && attempt < _RELAY_MAX_ATTEMPTS - 1) {
         attemptRelayStart(attempt + 1)
         return
@@ -1192,38 +1204,36 @@ function render() {
   renderParticipants()
   renderChat()
   renderMicControls()
+  renderHandoverButton()
+  renderLiveBadge()
 }
 
 /**
  * Show/hide controls that are not available to the current role.
- * - Listeners: hide Go Live, Relay, mic controls (they can only chat + observe).
- * - Interpreters: show Go Live + Relay, hide coordinator-only actions.
- * - Coordinators/admins: show all controls.
  */
 function renderRoleControls() {
   const role = state.grantedRole
-  if (!role) return  // unknown / legacy path — leave everything visible
+  if (!role) return
 
   const isListener = role === 'listener'
-  const canGo = !isListener  // interpreters + coordinators + admins can go live
+  const canGo = !isListener
 
-  if (elements.goLive) elements.goLive.style.display = canGo ? '' : 'none'
+  if (elements.handoverBtn) elements.handoverBtn.style.display = canGo ? '' : 'none'
+  if (elements.toggleMic) elements.toggleMic.style.display = canGo ? '' : 'none'
   if (elements.passRelay) elements.passRelay.style.display = canGo ? '' : 'none'
-  if (elements.ctrlCompound) elements.ctrlCompound.style.display = canGo ? '' : 'none'
 }
 
 function renderParticipants() {
   const currentParticipant = state.participants.find((p) => p.participant_id === state.participantId)
-  // Coordinator or the currently-active interpreter may reassign any interpreter.
-  // This aligns with the server permission model (booth_state.set_active_interpreter).
   const isActiveInterpreter = state.activeInterpreterId === state.participantId
-  const canReassign = currentParticipant?.role === 'coordinator' || isActiveInterpreter
+  const canReassign = ['room_coordinator', 'event_owner', 'super_admin'].includes(currentParticipant?.role) || isActiveInterpreter
   const activeParticipant = state.participants.find((p) => p.participant_id === state.activeInterpreterId)
   setBadge(
     elements.activeIndicator,
     activeParticipant ? `${activeParticipant.display_name} is active` : 'No active interpreter',
     activeParticipant ? 'success' : 'warning',
   )
+  if (elements.participantCount) elements.participantCount.textContent = state.participants.length
   elements.participantList.innerHTML = ''
   for (const participant of state.participants) {
     const tile = document.createElement('article')
@@ -1232,22 +1242,31 @@ function renderParticipants() {
       tile.classList.add('active')
     }
     const canActivateSelf = participant.participant_id === state.participantId
-    const canActivate = participant.role === 'interpreter' && (canReassign || canActivateSelf)
+    const canActivate = ['interpreter', 'room_coordinator', 'event_owner', 'super_admin'].includes(participant.role) && (canReassign || canActivateSelf)
     const isThisActive = participant.participant_id === state.activeInterpreterId
 
-    // Build participant tile using DOM construction (no innerHTML) to prevent XSS.
     const top = document.createElement('div')
     top.className = 'participant-top'
     const nameEl = document.createElement('strong')
     nameEl.textContent = participant.display_name
+    if (participant.participant_id === state.participantId) {
+      nameEl.textContent += ' (You)'
+    }
     const rolePill = document.createElement('span')
     rolePill.className = `participant-pill${isThisActive ? ' live' : ''}`
-    rolePill.textContent = isThisActive ? 'LIVE' : participant.role
+    
+    if (participant.role === 'interpreter') {
+      rolePill.textContent = isThisActive ? 'Active' : 'Passive'
+    } else {
+      rolePill.textContent = participant.role.replace('_', ' ')
+      rolePill.style.textTransform = 'capitalize'
+    }
+    
     top.append(nameEl, rolePill)
 
     const meta = document.createElement('div')
     meta.className = 'participant-meta'
-    meta.textContent = `${participant.language} \u00b7 ${participant.channel_id}`
+    meta.textContent = `${participant.language} · ${participant.channel_id}`
 
     const bottom = document.createElement('div')
     bottom.className = 'participant-bottom'
@@ -1261,10 +1280,7 @@ function renderParticipants() {
     pillGroup.append(micPill, ingestPill)
     bottom.append(pillGroup)
 
-    // Set Active / Active button:
-    //   active tile  → green "Active" badge (visible to all, no action needed)
-    //   non-active   → "Set Active" button only if this user can reassign
-    if (participant.role === 'interpreter') {
+    if (['interpreter', 'room_coordinator', 'event_owner', 'super_admin'].includes(participant.role)) {
       const btn = document.createElement('button')
       btn.type = 'button'
       if (isThisActive) {
@@ -1309,7 +1325,7 @@ function renderChat() {
 }
 
 function renderMicControls() {
-  const joinedActiveInterpreter = state.joined && state.participantId === state.activeInterpreterId
+  const isActive = state.joined && state.participantId === state.activeInterpreterId
   setBadge(
     elements.ingestStatus,
     state.ingestConnected ? 'Ingest connected' : 'Ingest disconnected',
@@ -1322,27 +1338,15 @@ function renderMicControls() {
   if (micOnIcon) micOnIcon.classList.toggle('hidden', state.micMuted)
   if (micOffIcon) micOffIcon.classList.toggle('hidden', !state.micMuted)
   elements.toggleMic.classList.toggle('muted', state.micMuted)
-  if (elements.ctrlCompound) elements.ctrlCompound.classList.toggle('muted', state.micMuted)
+  elements.toggleMic.classList.toggle('unmuted', !state.micMuted)
   if (elements.muteLabel) elements.muteLabel.textContent = state.micMuted ? 'UNMUTE' : 'MUTE'
   elements.toggleMic.setAttribute('aria-label', state.micMuted ? 'Unmute microphone' : 'Mute microphone')
   elements.toggleMic.setAttribute('title', state.micMuted ? 'Unmute (Space)' : 'Mute (Space)')
 
-  elements.goLive.classList.toggle('live', state.ingestConnected)
-  if (elements.liveLabel) elements.liveLabel.textContent = state.ingestConnected ? 'STOP' : 'GO LIVE'
-
-  const isJoined = state.joined
-  elements.joinLeaveBtn.title = isJoined ? 'Leave booth' : 'Join booth'
-  elements.joinLeaveBtn.setAttribute('aria-label', isJoined ? 'Leave booth' : 'Join booth')
-  if (elements.joinLeaveLabel) elements.joinLeaveLabel.textContent = isJoined ? 'LEAVE' : 'JOIN'
-  elements.joinLeaveBtn.classList.toggle('ctrl-btn--danger', isJoined)
-  elements.joinLeaveBtn.classList.toggle('ctrl-btn--primary', !isJoined)
-
-  elements.toggleMic.disabled = !joinedActiveInterpreter
-  const preflightCriticalPass =
-    state.preflight.micPermission === 'pass' &&
-      state.preflight.serverReachable !== 'fail'
-  elements.goLive.disabled = !state.ingestConnected && (!joinedActiveInterpreter || !state.ingestReachable || !preflightCriticalPass)
-  elements.passRelay.disabled = !joinedActiveInterpreter
+  elements.toggleMic.disabled = !isActive
+  if (!state.broadcastUnlocked) {
+    elements.toggleMic.setAttribute('title', 'Broadcast locked by Coordinator (Local test only)')
+  }
   elements.micDeviceSelect.disabled = state.ingestConnected
 
   if (state.ingestConnected && portal.dataset.eventSlug) {
@@ -1354,6 +1358,88 @@ function renderMicControls() {
     if (elements.listenerUrlRow) elements.listenerUrlRow.classList.remove('hidden')
   } else {
     if (elements.listenerUrlRow) elements.listenerUrlRow.classList.add('hidden')
+  }
+}
+
+/**
+ * Render the handover button based on the current handoff state machine.
+ *
+ * State matrix:
+ * ┌─────────────┬───────────────────────────────────┬──────────────────────────────────────┐
+ * │ State       │ Active Interpreter                │ Passive Interpreter                  │
+ * ├─────────────┼───────────────────────────────────┼──────────────────────────────────────┤
+ * │ idle        │ "PASS MIC" (grey, clickable)      │ "TAKE OVER" (grey, clickable)        │
+ * │ offered     │ "PASS MIC" (green, frozen/cancel) │ "TAKE OVER" (flash yellow, clickable)│
+ * │ requested   │ "PASS MIC" (flash yellow, click)  │ "TAKE OVER" (green, frozen/cancel)   │
+ * └─────────────┴───────────────────────────────────┴──────────────────────────────────────┘
+ */
+function renderHandoverButton() {
+  if (!elements.handoverBtn) return
+  if (!state.joined || !state.participantId) {
+    elements.handoverBtn.disabled = true
+    elements.handoverBtn.className = 'header-btn header-btn--handover state-grey'
+    elements.handoverLabel.textContent = 'PASS MIC'
+    return
+  }
+
+  const isActive = state.activeInterpreterId === state.participantId
+  const hState = state.handoffState
+  const iAmInitiator = state.handoffInitiatorId === state.participantId
+  const hasPartner = state.participants.filter(p => ['interpreter', 'room_coordinator', 'event_owner', 'super_admin'].includes(p.role)).length > 1
+
+  // Remove all state classes
+  elements.handoverBtn.classList.remove('state-grey', 'state-green', 'state-flash-yellow')
+
+  if (isActive) {
+    elements.handoverLabel.textContent = 'PASS MIC'
+
+    if (hState === 'idle') {
+      elements.handoverBtn.classList.add('state-grey')
+      elements.handoverBtn.disabled = !hasPartner
+    } else if (hState === 'offered' && iAmInitiator) {
+      // I (active) offered → green, frozen (can cancel)
+      elements.handoverBtn.classList.add('state-green')
+      elements.handoverBtn.disabled = false
+    } else if (hState === 'requested' && !iAmInitiator) {
+      // Partner (passive) requested → flash yellow, clickable to yield
+      elements.handoverBtn.classList.add('state-flash-yellow')
+      elements.handoverBtn.disabled = false
+    } else {
+      elements.handoverBtn.classList.add('state-grey')
+      elements.handoverBtn.disabled = true
+    }
+  } else {
+    elements.handoverLabel.textContent = 'TAKE OVER'
+
+    if (hState === 'idle') {
+      elements.handoverBtn.classList.add('state-grey')
+      elements.handoverBtn.disabled = !hasPartner
+    } else if (hState === 'requested' && iAmInitiator) {
+      // I (passive) requested → green, frozen (can cancel)
+      elements.handoverBtn.classList.add('state-green')
+      elements.handoverBtn.disabled = false
+    } else if (hState === 'offered' && !iAmInitiator) {
+      // Partner (active) offered → flash yellow, clickable to accept
+      elements.handoverBtn.classList.add('state-flash-yellow')
+      elements.handoverBtn.disabled = false
+    } else {
+      elements.handoverBtn.classList.add('state-grey')
+      elements.handoverBtn.disabled = true
+    }
+  }
+}
+
+/** Update the LIVE / OFF LIVE badge in the header */
+function renderLiveBadge() {
+  if (!elements.liveBadge) return
+  if (state.ingestConnected) {
+    elements.liveBadge.classList.remove('off')
+    elements.liveBadge.classList.add('on')
+    if (elements.liveBadgeText) elements.liveBadgeText.textContent = 'LIVE'
+  } else {
+    elements.liveBadge.classList.remove('on')
+    elements.liveBadge.classList.add('off')
+    if (elements.liveBadgeText) elements.liveBadgeText.textContent = 'OFF LIVE'
   }
 }
 

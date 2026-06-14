@@ -1,0 +1,120 @@
+{% extends "admin/base.html" %}
+{% block title %}Transcripts — {{ room.display_name }}{% endblock %}
+
+{% block breadcrumb %}
+<nav class="breadcrumb">
+  <a href="/admin/">Dashboard</a> <span>/</span>
+  <a href="/admin/events/">Events</a> <span>/</span>
+  <a href="/admin/events/{{ event.id }}/">{{ event.display_name }}</a> <span>/</span>
+  <a href="/admin/events/{{ event.id }}/rooms/">Rooms</a> <span>/</span>
+  <a href="/admin/events/{{ event.id }}/rooms/{{ room.id }}/">{{ room.display_name }}</a> <span>/</span>
+  <span>Transcripts</span>
+</nav>
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>Stored Transcripts: {{ room.display_name }}</h1>
+  <div class="header-meta">
+    <span class="meta-text">Event: {{ event.display_name }}</span>
+  </div>
+</div>
+
+<div class="section-card">
+  <div class="form-row" style="margin-bottom: 1rem;">
+    <div class="form-group" style="flex: 1;">
+      <label for="transcript_lang_select">Select Transcript Channel</label>
+      <select id="transcript_lang_select" class="input">
+        <option value="">-- Select Channel --</option>
+        {% if room.floor_transcription_enabled %}
+        <option value="floor">Floor Audio (Original)</option>
+          {% if room.floor_translation_enabled %}
+            {% for lang in room.translation_languages %}
+              {% if lang.enabled %}
+              <option value="floor?target_lang={{ lang.language_code }}">Floor Audio (Translation: {{ lang.language_name }})</option>
+              {% endif %}
+            {% endfor %}
+          {% endif %}
+        {% endif %}
+        {% for bs in booths %}
+        <option value="{{ bs.language_code }}">{{ bs.language_name }} ({{ bs.language_code }})</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="form-group form-group-btn" style="align-self: flex-end;">
+      <button type="button" class="btn btn-primary" id="refresh-transcripts-btn" onclick="fetchTranscripts()">Refresh</button>
+      <a href="#" id="download-csv-btn" class="btn btn-outline" style="display: none;">Download CSV</a>
+    </div>
+  </div>
+
+  <div id="transcript-viewer-container" style="background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 6px; padding: 1rem; max-height: 600px; overflow-y: auto;">
+    <p class="muted" style="text-align: center; margin-top: 2rem;">Select a channel above to view its transcripts.</p>
+  </div>
+</div>
+
+<script>
+  let currentLanguageCode = '';
+  const eventId = {{ event.id }};
+  const roomId = {{ room.id }};
+
+  document.getElementById('transcript_lang_select').addEventListener('change', function(e) {
+    currentLanguageCode = e.target.value;
+    if (currentLanguageCode) {
+      fetchTranscripts();
+    } else {
+      document.getElementById('transcript-viewer-container').innerHTML = '<p class="muted" style="text-align: center; margin-top: 2rem;">Select a channel above to view its transcripts.</p>';
+      document.getElementById('download-csv-btn').style.display = 'none';
+    }
+  });
+
+  async function fetchTranscripts() {
+    if (!currentLanguageCode) return;
+    
+    const container = document.getElementById('transcript-viewer-container');
+    container.innerHTML = '<p class="muted" style="text-align: center; margin-top: 2rem;">Loading...</p>';
+    
+    try {
+      const res = await fetch(`/api/admin/events/${eventId}/rooms/${roomId}/transcripts/${currentLanguageCode}`);
+      if (!res.ok) throw new Error('Failed to fetch transcripts');
+      
+      const data = await res.json();
+      if (data.length === 0) {
+        container.innerHTML = '<p class="muted" style="text-align: center; margin-top: 2rem;">No transcripts recorded for this channel yet.</p>';
+        document.getElementById('download-csv-btn').style.display = 'none';
+        return;
+      }
+      
+      let html = '<table class="data-table" style="margin: 0; width: 100%;"><thead><tr><th style="width: 150px;">Time</th><th>Text</th></tr></thead><tbody>';
+      let csvContent = "Time,Text\n";
+      
+      data.forEach(row => {
+        const d = new Date(row.created_at);
+        const timeStr = d.toLocaleTimeString();
+        html += `<tr><td class="muted">${timeStr}</td><td>${row.text}</td></tr>`;
+        
+        // Escape quotes for CSV
+        const escapedText = row.text.replace(/"/g, '""');
+        csvContent += `"${row.created_at}","${escapedText}"\n`;
+      });
+      html += '</tbody></table>';
+      
+      container.innerHTML = html;
+      
+      // Update Download link
+      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const downloadBtn = document.getElementById('download-csv-btn');
+      downloadBtn.href = url;
+      const safeFilename = currentLanguageCode.replace(/[^a-zA-Z0-9_-]/g, '_');
+      downloadBtn.download = `transcripts_${safeFilename}.csv`;
+      downloadBtn.style.display = 'inline-block';
+      
+      // Auto-scroll to bottom
+      container.scrollTop = container.scrollHeight;
+      
+    } catch (e) {
+      container.innerHTML = `<p class="danger-text" style="text-align: center; margin-top: 2rem;">Error: ${e.message}</p>`;
+    }
+  }
+</script>
+{% endblock %}

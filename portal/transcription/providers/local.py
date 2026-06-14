@@ -1,13 +1,13 @@
 import asyncio
+import gc
 import logging
 import threading
 import time
-import gc
-import numpy as np
 from dataclasses import dataclass
 
-from portal.transcription.providers.base import TranscriptionProvider, ProviderConfig, BoothTranscriptionState
+import numpy as np
 
+from portal.transcription.providers.base import BoothTranscriptionState, ProviderConfig, TranscriptionProvider
 
 logger = logging.getLogger(__name__)
 
@@ -72,7 +72,7 @@ class LocalProvider(TranscriptionProvider):
         if booth_state:
             # Append overlap buffer (last 1.0s) to current 3.0s chunk -> 4.0s total
             overlap_audio = booth_state.overlap_buffer + chunk
-            
+
             # Save the last 1.0s of the *current* chunk for the next iteration
             # 16000 hz * 2 bytes/sample * 1 channel * 1.0 seconds = 32000 bytes
             overlap_bytes = 32000
@@ -82,23 +82,23 @@ class LocalProvider(TranscriptionProvider):
                 booth_state.overlap_buffer = chunk
         else:
             overlap_audio = chunk
-            
+
         audio_data = np.frombuffer(overlap_audio, np.int16).astype(np.float32) / 32768.0
         return await asyncio.to_thread(self._run_inference, audio_data, language_code, model_variant, booth_state)
-        
+
     def _run_inference(self, audio_data: np.ndarray, language_code: str, model_size: str, booth_state: BoothTranscriptionState | None) -> str:
         model = get_model(model_size)
         segments, _ = model.transcribe(audio_data, beam_size=5, vad_filter=True, language=language_code, word_timestamps=True)
-        
+
         valid_words = []
         for segment in segments:
             if not getattr(segment, 'words', None):
                 # Fallback if words aren't available
                 valid_words.append(segment.text.strip())
                 continue
-                
+
             for word in segment.words:
                 if word.end > 1.0: # Skip words completely inside the 1.0s overlap period
                     valid_words.append(word.word.strip())
-                    
+
         return " ".join(valid_words).strip()

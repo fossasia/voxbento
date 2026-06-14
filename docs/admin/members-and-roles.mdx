@@ -11,28 +11,27 @@ Voxbento uses a role-based permission system that lets you grant each participan
 Voxbento defines five roles, ordered from most to least privileged:
 
 ```text
-super_admin > event_admin > coordinator > interpreter > listener
+super_admin > event_owner > room_coordinator > interpreter
 ```
 
 | Role | Description |
 | --- | --- |
 | **super\_admin** | Site-wide admin access. Can manage all events, users, and system settings. |
-| **event\_admin** | Full control over a specific event — manages booths, generates tokens, and can go live. |
-| **coordinator** | Can go live, reassign the active interpreter, and manage handoffs during a session. |
+| **event\_owner** | Full control over a specific event — manages booths, generates tokens, and can go live. |
+| **room\_room_coordinator** | Can go live, reassign the active interpreter, and manage handoffs during a session across a room. |
 | **interpreter** | Can go live (publish audio via WHIP) and participate in booth chat. |
-| **listener** | Read-only access — can listen to streams and send chat messages, but cannot go live. |
 
 ## Permission Matrix
 
 The table below shows which actions each role can perform within a booth or event:
 
-| Permission | super\_admin | event\_admin | coordinator | interpreter | listener |
-| --- | :-: | :-: | :-: | :-: | :-: |
-| Go Live (publish audio) | ✓ | ✓ | ✓ | ✓ | — |
-| Set Active Interpreter | ✓ | ✓ | ✓ | — | — |
-| Chat | ✓ | ✓ | ✓ | ✓ | — |
-| Manage Booths | ✓ | ✓ | — | — | — |
-| Manage Events | ✓ | — | — | — | — |
+| Permission | super\_admin | event\_owner | room\_room_coordinator | interpreter |
+| --- | :-: | :-: | :-: | :-: |
+| Go Live (publish audio) | ✓ | ✓ | ✓ | ✓ |
+| Set Active Interpreter | ✓ | ✓ | ✓ | — |
+| Chat | ✓ | ✓ | ✓ | ✓ |
+| Manage Booths | ✓ | ✓ | — | — |
+| Manage Events | ✓ | — | — | — |
 
 ## Event-Scoped Roles
 
@@ -44,7 +43,7 @@ For interpreters who cover multiple events, assigning them at the event level sa
 
 ## Assigning Event-Level Roles
 
-Use event-level role assignment when a user needs access to an entire event — for example, a coordinator who manages multiple rooms, or an interpreter who will work across several booths.
+Use event-level role assignment when a user needs access to an entire event — for example, an event owner who manages multiple rooms, or an interpreter who will work across several booths.
 
 ### Open the admin panel
 
@@ -60,10 +59,30 @@ Click **Manage Members** on the event detail page, or navigate to `/admin/events
 In the **Assign Member** form, type the registered email address of the user you want to add.
   ### Select a role
 
-Choose the appropriate role from the dropdown — `listener`, `interpreter`, `coordinator`, or `event_admin`.
+Choose the appropriate role from the dropdown — currently only `event_owner` is assigned here.
   ### Submit
 
 Click **Assign Role**. The user now appears in the members list and gains the selected permissions for the entire event.
+
+## Assigning Room-Level Roles
+
+For users who manage handoffs and oversee operations across multiple language channels in a single physical room, assign them at the room level.
+
+### Navigate to the room
+
+From the admin panel, go to your event → **Rooms** → open the target room.
+  ### Scroll to Assigned Room Coordinators
+
+Find the **Assigned Room Coordinators** section on the room detail page.
+  ### Enter the user's email
+
+Under **Assign Coordinator**, type the registered email address of the user.
+  ### Select a role
+
+Choose `room_coordinator` from the dropdown.
+  ### Submit
+
+Click **Assign**. When the room_coordinator logs in, they will see a link to monitor this specific room.
 
 ## Assigning Booth-Level Roles
 

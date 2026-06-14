@@ -106,7 +106,7 @@ async def test_coordinator_can_assign_active_interpreter():
     registry = BoothRegistry()
     await join(registry, 'Interpreter A')
     interpreter_b = await join(registry, 'Interpreter B')
-    coordinator = await join(registry, 'Coordinator', role='coordinator')
+    coordinator = await join(registry, 'Coordinator', role='room_coordinator')
 
     state = await registry.set_active_interpreter(
         'hall-a-fr',
@@ -358,7 +358,7 @@ async def test_coordinator_cannot_set_mic_active():
     """Coordinator role must not be allowed to mark mic or ingest active."""
     registry = BoothRegistry()
     await join(registry, 'Interpreter A')
-    coordinator = await join(registry, 'Coordinator', role='coordinator')
+    coordinator = await join(registry, 'Coordinator', role='room_coordinator')
 
     with pytest.raises(PermissionError, match='Only interpreter role'):
         await registry.update_participant_state(
@@ -371,11 +371,11 @@ async def test_coordinator_cannot_set_mic_active():
 
 
 @pytest.mark.anyio
-async def test_listener_cannot_set_ingest_connected():
-    """Listener role must not be allowed to mark ingest connected."""
+async def test_room_coordinator_cannot_set_ingest_connected():
+    """Room coordinator role must not be allowed to mark ingest connected."""
     registry = BoothRegistry()
     await join(registry, 'Interpreter A')
-    listener = await join(registry, 'Listener', role='listener')
+    listener = await join(registry, 'Listener', role='room_coordinator')
 
     with pytest.raises(PermissionError, match='Only interpreter role'):
         await registry.update_participant_state(
@@ -416,7 +416,7 @@ async def test_check_publish_permission_standby_interpreter_rejected():
 async def test_check_publish_permission_coordinator_rejected():
     """Coordinator role fails the publish permission check."""
     registry = BoothRegistry()
-    coordinator = await join(registry, 'Coordinator', role='coordinator')
+    coordinator = await join(registry, 'Coordinator', role='room_coordinator')
 
     with pytest.raises(PermissionError, match='Only interpreter role'):
         await registry.check_publish_permission(

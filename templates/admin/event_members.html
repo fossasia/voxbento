@@ -22,10 +22,15 @@
   <strong>Error:</strong> User with that email address was not found. They must register first.
 </div>
 {% endif %}
+{% if request.query_params.get('error') == 'invalid_role' %}
+<div class="alert alert-danger" style="margin-bottom: 1rem; color: #d32f2f; background-color: #fde0e0; padding: 10px; border-radius: 4px;">
+  <strong>Error:</strong> Invalid role selected.
+</div>
+{% endif %}
 
 <div class="section-card" style="margin-bottom: 2rem;">
   <div class="section-header">
-    <h2>Assign Event Admin</h2>
+    <h2>Assign Event Owner</h2>
   </div>
   <div class="card-body">
     <form method="post" action="/admin/events/{{ event.id }}/members/" class="token-form">
@@ -36,7 +41,7 @@
         </div>
         <div class="form-group">
           <label for="role">Role</label>
-          <input type="text" name="role" id="role" value="event_admin" readonly style="background-color: #f5f5f5;" />
+          <input type="text" name="role" id="role" value="event_owner" readonly style="background-color: #f5f5f5;" />
         </div>
         <div class="form-group form-group-btn">
           <button type="submit" class="btn btn-primary">Assign Role</button>
@@ -46,7 +51,7 @@
   </div>
 </div>
 
-<h2>Assigned Event Admins</h2>
+<h2>Assigned Event Owners</h2>
 {% if memberships %}
 <table class="data-table">
   <thead>
@@ -71,12 +76,12 @@
         <span class="status-offline">○ Inactive</span>
         {% endif %}
       </td>
-      <td><span class="badge badge-role badge-event_admin">event_admin</span></td>
+      <td><span class="badge badge-role badge-event_owner">event_owner</span></td>
       <td class="actions-cell">
         <form method="post"
               action="/admin/events/{{ event.id }}/members/{{ m.id }}/delete"
               class="inline-form"
-              onsubmit="return confirm('Remove {{ u.display_name }} from this event?')">
+              data-confirm="Remove {{ u.display_name }} from this event?">
           <button type="submit" class="btn btn-sm btn-danger">Remove</button>
         </form>
       </td>
@@ -86,7 +91,7 @@
 </table>
 {% else %}
 <div class="empty-state">
-  <p>No users have been assigned the event admin role yet.</p>
+  <p>No users have been assigned the event owner role yet.</p>
 </div>
 {% endif %}
 {% endblock %}

@@ -79,16 +79,19 @@ a real MediaMTX instance to verify WHEP continuity.
 WHEP listeners recover in ~1.5–3 s (RTCPeerConnection stays open via
 `alwaysAvailable` paths).
 
-## Transcription and AI Services
+## Transcription, Translation, and AI Services
 
-Voxbento provides real-time transcription (Speech-to-Text) using various AI providers.
+Voxbento provides real-time transcription (Speech-to-Text) and multilingual translation (Text-to-Text) using various AI providers.
 
 ### Architecture
 
-1. **Worker:** `portal/transcription/worker.py` spawns an FFmpeg process that pulls audio from MediaMTX via RTSP.
-2. **Ingest:** FFmpeg transcodes audio to PCM S16LE and pipes it to a `TranscriptionProvider`.
-3. **Provider:** Providers (in `portal/transcription/providers/`) handle communication with AI services (OpenAI, Deepgram, ElevenLabs, NVIDIA, or Local Faster-Whisper).
-4. **Aggregator:** `portal/transcription/aggregator.py` collects partial/final transcripts and broadcasts them via WebSockets (`/ws/captions/{booth_id}`).
+1. **Audio Sources:** 
+   - **Booth Audio:** Interpreters speak into their microphones, which pushes audio via WebRTC WHIP.
+   - **Floor Audio:** A headless Chromium browser (`floor-bot`) secretly joins the Jitsi meeting, captures the floor audio, and pushes it via RTSP to MediaMTX.
+2. **Worker (`portal/transcription/worker.py`):** Spawns an FFmpeg process that pulls audio from MediaMTX via RTSP, transcodes it to PCM S16LE, and pipes it to a `TranscriptionProvider`.
+3. **Provider (`portal/transcription/providers/`):** Handles communication with AI speech-to-text services (OpenAI, Deepgram, ElevenLabs, NVIDIA, or Local Faster-Whisper).
+4. **Aggregator (`portal/transcription/aggregator.py`):** Collects partial/final transcripts, broadcasts partials via WebSockets (`/ws/captions/{channel_id}`), and saves finalized sentences to the `transcript_segments` database table.
+5. **Translation (`portal/translations/worker.py`):** Once a transcript segment is finalized, the translation worker spins up concurrent LLM requests (Anthropic, Groq, Gemini) to translate the text into all enabled target languages. Translations are saved to `transcript_translations` and broadcast via WebSockets.
 
 ### Implementing a New Provider
 
@@ -99,7 +102,7 @@ Inherit from `TranscriptionProvider` in `portal/transcription/providers/base.py`
 
 ### Configuration
 
-API keys for third-party providers are stored encrypted in the database and managed via the Admin Panel under **Global API Integrations**.
+API keys for third-party transcription and translation providers are stored encrypted in the database and managed via the Admin Panel under **Global API Integrations**. Each Booth and Room can independently toggle transcription and translation on or off, and select their preferred models.
 
 ## Dependency management
 
@@ -344,6 +347,8 @@ Copy `.env.example` → `.env` and adjust as needed:
 | `DATABASE_URL` | `sqlite+aiosqlite:///./interpretation.db` | Database (PostgreSQL for production) |
 | `JVB_AUTH_PASSWORD` | `changeme` | Jitsi JVB auth (change in production) |
 | `JICOFO_AUTH_PASSWORD` | `changeme` | Jitsi Jicofo auth (change in production) |
+| `FLOOR_BOT_BASE` | `http://floor-bot:8080` | URL for the floor-bot container to extract Jitsi audio |
+| `MEDIAMTX_RTSP_BASE` | `rtsp://mediamtx:8554` | Internal MediaMTX RTSP URL for floor audio transcription |
 
 ### Stopping services
 

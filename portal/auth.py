@@ -104,6 +104,9 @@ async def require_admin(request: Request) -> None:
     event_id_str = request.path_params.get('event_id')
     event_id = int(event_id_str) if event_id_str and event_id_str.isdigit() else None
 
+    room_id_str = request.path_params.get('room_id')
+    room_id = int(room_id_str) if room_id_str and room_id_str.isdigit() else None
+
     user_cookie = request.cookies.get('user_token', '')
     if user_cookie:
         try:
@@ -111,12 +114,27 @@ async def require_admin(request: Request) -> None:
             if payload.get('user'):
                 if payload.get('is_admin'):
                     return
-                if event_id is not None and payload.get('sub'):
-                    from portal.database import get_session, list_memberships_for_user
+                if payload.get('sub'):
+                    from portal.database import get_session, list_memberships_for_user, list_room_memberships_for_user
                     async with get_session() as db_session:
                         memberships = await list_memberships_for_user(db_session, int(payload['sub']))
-                        for m in memberships:
-                            if m.event_id == event_id and m.role == 'event_admin':
+                        rms = await list_room_memberships_for_user(db_session, int(payload['sub']))
+
+                        if room_id is not None:
+                            if any(rm.room_id == room_id and rm.role == 'room_coordinator' for rm in rms):
+                                return
+                            # if room_id is provided, event_owner can also access it
+                            if any(m.event_id == event_id and m.role == 'event_owner' for m in memberships):
+                                return
+                        elif event_id is not None:
+                            if any(m.event_id == event_id and m.role == 'event_owner' for m in memberships):
+                                return
+                            # If they are a room_coordinator for any room in this event, let them see the event page.
+                            if any(rm.room.event_id == event_id and rm.role == 'room_coordinator' for rm in rms):
+                                return
+                        if event_id is None and room_id is None:
+                            # Accessing global admin pages (dashboard, event list)
+                            if any(m.role == 'event_owner' for m in memberships) or any(rm.role == 'room_coordinator' for rm in rms):
                                 return
         except jwt.InvalidTokenError:
             pass
@@ -141,6 +159,56 @@ def create_admin_token() -> str:
         'exp': now + timedelta(seconds=settings.jwt_expiry_seconds),
     }
     return jwt.encode(payload, settings.effective_jwt_secret, algorithm='HS256')
+
+
+async def get_admin_flags(request: Request, event_id: int | None = None, room_id: int | None = None) -> dict[str, bool]:
+    """Helper to pass boolean RBAC flags to Jinja admin templates."""
+    flags = {
+        'is_super_admin': False,
+        'is_event_owner': False,
+        'is_room_coordinator': False,
+    }
+    user_cookie = request.cookies.get('user_token', '')
+    if user_cookie:
+        try:
+            payload = decode_token(user_cookie)
+            if payload.get('user'):
+                if payload.get('is_admin'):
+                    flags['is_super_admin'] = True
+                    flags['is_event_owner'] = True
+                    flags['is_room_coordinator'] = True
+                    return flags
+                if payload.get('sub'):
+                    from portal.database import get_session, list_memberships_for_user, list_room_memberships_for_user
+                    async with get_session() as db_session:
+                        memberships = await list_memberships_for_user(db_session, int(payload['sub']))
+                        rms = await list_room_memberships_for_user(db_session, int(payload['sub']))
+
+                        if event_id is not None:
+                            if any(m.event_id == event_id and m.role == 'event_owner' for m in memberships):
+                                flags['is_event_owner'] = True
+                                flags['is_room_coordinator'] = True
+                        if room_id is not None:
+                            if any(rm.room_id == room_id and rm.role == 'room_coordinator' for rm in rms):
+                                flags['is_room_coordinator'] = True
+                        if not flags['is_event_owner'] and event_id is not None:
+                            if any(rm.room.event_id == event_id and rm.role == 'room_coordinator' for rm in rms):
+                                flags['is_room_coordinator'] = True
+        except jwt.InvalidTokenError:
+            pass
+
+    admin_cookie = request.cookies.get('admin_token', '')
+    if admin_cookie:
+        try:
+            payload = decode_token(admin_cookie)
+            if payload.get('admin'):
+                flags['is_super_admin'] = True
+                flags['is_event_owner'] = True
+                flags['is_room_coordinator'] = True
+        except jwt.InvalidTokenError:
+            pass
+
+    return flags
 
 
 # ---------------------------------------------------------------------------
@@ -177,6 +245,60 @@ async def get_current_user(request: Request) -> dict | None:
     return payload
 
 
+async def get_accessible_event_ids(
+    request: Request,
+    *,
+    user_id: int | None,
+) -> tuple[bool, set[int] | None]:
+    """Return (is_super_admin, allowed_event_ids) for the current request.
+
+    Checks admin_token and user_token cookies to determine super-admin status.
+    For non-super-admins with a user_id, returns the set of event IDs the user
+    may access (as event_owner or room_coordinator). Super-admins get None,
+    meaning "all events".
+
+    Args:
+        request: The FastAPI Request (used to read cookies).
+        user_id: The authenticated user's ID, or None for anonymous callers.
+
+    Returns:
+        (is_super_admin, allowed_event_ids) where allowed_event_ids is None for
+        super-admins (unrestricted) or a set[int] for regular users.
+    """
+    from portal.database import get_session, list_memberships_for_user, list_room_memberships_for_user
+
+    is_super_admin = False
+
+    admin_cookie = request.cookies.get('admin_token', '')
+    if admin_cookie:
+        try:
+            payload = decode_token(admin_cookie)
+            if payload.get('admin'):
+                is_super_admin = True
+        except jwt.InvalidTokenError:
+            pass
+
+    user_cookie = request.cookies.get('user_token', '')
+    if user_cookie:
+        try:
+            payload = decode_token(user_cookie)
+            if payload.get('is_admin'):
+                is_super_admin = True
+        except jwt.InvalidTokenError:
+            pass
+
+    if is_super_admin or user_id is None:
+        return is_super_admin, None
+
+    async with get_session() as session:
+        memberships = await list_memberships_for_user(session, user_id)
+        room_memberships = await list_room_memberships_for_user(session, user_id)
+
+    allowed_event_ids: set[int] = {m.event_id for m in memberships if m.role == 'event_owner'}
+    allowed_event_ids.update({rm.room.event_id for rm in room_memberships if rm.role == 'room_coordinator'})
+    return False, allowed_event_ids
+
+
 async def require_user(request: Request) -> dict:
     """FastAPI dependency that requires a logged-in user.
 
@@ -191,10 +313,9 @@ async def require_user(request: Request) -> dict:
 
 # Role hierarchy — higher index = more privilege.
 _ROLE_RANK: dict[str, int] = {
-    'listener': 0,
     'interpreter': 1,
-    'coordinator': 2,
-    'event_admin': 3,
+    'room_coordinator': 2,
+    'event_owner': 3,
     'super_admin': 4,
 }
 
@@ -210,7 +331,7 @@ def get_booth_session(request: Request) -> dict | None:
     """
     # Prefer user_token (registered user with is_admin / event roles) over
     # session_token (one-time invite link with a fixed role claim).
-    for cookie_name in ('user_token', 'session_token'):
+    for cookie_name in ('admin_token', 'user_token', 'session_token'):
         cookie = request.cookies.get(cookie_name, '')
         if not cookie:
             continue
@@ -227,47 +348,68 @@ async def resolve_booth_role(payload: dict | None, booth_id: str | None = None) 
 
     - Invite tokens carry a ``role`` claim directly.
     - User tokens without an explicit role will check the database for
-      BoothMembership and EventMembership.
-    - If no DB membership exists, is_admin users default to 'event_admin'.
+      BoothMembership, RoomMembership, and EventMembership.
+    - If no DB membership exists, is_admin users default to 'super_admin'.
     """
     if payload is None:
         return None
+    from portal.roles import _ROLE_RANK
+
+    roles = []
+
     # 1. Invite / participant token explicit role
     if 'role' in payload:
-        return payload['role']
-
-    granted_role = None
+        roles.append(payload['role'])
 
     # 2. Database lookup for registered users
     if payload.get('sub') and booth_id:
+        from sqlalchemy import select
+
         from portal.booth_identity import parse_booth_id
-        from portal.database import get_session, list_memberships_for_user, list_booth_memberships_for_user
+        from portal.database import (
+            get_session,
+            list_booth_memberships_for_user,
+            list_memberships_for_user,
+            list_room_memberships_for_user,
+        )
+        from portal.models import DBBooth, Event
+
         try:
             event_slug, lang_code = parse_booth_id(booth_id)
             async with get_session() as db_session:
-                bms = await list_booth_memberships_for_user(db_session, int(payload['sub']))
-                for bm in bms:
-                    if bm.booth.event.slug == event_slug and bm.booth.language_code == lang_code:
-                        granted_role = bm.role
-                        break
+                stmt = select(DBBooth).join(Event).where(Event.slug == event_slug, DBBooth.language_code == lang_code)
+                booth = (await db_session.scalars(stmt)).first()
+                if booth:
+                    bms = await list_booth_memberships_for_user(db_session, int(payload['sub']))
+                    for bm in bms:
+                        if bm.booth_id == booth.id:
+                            roles.append(bm.role)
+                            break
 
-                if granted_role is None:
+                    rms = await list_room_memberships_for_user(db_session, int(payload['sub']))
+                    for rm in rms:
+                        if rm.room_id == booth.room_id:
+                            roles.append(rm.role)
+                            break
+
                     memberships = await list_memberships_for_user(db_session, int(payload['sub']))
                     for m in memberships:
-                        if m.event and m.event.slug == event_slug:
-                            granted_role = m.role
+                        if m.event_id == booth.event_id:
+                            roles.append(m.role)
                             break
         except ValueError:
-            # booth_id is likely a legacy format (e.g., 'demo-booth') that cannot be parsed
             pass
         except Exception:
             logger.exception("Failed to resolve booth role from database")
 
     # 3. Global admin fallback
-    if granted_role is None and payload.get('is_admin'):
-        granted_role = 'event_admin'
+    if payload.get('is_admin') or payload.get('admin'):
+        roles.append('super_admin')
 
-    return granted_role
+    if not roles:
+        return None
+
+    return max(roles, key=lambda r: _ROLE_RANK.get(r, 0))
 
 
 def can_perform_role(granted_role: str | None, requested_role: str) -> bool:

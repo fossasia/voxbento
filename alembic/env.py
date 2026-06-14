@@ -16,7 +16,6 @@ from sqlalchemy import pool
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from alembic import context
-
 from portal.config import settings
 from portal.models import Base
 

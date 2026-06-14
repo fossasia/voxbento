@@ -61,18 +61,23 @@ Listeners connect to the WHEP endpoint for their chosen language. WHEP (WebRTC H
 You do not need to configure the fallback manually. The listener page tries WHEP first and switches to HLS transparently if the WebRTC negotiation fails.
 :::
 
-## The Transcription Pipeline
+## The Transcription & Translation Pipeline
 
-When live captions are enabled, Voxbento spawns a background transcription worker to process the active interpreter's audio.
+When live captions or translations are enabled, Voxbento spawns background workers to process the audio in real-time. This pipeline supports both **Booth Audio** (interpreters) and **Floor Audio** (the main conference).
 
-1. **Audio Ingest:** The worker uses FFmpeg to pull the live audio stream from MediaMTX via RTSP (`rtsp://mediamtx:8554/{event_slug}/{language_code}`).
+### Floor Audio Capture
+To transcribe or translate the original speakers without requiring external integrations, the system launches an isolated **Floor Bot** (`floor-bot`). This headless Chromium instance silently joins the Jitsi meeting, captures the live audio, and pushes it to MediaMTX via RTSP, making it accessible to the transcription workers just like a regular booth.
+
+### Pipeline Steps
+1. **Audio Ingest:** The worker uses FFmpeg to pull the live audio stream from MediaMTX via RTSP (`rtsp://mediamtx:8554/{event_slug}/{language_code}` or `rtsp://mediamtx:8554/{event_slug}/floor`).
 2. **Transcoding:** FFmpeg transcodes the audio to PCM S16LE (mono, 16kHz or 24kHz depending on the provider) and pipes it to the selected `TranscriptionProvider`.
-3. **AI Processing:** The provider sends audio chunks or a continuous stream to an AI service (OpenAI, Deepgram, ElevenLabs, NVIDIA, or Local Whisper).
-4. **Caption Aggregation:** The `CaptionAggregator` receives raw text from the provider. It applies logic to split sentences on punctuation (for batch providers) or handles real-time partial updates (for streaming providers).
-5. **Broadcast:** Caption updates are broadcast to listeners via the dedicated WebSocket at `wss://voxbento.com/ws/captions/{booth_id}`.
+3. **Speech-to-Text (Transcription):** The provider sends audio to an AI service (OpenAI, Deepgram, ElevenLabs, NVIDIA, or Local Whisper). The `CaptionAggregator` receives raw text, splitting sentences and instantly broadcasting partial updates to listeners (`/ws/captions/{channel_id}`).
+4. **Finalization:** Once a full sentence is formed, the aggregator saves it to the database as a canonical `transcript_segment`.
+5. **Text-to-Text (Translation):** If target languages are enabled, the Translation Worker detects the finalized segment and spawns parallel requests to LLMs (Anthropic, Groq, Gemini) to translate the sentence. 
+6. **Broadcast:** Translations are saved to the database and immediately broadcast via the dedicated WebSocket (`/ws/translations/{channel_id}`).
 
 :::info
-Transcription workers are isolated from the main audio path. If a transcription worker fails or encounters high latency, the interpretation audio remains unaffected.
+Transcription and Translation workers are isolated from the main audio path. If an API provider lags, fails, or drops chunks, the core interpretation audio remains perfectly stable and unaffected.
 :::
 
 ## Booth Identity
@@ -90,9 +95,9 @@ These two values combine to form the **MediaMTX path** (`pycon2026/en`) and the 
 
 In a professional interpretation setting, interpreters rotate every 20–30 minutes to prevent fatigue. Voxbento handles this transition without interrupting listeners.
 
-Here is what happens when a coordinator switches the active interpreter:
+Here is what happens when a room_coordinator switches the active interpreter:
 
-1. The coordinator clicks **Set Active** next to the incoming interpreter in the booth.
+1. The room_coordinator clicks **Set Active** next to the incoming interpreter in the booth.
 2. The portal updates the active interpreter state and notifies all booth participants over WebSocket.
 3. The incoming interpreter's browser calls the gated `/api/booth/{booth_id}/whip-url` endpoint, receives the WHIP URL, and begins publishing.
 4. MediaMTX is configured with `overridePublisher: yes` — it immediately accepts the new publisher and disconnects the outgoing interpreter's WHIP session.

@@ -18,9 +18,11 @@ services:
       JWT_EXPIRY_SECONDS: "${JWT_EXPIRY_SECONDS:-86400}"
       DEFAULT_JITSI_ROOM: "${DEFAULT_JITSI_ROOM:-eventyay-stage-room}"
       JITSI_DOMAIN: "${JITSI_DOMAIN:-jitsi.voxbento.com}"
-      JITSI_BASE_URL: "${JITSI_BASE_URL:-https://jitsi.voxbento.com}"
+      JITSI_BASE_URL: "${JITSI_BASE_URL:-http://${JITSI_DOMAIN:-localhost:8080}}"
+      JITSI_INTERNAL_BASE: "http://jitsi-web:80"
       # Browser-facing URLs — must be reachable from the user's machine
       MEDIAMTX_WHIP_BASE: "${MEDIAMTX_WHIP_BASE:-http://localhost:8889}"
+      FLOOR_BOT_BASE: "http://floor-bot:8080"
 
       # Internal URL for Python health checks (Docker service name)
       MEDIAMTX_INTERNAL_BASE: "http://mediamtx:8888"
@@ -49,6 +51,18 @@ services:
       timeout: 5s
       retries: 3
       start_period: 10s
+
+  # ── Floor Bot Service ─────────────────────────────────────────
+  floor-bot:
+    build:
+      context: ./floor-bot
+      dockerfile: Dockerfile
+    environment:
+      # Pass the docker-internal RTSP base
+      MEDIAMTX_RTSP_BASE: "rtsp://mediamtx:8554"
+    depends_on:
+      - mediamtx
+    restart: unless-stopped
 
   # ── MediaMTX audio server ─────────────────────────────────────
   mediamtx:

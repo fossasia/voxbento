@@ -4,14 +4,14 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Register — Voxbento</title>
-    <link rel="icon" type="image/x-icon" href="{{ url_for('static', path='favicon.ico') }}" />
+    <link rel="icon" type="image/x-icon" href="{{ url_for('static', path='img/favicon.ico') }}" />
     <link rel="stylesheet" href="{{ url_for('static', path='css/admin.css') }}" />
   </head>
   <body>
     <div class="login-page">
       <div class="login-card">
         <div class="login-brand">
-          <span class="brand-text">Voxbento</span>
+          <img src="{{ url_for('static', path='img/wordmark.png') }}" alt="Voxbento" class="brand-text" style="height: 48px; margin: 0 auto;" />
           <span class="login-subtitle">Create your account</span>
         </div>
         {% if errors %}
