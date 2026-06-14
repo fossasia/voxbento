@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import asyncio
-import pytest
-import httpx
 from unittest.mock import AsyncMock, MagicMock, patch
-from portal.transcription.providers.base import (
-    ProviderConfig, pcm_to_wav, TranscriptionProvider
-)
+
+import httpx
+import pytest
+
 import portal.transcription as ts
+from portal.transcription.providers.base import ProviderConfig, TranscriptionProvider, pcm_to_wav
+
 
 @pytest.mark.anyio
 class TestTranscriptionProviders:
@@ -36,19 +37,19 @@ class TestTranscriptionProviders:
         from portal.transcription.providers.openai import OpenAIProvider
         provider = OpenAIProvider()
         config = ProviderConfig(api_key='fake')
-        
+
         mock_client = MagicMock()
         mock_response = MagicMock()
         mock_response.status_code = 200
         mock_response.json.return_value = {"text": "Hello"}
         mock_client.post = AsyncMock(return_value=mock_response)
-        
+
         ts.shared_http_client = mock_client
-        
+
         try:
             result = await provider.process_chunk(b'\x00'*3200, 'en', 'whisper-1', config)
             assert result == 'Hello'
-            
+
             mock_client.post.assert_called_once()
             call_args = mock_client.post.call_args
             assert "api.openai.com" in call_args[0][0]
@@ -59,12 +60,12 @@ class TestTranscriptionProviders:
         from portal.transcription.providers.openai import OpenAIProvider
         provider = OpenAIProvider()
         config = ProviderConfig(api_key='fake')
-        
+
         mock_client = MagicMock()
         mock_client.post = AsyncMock(side_effect=httpx.ConnectError("Connection error"))
-        
+
         ts.shared_http_client = mock_client
-        
+
         try:
             with pytest.raises(Exception):
                 await provider.process_chunk(b'\x00'*3200, 'en', 'whisper-1', config)
@@ -72,26 +73,30 @@ class TestTranscriptionProviders:
             ts.shared_http_client = None
 
     async def test_local_model_ref_counting(self):
-        from portal.transcription.providers.local import increment_model_ref, decrement_model_ref, _active_booths_per_model
-        
+        from portal.transcription.providers.local import (
+            _active_booths_per_model,
+            decrement_model_ref,
+            increment_model_ref,
+        )
+
         # Ensure clean state for this test
         _active_booths_per_model['tiny'] = 0
-        
+
         increment_model_ref('tiny')
         increment_model_ref('tiny')
         assert _active_booths_per_model['tiny'] == 2
-        
+
         decrement_model_ref('tiny')
         assert _active_booths_per_model['tiny'] == 1
-        
+
         decrement_model_ref('tiny')
         assert _active_booths_per_model['tiny'] == 0
-        
+
         decrement_model_ref('tiny')
         assert _active_booths_per_model['tiny'] == 0
 
     async def test_local_model_ref_decrement_never_goes_negative(self):
-        from portal.transcription.providers.local import decrement_model_ref, _active_booths_per_model
+        from portal.transcription.providers.local import _active_booths_per_model, decrement_model_ref
         decrement_model_ref('nonexistent-model')
         assert _active_booths_per_model.get('nonexistent-model', 0) == 0
 
