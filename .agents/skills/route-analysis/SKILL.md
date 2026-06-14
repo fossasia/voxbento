@@ -1,3 +1,8 @@
+---
+name: route-analysis
+description: Use this skill to analyse, audit, or modify HTTP and WebSocket routes in VoxBento. All routes live in `fastapi_app.py`.
+---
+
 # Skill: Route Analysis
 
 > Use this skill to analyse, audit, or modify HTTP and WebSocket routes in VoxBento.

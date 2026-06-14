@@ -19,9 +19,10 @@ client = TestClient(app)
 
 @pytest.fixture(autouse=True)
 def setup_db():
-    from portal.database import configure, dispose, init_db
     import anyio
-    
+
+    from portal.database import configure, dispose, init_db
+
     configure('sqlite+aiosqlite://')
     anyio.run(init_db)
     yield
@@ -85,8 +86,8 @@ def test_interpreter_booth_jitsi_url_uses_base_url():
     a hard-coded http:// scheme, to avoid mixed-content on HTTPS deployments."""
     res = client.get('/interpreter/test-booth', cookies=_interpreter_cookie())
     assert res.status_code == 200
-    from portal.config import settings
     from fastapi_app import _make_jitsi_url
+    from portal.config import settings
     expected = _make_jitsi_url(settings.effective_jitsi_base_url, settings.default_jitsi_room)
     assert expected.encode() in res.content
 
@@ -112,6 +113,7 @@ def test_interpreter_booth_jitsi_domain_matches_base_url_host():
     If they differ the user's own pre-filled URL is rejected.
     """
     from urllib.parse import urlparse
+
     from portal.config import settings
     res = client.get('/interpreter/test-booth', cookies=_interpreter_cookie())
     assert res.status_code == 200
@@ -406,7 +408,7 @@ def test_ws_three_way_coordinator_flow():
          client.websocket_connect(f'/ws/booth/{booth}', cookies=_ws_auth()) as ws_coord:
 
         # IntA joins (no pending for ws_a; ws_b + ws_coord each queue 1 state msg)
-        pid_a = ws_join(ws_a, 'IntA', 'interpreter', n_pending=0)
+        ws_join(ws_a, 'IntA', 'interpreter', n_pending=0)
 
         # IntB joins (1 pending from IntA's join; ws_a + ws_coord queue 1 more)
         pid_b = ws_join(ws_b, 'IntB', 'interpreter', n_pending=1)

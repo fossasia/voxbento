@@ -1,8 +1,8 @@
 import asyncio
 import io
 import logging
-import wave
 import time
+import wave
 from dataclasses import dataclass
 
 from portal.models import Event
@@ -33,7 +33,7 @@ def get_api_key(event: Event, provider: ProviderEnum) -> str | None:
 @dataclass
 class ProviderConfig:
     api_key: str | None
-    
+
     def get_key(self) -> str | None:
         return self.api_key
 
@@ -55,7 +55,7 @@ class TranscriptionProvider:
         chunk_size_bytes = 16000 * 2 * 3 # 3 seconds
         queue = asyncio.Queue(maxsize=2)
         booth_state = BoothTranscriptionState(booth_id=booth_id)
-        
+
         async def audio_reader_task():
             while process.returncode is None:
                 try:
@@ -63,16 +63,18 @@ class TranscriptionProvider:
                 except asyncio.IncompleteReadError as e:
                     chunk = e.partial
                     if chunk:
-                        try: queue.put_nowait(chunk)
-                        except asyncio.QueueFull: pass
+                        try:
+                            queue.put_nowait(chunk)
+                        except asyncio.QueueFull:
+                            pass
                     break
                 except Exception as e:
                     logger.error(f"[{booth_id}] Reader error: {e}")
                     break
-                    
+
                 if not chunk:
                     break
-                    
+
                 if queue.full():
                     try:
                         queue.get_nowait()
@@ -81,12 +83,12 @@ class TranscriptionProvider:
                         logger.warning(f"[{booth_id}] Inference lagging: dropped oldest audio chunk. Total dropped: {booth_state.chunks_dropped_total}")
                     except asyncio.QueueEmpty:
                         pass
-                
+
                 try:
                     queue.put_nowait(chunk)
                 except asyncio.QueueFull:
                     pass
-            
+
             await queue.put(None)
 
         async def inference_task():
@@ -95,12 +97,14 @@ class TranscriptionProvider:
                 chunk = await queue.get()
                 if chunk is None:
                     break
-                
+
                 if booth_state.consecutive_drops > 3:
                     logger.error(f"[{booth_id}] Overload Protection triggered. Pausing inference for 10s.")
                     while not queue.empty():
-                        try: queue.get_nowait()
-                        except asyncio.QueueEmpty: break
+                        try:
+                            queue.get_nowait()
+                        except asyncio.QueueEmpty:
+                            break
                     await broadcast_callback(booth_id, "[Server overloaded - transcription temporarily paused]")
                     await asyncio.sleep(10)
                     booth_state.consecutive_drops = 0
@@ -112,7 +116,7 @@ class TranscriptionProvider:
                     text = await self.process_chunk(chunk, language_code, model_variant, config, booth_state=booth_state)
                     consecutive_errors = 0
                     booth_state.consecutive_drops = 0
-                    
+
                     if text:
                         logger.debug(f"[{booth_id}] Transcribed: {text}")
                         await aggregator.handle_chunk(booth_id, text)
@@ -130,14 +134,14 @@ class TranscriptionProvider:
                         booth_state.inference_latency_avg_ms = latency
                     else:
                         booth_state.inference_latency_avg_ms = 0.8 * booth_state.inference_latency_avg_ms + 0.2 * latency
-                        
+
                     if latency > 3000:
                         logger.warning(f"[{booth_id}] Inference slow: {latency:.0f}ms")
 
         reader = asyncio.create_task(audio_reader_task())
         inference = asyncio.create_task(inference_task())
-        
+
         await asyncio.wait([reader, inference], return_when=asyncio.FIRST_COMPLETED)
-        
+
         reader.cancel()
         inference.cancel()

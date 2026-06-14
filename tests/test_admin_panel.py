@@ -68,6 +68,7 @@ async def seed_event():
 
 def _client():
     from httpx import ASGITransport, AsyncClient
+
     from fastapi_app import app
     return AsyncClient(transport=ASGITransport(app=app), base_url='http://test')
 

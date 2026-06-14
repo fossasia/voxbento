@@ -1,13 +1,13 @@
 import asyncio
 import logging
-from typing import Dict, Any
+from typing import Any, Dict
 
 from portal.transcription.providers.base import ProviderConfig
-from portal.transcription.providers.local import LocalProvider
-from portal.transcription.providers.openai import OpenAIProvider
 from portal.transcription.providers.deepgram import DeepgramProvider
-from portal.transcription.providers.nvidia import NVIDIAProvider
 from portal.transcription.providers.elevenlabs import ElevenLabsProvider
+from portal.transcription.providers.local import LocalProvider
+from portal.transcription.providers.nvidia import NVIDIAProvider
+from portal.transcription.providers.openai import OpenAIProvider
 
 logger = logging.getLogger(__name__)
 
@@ -28,14 +28,15 @@ active_processes: Dict[str, asyncio.subprocess.Process] = {}
 
 from portal.config import settings
 
+
 async def transcription_worker(event_slug: str, language_code: str, booth_id: str, broadcast_callback, provider_name: str, model_size: str, config: ProviderConfig, transcription_language: str | None = None, room_id: int | None = None):
     logger.info(f"Starting {provider_name} transcription worker for booth {booth_id}")
     rtsp_url = f"{settings.mediamtx_rtsp_base}/{event_slug}/{language_code}"
-    
+
     provider = PROVIDERS.get(provider_name, PROVIDERS['local'])
-    
+
     sample_rate = "24000" if provider_name == "openai" else "16000"
-    
+
     ffmpeg_cmd = [
         "ffmpeg",
         "-rtsp_transport", "tcp",
@@ -45,13 +46,13 @@ async def transcription_worker(event_slug: str, language_code: str, booth_id: st
         "-ac", "1",
         "-f", "s16le", "-"
     ]
-    
+
     process = await asyncio.create_subprocess_exec(
         *ffmpeg_cmd,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE
     )
-    
+
     async def log_stderr(stderr_stream, bid):
         try:
             while True:
@@ -61,14 +62,14 @@ async def transcription_worker(event_slug: str, language_code: str, booth_id: st
                 logger.debug(f"[{bid}] ffmpeg: {line.decode().strip()}")
         except Exception:
             pass
-            
+
     stderr_task = asyncio.create_task(log_stderr(process.stderr, booth_id))
-    
+
     async with active_workers_lock:
         active_processes[booth_id] = process
         if booth_id in active_workers:
             active_workers[booth_id]["stderr_task"] = stderr_task
-    
+
     try:
         actual_language = transcription_language or language_code
         await provider.run_stream(process, actual_language, model_size, config, broadcast_callback, booth_id, room_id)
@@ -83,15 +84,15 @@ async def transcription_worker(event_slug: str, language_code: str, booth_id: st
         async with active_workers_lock:
             proc_to_kill = active_processes.pop(booth_id, None)
             worker_data = active_workers.pop(booth_id, None)
-            
+
         if worker_data:
             if worker_data.get("provider") == 'local':
                 from portal.transcription.providers.local import decrement_model_ref
                 decrement_model_ref(worker_data.get("model_size"))
-                
+
             if "stderr_task" in worker_data and worker_data["stderr_task"]:
                 worker_data["stderr_task"].cancel()
-            
+
         if proc_to_kill and proc_to_kill.returncode is None:
             try:
                 proc_to_kill.terminate()
@@ -126,18 +127,18 @@ async def stop_transcription_worker(booth_id: str):
     async with active_workers_lock:
         worker_data = active_workers.pop(booth_id, None)
         process = active_processes.pop(booth_id, None)
-        
+
     if process and process.returncode is None:
         try:
             process.terminate()
         except ProcessLookupError:
             pass
-            
+
     if worker_data:
         if worker_data.get("provider") == 'local':
             from portal.transcription.providers.local import decrement_model_ref
             decrement_model_ref(worker_data.get("model_size"))
-            
+
         if "stderr_task" in worker_data and worker_data["stderr_task"]:
             worker_data["stderr_task"].cancel()
         task = worker_data["task"]

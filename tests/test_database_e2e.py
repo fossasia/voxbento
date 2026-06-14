@@ -18,7 +18,6 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from portal.models import Base, DBBooth, Event, InviteToken, Room
 from portal.database import (
     configure,
     create_booth,
@@ -43,7 +42,7 @@ from portal.database import (
     list_tokens_for_booth,
     redeem_invite_token,
 )
-
+from portal.models import Base, DBBooth, Event, InviteToken, Room
 
 # ---------------------------------------------------------------------------
 # Fixtures — file-backed SQLite for real persistence testing
@@ -119,7 +118,7 @@ async def test_full_multi_event_scenario(db: AsyncSession):
         db, event_id=pycon.id, room_id=pycon_main.id,
         language_code='fr', language_name='French',
     )
-    pycon_ws_de = await create_booth(
+    await create_booth(
         db, event_id=pycon.id, room_id=pycon_workshop.id,
         language_code='de', language_name='German',
     )
@@ -155,7 +154,7 @@ async def test_full_multi_event_scenario(db: AsyncSession):
         db, booth_id=pycon_en.id, role='room_coordinator',
         label='Bob Coordinator', created_by='admin@pycon.org',
     )
-    tok_listener = await create_invite_token(
+    await create_invite_token(
         db, booth_id=pycon_fr.id, role='room_coordinator',
         label='Charlie Listener',
     )

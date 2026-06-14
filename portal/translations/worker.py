@@ -1,12 +1,10 @@
 import asyncio
 import logging
-import json
-from datetime import datetime
 
-from portal.database import get_session
-from portal.models import Event, Room, DBBooth, TranscriptTranslation
-from portal.translations.constants import TranslationProviderEnum
 from portal.crypto import decrypt_val
+from portal.database import get_session
+from portal.models import DBBooth, Event, Room, TranscriptTranslation
+from portal.translations.constants import TranslationProviderEnum
 
 logger = logging.getLogger(__name__)
 
@@ -21,18 +19,19 @@ class TranslationWorker:
         """Called when a finalized STT segment is saved. Fires off LLM requests for enabled target languages."""
         from sqlalchemy import select
         from sqlalchemy.orm import selectinload
-        from portal.models import TranscriptSegment, DBBooth
-        
+
+        from portal.models import TranscriptSegment
+
         async with get_session() as session:
             segment = await session.scalar(select(TranscriptSegment).where(TranscriptSegment.id == segment_id))
             if not segment:
                 return
-                
+
             provider = None
             model = None
             enabled_langs = []
             room = None
-            
+
             if segment.booth_id is None:
                 # Floor translation
                 room = await session.scalar(select(Room).options(selectinload(Room.translation_languages)).where(Room.id == room_id))
@@ -53,7 +52,7 @@ class TranslationWorker:
 
             if not provider or not model or not enabled_langs or not room:
                 return
-                
+
             event = await session.scalar(select(Event).where(Event.id == room.event_id))
             if not event:
                 return
@@ -86,7 +85,7 @@ class TranslationWorker:
             translated_text = await self._call_llm(provider, model, api_key, text, lang_name)
             if not translated_text:
                 return
-            
+
             # Save to DB using an independent session to avoid concurrent transaction crashes
             async with get_session() as local_session:
                 translation = TranscriptTranslation(
@@ -96,21 +95,21 @@ class TranslationWorker:
                 )
                 local_session.add(translation)
                 await local_session.commit()
-            
+
             # Broadcast to WebSocket
             await self.broadcast_callback(booth_id_str, {
                 "type": "translation",
                 "language_code": lang_code,
                 "text": translated_text
             })
-            
+
         except Exception as e:
             logger.error(f"[{booth_id_str}] Translation failed for {lang_code}: {e}")
 
     async def _call_llm(self, provider: str, model: str, api_key: str, text: str, target_lang_name: str) -> str | None:
         import httpx
         system_prompt = f"You are a professional interpreter. Translate the following text into {target_lang_name}. Output ONLY the translated text, nothing else."
-        
+
         timeout = httpx.Timeout(10.0)
         async with httpx.AsyncClient(timeout=timeout) as client:
             if provider == TranslationProviderEnum.OPENAI.value:
@@ -127,7 +126,7 @@ class TranslationWorker:
                 )
                 res.raise_for_status()
                 return res.json()["choices"][0]["message"]["content"].strip()
-                
+
             elif provider == TranslationProviderEnum.OPENROUTER.value:
                 res = await client.post(
                     "https://openrouter.ai/api/v1/chat/completions",
@@ -142,7 +141,7 @@ class TranslationWorker:
                 )
                 res.raise_for_status()
                 return res.json()["choices"][0]["message"]["content"].strip()
-                
+
             elif provider == TranslationProviderEnum.GROQ.value:
                 res = await client.post(
                     "https://api.groq.com/openai/v1/chat/completions",
@@ -157,7 +156,7 @@ class TranslationWorker:
                 )
                 res.raise_for_status()
                 return res.json()["choices"][0]["message"]["content"].strip()
-                
+
             elif provider == TranslationProviderEnum.GEMINI.value:
                 res = await client.post(
                     f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}",
@@ -168,7 +167,7 @@ class TranslationWorker:
                 )
                 res.raise_for_status()
                 return res.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
-                
+
             elif provider == TranslationProviderEnum.ANTHROPIC.value:
                 res = await client.post(
                     "https://api.anthropic.com/v1/messages",
@@ -187,11 +186,11 @@ class TranslationWorker:
                 )
                 res.raise_for_status()
                 return res.json()["content"][0]["text"].strip()
-                
+
             elif provider == TranslationProviderEnum.LOCAL.value:
                 # Placeholder for local model inference.
                 # In a real environment, you'd route this to an internal LLM endpoint like Ollama/vLLM.
                 logger.warning("Local translation not fully implemented. Echoing text.")
                 return f"[{target_lang_name}] {text}"
-            
+
         return None

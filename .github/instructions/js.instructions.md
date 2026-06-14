@@ -1,6 +1,6 @@
 ---
 description: 'JavaScript development standards'
-applyTo: 'app/**/*.{js,ts,vue}'
+applyTo: 'static/**/*.js'
 ---
 
 ## Development Standards

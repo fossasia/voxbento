@@ -7,9 +7,9 @@ Create Date: 2026-06-14 09:21:20.086987
 """
 from typing import Sequence, Union
 
-from alembic import op
 import sqlalchemy as sa
 
+from alembic import op
 
 # revision identifiers, used by Alembic.
 revision: str = '014'
@@ -33,11 +33,11 @@ def upgrade() -> None:
     )
     op.create_index('ix_membership_user_room', 'room_memberships', ['user_id', 'room_id'], unique=True)
     op.add_column('events', sa.Column('listener_join_code', sa.String(length=64), nullable=True))
-    
+
     # 1. Rename event_admin -> event_owner
     op.execute("UPDATE event_memberships SET role = 'event_owner' WHERE role = 'event_admin'")
     op.execute("UPDATE booth_memberships SET role = 'event_owner' WHERE role = 'event_admin'")
-    
+
     # 2. Migrate coordinator to room_coordinator
     op.execute("""
         INSERT INTO room_memberships (user_id, room_id, role, created_at)
@@ -47,7 +47,7 @@ def upgrade() -> None:
         WHERE bm.role = 'coordinator'
     """)
     op.execute("DELETE FROM booth_memberships WHERE role = 'coordinator'")
-    
+
     op.execute("""
         INSERT INTO room_memberships (user_id, room_id, role, created_at)
         SELECT DISTINCT em.user_id, r.id, 'room_coordinator', em.created_at
@@ -56,11 +56,11 @@ def upgrade() -> None:
         WHERE em.role = 'coordinator'
     """)
     op.execute("DELETE FROM event_memberships WHERE role = 'coordinator'")
-    
+
     # 3. Remove listeners from DB (they now use join codes)
     op.execute("DELETE FROM event_memberships WHERE role = 'listener'")
     op.execute("DELETE FROM booth_memberships WHERE role = 'listener'")
-    
+
     # ### end Alembic commands ###
 
 

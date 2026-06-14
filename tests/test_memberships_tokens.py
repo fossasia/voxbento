@@ -23,7 +23,6 @@ import pytest
 
 from portal.auth import create_admin_token, create_user_token, hash_password
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -45,6 +44,7 @@ def admin_cookie():
 
 def _client():
     from httpx import ASGITransport, AsyncClient
+
     from fastapi_app import app
     return AsyncClient(transport=ASGITransport(app=app), base_url='http://test')
 
@@ -115,7 +115,10 @@ class TestEventMembershipDB:
     @pytest.mark.anyio
     async def test_list_memberships_for_user(self, setup_db):
         from portal.database import (
-            create_event, get_session, list_memberships_for_user, set_event_membership,
+            create_event,
+            get_session,
+            list_memberships_for_user,
+            set_event_membership,
         )
         user = await _create_test_user()
         event1, _, _ = await _seed_event_room_booth()
@@ -131,7 +134,10 @@ class TestEventMembershipDB:
     @pytest.mark.anyio
     async def test_remove_membership(self, setup_db):
         from portal.database import (
-            get_session, list_memberships_for_event, remove_event_membership, set_event_membership,
+            get_session,
+            list_memberships_for_event,
+            remove_event_membership,
+            set_event_membership,
         )
         user = await _create_test_user()
         event, _, _ = await _seed_event_room_booth()
@@ -194,7 +200,10 @@ class TestTokenDB:
     @pytest.mark.anyio
     async def test_revoked_token_cannot_be_redeemed(self, setup_db):
         from portal.database import (
-            create_invite_token, get_session, redeem_invite_token, revoke_invite_token,
+            create_invite_token,
+            get_session,
+            redeem_invite_token,
+            revoke_invite_token,
         )
         _, _, booth = await _seed_event_room_booth()
         async with get_session() as s:
@@ -240,7 +249,7 @@ class TestAdminEventMembersRoutes:
     @pytest.mark.anyio
     async def test_members_page_renders(self, setup_db, admin_cookie):
         event, _, _ = await _seed_event_room_booth()
-        user = await _create_test_user(email='listed@test.com', display_name='Listed')
+        await _create_test_user(email='listed@test.com', display_name='Listed')
         async with _client() as c:
             resp = await c.get(f'/admin/events/{event.id}/members/', cookies=admin_cookie)
         assert resp.status_code == 200

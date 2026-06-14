@@ -36,14 +36,14 @@
       <td>
         {% if user.is_admin %}
         <span class="badge badge-role badge-event_admin">Admin</span>
-        {% else %}
+{% else %}
         <span class="muted">—</span>
         {% endif %}
       </td>
       <td>
         {% if user.is_active %}
         <span class="status-live">● Active</span>
-        {% else %}
+{% else %}
         <span class="status-offline">○ Inactive</span>
         {% endif %}
       </td>
@@ -63,6 +63,7 @@
     {% endfor %}
   </tbody>
 </table>
+  {% include 'admin/pagination.html' %}
 {% else %}
 <div class="empty-state">
   <p>No registered users yet. Users can sign up at <a href="/register">/register</a>.</p>

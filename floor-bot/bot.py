@@ -1,10 +1,8 @@
-import asyncio
+import json
 import logging
 import os
-import signal
 import subprocess  # nosec B404
 import threading
-import json
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Dict
 
@@ -39,25 +37,25 @@ from playwright.async_api import async_playwright
 async def run_capture():
     loop = asyncio.get_running_loop()
     main_task = asyncio.current_task()
-    
+
     def signal_handler():
         print("Received terminate signal, shutting down...")
         if main_task:
             main_task.cancel()
-            
+
     loop.add_signal_handler(signal.SIGTERM, signal_handler)
     loop.add_signal_handler(signal.SIGINT, signal_handler)
 
     event_slug = os.environ.get("BOT_EVENT_SLUG")
     jitsi_url = os.environ.get("BOT_JITSI_URL")
     mediamtx_rtsp_base = os.environ.get("BOT_MEDIAMTX_RTSP_BASE")
-    
+
     pulse_socket = f"/tmp/pulse-{event_slug}.sock"
     pulse_dir = f"/tmp/pulse-dir-{event_slug}"
-    
+
     os.makedirs(pulse_dir, exist_ok=True)
     sink_name = f"sink_{event_slug}"
-    
+
     subprocess.run(["pkill", "-f", f"ffmpeg.*{event_slug}"], stderr=subprocess.DEVNULL)
     subprocess.run(["pkill", "-f", f"pulseaudio.*{event_slug}"], stderr=subprocess.DEVNULL)
     if os.path.exists(pulse_socket):
@@ -76,19 +74,19 @@ async def run_capture():
         "-L", f"module-null-sink sink_name={sink_name}",
         "-L", "module-always-sink"
     ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    
+
     pw = None
     browser = None
     ffmpeg_proc = None
 
     try:
         await asyncio.sleep(2)
-        
+
         env = os.environ.copy()
         env["PULSE_SERVER"] = f"unix:{pulse_socket}"
-        
+
         pw = await async_playwright().start()
-        
+
         browser = await pw.chromium.launch(
             headless=True,
             env=env,
@@ -105,19 +103,19 @@ async def run_capture():
                 "--disable-dev-shm-usage"
             ]
         )
-        
+
         context = await browser.new_context(
             permissions=["microphone", "camera"],
             ignore_https_errors=True
         )
-        
+
         page = await context.new_page()
         page.on("console", lambda m: print(f"Browser: {m.text}"))
         page.on("pageerror", lambda err: print(f"Browser Error: {err}"))
-        
+
         import urllib.parse
         display_name = urllib.parse.quote('"VoxBento FloorBot"')
-        
+
         join_url = (
             f"{jitsi_url}"
             f"#config.startWithAudioMuted=false"
@@ -128,12 +126,12 @@ async def run_capture():
             f"&config.requireDisplayName=false"
             f"&userInfo.displayName={display_name}"
         )
-        
+
         print(f"Joining: {join_url}")
         await page.goto(join_url)
-        
+
         await asyncio.sleep(5)
-        
+
         try:
             await page.click("div[aria-label='Join meeting']", timeout=5000)
             print("Clicked Join Meeting dialog")
@@ -158,7 +156,7 @@ async def run_capture():
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL
         )
-        
+
         await ffmpeg_proc.wait()
 
     except asyncio.CancelledError:
@@ -181,11 +179,11 @@ async def run_capture():
                 os.remove(pulse_socket)
             except OSError:
                 pass
-            
+
 asyncio.run(run_capture())
 """
             ]
-            
+
             proc = subprocess.Popen(  # nosec B603
                 cmd,
                 stdout=subprocess.PIPE,
@@ -194,14 +192,14 @@ asyncio.run(run_capture())
                 bufsize=1,
                 env=env
             )
-            
+
             def log_stream(stream, prefix):
                 for line in iter(stream.readline, ''):
                     logger.info(f"{prefix}: {line.strip()}")
-            
+
             threading.Thread(target=log_stream, args=(proc.stdout, f"bot[{event_slug}] stdout"), daemon=True).start()
             threading.Thread(target=log_stream, args=(proc.stderr, f"bot[{event_slug}] stderr"), daemon=True).start()
-                    
+
             self.rooms[event_slug] = proc
 
     def stop_room_locked(self, event_slug: str):
@@ -222,7 +220,7 @@ class RequestHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         content_length = int(self.headers.get('Content-Length', 0))
         post_data = self.rfile.read(content_length)
-        
+
         try:
             req = json.loads(post_data.decode('utf-8'))
         except json.JSONDecodeError:
@@ -241,7 +239,7 @@ class RequestHandler(BaseHTTPRequestHandler):
             self.send_header('Content-type', 'application/json')
             self.end_headers()
             self.wfile.write(json.dumps({"status": "started", "event_slug": event_slug}).encode())
-            
+
         elif self.path == '/stop':
             event_slug = req.get("event_slug")
             if not event_slug:

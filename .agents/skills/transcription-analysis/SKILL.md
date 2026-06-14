@@ -1,3 +1,8 @@
+---
+name: transcription-analysis
+description: Use this skill for tasks involving transcription providers, caption streaming, or the audio pipeline. Reference: `portal/transcription/`, [TRANSCRIPTION_MAP.md](../../context/TRANSCRIPTION_MAP.md).
+---
+
 # Skill: Transcription Analysis
 
 > Use this skill for tasks involving transcription providers, caption streaming, or the audio pipeline.

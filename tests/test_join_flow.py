@@ -29,7 +29,6 @@ from portal.database import (
 )
 from portal.models import Base, utc_now
 
-
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
@@ -134,7 +133,7 @@ class TestTokenRedemption:
     async def test_redeem_sets_used_at(self, db, sample_booth):
         booth, _ = sample_booth
         tok = await create_invite_token(db, booth_id=booth.id, role='interpreter')
-        before = utc_now()
+
         redeemed = await redeem_invite_token(db, tok.token)
         assert redeemed.used_at is not None
 
@@ -233,6 +232,7 @@ class TestJoinRoute:
         token_str = await self._make_token(booth.id)
 
         from httpx import ASGITransport, AsyncClient
+
         from fastapi_app import app
         async with AsyncClient(
             transport=ASGITransport(app=app),
@@ -248,6 +248,7 @@ class TestJoinRoute:
         token_str = await self._make_token(booth.id, role='room_coordinator')
 
         from httpx import ASGITransport, AsyncClient
+
         from fastapi_app import app
         async with AsyncClient(
             transport=ASGITransport(app=app),
@@ -267,6 +268,7 @@ class TestJoinRoute:
     @pytest.mark.anyio
     async def test_invalid_token_returns_404(self, _seed):
         from httpx import ASGITransport, AsyncClient
+
         from fastapi_app import app
         async with AsyncClient(
             transport=ASGITransport(app=app),
@@ -282,6 +284,7 @@ class TestJoinRoute:
         token_str = await self._make_token(booth.id, expires_at=past)
 
         from httpx import ASGITransport, AsyncClient
+
         from fastapi_app import app
         async with AsyncClient(
             transport=ASGITransport(app=app),
@@ -297,6 +300,7 @@ class TestJoinRoute:
         token_str = await self._make_token(booth.id)
 
         from httpx import ASGITransport, AsyncClient
+
         from fastapi_app import app
         async with AsyncClient(
             transport=ASGITransport(app=app),
@@ -318,6 +322,7 @@ class TestJoinRoute:
             token_str = await self._make_token(booth.id, role=role)
 
             from httpx import ASGITransport, AsyncClient
+
             from fastapi_app import app
             async with AsyncClient(
                 transport=ASGITransport(app=app),
@@ -336,6 +341,7 @@ class TestJoinRoute:
         token_str = await self._make_token(booth.id, expires_at=future)
 
         from httpx import ASGITransport, AsyncClient
+
         from fastapi_app import app
         async with AsyncClient(
             transport=ASGITransport(app=app),
@@ -351,6 +357,7 @@ class TestJoinRoute:
         token_str = await self._make_token(booth.id)
 
         from httpx import ASGITransport, AsyncClient
+
         from fastapi_app import app
         async with AsyncClient(
             transport=ASGITransport(app=app),
@@ -387,6 +394,7 @@ class TestJoinRoute:
         tok_fr = await self._make_token(booth_fr.id)
 
         from httpx import ASGITransport, AsyncClient
+
         from fastapi_app import app
         async with AsyncClient(
             transport=ASGITransport(app=app),

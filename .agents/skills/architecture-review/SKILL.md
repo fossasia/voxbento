@@ -1,3 +1,8 @@
+---
+name: architecture-review
+description: Use this skill to evaluate proposed architecture changes against VoxBento's design principles.
+---
+
 # Skill: Architecture Review
 
 > Use this skill to evaluate proposed architecture changes against VoxBento's design principles.

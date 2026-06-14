@@ -48,6 +48,7 @@
     {% endfor %}
   </tbody>
 </table>
+  {% include 'admin/pagination.html' %}
 {% else %}
 <div class="empty-state">
   <p>No events created yet. Use the form above to create one.</p>

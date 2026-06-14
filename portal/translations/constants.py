@@ -1,6 +1,7 @@
 from enum import Enum
 from typing import Dict, List
 
+
 class TranslationProviderEnum(str, Enum):
     # Translation Providers
     LOCAL = "local"

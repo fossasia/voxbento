@@ -23,7 +23,6 @@ from portal.roles import (
     is_admin_role,
 )
 
-
 # ── Role type completeness ──────────────────────────────────────────────
 
 
