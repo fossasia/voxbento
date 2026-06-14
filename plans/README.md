@@ -15,7 +15,7 @@ conditions, run every verification command, and update your row when done.
 | [001](001-agents-context-docs.md) | Create the missing `.github/.agents` context and skills directories | P1 | M | — | DONE |
 | [002](002-pagination-list-queries.md) | Add pagination to unbounded list query helpers | P1 | S | — | DONE |
 | [003](003-ruff-linter.md) | Add ruff linter and pre-commit hook | P1 | S | — | DONE |
-| [004](004-js-instructions-applyto.md) | Fix `js.instructions.md` applyTo glob | P1 | S | — | TODO |
+| [004](004-js-instructions-applyto.md) | Fix `js.instructions.md` applyTo glob | P1 | S | — | DONE |
 | [005](005-secret-key-startup-guard.md) | Add startup guard for weak default `secret_key` | P1 | S | — | TODO |
 | [006](006-env-example-drift.md) | Fix `.env.example` drift (dead var, missing vars, latent AttributeError) | P1 | S | — | TODO |
 | [007](007-transcription-characterization-tests.md) | Add characterization tests for transcription providers and caption aggregator | P1 | M | — | TODO |
