@@ -1330,7 +1330,9 @@ async def mission_control_grid(request: Request, event_slug: str, user=Depends(r
             coord_room_ids = {rm.room_id for rm in room_memberships if rm.role == 'room_coordinator'}
             
             if event.id not in event_owner_ids:
-                event_room_ids = {r.id for r in event.rooms}
+                from portal.database import list_rooms_for_event
+                rooms = await list_rooms_for_event(session, event.id)
+                event_room_ids = {r.id for r in rooms}
                 if not coord_room_ids.intersection(event_room_ids):
                     raise HTTPException(status_code=403, detail='Access denied. Event Owner or Room Coordinator required.')
                 allowed_room_ids = coord_room_ids
