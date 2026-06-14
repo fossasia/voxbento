@@ -29,6 +29,7 @@ from portal.database import (
     get_event_by_slug,
     get_invite_token,
     get_room_by_id,
+    list_all_booths_for_events,
     list_booths_for_event,
     list_booths_for_room,
     list_events,
@@ -293,6 +294,54 @@ async def test_list_booths_for_event(db: AsyncSession):
     booths = await list_booths_for_event(db, ev.id)
     assert len(booths) == 2
     assert booths[0].language_code == 'en'  # ordered by language_code
+
+
+@pytest.mark.anyio
+async def test_list_all_booths_for_events_empty_input(db: AsyncSession):
+    result = await list_all_booths_for_events(db, [])
+    assert result == {}
+
+
+@pytest.mark.anyio
+async def test_list_all_booths_for_events_single_event(db: AsyncSession):
+    ev = await create_event(db, slug='ev-all-single', display_name='Ev Single')
+    room = await create_room(db, event_id=ev.id, display_name='Hall')
+    await create_booth(db, event_id=ev.id, room_id=room.id, language_code='en', language_name='English')
+    await create_booth(db, event_id=ev.id, room_id=room.id, language_code='fr', language_name='French')
+    result = await list_all_booths_for_events(db, [ev.id])
+    assert list(result.keys()) == [ev.id]
+    assert len(result[ev.id]) == 2
+    assert result[ev.id][0].language_code == 'en'
+    assert result[ev.id][1].language_code == 'fr'
+
+
+@pytest.mark.anyio
+async def test_list_all_booths_for_events_multiple_events(db: AsyncSession):
+    ev1 = await create_event(db, slug='ev-all-multi1', display_name='Ev 1')
+    ev2 = await create_event(db, slug='ev-all-multi2', display_name='Ev 2')
+    room1 = await create_room(db, event_id=ev1.id, display_name='Hall 1')
+    room2 = await create_room(db, event_id=ev2.id, display_name='Hall 2')
+    await create_booth(db, event_id=ev1.id, room_id=room1.id, language_code='en', language_name='English')
+    await create_booth(db, event_id=ev1.id, room_id=room1.id, language_code='fr', language_name='French')
+    await create_booth(db, event_id=ev2.id, room_id=room2.id, language_code='de', language_name='German')
+    await create_booth(db, event_id=ev2.id, room_id=room2.id, language_code='ja', language_name='Japanese')
+    result = await list_all_booths_for_events(db, [ev1.id, ev2.id])
+    assert len(result[ev1.id]) == 2
+    assert len(result[ev2.id]) == 2
+    assert result[ev1.id][0].language_code == 'en'
+    assert result[ev2.id][0].language_code == 'de'
+
+
+@pytest.mark.anyio
+async def test_list_all_booths_for_events_event_with_no_booths(db: AsyncSession):
+    ev1 = await create_event(db, slug='ev-all-nobooth1', display_name='Ev With Booths')
+    ev2 = await create_event(db, slug='ev-all-nobooth2', display_name='Ev No Booths')
+    room1 = await create_room(db, event_id=ev1.id, display_name='Hall')
+    await create_booth(db, event_id=ev1.id, room_id=room1.id, language_code='en', language_name='English')
+    await create_booth(db, event_id=ev1.id, room_id=room1.id, language_code='fr', language_name='French')
+    result = await list_all_booths_for_events(db, [ev1.id, ev2.id])
+    assert len(result[ev1.id]) == 2
+    assert result[ev2.id] == []
 
 
 @pytest.mark.anyio

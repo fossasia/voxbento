@@ -377,8 +377,8 @@ async def join_via_invite(token: str) -> RedirectResponse:
 async def home(request: Request):
     from portal.database import (
         get_session,
+        list_all_booths_for_events,
         list_booth_memberships_for_user,
-        list_booths_for_event,
         list_events,
         list_memberships_for_user,
     )
@@ -413,9 +413,12 @@ async def home(request: Request):
                         'language_code': bm.booth.language_code,
                     })
 
+            event_ids = [ev.id for ev in events]
+            booths_by_event = await list_all_booths_for_events(session, event_ids)
+
             event_data = []
             for ev in events:
-                db_booths = await list_booths_for_event(session, ev.id)
+                db_booths = booths_by_event.get(ev.id, [])
                 booth_statuses = []
                 for b in db_booths:
                     bid = make_booth_id(ev.slug, b.language_code)
@@ -1395,7 +1398,7 @@ async def admin_dashboard(request: Request, page: int = 1):
     from portal.database import (
         count_events,
         get_session,
-        list_booths_for_event,
+        list_all_booths_for_events,
         list_events,
     )
 
@@ -1415,9 +1418,12 @@ async def admin_dashboard(request: Request, page: int = 1):
             if len(events) == 1 and total_events == 1:
                 return safe_redirect(url=f'/admin/events/{events[0].id}/', status_code=status.HTTP_303_SEE_OTHER)
 
+        event_ids = [ev.id for ev in events]
+        booths_by_event = await list_all_booths_for_events(session, event_ids)
+
         event_data = []
         for ev in events:
-            db_booths = await list_booths_for_event(session, ev.id)
+            db_booths = booths_by_event.get(ev.id, [])
             booth_statuses = []
             for b in db_booths:
                 booth_id = make_booth_id(ev.slug, b.language_code)
