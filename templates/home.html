@@ -557,40 +557,62 @@
         
     </main>
 
-    <!-- Footer -->
-    <footer class="bg-white border-t border-slate-200 pt-20 pb-10">
-        <div class="max-w-7xl mx-auto px-6">
-            <div class="grid grid-cols-2 md:grid-cols-4 gap-8 mb-12">
-                <div>
-                    <img src="{{ url_for('static', path='img/wordmark.png') }}" alt="VoxBento" class="h-6 mb-6">
-                    <p class="text-slate-500 text-sm font-medium">Open-source interpretation for the modern web.</p>
+    <!-- Unified Footer -->
+    <footer class="bg-white border-t border-slate-200 py-16 text-slate-500 mt-20 relative z-10">
+        <div class="max-w-7xl mx-auto px-6 sm:px-8 lg:px-12">
+            <div class="grid grid-cols-2 md:grid-cols-5 gap-8 lg:gap-12">
+                <div class="col-span-2 md:col-span-1">
+                    <a href="/" class="flex items-center gap-2 mb-6">
+                        <img src="{{ url_for('static', path='img/wordmark.png') }}" alt="VoxBento" class="h-6">
+                    </a>
+                    <p class="text-sm mb-6">Production-grade browser-first interpretation console for live events.</p>
+                    <div class="flex gap-4">
+                        <a href="https://github.com/fossasia/voxbento" class="text-slate-400 hover:text-slate-900 transition-colors">
+                            <span class="sr-only">GitHub</span>
+                            <svg class="h-6 w-6" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true">
+                                <path fill-rule="evenodd" d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z" clip-rule="evenodd" />
+                            </svg>
+                        </a>
+                    </div>
                 </div>
                 <div>
-                    <h4 class="font-bold text-slate-900 mb-6 uppercase tracking-wider text-sm">Product</h4>
-                    <ul class="space-y-4 text-sm font-medium text-slate-500">
+                    <h3 class="text-slate-900 font-semibold mb-4 text-sm uppercase tracking-wider">Product</h3>
+                    <ul class="space-y-3 text-sm">
                         <li><a href="#solutions" class="hover:text-brand-600 transition-colors">Solutions</a></li>
                         <li><a href="#interactive-demo" class="hover:text-brand-600 transition-colors">Interactive Demo</a></li>
+                        <li><a href="https://docs.voxbento.com" class="hover:text-brand-600 transition-colors">Documentation</a></li>
                         <li><a href="/login" class="hover:text-brand-600 transition-colors">Sign In</a></li>
                     </ul>
                 </div>
                 <div>
-                    <h4 class="font-bold text-slate-900 mb-6 uppercase tracking-wider text-sm">Resources</h4>
-                    <ul class="space-y-4 text-sm font-medium text-slate-500">
-                        <li><a href="https://docs.voxbento.com" class="hover:text-brand-600 transition-colors">Documentation</a></li>
-                        <li><a href="#" class="hover:text-brand-600 transition-colors">API Reference</a></li>
-                        <li><a href="#" class="hover:text-brand-600 transition-colors">Blog</a></li>
+                    <h3 class="text-slate-900 font-semibold mb-4 text-sm uppercase tracking-wider">Research</h3>
+                    <ul class="space-y-3 text-sm">
+                        <li><a href="/research" class="hover:text-brand-600 transition-colors">Research Home</a></li>
+                        <li><a href="/research/streaming-stt-architecture" class="hover:text-brand-600 transition-colors">STT Architecture</a></li>
+                        <li><a href="/research/webrtc-vs-rtmp-vs-hls" class="hover:text-brand-600 transition-colors">WebRTC Latency</a></li>
+                        <li><a href="/research/stt-comparison" class="hover:text-brand-600 transition-colors">STT Comparison</a></li>
                     </ul>
                 </div>
                 <div>
-                    <h4 class="font-bold text-slate-900 mb-6 uppercase tracking-wider text-sm">Community</h4>
-                    <ul class="space-y-4 text-sm font-medium text-slate-500">
+                    <h3 class="text-slate-900 font-semibold mb-4 text-sm uppercase tracking-wider">Benchmarks</h3>
+                    <ul class="space-y-3 text-sm">
+                        <li><a href="/research/whisper-benchmark" class="hover:text-brand-600 transition-colors">Whisper RTF</a></li>
+                        <li><a href="/research/real-time-audio-latency" class="hover:text-brand-600 transition-colors">Audio Latency</a></li>
+                        <li><a href="/research/speech-ai-statistics" class="hover:text-brand-600 transition-colors">Speech AI Stats</a></li>
+                        <li><a href="/research/speech-ai-glossary" class="hover:text-brand-600 transition-colors">Glossary</a></li>
+                    </ul>
+                </div>
+                <div>
+                    <h3 class="text-slate-900 font-semibold mb-4 text-sm uppercase tracking-wider">Developers</h3>
+                    <ul class="space-y-3 text-sm">
+                        <li><a href="/llms.txt" class="hover:text-brand-600 transition-colors">LLM Context</a></li>
+                        <li><a href="/llms-full.txt" class="hover:text-brand-600 transition-colors">Full LLM Index</a></li>
+                        <li><a href="/sitemap.xml" class="hover:text-brand-600 transition-colors">Sitemap</a></li>
                         <li><a href="https://github.com/fossasia/voxbento" class="hover:text-brand-600 transition-colors">GitHub</a></li>
-                        <li><a href="#" class="hover:text-brand-600 transition-colors">Discord</a></li>
-                        <li><a href="#" class="hover:text-brand-600 transition-colors">Twitter</a></li>
                     </ul>
                 </div>
             </div>
-            <div class="border-t border-slate-100 pt-8 flex flex-col md:flex-row justify-between items-center gap-4 text-sm font-medium text-slate-400">
+            <div class="mt-16 pt-8 border-t border-slate-100 text-sm text-slate-500 flex flex-col md:flex-row justify-between items-center gap-4">
                 <p>&copy; 2026 VoxBento. Open Source software by FOSSASIA.</p>
                 <div class="flex gap-6">
                     <a href="#" class="hover:text-slate-900 transition-colors">Privacy Policy</a>

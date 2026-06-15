@@ -1,0 +1,81 @@
+{% extends "research/base_research.html" %}
+
+{% set page_title = "Speech AI and Live Interpretation Statistics" %}
+
+{% block schema %}
+{
+  "@context": "https://schema.org",
+  "@type": "TechArticle",
+  "headline": "Speech AI and Live Interpretation Statistics",
+  "author": {
+    "@type": "Organization",
+    "name": "VoxBento Research"
+  },
+  "publisher": {
+    "@type": "Organization",
+    "name": "VoxBento"
+  },
+  "dateModified": "2026-06-15",
+  "description": "Comprehensive statistics, adoption rates, and methodologies regarding Speech AI in live event interpretation and accessibility."
+}
+{% endblock %}
+
+{% block answer_first %}
+Speech AI is rapidly transforming live interpretation by lowering costs and expanding accessibility. Key statistics indicate that hybrid models—combining human interpreters with AI-assisted transcription—yield the highest accuracy and attendee satisfaction. Fully automated systems are increasingly viable for low-latency, high-volume event translation, provided the Word Error Rate (WER) remains below 5% for technical vocabulary.
+{% endblock %}
+
+{% block key_takeaways %}
+<li><strong>Hybrid Workflows:</strong> AI transcription serves as a cognitive aid for human interpreters, reducing fatigue.</li>
+<li><strong>Latency Requirements:</strong> Attendee engagement drops significantly when audio translation latency exceeds 1.5 seconds.</li>
+<li><strong>Cost Efficiency:</strong> Automated translation systems can reduce traditional hardware constraints by utilizing browser-first WebRTC pipelines.</li>
+<li><strong>Accuracy Baselines:</strong> Professional use cases require specialized models fine-tuned for industry-specific terminology.</li>
+{% endblock %}
+
+{% block research_body %}
+<div class="disclaimer-box">
+    <strong>Note:</strong> The metrics below are provided as an illustrative dataset and methodology template. They represent industry baseline targets rather than guaranteed performance of specific deployments.
+</div>
+
+<h2>The Impact of Low Latency in Live Translation</h2>
+<p>Latency is the critical metric in simultaneous interpretation. When attendees listen to translated audio while watching a live speaker, visual-audio desynchronization creates cognitive dissonance.</p>
+
+<table>
+    <thead>
+        <tr>
+            <th>Latency Range</th>
+            <th>Protocol</th>
+            <th>Attendee Experience Impact</th>
+        </tr>
+    </thead>
+    <tbody>
+        <tr>
+            <td>Under 500ms</td>
+            <td><a href="/research/webrtc-vs-rtmp-vs-hls">WebRTC / WHIP / WHEP</a></td>
+            <td>Indistinguishable from real-time. High engagement.</td>
+        </tr>
+        <tr>
+            <td>1.5s - 3s</td>
+            <td>RTMP / SRT</td>
+            <td>Noticeable delay. Acceptable for non-visual audio, poor for live video.</td>
+        </tr>
+        <tr>
+            <td>5s - 15s</td>
+            <td>HLS / DASH</td>
+            <td>Severe disconnect. Often causes attendees to abandon the feed.</td>
+        </tr>
+    </tbody>
+</table>
+
+<h2>Speech-to-Text Accuracy Targets (WER)</h2>
+<p>Word Error Rate (WER) measures the percentage of words incorrectly transcribed. In conference settings, technical jargon and speaker accents heavily influence WER.</p>
+
+<p>For more details on specific model performance, see our <a href="/research/stt-comparison">STT Provider Comparison methodology</a>.</p>
+
+<h3>Methodology for Measuring Adoption</h3>
+<p>To accurately assess the impact of Speech AI in your events, we recommend tracking the following metrics:</p>
+<ol>
+    <li><strong>Session Duration vs Engagement:</strong> Do attendees using AI-translated feeds stay in the session as long as native speakers?</li>
+    <li><strong>Transcript Correction Rate:</strong> When providing post-event VODs, what percentage of the AI transcript requires manual editing?</li>
+    <li><strong>Interpreter Handoff Frequency:</strong> Does providing real-time transcripts to interpreters alter the frequency of their 15-minute handoff cycles?</li>
+</ol>
+{% endblock %}

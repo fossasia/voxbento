@@ -1,0 +1,162 @@
+{% extends "base.html" %}
+
+{% block title %}Speech AI Research & Benchmarks - VoxBento{% endblock %}
+
+{% block head %}
+<style>
+    .research-index-container {
+        max-width: 1000px;
+        margin: 0 auto;
+        padding: 60px 20px;
+        font-family: 'Inter', system-ui, sans-serif;
+    }
+    .research-index-header {
+        text-align: center;
+        margin-bottom: 60px;
+    }
+    .research-index-header h1 {
+        font-size: 3rem;
+        font-weight: 800;
+        color: #1a202c;
+        margin-bottom: 20px;
+    }
+    .research-index-header p {
+        font-size: 1.25rem;
+        color: #4a5568;
+        max-width: 600px;
+        margin: 0 auto;
+    }
+    .research-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+        gap: 30px;
+    }
+    .research-card {
+        background: white;
+        border: 1px solid #e2e8f0;
+        border-radius: 12px;
+        padding: 30px;
+        transition: transform 0.2s, box-shadow 0.2s;
+        text-decoration: none;
+        color: inherit;
+        display: flex;
+        flex-direction: column;
+    }
+    .research-card:hover {
+        transform: translateY(-5px);
+        box-shadow: 0 10px 25px rgba(0,0,0,0.05);
+        border-color: #cbd5e0;
+    }
+    .research-card-tag {
+        font-size: 0.75rem;
+        text-transform: uppercase;
+        font-weight: 700;
+        color: #3182ce;
+        letter-spacing: 0.05em;
+        margin-bottom: 12px;
+    }
+    .research-card h2 {
+        font-size: 1.5rem;
+        font-weight: 700;
+        color: #2d3748;
+        margin-top: 0;
+        margin-bottom: 15px;
+        line-height: 1.3;
+    }
+    .research-card p {
+        color: #718096;
+        margin-bottom: 20px;
+        flex-grow: 1;
+    }
+    .research-card-footer {
+        font-size: 0.875rem;
+        color: #a0aec0;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        border-top: 1px solid #edf2f7;
+        padding-top: 15px;
+    }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="research-index-container">
+    <div class="research-index-header">
+        <h1>Speech AI Research & Benchmarks</h1>
+        <p>Technical analysis, latency benchmarks, and architectural methodologies for real-time speech-to-text systems.</p>
+    </div>
+
+    <div class="research-grid">
+        <a href="/research/speech-ai-statistics" class="research-card">
+            <span class="research-card-tag">Data & Statistics</span>
+            <h2>Speech AI Statistics (2026)</h2>
+            <p>A compilation of industry statistics regarding interpretation, accessibility, and real-time transcription adoption.</p>
+            <div class="research-card-footer">
+                <span>Methodology & Analysis</span>
+                <span>→</span>
+            </div>
+        </a>
+
+        <a href="/research/whisper-benchmark" class="research-card">
+            <span class="research-card-tag">Benchmarks</span>
+            <h2>Whisper Performance Benchmark</h2>
+            <p>Methodology for benchmarking OpenAI's Whisper model (Local vs API) for real-time interpretation workloads.</p>
+            <div class="research-card-footer">
+                <span>Hardware & Compute</span>
+                <span>→</span>
+            </div>
+        </a>
+
+        <a href="/research/stt-comparison" class="research-card">
+            <span class="research-card-tag">Comparison</span>
+            <h2>STT Provider Comparison</h2>
+            <p>A technical comparison of Deepgram, OpenAI Realtime, and Local Whisper focusing on Word Error Rate (WER) measuring frameworks.</p>
+            <div class="research-card-footer">
+                <span>Provider Analysis</span>
+                <span>→</span>
+            </div>
+        </a>
+
+        <a href="/research/real-time-audio-latency" class="research-card">
+            <span class="research-card-tag">Latency Analysis</span>
+            <h2>Real-Time Audio Latency</h2>
+            <p>Understanding the components of audio latency in a distributed browser-based interpretation booth.</p>
+            <div class="research-card-footer">
+                <span>WebRTC Analysis</span>
+                <span>→</span>
+            </div>
+        </a>
+
+        <a href="/research/webrtc-vs-rtmp-vs-hls" class="research-card">
+            <span class="research-card-tag">Protocols</span>
+            <h2>WebRTC vs RTMP vs HLS</h2>
+            <p>Technical evaluation of media transport protocols for sub-second, multi-language audio delivery.</p>
+            <div class="research-card-footer">
+                <span>Infrastructure Design</span>
+                <span>→</span>
+            </div>
+        </a>
+
+        <a href="/research/streaming-stt-architecture" class="research-card">
+            <span class="research-card-tag">Architecture</span>
+            <h2>Streaming STT Architecture</h2>
+            <p>Design principles for building highly available, horizontally scalable transcription workers with MediaMTX.</p>
+            <div class="research-card-footer">
+                <span>System Design</span>
+                <span>→</span>
+            </div>
+        </a>
+
+        <a href="/research/speech-ai-glossary" class="research-card">
+            <span class="research-card-tag">Glossary</span>
+            <h2>Speech AI Glossary</h2>
+            <p>Standardized definitions for terms used across real-time audio, AI transcription, and conference interpretation.</p>
+            <div class="research-card-footer">
+                <span>Definitions</span>
+                <span>→</span>
+            </div>
+        </a>
+    </div>
+</div>
+{% endblock %}

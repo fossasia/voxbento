@@ -1,0 +1,51 @@
+{% extends "research/base_research.html" %}
+
+{% set page_title = "Streaming STT Architecture Guide" %}
+
+{% block schema %}
+{
+  "@context": "https://schema.org",
+  "@type": "TechArticle",
+  "headline": "Streaming STT Architecture Guide",
+  "author": {
+    "@type": "Organization",
+    "name": "VoxBento Research"
+  },
+  "description": "Design principles and system architecture for building scalable, highly available real-time transcription pipelines."
+}
+{% endblock %}
+
+{% block answer_first %}
+A robust Streaming STT Architecture decouples media ingestion from AI inference. By utilizing an SFU (Selective Forwarding Unit) like MediaMTX, incoming WebRTC audio is demultiplexed. A dedicated worker pool pulls this audio via RTSP or raw UDP, processes it through a Voice Activity Detection (VAD) layer, and dispatches chunks to scalable inference nodes, ensuring the core broadcast remains unaffected by heavy AI compute loads.
+{% endblock %}
+
+{% block key_takeaways %}
+<li><strong>Decoupling is Mandatory:</strong> Never run STT inference on the same thread or process that handles media routing.</li>
+<li><strong>SFU as the Hub:</strong> Media servers must act as the central routing hub, fanning out audio to listeners and STT workers simultaneously.</li>
+<li><strong>State Management:</strong> Transcription workers must maintain sequence state to ensure captions arrive at the client in the correct chronological order.</li>
+<li><strong>Horizontal Scalability:</strong> The architecture must allow inference workers to scale dynamically based on the number of active audio channels.</li>
+{% endblock %}
+
+{% block research_body %}
+<h2>Core Architectural Components</h2>
+
+<p>To process real-time audio without introducing latency to the listener's audio feed, the architecture must branch the media stream early in the pipeline.</p>
+
+<ol>
+    <li><strong>The Ingest Layer (WHIP/MediaMTX):</strong> Receives the original audio from the broadcaster's browser. It is responsible solely for terminating the DTLS/SRTP connection and making the stream available internally.</li>
+    <li><strong>The Transcription Worker Pool:</strong> Independent processes that subscribe to the internal media streams (often via RTSP for reliability). </li>
+    <li><strong>The Inference Engine:</strong> The GPU-backed models (Local Whisper, Deepgram, etc.) that perform the actual Speech-to-Text conversion.</li>
+    <li><strong>The Aggregation & Broadcast Layer:</strong> Receives the raw text from the inference engine, formats it as standard captions (e.g., VTT or JSON), and broadcasts it to listeners via WebSockets.</li>
+</ol>
+
+<h2>Handling Chunking and VAD</h2>
+<p>Most AI models (including Whisper) cannot process an infinite stream of raw PCM audio. They require discrete "chunks" of audio.</p>
+<p>A Voice Activity Detector (VAD) is used to identify pauses in speech. When a pause is detected, the audio buffer is flushed and sent to the inference engine. If a speaker speaks continuously without pausing, the system must forcefully chunk the audio at a maximum interval (e.g., 10 seconds) to ensure captions are delivered to the user promptly, even if it risks cutting a word in half.</p>
+
+<h2>Failure Domains and Redundancy</h2>
+<p>In a production environment, AI inference is the most computationally expensive and fragile component of the pipeline.</p>
+<ul>
+    <li>If a transcription worker crashes (OOM error, GPU fault), the primary audio broadcast must not be interrupted.</li>
+    <li>The Aggregation layer must be resilient to receiving out-of-order captions if a delayed chunk finishes processing after a subsequent, faster chunk.</li>
+</ul>
+{% endblock %}
