@@ -23,7 +23,7 @@ config = context.config
 
 # Override alembic.ini URL with the application's DATABASE_URL when set via env.
 if settings.database_url:
-    config.set_main_option('sqlalchemy.url', settings.database_url)
+    config.set_main_option("sqlalchemy.url", settings.database_url)
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
@@ -35,19 +35,20 @@ target_metadata = Base.metadata
 # Sequential revision IDs (001, 002, …)
 # ---------------------------------------------------------------------------
 
+
 def _next_rev_id() -> str:
     """Return the next zero-padded revision number based on existing files."""
-    versions_dir = os.path.join(os.path.dirname(__file__), 'versions')
+    versions_dir = os.path.join(os.path.dirname(__file__), "versions")
     max_num = 0
     if os.path.isdir(versions_dir):
         for name in os.listdir(versions_dir):
-            if name.endswith('.py') and not name.startswith('__'):
+            if name.endswith(".py") and not name.startswith("__"):
                 try:
-                    num = int(name.split('_', 1)[0])
+                    num = int(name.split("_", 1)[0])
                     max_num = max(max_num, num)
                 except ValueError:
                     pass
-    return f'{max_num + 1:03d}'
+    return f"{max_num + 1:03d}"
 
 
 def process_revision_directives(context, revision, directives):

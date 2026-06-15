@@ -10,17 +10,21 @@ from portal.transcription.constants import ProviderEnum
 
 logger = logging.getLogger(__name__)
 
+
 def pcm_to_wav(pcm_data: bytes, sample_rate: int = 16000) -> bytes:
     buf = io.BytesIO()
-    with wave.open(buf, 'wb') as wf:
+    with wave.open(buf, "wb") as wf:
         wf.setnchannels(1)
         wf.setsampwidth(2)
         wf.setframerate(sample_rate)
         wf.writeframes(pcm_data)
     return buf.getvalue()
 
+
 def get_api_key(event: Event, provider: ProviderEnum) -> str | None:
+    # Local import required to avoid circular dependency
     from portal.crypto import decrypt_val
+
     key_map = {
         ProviderEnum.OPENAI: event.encrypted_openai_api_key,
         ProviderEnum.DEEPGRAM: event.encrypted_deepgram_api_key,
@@ -30,12 +34,14 @@ def get_api_key(event: Event, provider: ProviderEnum) -> str | None:
     encrypted = key_map.get(provider)
     return decrypt_val(encrypted) if encrypted else None
 
+
 @dataclass
 class ProviderConfig:
     api_key: str | None
 
     def get_key(self) -> str | None:
         return self.api_key
+
 
 @dataclass
 class BoothTranscriptionState:
@@ -45,14 +51,33 @@ class BoothTranscriptionState:
     consecutive_drops: int = 0
     inference_latency_avg_ms: float = 0.0
 
+
 class TranscriptionProvider:
-    async def process_chunk(self, chunk: bytes, language_code: str, model_variant: str, config: ProviderConfig, booth_state: BoothTranscriptionState | None = None) -> str:
+    async def process_chunk(
+        self,
+        chunk: bytes,
+        language_code: str,
+        model_variant: str,
+        config: ProviderConfig,
+        booth_state: BoothTranscriptionState | None = None,
+    ) -> str:
         raise NotImplementedError
 
-    async def run_stream(self, process: asyncio.subprocess.Process, language_code: str, model_variant: str, config: ProviderConfig, broadcast_callback, booth_id: str, room_id: int | None = None) -> None:
+    async def run_stream(
+        self,
+        process: asyncio.subprocess.Process,
+        language_code: str,
+        model_variant: str,
+        config: ProviderConfig,
+        broadcast_callback,
+        booth_id: str,
+        room_id: int | None = None,
+    ) -> None:
+        # Local import required to avoid circular dependency
         from portal.transcription.aggregator import CaptionAggregator
+
         aggregator = CaptionAggregator(broadcast_callback, room_id=room_id)
-        chunk_size_bytes = 16000 * 2 * 3 # 3 seconds
+        chunk_size_bytes = 16000 * 2 * 3  # 3 seconds
         queue = asyncio.Queue(maxsize=2)
         booth_state = BoothTranscriptionState(booth_id=booth_id)
 
@@ -80,7 +105,9 @@ class TranscriptionProvider:
                         queue.get_nowait()
                         booth_state.chunks_dropped_total += 1
                         booth_state.consecutive_drops += 1
-                        logger.warning(f"[{booth_id}] Inference lagging: dropped oldest audio chunk. Total dropped: {booth_state.chunks_dropped_total}")
+                        logger.warning(
+                            f"[{booth_id}] Inference lagging: dropped oldest audio chunk. Total dropped: {booth_state.chunks_dropped_total}"
+                        )
                     except asyncio.QueueEmpty:
                         pass
 
@@ -113,7 +140,9 @@ class TranscriptionProvider:
 
                 t0 = time.time()
                 try:
-                    text = await self.process_chunk(chunk, language_code, model_variant, config, booth_state=booth_state)
+                    text = await self.process_chunk(
+                        chunk, language_code, model_variant, config, booth_state=booth_state
+                    )
                     consecutive_errors = 0
                     booth_state.consecutive_drops = 0
 
@@ -133,7 +162,9 @@ class TranscriptionProvider:
                     if booth_state.inference_latency_avg_ms == 0:
                         booth_state.inference_latency_avg_ms = latency
                     else:
-                        booth_state.inference_latency_avg_ms = 0.8 * booth_state.inference_latency_avg_ms + 0.2 * latency
+                        booth_state.inference_latency_avg_ms = (
+                            0.8 * booth_state.inference_latency_avg_ms + 0.2 * latency
+                        )
 
                     if latency > 3000:
                         logger.warning(f"[{booth_id}] Inference slow: {latency:.0f}ms")

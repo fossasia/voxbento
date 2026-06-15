@@ -1,8 +1,14 @@
+import asyncio
 import logging
+import re
 import time
 from dataclasses import dataclass
 
+from portal.database import save_transcript_segment
+from portal.translations.worker import TranslationWorker
+
 logger = logging.getLogger(__name__)
+
 
 @dataclass
 class CaptionState:
@@ -10,6 +16,7 @@ class CaptionState:
     current_utterance: str = ""
     utterance_start_time: float = 0.0
     current_word_count: int = 0
+
 
 class CaptionAggregator:
     def __init__(self, broadcast_callback, room_id: int | None = None):
@@ -40,11 +47,9 @@ class CaptionAggregator:
             await self.handle_final(booth_id, text)
             return
 
-        await self.broadcast_callback(booth_id, {
-            "type": "caption",
-            "status": "partial",
-            "text": state.current_utterance
-        })
+        await self.broadcast_callback(
+            booth_id, {"type": "caption", "status": "partial", "text": state.current_utterance}
+        )
 
     async def handle_chunk(self, booth_id: str, text: str):
         """Used by Local Whisper. Appends finalized chunks and splits on punctuation."""
@@ -63,12 +68,10 @@ class CaptionAggregator:
 
         state.current_word_count = len(state.current_utterance.split())
 
-        import re
-
         has_finalized = False
         while True:
             # Find the FIRST sentence boundary
-            match = re.search(r'^([^.?!]*[.?!]+)(?:\s+|$)', state.current_utterance)
+            match = re.search(r"^([^.?!]*[.?!]+)(?:\s+|$)", state.current_utterance)
             if not match:
                 break
 
@@ -76,11 +79,7 @@ class CaptionAggregator:
             split_idx = match.end()
 
             if sentence:
-                await self.broadcast_callback(booth_id, {
-                    "type": "caption",
-                    "status": "final",
-                    "text": sentence
-                })
+                await self.broadcast_callback(booth_id, {"type": "caption", "status": "final", "text": sentence})
                 has_finalized = True
 
             state.current_utterance = state.current_utterance[split_idx:].strip()
@@ -92,29 +91,21 @@ class CaptionAggregator:
             state.utterance_start_time = 0.0
 
         if state.current_utterance:
-            await self.broadcast_callback(booth_id, {
-                "type": "caption",
-                "status": "partial",
-                "text": state.current_utterance
-            })
+            await self.broadcast_callback(
+                booth_id, {"type": "caption", "status": "partial", "text": state.current_utterance}
+            )
         elif has_finalized:
             # Only send clear if we just finalized something and have nothing left,
             # ensuring the frontend's partial box is cleared out.
-            await self.broadcast_callback(booth_id, {
-                "type": "caption",
-                "status": "clear",
-                "text": ""
-            })
+            await self.broadcast_callback(booth_id, {"type": "caption", "status": "clear", "text": ""})
             if state.current_word_count >= 50 or (time.time() - state.utterance_start_time) >= 15.0:
                 logger.info(f"[{booth_id}] Forced chunk finalization triggered (words: {state.current_word_count})")
                 await self.handle_final(booth_id, state.current_utterance)
                 return
 
-            await self.broadcast_callback(booth_id, {
-                "type": "caption",
-                "status": "partial",
-                "text": state.current_utterance
-            })
+            await self.broadcast_callback(
+                booth_id, {"type": "caption", "status": "partial", "text": state.current_utterance}
+            )
 
     async def handle_final(self, booth_id: str, text: str):
         state = self._get_state(booth_id)
@@ -123,21 +114,13 @@ class CaptionAggregator:
         if not final_text:
             return
 
-        await self.broadcast_callback(booth_id, {
-            "type": "caption",
-            "status": "final",
-            "text": final_text
-        })
+        await self.broadcast_callback(booth_id, {"type": "caption", "status": "final", "text": final_text})
 
         if self.room_id is not None:
-            import asyncio
-
-            from portal.database import save_transcript_segment
 
             async def _save_and_translate():
                 segment_id = await save_transcript_segment(booth_id, final_text, self.room_id)
                 if segment_id is not None:
-                    from portal.translations.worker import TranslationWorker
                     worker = TranslationWorker(self.broadcast_callback)
                     await worker.handle_translation(self.room_id, segment_id, final_text, booth_id)
 
@@ -155,15 +138,11 @@ class CaptionAggregator:
             # If we have a pending partial, finalize it instead of losing it.
             await self.handle_final(booth_id, state.current_utterance)
         else:
-            await self.broadcast_callback(booth_id, {
-                "type": "caption",
-                "status": "clear",
-                "text": ""
-            })
+            await self.broadcast_callback(booth_id, {"type": "caption", "status": "clear", "text": ""})
 
     def get_metrics(self, booth_id: str) -> dict:
         state = self._get_state(booth_id)
         return {
             "current_word_count": state.current_word_count,
-            "open_duration": time.time() - state.utterance_start_time if state.utterance_start_time else 0.0
+            "open_duration": time.time() - state.utterance_start_time if state.utterance_start_time else 0.0,
         }

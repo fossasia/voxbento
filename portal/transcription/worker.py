@@ -2,6 +2,7 @@ import asyncio
 import logging
 from typing import Any, Dict
 
+from portal.config import settings
 from portal.transcription.providers.base import ProviderConfig
 from portal.transcription.providers.deepgram import DeepgramProvider
 from portal.transcription.providers.elevenlabs import ElevenLabsProvider
@@ -12,11 +13,11 @@ from portal.transcription.providers.openai import OpenAIProvider
 logger = logging.getLogger(__name__)
 
 PROVIDERS = {
-    'local': LocalProvider(),
-    'openai': OpenAIProvider(),
-    'deepgram': DeepgramProvider(),
-    'nvidia': NVIDIAProvider(),
-    'elevenlabs': ElevenLabsProvider(),
+    "local": LocalProvider(),
+    "openai": OpenAIProvider(),
+    "deepgram": DeepgramProvider(),
+    "nvidia": NVIDIAProvider(),
+    "elevenlabs": ElevenLabsProvider(),
 }
 
 # --- Worker State ---
@@ -26,31 +27,45 @@ MAX_TOTAL_WORKERS = 10
 active_workers: Dict[str, Dict[str, Any]] = {}
 active_processes: Dict[str, asyncio.subprocess.Process] = {}
 
-from portal.config import settings
 
-
-async def transcription_worker(event_slug: str, language_code: str, booth_id: str, broadcast_callback, provider_name: str, model_size: str, config: ProviderConfig, transcription_language: str | None = None, room_id: int | None = None):
+async def transcription_worker(
+    event_slug: str,
+    language_code: str,
+    booth_id: str,
+    broadcast_callback,
+    provider_name: str,
+    model_size: str,
+    config: ProviderConfig,
+    transcription_language: str | None = None,
+    room_id: int | None = None,
+):
     logger.info(f"Starting {provider_name} transcription worker for booth {booth_id}")
     rtsp_url = f"{settings.mediamtx_rtsp_base}/{event_slug}/{language_code}"
 
-    provider = PROVIDERS.get(provider_name, PROVIDERS['local'])
+    provider = PROVIDERS.get(provider_name, PROVIDERS["local"])
 
     sample_rate = "24000" if provider_name == "openai" else "16000"
 
     ffmpeg_cmd = [
         "ffmpeg",
-        "-rtsp_transport", "tcp",
-        "-i", rtsp_url,
-        "-vn", "-acodec", "pcm_s16le",
-        "-ar", sample_rate,
-        "-ac", "1",
-        "-f", "s16le", "-"
+        "-rtsp_transport",
+        "tcp",
+        "-i",
+        rtsp_url,
+        "-vn",
+        "-acodec",
+        "pcm_s16le",
+        "-ar",
+        sample_rate,
+        "-ac",
+        "1",
+        "-f",
+        "s16le",
+        "-",
     ]
 
     process = await asyncio.create_subprocess_exec(
-        *ffmpeg_cmd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE
+        *ffmpeg_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
     )
 
     async def log_stderr(stderr_stream, bid):
@@ -86,8 +101,10 @@ async def transcription_worker(event_slug: str, language_code: str, booth_id: st
             worker_data = active_workers.pop(booth_id, None)
 
         if worker_data:
-            if worker_data.get("provider") == 'local':
+            if worker_data.get("provider") == "local":
+                # Local import required to avoid circular dependency
                 from portal.transcription.providers.local import decrement_model_ref
+
                 decrement_model_ref(worker_data.get("model_size"))
 
             if "stderr_task" in worker_data and worker_data["stderr_task"]:
@@ -101,7 +118,18 @@ async def transcription_worker(event_slug: str, language_code: str, booth_id: st
                 pass
         logger.info(f"[{booth_id}] Transcription worker exited.")
 
-async def start_transcription_worker(event_slug: str, language_code: str, booth_id: str, broadcast_callback, provider: str, model_size: str, config: ProviderConfig, transcription_language: str | None = None, room_id: int | None = None):
+
+async def start_transcription_worker(
+    event_slug: str,
+    language_code: str,
+    booth_id: str,
+    broadcast_callback,
+    provider: str,
+    model_size: str,
+    config: ProviderConfig,
+    transcription_language: str | None = None,
+    room_id: int | None = None,
+):
     async with active_workers_lock:
         if booth_id in active_workers:
             logger.info(f"Transcription worker for {booth_id} is already running.")
@@ -110,18 +138,28 @@ async def start_transcription_worker(event_slug: str, language_code: str, booth_
         if len(active_workers) >= MAX_TOTAL_WORKERS:
             raise ValueError(f"System at maximum capacity ({MAX_TOTAL_WORKERS} concurrent transcription booths).")
 
-        if provider == 'local':
+        if provider == "local":
+            # Local import required to avoid circular dependency
             from portal.transcription.providers.local import increment_model_ref, start_eviction_loop
+
             increment_model_ref(model_size)
             start_eviction_loop()
 
-        task = asyncio.create_task(transcription_worker(event_slug, language_code, booth_id, broadcast_callback, provider, model_size, config, transcription_language, room_id))
-        active_workers[booth_id] = {
-            "task": task,
-            "provider": provider,
-            "model_size": model_size,
-            "stderr_task": None
-        }
+        task = asyncio.create_task(
+            transcription_worker(
+                event_slug,
+                language_code,
+                booth_id,
+                broadcast_callback,
+                provider,
+                model_size,
+                config,
+                transcription_language,
+                room_id,
+            )
+        )
+        active_workers[booth_id] = {"task": task, "provider": provider, "model_size": model_size, "stderr_task": None}
+
 
 async def stop_transcription_worker(booth_id: str):
     async with active_workers_lock:
@@ -135,8 +173,10 @@ async def stop_transcription_worker(booth_id: str):
             pass
 
     if worker_data:
-        if worker_data.get("provider") == 'local':
+        if worker_data.get("provider") == "local":
+            # Local import required to avoid circular dependency
             from portal.transcription.providers.local import decrement_model_ref
+
             decrement_model_ref(worker_data.get("model_size"))
 
         if "stderr_task" in worker_data and worker_data["stderr_task"]:

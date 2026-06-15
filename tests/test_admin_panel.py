@@ -12,17 +12,29 @@ from __future__ import annotations
 
 import os
 
-os.environ['BOOTH_ACCESS_TOKEN'] = ''
-os.environ['ADMIN_PASSWORD'] = 'test-admin-pass'
+os.environ["BOOTH_ACCESS_TOKEN"] = ""
+os.environ["ADMIN_PASSWORD"] = "test-admin-pass"
 
 from datetime import datetime, timedelta, timezone
 
 import pytest
+from httpx import ASGITransport, AsyncClient
 
+from fastapi_app import app
 from portal.auth import create_admin_token, decode_token
 from portal.config import settings
+from portal.database import (
+    configure,
+    create_booth,
+    create_event,
+    create_invite_token,
+    create_room,
+    dispose,
+    get_session,
+    init_db,
+)
 
-settings.admin_password = 'test-admin-pass'
+settings.admin_password = "test-admin-pass"
 
 
 # ---------------------------------------------------------------------------
@@ -33,8 +45,7 @@ settings.admin_password = 'test-admin-pass'
 @pytest.fixture(autouse=True)
 async def setup_db():
     """Set up an in-memory database for the FastAPI app."""
-    from portal.database import configure, dispose, init_db
-    configure('sqlite+aiosqlite://')
+    configure("sqlite+aiosqlite://")
     await init_db()
     yield
     await dispose()
@@ -44,19 +55,21 @@ async def setup_db():
 def admin_cookie():
     """Return a dict with the admin_token cookie for authenticated requests."""
     token = create_admin_token()
-    return {'admin_token': token}
+    return {"admin_token": token}
 
 
 @pytest.fixture
 async def seed_event():
     """Seed an event, room, and booth."""
-    from portal.database import create_booth, create_event, create_room, get_session
     async with get_session() as s:
-        event = await create_event(s, slug='testcon', display_name='TestCon 2026')
-        room = await create_room(s, event_id=event.id, display_name='Main Hall')
+        event = await create_event(s, slug="testcon", display_name="TestCon 2026")
+        room = await create_room(s, event_id=event.id, display_name="Main Hall")
         booth = await create_booth(
-            s, event_id=event.id, room_id=room.id,
-            language_code='en', language_name='English',
+            s,
+            event_id=event.id,
+            room_id=room.id,
+            language_code="en",
+            language_name="English",
         )
     return event, room, booth
 
@@ -67,10 +80,8 @@ async def seed_event():
 
 
 def _client():
-    from httpx import ASGITransport, AsyncClient
 
-    from fastapi_app import app
-    return AsyncClient(transport=ASGITransport(app=app), base_url='http://test')
+    return AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
 
 
 # ---------------------------------------------------------------------------
@@ -82,39 +93,39 @@ class TestAdminLogin:
     @pytest.mark.anyio
     async def test_login_page_renders(self):
         async with _client() as c:
-            resp = await c.get('/admin/login')
+            resp = await c.get("/admin/login")
         assert resp.status_code == 200
-        assert b'Admin' in resp.content
+        assert b"Admin" in resp.content
 
     @pytest.mark.anyio
     async def test_login_with_correct_password(self):
         async with _client() as c:
             resp = await c.post(
-                '/admin/login',
-                data={'password': 'test-admin-pass'},
+                "/admin/login",
+                data={"password": "test-admin-pass"},
                 follow_redirects=False,
             )
         assert resp.status_code == 303
-        assert resp.headers['location'] == '/admin/'
-        assert 'admin_token' in resp.headers.get('set-cookie', '')
+        assert resp.headers["location"] == "/admin/"
+        assert "admin_token" in resp.headers.get("set-cookie", "")
 
     @pytest.mark.anyio
     async def test_login_with_wrong_password(self):
         async with _client() as c:
             resp = await c.post(
-                '/admin/login',
-                data={'password': 'wrong'},
+                "/admin/login",
+                data={"password": "wrong"},
                 follow_redirects=False,
             )
         assert resp.status_code == 403
-        assert b'Invalid password' in resp.content
+        assert b"Invalid password" in resp.content
 
     @pytest.mark.anyio
     async def test_logout_clears_cookie(self):
         async with _client() as c:
-            resp = await c.get('/admin/logout', follow_redirects=False)
+            resp = await c.get("/admin/logout", follow_redirects=False)
         assert resp.status_code == 303
-        assert resp.headers['location'] == '/admin/login'
+        assert resp.headers["location"] == "/admin/login"
 
 
 # ---------------------------------------------------------------------------
@@ -126,25 +137,25 @@ class TestRequireAdmin:
     @pytest.mark.anyio
     async def test_dashboard_requires_auth(self):
         async with _client() as c:
-            resp = await c.get('/admin/', follow_redirects=False)
+            resp = await c.get("/admin/", follow_redirects=False)
         assert resp.status_code == 403
 
     @pytest.mark.anyio
     async def test_event_list_requires_auth(self):
         async with _client() as c:
-            resp = await c.get('/admin/events/', follow_redirects=False)
+            resp = await c.get("/admin/events/", follow_redirects=False)
         assert resp.status_code == 403
 
     @pytest.mark.anyio
     async def test_dashboard_with_valid_cookie(self, admin_cookie):
         async with _client() as c:
-            resp = await c.get('/admin/', cookies=admin_cookie)
+            resp = await c.get("/admin/", cookies=admin_cookie)
         assert resp.status_code == 200
 
     @pytest.mark.anyio
     async def test_invalid_cookie_rejected(self):
         async with _client() as c:
-            resp = await c.get('/admin/', cookies={'admin_token': 'garbage'})
+            resp = await c.get("/admin/", cookies={"admin_token": "garbage"})
         assert resp.status_code == 403
 
 
@@ -157,23 +168,23 @@ class TestHomePage:
     @pytest.mark.anyio
     async def test_home_renders(self):
         async with _client() as c:
-            resp = await c.get('/')
+            resp = await c.get("/")
         assert resp.status_code == 200
-        assert b'VoxBento' in resp.content
+        assert b"VoxBento" in resp.content
 
     @pytest.mark.anyio
     async def test_home_shows_events(self, seed_event):
         async with _client() as c:
-            resp = await c.get('/')
+            resp = await c.get("/")
         assert resp.status_code == 200
-        assert b'TestCon 2026' in resp.content
+        assert b"TestCon 2026" in resp.content
 
     @pytest.mark.anyio
     async def test_home_shows_listener_links(self, seed_event):
         async with _client() as c:
-            resp = await c.get('/')
+            resp = await c.get("/")
         assert resp.status_code == 200
-        assert b'/listener/testcon' in resp.content
+        assert b"/listener/testcon" in resp.content
 
 
 # ---------------------------------------------------------------------------
@@ -185,17 +196,17 @@ class TestDashboard:
     @pytest.mark.anyio
     async def test_dashboard_empty(self, admin_cookie):
         async with _client() as c:
-            resp = await c.get('/admin/', cookies=admin_cookie)
+            resp = await c.get("/admin/", cookies=admin_cookie)
         assert resp.status_code == 200
-        assert b'No events yet' in resp.content
+        assert b"No events yet" in resp.content
 
     @pytest.mark.anyio
     async def test_dashboard_shows_events(self, admin_cookie, seed_event):
         async with _client() as c:
-            resp = await c.get('/admin/', cookies=admin_cookie)
+            resp = await c.get("/admin/", cookies=admin_cookie)
         assert resp.status_code == 200
-        assert b'TestCon 2026' in resp.content
-        assert b'English' in resp.content
+        assert b"TestCon 2026" in resp.content
+        assert b"English" in resp.content
 
 
 # ---------------------------------------------------------------------------
@@ -207,60 +218,60 @@ class TestEventCRUD:
     @pytest.mark.anyio
     async def test_event_list(self, admin_cookie, seed_event):
         async with _client() as c:
-            resp = await c.get('/admin/events/', cookies=admin_cookie)
+            resp = await c.get("/admin/events/", cookies=admin_cookie)
         assert resp.status_code == 200
-        assert b'testcon' in resp.content
+        assert b"testcon" in resp.content
 
     @pytest.mark.anyio
     async def test_create_event(self, admin_cookie):
         async with _client() as c:
             resp = await c.post(
-                '/admin/events/',
-                data={'slug': 'newcon', 'display_name': 'NewCon 2026'},
+                "/admin/events/",
+                data={"slug": "newcon", "display_name": "NewCon 2026"},
                 cookies=admin_cookie,
                 follow_redirects=False,
             )
         assert resp.status_code == 303
         # Verify it was created
         async with _client() as c:
-            resp = await c.get('/admin/events/', cookies=admin_cookie)
-        assert b'NewCon 2026' in resp.content
+            resp = await c.get("/admin/events/", cookies=admin_cookie)
+        assert b"NewCon 2026" in resp.content
 
     @pytest.mark.anyio
     async def test_event_detail(self, admin_cookie, seed_event):
         event, _, _ = seed_event
         async with _client() as c:
-            resp = await c.get(f'/admin/events/{event.id}/', cookies=admin_cookie)
+            resp = await c.get(f"/admin/events/{event.id}/", cookies=admin_cookie)
         assert resp.status_code == 200
-        assert b'TestCon 2026' in resp.content
-        assert b'Main Hall' in resp.content
+        assert b"TestCon 2026" in resp.content
+        assert b"Main Hall" in resp.content
 
     @pytest.mark.anyio
     async def test_event_detail_shows_booth_links(self, admin_cookie, seed_event):
         event, _, _ = seed_event
         async with _client() as c:
-            resp = await c.get(f'/admin/events/{event.id}/', cookies=admin_cookie)
-        assert b'/interpreter/testcon/en' in resp.content
+            resp = await c.get(f"/admin/events/{event.id}/", cookies=admin_cookie)
+        assert b"/interpreter/testcon/en" in resp.content
 
     @pytest.mark.anyio
     async def test_delete_event(self, admin_cookie, seed_event):
         event, _, _ = seed_event
         async with _client() as c:
             resp = await c.post(
-                f'/admin/events/{event.id}/delete',
+                f"/admin/events/{event.id}/delete",
                 cookies=admin_cookie,
                 follow_redirects=False,
             )
         assert resp.status_code == 303
         # Verify deleted
         async with _client() as c:
-            resp = await c.get('/admin/events/', cookies=admin_cookie)
-        assert b'testcon' not in resp.content
+            resp = await c.get("/admin/events/", cookies=admin_cookie)
+        assert b"testcon" not in resp.content
 
     @pytest.mark.anyio
     async def test_event_not_found(self, admin_cookie):
         async with _client() as c:
-            resp = await c.get('/admin/events/99999/', cookies=admin_cookie)
+            resp = await c.get("/admin/events/99999/", cookies=admin_cookie)
         assert resp.status_code == 404
 
 
@@ -274,54 +285,54 @@ class TestRoomCRUD:
     async def test_room_list(self, admin_cookie, seed_event):
         event, _, _ = seed_event
         async with _client() as c:
-            resp = await c.get(f'/admin/events/{event.id}/rooms/', cookies=admin_cookie)
+            resp = await c.get(f"/admin/events/{event.id}/rooms/", cookies=admin_cookie)
         assert resp.status_code == 200
-        assert b'Main Hall' in resp.content
+        assert b"Main Hall" in resp.content
 
     @pytest.mark.anyio
     async def test_create_room(self, admin_cookie, seed_event):
         event, _, _ = seed_event
         async with _client() as c:
             resp = await c.post(
-                f'/admin/events/{event.id}/rooms/',
-                data={'display_name': 'Track B'},
+                f"/admin/events/{event.id}/rooms/",
+                data={"display_name": "Track B"},
                 cookies=admin_cookie,
                 follow_redirects=False,
             )
         assert resp.status_code == 303
         async with _client() as c:
-            resp = await c.get(f'/admin/events/{event.id}/rooms/', cookies=admin_cookie)
-        assert b'Track B' in resp.content
+            resp = await c.get(f"/admin/events/{event.id}/rooms/", cookies=admin_cookie)
+        assert b"Track B" in resp.content
 
     @pytest.mark.anyio
     async def test_room_detail(self, admin_cookie, seed_event):
         event, room, _ = seed_event
         async with _client() as c:
             resp = await c.get(
-                f'/admin/events/{event.id}/rooms/{room.id}/',
+                f"/admin/events/{event.id}/rooms/{room.id}/",
                 cookies=admin_cookie,
             )
         assert resp.status_code == 200
-        assert b'Main Hall' in resp.content
-        assert b'English' in resp.content
+        assert b"Main Hall" in resp.content
+        assert b"English" in resp.content
 
     @pytest.mark.anyio
     async def test_room_detail_shows_interpreter_urls(self, admin_cookie, seed_event):
         event, room, _ = seed_event
         async with _client() as c:
             resp = await c.get(
-                f'/admin/events/{event.id}/rooms/{room.id}/',
+                f"/admin/events/{event.id}/rooms/{room.id}/",
                 cookies=admin_cookie,
             )
-        assert b'/interpreter/testcon/en' in resp.content
-        assert b'/listener/testcon' in resp.content
+        assert b"/interpreter/testcon/en" in resp.content
+        assert b"/listener/testcon" in resp.content
 
     @pytest.mark.anyio
     async def test_delete_room(self, admin_cookie, seed_event):
         event, room, _ = seed_event
         async with _client() as c:
             resp = await c.post(
-                f'/admin/events/{event.id}/rooms/{room.id}/delete',
+                f"/admin/events/{event.id}/rooms/{room.id}/delete",
                 cookies=admin_cookie,
                 follow_redirects=False,
             )
@@ -339,83 +350,82 @@ class TestBoothCRUD:
         event, room, _ = seed_event
         async with _client() as c:
             resp = await c.get(
-                f'/admin/events/{event.id}/rooms/{room.id}/booths/',
+                f"/admin/events/{event.id}/rooms/{room.id}/booths/",
                 cookies=admin_cookie,
             )
         assert resp.status_code == 200
-        assert b'English' in resp.content
+        assert b"English" in resp.content
 
     @pytest.mark.anyio
     async def test_create_booth(self, admin_cookie, seed_event):
         event, room, _ = seed_event
         async with _client() as c:
             resp = await c.post(
-                f'/admin/events/{event.id}/rooms/{room.id}/booths/',
-                data={'language_code': 'fr', 'language_name': 'French'},
+                f"/admin/events/{event.id}/rooms/{room.id}/booths/",
+                data={"language_code": "fr", "language_name": "French"},
                 cookies=admin_cookie,
                 follow_redirects=False,
             )
         assert resp.status_code == 303
         async with _client() as c:
             resp = await c.get(
-                f'/admin/events/{event.id}/rooms/{room.id}/booths/',
+                f"/admin/events/{event.id}/rooms/{room.id}/booths/",
                 cookies=admin_cookie,
             )
-        assert b'French' in resp.content
+        assert b"French" in resp.content
 
     @pytest.mark.anyio
     async def test_booth_detail(self, admin_cookie, seed_event):
         event, room, booth = seed_event
         async with _client() as c:
             resp = await c.get(
-                f'/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/',
+                f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/",
                 cookies=admin_cookie,
             )
         assert resp.status_code == 200
-        assert b'English' in resp.content
-        assert b'whep' in resp.content.lower()
+        assert b"English" in resp.content
+        assert b"whep" in resp.content.lower()
 
     @pytest.mark.anyio
     async def test_booth_detail_shows_whep_url(self, admin_cookie, seed_event):
         event, room, booth = seed_event
         async with _client() as c:
             resp = await c.get(
-                f'/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/',
+                f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/",
                 cookies=admin_cookie,
             )
-        assert b'testcon/en/whep' in resp.content
+        assert b"testcon/en/whep" in resp.content
 
     @pytest.mark.anyio
     async def test_booth_detail_shows_mediamtx_path(self, admin_cookie, seed_event):
         event, room, booth = seed_event
         async with _client() as c:
             resp = await c.get(
-                f'/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/',
+                f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/",
                 cookies=admin_cookie,
             )
-        assert b'testcon/en' in resp.content
+        assert b"testcon/en" in resp.content
 
     @pytest.mark.anyio
     async def test_booth_detail_shows_invite_tokens(self, admin_cookie, seed_event):
         event, room, booth = seed_event
-        from portal.database import create_invite_token, get_session
         async with get_session() as s:
-            await create_invite_token(s, booth_id=booth.id, role='interpreter', label='Alice')
+            await create_invite_token(s, booth_id=booth.id, role="interpreter", label="Alice")
 
         async with _client() as c:
             resp = await c.get(
-                f'/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/',
+                f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/",
                 cookies=admin_cookie,
             )
-        assert b'Alice' in resp.content
-        assert b'interpreter' in resp.content.lower()
+        assert b"Alice" in resp.content
+        assert b"interpreter" in resp.content.lower()
 
     @pytest.mark.anyio
     async def test_delete_booth(self, admin_cookie, seed_event):
         event, room, booth = seed_event
         async with _client() as c:
             resp = await c.post(
-                f'/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/delete',
+                f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/delete",
                 cookies=admin_cookie,
                 follow_redirects=False,
             )
@@ -426,7 +436,7 @@ class TestBoothCRUD:
         event, room, _ = seed_event
         async with _client() as c:
             resp = await c.get(
-                f'/admin/events/{event.id}/rooms/{room.id}/booths/99999/',
+                f"/admin/events/{event.id}/rooms/{room.id}/booths/99999/",
                 cookies=admin_cookie,
             )
         assert resp.status_code == 404
@@ -442,9 +452,9 @@ class TestAdminToken:
     async def test_create_admin_token_has_admin_claim(self, setup_db):
         token = create_admin_token()
         payload = decode_token(token)
-        assert payload['admin'] is True
-        assert 'exp' in payload
-        assert 'iat' in payload
+        assert payload["admin"] is True
+        assert "exp" in payload
+        assert "iat" in payload
 
     @pytest.mark.anyio
     async def test_admin_token_is_valid_jwt(self, setup_db):

@@ -1,11 +1,14 @@
 """Integration tests simulating massive concurrency, API key isolation, and race condition prevention."""
+
 from __future__ import annotations
 
 import asyncio
 import os
 
-os.environ['BOOTH_ACCESS_TOKEN'] = ''
-os.environ['API_KEY_ENCRYPTION_KEY'] = 'test-key-encryption-key-for-transcription'
+import anyio
+
+os.environ["BOOTH_ACCESS_TOKEN"] = ""
+os.environ["API_KEY_ENCRYPTION_KEY"] = "test-key-encryption-key-for-transcription"
 
 from unittest.mock import AsyncMock, patch
 
@@ -22,13 +25,14 @@ from portal.transcription.worker import active_processes, active_workers
 # Bypass token requirements for WS/REST endpoints where applicable,
 # and use an admin token to satisfy _require_access.
 
+
 @pytest.fixture(autouse=True)
 def setup_db():
-    configure('sqlite+aiosqlite://')
-    import anyio
+    configure("sqlite+aiosqlite://")
     anyio.run(init_db)
     yield
     anyio.run(dispose)
+
 
 class MockProvider:
     def __init__(self, name):
@@ -38,35 +42,37 @@ class MockProvider:
     async def process_chunk(self, chunk, language_code, model_variant, config):
         pass
 
-    async def run_stream(self, process, language_code, model_variant, config, broadcast_callback, booth_id, room_id=None):
+    async def run_stream(
+        self, process, language_code, model_variant, config, broadcast_callback, booth_id, room_id=None
+    ):
         # Log the config key to assert cross-contamination did not occur
-        self.received_configs.append({
-            "booth_id": booth_id,
-            "api_key": config.get_key()
-        })
+        self.received_configs.append({"booth_id": booth_id, "api_key": config.get_key()})
         # Simulate a long-lived streaming connection to keep the worker active
         try:
             await asyncio.sleep(2)
         except asyncio.CancelledError:
             pass
 
+
 mock_providers = {
-    'local': MockProvider('local'),
-    'openai': MockProvider('openai'),
-    'deepgram': MockProvider('deepgram'),
-    'nvidia': MockProvider('nvidia'),
+    "local": MockProvider("local"),
+    "openai": MockProvider("openai"),
+    "deepgram": MockProvider("deepgram"),
+    "nvidia": MockProvider("nvidia"),
 }
+
 
 @pytest.fixture(autouse=True)
 def patch_transcription_dependencies():
-    with patch('portal.transcription.worker.PROVIDERS', mock_providers):
+    with patch("portal.transcription.worker.PROVIDERS", mock_providers):
         # Mock ffmpeg subprocess creation
         mock_process = AsyncMock()
         mock_process.returncode = None
         mock_process.stderr.readline = AsyncMock(side_effect=[b"ffmpeg logs", b""])
 
-        with patch('asyncio.create_subprocess_exec', return_value=mock_process):
+        with patch("asyncio.create_subprocess_exec", return_value=mock_process):
             yield
+
 
 async def seed_data():
     async with get_session() as session:
@@ -97,38 +103,54 @@ async def seed_data():
             session.add(r)
             await session.flush()
             b = DBBooth(
-                event_id=e1.id, language_name=f"Lang {i}", language_code=lang_code, room_id=r.id,
-                transcription_enabled=True, transcription_provider="openai", transcription_model="gpt-4o"
+                event_id=e1.id,
+                language_name=f"Lang {i}",
+                language_code=lang_code,
+                room_id=r.id,
+                transcription_enabled=True,
+                transcription_provider="openai",
+                transcription_model="gpt-4o",
             )
             session.add(b)
             booths.append((e1.slug, b.language_code, f"{e1.slug}-{b.language_code}", "openai"))
 
         # Event 2: 6 NVIDIA booths
         for i, lang_code in enumerate(nvidia_langs):
-            r = Room(event_id=e2.id, display_name=f"Room {i+20}")
+            r = Room(event_id=e2.id, display_name=f"Room {i + 20}")
             session.add(r)
             await session.flush()
             b = DBBooth(
-                event_id=e2.id, language_name=f"Lang {i}", language_code=lang_code, room_id=r.id,
-                transcription_enabled=True, transcription_provider="nvidia", transcription_model="parakeet-rnnt"
+                event_id=e2.id,
+                language_name=f"Lang {i}",
+                language_code=lang_code,
+                room_id=r.id,
+                transcription_enabled=True,
+                transcription_provider="nvidia",
+                transcription_model="parakeet-rnnt",
             )
             session.add(b)
             booths.append((e2.slug, b.language_code, f"{e2.slug}-{b.language_code}", "nvidia"))
 
         # Event 3: 4 Local booths
         for i, lang_code in enumerate(local_langs):
-            r = Room(event_id=e3.id, display_name=f"Room {i+40}")
+            r = Room(event_id=e3.id, display_name=f"Room {i + 40}")
             session.add(r)
             await session.flush()
             b = DBBooth(
-                event_id=e3.id, language_name=f"Lang {i}", language_code=lang_code, room_id=r.id,
-                transcription_enabled=True, transcription_provider="local", transcription_model="tiny"
+                event_id=e3.id,
+                language_name=f"Lang {i}",
+                language_code=lang_code,
+                room_id=r.id,
+                transcription_enabled=True,
+                transcription_provider="local",
+                transcription_model="tiny",
             )
             session.add(b)
             booths.append((e3.slug, b.language_code, f"{e3.slug}-{b.language_code}", "local"))
 
         await session.flush()
         return booths
+
 
 @pytest.mark.anyio
 async def test_high_concurrency_isolation_and_capacity_limits():
@@ -147,8 +169,8 @@ async def test_high_concurrency_isolation_and_capacity_limits():
     for p in mock_providers.values():
         p.received_configs.clear()
 
-    tok = create_user_token(user_id=1, email='admin@test.com', is_admin=True)
-    cookies = {'user_token': tok}
+    tok = create_user_token(user_id=1, email="admin@test.com", is_admin=True)
+    cookies = {"user_token": tok}
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         # Launch all 16 POST requests simultaneously
@@ -174,8 +196,8 @@ async def test_high_concurrency_isolation_and_capacity_limits():
     assert len(active_processes) == 10
 
     # 2. Verify API Key Cross-Contamination did not occur
-    openai_provider = mock_providers['openai']
-    nvidia_provider = mock_providers['nvidia']
+    openai_provider = mock_providers["openai"]
+    nvidia_provider = mock_providers["nvidia"]
 
     for config in openai_provider.received_configs:
         assert config["booth_id"].startswith("event-alpha")

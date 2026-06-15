@@ -14,6 +14,7 @@ def reset_fernet():
     yield
     portal.crypto._fernet = None
 
+
 def test_single_key_encryption():
     with patch("portal.config.settings.api_key_encryption_key", "my-super-secret-encryption-key-32-chars!"):
         original = "sk-test-123"
@@ -23,6 +24,7 @@ def test_single_key_encryption():
 
         decrypted = decrypt_val(encrypted)
         assert decrypted == original
+
 
 def test_multi_key_rotation():
     key1 = "old-encryption-key-that-is-at-least-32-chars"

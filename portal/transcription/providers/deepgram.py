@@ -6,13 +6,32 @@ from portal.transcription.providers.base import BoothTranscriptionState, Provide
 
 logger = logging.getLogger(__name__)
 
+
 class DeepgramProvider(TranscriptionProvider):
-    async def process_chunk(self, chunk: bytes, language_code: str, model_variant: str, config: ProviderConfig, booth_state: BoothTranscriptionState | None = None) -> str:
+    async def process_chunk(
+        self,
+        chunk: bytes,
+        language_code: str,
+        model_variant: str,
+        config: ProviderConfig,
+        booth_state: BoothTranscriptionState | None = None,
+    ) -> str:
         return ""
 
-    async def run_stream(self, process: asyncio.subprocess.Process, language_code: str, model_variant: str, config: ProviderConfig, broadcast_callback, booth_id: str, room_id: int | None = None) -> None:
+    async def run_stream(
+        self,
+        process: asyncio.subprocess.Process,
+        language_code: str,
+        model_variant: str,
+        config: ProviderConfig,
+        broadcast_callback,
+        booth_id: str,
+        room_id: int | None = None,
+    ) -> None:
+        # Local import required to avoid circular dependency
         import websockets
 
+        # Local import required to avoid circular dependency
         from portal.transcription.aggregator import CaptionAggregator
 
         aggregator = CaptionAggregator(broadcast_callback, room_id=room_id)
@@ -73,8 +92,7 @@ class DeepgramProvider(TranscriptionProvider):
                     receiver_task = asyncio.create_task(receiver())
 
                     done, pending = await asyncio.wait(
-                        [sender_task, receiver_task],
-                        return_when=asyncio.FIRST_COMPLETED
+                        [sender_task, receiver_task], return_when=asyncio.FIRST_COMPLETED
                     )
 
                     if sender_task in done and sender_task.result() == "EOF":
@@ -85,7 +103,7 @@ class DeepgramProvider(TranscriptionProvider):
                             pass
                         for task in pending:
                             task.cancel()
-                        return # Clean exit
+                        return  # Clean exit
 
                     for task in pending:
                         task.cancel()

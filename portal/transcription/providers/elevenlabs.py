@@ -15,8 +15,16 @@ from portal.transcription.providers.openai import get_http_client
 
 logger = logging.getLogger(__name__)
 
+
 class ElevenLabsProvider(TranscriptionProvider):
-    async def process_chunk(self, chunk: bytes, language_code: str, model_variant: str, config: ProviderConfig, booth_state: BoothTranscriptionState | None = None) -> str:
+    async def process_chunk(
+        self,
+        chunk: bytes,
+        language_code: str,
+        model_variant: str,
+        config: ProviderConfig,
+        booth_state: BoothTranscriptionState | None = None,
+    ) -> str:
         api_key = config.get_key()
         if not api_key:
             logger.error("ElevenLabs API key missing")
@@ -27,20 +35,19 @@ class ElevenLabsProvider(TranscriptionProvider):
         files = {
             "file": ("audio.wav", wav_data, "audio/wav"),
         }
-        data = {
-            "model_id": model_variant,
-            "language_code": language_code
-        }
+        data = {"model_id": model_variant, "language_code": language_code}
 
         client = get_http_client()
         try:
             async for attempt in AsyncRetrying(
                 wait=wait_exponential(multiplier=1, min=2, max=10),
                 stop=stop_after_attempt(3),
-                retry=retry_if_exception_type((httpx.ReadTimeout, httpx.ConnectError, httpx.HTTPStatusError))
+                retry=retry_if_exception_type((httpx.ReadTimeout, httpx.ConnectError, httpx.HTTPStatusError)),
             ):
                 with attempt:
-                    resp = await client.post("https://api.elevenlabs.io/v1/speech-to-text", headers=headers, files=files, data=data)
+                    resp = await client.post(
+                        "https://api.elevenlabs.io/v1/speech-to-text", headers=headers, files=files, data=data
+                    )
                     if resp.status_code in (429, 502, 503, 504):
                         resp.raise_for_status()
 
@@ -53,9 +60,20 @@ class ElevenLabsProvider(TranscriptionProvider):
             raise e
         return ""
 
-    async def run_stream(self, process: asyncio.subprocess.Process, language_code: str, model_variant: str, config: ProviderConfig, broadcast_callback, booth_id: str, room_id: int | None = None) -> None:
+    async def run_stream(
+        self,
+        process: asyncio.subprocess.Process,
+        language_code: str,
+        model_variant: str,
+        config: ProviderConfig,
+        broadcast_callback,
+        booth_id: str,
+        room_id: int | None = None,
+    ) -> None:
+        # Local import required to avoid circular dependency
         import websockets
 
+        # Local import required to avoid circular dependency
         from portal.transcription.aggregator import CaptionAggregator
 
         aggregator = CaptionAggregator(broadcast_callback, room_id=room_id)
@@ -74,9 +92,12 @@ class ElevenLabsProvider(TranscriptionProvider):
         consecutive_errors = 0
         while process.returncode is None:
             try:
+                # Local import required to avoid circular dependency
                 import base64
 
+                # Local import required to avoid circular dependency
                 import websockets
+
                 async with websockets.connect(url, additional_headers=headers) as ws:
                     consecutive_errors = 0
 
@@ -100,9 +121,9 @@ class ElevenLabsProvider(TranscriptionProvider):
                                     return "EOF"
                                 payload = {
                                     "message_type": "input_audio_chunk",
-                                    "audio_base_64": base64.b64encode(chunk).decode('utf-8'),
+                                    "audio_base_64": base64.b64encode(chunk).decode("utf-8"),
                                     "commit": False,
-                                    "sample_rate": 16000
+                                    "sample_rate": 16000,
                                 }
                                 await ws.send(json.dumps(payload))
                         except Exception as e:
@@ -114,7 +135,10 @@ class ElevenLabsProvider(TranscriptionProvider):
                             async for msg in ws:
                                 data = json.loads(msg)
                                 message_type = data.get("message_type")
-                                if message_type == "committed_transcript" or message_type == "committed_transcript_with_timestamps":
+                                if (
+                                    message_type == "committed_transcript"
+                                    or message_type == "committed_transcript_with_timestamps"
+                                ):
                                     text = data.get("text", "").strip()
                                     if text:
                                         await aggregator.handle_final(booth_id, text)
@@ -133,7 +157,9 @@ class ElevenLabsProvider(TranscriptionProvider):
                     sender_task = asyncio.create_task(sender())
                     receiver_task = asyncio.create_task(receiver())
 
-                    done, pending = await asyncio.wait([sender_task, receiver_task], return_when=asyncio.FIRST_COMPLETED)
+                    done, pending = await asyncio.wait(
+                        [sender_task, receiver_task], return_when=asyncio.FIRST_COMPLETED
+                    )
 
                     for task in pending:
                         task.cancel()

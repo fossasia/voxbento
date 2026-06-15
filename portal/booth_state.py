@@ -17,10 +17,10 @@ from portal.booth_identity import (
 )
 
 ParticipantRole = Literal[
-    'super_admin',
-    'event_owner',
-    'room_coordinator',
-    'interpreter',
+    "super_admin",
+    "event_owner",
+    "room_coordinator",
+    "interpreter",
 ]
 
 
@@ -58,16 +58,16 @@ class Booth:
     language_code: str
     language: str
     channel_id: str
-    instance: BoothInstance = 'primary'
-    mediamtx_path: str = ''
+    instance: BoothInstance = "primary"
+    mediamtx_path: str = ""
     room_id: int | None = None
     active_interpreter_id: str | None = None
-    handoff_state: str = 'idle'
+    handoff_state: str = "idle"
     handoff_initiator_id: str | None = None
     broadcast_unlocked: bool = False
     participants: dict[str, Participant] = field(default_factory=dict)
     chat_messages: list[ChatMessage] = field(default_factory=list)
-    ingest_status: str = 'disconnected'
+    ingest_status: str = "disconnected"
 
     def __post_init__(self) -> None:
         if self.event_slug and self.language_code:
@@ -78,27 +78,27 @@ class Booth:
 
     def as_public_dict(self) -> dict:
         return {
-            'booth_id': self.booth_id,
-            'event_slug': self.event_slug,
-            'language_code': self.language_code,
-            'instance': self.instance,
-            'mediamtx_path': self.mediamtx_path,
-            'room_id': self.room_id,
-            'language': self.language,
-            'channel_id': self.channel_id,
-            'active_interpreter_id': self.active_interpreter_id,
-            'handoff_state': self.handoff_state,
-            'handoff_initiator_id': self.handoff_initiator_id,
-            'broadcast_unlocked': self.broadcast_unlocked,
-            'ingest_status': self.ingest_status,
-            'participants': [asdict(p) for p in self.participants.values()],
-            'chat_messages': [asdict(m) for m in self.chat_messages[-100:]],
+            "booth_id": self.booth_id,
+            "event_slug": self.event_slug,
+            "language_code": self.language_code,
+            "instance": self.instance,
+            "mediamtx_path": self.mediamtx_path,
+            "room_id": self.room_id,
+            "language": self.language,
+            "channel_id": self.channel_id,
+            "active_interpreter_id": self.active_interpreter_id,
+            "handoff_state": self.handoff_state,
+            "handoff_initiator_id": self.handoff_initiator_id,
+            "broadcast_unlocked": self.broadcast_unlocked,
+            "ingest_status": self.ingest_status,
+            "participants": [asdict(p) for p in self.participants.values()],
+            "chat_messages": [asdict(m) for m in self.chat_messages[-100:]],
         }
 
 
 def _pick_next_interpreter(booth: Booth) -> str | None:
     for p in booth.participants.values():
-        if p.role in ('interpreter', 'room_coordinator', 'event_owner', 'super_admin'):
+        if p.role in ("interpreter", "room_coordinator", "event_owner", "super_admin"):
             return p.participant_id
     return None
 
@@ -132,8 +132,8 @@ class BoothRegistry:
             try:
                 event_slug, language_code = parse_booth_id(booth_id)
             except ValueError:
-                event_slug = ''
-                language_code = ''
+                event_slug = ""
+                language_code = ""
             booth = Booth(
                 booth_id=booth_id,
                 event_slug=event_slug,
@@ -150,8 +150,8 @@ class BoothRegistry:
         event_slug: str,
         language_code: str,
         language: str,
-        channel_id: str = '',
-        instance: BoothInstance = 'primary',
+        channel_id: str = "",
+        instance: BoothInstance = "primary",
         room_id: int | None = None,
     ) -> dict:
         """Create a booth using validated identity coordinates.
@@ -213,13 +213,16 @@ class BoothRegistry:
             booth = self._get_or_create_booth(booth_id, language, channel_id, room_id=room_id)
             participant = Participant(
                 participant_id=participant_id or uuid4().hex,
-                display_name=display_name.strip() or 'Interpreter',
+                display_name=display_name.strip() or "Interpreter",
                 role=role,
                 language=language.strip() or booth.language,
                 channel_id=channel_id.strip() or booth.channel_id,
             )
             booth.participants[participant.participant_id] = participant
-            if participant.role in ('interpreter', 'room_coordinator', 'event_owner', 'super_admin') and booth.active_interpreter_id is None:
+            if (
+                participant.role in ("interpreter", "room_coordinator", "event_owner", "super_admin")
+                and booth.active_interpreter_id is None
+            ):
                 booth.active_interpreter_id = participant.participant_id
             return participant, booth.as_public_dict()
 
@@ -231,10 +234,10 @@ class BoothRegistry:
                 return booth.as_public_dict()
             if booth.active_interpreter_id == participant_id:
                 booth.active_interpreter_id = _pick_next_interpreter(booth)
-                booth.handoff_state = 'pending' if booth.active_interpreter_id else 'idle'
+                booth.handoff_state = "pending" if booth.active_interpreter_id else "idle"
             if not booth.participants:
-                booth.ingest_status = 'disconnected'
-                booth.handoff_state = 'idle'
+                booth.ingest_status = "disconnected"
+                booth.handoff_state = "idle"
             return booth.as_public_dict()
 
     async def set_broadcast_unlocked(
@@ -262,22 +265,24 @@ class BoothRegistry:
             requester = booth.participants.get(requester_id)
             target = booth.participants.get(target_id)
             if requester is None or target is None:
-                raise ValueError('Requester or target participant does not exist in this booth.')
-            if target.role not in ('interpreter', 'room_coordinator', 'event_owner', 'super_admin'):
-                raise ValueError('Only interpreters or admins can be set active.')
-            requester_is_admin = requester.role in ('room_coordinator', 'event_owner', 'super_admin')
+                raise ValueError("Requester or target participant does not exist in this booth.")
+            if target.role not in ("interpreter", "room_coordinator", "event_owner", "super_admin"):
+                raise ValueError("Only interpreters or admins can be set active.")
+            requester_is_admin = requester.role in ("room_coordinator", "event_owner", "super_admin")
             requester_is_active = booth.active_interpreter_id == requester_id
             requester_is_target = requester_id == target_id
             if not requester_is_admin and not requester_is_active and not requester_is_target:
-                raise PermissionError('Only coordinators/admins or the active interpreter can reassign another interpreter.')
+                raise PermissionError(
+                    "Only coordinators/admins or the active interpreter can reassign another interpreter."
+                )
             booth.active_interpreter_id = target_id
-            booth.handoff_state = 'completed'
+            booth.handoff_state = "completed"
             for p in booth.participants.values():
                 p.ingest_connected = p.participant_id == target_id and p.ingest_connected
                 p.mic_active = p.participant_id == target_id and p.mic_active
                 p.updated_at = utc_now_iso()
             booth.ingest_status = (
-                'connected' if any(p.ingest_connected for p in booth.participants.values()) else 'disconnected'
+                "connected" if any(p.ingest_connected for p in booth.participants.values()) else "disconnected"
             )
             return booth.as_public_dict()
 
@@ -300,20 +305,19 @@ class BoothRegistry:
             booth = self._get_or_create_booth(booth_id, language, channel_id)
             requester = booth.participants.get(requester_id)
             if requester is None:
-                raise ValueError('Requester is not in this booth.')
-            if requester.role != 'interpreter':
-                raise PermissionError('Only interpreters can initiate handoffs.')
-            if booth.handoff_state != 'idle':
-                raise ValueError('A handoff is already in progress.')
+                raise ValueError("Requester is not in this booth.")
+            if requester.role != "interpreter":
+                raise PermissionError("Only interpreters can initiate handoffs.")
+            if booth.handoff_state != "idle":
+                raise ValueError("A handoff is already in progress.")
             # Need at least one other interpreter to hand off to
             other_interpreters = [
-                p for p in booth.participants.values()
-                if p.role == 'interpreter' and p.participant_id != requester_id
+                p for p in booth.participants.values() if p.role == "interpreter" and p.participant_id != requester_id
             ]
             if not other_interpreters:
-                raise ValueError('No other interpreter in the booth to hand off to.')
+                raise ValueError("No other interpreter in the booth to hand off to.")
             is_active = booth.active_interpreter_id == requester_id
-            booth.handoff_state = 'offered' if is_active else 'requested'
+            booth.handoff_state = "offered" if is_active else "requested"
             booth.handoff_initiator_id = requester_id
             return booth.as_public_dict()
 
@@ -339,29 +343,29 @@ class BoothRegistry:
             booth = self._get_or_create_booth(booth_id, language, channel_id)
             acceptor = booth.participants.get(acceptor_id)
             if acceptor is None:
-                raise ValueError('Acceptor is not in this booth.')
-            if booth.handoff_state == 'idle':
-                raise ValueError('No handoff is in progress.')
+                raise ValueError("Acceptor is not in this booth.")
+            if booth.handoff_state == "idle":
+                raise ValueError("No handoff is in progress.")
             initiator_id = booth.handoff_initiator_id
             if acceptor_id == initiator_id:
-                raise ValueError('The initiator cannot accept their own handoff.')
+                raise ValueError("The initiator cannot accept their own handoff.")
 
-            if booth.handoff_state == 'offered':
+            if booth.handoff_state == "offered":
                 # Active offered → passive accepts → passive becomes active
                 if booth.active_interpreter_id == acceptor_id:
-                    raise ValueError('Active interpreter cannot accept an offer they did not initiate.')
+                    raise ValueError("Active interpreter cannot accept an offer they did not initiate.")
                 new_active = acceptor_id
-            elif booth.handoff_state == 'requested':
+            elif booth.handoff_state == "requested":
                 # Passive requested → active accepts (yields) → requester becomes active
                 if booth.active_interpreter_id != acceptor_id:
-                    raise ValueError('Only the active interpreter can yield the mic.')
+                    raise ValueError("Only the active interpreter can yield the mic.")
                 new_active = initiator_id
             else:
-                raise ValueError(f'Unexpected handoff state: {booth.handoff_state}')
+                raise ValueError(f"Unexpected handoff state: {booth.handoff_state}")
 
             # Flip active interpreter
             booth.active_interpreter_id = new_active
-            booth.handoff_state = 'idle'
+            booth.handoff_state = "idle"
             booth.handoff_initiator_id = None
 
             # Reset ingest/mic flags: only the new active keeps them
@@ -370,7 +374,7 @@ class BoothRegistry:
                 p.mic_active = p.participant_id == new_active and p.mic_active
                 p.updated_at = utc_now_iso()
             booth.ingest_status = (
-                'connected' if any(p.ingest_connected for p in booth.participants.values()) else 'disconnected'
+                "connected" if any(p.ingest_connected for p in booth.participants.values()) else "disconnected"
             )
             return booth.as_public_dict()
 
@@ -384,11 +388,11 @@ class BoothRegistry:
         """Cancel an in-progress handoff (only the initiator can cancel)."""
         async with self._lock:
             booth = self._get_or_create_booth(booth_id, language, channel_id)
-            if booth.handoff_state == 'idle':
+            if booth.handoff_state == "idle":
                 return booth.as_public_dict()
             if booth.handoff_initiator_id != requester_id:
-                raise PermissionError('Only the handoff initiator can cancel.')
-            booth.handoff_state = 'idle'
+                raise PermissionError("Only the handoff initiator can cancel.")
+            booth.handoff_state = "idle"
             booth.handoff_initiator_id = None
             return booth.as_public_dict()
 
@@ -404,7 +408,7 @@ class BoothRegistry:
             booth = self._get_or_create_booth(booth_id, language, channel_id)
             sender = booth.participants.get(sender_id)
             if sender is None:
-                raise ValueError('Sender is not registered in booth.')
+                raise ValueError("Sender is not registered in booth.")
             message = ChatMessage(
                 message_id=uuid4().hex,
                 sender_id=sender_id,
@@ -412,7 +416,7 @@ class BoothRegistry:
                 body=body.strip(),
             )
             if not message.body:
-                raise ValueError('Message body cannot be empty.')
+                raise ValueError("Message body cannot be empty.")
             booth.chat_messages.append(message)
             if len(booth.chat_messages) > 500:
                 booth.chat_messages = booth.chat_messages[-500:]
@@ -433,12 +437,12 @@ class BoothRegistry:
             booth = self._get_or_create_booth(booth_id, language, channel_id)
             participant = booth.participants.get(participant_id)
             if participant is None:
-                raise ValueError('Participant does not exist in booth.')
+                raise ValueError("Participant does not exist in booth.")
             wants_publisher_state = mic_active is True or ingest_connected is True
-            if wants_publisher_state and participant.role != 'interpreter':
-                raise PermissionError('Only interpreter role can publish audio.')
+            if wants_publisher_state and participant.role != "interpreter":
+                raise PermissionError("Only interpreter role can publish audio.")
             if wants_publisher_state and booth.active_interpreter_id != participant_id:
-                raise PermissionError('Only the active interpreter can mark mic or ingest active.')
+                raise PermissionError("Only the active interpreter can mark mic or ingest active.")
             if mic_active is not None:
                 participant.mic_active = mic_active
             if ingest_connected is not None:
@@ -447,7 +451,7 @@ class BoothRegistry:
                 participant.connected = connected
             participant.updated_at = utc_now_iso()
             booth.ingest_status = (
-                'connected' if any(p.ingest_connected for p in booth.participants.values()) else 'disconnected'
+                "connected" if any(p.ingest_connected for p in booth.participants.values()) else "disconnected"
             )
             return booth.as_public_dict()
 
@@ -468,11 +472,11 @@ class BoothRegistry:
             booth = self._get_or_create_booth(booth_id, language, channel_id)
             participant = booth.participants.get(participant_id)
             if participant is None:
-                raise ValueError('Participant does not exist in booth.')
-            if participant.role != 'interpreter':
-                raise PermissionError('Only interpreter role can publish audio.')
+                raise ValueError("Participant does not exist in booth.")
+            if participant.role != "interpreter":
+                raise PermissionError("Only interpreter role can publish audio.")
             if booth.active_interpreter_id != participant_id:
-                raise PermissionError('Only the active interpreter can publish audio.')
+                raise PermissionError("Only the active interpreter can publish audio.")
 
     async def is_active_interpreter(self, booth_id: str, participant_id: str, language: str, channel_id: str) -> bool:
         async with self._lock:
@@ -482,11 +486,7 @@ class BoothRegistry:
     async def list_booths_for_event(self, event_slug: str) -> list[dict]:
         """Return public snapshots of all booths belonging to *event_slug*."""
         async with self._lock:
-            return [
-                booth.as_public_dict()
-                for booth in self._booths.values()
-                if booth.event_slug == event_slug
-            ]
+            return [booth.as_public_dict() for booth in self._booths.values() if booth.event_slug == event_slug]
 
     async def get_booth(self, booth_id: str) -> dict | None:
         """Return the public dict for an existing booth, or None."""
@@ -517,11 +517,9 @@ class BoothRegistry:
         try:
             event_slug, _ = parse_booth_id(booth_id)
         except ValueError:
-            event_slug = ''
+            event_slug = ""
         if event_slug != expected_event:
-            raise PermissionError(
-                f"Booth '{booth_id}' does not belong to event '{expected_event}'."
-            )
+            raise PermissionError(f"Booth '{booth_id}' does not belong to event '{expected_event}'.")
 
     async def set_ingest_status(self, booth_id: str, status: str, language: str, channel_id: str) -> dict:
         async with self._lock:

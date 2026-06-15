@@ -5,6 +5,7 @@ import logging
 import httpx
 from tenacity import AsyncRetrying, retry_if_exception_type, stop_after_attempt, wait_exponential
 
+import portal.transcription as ts
 from portal.transcription.providers.base import (
     BoothTranscriptionState,
     ProviderConfig,
@@ -14,16 +15,22 @@ from portal.transcription.providers.base import (
 
 logger = logging.getLogger(__name__)
 
-import portal.transcription as ts
-
 
 def get_http_client() -> httpx.AsyncClient:
     if ts.shared_http_client is None:
         ts.shared_http_client = httpx.AsyncClient(timeout=10.0)
     return ts.shared_http_client
 
+
 class OpenAIProvider(TranscriptionProvider):
-    async def process_chunk(self, chunk: bytes, language_code: str, model_variant: str, config: ProviderConfig, booth_state: BoothTranscriptionState | None = None) -> str:
+    async def process_chunk(
+        self,
+        chunk: bytes,
+        language_code: str,
+        model_variant: str,
+        config: ProviderConfig,
+        booth_state: BoothTranscriptionState | None = None,
+    ) -> str:
         api_key = config.get_key()
         if not api_key:
             logger.error("OpenAI API key missing")
@@ -34,20 +41,19 @@ class OpenAIProvider(TranscriptionProvider):
         files = {
             "file": ("audio.wav", wav_data, "audio/wav"),
         }
-        data = {
-            "model": model_variant,
-            "language": language_code
-        }
+        data = {"model": model_variant, "language": language_code}
 
         client = get_http_client()
         try:
             async for attempt in AsyncRetrying(
                 wait=wait_exponential(multiplier=1, min=2, max=10),
                 stop=stop_after_attempt(3),
-                retry=retry_if_exception_type((httpx.ReadTimeout, httpx.ConnectError, httpx.HTTPStatusError))
+                retry=retry_if_exception_type((httpx.ReadTimeout, httpx.ConnectError, httpx.HTTPStatusError)),
             ):
                 with attempt:
-                    resp = await client.post("https://api.openai.com/v1/audio/transcriptions", headers=headers, files=files, data=data)
+                    resp = await client.post(
+                        "https://api.openai.com/v1/audio/transcriptions", headers=headers, files=files, data=data
+                    )
                     if resp.status_code in (429, 502, 503, 504):
                         resp.raise_for_status()
 
@@ -60,12 +66,24 @@ class OpenAIProvider(TranscriptionProvider):
             raise e
         return ""
 
-    async def run_stream(self, process: asyncio.subprocess.Process, language_code: str, model_variant: str, config: ProviderConfig, broadcast_callback, booth_id: str, room_id: int | None = None) -> None:
+    async def run_stream(
+        self,
+        process: asyncio.subprocess.Process,
+        language_code: str,
+        model_variant: str,
+        config: ProviderConfig,
+        broadcast_callback,
+        booth_id: str,
+        room_id: int | None = None,
+    ) -> None:
         if model_variant in ("whisper-1", "gpt-4o-transcribe", "gpt-4o-mini-transcribe"):
-            await super().run_stream(process, language_code, model_variant, config, broadcast_callback, booth_id, room_id)
+            await super().run_stream(
+                process, language_code, model_variant, config, broadcast_callback, booth_id, room_id
+            )
             return
 
         from portal.transcription.aggregator import CaptionAggregator
+
         aggregator = CaptionAggregator(broadcast_callback, room_id=room_id)
 
         api_key = config.get_key()
@@ -74,10 +92,7 @@ class OpenAIProvider(TranscriptionProvider):
             return
 
         url = f"wss://api.openai.com/v1/realtime?model={model_variant}"
-        headers = {
-            "Authorization": f"Bearer {api_key}",
-            "OpenAI-Beta": "realtime=v1"
-        }
+        headers = {"Authorization": f"Bearer {api_key}", "OpenAI-Beta": "realtime=v1"}
 
         consecutive_errors = 0
         while process.returncode is None:
@@ -86,6 +101,7 @@ class OpenAIProvider(TranscriptionProvider):
 
                 import numpy as np
                 import websockets
+
                 async with websockets.connect(url, additional_headers=headers) as ws:
                     consecutive_errors = 0
 
@@ -95,17 +111,11 @@ class OpenAIProvider(TranscriptionProvider):
                             "type": "transcription",
                             "audio": {
                                 "input": {
-                                    "format": {
-                                        "type": "audio/pcm",
-                                        "rate": 24000
-                                    },
-                                    "transcription": {
-                                        "model": model_variant,
-                                        "language": language_code
-                                    }
+                                    "format": {"type": "audio/pcm", "rate": 24000},
+                                    "transcription": {"model": model_variant, "language": language_code},
                                 }
-                            }
-                        }
+                            },
+                        },
                     }
                     await ws.send(json.dumps(session_update))
 
@@ -128,7 +138,7 @@ class OpenAIProvider(TranscriptionProvider):
 
                                 payload = {
                                     "type": "input_audio_buffer.append",
-                                    "audio": base64.b64encode(chunk).decode('utf-8')
+                                    "audio": base64.b64encode(chunk).decode("utf-8"),
                                 }
                                 await ws.send(json.dumps(payload))
 
@@ -173,8 +183,7 @@ class OpenAIProvider(TranscriptionProvider):
                     receiver_task = asyncio.create_task(receiver())
 
                     done, pending = await asyncio.wait(
-                        [sender_task, receiver_task],
-                        return_when=asyncio.FIRST_COMPLETED
+                        [sender_task, receiver_task], return_when=asyncio.FIRST_COMPLETED
                     )
 
                     if sender_task in done and sender_task.result() == "EOF":

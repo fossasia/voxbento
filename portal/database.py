@@ -2,6 +2,7 @@
 
 Usage::
 
+    # Local import required to avoid circular dependency
     from portal.database import get_session, create_event, get_event_by_slug
 
     async with get_session() as session:
@@ -50,7 +51,9 @@ _async_session_factory = None
 def _get_engine():
     global _engine, _async_session_factory
     if _engine is None:
+        # Local import required to avoid circular dependency
         from portal.config import settings
+
         _engine = create_async_engine(settings.database_url, echo=settings.debug)
         _async_session_factory = async_sessionmaker(_engine, expire_on_commit=False)
     return _engine
@@ -183,8 +186,12 @@ async def create_room(
 
 
 async def get_room_by_id(session: AsyncSession, room_id: int) -> Room | None:
+    # Local import required to avoid circular dependency
     from sqlalchemy.orm import selectinload
-    result = await session.execute(select(Room).options(selectinload(Room.translation_languages)).where(Room.id == room_id))
+
+    result = await session.execute(
+        select(Room).options(selectinload(Room.translation_languages)).where(Room.id == room_id)
+    )
     return result.scalar_one_or_none()
 
 
@@ -200,7 +207,9 @@ async def list_rooms_for_event(
     limit: int = 100,
     offset: int = 0,
 ) -> list[Room]:
+    # Local import required to avoid circular dependency
     from sqlalchemy.orm import selectinload
+
     result = await session.execute(
         select(Room)
         .options(selectinload(Room.translation_languages))
@@ -246,9 +255,13 @@ async def create_booth(
 
 
 async def get_booth_by_id(session: AsyncSession, booth_id: int) -> DBBooth | None:
+    # Local import required to avoid circular dependency
     from sqlalchemy.orm import selectinload
+
     result = await session.execute(
-        select(DBBooth).options(joinedload(DBBooth.event), selectinload(DBBooth.translation_languages)).where(DBBooth.id == booth_id),
+        select(DBBooth)
+        .options(joinedload(DBBooth.event), selectinload(DBBooth.translation_languages))
+        .where(DBBooth.id == booth_id),
     )
     return result.scalar_one_or_none()
 
@@ -265,7 +278,9 @@ async def list_booths_for_event(
     limit: int = 100,
     offset: int = 0,
 ) -> list[DBBooth]:
+    # Local import required to avoid circular dependency
     from sqlalchemy.orm import selectinload
+
     result = await session.execute(
         select(DBBooth)
         .options(joinedload(DBBooth.event), selectinload(DBBooth.translation_languages))
@@ -302,7 +317,9 @@ async def list_all_booths_for_events(
 
 
 async def list_booths_for_room(session: AsyncSession, room_id: int) -> list[DBBooth]:
+    # Local import required to avoid circular dependency
     from sqlalchemy.orm import selectinload
+
     result = await session.execute(
         select(DBBooth)
         .options(joinedload(DBBooth.event), selectinload(DBBooth.translation_languages))
@@ -331,9 +348,9 @@ async def create_invite_token(
     *,
     booth_id: int,
     role: str,
-    label: str = '',
+    label: str = "",
     expires_at: datetime | None = None,
-    created_by: str = '',
+    created_by: str = "",
 ) -> InviteToken:
     token = InviteToken(
         token=generate_token(),
@@ -366,9 +383,9 @@ async def redeem_invite_token(session: AsyncSession, token_str: str) -> InviteTo
     if tok is None:
         return None
     if tok.is_used:
-        raise ValueError('Token has already been used.')
+        raise ValueError("Token has already been used.")
     if tok.is_expired:
-        raise ValueError('Token has expired.')
+        raise ValueError("Token has expired.")
     tok.used_at = utc_now()
     await session.flush()
     return tok
@@ -376,9 +393,7 @@ async def redeem_invite_token(session: AsyncSession, token_str: str) -> InviteTo
 
 async def list_tokens_for_booth(session: AsyncSession, booth_id: int) -> list[InviteToken]:
     result = await session.execute(
-        select(InviteToken)
-        .where(InviteToken.booth_id == booth_id)
-        .order_by(InviteToken.created_at),
+        select(InviteToken).where(InviteToken.booth_id == booth_id).order_by(InviteToken.created_at),
     )
     return list(result.scalars().all())
 
@@ -428,9 +443,7 @@ async def list_users(
     limit: int = 100,
     offset: int = 0,
 ) -> list[User]:
-    result = await session.execute(
-        select(User).order_by(User.created_at).limit(limit).offset(offset)
-    )
+    result = await session.execute(select(User).order_by(User.created_at).limit(limit).offset(offset))
     return list(result.scalars().all())
 
 
@@ -512,6 +525,7 @@ async def list_memberships_for_user(session: AsyncSession, user_id: int) -> list
     )
     return list(result.scalars().all())
 
+
 # ---------------------------------------------------------------------------
 # RoomMembership CRUD
 # ---------------------------------------------------------------------------
@@ -571,6 +585,8 @@ async def list_room_memberships_for_user(session: AsyncSession, user_id: int) ->
         .order_by(RoomMembership.created_at),
     )
     return list(result.scalars().all())
+
+
 # ---------------------------------------------------------------------------
 # BoothMembership CRUD
 # ---------------------------------------------------------------------------
@@ -625,7 +641,10 @@ async def list_memberships_for_booth(session: AsyncSession, booth_id: int) -> li
 async def list_booth_memberships_for_user(session: AsyncSession, user_id: int) -> list[BoothMembership]:
     result = await session.execute(
         select(BoothMembership)
-        .options(joinedload(BoothMembership.booth).joinedload(DBBooth.event), joinedload(BoothMembership.booth).joinedload(DBBooth.room))
+        .options(
+            joinedload(BoothMembership.booth).joinedload(DBBooth.event),
+            joinedload(BoothMembership.booth).joinedload(DBBooth.room),
+        )
         .where(BoothMembership.user_id == user_id)
         .order_by(BoothMembership.created_at),
     )
@@ -646,17 +665,21 @@ async def revoke_invite_token(session: AsyncSession, token_str: str) -> InviteTo
     await session.flush()
     return tok
 
+
 # ---------------------------------------------------------------------------
 # Transcripts
 # ---------------------------------------------------------------------------
 
+
 async def save_transcript_segment(booth_id_str: str, text: str, room_id: int | None = None) -> int | None:
     """Save a finalized transcript segment to the database asynchronously and return its ID."""
+    # Local import required to avoid circular dependency
     from sqlalchemy import select
 
+    # Local import required to avoid circular dependency
     from portal.models import DBBooth, Event, TranscriptSegment
 
-    parts = booth_id_str.split('-')
+    parts = booth_id_str.split("-")
     if len(parts) < 2:
         return None
 
@@ -667,18 +690,14 @@ async def save_transcript_segment(booth_id_str: str, text: str, room_id: int | N
         async with get_session() as session:
             booth_id = None
             if language_code != "floor":
-                stmt = select(DBBooth.id).join(Event).where(
-                    Event.slug == event_slug,
-                    DBBooth.language_code == language_code
+                stmt = (
+                    select(DBBooth.id)
+                    .join(Event)
+                    .where(Event.slug == event_slug, DBBooth.language_code == language_code)
                 )
                 booth_id = await session.scalar(stmt)
 
-            segment = TranscriptSegment(
-                room_id=room_id,
-                booth_id=booth_id,
-                language_code=language_code,
-                text=text
-            )
+            segment = TranscriptSegment(room_id=room_id, booth_id=booth_id, language_code=language_code, text=text)
             session.add(segment)
             await session.commit()
             return segment.id

@@ -8,10 +8,13 @@ logger = logging.getLogger(__name__)
 
 _fernet = None
 
+
 def get_fernet() -> MultiFernet:
     global _fernet
     if _fernet is None:
+        # Local import required to avoid circular dependency
         from portal.config import settings
+
         keys_str = settings.api_key_encryption_key
         if not keys_str or keys_str == "change-this-encryption-key-in-production":
             raise RuntimeError("API_KEY_ENCRYPTION_KEY must be set securely and changed from the default value.")
@@ -34,10 +37,12 @@ def get_fernet() -> MultiFernet:
         _fernet = MultiFernet(fernets)
     return _fernet
 
+
 def encrypt_val(val: str | None) -> str | None:
     if not val:
         return None
     return get_fernet().encrypt(val.encode()).decode()
+
 
 def decrypt_val(val: str | None) -> str | None:
     if not val:
@@ -46,4 +51,6 @@ def decrypt_val(val: str | None) -> str | None:
         return get_fernet().decrypt(val.encode()).decode()
     except Exception as e:
         logger.exception("Failed to decrypt API key.")
-        raise ValueError("Failed to decrypt API key. This may indicate a corrupted database entry or an incorrect API_KEY_ENCRYPTION_KEY.") from e
+        raise ValueError(
+            "Failed to decrypt API key. This may indicate a corrupted database entry or an incorrect API_KEY_ENCRYPTION_KEY."
+        ) from e
