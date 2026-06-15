@@ -1,185 +1,239 @@
+/**
+ * Mission Control — Live Booth Matrix
+ *
+ * Connects to each booth's WebSocket as a silent observer (no booth:join).
+ * Coordinators / admins can:
+ *   - Monitor all configured booths for the event in real-time
+ *   - See which interpreters are present and speaking
+ *   - Listen in via a per-booth audio volume slider (WHEP)
+ *   - Toggle Go Live / Stop per booth
+ */
+
 const config = window.MISSION_CONTROL_CONFIG;
 const grid = document.getElementById('booth-grid');
-const booths = new Map();
+
+/** @type {Map<string, {state:object, ws:WebSocket|null, whep:object|null, audioElement:HTMLAudioElement|null, currentVolume:number}>} */
+const boothMap = new Map();
 
 function init() {
+  if (!config.initialBooths || config.initialBooths.length === 0) {
+    grid.innerHTML = '<div class="card" style="padding:2rem;text-align:center;grid-column:1/-1;"><p style="color:var(--color-muted);margin:0;">No booths are configured for this event yet.</p></div>';
+    return;
+  }
+
   config.initialBooths.forEach(b => {
-    booths.set(b.booth_id, {
+    boothMap.set(b.booth_id, {
       state: b,
       ws: null,
       whep: null,
-      audioElement: null
+      audioElement: null,
+      currentVolume: 0,
     });
     renderCard(b.booth_id);
     connectWs(b.booth_id);
   });
 }
 
-function connectWs(boothId) {
-  const boothData = booths.get(boothId);
-  const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const host = window.location.host;
-  const wsUrl = `${proto}//${host}/ws/booth/${boothId}`;
-  
-  const ws = new WebSocket(wsUrl);
-  boothData.ws = ws;
+// ---------------------------------------------------------------------------
+// WebSocket — silent observer mode (no booth:join participant registration)
+// ---------------------------------------------------------------------------
 
-  ws.onopen = () => {
-    ws.send(JSON.stringify({
-      type: 'booth:join',
-      display_name: 'Mission Control',
-      role: 'room_coordinator',
-      language: boothData.state.language,
-      channel_id: boothData.state.channel_id
-    }));
-  };
+function connectWs(boothId) {
+  const entry = boothMap.get(boothId);
+  if (!entry) return;
+
+  const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const wsUrl = `${proto}//${window.location.host}/ws/booth/${boothId}`;
+  const ws = new WebSocket(wsUrl);
+  entry.ws = ws;
 
   ws.onmessage = (e) => {
-    const data = JSON.parse(e.data);
+    let data;
+    try { data = JSON.parse(e.data); } catch { return; }
+
     if (data.type === 'booth:state') {
-      boothData.state = data.state;
+      entry.state = data.state;
       renderCard(boothId);
-    } else if (data.type === 'booth:error') {
-      console.error('WebSocket Error for booth ' + boothId + ':', data.message);
-      alert('Error: ' + data.message);
     }
+    // Silently ignore booth:joined — we do not join as a participant.
   };
 
   ws.onclose = () => {
+    entry.ws = null;
     setTimeout(() => connectWs(boothId), 3000);
   };
+
+  ws.onerror = () => ws.close();
 }
+
+// ---------------------------------------------------------------------------
+// Go Live / Stop — broadcast-unlock toggle without joining as participant
+// ---------------------------------------------------------------------------
+
+function setBroadcastLive(boothId, goLive) {
+  const entry = boothMap.get(boothId);
+  if (!entry || !entry.ws || entry.ws.readyState !== WebSocket.OPEN) {
+    showToast(`Cannot reach booth — WebSocket not connected.`, 'error');
+    return;
+  }
+  entry.ws.send(JSON.stringify({
+    type: 'booth:set-broadcast-unlocked',
+    unlocked: goLive,
+  }));
+}
+
+// ---------------------------------------------------------------------------
+// Audio monitor — lazy WHEP start/stop
+// ---------------------------------------------------------------------------
 
 function handleVolumeChange(boothId, volume) {
-  const boothData = booths.get(boothId);
+  const entry = boothMap.get(boothId);
+  if (!entry) return;
   const vol = parseInt(volume, 10);
-  const audioEl = boothData.audioElement;
-  
-  if (vol > 0 && !boothData.whep) {
-    // Start WHEP
-    const whepUrl = `${config.whipBase}/${boothData.state.mediamtx_path}/whep`;
+
+  if (vol > 0 && !entry.whep) {
+    const whepUrl = `${config.whipBase}/${entry.state.mediamtx_path}/whep`;
     const whep = window.createWhepClient();
-    whep.start({ whepUrl: whepUrl, audioEl: audioEl });
-    boothData.whep = whep;
-  } else if (vol === 0 && boothData.whep) {
-    // Stop WHEP
-    boothData.whep.stop();
-    boothData.whep = null;
+    whep.start({ whepUrl, audioEl: entry.audioElement });
+    entry.whep = whep;
+  } else if (vol === 0 && entry.whep) {
+    entry.whep.stop();
+    entry.whep = null;
   }
-  
-  if (audioEl) {
-    audioEl.volume = vol / 100;
+
+  if (entry.audioElement) {
+    entry.audioElement.volume = vol / 100;
   }
 }
 
-function toggleBroadcastLock(boothId) {
-  const boothData = booths.get(boothId);
-  const newState = !boothData.state.broadcast_unlocked;
-  if (boothData.ws && boothData.ws.readyState === WebSocket.OPEN) {
-    boothData.ws.send(JSON.stringify({
-      type: 'booth:set-broadcast-unlocked',
-      unlocked: newState
-    }));
-  }
-}
+// ---------------------------------------------------------------------------
+// Card rendering
+// ---------------------------------------------------------------------------
 
 function renderCard(boothId) {
-  const boothData = booths.get(boothId);
-  const s = boothData.state;
-  
-  let card = document.getElementById(`card-${boothId}`);
+  const entry = boothMap.get(boothId);
+  if (!entry) return;
+  const s = entry.state;
+
+  let card = document.getElementById(`mc-card-${boothId}`);
   if (!card) {
     card = document.createElement('div');
-    card.id = `card-${boothId}`;
+    card.id = `mc-card-${boothId}`;
     card.className = 'card';
-    card.style.padding = '1.25rem';
-    card.style.display = 'flex';
-    card.style.flexDirection = 'column';
-    card.style.gap = '1rem';
-    
-    // Create Audio Element
+    card.style.cssText = 'padding:1.25rem;display:flex;flex-direction:column;gap:1rem;';
+
     const audio = document.createElement('audio');
     audio.autoplay = true;
     audio.hidden = true;
-    boothData.audioElement = audio;
+    entry.audioElement = audio;
     card.appendChild(audio);
-    
+
     grid.appendChild(card);
   }
-  
-  // Interpreters info
-  const interpreters = s.participants.filter(p => ['interpreter', 'room_coordinator', 'event_owner', 'super_admin'].includes(p.role));
-  const activeInterpreter = interpreters.find(p => p.participant_id === s.active_interpreter_id);
-  
-  const interpretersHtml = interpreters.map(p => {
-    const isActive = p.participant_id === s.active_interpreter_id;
-    const isMuted = !p.mic_active;
-    return `
-      <div style="display: flex; align-items: center; justify-content: space-between; font-size: 0.85rem; padding: 0.25rem 0;">
-        <span style="${isActive ? 'font-weight: bold; color: var(--color-primary);' : ''}">${p.display_name} ${isActive ? '(Active)' : ''}</span>
-        <span class="status-badge ${isMuted ? '' : 'status-success'}">${isMuted ? 'Muted' : 'Speaking'}</span>
-      </div>
-    `;
-  }).join('') || '<div style="font-size:0.85rem; color:var(--color-muted)">No interpreters present</div>';
 
-  const isUnlocked = s.broadcast_unlocked;
-  const toggleBtnClass = isUnlocked ? 'btn-danger' : 'btn-success';
-  const toggleBtnText = isUnlocked ? 'Lock Broadcast' : 'Unlock Broadcast (Go Live)';
+  // Interpreter rows — only show interpreter role; coordinators are observers.
+  const interpreters = (s.participants || []).filter(p => p.role === 'interpreter');
+
+  const interpretersHtml = interpreters.length
+    ? interpreters.map(p => {
+        const isActive = p.participant_id === s.active_interpreter_id;
+        const isMuted = !p.mic_active;
+        return `
+          <div style="display:flex;align-items:center;justify-content:space-between;font-size:0.85rem;padding:0.25rem 0;">
+            <span style="${isActive ? 'font-weight:bold;color:var(--color-primary);' : ''}">${escHtml(p.display_name)}${isActive ? ' <em style="font-weight:normal">(active)</em>' : ''}</span>
+            <span class="status-badge ${isMuted ? '' : 'status-success'}">${isMuted ? 'Muted' : '&#9654; Speaking'}</span>
+          </div>`;
+      }).join('')
+    : '<div style="font-size:0.85rem;color:var(--color-muted);">No interpreters present</div>';
+
+  // Broadcast control
+  const isLive = s.broadcast_unlocked;
+  const btnClass = isLive ? 'btn-danger' : 'btn-success';
+  const btnText = isLive ? 'Stop' : 'Go Live';
+
+  // Ingest status
+  const ingestBadge = s.ingest_status === 'connected'
+    ? '<span class="status-badge status-success">&#9679; Ingest Live</span>'
+    : '<span class="status-badge">&#9675; No Ingest</span>';
+
+  // Room label (populated from DB even for empty booths)
+  const roomLabel = s.room_name
+    ? `<div style="font-size:0.8rem;color:var(--color-muted);margin-top:0.2rem;">${escHtml(s.room_name)}</div>`
+    : `<div style="font-size:0.8rem;color:var(--color-muted);margin-top:0.2rem;">Room ID: ${s.room_id ?? 'N/A'}</div>`;
 
   card.innerHTML = `
-    <div style="display: flex; justify-content: space-between; align-items: flex-start;">
+    <div style="display:flex;justify-content:space-between;align-items:flex-start;">
       <div>
-        <h3 style="margin: 0;">${s.language} <span style="font-size: 0.8rem; font-weight: normal; color: var(--color-muted);">(${s.language_code})</span></h3>
-        <div style="font-size: 0.8rem; color: var(--color-muted); margin-top: 0.2rem;">Room ID: ${s.room_id || 'N/A'}</div>
+        <h3 style="margin:0;">${escHtml(s.language)} <span style="font-size:0.8rem;font-weight:normal;color:var(--color-muted);">(${escHtml(s.language_code)})</span></h3>
+        ${roomLabel}
       </div>
-      <div class="status-badge ${s.ingest_status === 'connected' ? 'status-success' : ''}">Ingest: ${s.ingest_status}</div>
+      ${ingestBadge}
     </div>
-    
-    <div style="border-top: 1px solid var(--color-border); padding-top: 0.75rem;">
-      <h4 style="margin: 0 0 0.5rem 0; font-size: 0.8rem; text-transform: uppercase; color: var(--color-muted);">Interpreters</h4>
+
+    <div style="border-top:1px solid var(--color-border);padding-top:0.75rem;">
+      <h4 style="margin:0 0 0.5rem 0;font-size:0.8rem;text-transform:uppercase;color:var(--color-muted);">Interpreters</h4>
       ${interpretersHtml}
     </div>
-    
-    <div style="border-top: 1px solid var(--color-border); padding-top: 0.75rem; display: flex; flex-direction: column; gap: 0.5rem;">
-      <div style="display: flex; align-items: center; justify-content: space-between;">
-        <label style="font-size: 0.8rem; font-weight: 500;">Monitor Audio</label>
-        <span id="vol-lbl-${boothId}" style="font-size: 0.8rem; color: var(--color-muted);">0%</span>
+
+    <div style="border-top:1px solid var(--color-border);padding-top:0.75rem;display:flex;flex-direction:column;gap:0.5rem;">
+      <div style="display:flex;align-items:center;justify-content:space-between;">
+        <label style="font-size:0.8rem;font-weight:500;">Monitor Audio</label>
+        <span id="mc-vol-lbl-${boothId}" style="font-size:0.8rem;color:var(--color-muted);">0%</span>
       </div>
-      <input type="range" id="vol-${boothId}" min="0" max="100" value="0" style="width: 100%;">
+      <input type="range" id="mc-vol-${boothId}" min="0" max="100" value="0" style="width:100%;">
     </div>
-    
-    <div style="margin-top: auto; padding-top: 1rem;">
-      <button id="lock-${boothId}" class="btn ${toggleBtnClass}" style="width: 100%;">
-        ${toggleBtnText}
+
+    <div style="margin-top:auto;padding-top:1rem;">
+      <button id="mc-live-${boothId}" class="btn ${btnClass}" style="width:100%;font-weight:600;">
+        ${btnText}
       </button>
     </div>
   `;
-  
-  // Re-attach audio so it doesn't get destroyed
-  card.appendChild(boothData.audioElement);
-  
-  // Bind events
-  const volInput = card.querySelector(`#vol-${boothId}`);
-  const volLbl = card.querySelector(`#vol-lbl-${boothId}`);
-  // Restore current volume value on re-render to avoid jumping back to 0
-  if (boothData.currentVolume) {
-    volInput.value = boothData.currentVolume;
-    volLbl.textContent = `${boothData.currentVolume}%`;
+
+  // Re-attach audio element (innerHTML replacement removes it from DOM)
+  card.appendChild(entry.audioElement);
+
+  // Restore volume slider after re-render
+  const volInput = card.querySelector(`#mc-vol-${boothId}`);
+  const volLbl = card.querySelector(`#mc-vol-lbl-${boothId}`);
+  if (entry.currentVolume > 0) {
+    volInput.value = entry.currentVolume;
+    volLbl.textContent = `${entry.currentVolume}%`;
   }
-  
+
   volInput.addEventListener('input', (e) => {
-    const val = e.target.value;
+    const val = parseInt(e.target.value, 10);
     volLbl.textContent = `${val}%`;
-    boothData.currentVolume = val;
+    entry.currentVolume = val;
   });
-  
+
   volInput.addEventListener('change', (e) => {
     handleVolumeChange(boothId, e.target.value);
   });
-  
-  card.querySelector(`#lock-${boothId}`).addEventListener('click', () => {
-    toggleBroadcastLock(boothId);
+
+  card.querySelector(`#mc-live-${boothId}`).addEventListener('click', () => {
+    setBroadcastLive(boothId, !isLive);
   });
+}
+
+// ---------------------------------------------------------------------------
+// Utilities
+// ---------------------------------------------------------------------------
+
+function escHtml(str) {
+  return String(str ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+function showToast(msg, type = 'info') {
+  const t = document.createElement('div');
+  t.textContent = msg;
+  t.style.cssText = `position:fixed;bottom:1.5rem;right:1.5rem;padding:0.75rem 1.25rem;border-radius:6px;font-size:0.9rem;z-index:9999;background:${type === 'error' ? '#c0392b' : '#2c3e50'};color:#fff;`;
+  document.body.appendChild(t);
+  setTimeout(() => t.remove(), 4000);
 }
 
 document.addEventListener('DOMContentLoaded', init);

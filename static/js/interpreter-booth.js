@@ -287,6 +287,12 @@ function bindEventHandlers() {
       const val = parseInt(elements.boothVolume.value, 10)
       elements.boothAudio.volume = val / 100
       if (elements.boothVolumeLabel) elements.boothVolumeLabel.textContent = `${val}%`
+      // Start WHEP on first non-zero drag; stop when back to zero.
+      if (val > 0 && !boothListening) {
+        startBoothAudioListening()
+      } else if (val === 0 && boothListening) {
+        stopBoothAudioListening()
+      }
     })
   }
 
@@ -363,17 +369,8 @@ function bindEventHandlers() {
     })
   }
 
-  elements.participantList.addEventListener('click', (event) => {
-    const target = event.target
-    if (!(target instanceof HTMLElement)) return
-    if (!target.classList.contains('set-active-btn')) return
-    const participantId = target.dataset.participantId
-    if (!participantId) return
-    wsSend({
-      type: 'booth:set-active',
-      target_id: participantId,
-    })
-  })
+  // Set Active button removed — active interpreter assignment is handled
+  // automatically on join and via the handover protocol.
 
   window.addEventListener('beforeunload', () => {
     if (state.joined && state.participantId) {
@@ -984,10 +981,13 @@ function stopLoopbackTest() {
 }
 
 async function toggleMicMute() {
+  // Flip state and update UI immediately for instant visual feedback.
+  state.micMuted = !state.micMuted
+  renderMicControls()
+  // Then acquire the mic stream if not yet open (may take a moment).
   if (!state.micStream) {
     await ensureMicStream()
   }
-  state.micMuted = !state.micMuted
   state.micStream.getAudioTracks().forEach((track) => {
     track.enabled = !state.micMuted
   })
@@ -997,7 +997,6 @@ async function toggleMicMute() {
       mic_active: !state.micMuted && state.ingestConnected,
     })
   }
-  renderMicControls()
 }
 
 // ── Ingest helpers ────────────────────────────────────────────────────────────
@@ -1278,21 +1277,8 @@ function renderParticipants() {
     pillGroup.append(micPill, ingestPill)
     bottom.append(pillGroup)
 
-    if (['interpreter', 'room_coordinator', 'event_owner', 'super_admin'].includes(participant.role)) {
-      const btn = document.createElement('button')
-      btn.type = 'button'
-      if (isThisActive) {
-        btn.className = 'btn btn-active-status'
-        btn.disabled = true
-        btn.textContent = 'Active'
-        bottom.append(btn)
-      } else if (canActivate) {
-        btn.className = 'btn set-active-btn'
-        btn.dataset.participantId = participant.participant_id
-        btn.textContent = 'Set Active'
-        bottom.append(btn)
-      }
-    }
+    // Active/Passive status is shown via the role pill above.
+    // Set Active button removed — use the handover protocol instead.
 
     tile.append(top, meta, bottom)
     elements.participantList.append(tile)
@@ -1427,15 +1413,21 @@ function renderHandoverButton() {
   }
 }
 
-/** Update the LIVE / OFF LIVE badge in the header */
+/** Update the LIVE / OFF LIVE / STANDBY badge in the header */
 function renderLiveBadge() {
   if (!elements.liveBadge) return
   if (state.ingestConnected) {
-    elements.liveBadge.classList.remove('off')
+    elements.liveBadge.classList.remove('off', 'standby')
     elements.liveBadge.classList.add('on')
     if (elements.liveBadgeText) elements.liveBadgeText.textContent = 'LIVE'
+  } else if (state.broadcastUnlocked && state.joined && state.activeInterpreterId === state.participantId) {
+    // Coordinator has unlocked this booth and we are the active interpreter —
+    // show STANDBY so the interpreter knows they are cleared to go live.
+    elements.liveBadge.classList.remove('off', 'on')
+    elements.liveBadge.classList.add('standby')
+    if (elements.liveBadgeText) elements.liveBadgeText.textContent = 'STANDBY'
   } else {
-    elements.liveBadge.classList.remove('on')
+    elements.liveBadge.classList.remove('on', 'standby')
     elements.liveBadge.classList.add('off')
     if (elements.liveBadgeText) elements.liveBadgeText.textContent = 'OFF LIVE'
   }

@@ -1301,7 +1301,8 @@ async def mission_control_list(request: Request, user=Depends(require_user), pag
 @app.get('/mission-control/{event_slug}/')
 async def mission_control_grid(request: Request, event_slug: str, user=Depends(require_user)):
     from portal.auth import get_accessible_event_ids
-    from portal.database import get_event_by_slug, get_session
+    from portal.booth_identity import make_booth_id
+    from portal.database import get_event_by_slug, get_session, list_booths_for_event
 
     is_super_admin, _ = await get_accessible_event_ids(
         request, user_id=int(user['sub'])
@@ -1329,13 +1330,45 @@ async def mission_control_grid(request: Request, event_slug: str, user=Depends(r
                     raise HTTPException(status_code=403, detail='Access denied. Event Owner or Room Coordinator required.')
                 allowed_room_ids = coord_room_ids
 
+        # Load ALL configured DB booths for the event (not just in-memory ones).
+        # This ensures every booth card is shown even when no interpreter is connected.
+        db_booths = await list_booths_for_event(session, event.id)
+
         event_booths = []
-        for b in booths._booths.values():
-            if b.event_slug == event_slug:
-                # If they are a room coordinator, only show booths in their allowed rooms.
-                if allowed_room_ids is not None and b.room_id not in allowed_room_ids:
-                    continue
-                event_booths.append(b.as_public_dict())
+        for db_b in db_booths:
+            # Respect room-level access for coordinators.
+            if allowed_room_ids is not None and db_b.room_id not in allowed_room_ids:
+                continue
+
+            booth_id = make_booth_id(event.slug, db_b.language_code)
+            in_mem = booths._booths.get(booth_id)
+
+            if in_mem is not None:
+                state = in_mem.as_public_dict()
+            else:
+                # Booth has no live connections yet — build a static stub from DB.
+                mtx_path = db_b.mediamtx_path
+                state = {
+                    'booth_id': booth_id,
+                    'event_slug': event.slug,
+                    'language_code': db_b.language_code,
+                    'language': db_b.language_name,
+                    'instance': 'primary',
+                    'mediamtx_path': mtx_path,
+                    'room_id': db_b.room_id,
+                    'channel_id': mtx_path,
+                    'active_interpreter_id': None,
+                    'handoff_state': 'idle',
+                    'handoff_initiator_id': None,
+                    'broadcast_unlocked': db_b.broadcast_unlocked,
+                    'ingest_status': 'disconnected',
+                    'participants': [],
+                    'chat_messages': [],
+                }
+
+            # Always annotate with the human-readable room name from DB.
+            state['room_name'] = db_b.room.display_name if db_b.room else 'Unknown Room'
+            event_booths.append(state)
 
     return templates.TemplateResponse(
         request,

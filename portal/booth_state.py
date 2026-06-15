@@ -97,6 +97,13 @@ class Booth:
 
 
 def _pick_next_interpreter(booth: Booth) -> str | None:
+    """Return the next active-interpreter-eligible participant ID, or None.
+
+    Any role with BOOTH_GO_LIVE permission qualifies: interpreter,
+    room_coordinator, event_owner, super_admin.  Mission control no longer
+    calls booth:join (silent observer mode), so these roles will only be
+    present when the participant is actually in the interpreter booth.
+    """
     for p in booth.participants.values():
         if p.role in ('interpreter', 'room_coordinator', 'event_owner', 'super_admin'):
             return p.participant_id
@@ -219,6 +226,9 @@ class BoothRegistry:
                 channel_id=channel_id.strip() or booth.channel_id,
             )
             booth.participants[participant.participant_id] = participant
+            # Auto-assign active slot to any role that can go live.
+            # Mission control now uses silent-observer mode (no booth:join),
+            # so only real interpreter-booth participants appear here.
             if participant.role in ('interpreter', 'room_coordinator', 'event_owner', 'super_admin') and booth.active_interpreter_id is None:
                 booth.active_interpreter_id = participant.participant_id
             return participant, booth.as_public_dict()
@@ -301,14 +311,15 @@ class BoothRegistry:
             requester = booth.participants.get(requester_id)
             if requester is None:
                 raise ValueError('Requester is not in this booth.')
-            if requester.role != 'interpreter':
-                raise PermissionError('Only interpreters can initiate handoffs.')
+            if requester.role not in ('interpreter', 'room_coordinator', 'event_owner', 'super_admin'):
+                raise PermissionError('Only interpreters and coordinators can initiate handoffs.')
             if booth.handoff_state != 'idle':
                 raise ValueError('A handoff is already in progress.')
-            # Need at least one other interpreter to hand off to
+            # Need at least one other participant who can take over
             other_interpreters = [
                 p for p in booth.participants.values()
-                if p.role == 'interpreter' and p.participant_id != requester_id
+                if p.role in ('interpreter', 'room_coordinator', 'event_owner', 'super_admin')
+                and p.participant_id != requester_id
             ]
             if not other_interpreters:
                 raise ValueError('No other interpreter in the booth to hand off to.')

@@ -542,6 +542,21 @@ label {
   border-color: rgb(22 163 74 / 0.3);
 }
 
+.live-badge.standby {
+  color: #d97706;
+  background: rgb(217 119 6 / 0.1);
+  border-color: rgb(217 119 6 / 0.3);
+}
+
+.live-badge.standby .live-dot {
+  animation: pulse-standby 1s ease-in-out infinite;
+}
+
+@keyframes pulse-standby {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
 .live-dot {
   font-size: 0.9rem;
   line-height: 1;

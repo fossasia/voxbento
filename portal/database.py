@@ -268,7 +268,11 @@ async def list_booths_for_event(
     from sqlalchemy.orm import selectinload
     result = await session.execute(
         select(DBBooth)
-        .options(joinedload(DBBooth.event), selectinload(DBBooth.translation_languages))
+        .options(
+            joinedload(DBBooth.event),
+            joinedload(DBBooth.room),
+            selectinload(DBBooth.translation_languages),
+        )
         .where(DBBooth.event_id == event_id)
         .order_by(DBBooth.language_code)
         .limit(limit)
