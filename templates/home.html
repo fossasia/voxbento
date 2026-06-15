@@ -50,11 +50,11 @@
             </nav>
             <div class="flex items-center gap-4 text-sm font-bold">
                 {% if current_user %}
-                <a href="/account" class="text-slate-600 hover:text-brand-600 transition-colors uppercase tracking-wider">My Account</a>
-                <a href="/admin/events/" class="bg-slate-900 text-white px-5 py-2.5 rounded-full hover:bg-slate-800 transition-all shadow-sm hover:shadow-md uppercase tracking-wider">Admin Dashboard</a>
+                <a href="/logout" class="text-slate-600 hover:text-brand-600 transition-colors uppercase tracking-wider">Logout</a>
+                <a href="/admin/events/" class="bg-slate-900 text-white px-5 py-2.5 rounded-full hover:bg-slate-800 transition-all shadow-sm hover:shadow-md uppercase tracking-wider">Dashboard</a>
                 {% else %}
                 <a href="/login" class="text-slate-600 hover:text-brand-600 transition-colors uppercase tracking-wider">Sign In</a>
-                <a href="/register" class="bg-slate-900 text-white px-5 py-2.5 rounded-full hover:bg-slate-800 transition-all shadow-sm hover:shadow-md uppercase tracking-wider">Contact Us</a>
+                <a href="/register" class="bg-slate-900 text-white px-5 py-2.5 rounded-full hover:bg-slate-800 transition-all shadow-sm hover:shadow-md uppercase tracking-wider">Register</a>
                 {% endif %}
             </div>
         </div>

@@ -335,5 +335,4 @@ class TestHomePageAuthLinks:
         async with _client() as c:
             resp = await c.get('/', cookies={'user_token': token})
         assert resp.status_code == 200
-        assert b'My Account' in resp.content
         assert b'Logout' in resp.content

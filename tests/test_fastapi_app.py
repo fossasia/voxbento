@@ -65,7 +65,7 @@ def test_healthz_ok():
 def test_home_renders_home_page():
     res = client.get('/')
     assert res.status_code == 200
-    assert b'Voxbento' in res.content
+    assert b'VoxBento' in res.content
 
 
 def test_interpreter_booth_requires_auth():
