@@ -1,0 +1,93 @@
+{% extends "research/base_research.html" %}
+
+{% set page_title = "STT Provider Comparison Framework" %}
+
+{% block schema %}
+{
+  "@context": "https://schema.org",
+  "@type": "Article",
+  "headline": "Speech-to-Text (STT) Provider Comparison",
+  "author": {
+    "@type": "Organization",
+    "name": "VoxBento Research"
+  },
+  "description": "Technical analysis and methodology for comparing Deepgram, OpenAI Realtime, and Local Whisper based on Word Error Rate (WER) and streaming capabilities."
+}
+{% endblock %}
+
+{% block answer_first %}
+When comparing STT providers for live interpretation, there is no single "best" model. Deepgram excels in low-latency streaming and high concurrency. OpenAI Realtime offers superior conversational context handling. Local Whisper deployments provide maximum data privacy and cost-efficiency at scale but require robust GPU orchestration and custom Voice Activity Detection (VAD) pipelines.
+{% endblock %}
+
+{% block key_takeaways %}
+<li><strong>Streaming vs. Chunked:</strong> Deepgram provides a true WebSocket-based streaming API. Whisper relies on chunked audio processing.</li>
+<li><strong>Word Error Rate (WER):</strong> WER varies heavily by language and audio quality. Testing providers on your specific domain data is mandatory.</li>
+<li><strong>Data Sovereignty:</strong> Local STT guarantees that sensitive conference audio never leaves your infrastructure.</li>
+<li><strong>Cost Predictability:</strong> Cloud APIs charge per minute. Local models incur fixed infrastructure costs regardless of volume.</li>
+{% endblock %}
+
+{% block research_body %}
+<div class="disclaimer-box">
+    <strong>Note:</strong> The data and provider details listed below represent an illustrative comparison methodology. Evaluate models against your own datasets before making architectural decisions.
+</div>
+
+<h2>Evaluating Provider Architectures</h2>
+<p>The architecture of a provider dictates how it integrates into a <a href="/research/webrtc-vs-rtmp-vs-hls">WebRTC audio pipeline</a>. </p>
+
+<table>
+    <thead>
+        <tr>
+            <th>Provider</th>
+            <th>Primary Input Method</th>
+            <th>Latency Profile</th>
+            <th>Best For</th>
+        </tr>
+    </thead>
+    <tbody>
+        <tr>
+            <td>Deepgram Nova-2</td>
+            <td>Streaming WebSocket</td>
+            <td>Ultra-low (&lt; 300ms)</td>
+            <td>High-volume live events requiring immediate closed captioning.</td>
+        </tr>
+        <tr>
+            <td>OpenAI Whisper API</td>
+            <td>REST API (Chunked)</td>
+            <td>Moderate (600ms - 1s)</td>
+            <td>High accuracy asynchronous transcription or non-critical live feeds.</td>
+        </tr>
+        <tr>
+            <td>Local Faster-Whisper</td>
+            <td>Memory Buffer (Chunked)</td>
+            <td>Variable (Hardware dependent)</td>
+            <td>Self-hosted deployments requiring strict data privacy.</td>
+        </tr>
+        <tr>
+            <td>Nvidia Riva / Parakeet</td>
+            <td>gRPC Streaming</td>
+            <td>Low</td>
+            <td>Enterprise on-premise environments with heavy GPU investments.</td>
+        </tr>
+    </tbody>
+</table>
+
+<h2>Methodology for Measuring WER</h2>
+<p>Word Error Rate (WER) is the standard metric for STT accuracy. It is calculated using the Levenshtein distance formula:</p>
+<pre><code>WER = (Substitutions + Insertions + Deletions) / Total Words in Reference</code></pre>
+
+<h3>Establishing a Baseline</h3>
+<p>To accurately compare providers:</p>
+<ol>
+    <li><strong>Curate a Dataset:</strong> Record 5 hours of live conference audio covering diverse accents, technical jargon, and background noise levels.</li>
+    <li><strong>Create Ground Truth:</strong> Have human transcriptionists generate a verbatim reference transcript.</li>
+    <li><strong>Normalize Output:</strong> Run the provider outputs through a text normalizer (removing punctuation, lowercasing, converting numbers to text) before calculating the Levenshtein distance against the ground truth.</li>
+</ol>
+
+<h2>Feature Set Comparison</h2>
+<p>Beyond accuracy and latency, consider the auxiliary features required by your application:</p>
+<ul>
+    <li><strong>Diarization:</strong> Can the model identify multiple speakers on the same audio channel? (Less relevant for isolated interpretation booths, critical for floor audio).</li>
+    <li><strong>Profanity Filtering:</strong> Required for public-facing enterprise events.</li>
+    <li><strong>Custom Vocabulary:</strong> The ability to boost the probability of specific proper nouns (e.g., product names, speaker names) is crucial for conference accuracy.</li>
+</ul>
+{% endblock %}
