@@ -161,6 +161,14 @@ class TestMakeMediamtxPath:
     def test_normalises_inputs(self):
         assert make_mediamtx_path('PyCon2026', 'EN') == 'pycon2026/en'
 
+    def test_invalid_slug_raises(self):
+        with pytest.raises(ValueError):
+            make_mediamtx_path('', 'en')
+
+    def test_invalid_code_raises(self):
+        with pytest.raises(ValueError):
+            make_mediamtx_path('pycon2026', 'xyz')
+
 
 # ── parse_booth_id ────────────────────────────────────────────────────────────
 
