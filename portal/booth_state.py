@@ -445,9 +445,11 @@ class BoothRegistry:
             participant = booth.participants.get(participant_id)
             if participant is None:
                 raise ValueError('Participant does not exist in booth.')
+            from portal.roles import Permission, has_permission
+
             wants_publisher_state = mic_active is True or ingest_connected is True
-            if wants_publisher_state and participant.role != 'interpreter':
-                raise PermissionError('Only interpreter role can publish audio.')
+            if wants_publisher_state and not has_permission(participant.role, Permission.BOOTH_GO_LIVE):
+                raise PermissionError('Your role does not permit publishing audio.')
             if wants_publisher_state and booth.active_interpreter_id != participant_id:
                 raise PermissionError('Only the active interpreter can mark mic or ingest active.')
             if mic_active is not None:
@@ -472,16 +474,18 @@ class BoothRegistry:
         """Raise PermissionError if participant may not publish audio.
 
         Checks two conditions (Layer 1 enforcement):
-        1. Participant must have the ``interpreter`` role.
+        1. Participant's role must carry BOOTH_GO_LIVE permission.
         2. Participant must be the booth's active interpreter.
         """
+        from portal.roles import Permission, has_permission
+
         async with self._lock:
             booth = self._get_or_create_booth(booth_id, language, channel_id)
             participant = booth.participants.get(participant_id)
             if participant is None:
                 raise ValueError('Participant does not exist in booth.')
-            if participant.role != 'interpreter':
-                raise PermissionError('Only interpreter role can publish audio.')
+            if not has_permission(participant.role, Permission.BOOTH_GO_LIVE):
+                raise PermissionError('Your role does not permit publishing audio.')
             if booth.active_interpreter_id != participant_id:
                 raise PermissionError('Only the active interpreter can publish audio.')
 
