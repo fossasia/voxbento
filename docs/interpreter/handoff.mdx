@@ -8,7 +8,7 @@ Interpretation at live events rarely runs on a single interpreter for the entire
 
 ## How Handoff Works
 
-When a room_coordinator or active interpreter triggers a handoff, Voxbento immediately updates the active interpreter and broadcasts the new roster to all participants in the booth. On the media side, the moment the incoming interpreter clicks **Go Live**, the media relay switches the source automatically. Listeners receive the new stream within approximately one to two seconds. No reconnection, no page refresh, no audible silence gap beyond the natural transition.
+When a room_coordinator or active interpreter triggers a handoff, Voxbento immediately updates the active interpreter and broadcasts the new roster to all participants in the booth. On the media side, the moment the incoming interpreter clicks **UNMUTE**, the media relay switches the source automatically. Listeners receive the new stream within approximately one to two seconds. No reconnection, no page refresh, no audible silence gap beyond the natural transition.
 
 ## Who Can Trigger a Handoff
 
@@ -44,7 +44,7 @@ Click **Set Active** next to the interpreter's name. Voxbento immediately design
 Within approximately one to two seconds, the media relay switches to the new publisher and stops forwarding the old stream. The outgoing interpreter sees their Audio Status change to **Idle**.
   ### New interpreter begins speaking
 
-Signal the incoming interpreter (via chat or a pre-agreed cue) to click **Go Live** and begin. Listeners hear the transition as a brief natural pause.
+Signal the incoming interpreter (via chat or a pre-agreed cue) to click **UNMUTE** and begin. Listeners hear the transition as a brief natural pause.
 
 ## Steps for the Incoming Interpreter
 
@@ -52,13 +52,13 @@ Smooth handoffs depend on the incoming interpreter being ready before the room_c
 
 ### Join the booth before your shift starts
 
-Open the booth URL and join as a participant well ahead of your scheduled slot. Stay in idle — do not click **Go Live** yet. This ensures you're visible in the coordinator's roster.
+Open the booth URL and join as a participant well ahead of your scheduled slot. Stay muted — do not click **UNMUTE** yet. This ensures you're visible in the coordinator's roster.
   ### Watch for your Go Live button to activate
 
-When the room_coordinator designates you as the active interpreter, your **Go Live** button becomes enabled and the Audio Status panel shows **Ready**.
+When the room_coordinator designates you as the active interpreter, the top-left indicator will change to **STANDBY** (or **ON AIR** if you are unmuted).
   ### Click Go Live immediately
 
-Click **Go Live** as soon as your button activates. Every second of delay is a second of silence for listeners. Speak your first word within one to two seconds of clicking.
+Click **UNMUTE** as soon as you are ready. Every second of delay is a second of silence for listeners. Speak your first word within one to two seconds of clicking.
 
 :::tip
 Agree on a hand signal or chat message before the event to coordinate smooth handoffs. A simple "ready in 30 seconds" in the booth chat gives the outgoing interpreter a clear countdown and prevents premature transitions.
@@ -76,7 +76,7 @@ Consistent shorthand makes real-time coordination faster under pressure. Conside
   | Message | Meaning |
   |---|---|
   | `ready` | Incoming interpreter is joined and ready to go live |
-  | `go` | Room Coordinator confirms: click Go Live now |
+  | `go` | Room Coordinator confirms: click UNMUTE now |
   | `hold` | Do not go live yet — room_coordinator is resolving an issue |
   | `back` | Outgoing interpreter is going offline (voluntary handoff) |
   | `check` | Request a mic level check from the incoming interpreter |
@@ -89,4 +89,4 @@ Consistent shorthand makes real-time coordination faster under pressure. Conside
 If the room_coordinator role is not filled, the currently active interpreter can designate a new active interpreter from the roster. Any participant with the `interpreter` role who is currently set as active has permission to use the **Set Active** control — they do not need a room_coordinator to be present.
 :::
 
-In this case, the outgoing interpreter clicks **Set Active** next to the incoming interpreter's name in the roster, then clicks **Go Offline** after the new stream is confirmed live. The media relay switches sources within approximately two seconds, so listeners hear no gap provided the incoming interpreter clicks **Go Live** promptly.
+In this case, the outgoing interpreter clicks **Set Active** next to the incoming interpreter's name in the roster, then clicks **MUTE** after the new stream is confirmed live. The media relay switches sources within approximately two seconds, so listeners hear no gap provided the incoming interpreter clicks **UNMUTE** promptly.

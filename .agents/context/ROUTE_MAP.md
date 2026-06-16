@@ -1,6 +1,6 @@
 # VoxBento — Route Map
 
-> All HTTP and WebSocket routes derived from `fastapi_app.py`.
+> All HTTP and WebSocket routes are now modularized in `portal/routers/` and `portal/websockets/`.
 > Auth column: `user` = user_token cookie; `admin` = admin_token cookie; `session` = session_token cookie; `open` = no auth required; `token/Bearer` = optional legacy token guard.
 
 ---
@@ -101,7 +101,13 @@ All admin routes require `admin_token` cookie (or `user_token` with `is_admin=Tr
 
 | Module | Owns |
 |---|---|
-| `fastapi_app.py` | **All** routes — no router splitting yet |
-| `portal/auth.py` | Auth utilities consumed by routes |
-| `portal/booth_state.py` | Business logic for WS handlers |
-| `portal/database.py` | CRUD used by page and admin routes |
+| `portal/routers/public.py` | Home page, health check, registration |
+| `portal/routers/auth.py` | Login, logout, invite token validation |
+| `portal/routers/account.py` | User profile page |
+| `portal/routers/interpreter.py` | Booth UI route |
+| `portal/routers/listener.py` | WHEP listener UI route |
+| `portal/routers/api.py` | Booth state REST API, WHIP URL generation |
+| `portal/routers/admin/*.py` | All `/admin/*` routes (split by resource: events, rooms, dashboard) |
+| `portal/websockets/manager.py` | `ws_booth` and `ws_captions` endpoints |
+| `portal/websockets/handlers.py` | Specific `_handle_*` logic for WS messages |
+| `fastapi_app.py` | Application lifespan, router include aggregation |

@@ -102,6 +102,7 @@ Here is what happens when a room_coordinator switches the active interpreter:
 3. The incoming interpreter's browser calls the gated `/api/booth/{booth_id}/whip-url` endpoint, receives the WHIP URL, and begins publishing.
 4. MediaMTX is configured with `overridePublisher: yes` — it immediately accepts the new publisher and disconnects the outgoing interpreter's WHIP session.
 5. All existing WHEP listeners receive the new publisher's audio within approximately one to two seconds. Their `RTCPeerConnection` stays open throughout; MediaMTX routes the new track into it automatically.
+6. **Transcription Continuity:** The backend background transcription worker (FFmpeg) continuously retries pulling from the RTSP stream. Even if the stream drops for a few milliseconds during the handoff, the worker aggressively reconnects, ensuring zero loss of translation pipeline state.
 
 :::info
 Listeners on the HLS fallback path experience a longer gap during handoff — roughly 10–15 seconds — while hls.js recovers from the muxer reset that occurs when the publisher changes.

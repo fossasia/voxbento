@@ -16,7 +16,7 @@ Before starting any task, read:
 ## W1: Feature Development
 
 ### Step 1 — Understand the target area
-- Backend route? → Read `fastapi_app.py` around similar routes, [ROUTE_MAP.md](ROUTE_MAP.md)
+- Backend route? → Read `portal/routers/` around similar routes, [ROUTE_MAP.md](ROUTE_MAP.md)
 - Database change? → Read `portal/models.py`, `portal/database.py`, [DATABASE_MAP.md](DATABASE_MAP.md)
 - Transcription? → Read `portal/transcription/`, [TRANSCRIPTION_MAP.md](TRANSCRIPTION_MAP.md)
 - Frontend UI? → Read `static/js/interpreter-booth.js` or `whep-listener.js`; see `.github/instructions/js.instructions.md`
@@ -33,7 +33,7 @@ Before starting any task, read:
 - Minimal, local edits only — do not refactor adjacent code.
 - New Python: `portal.*` imports.
 - New DB column: create Alembic migration in `alembic/versions/`.
-- New route: add to `fastapi_app.py` with correct auth dependency (`Depends(require_admin)`, `require_user`, or cookie check).
+- New route: add to `portal/routers/` with correct auth dependency (`Depends(require_admin)`, `require_user`, or cookie check).
 
 ### Step 4 — Validate
 ```bash
@@ -49,10 +49,10 @@ uv run alembic upgrade head   # if DB changes
 
 ### Step 1 — Reproduce
 - Read the failing test in `tests/` if one exists.
-- If HTTP bug: check `fastapi_app.py` route + relevant template.
-- If WebSocket bug: check `fastapi_app.py` WS handler + `portal/booth_state.py` + `static/js/interpreter-booth.js`.
+- If HTTP bug: check `portal/routers/` route + relevant template.
+- If WebSocket bug: check `portal/websockets/handlers.py` WS handler + `portal/booth_state.py` + `static/js/interpreter-booth.js`.
 - If DB bug: check `portal/models.py` + `portal/database.py`.
-- If auth bug: check `portal/auth.py` + cookie handling in `fastapi_app.py`.
+- If auth bug: check `portal/auth.py` + cookie handling in `portal/routers/`.
 
 ### Step 2 — Isolate
 - Check [CHANGE_IMPACT_MAP.md](CHANGE_IMPACT_MAP.md) for files that own the buggy behavior.
@@ -81,7 +81,7 @@ uv run pytest tests/ -v
 7. If provider needs API key: add encrypted column to `Event` in `portal/models.py`.
 8. Create Alembic migration.
 9. Update `get_api_key` in `providers/base.py` key_map.
-10. Update `admin_event_api_settings_post` in `fastapi_app.py`.
+10. Update `admin_event_api_settings_post` in `portal/routers/admin/settings.py`.
 11. Update `templates/admin/api_settings.html`.
 12. Run: `uv run pytest tests/test_transcription_concurrency.py -v`
 
@@ -107,7 +107,7 @@ node --check static/js/*.js
 
 1. Check `/healthz` endpoint — returns `{ok, mediamtx_ok}`.
 2. If `mediamtx_ok: false` — MediaMTX is down or unreachable. Check `docker-compose ps mediamtx`.
-3. If interpreters can't go live — check `_ensure_mediamtx_path` in `fastapi_app.py` and MediaMTX Control API (port 9997).
+3. If interpreters can't go live — check `_ensure_mediamtx_path` in `portal/routers/api.py` and MediaMTX Control API (port 9997).
 4. If WebSocket disconnects — check `portal/booth_state.py` `asyncio.Lock` usage; check server logs for `WebSocketDisconnect`.
 5. If transcription failing — check `portal/transcription/worker.py` `active_workers` state; check ffmpeg availability in container.
 6. If login fails — check `portal/auth.py` `verify_password`; check `users.is_active` in DB.
@@ -141,7 +141,7 @@ uv run pytest tests/test_database.py -v
 2. Check all `safe_redirect` calls — verifies path starts with `/` and has no netloc (prevents open redirect).
 3. Check all form handlers for CSRF exposure (admin panel uses session cookie + same-site=lax).
 4. Check `portal/crypto.py` — `API_KEY_ENCRYPTION_KEY` must be set and ≥32 chars.
-5. Check `fastapi_app.py` WebSocket handler — role is never taken from client data.
+5. Check `portal/websockets/handlers.py` WebSocket handler — role is never taken from client data.
 6. Check `_require_access` — optional token guard (disabled if `booth_access_token` is empty).
 7. See `.github/.agents/skills/security-audit/SKILL.md` for full checklist.
 

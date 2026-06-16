@@ -1,0 +1,40 @@
+---
+title: "Playback Resilience (WHEP & HLS)"
+sidebarTitle: "Playback Resilience"
+description: "Technical details on how Voxbento achieves sub-second latency while maintaining unbreakable listener connections through WHEP reconnects and HLS failover."
+---
+
+Delivering live audio to thousands of diverse mobile and desktop clients requires a highly resilient playback engine. Voxbento's listener client is engineered to prioritize ultra-low latency (WHEP) while gracefully falling back to universally supported streaming (HLS) when networks degrade.
+
+## The WebRTC (WHEP) Engine
+
+Voxbento's primary playback protocol is WHEP (WebRTC HTTP Egress Protocol). 
+
+- **Latency**: Typically under 1 second.
+- **Connection**: The client makes an HTTP POST to the MediaMTX `/whep` endpoint, exchanging SDP offers/answers to establish a UDP peer connection.
+
+### Reconnection Strategy: Exponential Backoff
+
+Live events are unpredictable. If the active interpreter's internet drops, or a handoff takes longer than a second, the media server will close the WHEP stream. The listener client must not permanently fail.
+
+Instead, the `whep-listener.js` client enters a state of **Exponential Backoff**:
+1. When the `RTCPeerConnection` fires `iceconnectionstatechange` to `disconnected` or `failed`, the client immediately tears down the connection.
+2. It attempts to renegotiate a new WHEP session.
+3. If the server rejects the connection (because no active interpreter is publishing), the client waits 1 second, then retries.
+4. If it fails again, it waits 2 seconds, then 4 seconds, capping at a maximum retry interval (e.g., 5 seconds).
+
+**Why this matters for handoffs**: When a Coordinator clicks "Set Active", the old WHEP stream is killed by MediaMTX. The listener's browser detects the drop, instantly renegotiates, and connects to the *new* interpreter's stream before the listener even realizes the connection dropped. 
+
+## The HLS Failover
+
+While WebRTC is incredible for low latency, it relies on UDP and complex ICE traversal. Many corporate firewalls and strict proxy networks block UDP traffic entirely.
+
+If the listener client attempts a WHEP connection and fails to establish an ICE connection within the timeout window, it triggers a hard fallback.
+
+### Seamless Downgrade to HLS
+
+Voxbento's MediaMTX server automatically repackages the WebRTC ingest into an HLS (HTTP Live Streaming) playlist at the same time.
+- **Latency**: Typically 3 to 6 seconds (due to chunk buffering).
+- **Delivery**: Standard HTTP/TCP, which penetrates almost all firewalls.
+
+When the listener client detects a WebRTC failure, it swaps the `srcObject` of the HTML5 `<audio>` element to point to the MediaMTX `.m3u8` HLS playlist URL. This ensures 100% reachability for listeners, regardless of their network topology.

@@ -51,7 +51,7 @@ description: Use this skill for security reviews of VoxBento code. Covers OWASP 
 ### A05 — Security Misconfiguration
 - [ ] `debug: bool = True` in default settings — must be `False` in production.
 - [ ] `BOOTH_ACCESS_TOKEN` unset = no token guard on API; set it in production if API is public.
-- [ ] `ADMIN_PASSWORD` must be set; empty string disables admin login (see `fastapi_app.py`).
+- [ ] `ADMIN_PASSWORD` must be set; empty string disables admin login (see `portal/routers/auth.py`).
 - [ ] `database_url` default is SQLite — use PostgreSQL in production.
 - [ ] `SECRET_KEY: str = 'change-me'` — must be overridden.
 
@@ -71,7 +71,7 @@ description: Use this skill for security reviews of VoxBento code. Covers OWASP 
 
 ## Open Redirect Audit
 
-All redirects in `fastapi_app.py` must use `safe_redirect(url)`:
+All redirects in `portal/routers/` must use `safe_redirect(url)`:
 ```python
 def safe_redirect(url: str, status_code: int) -> RedirectResponse:
     url = url.replace('\\', '').strip()
@@ -83,7 +83,7 @@ def safe_redirect(url: str, status_code: int) -> RedirectResponse:
 
 Check `next_url` / `next` parameter usage:
 ```bash
-grep -n "next_url\|next=" fastapi_app.py
+grep -rn "next_url\|next=" portal/routers/
 ```
 Ensure all uses pass through `safe_redirect`.
 
@@ -110,7 +110,7 @@ VoxBento does not directly pass user input to LLM APIs. Transcription providers 
 ## Security Quick Checks
 ```bash
 # Check for raw redirects (should be none)
-grep -n "RedirectResponse(url=" fastapi_app.py | grep -v safe_redirect
+grep -rn "RedirectResponse(url=" portal/routers/ | grep -v safe_redirect
 
 # Check for debug=True in production settings
 grep -n "debug" portal/config.py

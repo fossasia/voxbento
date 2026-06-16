@@ -13,7 +13,7 @@ description: Use this skill to find files, understand module ownership, and loca
 
 | What you're looking for | Where to look |
 |---|---|
-| Route definition for any URL | `fastapi_app.py` — search for `@app.get`, `@app.post`, `@app.websocket` |
+| Route definition for any URL | `portal/routers/` — search for `@router.get`, `@app.post`, `@app.websocket` |
 | Auth logic (JWT, cookies, role) | `portal/auth.py` |
 | Booth state / participant logic | `portal/booth_state.py` |
 | Database models (table schema) | `portal/models.py` |
@@ -62,22 +62,22 @@ description: Use this skill to find files, understand module ownership, and loca
 
 ### Find all routes
 ```bash
-grep -n "@app\." fastapi_app.py
+grep -rn "@router\." portal/routers/
 ```
 
 ### Find where a WS message type is handled
 ```bash
-grep -n "booth:join\|booth:chat\|booth:set-active" fastapi_app.py
+grep -rn "booth:join\|booth:chat\|booth:set-active" portal/websockets/
 ```
 
 ### Find all settings
 ```bash
-grep -n "settings\." fastapi_app.py | head -40
+grep -rn "settings\." portal/ | head -40
 ```
 
 ### Find all auth cookie checks
 ```bash
-grep -rn "session_token\|user_token\|admin_token" fastapi_app.py
+grep -rn "session_token\|user_token\|admin_token" portal/routers/
 ```
 
 ### Find where a DB model is used
@@ -91,7 +91,7 @@ grep -rn "DBBooth\|InviteToken\|BoothMembership" portal/
 
 | File | ~Lines | Complexity |
 |---|---|---|
-| `fastapi_app.py` | ~1 900 | High — monolith; use search not full reads |
+| `portal/routers/` | Various | High |
 | `portal/database.py` | ~400 | Medium |
 | `portal/models.py` | ~250 | Medium |
 | `portal/booth_state.py` | ~300 | Medium |
@@ -104,8 +104,8 @@ grep -rn "DBBooth\|InviteToken\|BoothMembership" portal/
 
 ## Navigation Tips
 
-1. **Routes are never split into sub-modules.** Everything is in `fastapi_app.py`.
+1. **Routes are split into sub-modules in `portal/routers/`.
 2. **Admin routes** all start with `/admin/` and use `dependencies=[Depends(require_admin)]`.
-3. **WebSocket handlers** are `_handle_join`, `_handle_leave`, `_handle_chat`, `_handle_set_active`, `_handle_update_state` — all in `fastapi_app.py`.
-4. **The in-memory `booths` variable** is a module-level `BoothRegistry()` instance in `fastapi_app.py` — the only source of live booth state.
+3. **WebSocket handlers** are `_handle_join`, `_handle_leave`, `_handle_chat`, `_handle_set_active`, `_handle_update_state` — all in `portal/websockets/handlers.py`.
+4. **The in-memory `booths` variable** is a module-level `BoothRegistry()` instance in `portal/booth_state.py` — the only source of live booth state.
 5. **Templates inherit from** `templates/base.html` (user pages) or `templates/admin/base.html` (admin pages).

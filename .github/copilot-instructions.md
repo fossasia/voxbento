@@ -5,7 +5,7 @@ Canonical project policy is in [`../agents.md`](../agents.md). Read that first.
 ## Copilot-Specific Defaults
 
 - Match the existing code style in the file you are editing.
-- For Python: follow the patterns in `fastapi_app.py` and `portal/`. Keep `from __future__ import annotations` at the top of every Python file.
+- For Python: follow the patterns in `portal/routers/` and `portal/`. Keep `from __future__ import annotations` at the top of every Python file.
 - For JavaScript: plain ES modules in `static/js/`. No frameworks, no build step, no jQuery, no inline scripts.
 - Prefer minimal, local edits. Do not refactor code that is not directly related to the current task.
 - If you are unsure whether a change is safe, leave a comment rather than guessing.

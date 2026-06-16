@@ -15,7 +15,7 @@ description: Use this skill to evaluate proposed architecture changes against Vo
 2. **FastAPI is coordination only.** Routes, WebSocket signalling, auth, admin. No audio processing.
 3. **Jitsi is monitoring only.** Interpreters watch/hear the floor session. It is not the ingest path.
 4. **Single publisher per channel.** Enforced at two layers: Python (`BoothRegistry.set_active_interpreter`) and MediaMTX (`overridePublisher: yes`).
-5. **In-memory booth state.** `BoothRegistry` is module-level in `fastapi_app.py`. No external state store yet (see TD-03 in `TECHNICAL_DEBT_REPORT.md`).
+5. **In-memory booth state.** `BoothRegistry` is module-level in `portal/booth_state.py`. No external state store yet (see TD-03 in `TECHNICAL_DEBT_REPORT.md`).
 
 ---
 
@@ -55,7 +55,7 @@ description: Use this skill to evaluate proposed architecture changes against Vo
 
 ### Does this change the WebSocket protocol?
 - The protocol is used by `static/js/interpreter-booth.js` — both files must change together.
-- New message types must be handled in `fastapi_app.py` `ws_booth` loop + `_handle_*` function.
+- New message types must be handled in `portal/websockets/manager.py` `ws_booth` loop + `_handle_*` function.
 - Role enforcement: role is always from `session.granted_role`, never from client `data['role']`.
 
 ### Does this change auth?

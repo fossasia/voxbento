@@ -443,8 +443,10 @@ file is stored on a named volume (`portal-data`) that persists across `docker co
 ### Project layout
 
 ```
-fastapi_app.py                # FastAPI — REST, WebSocket, Jinja2
+fastapi_app.py                # Lightweight ASGI entrypoint (main app)
 portal/
+  routers/                    # Modular HTTP endpoints (auth, api, admin, etc.)
+  websockets/                 # WebSocket manager and connection handlers
   config.py                   # pydantic-settings (env vars / .env)
   auth.py                     # JWT issue / validate
   booth_state.py              # async in-memory booth registry

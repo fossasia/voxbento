@@ -111,3 +111,33 @@ Tokens expire after 86400 seconds (24 hours) by default. When a token expires, t
 |---|---|
 | `401 Unauthorized` | The `Authorization` header is missing, the token is malformed, or the token has expired. Request a new token and retry. |
 | `403 Forbidden` | The token is structurally valid but the request targets a resource you are not permitted to access. |
+
+## Cookie-Based Authentication (Internal UI)
+
+While external integrations use the Bearer tokens described above, the Voxbento frontend UI relies on a strict hierarchy of HTTP-only JWT cookies to authenticate users.
+
+### The Token Hierarchy
+
+Voxbento issues three distinct cookies, which are evaluated in the following order of precedence:
+
+1. **`admin_token`**: Issued via the `/admin/login` page using the global `ADMIN_PASSWORD`. Grants blanket `super_admin` permissions across the entire platform.
+2. **`user_token`**: Issued when a registered user logs in. It contains claims about their identity (`sub`) and whether they have site-wide admin rights (`is_admin=True`).
+3. **`session_token`**: Issued when a user clicks a magic invite link (`/join/{token}`). It is scoped to a specific `event_slug` and `booth_id` with a specific role.
+
+### Role Resolution (`resolve_booth_role`)
+
+When a user joins a booth via WebSocket, the backend `resolve_booth_role` function determines their ultimate permissions by checking the database and comparing their tokens.
+
+Voxbento enforces the following role hierarchy:
+`super_admin` > `event_owner` > `room_coordinator` > `interpreter` > `listener`
+
+If a user has multiple conflicting roles (e.g., they clicked an `interpreter` invite link, but they are logged in as an `event_owner` for that event), **the highest privilege wins**. 
+
+### The `require_admin` Dependency
+
+For administrative HTTP routes, Voxbento uses the `require_admin` FastAPI dependency. This dependency:
+1. Checks for a valid `admin_token` cookie. If found, access is granted.
+2. If missing, checks for a valid `user_token`.
+3. If the user token has `is_admin=True`, they are treated as a `super_admin` and granted access.
+4. If not a `super_admin`, it checks the database to see if the user is an `event_owner` for the specific `event_id` or `room_id` in the URL path.
+5. If neither condition is met, it returns HTTP `403 Forbidden`.

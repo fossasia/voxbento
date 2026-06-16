@@ -1,0 +1,120 @@
+---
+title: "Booth Coordination WebSocket"
+sidebarTitle: "Booth Coordination"
+description: "The low-latency WebSocket protocol that powers role-based access, booth chat, and the interpreter handoff mechanics."
+---
+
+The Voxbento coordination layer runs entirely over WebSockets. This connection dictates who is allowed to hold the microphone (WHIP authorization), manages the real-time participant roster, and facilitates instant chat.
+
+## Connection & Authentication
+
+To join a booth's coordination room, establish a WebSocket connection to:
+
+```text
+/ws/booth/{booth_id}
+```
+
+### The `?token=` Parameter
+When joining the WebSocket, the client must pass a valid JWT in the `?token=` query parameter. This token is typically the `session_token` generated via an invite link, or the `user_token` for registered accounts.
+
+- If the token is missing or invalid, the server immediately drops the connection with WebSocket close code `4001`.
+- The server decodes the token to determine the user's role (`interpreter`, `room_coordinator`, etc.) and identity. **The client cannot assert its own role; the server solely trusts the JWT claims.**
+
+## Outbound Messages (Client to Server)
+
+All messages sent from the client to the server must be JSON objects containing a `type` and a `payload`.
+
+### 1. Join a Booth
+The first message sent after connection MUST be `booth:join`. The server will not broadcast your presence or send you state updates until this is received.
+
+```json
+{
+  "type": "booth:join",
+  "payload": {
+    "name": "Arnav Angarkar"
+  }
+}
+```
+
+### 2. Update Status
+Participants should continually update the server on their WebRTC status.
+```json
+{
+  "type": "booth:update-state",
+  "payload": {
+    "mic_active": true,
+    "ingest_connected": true
+  }
+}
+```
+
+### 3. Send a Chat Message
+Sending an internal chat message to the booth.
+```json
+{
+  "type": "booth:chat",
+  "payload": {
+    "body": "Ready in 30 seconds."
+  }
+}
+```
+
+### 4. Initiate a Handoff (Set Active)
+This is the core of the Voxbento handoff mechanic. A participant with the `BOOTH_SET_ACTIVE` permission (e.g., a `room_coordinator`) sends this message to designate a new active interpreter.
+
+```json
+{
+  "type": "booth:set-active",
+  "payload": {
+    "target_id": "participant-uuid-here"
+  }
+}
+```
+**Authorization Check:** The backend explicitly calls `can_set_active(session.granted_role)`. If an `interpreter` (who lacks this permission) tries to send this message, the server ignores it.
+
+## Inbound Messages (Server to Client)
+
+### 1. `booth:state` (The Source of Truth)
+Every time a participant joins, leaves, updates their mic status, or the active interpreter changes, the server broadcasts a `booth:state` message to all connected clients.
+
+```json
+{
+  "type": "booth:state",
+  "booth_id": "pycon2026-en",
+  "active_interpreter_id": "participant-uuid-here",
+  "participants": {
+    "participant-uuid-here": {
+      "name": "Arnav Angarkar",
+      "role": "interpreter",
+      "mic_active": false,
+      "ingest_connected": false
+    }
+  }
+}
+```
+Clients use this payload to render the participant list and determine if they are authorized to fetch the WHIP URL.
+
+### 2. `booth:chat`
+Received when another participant sends a message.
+
+```json
+{
+  "type": "booth:chat",
+  "id": "message-uuid",
+  "sender_id": "participant-uuid",
+  "sender_name": "Arnav Angarkar",
+  "body": "Ready in 30 seconds.",
+  "timestamp": "2026-06-16T10:00:00Z"
+}
+```
+
+## The Complete Handoff Flow (Under the Hood)
+
+When a `room_coordinator` clicks "Set Active" in the UI, here is the exact sequence of technical events:
+
+1. **WS Request:** Coordinator sends `booth:set-active` with the target's ID.
+2. **Server Auth:** The `_handle_set_active` backend function verifies the coordinator has `BOOTH_SET_ACTIVE` permissions.
+3. **State Update:** The server updates the in-memory `BoothRegistry` and immediately broadcasts a new `booth:state` to all clients.
+4. **Client Auth Fetch:** The target interpreter's client sees they are now the `active_interpreter_id`. The client immediately sends an HTTP `GET /api/booth/{id}/whip-url`.
+5. **WHIP URL Gating:** The FastAPI backend verifies the requesting client's `session_id` exactly matches the `active_interpreter_id` stored in the `BoothRegistry`. It returns the WHIP URL.
+6. **Media Disconnection:** The new interpreter executes the WHIP HTTP POST handshake. MediaMTX, configured with `overridePublisher: yes`, immediately accepts the new connection and kicks the old publisher, ensuring listeners hear a seamless transition.

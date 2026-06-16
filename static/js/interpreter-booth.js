@@ -1116,11 +1116,15 @@ async function stopLiveIngest() {
       ingest_connected: false,
     })
     
-    // Stop backend transcription
-    try {
-      await fetch(`/api/booth/${state.boothId}/transcription/stop`, { method: 'POST', headers: authHeaders() })
-    } catch (err) {
-      console.warn('Failed to stop transcription worker:', err)
+    // Stop backend transcription ONLY IF we are still the active interpreter (meaning we clicked OFF LIVE)
+    // or if the booth has no active interpreter.
+    // If someone else is active, it means they took over, so let THEM manage the transcription!
+    if (state.activeInterpreterId === null || state.activeInterpreterId === state.participantId) {
+      try {
+        await fetch(`/api/booth/${state.boothId}/transcription/stop`, { method: 'POST', headers: authHeaders() })
+      } catch (err) {
+        console.warn('Failed to stop transcription worker:', err)
+      }
     }
   }
   state.ingestConnected = false

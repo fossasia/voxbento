@@ -51,7 +51,6 @@ line-length = 120
 select = ["E", "W", "F", "I", "C4"]
 ignore = [
     "E501",   # line too long — handled by formatter, not linter
-    "E402",   # module level import not at top — some portal files use deferred imports
 ]
 
 [tool.ruff.lint.per-file-ignores]

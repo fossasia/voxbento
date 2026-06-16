@@ -30,6 +30,10 @@ Every piece of content in Voxbento hangs off a strict three-level hierarchy:
 
 ## Creating an Event
 
+:::info Role Requirement
+Only a **`super_admin`** can create or delete top-level events. If you are an **`event_owner`**, you will only see the events assigned to you on the dashboard and cannot create new ones.
+:::
+
 ### Open the Events list
 
 From the dashboard, click **Events** in the admin navigation, or go directly to `/admin/events/`.
@@ -51,6 +55,10 @@ Each event has a unique slug used in all URLs. Choose it carefully — changing 
 :::
 
 ## Creating a Room
+
+:::info Role Requirement
+Both **`super_admin`** and **`event_owner`** roles can create, edit, and delete rooms within an event.
+:::
 
 Rooms represent physical or logical spaces within your event — typically one room per stage or conference track. Each room can contain multiple language booths.
 
@@ -91,3 +99,5 @@ Deleting an event or room is **permanent and irreversible** — all nested recor
 - **Delete a room** — open the room detail page and click **Delete Room**. All booths inside the room, along with their members and tokens, are removed.
 
 Deletions cannot be undone, so make sure you no longer need any of the child records before proceeding.
+
+*(Note: `event_owner` accounts do not have permission to delete events.)*

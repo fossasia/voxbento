@@ -49,7 +49,7 @@ Interpreter browser
 6. Add `{name}: {allowed_models_set}` to `ALLOWED_MODELS`
 7. Add to `PROVIDERS` dict in `worker.py`
 8. If API key needed: add encrypted column to `Event` model (migration 008 pattern) + update `get_api_key` key_map in `base.py`
-9. Update `admin_event_api_settings_post` in `fastapi_app.py` to handle new key
+9. Update `admin_event_api_settings_post` in `portal/routers/admin/settings.py` to handle new key
 10. Update `templates/admin/api_settings.html`
 
 ---
@@ -115,7 +115,7 @@ await aggregator.handle_clear(booth_id)                   # silence endpoint
    - Saves settings to DB.
    - If booth is currently live (has `active_interpreter_id`): stops old worker, starts new worker.
 3. On interpreter Go Live: worker is started if `transcription_enabled=True` on the DBBooth.
-   - Look for this logic in `fastapi_app.py` (search for `start_transcription_worker`).
+   - Look for this logic in `portal/routers/api.py` (search for `start_transcription_worker`).
 
 ---
 

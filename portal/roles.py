@@ -33,14 +33,14 @@ class Permission(Enum):
     """
 
     # Booth-level permissions
-    BOOTH_GO_LIVE = 'booth.go_live'
-    BOOTH_SET_ACTIVE = 'booth.set_active'
-    BOOTH_CHAT_SEND = 'booth.chat_send'
-    BOOTH_VIEW = 'booth.view'
+    BOOTH_GO_LIVE = "booth.go_live"
+    BOOTH_SET_ACTIVE = "booth.set_active"
+    BOOTH_CHAT_SEND = "booth.chat_send"
+    BOOTH_VIEW = "booth.view"
 
     # Admin permissions
-    ADMIN_MANAGE_BOOTHS = 'admin.manage_booths'
-    ADMIN_MANAGE_EVENTS = 'admin.manage_events'
+    ADMIN_MANAGE_BOOTHS = "admin.manage_booths"
+    ADMIN_MANAGE_EVENTS = "admin.manage_events"
 
 
 # ---------------------------------------------------------------------------
@@ -48,38 +48,44 @@ class Permission(Enum):
 # ---------------------------------------------------------------------------
 
 ROLE_PERMISSIONS: dict[ParticipantRole, frozenset[Permission]] = {
-    'super_admin': frozenset(Permission),
-    'event_owner': frozenset({
-        Permission.BOOTH_GO_LIVE,
-        Permission.BOOTH_SET_ACTIVE,
-        Permission.BOOTH_CHAT_SEND,
-        Permission.BOOTH_VIEW,
-        Permission.ADMIN_MANAGE_BOOTHS,
-    }),
-    'room_coordinator': frozenset({
-        Permission.BOOTH_GO_LIVE,
-        Permission.BOOTH_SET_ACTIVE,
-        Permission.BOOTH_CHAT_SEND,
-        Permission.BOOTH_VIEW,
-    }),
-    'interpreter': frozenset({
-        Permission.BOOTH_GO_LIVE,
-        Permission.BOOTH_CHAT_SEND,
-        Permission.BOOTH_VIEW,
-    }),
+    "super_admin": frozenset(Permission),
+    "event_owner": frozenset(
+        {
+            Permission.BOOTH_GO_LIVE,
+            Permission.BOOTH_SET_ACTIVE,
+            Permission.BOOTH_CHAT_SEND,
+            Permission.BOOTH_VIEW,
+            Permission.ADMIN_MANAGE_BOOTHS,
+        }
+    ),
+    "room_coordinator": frozenset(
+        {
+            Permission.BOOTH_GO_LIVE,
+            Permission.BOOTH_SET_ACTIVE,
+            Permission.BOOTH_CHAT_SEND,
+            Permission.BOOTH_VIEW,
+        }
+    ),
+    "interpreter": frozenset(
+        {
+            Permission.BOOTH_GO_LIVE,
+            Permission.BOOTH_CHAT_SEND,
+            Permission.BOOTH_VIEW,
+        }
+    ),
 }
 
 # Roles considered administrative (mirrors Eventyay's ``ORGANIZER_ROLES``).
-ADMIN_ROLES: frozenset[ParticipantRole] = frozenset({'super_admin', 'event_owner'})
+ADMIN_ROLES: frozenset[ParticipantRole] = frozenset({"super_admin", "event_owner"})
 
 # All valid role values as a frozenset for quick membership testing.
 ALL_ROLES: frozenset[ParticipantRole] = frozenset(ROLE_PERMISSIONS.keys())
 
 _ROLE_RANK = {
-    'super_admin': 50,
-    'event_owner': 40,
-    'room_coordinator': 30,
-    'interpreter': 20,
+    "super_admin": 50,
+    "event_owner": 40,
+    "room_coordinator": 30,
+    "interpreter": 20,
 }
 
 

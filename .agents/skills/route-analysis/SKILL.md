@@ -1,12 +1,12 @@
 ---
 name: route-analysis
-description: Use this skill to analyse, audit, or modify HTTP and WebSocket routes in VoxBento. All routes live in `fastapi_app.py`.
+description: Use this skill to analyse, audit, or modify HTTP and WebSocket routes in VoxBento. All routes live in `portal/routers/`.
 ---
 
 # Skill: Route Analysis
 
 > Use this skill to analyse, audit, or modify HTTP and WebSocket routes in VoxBento.
-> All routes live in `fastapi_app.py`.
+> All routes live in `portal/routers/`.
 
 ---
 
@@ -87,7 +87,7 @@ Never call `RedirectResponse(url=user_input)` directly.
 
 ## Adding a New Route
 
-1. Add handler to `fastapi_app.py`.
+1. Add handler to `portal/routers/`.
 2. Use correct auth pattern (see above).
 3. Use `safe_redirect` for all redirects.
 4. Return `templates.TemplateResponse(request, 'template.html', context)` for HTML.

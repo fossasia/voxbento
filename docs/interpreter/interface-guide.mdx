@@ -1,0 +1,61 @@
+---
+title: "Booth Interface Guide"
+sidebarTitle: "Interface Guide"
+description: "A visual map of the Voxbento Interpreter Booth, explaining every control, indicator, and panel."
+---
+
+When you join a booth in Voxbento, you'll see a unified interface that combines the live event floor audio (via Jitsi), your microphone controls, and the participant list.
+
+Here is a visual breakdown of the booth:
+
+![Voxbento Interpreter Booth Interface](pathname:///static/interpreter_booth.png)
+
+## 1. The Top Control Bar
+
+The top bar is your primary command center for publishing audio to the event.
+
+- **OFF LIVE / ON AIR**: This indicator shows your current broadcast status. When it says `OFF LIVE`, your microphone is not being transmitted to listeners. When you are actively interpreting, this will change to a red `ON AIR`.
+- **PASS MIC**: Click this button to signal to the Coordinator that you want to hand off the active interpreter role. (If you are not the active interpreter, this button may not be visible or will be disabled).
+- **UNMUTE / MUTE**: This is your master microphone switch. It controls the WHIP audio stream being sent to MediaMTX. 
+- **LEAVE BOOTH**: Closes your WebRTC connection and returns you to the event lobby.
+
+:::warning Do Not Mute Inside Jitsi
+Always use the top control bar's **UNMUTE** button to manage your microphone. The Jitsi iframe in the center is for **receive-only** floor audio. If you unmute inside the Jitsi interface, you will broadcast your voice back to the presenters, not to the translation listeners!
+:::
+
+## 2. The Jitsi Iframe (Floor Audio)
+
+The large central video area is the Jitsi Meet iframe. 
+
+- This is where you will see the presenters' screenshare and hear the original floor audio.
+- The booth automatically handles echo cancellation so that the Jitsi audio coming from your speakers does not bleed into your interpreter microphone.
+- You can use the Jitsi controls at the bottom of the video frame to adjust the volume of the floor audio or hide/show participant thumbnails.
+
+## 3. Participants Panel
+
+On the right side of the screen, you will see the `Participants` list. This shows everyone currently connected to your language booth.
+
+- **Badges**:
+  - `Connected`: The user has an active WebSocket connection to the booth.
+  - `Arnav is active`: This green badge indicates who the current active interpreter is. **Only the active interpreter can broadcast audio.**
+- **Status Tags**:
+  - `mic muted` / `mic active`: Shows whether the participant's physical microphone is open or closed.
+  - `ingest idle` / `ingest live`: Shows whether the participant has successfully established a WHIP WebRTC connection to the media server.
+
+## 4. Booth Audio Volume
+
+Below the participants list is the `BOOTH AUDIO VOLUME` slider.
+- This slider allows you to test and monitor your microphone levels. 
+- Speak into your microphone and watch the blue bar move to ensure your hardware is capturing audio correctly before you go live.
+
+## 5. Booth Chat
+
+The `Booth Chat` panel is a private text channel for everyone inside your specific language booth.
+- **Internal**: These messages are only visible to Interpreters and Coordinators currently in this booth. They are not visible to the main event attendees or the presenters.
+- Use this chat to coordinate handoffs, confirm audio levels, or ask the Coordinator for assistance.
+
+## 6. Relay Audio & Diagnostics
+
+At the very bottom of the sidebar are two collapsable sections:
+- **Relay Audio**: If enabled, this allows you to listen to another interpreter's translation (e.g., listening to the Spanish booth to translate into English) instead of the main floor audio.
+- **Diagnostics**: Displays low-level connection information (like `Ingest disconnected`). If you are having trouble going live, a Coordinator may ask you to open this panel to check for WebRTC errors.
