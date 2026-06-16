@@ -131,8 +131,11 @@ function renderCard(boothId) {
     grid.appendChild(card);
   }
 
-  // Interpreter rows — only show interpreter role; coordinators are observers.
-  const interpreters = (s.participants || []).filter(p => p.role === 'interpreter');
+  // Interpreter rows — show all roles that can go live (interpreter, coordinator,
+  // event_admin, super_admin). Users with elevated roles may join a booth and act
+  // as the active interpreter, so they must appear here too.
+  const LIVE_ROLES = new Set(['interpreter', 'coordinator', 'event_admin', 'super_admin']);
+  const interpreters = (s.participants || []).filter(p => LIVE_ROLES.has(p.role));
 
   const interpretersHtml = interpreters.length
     ? interpreters.map(p => {
