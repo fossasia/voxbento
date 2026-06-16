@@ -85,7 +85,9 @@ async def transcription_worker(
                     active_workers[booth_id]["stderr_task"] = stderr_task
             try:
                 actual_language = transcription_language or language_code
-                await provider.run_stream(process, actual_language, model_size, config, broadcast_callback, booth_id, room_id)
+                await provider.run_stream(
+                    process, actual_language, model_size, config, broadcast_callback, booth_id, room_id
+                )
             except asyncio.IncompleteReadError:
                 logger.error(f"[{booth_id}] ffmpeg stream ended abruptly. Retrying...")
             except asyncio.CancelledError:

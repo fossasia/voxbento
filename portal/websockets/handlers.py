@@ -51,6 +51,7 @@ async def ws_booth(websocket: WebSocket, booth_id: str) -> None:
             continue
         except Exception as e:
             import logging
+
             logging.getLogger(__name__).warning(f"Failed to decode token: {e}")
             continue
 

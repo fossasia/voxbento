@@ -9,6 +9,7 @@ from typing import Dict
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("floor-bot")
 
+
 class SubprocessManager:
     def __init__(self):
         self.rooms: Dict[str, subprocess.Popen] = {}
@@ -26,7 +27,9 @@ class SubprocessManager:
             env["BOT_MEDIAMTX_RTSP_BASE"] = mediamtx_rtsp_base
 
             cmd = [
-                "python", "-u", "-c",
+                "python",
+                "-u",
+                "-c",
                 """
 import asyncio
 import os
@@ -181,20 +184,15 @@ async def run_capture():
                 pass
 
 asyncio.run(run_capture())
-"""
+""",
             ]
 
             proc = subprocess.Popen(  # nosec B603
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                bufsize=1,
-                env=env
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1, env=env
             )
 
             def log_stream(stream, prefix):
-                for line in iter(stream.readline, ''):
+                for line in iter(stream.readline, ""):
                     logger.info(f"{prefix}: {line.strip()}")
 
             threading.Thread(target=log_stream, args=(proc.stdout, f"bot[{event_slug}] stdout"), daemon=True).start()
@@ -214,20 +212,22 @@ asyncio.run(run_capture())
         with self.lock:
             self.stop_room_locked(event_slug)
 
+
 manager = SubprocessManager()
+
 
 class RequestHandler(BaseHTTPRequestHandler):
     def do_POST(self):
-        content_length = int(self.headers.get('Content-Length', 0))
+        content_length = int(self.headers.get("Content-Length", 0))
         post_data = self.rfile.read(content_length)
 
         try:
-            req = json.loads(post_data.decode('utf-8'))
+            req = json.loads(post_data.decode("utf-8"))
         except json.JSONDecodeError:
             self.send_error(400, "Bad Request: Invalid JSON")
             return
 
-        if self.path == '/start':
+        if self.path == "/start":
             event_slug = req.get("event_slug")
             jitsi_url = req.get("jitsi_url")
             mediamtx_rtsp_base = req.get("mediamtx_rtsp_base")
@@ -236,25 +236,25 @@ class RequestHandler(BaseHTTPRequestHandler):
                 return
             manager.start_room(event_slug, jitsi_url, mediamtx_rtsp_base)
             self.send_response(200)
-            self.send_header('Content-type', 'application/json')
+            self.send_header("Content-type", "application/json")
             self.end_headers()
             self.wfile.write(json.dumps({"status": "started", "event_slug": event_slug}).encode())
 
-        elif self.path == '/stop':
+        elif self.path == "/stop":
             event_slug = req.get("event_slug")
             if not event_slug:
                 self.send_error(400, "Missing event_slug")
                 return
             manager.stop_room(event_slug)
             self.send_response(200)
-            self.send_header('Content-type', 'application/json')
+            self.send_header("Content-type", "application/json")
             self.end_headers()
             self.wfile.write(json.dumps({"status": "stopped", "event_slug": event_slug}).encode())
         else:
             self.send_error(404, "Not Found")
 
     def do_GET(self):
-        if self.path == '/status':
+        if self.path == "/status":
             status = {}
             with manager.lock:
                 for event_slug, proc in manager.rooms.items():
@@ -263,14 +263,15 @@ class RequestHandler(BaseHTTPRequestHandler):
                     else:
                         status[event_slug] = {"state": "healthy", "pid": proc.pid}
             self.send_response(200)
-            self.send_header('Content-type', 'application/json')
+            self.send_header("Content-type", "application/json")
             self.end_headers()
             self.wfile.write(json.dumps({"active_rooms": status}).encode())
         else:
             self.send_error(404, "Not Found")
 
+
 if __name__ == "__main__":
-    server_address = ('0.0.0.0', 8080)  # nosec B104
+    server_address = ("0.0.0.0", 8080)  # nosec B104
     httpd = HTTPServer(server_address, RequestHandler)
     logger.info("Starting floor-bot on port 8080...")
     try:

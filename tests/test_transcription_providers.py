@@ -12,15 +12,14 @@ from portal.transcription.providers.base import ProviderConfig, TranscriptionPro
 
 @pytest.mark.anyio
 class TestTranscriptionProviders:
-
     async def test_pcm_to_wav_produces_valid_wav_header(self):
-        result = pcm_to_wav(b'\x00' * 3200, sample_rate=16000)
-        assert result.startswith(b'RIFF')
+        result = pcm_to_wav(b"\x00" * 3200, sample_rate=16000)
+        assert result.startswith(b"RIFF")
         assert len(result) > 3200
 
     async def test_provider_config_get_key_returns_api_key(self):
-        config = ProviderConfig(api_key='test-key-abc')
-        assert config.get_key() == 'test-key-abc'
+        config = ProviderConfig(api_key="test-key-abc")
+        assert config.get_key() == "test-key-abc"
 
     async def test_provider_config_get_key_returns_none(self):
         config = ProviderConfig(api_key=None)
@@ -28,15 +27,17 @@ class TestTranscriptionProviders:
 
     async def test_openai_process_chunk_returns_empty_on_missing_key(self):
         from portal.transcription.providers.openai import OpenAIProvider
+
         provider = OpenAIProvider()
         config = ProviderConfig(api_key=None)
-        result = await provider.process_chunk(b'\x00'*100, 'en', 'whisper-1', config)
-        assert result == ''
+        result = await provider.process_chunk(b"\x00" * 100, "en", "whisper-1", config)
+        assert result == ""
 
     async def test_openai_process_chunk_calls_api_with_wav(self):
         from portal.transcription.providers.openai import OpenAIProvider
+
         provider = OpenAIProvider()
-        config = ProviderConfig(api_key='fake')
+        config = ProviderConfig(api_key="fake")
 
         mock_client = MagicMock()
         mock_response = MagicMock()
@@ -47,8 +48,8 @@ class TestTranscriptionProviders:
         ts.shared_http_client = mock_client
 
         try:
-            result = await provider.process_chunk(b'\x00'*3200, 'en', 'whisper-1', config)
-            assert result == 'Hello'
+            result = await provider.process_chunk(b"\x00" * 3200, "en", "whisper-1", config)
+            assert result == "Hello"
 
             mock_client.post.assert_called_once()
             call_args = mock_client.post.call_args
@@ -58,8 +59,9 @@ class TestTranscriptionProviders:
 
     async def test_openai_process_chunk_returns_empty_on_api_error(self):
         from portal.transcription.providers.openai import OpenAIProvider
+
         provider = OpenAIProvider()
-        config = ProviderConfig(api_key='fake')
+        config = ProviderConfig(api_key="fake")
 
         mock_client = MagicMock()
         mock_client.post = AsyncMock(side_effect=httpx.ConnectError("Connection error"))
@@ -68,7 +70,7 @@ class TestTranscriptionProviders:
 
         try:
             with pytest.raises(Exception):
-                await provider.process_chunk(b'\x00'*3200, 'en', 'whisper-1', config)
+                await provider.process_chunk(b"\x00" * 3200, "en", "whisper-1", config)
         finally:
             ts.shared_http_client = None
 
@@ -80,23 +82,23 @@ class TestTranscriptionProviders:
         )
 
         # Ensure clean state for this test
-        _active_booths_per_model['tiny'] = 0
+        _active_booths_per_model["tiny"] = 0
 
-        increment_model_ref('tiny')
-        increment_model_ref('tiny')
-        assert _active_booths_per_model['tiny'] == 2
+        increment_model_ref("tiny")
+        increment_model_ref("tiny")
+        assert _active_booths_per_model["tiny"] == 2
 
-        decrement_model_ref('tiny')
-        assert _active_booths_per_model['tiny'] == 1
+        decrement_model_ref("tiny")
+        assert _active_booths_per_model["tiny"] == 1
 
-        decrement_model_ref('tiny')
-        assert _active_booths_per_model['tiny'] == 0
+        decrement_model_ref("tiny")
+        assert _active_booths_per_model["tiny"] == 0
 
-        decrement_model_ref('tiny')
-        assert _active_booths_per_model['tiny'] == 0
+        decrement_model_ref("tiny")
+        assert _active_booths_per_model["tiny"] == 0
 
     async def test_local_model_ref_decrement_never_goes_negative(self):
         from portal.transcription.providers.local import _active_booths_per_model, decrement_model_ref
-        decrement_model_ref('nonexistent-model')
-        assert _active_booths_per_model.get('nonexistent-model', 0) == 0
 
+        decrement_model_ref("nonexistent-model")
+        assert _active_booths_per_model.get("nonexistent-model", 0) == 0
