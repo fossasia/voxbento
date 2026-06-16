@@ -48,7 +48,7 @@ class MockProvider:
         try:
             await asyncio.sleep(2)
         except asyncio.CancelledError:
-            pass
+            raise
 
 mock_providers = {
     'local': MockProvider('local'),
@@ -63,7 +63,10 @@ def patch_transcription_dependencies():
         # Mock ffmpeg subprocess creation
         mock_process = AsyncMock()
         mock_process.returncode = None
-        mock_process.stderr.readline = AsyncMock(side_effect=[b"ffmpeg logs", b""])
+        async def dummy_readline(*args, **kwargs):
+            await asyncio.sleep(0.01)
+            return b""
+        mock_process.stderr.readline = dummy_readline
 
         with patch('asyncio.create_subprocess_exec', return_value=mock_process):
             yield

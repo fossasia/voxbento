@@ -75,8 +75,8 @@ async def transcription_worker(
                         if not line:
                             break
                         logger.debug(f"[{bid}] ffmpeg: {line.decode().strip()}")
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"ffmpeg error: {e}")
 
             stderr_task = asyncio.create_task(log_stderr(process.stderr, booth_id))
             async with active_workers_lock:

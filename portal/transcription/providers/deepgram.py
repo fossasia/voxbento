@@ -97,8 +97,10 @@ class DeepgramProvider(TranscriptionProvider):
                         try:
                             await ws.send(b"")
                             await receiver_task
-                        except Exception:
-                            pass
+                        except asyncio.CancelledError:
+                            raise
+                        except Exception as e:
+                            logger.warning(f"Receiver task error: {e}")
                         for task in pending:
                             task.cancel()
                         return  # Clean exit

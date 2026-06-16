@@ -92,7 +92,7 @@ async def _ensure_mediamtx_path(channel_id: str) -> None:
 
 def _require_access(
     credentials: HTTPAuthorizationCredentials | None,
-    token_query: str = "",
+    token_query: str | None = None,
 ) -> None:
     """Allow request if access token is unset, or if a valid JWT or legacy token is provided."""
     if not settings.booth_access_token:

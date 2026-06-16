@@ -161,8 +161,9 @@ async def _handle_join(ws: WebSocket, session: Session, data: dict) -> None:
                 )
                 if _db_booth and _db_booth.broadcast_unlocked:
                     state = await booths.set_broadcast_unlocked(session.booth_id, True, language, channel_id)
-        except Exception:
-            pass
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning(f"Failed to set broadcast unlocked: {e}")
     await ws.send_text(
         json.dumps({"type": "booth:joined", "participant_id": participant.participant_id, "state": state})
     )

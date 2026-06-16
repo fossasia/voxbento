@@ -677,8 +677,8 @@ async def admin_create_booth(request: Request, event_id: int, room_id: int):
             await create_booth(
                 session, event_id=event_id, room_id=room_id, language_code=language_code, language_name=language_name
             )
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning(f"Error creating booth: {e}")
     return safe_redirect(url=f"/admin/events/{event_id}/rooms/{room_id}/booths/", status_code=status.HTTP_303_SEE_OTHER)
 
 
