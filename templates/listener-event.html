@@ -151,7 +151,7 @@
   </div>
 
   <div id="status"><span class="status-badge waiting">Waiting for selection...</span></div>
-  <audio id="audio-player" controls autoplay></audio>
+  <audio id="audio-player" autoplay style="width:100%; margin:1rem 0; display:none;"></audio>
 
   <div class="captions-container" id="captions-container">
     <div class="captions-header" style="justify-content: space-between; align-items: flex-end;">
@@ -223,9 +223,19 @@
     statusEl.innerHTML = '<span class="status-badge ' + cls + '">' + text + '</span>';
   }
 
+  function showAudioPlayer(show) {
+    audioEl.style.display = show ? 'block' : 'none';
+    if (show) {
+      audioEl.setAttribute('controls', '');
+    } else {
+      audioEl.removeAttribute('controls');
+    }
+  }
+
   function onState(s) {
     if (s.peerConnection === 'connected' && s.audioActive) {
       setStatus('Live (WebRTC)', 'live');
+      showAudioPlayer(true);
     } else if (s.peerConnection === 'connecting' || s.ice === 'checking') {
       setStatus('Connecting...', 'recovering');
     } else if (s.peerConnection === 'failed' || s.peerConnection === 'disconnected') {
@@ -237,19 +247,105 @@
     }
   }
 
+  var pendingBoothId = null;   // booth currently being watched (pre-live)
+  var pendingWhepUrl = null;   // WHEP URL to start once live
+
   function stopCurrentStream() {
     WhepListener.stop();
+    pendingBoothId = null;
+    pendingWhepUrl = null;
     if (captionsWs) {
       captionsWs.close();
       captionsWs = null;
     }
-    
+    showAudioPlayer(false);
     document.getElementById('caption-history').innerHTML = '';
     document.getElementById('caption-current').innerHTML = '';
     document.getElementById('translation-history').innerHTML = '';
     document.getElementById('translation-current').innerHTML = '';
     
     setStatus('Waiting for selection...', 'waiting');
+  }
+
+  function startWhepAndCaptions(whepUrl, boothId) {
+    setStatus('Connecting...', 'recovering');
+    WhepListener.start({
+      whepUrl: whepUrl,
+      audioEl: audioEl,
+      onState: onState
+    });
+    openCaptionsWs(boothId);
+  }
+
+  function openCaptionsWs(boothId) {
+    if (!boothId) return;
+    var wsProto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    captionsWs = new WebSocket(wsProto + '//' + window.location.host + '/ws/captions/' + boothId);
+    captionsWs.onmessage = handleCaptionsMessage;
+  }
+
+  function handleCaptionsMessage(event) {
+    try {
+      var data = JSON.parse(event.data);
+      var waitingText = document.getElementById('waiting-text');
+
+      if (data.type === 'booth:state') {
+        var bstate = data.state || {};
+        // If we were waiting for the broadcast to go live, start WHEP now.
+        if (pendingWhepUrl && bstate.ingest_status === 'connected') {
+          var url = pendingWhepUrl;
+          var bid = pendingBoothId;
+          pendingWhepUrl = null;
+          pendingBoothId = null;
+          WhepListener.start({ whepUrl: url, audioEl: audioEl, onState: onState });
+        }
+        // If broadcast was locked, tear down.
+        if (bstate.broadcast_unlocked === false) {
+          WhepListener.stop();
+          showAudioPlayer(false);
+          setStatus('Broadcast is currently locked by the organizers.', 'error');
+          roomSelect.value = '';
+          languageSelect.innerHTML = '<option value="">-- Select Language --</option>';
+          languageSelect.disabled = true;
+          captionModeSelect.disabled = true;
+          captionModeSelect.value = 'original';
+          translationLangSelect.innerHTML = '';
+          updateCaptionLayout();
+        }
+        return;
+      }
+
+      if (data.type === 'caption') {
+        if (waitingText) waitingText.remove();
+        var historyBox = document.getElementById('caption-history');
+        var currentBox = document.getElementById('caption-current');
+        if (data.status === 'partial') {
+          currentBox.textContent = data.text || '';
+        } else if (data.status === 'final') {
+          if (data.text) {
+            var p = document.createElement('div');
+            p.textContent = data.text;
+            historyBox.appendChild(p);
+            while (historyBox.children.length > 50) historyBox.removeChild(historyBox.firstChild);
+          }
+          currentBox.textContent = '';
+        } else if (data.status === 'clear') {
+          currentBox.textContent = '';
+        }
+        captionsBox.scrollTop = captionsBox.scrollHeight;
+      } else if (data.type === 'translation') {
+        if (data.language_code === translationLangSelect.value) {
+          var tHistoryBox = document.getElementById('translation-history');
+          var tp = document.createElement('div');
+          tp.textContent = data.text;
+          tHistoryBox.appendChild(tp);
+          while (tHistoryBox.children.length > 50) tHistoryBox.removeChild(tHistoryBox.firstChild);
+          captionsBox.scrollTop = captionsBox.scrollHeight;
+        }
+      }
+    } catch (e) {
+      console.error('Failed to parse caption data', e);
+    }
   }
 
   function updateCaptionLayout() {
@@ -349,67 +445,28 @@
     updateCaptionLayout();
     
     if (whepUrl) {
-      setStatus('Connecting...', 'recovering');
-      WhepListener.start({
-        whepUrl: whepUrl,
-        audioEl: audioEl,
-        onState: onState
-      });
-      
+      // Check booth live status before starting WHEP to avoid phantom timer.
       if (boothId) {
-        var wsProto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        captionsWs = new WebSocket(wsProto + '//' + window.location.host + '/ws/captions/' + boothId);
-        captionsWs.onmessage = function(event) {
-          try {
-            var data = JSON.parse(event.data);
-            var waitingText = document.getElementById('waiting-text');
-            if (waitingText) waitingText.remove();
-
-            if (data.type === 'caption') {
-              var historyBox = document.getElementById('caption-history');
-              var currentBox = document.getElementById('caption-current');
-              
-              if (data.status === 'partial') {
-                currentBox.textContent = data.text || '';
-              } else if (data.status === 'final') {
-                if (data.text) {
-                  var p = document.createElement('div');
-                  p.textContent = data.text;
-                  historyBox.appendChild(p);
-                  while (historyBox.children.length > 50) historyBox.removeChild(historyBox.firstChild);
-                }
-                currentBox.textContent = '';
-              } else if (data.status === 'clear') {
-                currentBox.textContent = '';
-              }
-              captionsBox.scrollTop = captionsBox.scrollHeight;
-              
-            } else if (data.type === 'translation') {
-              if (data.language_code === translationLangSelect.value) {
-                var tHistoryBox = document.getElementById('translation-history');
-                var p = document.createElement('div');
-                p.textContent = data.text;
-                tHistoryBox.appendChild(p);
-                while (tHistoryBox.children.length > 50) tHistoryBox.removeChild(tHistoryBox.firstChild);
-                captionsBox.scrollTop = captionsBox.scrollHeight;
-              }
-            } else if (data.type === 'booth:state') {
-              if (data.state && data.state.broadcast_unlocked === false) {
-                WhepListener.stop();
-                setStatus('Broadcast is currently locked by the organizers.', 'error');
-                roomSelect.value = "";
-                languageSelect.innerHTML = '<option value="">-- Select Language --</option>';
-                languageSelect.disabled = true;
-                captionModeSelect.disabled = true;
-                captionModeSelect.value = 'original';
-                translationLangSelect.innerHTML = '';
-                updateCaptionLayout();
-              }
+        openCaptionsWs(boothId);
+        fetch('/api/booth/' + boothId + '/state')
+          .then(function(r) { return r.ok ? r.json() : null; })
+          .then(function(bstate) {
+            if (bstate && bstate.ingest_status === 'connected') {
+              startWhepAndCaptions(whepUrl, null); // WS already open
+            } else {
+              // Not live yet — wait for booth:state via WS
+              pendingWhepUrl = whepUrl;
+              pendingBoothId = boothId;
+              setStatus('Broadcast not live yet — waiting...', 'waiting');
+              showAudioPlayer(false);
             }
-          } catch (e) {
-            console.error('Failed to parse caption data', e);
-          }
-        };
+          })
+          .catch(function() {
+            // Can't determine state — start anyway
+            startWhepAndCaptions(whepUrl, null);
+          });
+      } else {
+        startWhepAndCaptions(whepUrl, null);
       }
     }
   });

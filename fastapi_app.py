@@ -1103,6 +1103,31 @@ async def _handle_join(ws: WebSocket, session: Session, data: dict) -> None:
     session.participant_id = participant.participant_id
     session.language = language
     session.channel_id = channel_id
+
+    # Restore broadcast_unlocked from DB so the in-memory booth reflects
+    # the persisted value after a server restart.
+    if not state.get('broadcast_unlocked'):
+        try:
+            from portal.booth_identity import parse_booth_id
+            from portal.database import get_session as get_db_session
+            from portal.models import DBBooth, Event as DBEvent
+            from sqlalchemy import select as sa_select
+
+            _slug, _lang = parse_booth_id(session.booth_id)
+            async with get_db_session() as _db:
+                _db_booth = await _db.scalar(
+                    sa_select(DBBooth).join(DBEvent).where(
+                        DBEvent.slug == _slug,
+                        DBBooth.language_code == _lang,
+                    )
+                )
+                if _db_booth and _db_booth.broadcast_unlocked:
+                    state = await booths.set_broadcast_unlocked(
+                        session.booth_id, True, language, channel_id
+                    )
+        except Exception:
+            pass
+
     await ws.send_text(json.dumps({
         'type': 'booth:joined',
         'participant_id': participant.participant_id,

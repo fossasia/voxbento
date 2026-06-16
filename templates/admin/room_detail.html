@@ -165,13 +165,17 @@
 
     <div class="form-row">
       <div class="form-group" style="flex: 1;">
-        <label for="floor_translation_languages">Target Languages (Select Multiple)</label>
-        <select id="floor_translation_languages" name="floor_translation_languages" class="input" multiple style="height: 120px;">
-          {% for lang in translation_languages_dataset %}
-            <option value="{{ lang.code }}" {% if lang.code in enabled_translation_language_codes %}selected{% endif %}>{{ lang.name }} ({{ lang.code }})</option>
-          {% endfor %}
-        </select>
-        <p class="form-help" style="margin-top: 0.5rem; font-size: 0.85rem; color: #666;">Hold Cmd/Ctrl to select multiple. The translation worker will generate a translation for every selected language simultaneously.</p>
+        <label>Target Languages</label>
+        <div class="lang-picker" id="lp_floor_translation" aria-label="Target languages picker">
+          <div class="lang-picker-tags" id="lp_floor_translation_tags"></div>
+          <div class="lang-picker-search-wrap">
+            <input type="text" class="lang-picker-input" id="lp_floor_translation_search"
+                   placeholder="Search and add a language…" autocomplete="off">
+            <ul class="lang-picker-dropdown" id="lp_floor_translation_dropdown" hidden></ul>
+          </div>
+        </div>
+        <div id="lp_floor_translation_hidden"></div>
+        <p class="form-help" style="margin-top: 0.5rem; font-size: 0.85rem; color: #666;">The translation worker will generate a translation for every selected language simultaneously.</p>
       </div>
       <div class="form-group form-group-btn" style="flex: 0; align-self: flex-end;">
         <button type="submit" class="btn btn-primary">Save Settings</button>
@@ -246,6 +250,113 @@
     if (transProviderSelect.value) {
       loadTranslationModels();
     }
+
+    // Language tag picker
+    function initLangPicker(cfg) {
+      const tagsEl = document.getElementById(cfg.tagsId);
+      const searchEl = document.getElementById(cfg.searchId);
+      const dropdownEl = document.getElementById(cfg.dropdownId);
+      const hiddenEl = document.getElementById(cfg.hiddenId);
+      const selected = new Set(cfg.selectedCodes);
+      let filtered = [];
+      let focusedIdx = -1;
+
+      function renderTags() {
+        tagsEl.innerHTML = '';
+        selected.forEach(code => {
+          const lang = cfg.allLanguages.find(l => l.code === code);
+          if (!lang) return;
+          const tag = document.createElement('span');
+          tag.className = 'lang-tag';
+          const nameSpan = document.createElement('span');
+          nameSpan.textContent = lang.name + ' (' + lang.code + ')';
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'lang-tag-remove';
+          btn.setAttribute('aria-label', 'Remove ' + lang.name);
+          btn.textContent = '×';
+          btn.addEventListener('click', () => { selected.delete(code); renderTags(); syncHidden(); });
+          tag.appendChild(nameSpan);
+          tag.appendChild(btn);
+          tagsEl.appendChild(tag);
+        });
+      }
+
+      function syncHidden() {
+        hiddenEl.innerHTML = '';
+        selected.forEach(code => {
+          const inp = document.createElement('input');
+          inp.type = 'hidden';
+          inp.name = cfg.inputName;
+          inp.value = code;
+          hiddenEl.appendChild(inp);
+        });
+      }
+
+      function renderDropdown(q) {
+        const ql = q.toLowerCase();
+        filtered = cfg.allLanguages.filter(l =>
+          !selected.has(l.code) &&
+          (l.name.toLowerCase().includes(ql) || l.code.toLowerCase().includes(ql))
+        ).slice(0, 60);
+        focusedIdx = -1;
+        dropdownEl.innerHTML = '';
+        if (filtered.length === 0) { dropdownEl.hidden = true; return; }
+        filtered.forEach(lang => {
+          const li = document.createElement('li');
+          li.textContent = lang.name + ' (' + lang.code + ')';
+          li.addEventListener('mousedown', e => { e.preventDefault(); addLang(lang.code); });
+          dropdownEl.appendChild(li);
+        });
+        dropdownEl.hidden = false;
+      }
+
+      function addLang(code) {
+        selected.add(code);
+        searchEl.value = '';
+        renderTags();
+        syncHidden();
+        dropdownEl.hidden = true;
+        searchEl.focus();
+      }
+
+      searchEl.addEventListener('input', () => renderDropdown(searchEl.value));
+      searchEl.addEventListener('focus', () => renderDropdown(searchEl.value));
+      searchEl.addEventListener('blur', () => { setTimeout(() => { dropdownEl.hidden = true; }, 150); });
+      searchEl.addEventListener('keydown', e => {
+        if (dropdownEl.hidden) return;
+        const items = dropdownEl.querySelectorAll('li');
+        if (e.key === 'ArrowDown') {
+          e.preventDefault();
+          focusedIdx = Math.min(focusedIdx + 1, filtered.length - 1);
+          items.forEach((li, i) => li.classList.toggle('lp-focused', i === focusedIdx));
+          if (items[focusedIdx]) items[focusedIdx].scrollIntoView({ block: 'nearest' });
+        } else if (e.key === 'ArrowUp') {
+          e.preventDefault();
+          focusedIdx = Math.max(focusedIdx - 1, 0);
+          items.forEach((li, i) => li.classList.toggle('lp-focused', i === focusedIdx));
+        } else if (e.key === 'Enter') {
+          e.preventDefault();
+          if (focusedIdx >= 0 && filtered[focusedIdx]) addLang(filtered[focusedIdx].code);
+        } else if (e.key === 'Escape') {
+          dropdownEl.hidden = true;
+          focusedIdx = -1;
+        }
+      });
+
+      renderTags();
+      syncHidden();
+    }
+
+    initLangPicker({
+      allLanguages: {{ translation_languages_dataset | tojson }},
+      selectedCodes: {{ enabled_translation_language_codes | tojson }},
+      inputName: 'floor_translation_languages',
+      tagsId: 'lp_floor_translation_tags',
+      searchId: 'lp_floor_translation_search',
+      dropdownId: 'lp_floor_translation_dropdown',
+      hiddenId: 'lp_floor_translation_hidden',
+    });
   });
 
 async function startFloorTranscription(roomId) {

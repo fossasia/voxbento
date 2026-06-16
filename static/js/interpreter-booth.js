@@ -1163,6 +1163,23 @@ function attemptRelayStart(attempt) {
       if (!state.whipBase) throw new Error('MEDIAMTX_WHIP_BASE is not configured')
       await doWhipIngest(pc)
       state.ingestConnected = true
+
+      // Start backend transcription worker now that WHIP ingest is live
+      if (portal.dataset.eventSlug && portal.dataset.languageCode) {
+        try {
+          await fetch(`/api/booth/${state.boothId}/transcription/start`, {
+            method: 'POST',
+            headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              event_slug: portal.dataset.eventSlug,
+              language_code: portal.dataset.languageCode,
+            }),
+          })
+        } catch (err) {
+          console.warn('Failed to start transcription worker:', err)
+        }
+      }
+
       wsSend({ type: 'booth:update-state', mic_active: !state.micMuted, ingest_connected: true })
       showError('')
     } catch (error) {
