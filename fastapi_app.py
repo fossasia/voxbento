@@ -1108,10 +1108,12 @@ async def _handle_join(ws: WebSocket, session: Session, data: dict) -> None:
     # the persisted value after a server restart.
     if not state.get('broadcast_unlocked'):
         try:
+            from sqlalchemy import select as sa_select
+
             from portal.booth_identity import parse_booth_id
             from portal.database import get_session as get_db_session
-            from portal.models import DBBooth, Event as DBEvent
-            from sqlalchemy import select as sa_select
+            from portal.models import DBBooth
+            from portal.models import Event as DBEvent
 
             _slug, _lang = parse_booth_id(session.booth_id)
             async with get_db_session() as _db:
