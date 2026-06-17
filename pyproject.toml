@@ -56,3 +56,8 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["F401"]  # allow unused imports in test files (fixtures, re-exports)
 "alembic/*" = ["F401", "E402"]
+
+[tool.bandit]
+exclude_dirs = ["tests", ".venv"]
+skips = ["B101"]
+
