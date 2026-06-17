@@ -304,16 +304,16 @@ open http://localhost:8000/admin/login
 2. Open the booth detail page → generate an **invite token** with role "interpreter"
 3. Copy the invite link (`/join/<token>`) and open it in a new browser tab
 4. You'll be redirected to the interpreter booth — click **Go Live** and allow microphone
-5. Open `http://localhost:8000/listener-webrtc/<booth-slug>` in another tab
+5. Open `http://localhost:8000/listener/<event_slug>` in another tab
    - This is the WHEP WebRTC listener — sub-second latency
 7. Speak — you should hear yourself
 
 **Quick test without admin panel:**
 ```bash
 # Direct interpreter booth (for development/testing only)
-open http://localhost:8000/interpreter/demo-booth
+open http://localhost:8000/events/demo-event/booths/en
 # Enter a name → select Interpreter → Join Booth → Go Live
-# Then open http://localhost:8000/listener-webrtc/demo-booth in another tab
+# Then open http://localhost:8000/listener/demo-event in another tab
 ```
 
 ### Services and ports
@@ -372,10 +372,10 @@ docker compose down
 | `POST` | `/login` | Authenticate and set session cookie |
 | `GET`  | `/logout` | Clear session cookie |
 | `GET`  | `/account` | User account page (role, status) |
-| `GET`  | `/interpreter/{booth_id}` | Interpreter booth UI |
-| `GET`  | `/listener-webrtc/{booth_id}` | Attendee WHEP listener (WebRTC, primary) |
+| `GET`  | `/events/{event_slug}/booths/{language_code}` | Interpreter booth UI |
+| `GET`  | `/listener/{event_slug}` | Attendee listener (WebRTC playback) |
 | `POST` | `/api/auth/token` | Issue a signed JWT |
-| `GET`  | `/api/booth/{booth_id}/state` | Current booth snapshot |
+| `GET`  | `/api/events/{event_slug}/booths/{language_code}/state` | Current booth snapshot |
 | `GET`  | `/api/interpreter/status/{channel_id}` | MediaMTX reachability |
 | `GET`  | `/healthz` | Health check |
 | `WS`   | `/ws/booth/{booth_id}` | Booth coordination WebSocket |
