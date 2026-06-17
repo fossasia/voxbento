@@ -646,7 +646,7 @@ def test_whip_url_active_interpreter_gets_url():
     """Active interpreter receives a WHIP URL from the gated endpoint."""
     client.post("/api/events/whip-gate/booths", json={"language_code": "en", "language": "English"})
     booth = "whip-gate-en"
-    channel = f"whip-gate/en"
+    channel = "whip-gate/en"
     with client.websocket_connect(f"/ws/booth/{booth}", cookies=_ws_auth()) as ws:
         ws.send_text(
             json.dumps(
@@ -666,7 +666,7 @@ def test_whip_url_active_interpreter_gets_url():
         ws.receive_text()  # drain booth:state
 
         res = client.get(
-            f"/api/events/whip-gate/booths/en/whip-url",
+            "/api/events/whip-gate/booths/en/whip-url",
             params={"participant_id": pid},
         )
 
@@ -682,7 +682,7 @@ def test_whip_url_standby_interpreter_rejected():
     """Standby interpreter receives 403 from the WHIP URL endpoint."""
     client.post("/api/events/whip-standby/booths", json={"language_code": "en", "language": "English"})
     booth = "whip-standby-en"
-    channel = f"whip-standby/en"
+    channel = "whip-standby/en"
     with (
         client.websocket_connect(f"/ws/booth/{booth}", cookies=_ws_auth()) as ws_a,
         client.websocket_connect(f"/ws/booth/{booth}", cookies=_ws_auth()) as ws_b,
@@ -723,7 +723,7 @@ def test_whip_url_standby_interpreter_rejected():
         ws_a.receive_text()  # drain broadcast to ws_a
 
         res = client.get(
-            f"/api/events/whip-standby/booths/en/whip-url",
+            "/api/events/whip-standby/booths/en/whip-url",
             params={"participant_id": pid_b},
         )
 
@@ -735,7 +735,7 @@ def test_whip_url_active_coordinator_passes():
     """Active coordinator role receives 200 from the WHIP URL endpoint."""
     client.post("/api/events/whip-coord/booths", json={"language_code": "en", "language": "English"})
     booth = "whip-coord-en"
-    channel = f"whip-coord/en"
+    channel = "whip-coord/en"
     with client.websocket_connect(f"/ws/booth/{booth}", cookies=_ws_auth()) as ws:
         ws.send_text(
             json.dumps(
@@ -755,7 +755,7 @@ def test_whip_url_active_coordinator_passes():
         ws.receive_text()  # drain booth:state
 
         res = client.get(
-            f"/api/events/whip-coord/booths/en/whip-url",
+            "/api/events/whip-coord/booths/en/whip-url",
             params={"participant_id": pid},
         )
 
@@ -949,7 +949,7 @@ def test_full_bootstrap_flow():
 
         # 4. Active interpreter requests WHIP URL (Go Live)
         whip_res = client.get(
-            f"/api/events/bootstrap/booths/es/whip-url",
+            "/api/events/bootstrap/booths/es/whip-url",
             params={"participant_id": pid},
         )
         assert whip_res.status_code == 200

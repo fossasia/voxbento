@@ -1,13 +1,13 @@
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Query, Request, status
+from fastapi import APIRouter, HTTPException, Request, status
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import select
 from sqlalchemy.orm import joinedload
 
 from portal.auth import get_booth_session, resolve_booth_role
-from portal.booth_identity import booth_id_to_mediamtx_path, make_booth_id, make_mediamtx_path
+from portal.booth_identity import make_booth_id, make_mediamtx_path
 from portal.config import settings
 from portal.database import get_booth_by_id, get_session, list_booth_memberships_for_user
 from portal.globals import _JS_CACHE_BUST, booths
