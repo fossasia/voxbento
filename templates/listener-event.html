@@ -399,8 +399,10 @@
       // b.language_code here is "floor" for floor audio
       if (b.language_code === 'floor') {
         opt.dataset.boothId = '{{ event.slug }}-floor';
+        opt.dataset.languageCode = 'floor';
       } else {
         opt.dataset.boothId = '{{ event.slug }}-' + b.language_code;
+        opt.dataset.languageCode = b.language_code;
       }
       opt.dataset.boothObjId = b.id;
       languageSelect.appendChild(opt);
@@ -418,6 +420,7 @@
     var whepUrl = this.value;
     var selectedOpt = this.options[this.selectedIndex];
     var boothId = selectedOpt ? selectedOpt.dataset.boothId : null;
+    var languageCode = selectedOpt ? selectedOpt.dataset.languageCode : null;
     var boothObjId = selectedOpt ? selectedOpt.dataset.boothObjId : null;
     
     // Setup translation options based on the selected audio source
@@ -446,9 +449,9 @@
     
     if (whepUrl) {
       // Check booth live status before starting WHEP to avoid phantom timer.
-      if (boothId) {
+      if (boothId && languageCode) {
         openCaptionsWs(boothId);
-        fetch('/api/booth/' + boothId + '/state')
+        fetch('/api/events/{{ event.slug }}/booths/' + languageCode + '/state')
           .then(function(r) { return r.ok ? r.json() : null; })
           .then(function(bstate) {
             if (bstate && bstate.ingest_status === 'connected') {

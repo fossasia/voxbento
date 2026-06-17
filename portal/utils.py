@@ -111,8 +111,7 @@ def _require_access(
 async def _resolve_whip_url(booth_id: str, participant_id: str, language: str, channel_id: str) -> dict:
     """Check publish permission and return the WHIP URL payload.
 
-    Shared by both the legacy ``/api/booth/{id}/whip-url`` endpoint and the
-    event-scoped ``/api/events/{slug}/booths/{lang}/whip-url`` endpoint.
+    Used by the event-scoped ``/api/events/{slug}/booths/{lang}/whip-url`` endpoint.
     Raises :class:`HTTPException` on permission/lookup failures.
     """
     try:

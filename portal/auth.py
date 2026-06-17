@@ -132,6 +132,33 @@ async def require_admin(request: Request) -> None:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required.")
 
 
+async def require_super_admin(request: Request) -> None:
+    """FastAPI dependency that guards super-admin routes.
+
+    Checks for a valid ``admin_token`` cookie containing a JWT with
+    ``admin=True`` claim. Also accepts a valid ``user_token`` with
+    ``is_admin=True``. Returns None on success; raises HTTP 403 on failure.
+    """
+    user_cookie = request.cookies.get("user_token", "")
+    if user_cookie:
+        try:
+            payload = decode_token(user_cookie)
+            if payload.get("user") and payload.get("is_admin"):
+                return
+        except jwt.InvalidTokenError:
+            pass
+
+    cookie = request.cookies.get("admin_token", "")
+    if not cookie:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Super-admin access required.")
+    try:
+        payload = decode_token(cookie)
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid admin token.")
+    if not payload.get("admin"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Super-admin access required.")
+
+
 def create_admin_token() -> str:
     """Create a JWT with admin=True claim for admin panel access."""
     now = datetime.now(timezone.utc)

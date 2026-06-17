@@ -73,21 +73,21 @@ def test_home_renders_home_page():
 
 def test_interpreter_booth_requires_auth():
     """Unauthenticated /interpreter/ requests redirect to login."""
-    res = client.get("/interpreter/test-booth", follow_redirects=False)
+    res = client.get("/interpreter/myevent/en", follow_redirects=False)
     assert res.status_code == 303
     assert "/login" in res.headers["location"]
 
 
 def test_interpreter_booth_page_renders():
-    res = client.get("/interpreter/test-booth", cookies=_interpreter_cookie())
+    res = client.get("/interpreter/myevent/en", cookies=_interpreter_cookie("myevent", "en"))
     assert res.status_code == 200
-    assert b"test-booth" in res.content
+    assert b"myevent-en" in res.content
 
 
 def test_interpreter_booth_jitsi_url_uses_base_url():
     """Jitsi URL in the booth page must use the configured base URL, not
     a hard-coded http:// scheme, to avoid mixed-content on HTTPS deployments."""
-    res = client.get("/interpreter/test-booth", cookies=_interpreter_cookie())
+    res = client.get("/interpreter/myevent/en", cookies=_interpreter_cookie("myevent", "en"))
     assert res.status_code == 200
     from portal.config import settings
     from portal.utils import _make_jitsi_url
@@ -122,7 +122,7 @@ def test_interpreter_booth_jitsi_domain_matches_base_url_host():
 
     from portal.config import settings
 
-    res = client.get("/interpreter/test-booth", cookies=_interpreter_cookie())
+    res = client.get("/interpreter/myevent/en", cookies=_interpreter_cookie("myevent", "en"))
     assert res.status_code == 200
     expected_host = urlparse(settings.effective_jitsi_base_url).netloc
     assert f"data-jitsi-domain='{expected_host}'".encode() in res.content
@@ -135,13 +135,6 @@ def test_auth_token_no_password():
     body = res.json()
     assert "access_token" in body
     assert body["token_type"] == "bearer"
-
-
-def test_booth_state_returns_empty_booth():
-    res = client.get("/api/booth/empty-booth/state")
-    assert res.status_code == 200
-    body = res.json()
-    assert "participants" in body
 
 
 def test_ingest_status_endpoint():
@@ -327,7 +320,8 @@ def test_ws_update_state_active_interpreter():
 
 def test_ws_disconnect_without_leave_auto_removes_participant():
     """Participant is cleaned up from registry when WS disconnects unexpectedly."""
-    with client.websocket_connect("/ws/booth/disc-booth", cookies=_ws_auth()) as ws:
+    with client.websocket_connect("/ws/booth/disc-nl", cookies=_ws_auth()) as ws:
+        client.post("/api/events/disc/booths", json={"language_code": "nl", "language": "Dutch"})
         ws.send_text(
             json.dumps(
                 {
@@ -335,7 +329,7 @@ def test_ws_disconnect_without_leave_auto_removes_participant():
                     "display_name": "Frank",
                     "role": "interpreter",
                     "language": "Dutch",
-                    "channel_id": "disc-booth-audio",
+                    "channel_id": "disc-nl-audio",
                 }
             )
         )
@@ -343,7 +337,7 @@ def test_ws_disconnect_without_leave_auto_removes_participant():
         ws.receive_text()  # booth:state
 
     # After disconnect, state should have zero participants
-    res = client.get("/api/booth/disc-booth/state?language=Dutch&channel=disc-booth-audio")
+    res = client.get("/api/events/disc/booths/nl/state")
     assert res.status_code == 200
     assert len(res.json()["participants"]) == 0
 
@@ -650,8 +644,9 @@ def test_ws_coordinator_can_switch_active_interpreter():
 
 def test_whip_url_active_interpreter_gets_url():
     """Active interpreter receives a WHIP URL from the gated endpoint."""
-    booth = "whip-gate-booth"
-    channel = f"{booth}-audio"
+    client.post("/api/events/whip-gate/booths", json={"language_code": "en", "language": "English"})
+    booth = "whip-gate-en"
+    channel = f"whip-gate/en"
     with client.websocket_connect(f"/ws/booth/{booth}", cookies=_ws_auth()) as ws:
         ws.send_text(
             json.dumps(
@@ -671,8 +666,8 @@ def test_whip_url_active_interpreter_gets_url():
         ws.receive_text()  # drain booth:state
 
         res = client.get(
-            f"/api/booth/{booth}/whip-url",
-            params={"participant_id": pid, "language": "English", "channel": channel},
+            f"/api/events/whip-gate/booths/en/whip-url",
+            params={"participant_id": pid},
         )
 
     assert res.status_code == 200
@@ -685,8 +680,9 @@ def test_whip_url_active_interpreter_gets_url():
 
 def test_whip_url_standby_interpreter_rejected():
     """Standby interpreter receives 403 from the WHIP URL endpoint."""
-    booth = "whip-standby-booth"
-    channel = f"{booth}-audio"
+    client.post("/api/events/whip-standby/booths", json={"language_code": "en", "language": "English"})
+    booth = "whip-standby-en"
+    channel = f"whip-standby/en"
     with (
         client.websocket_connect(f"/ws/booth/{booth}", cookies=_ws_auth()) as ws_a,
         client.websocket_connect(f"/ws/booth/{booth}", cookies=_ws_auth()) as ws_b,
@@ -727,8 +723,8 @@ def test_whip_url_standby_interpreter_rejected():
         ws_a.receive_text()  # drain broadcast to ws_a
 
         res = client.get(
-            f"/api/booth/{booth}/whip-url",
-            params={"participant_id": pid_b, "language": "English", "channel": channel},
+            f"/api/events/whip-standby/booths/en/whip-url",
+            params={"participant_id": pid_b},
         )
 
     assert res.status_code == 403
@@ -737,8 +733,9 @@ def test_whip_url_standby_interpreter_rejected():
 
 def test_whip_url_active_coordinator_passes():
     """Active coordinator role receives 200 from the WHIP URL endpoint."""
-    booth = "whip-coord-booth"
-    channel = f"{booth}-audio"
+    client.post("/api/events/whip-coord/booths", json={"language_code": "en", "language": "English"})
+    booth = "whip-coord-en"
+    channel = f"whip-coord/en"
     with client.websocket_connect(f"/ws/booth/{booth}", cookies=_ws_auth()) as ws:
         ws.send_text(
             json.dumps(
@@ -758,8 +755,8 @@ def test_whip_url_active_coordinator_passes():
         ws.receive_text()  # drain booth:state
 
         res = client.get(
-            f"/api/booth/{booth}/whip-url",
-            params={"participant_id": pid, "language": "English", "channel": channel},
+            f"/api/events/whip-coord/booths/en/whip-url",
+            params={"participant_id": pid},
         )
 
     assert res.status_code == 200
@@ -770,16 +767,18 @@ def test_whip_url_active_coordinator_passes():
 
 def test_whip_url_unknown_participant_returns_404():
     """Unknown participant_id returns 404."""
+    client.post("/api/events/whip-404/booths", json={"language_code": "en", "language": "English"})
     res = client.get(
-        "/api/booth/whip-404-booth/whip-url",
-        params={"participant_id": "nonexistent", "language": "English"},
+        "/api/events/whip-404/booths/en/whip-url",
+        params={"participant_id": "nonexistent"},
     )
     assert res.status_code == 404
 
 
 def test_whip_url_missing_participant_id_returns_422():
     """Missing required participant_id query param returns 422."""
-    res = client.get("/api/booth/whip-missing-booth/whip-url")
+    client.post("/api/events/whip-missing/booths", json={"language_code": "en", "language": "English"})
+    res = client.get("/api/events/whip-missing/booths/en/whip-url")
     assert res.status_code == 422
 
 
@@ -907,19 +906,6 @@ def test_interpreter_booth_admin_user_gets_super_admin_role():
     assert b"data-granted-role='super_admin'" in res.content
 
 
-def test_legacy_interpreter_booth_requires_auth():
-    """Unauthenticated legacy /interpreter/{booth_id} redirects to login."""
-    res = client.get("/interpreter/demo-booth", follow_redirects=False)
-    assert res.status_code == 303
-
-
-def test_legacy_interpreter_booth_still_works():
-    """The old /interpreter/{booth_id} route still works for backward compat."""
-    res = client.get("/interpreter/demo-booth", cookies=_interpreter_cookie())
-    assert res.status_code == 200
-    assert b"demo-booth" in res.content
-
-
 def test_full_bootstrap_flow():
     """End-to-end: create booth → access page → join → go live (get WHIP URL)."""
     # 1. Organiser creates booth via API
@@ -963,8 +949,8 @@ def test_full_bootstrap_flow():
 
         # 4. Active interpreter requests WHIP URL (Go Live)
         whip_res = client.get(
-            f"/api/booth/{booth_id}/whip-url",
-            params={"participant_id": pid, "language": "Spanish", "channel": channel},
+            f"/api/events/bootstrap/booths/es/whip-url",
+            params={"participant_id": pid},
         )
         assert whip_res.status_code == 200
         whip_body = whip_res.json()

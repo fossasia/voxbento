@@ -434,7 +434,7 @@ function setPreflightStatus(check, status, message = '') {
 // ── REST helpers ──────────────────────────────────────────────────────────────
 
 async function fetchBoothState() {
-  const url = new URL(`/api/booth/${encodeURIComponent(state.boothId)}/state`, window.location.origin)
+  const url = new URL(`/api/events/${portal.dataset.eventSlug}/booths/${portal.dataset.languageCode}/state`, window.location.origin)
   url.searchParams.set('token', state.token)
   url.searchParams.set('language', state.language)
   url.searchParams.set('channel', state.channelId)
@@ -1072,7 +1072,7 @@ async function startLiveIngest() {
     // Start backend transcription
     try {
       const payload = { event_slug: portal.dataset.eventSlug, language_code: portal.dataset.languageCode }
-      await fetch(`/api/booth/${state.boothId}/transcription/start`, {
+      await fetch(`/api/events/${portal.dataset.eventSlug}/booths/${portal.dataset.languageCode}/transcription/start`, {
         method: 'POST',
         headers: { ...authHeaders(), 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
@@ -1121,7 +1121,7 @@ async function stopLiveIngest() {
     // If someone else is active, it means they took over, so let THEM manage the transcription!
     if (state.activeInterpreterId === null || state.activeInterpreterId === state.participantId) {
       try {
-        await fetch(`/api/booth/${state.boothId}/transcription/stop`, { method: 'POST', headers: authHeaders() })
+        await fetch(`/api/events/${portal.dataset.eventSlug}/booths/${portal.dataset.languageCode}/transcription/stop`, { method: 'POST', headers: authHeaders() })
       } catch (err) {
         console.warn('Failed to stop transcription worker:', err)
       }
@@ -1171,7 +1171,7 @@ function attemptRelayStart(attempt) {
       // Start backend transcription worker now that WHIP ingest is live
       if (portal.dataset.eventSlug && portal.dataset.languageCode) {
         try {
-          await fetch(`/api/booth/${state.boothId}/transcription/start`, {
+          await fetch(`/api/events/${portal.dataset.eventSlug}/booths/${portal.dataset.languageCode}/transcription/start`, {
             method: 'POST',
             headers: { ...authHeaders(), 'Content-Type': 'application/json' },
             body: JSON.stringify({

@@ -19,6 +19,7 @@ from portal.auth import (
     get_admin_flags,
     get_current_user,
     require_admin,
+    require_super_admin,
     require_user,
 )
 from portal.booth_identity import make_booth_id, make_mediamtx_path, validate_language_code
@@ -976,7 +977,7 @@ async def admin_transcription_settings(
     )
 
 
-@router.get("/admin/users/", dependencies=[Depends(require_admin)])
+@router.get("/admin/users/", dependencies=[Depends(require_super_admin)])
 async def admin_user_list(request: Request, page: int = 1):
     limit = 20
     offset = (page - 1) * limit
@@ -989,7 +990,7 @@ async def admin_user_list(request: Request, page: int = 1):
     )
 
 
-@router.post("/admin/users/{user_id}/toggle-active", dependencies=[Depends(require_admin)])
+@router.post("/admin/users/{user_id}/toggle-active", dependencies=[Depends(require_super_admin)])
 async def admin_toggle_user_active(request: Request, user_id: int):
     async with get_session() as session:
         user = await get_user_by_id(session, user_id)
@@ -998,14 +999,14 @@ async def admin_toggle_user_active(request: Request, user_id: int):
     return safe_redirect(url="/admin/users/", status_code=status.HTTP_303_SEE_OTHER)
 
 
-@router.post("/admin/users/{user_id}/delete", dependencies=[Depends(require_admin)])
+@router.post("/admin/users/{user_id}/delete", dependencies=[Depends(require_super_admin)])
 async def admin_delete_user(request: Request, user_id: int):
     async with get_session() as session:
         await delete_user(session, user_id)
     return safe_redirect(url="/admin/users/", status_code=status.HTTP_303_SEE_OTHER)
 
 
-@router.get("/admin/users/{user_id}/", dependencies=[Depends(require_admin)])
+@router.get("/admin/users/{user_id}/", dependencies=[Depends(require_super_admin)])
 async def admin_user_detail(request: Request, user_id: int):
     async with get_session() as session:
         user = await get_user_by_id(session, user_id)
@@ -1019,7 +1020,7 @@ async def admin_user_detail(request: Request, user_id: int):
     )
 
 
-@router.post("/admin/users/{user_id}/toggle-admin", dependencies=[Depends(require_admin)])
+@router.post("/admin/users/{user_id}/toggle-admin", dependencies=[Depends(require_super_admin)])
 async def admin_toggle_user_admin(request: Request, user_id: int):
     async with get_session() as session:
         user = await get_user_by_id(session, user_id)
@@ -1030,7 +1031,7 @@ async def admin_toggle_user_admin(request: Request, user_id: int):
     return safe_redirect(url=f"/admin/users/{user_id}/", status_code=status.HTTP_303_SEE_OTHER)
 
 
-@router.post("/admin/users/{user_id}/events/{event_id}/toggle-owner", dependencies=[Depends(require_admin)])
+@router.post("/admin/users/{user_id}/events/{event_id}/toggle-owner", dependencies=[Depends(require_super_admin)])
 async def admin_toggle_user_event_owner(request: Request, user_id: int, event_id: int):
     async with get_session() as session:
         user = await get_user_by_id(session, user_id)
@@ -1133,7 +1134,7 @@ async def admin_revoke_token(request: Request, event_id: int, room_id: int, boot
     )
 
 
-@router.get("/events/{event_id}/rooms/{room_id}/transcripts/{language_code}")
+@router.get("/api/admin/events/{event_id}/rooms/{room_id}/transcripts/{language_code}")
 async def api_admin_get_transcripts(
     event_id: int,
     room_id: int,

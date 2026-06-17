@@ -18,33 +18,6 @@ from portal.websockets.manager import broadcast_transcription
 router = APIRouter(prefix="/api")
 
 
-@router.get("/booth/{booth_id}/state")
-async def booth_state_api(
-    booth_id: str,
-    token: str = Query(""),
-    language: str = "English",
-    channel: str | None = Query(None),
-    room: int | None = Query(None),
-    credentials: HTTPAuthorizationCredentials | None = Depends(security),
-) -> dict:
-    _require_access(credentials, token)
-    channel_id = channel or f"{booth_id}-audio"
-    return await booths.snapshot(booth_id, language, channel_id, room_id=room)
-
-
-@router.get("/booth/{booth_id}/whip-url")
-async def booth_whip_url(
-    booth_id: str,
-    participant_id: str = Query(...),
-    token: str = Query(""),
-    language: str = "English",
-    channel: str | None = Query(None),
-    credentials: HTTPAuthorizationCredentials | None = Depends(security),
-) -> dict:
-    """Return the WHIP ingest URL only if the caller is the active interpreter."""
-    _require_access(credentials, token)
-    channel_id = channel or f"{booth_id}-audio"
-    return await _resolve_whip_url(booth_id, participant_id, language, channel_id)
 
 
 @router.post("/events/{event_slug}/booths", status_code=status.HTTP_201_CREATED)
@@ -135,19 +108,16 @@ async def ingest_status_api(channel_id: str) -> dict:
     return {"channel_id": channel_id, "state": "mediamtx", "reachable": await _check_mediamtx()}
 
 
-@router.post("/booth/{booth_id}/transcription/start")
+@router.post("/events/{event_slug}/booths/{language_code}/transcription/start")
 async def api_transcription_start(
-    booth_id: str,
+    event_slug: str,
+    language_code: str,
     request: Request,
     token: str = Query(""),
     credentials: HTTPAuthorizationCredentials | None = Depends(security),
 ):
     _require_access(credentials, token)
-    data = await request.json()
-    event_slug = data.get("event_slug")
-    language_code = data.get("language_code")
-    if not event_slug or not language_code:
-        raise HTTPException(status_code=400, detail="Missing event_slug or language_code")
+    booth_id = make_booth_id(event_slug, language_code)
     async with get_session() as session:
         stmt = (
             select(DBBooth)
@@ -186,10 +156,14 @@ async def api_transcription_start(
     return {"status": "started", "provider": provider, "model": model_size}
 
 
-@router.post("/booth/{booth_id}/transcription/stop")
+@router.post("/events/{event_slug}/booths/{language_code}/transcription/stop")
 async def api_transcription_stop(
-    booth_id: str, token: str = Query(""), credentials: HTTPAuthorizationCredentials | None = Depends(security)
+    event_slug: str,
+    language_code: str,
+    token: str = Query(""),
+    credentials: HTTPAuthorizationCredentials | None = Depends(security)
 ):
     _require_access(credentials, token)
+    booth_id = make_booth_id(event_slug, language_code)
     await stop_transcription_worker(booth_id)
     return {"status": "stopped"}
