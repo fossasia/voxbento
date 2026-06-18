@@ -633,7 +633,7 @@ async def api_stop_floor_transcription(room_id: int):
             await client.post(f"{settings.floor_bot_base}/stop", json={"event_slug": event_slug}, timeout=5.0)
     except Exception as e:
         logger.error(f"Failed to stop floor-bot: {e}")
-    stop_transcription_worker(f"{event_slug}-floor")
+    await stop_transcription_worker(f"{event_slug}-floor")
     return {"status": "stopped"}
 
 
