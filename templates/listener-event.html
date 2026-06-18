@@ -367,7 +367,7 @@
             setStatus('Live (TTS Audio)', 'live');
           }
         }
-        // If broadcast was locked, tear down.
+        // If broadcast was locked, tear down (floor booths are never locked this way).
         if (bstate.broadcast_unlocked === false) {
           WhepListener.stop();
           showAudioPlayer(false);
@@ -542,14 +542,17 @@
         if (boothId && languageCode) {
           openCaptionsWs(boothId);
           if (languageCode === 'floor') {
+            // Floor audio has no WHIP ingest — start WHEP immediately.
             startWhepAndCaptions(whepUrl, null);
           } else {
+            // Check booth live status before starting WHEP to avoid phantom timer.
             fetch('/api/events/{{ event.slug }}/booths/' + languageCode + '/state')
               .then(function(r) { return r.ok ? r.json() : null; })
               .then(function(bstate) {
                 if (bstate && bstate.ingest_status === 'connected') {
                   startWhepAndCaptions(whepUrl, null);
                 } else {
+                  // Not live yet — wait for booth:state via WS
                   pendingWhepUrl = whepUrl;
                   pendingBoothId = boothId;
                   setStatus('Broadcast not live yet — waiting...', 'waiting');
@@ -557,6 +560,7 @@
                 }
               })
               .catch(function() {
+                // Can't determine state — start anyway
                 startWhepAndCaptions(whepUrl, null);
               });
           }
@@ -569,9 +573,11 @@
       if (boothId && languageCode) {
         openCaptionsWs(boothId);
         if (languageCode === 'floor') {
+          // Floor audio has no WHIP ingest — start TTS immediately.
           startTtsWs(roomId, ttsLang);
           setStatus('Live (TTS Audio)', 'live');
         } else {
+          // Check booth live status before starting TTS to avoid phantom timer.
           fetch('/api/events/{{ event.slug }}/booths/' + languageCode + '/state')
             .then(function(r) { return r.ok ? r.json() : null; })
             .then(function(bstate) {
@@ -579,6 +585,7 @@
                 startTtsWs(roomId, ttsLang);
                 setStatus('Live (TTS Audio)', 'live');
               } else {
+                // Not live yet — wait for booth:state via WS
                 pendingTtsLang = ttsLang;
                 pendingRoomId = roomId;
                 setStatus('Broadcast not live yet — waiting...', 'waiting');
@@ -586,6 +593,7 @@
               }
             })
             .catch(function() {
+              // Can't determine state — start anyway
               startTtsWs(roomId, ttsLang);
               setStatus('Live (TTS Audio)', 'live');
             });
