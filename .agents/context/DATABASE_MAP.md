@@ -54,6 +54,7 @@ Cascade: deletes rooms + booths when event is deleted.
 | `eventyay_room_id` | String(200) nullable | Future Eventyay room linkage |
 | `jitsi_url` | String(500) nullable | Full Jitsi meeting URL for this room; overrides default |
 | `relay_booth_id` | FK → booths.id SET NULL nullable | Points to the booth whose WHEP stream is relayed in this room |
+| `floor_tts_enabled` | Boolean | Default False; controls whether TTS is generated for floor audio translations |
 | `created_at` | DateTime(tz) | UTC |
 
 ---

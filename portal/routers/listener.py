@@ -78,7 +78,12 @@ async def listen_event_page(request: Request, event_slug: str, code: str | None 
             {"code": lang.language_code, "name": lang.language_name} for lang in r.translation_languages if lang.enabled
         ]
         rooms_data.append(
-            {"id": r.id, "floor_translation_enabled": r.floor_translation_enabled, "translation_languages": lang_data}
+            {
+                "id": r.id,
+                "floor_translation_enabled": r.floor_translation_enabled,
+                "floor_tts_enabled": r.floor_tts_enabled,
+                "translation_languages": lang_data,
+            }
         )
 
         if r.floor_transcription_enabled:

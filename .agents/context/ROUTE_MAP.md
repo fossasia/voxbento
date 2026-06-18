@@ -52,6 +52,7 @@
 |---|---|---|
 | `/ws/booth/{booth_id}` | optional JWT via `?token=` + cookies (`session_token` or `user_token`) | See WebSocket Protocol in `REPOSITORY_CONTEXT.md` |
 | `/ws/captions/{booth_id}` | open (no auth) | Receives `booth:state`, `caption` messages; listener captions feed |
+| `/ws/tts/{room_id}` | open (no auth) | Receives raw PCM 16-bit 24kHz binary audio for synthesized translated speech |
 
 ---
 

@@ -143,9 +143,9 @@
       </select>
     </div>
     <div class="selector-group">
-      <label for="language-select">Language</label>
+      <label for="language-select">Source Audio</label>
       <select id="language-select" class="input" disabled>
-        <option value="">-- Select Language --</option>
+        <option value="">-- Select Source Audio --</option>
       </select>
     </div>
   </div>
@@ -219,6 +219,10 @@
   var captionsBox = document.getElementById('live-captions');
   var captionsWs = null;
 
+  var ttsWs = null;
+  var audioCtx = null;
+  var nextStartTime = 0;
+
   function setStatus(text, cls) {
     statusEl.innerHTML = '<span class="status-badge ' + cls + '">' + text + '</span>';
   }
@@ -249,22 +253,78 @@
 
   var pendingBoothId = null;   // booth currently being watched (pre-live)
   var pendingWhepUrl = null;   // WHEP URL to start once live
+  var pendingTtsLang = null;   // TTS language to start once live
+  var pendingRoomId = null;
 
   function stopCurrentStream() {
     WhepListener.stop();
+    stopTtsWs();
     pendingBoothId = null;
     pendingWhepUrl = null;
+    pendingTtsLang = null;
+    pendingRoomId = null;
     if (captionsWs) {
       captionsWs.close();
       captionsWs = null;
     }
     showAudioPlayer(false);
+    audioEl.muted = false;
     document.getElementById('caption-history').innerHTML = '';
     document.getElementById('caption-current').innerHTML = '';
     document.getElementById('translation-history').innerHTML = '';
     document.getElementById('translation-current').innerHTML = '';
     
     setStatus('Waiting for selection...', 'waiting');
+  }
+
+  function startTtsWs(roomId, langCode) {
+    stopTtsWs();
+    if (!audioCtx) {
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    }
+    if (audioCtx.state === 'suspended') {
+      audioCtx.resume();
+    }
+    
+    var wsProto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    ttsWs = new WebSocket(wsProto + '//' + window.location.host + '/ws/tts/' + roomId + '/' + langCode);
+    ttsWs.binaryType = 'arraybuffer';
+    
+    nextStartTime = audioCtx.currentTime;
+    
+    ttsWs.onmessage = function(event) {
+      if (event.data instanceof ArrayBuffer) {
+        var int16 = new Int16Array(event.data);
+        var float32 = new Float32Array(int16.length);
+        for (var i = 0; i < int16.length; i++) {
+          float32[i] = int16[i] / 32768.0;
+        }
+        var audioBuffer = audioCtx.createBuffer(1, float32.length, 24000);
+        audioBuffer.copyToChannel(float32, 0);
+        
+        var source = audioCtx.createBufferSource();
+        source.buffer = audioBuffer;
+        source.connect(audioCtx.destination);
+        
+        if (nextStartTime < audioCtx.currentTime) {
+          nextStartTime = audioCtx.currentTime;
+        }
+        source.start(nextStartTime);
+        nextStartTime += audioBuffer.duration;
+      }
+    };
+    
+    ttsWs.onclose = function() {
+      console.log('TTS WS closed');
+    };
+  }
+
+  function stopTtsWs() {
+    if (ttsWs) {
+      ttsWs.close();
+      ttsWs = null;
+    }
+    nextStartTime = 0;
   }
 
   function startWhepAndCaptions(whepUrl, boothId) {
@@ -291,13 +351,21 @@
 
       if (data.type === 'booth:state') {
         var bstate = data.state || {};
-        // If we were waiting for the broadcast to go live, start WHEP now.
-        if (pendingWhepUrl && bstate.ingest_status === 'connected') {
-          var url = pendingWhepUrl;
-          var bid = pendingBoothId;
-          pendingWhepUrl = null;
-          pendingBoothId = null;
-          WhepListener.start({ whepUrl: url, audioEl: audioEl, onState: onState });
+        // If we were waiting for the broadcast to go live, start WHEP or TTS now.
+        if (bstate.ingest_status === 'connected') {
+          if (pendingWhepUrl) {
+            var url = pendingWhepUrl;
+            pendingWhepUrl = null;
+            pendingBoothId = null;
+            WhepListener.start({ whepUrl: url, audioEl: audioEl, onState: onState });
+          } else if (pendingTtsLang) {
+            var plang = pendingTtsLang;
+            var prid = pendingRoomId;
+            pendingTtsLang = null;
+            pendingRoomId = null;
+            startTtsWs(prid, plang);
+            setStatus('Live (TTS Audio)', 'live');
+          }
         }
         // If broadcast was locked, tear down (floor booths are never locked this way).
         if (bstate.broadcast_unlocked === false) {
@@ -377,7 +445,7 @@
 
   roomSelect.addEventListener('change', function() {
     var roomId = parseInt(this.value, 10);
-    languageSelect.innerHTML = '<option value="">-- Select Language --</option>';
+    languageSelect.innerHTML = '<option value="">-- Select Source Audio --</option>';
     
     stopCurrentStream();
 
@@ -396,7 +464,7 @@
       var opt = document.createElement('option');
       opt.value = b.whep_url;
       opt.textContent = b.language_name;
-      // b.language_code here is "floor" for floor audio
+      opt.dataset.type = 'whep';
       if (b.language_code === 'floor') {
         opt.dataset.boothId = '{{ event.slug }}-floor';
         opt.dataset.languageCode = 'floor';
@@ -406,6 +474,24 @@
       }
       opt.dataset.boothObjId = b.id;
       languageSelect.appendChild(opt);
+
+      // Append TTS translations if available
+      if (b.language_code === 'floor') {
+        var rData = roomsData.find(r => r.id.toString() === roomId.toString());
+        if (rData && rData.floor_tts_enabled && rData.translation_languages && rData.translation_languages.length > 0) {
+          rData.translation_languages.forEach(lang => {
+            var ttsOpt = document.createElement('option');
+            ttsOpt.value = '';
+            ttsOpt.textContent = '🤖 Floor Audio (' + lang.name + ' TTS)';
+            ttsOpt.dataset.type = 'tts';
+            ttsOpt.dataset.ttsLang = lang.code;
+            ttsOpt.dataset.boothId = '{{ event.slug }}-floor';
+            ttsOpt.dataset.languageCode = 'floor';
+            ttsOpt.dataset.boothObjId = b.id;
+            languageSelect.appendChild(ttsOpt);
+          });
+        }
+      }
     });
     
     // Reset translation dropdown until language is selected
@@ -422,6 +508,9 @@
     var boothId = selectedOpt ? selectedOpt.dataset.boothId : null;
     var languageCode = selectedOpt ? selectedOpt.dataset.languageCode : null;
     var boothObjId = selectedOpt ? selectedOpt.dataset.boothObjId : null;
+    var type = selectedOpt ? selectedOpt.dataset.type : null;
+    var ttsLang = selectedOpt ? selectedOpt.dataset.ttsLang : null;
+    var roomId = parseInt(roomSelect.value, 10);
     
     // Setup translation options based on the selected audio source
     if (boothObjId) {
@@ -445,36 +534,70 @@
       captionModeSelect.value = 'original';
       translationLangSelect.innerHTML = '';
     }
+
     updateCaptionLayout();
     
-    if (whepUrl) {
+    if (type === 'whep') {
+      if (whepUrl) {
+        if (boothId && languageCode) {
+          openCaptionsWs(boothId);
+          if (languageCode === 'floor') {
+            // Floor audio has no WHIP ingest — start WHEP immediately.
+            startWhepAndCaptions(whepUrl, null);
+          } else {
+            // Check booth live status before starting WHEP to avoid phantom timer.
+            fetch('/api/events/{{ event.slug }}/booths/' + languageCode + '/state')
+              .then(function(r) { return r.ok ? r.json() : null; })
+              .then(function(bstate) {
+                if (bstate && bstate.ingest_status === 'connected') {
+                  startWhepAndCaptions(whepUrl, null);
+                } else {
+                  // Not live yet — wait for booth:state via WS
+                  pendingWhepUrl = whepUrl;
+                  pendingBoothId = boothId;
+                  setStatus('Broadcast not live yet — waiting...', 'waiting');
+                  showAudioPlayer(false);
+                }
+              })
+              .catch(function() {
+                // Can't determine state — start anyway
+                startWhepAndCaptions(whepUrl, null);
+              });
+          }
+        } else {
+          startWhepAndCaptions(whepUrl, null);
+        }
+      }
+    } else if (type === 'tts') {
+      audioEl.muted = true;
       if (boothId && languageCode) {
         openCaptionsWs(boothId);
         if (languageCode === 'floor') {
-          // Floor audio has no WHIP ingest — start WHEP immediately.
-          startWhepAndCaptions(whepUrl, null); // WS already open
+          // Floor audio has no WHIP ingest — start TTS immediately.
+          startTtsWs(roomId, ttsLang);
+          setStatus('Live (TTS Audio)', 'live');
         } else {
-          // Check booth live status before starting WHEP to avoid phantom timer.
+          // Check booth live status before starting TTS to avoid phantom timer.
           fetch('/api/events/{{ event.slug }}/booths/' + languageCode + '/state')
             .then(function(r) { return r.ok ? r.json() : null; })
             .then(function(bstate) {
               if (bstate && bstate.ingest_status === 'connected') {
-                startWhepAndCaptions(whepUrl, null); // WS already open
+                startTtsWs(roomId, ttsLang);
+                setStatus('Live (TTS Audio)', 'live');
               } else {
                 // Not live yet — wait for booth:state via WS
-                pendingWhepUrl = whepUrl;
-                pendingBoothId = boothId;
+                pendingTtsLang = ttsLang;
+                pendingRoomId = roomId;
                 setStatus('Broadcast not live yet — waiting...', 'waiting');
                 showAudioPlayer(false);
               }
             })
             .catch(function() {
               // Can't determine state — start anyway
-              startWhepAndCaptions(whepUrl, null);
+              startTtsWs(roomId, ttsLang);
+              setStatus('Live (TTS Audio)', 'live');
             });
         }
-      } else {
-        startWhepAndCaptions(whepUrl, null);
       }
     }
   });
@@ -482,6 +605,7 @@
   // Clean up on page unload.
   window.addEventListener('beforeunload', function () {
     WhepListener.stop();
+    stopTtsWs();
   });
 })();
 </script>
