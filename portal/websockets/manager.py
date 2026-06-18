@@ -81,8 +81,39 @@ class ListenerConnectionManager:
             self.remove(ws, booth_id)
 
 
+class TTSConnectionManager:
+    def __init__(self) -> None:
+        self._rooms: dict[str, set[WebSocket]] = {}
+
+    def _get_key(self, room_id: int, language_code: str) -> str:
+        return f"{room_id}-{language_code}"
+
+    def add(self, ws: WebSocket, room_id: int, language_code: str) -> None:
+        key = self._get_key(room_id, language_code)
+        self._rooms.setdefault(key, set()).add(ws)
+
+    def remove(self, ws: WebSocket, room_id: int, language_code: str) -> None:
+        key = self._get_key(room_id, language_code)
+        room = self._rooms.get(key, set())
+        room.discard(ws)
+        if not room:
+            self._rooms.pop(key, None)
+
+    async def broadcast_audio(self, room_id: int, language_code: str, audio_bytes: bytes) -> None:
+        key = self._get_key(room_id, language_code)
+        dead: list[WebSocket] = []
+        for ws in list(self._rooms.get(key, set())):
+            try:
+                await ws.send_bytes(audio_bytes)
+            except Exception:
+                dead.append(ws)
+        for ws in dead:
+            self.remove(ws, room_id, language_code)
+
+
 manager = ConnectionManager()
 listener_manager = ListenerConnectionManager()
+tts_manager = TTSConnectionManager()
 
 
 async def broadcast_transcription(booth_id: str, payload: str | dict):

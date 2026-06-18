@@ -122,9 +122,16 @@ class CaptionAggregator:
                 segment_id = await save_transcript_segment(booth_id, final_text, self.room_id)
                 if segment_id is not None:
                     from portal.translations.worker import TranslationWorker
+                    from portal.tts.worker import TTSWorker
+                    from portal.websockets.manager import tts_manager
 
                     worker = TranslationWorker(self.broadcast_callback)
-                    await worker.handle_translation(self.room_id, segment_id, final_text, booth_id)
+                    tts_worker = TTSWorker(tts_manager.broadcast_audio)
+
+                    await asyncio.gather(
+                        worker.handle_translation(self.room_id, segment_id, final_text, booth_id),
+                        tts_worker.handle_tts(self.room_id, final_text),
+                    )
 
             asyncio.create_task(_save_and_translate())
 

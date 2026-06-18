@@ -126,6 +126,9 @@ class Room(Base):
     floor_translation_model: Mapped[str | None] = mapped_column(String(100), nullable=True, default=None)
     floor_source_language_code: Mapped[str] = mapped_column(String(20), default="en", server_default=sa.text("'en'"))
 
+    # TTS Settings
+    floor_tts_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
     event: Mapped[Event] = relationship(back_populates="rooms")
