@@ -379,6 +379,7 @@ docker compose down
 | `GET`  | `/api/interpreter/status/{channel_id}` | MediaMTX reachability |
 | `GET`  | `/healthz` | Health check |
 | `WS`   | `/ws/booth/{booth_id}` | Booth coordination WebSocket |
+| `WS`   | `/ws/tts/{room_id}` | TTS playback WebSocket |
 
 ### Admin panel routes
 

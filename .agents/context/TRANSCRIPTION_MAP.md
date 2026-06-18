@@ -55,8 +55,14 @@ Jitsi Meet Floor Conference
         ▼
    Database (TranscriptSegment target_language)
         │
-        ▼
    broadcast_translation() (WebSocket /ws/translations)
+        │
+        ▼
+   TTS Worker (tts/worker.py)
+   Reads 'final' translated segments → buffers punctuation → calls Deepgram Aura API
+        │
+        ▼
+   broadcast_tts() (WebSocket /ws/tts/{room_id}) -> Listener Web Audio API
 ```
 
 ---
@@ -77,6 +83,8 @@ Jitsi Meet Floor Conference
 | `portal/transcription/providers/elevenlabs.py` | `ElevenLabsProvider` — scribe_v2 |
 | `portal/translations/worker.py` | `start_translation_worker()`, LLM translation loop, multithreaded translation dispatch |
 | `portal/translations/constants.py` | Translation models enum mapped to Anthropic, OpenAI, Groq, Gemini, etc. |
+| `portal/tts/worker.py` | `TTSWorker`, buffers punctuation, chunks text, calls Deepgram Aura WebSocket API, pushes raw PCM binary to `tts_manager` |
+| `portal/tts/constants.py` | `TTS_VOICE_MAP` (language code to Deepgram voice ID mapping) |
 
 ---
 
