@@ -504,6 +504,7 @@ async def admin_edit_room(request: Request, event_id: int, room_id: int):
     jitsi_url = form.get("jitsi_url", "").strip()
     relay_booth_id_str = form.get("relay_booth_id", "").strip()
     relay_booth_id = int(relay_booth_id_str) if relay_booth_id_str and relay_booth_id_str.lower() != "none" else None
+    audio_delay_ms = parse_audio_delay_ms(form.get("audio_delay_ms", "0"))
     floor_transcription_enabled = form.get("floor_transcription_enabled") == "on"
     floor_transcription_provider = form.get("floor_transcription_provider", "local").strip()
     floor_transcription_model = form.get("floor_transcription_model", "tiny").strip()
@@ -520,6 +521,7 @@ async def admin_edit_room(request: Request, event_id: int, room_id: int):
                 room.display_name = display_name
             room.jitsi_url = jitsi_url if jitsi_url else None
             room.relay_booth_id = relay_booth_id
+            room.audio_delay_ms = audio_delay_ms
             room.floor_transcription_enabled = floor_transcription_enabled
             room.floor_transcription_provider = floor_transcription_provider
             room.floor_transcription_model = floor_transcription_model
@@ -553,6 +555,17 @@ async def get_translation_models():
 
 
 logger = logging.getLogger(__name__)
+MAX_AUDIO_DELAY_MS = 10_000
+
+
+def parse_audio_delay_ms(value: object) -> int:
+    try:
+        delay_ms = int(str(value or "0").strip())
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Audio synchronization delay must be an integer.")
+    if delay_ms < 0 or delay_ms > MAX_AUDIO_DELAY_MS:
+        raise HTTPException(status_code=400, detail="Audio synchronization delay must be between 0 and 10000 ms.")
+    return delay_ms
 
 
 @router.post("/api/rooms/{room_id}/floor-transcription/start", dependencies=[Depends(require_admin)])

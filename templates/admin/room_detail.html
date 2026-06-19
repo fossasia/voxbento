@@ -34,11 +34,16 @@
         <label for="jitsi_url">Jitsi Room URL (Floor Audio Source)</label>
         <input type="url" id="jitsi_url" name="jitsi_url" class="input" value="{{ room.jitsi_url or fallback_jitsi_url }}" placeholder="e.g. https://jitsi.voxbento.com/Room-Event-TrackA">
       </div>
+      <div class="form-group" style="flex: 1;">
+        <label for="audio_delay_ms">Audio Synchronization Delay (ms)</label>
+        <input type="number" id="audio_delay_ms" name="audio_delay_ms" class="input" value="{{ room.audio_delay_ms }}" min="0" max="10000" step="1">
+      </div>
       <div class="form-group form-group-btn" style="flex: 0; align-self: flex-end;">
         <button type="submit" class="btn btn-primary">Save Settings</button>
       </div>
     </div>
     <p class="form-help" style="margin-top: 0.5rem; font-size: 0.85rem; color: #666;">Interpreters in all booths for this room will automatically join this Jitsi URL for floor monitoring.</p>
+    <p class="form-help" style="margin-top: 0.25rem; font-size: 0.85rem; color: #666;">Applies a listener-side delay to all audio sources in this room. Use this when livestream video, captions, or external media are delayed and need audio synchronization.</p>
   </div>
 
   <div class="token-form-card" style="margin-bottom: 2rem;">

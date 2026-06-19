@@ -323,6 +323,99 @@ class TestRoomCRUD:
         assert b"/listener/testcon" in resp.content
 
     @pytest.mark.anyio
+    async def test_room_detail_shows_audio_delay_setting(self, admin_cookie, seed_event):
+        event, room, _ = seed_event
+        async with _client() as c:
+            resp = await c.get(
+                f"/admin/events/{event.id}/rooms/{room.id}/",
+                cookies=admin_cookie,
+            )
+        assert resp.status_code == 200
+        assert b"Audio Synchronization Delay (ms)" in resp.content
+        assert b'name="audio_delay_ms"' in resp.content
+
+    @pytest.mark.anyio
+    async def test_update_room_audio_delay(self, admin_cookie, seed_event):
+        event, room, _ = seed_event
+        async with _client() as c:
+            resp = await c.post(
+                f"/admin/events/{event.id}/rooms/{room.id}/edit",
+                data={
+                    "display_name": "Main Hall",
+                    "jitsi_url": "",
+                    "relay_booth_id": "none",
+                    "audio_delay_ms": "2500",
+                },
+                cookies=admin_cookie,
+                follow_redirects=False,
+            )
+        assert resp.status_code == 303
+
+        from portal.database import get_room_by_id, get_session
+
+        async with get_session() as s:
+            updated = await get_room_by_id(s, room.id)
+            assert updated is not None
+            assert updated.audio_delay_ms == 2500
+
+    @pytest.mark.anyio
+    async def test_update_room_audio_delay_rejects_out_of_range(self, admin_cookie, seed_event):
+        event, room, _ = seed_event
+        async with _client() as c:
+            resp = await c.post(
+                f"/admin/events/{event.id}/rooms/{room.id}/edit",
+                data={
+                    "display_name": "Main Hall",
+                    "jitsi_url": "",
+                    "relay_booth_id": "none",
+                    "audio_delay_ms": "10001",
+                },
+                cookies=admin_cookie,
+                follow_redirects=False,
+            )
+        assert resp.status_code == 400
+
+    @pytest.mark.anyio
+    async def test_listener_page_includes_room_audio_delay(self, seed_event):
+        event, room, _ = seed_event
+
+        from portal.database import get_session
+
+        async with get_session() as s:
+            db_event = await s.get(type(event), event.id)
+            db_room = await s.get(type(room), room.id)
+            assert db_event is not None
+            assert db_room is not None
+            db_event.listener_join_code = "ROOM42"
+            db_room.audio_delay_ms = 5000
+
+        async with _client() as c:
+            resp = await c.get(f"/listener/{event.slug}?code=ROOM42")
+
+        assert resp.status_code == 200
+        assert b'"audio_delay_ms": 5000' in resp.content
+
+    @pytest.mark.anyio
+    async def test_listener_room_audio_delay_endpoint_reflects_updates(self, seed_event):
+        event, room, _ = seed_event
+
+        from portal.database import get_session
+
+        async with get_session() as s:
+            db_event = await s.get(type(event), event.id)
+            db_room = await s.get(type(room), room.id)
+            assert db_event is not None
+            assert db_room is not None
+            db_event.listener_join_code = "ROOM42"
+            db_room.audio_delay_ms = 2000
+
+        async with _client() as c:
+            resp = await c.get(f"/listener/{event.slug}/rooms/{room.id}/audio-delay?code=ROOM42")
+
+        assert resp.status_code == 200
+        assert resp.json() == {"audio_delay_ms": 2000}
+
+    @pytest.mark.anyio
     async def test_delete_room(self, admin_cookie, seed_event):
         event, room, _ = seed_event
         async with _client() as c:

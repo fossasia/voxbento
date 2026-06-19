@@ -174,6 +174,16 @@ async def test_create_room(db: AsyncSession):
     assert room.event_id == ev.id
     assert room.display_name == "Main Hall"
     assert room.eventyay_room_id is None
+    assert room.audio_delay_ms == 0
+
+
+@pytest.mark.anyio
+async def test_room_audio_delay_defaults_to_zero(db: AsyncSession):
+    ev = await create_event(db, slug="ev-room-delay", display_name="Ev")
+    room = await create_room(db, event_id=ev.id, display_name="Main Hall")
+    loaded = await get_room_by_id(db, room.id)
+    assert loaded is not None
+    assert loaded.audio_delay_ms == 0
 
 
 @pytest.mark.anyio

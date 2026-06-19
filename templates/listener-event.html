@@ -222,6 +222,9 @@
   var ttsWs = null;
   var audioCtx = null;
   var nextStartTime = 0;
+  var currentAudioDelayMs = 0;
+  var currentRoomId = null;
+  var currentSourceType = null;
 
   function setStatus(text, cls) {
     statusEl.innerHTML = '<span class="status-badge ' + cls + '">' + text + '</span>';
@@ -229,7 +232,7 @@
 
   function showAudioPlayer(show) {
     audioEl.style.display = show ? 'block' : 'none';
-    if (show) {
+    if (show && currentAudioDelayMs === 0) {
       audioEl.setAttribute('controls', '');
     } else {
       audioEl.removeAttribute('controls');
@@ -253,16 +256,27 @@
 
   var pendingBoothId = null;   // booth currently being watched (pre-live)
   var pendingWhepUrl = null;   // WHEP URL to start once live
+  var pendingAudioDelayMs = 0;
   var pendingTtsLang = null;   // TTS language to start once live
   var pendingRoomId = null;
+
+  function normalizeAudioDelayMs(value) {
+    var delayMs = parseInt(value || 0, 10);
+    if (!Number.isFinite(delayMs) || delayMs < 0) return 0;
+    return Math.min(delayMs, 10000);
+  }
 
   function stopCurrentStream() {
     WhepListener.stop();
     stopTtsWs();
     pendingBoothId = null;
     pendingWhepUrl = null;
+    pendingAudioDelayMs = 0;
+    currentAudioDelayMs = 0;
     pendingTtsLang = null;
     pendingRoomId = null;
+    currentRoomId = null;
+    currentSourceType = null;
     if (captionsWs) {
       captionsWs.close();
       captionsWs = null;
@@ -277,7 +291,7 @@
     setStatus('Waiting for selection...', 'waiting');
   }
 
-  function startTtsWs(roomId, langCode) {
+  function startTtsWs(roomId, langCode, audioDelayMs) {
     stopTtsWs();
     if (!audioCtx) {
       audioCtx = new (window.AudioContext || window.webkitAudioContext)();
@@ -290,7 +304,7 @@
     ttsWs = new WebSocket(wsProto + '//' + window.location.host + '/ws/tts/' + roomId + '/' + langCode);
     ttsWs.binaryType = 'arraybuffer';
     
-    nextStartTime = audioCtx.currentTime;
+    nextStartTime = audioCtx.currentTime + (normalizeAudioDelayMs(audioDelayMs) / 1000);
     
     ttsWs.onmessage = function(event) {
       if (event.data instanceof ArrayBuffer) {
@@ -327,13 +341,62 @@
     nextStartTime = 0;
   }
 
-  function startWhepAndCaptions(whepUrl, boothId) {
-    setStatus('Connecting...', 'recovering');
+  function startWhepStream(whepUrl, audioDelayMs) {
+    currentAudioDelayMs = normalizeAudioDelayMs(audioDelayMs);
     WhepListener.start({
       whepUrl: whepUrl,
       audioEl: audioEl,
+      audioDelayMs: currentAudioDelayMs,
       onState: onState
     });
+  }
+
+  function updateRoomDelayData(roomId, audioDelayMs) {
+    var normalized = normalizeAudioDelayMs(audioDelayMs);
+    roomsData.forEach(function(room) {
+      if (room.id.toString() === roomId.toString()) {
+        room.audio_delay_ms = normalized;
+      }
+    });
+    boothsData.forEach(function(source) {
+      if (source.room_id.toString() === roomId.toString()) {
+        source.audio_delay_ms = normalized;
+      }
+    });
+  }
+
+  function fetchRoomAudioDelay(roomId) {
+    if (!roomId) return Promise.resolve(currentAudioDelayMs);
+    return fetch('/listener/{{ event.slug }}/rooms/' + roomId + '/audio-delay')
+      .then(function(resp) {
+        if (!resp.ok) throw new Error('Failed to fetch room audio delay: ' + resp.status);
+        return resp.json();
+      })
+      .then(function(data) {
+        var delayMs = normalizeAudioDelayMs(data.audio_delay_ms);
+        updateRoomDelayData(roomId, delayMs);
+        return delayMs;
+      });
+  }
+
+  function applyCurrentRoomAudioDelay() {
+    if (!currentRoomId) return;
+    fetchRoomAudioDelay(currentRoomId)
+      .then(function(delayMs) {
+        if (delayMs === currentAudioDelayMs) return;
+        currentAudioDelayMs = delayMs;
+        if (currentSourceType === 'whep' && WhepListener.setAudioDelayMs) {
+          WhepListener.setAudioDelayMs(delayMs);
+        }
+      })
+      .catch(function(err) {
+        console.warn('Could not refresh room audio delay', err);
+      });
+  }
+
+  function startWhepAndCaptions(whepUrl, boothId, audioDelayMs) {
+    setStatus('Connecting...', 'recovering');
+    startWhepStream(whepUrl, audioDelayMs);
     openCaptionsWs(boothId);
   }
 
@@ -355,15 +418,19 @@
         if (bstate.ingest_status === 'connected') {
           if (pendingWhepUrl) {
             var url = pendingWhepUrl;
+            var delayMs = pendingAudioDelayMs;
             pendingWhepUrl = null;
+            pendingAudioDelayMs = 0;
             pendingBoothId = null;
-            WhepListener.start({ whepUrl: url, audioEl: audioEl, onState: onState });
+            startWhepStream(url, delayMs);
           } else if (pendingTtsLang) {
             var plang = pendingTtsLang;
             var prid = pendingRoomId;
+            var ttsDelayMs = pendingAudioDelayMs;
             pendingTtsLang = null;
+            pendingAudioDelayMs = 0;
             pendingRoomId = null;
-            startTtsWs(prid, plang);
+            startTtsWs(prid, plang, ttsDelayMs);
             setStatus('Live (TTS Audio)', 'live');
           }
         }
@@ -511,10 +578,14 @@
     var type = selectedOpt ? selectedOpt.dataset.type : null;
     var ttsLang = selectedOpt ? selectedOpt.dataset.ttsLang : null;
     var roomId = parseInt(roomSelect.value, 10);
+    var sourceData = boothObjId ? boothsData.find(b => b.id.toString() === boothObjId.toString()) : null;
+    var selectedAudioDelayMs = normalizeAudioDelayMs(sourceData ? sourceData.audio_delay_ms : 0);
+    currentRoomId = roomId || null;
+    currentSourceType = type;
     
     // Setup translation options based on the selected audio source
-    if (boothObjId) {
-      var bData = boothsData.find(b => b.id.toString() === boothObjId.toString());
+    if (sourceData) {
+      var bData = sourceData;
       if (bData && bData.translation_enabled && bData.translation_languages && bData.translation_languages.length > 0) {
         captionModeSelect.disabled = false;
         translationLangSelect.innerHTML = '';
@@ -543,17 +614,18 @@
           openCaptionsWs(boothId);
           if (languageCode === 'floor') {
             // Floor audio has no WHIP ingest — start WHEP immediately.
-            startWhepAndCaptions(whepUrl, null);
+            startWhepAndCaptions(whepUrl, null, selectedAudioDelayMs);
           } else {
             // Check booth live status before starting WHEP to avoid phantom timer.
             fetch('/api/events/{{ event.slug }}/booths/' + languageCode + '/state')
               .then(function(r) { return r.ok ? r.json() : null; })
               .then(function(bstate) {
                 if (bstate && bstate.ingest_status === 'connected') {
-                  startWhepAndCaptions(whepUrl, null);
+                  startWhepAndCaptions(whepUrl, null, selectedAudioDelayMs);
                 } else {
                   // Not live yet — wait for booth:state via WS
                   pendingWhepUrl = whepUrl;
+                  pendingAudioDelayMs = selectedAudioDelayMs;
                   pendingBoothId = boothId;
                   setStatus('Broadcast not live yet — waiting...', 'waiting');
                   showAudioPlayer(false);
@@ -561,11 +633,11 @@
               })
               .catch(function() {
                 // Can't determine state — start anyway
-                startWhepAndCaptions(whepUrl, null);
+                startWhepAndCaptions(whepUrl, null, selectedAudioDelayMs);
               });
           }
         } else {
-          startWhepAndCaptions(whepUrl, null);
+          startWhepAndCaptions(whepUrl, null, selectedAudioDelayMs);
         }
       }
     } else if (type === 'tts') {
@@ -574,7 +646,7 @@
         openCaptionsWs(boothId);
         if (languageCode === 'floor') {
           // Floor audio has no WHIP ingest — start TTS immediately.
-          startTtsWs(roomId, ttsLang);
+          startTtsWs(roomId, ttsLang, selectedAudioDelayMs);
           setStatus('Live (TTS Audio)', 'live');
         } else {
           // Check booth live status before starting TTS to avoid phantom timer.
@@ -582,11 +654,12 @@
             .then(function(r) { return r.ok ? r.json() : null; })
             .then(function(bstate) {
               if (bstate && bstate.ingest_status === 'connected') {
-                startTtsWs(roomId, ttsLang);
+                startTtsWs(roomId, ttsLang, selectedAudioDelayMs);
                 setStatus('Live (TTS Audio)', 'live');
               } else {
                 // Not live yet — wait for booth:state via WS
                 pendingTtsLang = ttsLang;
+                pendingAudioDelayMs = selectedAudioDelayMs;
                 pendingRoomId = roomId;
                 setStatus('Broadcast not live yet — waiting...', 'waiting');
                 showAudioPlayer(false);
@@ -594,7 +667,7 @@
             })
             .catch(function() {
               // Can't determine state — start anyway
-              startTtsWs(roomId, ttsLang);
+              startTtsWs(roomId, ttsLang, selectedAudioDelayMs);
               setStatus('Live (TTS Audio)', 'live');
             });
         }
@@ -607,6 +680,8 @@
     WhepListener.stop();
     stopTtsWs();
   });
+
+  window.setInterval(applyCurrentRoomAudioDelay, 3000);
 })();
 </script>
 {% endblock %}

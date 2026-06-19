@@ -26,7 +26,7 @@ import secrets
 from datetime import datetime, timezone
 
 import sqlalchemy as sa
-from sqlalchemy import Boolean, DateTime, ForeignKey, Index, String, Text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, String, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, validates
 
 from portal.booth_identity import make_mediamtx_path, validate_event_slug, validate_language_code
@@ -128,6 +128,7 @@ class Room(Base):
 
     # TTS Settings
     floor_tts_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    audio_delay_ms: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 

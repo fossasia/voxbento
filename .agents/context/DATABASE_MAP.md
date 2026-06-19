@@ -55,6 +55,7 @@ Cascade: deletes rooms + booths when event is deleted.
 | `jitsi_url` | String(500) nullable | Full Jitsi meeting URL for this room; overrides default |
 | `relay_booth_id` | FK → booths.id SET NULL nullable | Points to the booth whose WHEP stream is relayed in this room |
 | `floor_tts_enabled` | Boolean | Default False; controls whether TTS is generated for floor audio translations |
+| `audio_delay_ms` | Integer | Default 0; optional listener-side WHEP playback delay for all sources in the room |
 | `created_at` | DateTime(tz) | UTC |
 
 ---
@@ -210,6 +211,8 @@ Tracks which languages the translation worker should generate for a given room o
 | 012 | `012_add_booth_translation_settings.py` | `booth_translation_languages` table, `booths.translation_enabled/provider/model` |
 | 013 | `013_add_broadcast_unlocked_to_booths.py` | `booths.broadcast_unlocked` column |
 | 014 | `014_rbac_refactor.py` | `room_memberships` table, `events.listener_join_code` |
+| 015 | `015_add_floor_tts_enabled.py` | `rooms.floor_tts_enabled` |
+| 016 | `016_add_room_audio_delay.py` | `rooms.audio_delay_ms` |
 
 Run migrations: `uv run alembic upgrade head`
 

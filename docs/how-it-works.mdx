@@ -61,6 +61,8 @@ Listeners connect to the WHEP endpoint for their chosen language. WHEP (WebRTC H
 You do not need to configure the fallback manually. The listener page tries WHEP first and switches to HLS transparently if the WebRTC negotiation fails.
 :::
 
+Rooms can also define an optional listener-side audio synchronization delay. This is useful when attendees are watching delayed livestream video, delayed captions, embedded conference players, or external media while listening to Voxbento audio. For example, use `1000` ms for a one-second caption delay, `2000` ms for a lightly delayed player, `5000` ms for a typical embedded stream, or `8000` ms for a platform with a larger broadcast buffer. When the room delay is `0` ms, listener playback uses the same direct WHEP-to-HTML-audio path as normal and adds no Web Audio graph or extra latency.
+
 ## The Transcription & Translation Pipeline
 
 When live captions or translations are enabled, Voxbento spawns background workers to process the audio in real-time. This pipeline supports both **Booth Audio** (interpreters) and **Floor Audio** (the main conference).
