@@ -29,7 +29,7 @@ jobs:
 
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Install Bandit
         run: pip install bandit[toml] bandit-sarif-formatter
       - name: Run Bandit Scan
