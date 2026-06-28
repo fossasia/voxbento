@@ -18,6 +18,7 @@ from portal.routers.api import router as api_router
 from portal.routers.auth import router as auth_router
 from portal.routers.interpreter import router as interpreter_router
 from portal.routers.listener import router as listener_router
+from portal.routers.demo import router as demo_router
 from portal.routers.public import router as public_router
 from portal.websockets.handlers import router as ws_router
 
@@ -33,8 +34,24 @@ async def lifespan(app: FastAPI):
     import httpx
 
     import portal.transcription as ts
+    from portal.tts.demo_gen import ensure_demo_generated
+    from portal.tts import demo_gen as dg
 
     ts.shared_http_client = httpx.AsyncClient(timeout=10.0)
+
+    # Generate landing page demo audio in the background on first startup.
+    # Uses local Supertonic — no external API key needed.
+    dg._generating = True
+
+    async def _gen():
+        try:
+            await ensure_demo_generated()
+        finally:
+            dg._generating = False
+
+    import asyncio
+    asyncio.create_task(_gen())
+
     yield
     if ts.shared_http_client:
         await ts.shared_http_client.aclose()
@@ -96,6 +113,8 @@ app.include_router(listener_router)
 app.include_router(api_router)
 
 app.include_router(admin_router)
+
+app.include_router(demo_router)
 
 app.include_router(ws_router)
 
