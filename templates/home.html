@@ -11,6 +11,12 @@
     
     <!-- Custom CSS for animations and overrides -->
     <link rel="stylesheet" href="{{ url_for('static', path='css/landing.css') }}" />
+    <style>
+        @keyframes demoWave {
+            from { transform: scaleY(0.4); }
+            to   { transform: scaleY(1.0); }
+        }
+    </style>
     
     <script>
         tailwind.config = {
@@ -66,6 +72,11 @@
         <section class="relative max-w-7xl mx-auto px-6 pt-12 pb-24 lg:pt-20 lg:pb-32 flex flex-col lg:flex-row items-center gap-12 animate-fade-in-up">
             <!-- Left Text -->
             <div class="flex-1 text-center lg:text-left z-10">
+                <!-- Logo mark -->
+                <div class="flex items-center gap-3 mb-6 justify-center lg:justify-start">
+                    <img src="{{ url_for('static', path='img/app_icon.png') }}" alt="VoxBento" class="w-10 h-10 rounded-xl shadow-md">
+                    <span class="text-sm font-extrabold uppercase tracking-widest text-slate-500">VoxBento</span>
+                </div>
                 <h1 class="text-[2.75rem] md:text-6xl lg:text-7xl font-extrabold tracking-tight text-slate-900 mb-8 leading-[1.1] flex flex-col items-center lg:items-start text-center lg:text-left w-full">
                     <div class="relative w-full text-brand-600">
                         <!-- Invisible spacer to perfectly preserve layout size for the longest word without CLS -->
@@ -94,32 +105,36 @@
             
             <!-- Right Visual -->
             <div class="flex-1 w-full relative max-md:hidden">
-                <div class="relative w-full aspect-[4/3] rounded-[2rem] overflow-hidden bg-slate-100 shadow-2xl">
-                    <!-- Main Hero Image -->
-                    <img src="https://images.unsplash.com/photo-1541829070764-84a7d30dd3f3?q=80&w=1200&auto=format&fit=crop" alt="Speaker" class="w-full h-full object-cover">
-                    <div class="absolute inset-0 bg-brand-600 mix-blend-overlay opacity-20"></div>
+                <div class="relative w-full aspect-[4/3] rounded-[2rem] overflow-hidden bg-slate-900 shadow-2xl">
+                    <img src="https://images.unsplash.com/photo-1541829070764-84a7d30dd3f3?q=80&w=1200&auto=format&fit=crop" alt="Conference" class="w-full h-full object-cover opacity-70">
+                    <div class="absolute inset-0 bg-slate-900 opacity-30"></div>
                     
                     <!-- Floating Elements -->
                     <div class="absolute top-8 right-8 bg-brand-600 text-white px-4 py-2 rounded-full shadow-2xl text-sm font-bold flex items-center gap-2 animate-bounce">
                         <span class="w-2 h-2 rounded-full bg-white animate-pulse"></span> LIVE
                     </div>
                     
+                    <!-- Hero audio selector — clicking rows plays the pre-baked demo audio -->
                     <div class="absolute bottom-8 left-8 bg-slate-900/90 backdrop-blur-md border border-white/10 p-5 rounded-2xl shadow-2xl w-72 text-white">
                         <div class="flex justify-between items-center mb-4">
-                            <span class="text-xs font-bold uppercase tracking-widest text-slate-400">Audio</span>
-                            <div class="w-10 h-5 bg-brand-600 rounded-full relative"><div class="absolute right-1 top-1 w-3 h-3 bg-white rounded-full"></div></div>
+                            <span class="text-xs font-bold uppercase tracking-widest text-slate-400">Audio Channel</span>
+                            <button id="hero-audio-toggle" class="w-10 h-5 bg-slate-500 rounded-full relative flex-shrink-0 transition-colors duration-200" aria-label="Play audio">
+                                <div class="absolute left-1 top-1 w-3 h-3 bg-white rounded-full" style="transition: transform 0.2s ease"></div>
+                            </button>
                         </div>
-                        <div class="space-y-3">
-                            <div class="bg-slate-800 rounded-lg p-2 flex items-center justify-between border border-brand-500/30">
-                                <span class="text-sm font-medium">English</span>
-                                <svg class="w-4 h-4 text-brand-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg>
-                            </div>
-                            <div class="p-2 flex items-center justify-between text-slate-400 hover:text-white transition-colors cursor-pointer">
-                                <span class="text-sm font-medium">Mandarin <span class="ml-2 bg-brand-600 text-white text-[10px] px-1.5 py-0.5 rounded font-bold">AI</span></span>
-                            </div>
-                            <div class="p-2 flex items-center justify-between text-slate-400 hover:text-white transition-colors cursor-pointer">
-                                <span class="text-sm font-medium">Spanish</span>
-                            </div>
+                        <div class="space-y-1">
+                            <button data-hero-lang="en" class="hero-lang-row w-full bg-slate-800 rounded-lg px-3 py-2 flex items-center justify-between border border-brand-500/30 text-white">
+                                <span class="text-sm font-medium">English (Original)</span>
+                                <svg class="hero-check w-4 h-4 text-brand-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg>
+                            </button>
+                            <button data-hero-lang="fr" class="hero-lang-row w-full px-3 py-2 flex items-center justify-between text-slate-400 hover:text-white hover:bg-slate-800/60 rounded-lg transition-colors">
+                                <span class="text-sm font-medium">French <span class="ml-2 bg-brand-600 text-white text-[10px] px-1.5 py-0.5 rounded font-bold">AI</span></span>
+                                <svg class="hero-check w-4 h-4 opacity-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg>
+                            </button>
+                            <button data-hero-lang="es" class="hero-lang-row w-full px-3 py-2 flex items-center justify-between text-slate-400 hover:text-white hover:bg-slate-800/60 rounded-lg transition-colors">
+                                <span class="text-sm font-medium">Spanish <span class="ml-2 bg-brand-600 text-white text-[10px] px-1.5 py-0.5 rounded font-bold">AI</span></span>
+                                <svg class="hero-check w-4 h-4 opacity-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg>
+                            </button>
                         </div>
                     </div>
                     
@@ -362,154 +377,193 @@
         </section>
 
         <!-- Interactive Demo Section -->
-        <section id="interactive-demo" class="py-32 bg-white border-t border-slate-200">
-            <div class="max-w-5xl mx-auto px-6">
-                <div class="text-center mb-16">
+        <section id="interactive-demo" class="py-24 bg-white border-t border-slate-200">
+            <div class="max-w-4xl mx-auto px-6">
+                <div class="text-center mb-14">
                     <h2 class="text-5xl font-extrabold text-brand-600 mb-6">VoxBento Demo</h2>
                     <p class="text-slate-600 max-w-3xl mx-auto text-lg leading-relaxed font-medium">
-                        Real-time AI translation isn't something you can fully grasp from a product page, you have to hear it, see it, and feel how naturally it flows. Hit play, pick your language, and experience instant AI-powered translation in action.
+                        Real-time AI translation isn't something you can fully grasp from a product page — you have to hear it.
+                        Hit play, pick your language, and experience instant AI-powered translation in action.
                     </p>
                 </div>
-                
-                <!-- Device Mockups (Separate for Mobile & Desktop to ensure perfect rendering) -->
 
-                <!-- 1. MOBILE DEVICE MOCKUP (iPhone Portrait) - Visible only below md -->
-                <div class="md:hidden relative mx-auto w-full max-w-[280px] sm:max-w-[320px] hover:scale-[1.02] transition-transform duration-500 group/mockup mt-10">
-                    
-                    <!-- Phone Screen Container -->
-                    <div class="bg-slate-900 rounded-[2.5rem] p-2 pb-2 shadow-2xl relative border-[8px] border-slate-800 flex flex-col">
-                        
-                        <!-- Phone Notch -->
-                        <div class="absolute top-0 left-1/2 -translate-x-1/2 w-32 h-6 bg-slate-800 rounded-b-xl z-20 flex justify-center items-end pb-1.5">
-                            <div class="w-12 h-1 bg-slate-900 rounded-full"></div>
-                        </div>
+                <!-- Demo player — pre-rendered, JS attaches behaviour only -->
+                <div id="demo-player-root" class="w-full">
 
-                        <!-- Phone Screen Content -->
-                        <div class="bg-black w-full aspect-[9/19] rounded-[1.5rem] relative overflow-hidden flex flex-col border border-white/5">
-                            <!-- Fake Video Background -->
-                            <img src="https://images.unsplash.com/photo-1540575467063-178a50c2df87?q=80&w=1200&auto=format&fit=crop" class="absolute inset-0 w-full h-full object-cover opacity-30 group-hover/mockup:scale-105 transition-transform duration-1000" alt="Demo Video">
-                            
-                            <!-- Video area logic -->
-                            <div class="flex-1 flex flex-col justify-center items-center relative z-10 p-6 pt-12">
-                                <button class="w-16 h-16 bg-brand-600/90 text-white rounded-full flex items-center justify-center shadow-[0_0_40px_rgba(250,92,36,0.5)] z-10 relative">
-                                    <svg class="w-6 h-6 ml-1" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
-                                </button>
-                            </div>
-
-                            <!-- Bottom Control Bar overlay inside screen -->
-                            <div class="relative z-10 bg-gradient-to-t from-black/95 via-black/80 to-transparent p-4 w-full mt-auto">
-                                <div class="flex flex-col items-center justify-between gap-4">
-                                    <div class="flex items-center justify-center gap-4 text-white w-full">
-                                        <span class="font-bold text-xs tracking-widest uppercase">Live Demo</span>
-                                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"></path></svg>
-                                        <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M12 14c1.66 0 2.99-1.34 2.99-3L15 5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm5.3-3c0 3-2.54 5.1-5.3 5.1S6.7 14 6.7 11H5c0 3.41 2.72 6.23 6 6.72V21h2v-3.28c3.28-.48 6-3.3 6-6.72h-1.7z"/></svg>
+                    <!-- ===== LOADING STATE ===== -->
+                    <!-- Mobile phone loading -->
+                    <div id="demo-loading" class="">
+                        <div class="md:hidden relative mx-auto w-full max-w-[280px] sm:max-w-[320px]">
+                            <div class="bg-slate-900 rounded-[2.5rem] p-2 shadow-2xl border-[8px] border-slate-800 flex flex-col">
+                                <div class="bg-slate-800 w-full rounded-[1.5rem] overflow-hidden" style="aspect-ratio:9/19;">
+                                    <div class="w-full h-full flex flex-col items-center justify-center gap-3">
+                                        <div class="flex items-end gap-1 h-8">
+                                            <div class="w-1.5 bg-brand-500 rounded-full" style="height:10px;animation:demoWave 0.5s ease-in-out infinite alternate;"></div>
+                                            <div class="w-1.5 bg-brand-500 rounded-full" style="height:18px;animation:demoWave 0.6s ease-in-out infinite alternate;animation-delay:0.1s;"></div>
+                                            <div class="w-1.5 bg-brand-500 rounded-full" style="height:24px;animation:demoWave 0.55s ease-in-out infinite alternate;animation-delay:0.2s;"></div>
+                                            <div class="w-1.5 bg-brand-500 rounded-full" style="height:14px;animation:demoWave 0.7s ease-in-out infinite alternate;animation-delay:0.3s;"></div>
+                                            <div class="w-1.5 bg-brand-500 rounded-full" style="height:20px;animation:demoWave 0.5s ease-in-out infinite alternate;animation-delay:0.4s;"></div>
+                                        </div>
+                                        <p class="text-white/50 text-xs font-medium px-4 text-center">Generating audio&hellip;</p>
                                     </div>
-                                    <div class="flex items-center justify-center gap-2 w-full">
-                                        <button class="bg-brand-600 text-white p-2 rounded-full shadow-lg border border-brand-500">
-                                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
-                                        </button>
-                                        <button class="bg-white/20 text-white p-2 rounded-full backdrop-blur-sm border border-white/20">
-                                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 5h12M9 3v2m1.048 9.5A18.022 18.022 0 016.412 9m6.088 9h7M11 21l5-10 5 10M12.751 5C11.783 10.77 8.07 15.61 3 18.129"></path></svg>
-                                        </button>
-                                        <button class="bg-white/20 text-white p-2 rounded-full backdrop-blur-sm border border-white/20">
-                                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h.01M12 12h.01M19 12h.01M6 12a1 1 0 11-2 0 1 1 0 012 0zm7 0a1 1 0 11-2 0 1 1 0 012 0zm7 0a1 1 0 11-2 0 1 1 0 012 0z"></path></svg>
-                                        </button>
-                                    </div>
+                                </div>
+                                <div class="bg-white p-3 rounded-[1rem] flex items-center justify-center gap-2 mt-2">
+                                    <img src="{{ url_for('static', path='img/wordmark.png') }}" alt="VoxBento" class="h-4">
+                                    <p class="text-xs font-bold text-slate-500">Generating&hellip;</p>
                                 </div>
                             </div>
                         </div>
-                        
-                        <!-- Phone Subtitle Bar -->
-                        <div class="bg-white p-3 rounded-[1rem] flex items-center justify-center gap-2 mt-2 shadow-inner">
-                            <img src="{{ url_for('static', path='img/wordmark.png') }}" alt="VoxBento" class="h-4">
-                            <p class="text-xs font-bold text-slate-600">This is VoxBento translating live...</p>
+                        <!-- MacBook loading -->
+                        <div class="max-md:hidden relative mx-auto w-full max-w-4xl mt-16">
+                            <div class="bg-black rounded-[1.5rem] p-3 pb-4 shadow-2xl ring-1 ring-white/20 flex flex-col">
+                                <div class="bg-slate-800 w-full aspect-video rounded-xl flex flex-col items-center justify-center gap-4">
+                                    <div class="flex items-end gap-1 h-10">
+                                        <div class="w-1.5 bg-brand-500 rounded-full" style="height:14px;animation:demoWave 0.5s ease-in-out infinite alternate;"></div>
+                                        <div class="w-1.5 bg-brand-500 rounded-full" style="height:22px;animation:demoWave 0.6s ease-in-out infinite alternate;animation-delay:0.05s;"></div>
+                                        <div class="w-1.5 bg-brand-500 rounded-full" style="height:18px;animation:demoWave 0.55s ease-in-out infinite alternate;animation-delay:0.1s;"></div>
+                                        <div class="w-1.5 bg-brand-500 rounded-full" style="height:28px;animation:demoWave 0.7s ease-in-out infinite alternate;animation-delay:0.15s;"></div>
+                                        <div class="w-1.5 bg-brand-500 rounded-full" style="height:12px;animation:demoWave 0.5s ease-in-out infinite alternate;animation-delay:0.2s;"></div>
+                                        <div class="w-1.5 bg-brand-500 rounded-full" style="height:20px;animation:demoWave 0.65s ease-in-out infinite alternate;animation-delay:0.25s;"></div>
+                                        <div class="w-1.5 bg-brand-500 rounded-full" style="height:30px;animation:demoWave 0.6s ease-in-out infinite alternate;animation-delay:0.3s;"></div>
+                                        <div class="w-1.5 bg-brand-500 rounded-full" style="height:16px;animation:demoWave 0.5s ease-in-out infinite alternate;animation-delay:0.35s;"></div>
+                                        <div class="w-1.5 bg-brand-500 rounded-full" style="height:24px;animation:demoWave 0.7s ease-in-out infinite alternate;animation-delay:0.4s;"></div>
+                                        <div class="w-1.5 bg-brand-500 rounded-full" style="height:10px;animation:demoWave 0.55s ease-in-out infinite alternate;animation-delay:0.45s;"></div>
+                                        <div class="w-1.5 bg-brand-500 rounded-full" style="height:26px;animation:demoWave 0.6s ease-in-out infinite alternate;animation-delay:0.5s;"></div>
+                                    </div>
+                                    <p class="text-white/60 text-sm font-medium">Generating demo audio&hellip;</p>
+                                    <p class="text-white/30 text-xs">VoxBento TTS — takes ~30s on first run</p>
+                                </div>
+                                <div class="bg-white p-4 rounded-[0.5rem] flex items-center gap-4 mt-2">
+                                    <img src="{{ url_for('static', path='img/wordmark.png') }}" alt="VoxBento" class="h-5">
+                                    <div class="w-px h-6 bg-slate-200"></div>
+                                    <p class="text-sm font-bold text-slate-500">Generating audio in English, French, Spanish &amp; German&hellip;</p>
+                                </div>
+                            </div>
+                            <div class="w-full h-1"></div>
+                            <div class="relative z-20 w-[104%] -ml-[2%]">
+                                <div class="bg-gradient-to-b from-[#e5e7eb] to-[#d1d5db] h-3.5 rounded-t-md w-full shadow-[inset_0_1px_1px_rgba(255,255,255,0.8)] border-b border-[#9ca3af] relative">
+                                    <div class="absolute top-0 left-1/2 -translate-x-1/2 w-32 h-1.5 bg-gradient-to-b from-[#d1d5db] to-[#9ca3af] rounded-b-lg"></div>
+                                </div>
+                                <div class="bg-gradient-to-b from-[#9ca3af] to-[#4b5563] h-2 rounded-b-2xl w-full shadow-[0_20px_40px_rgba(0,0,0,0.5)]"></div>
+                            </div>
                         </div>
                     </div>
-                </div>
 
-                <!-- 2. DESKTOP DEVICE MOCKUP (MacBook Air) - Visible only on md and up -->
-                <div class="max-md:hidden relative mx-auto w-full max-w-4xl hover:scale-[1.02] transition-transform duration-500 group/mockup mt-16">
-                    
-                    <!-- Screen Container -->
-                    <div class="bg-black rounded-[1.5rem] p-3 pb-4 shadow-2xl relative ring-1 ring-white/20 shadow-[0_0_50px_rgba(0,0,0,0.25)] flex flex-col">
-                        
-                        <!-- MacBook Camera Notch -->
-                        <div class="absolute top-0 left-1/2 -translate-x-1/2 w-36 h-7 bg-black rounded-b-[1rem] z-20 flex justify-center items-center gap-3">
-                            <!-- Camera dot -->
-                            <div class="w-2 h-2 rounded-full bg-[#1a1a24] shadow-inner flex items-center justify-center border border-[#2a2a35]"><div class="w-0.5 h-0.5 rounded-full bg-blue-900/50"></div></div>
-                            <!-- Green active light -->
-                            <div class="w-1 h-1 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.8)] opacity-90"></div>
-                        </div>
-                        
-                        <!-- Screen Content -->
-                        <div class="bg-black w-full aspect-video rounded-xl relative overflow-hidden flex flex-col border border-white/5">
-                            
-                            <!-- Fake Video Background -->
-                            <img src="https://images.unsplash.com/photo-1540575467063-178a50c2df87?q=80&w=1200&auto=format&fit=crop" class="absolute inset-0 w-full h-full object-cover opacity-30 group-hover/mockup:scale-105 transition-transform duration-1000" alt="Demo Video">
-                            
-                            <!-- Video area logic -->
-                            <div class="flex-1 flex flex-col justify-center items-center relative z-10 p-6">
-                                <!-- Center Play Button -->
-                                <button class="w-20 h-20 bg-brand-600/90 text-white rounded-full flex items-center justify-center hover:bg-brand-500 hover:scale-110 transition-all shadow-[0_0_40px_rgba(250,92,36,0.5)] z-10 relative">
-                                    <svg class="w-8 h-8 ml-1" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
-                                </button>
-                            </div>
+                    <!-- ===== ACTUAL PLAYER (hidden until audio ready) ===== -->
 
-                            <!-- Bottom Control Bar overlay inside screen -->
-                            <div class="relative z-10 bg-gradient-to-t from-black/95 via-black/80 to-transparent p-6 w-full absolute bottom-0 left-0 right-0 pt-16 mt-auto">
-                                <div class="flex flex-row items-end justify-between gap-4">
-                                    <!-- Left Controls -->
-                                    <div class="flex items-center justify-start gap-4 text-white w-auto">
-                                        <span class="font-bold text-sm tracking-widest uppercase">Live Demo</span>
-                                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"></path></svg>
-                                        <svg class="w-5 h-5" fill="currentColor" viewBox="0 0 24 24"><path d="M12 14c1.66 0 2.99-1.34 2.99-3L15 5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm5.3-3c0 3-2.54 5.1-5.3 5.1S6.7 14 6.7 11H5c0 3.41 2.72 6.23 6 6.72V21h2v-3.28c3.28-.48 6-3.3 6-6.72h-1.7z"/></svg>
+                    <!-- Mobile phone player -->
+                    <div id="demo-player" class="hidden">
+                        <div class="md:hidden relative mx-auto w-full max-w-[280px] sm:max-w-[320px] hover:scale-[1.02] transition-transform duration-500 group/mockup">
+                            <div class="bg-slate-900 rounded-[2.5rem] p-2 shadow-2xl relative border-[8px] border-slate-800 flex flex-col">
+                                <div class="absolute top-0 left-1/2 -translate-x-1/2 w-32 h-6 bg-slate-800 rounded-b-xl z-20 flex justify-center items-end pb-1.5">
+                                    <div class="w-12 h-1 bg-slate-900 rounded-full"></div>
+                                </div>
+                                <div class="bg-black w-full rounded-[1.5rem] relative overflow-hidden flex flex-col border border-white/5" style="aspect-ratio:9/19;">
+                                    <img src="https://images.unsplash.com/photo-1540575467063-178a50c2df87?q=80&w=800&auto=format&fit=crop" class="absolute inset-0 w-full h-full object-cover opacity-30" alt="Conference">
+                                    <div class="absolute top-4 left-4 z-20">
+                                        <span class="bg-red-600 text-white text-[10px] font-extrabold px-2 py-0.5 rounded-full uppercase tracking-widest flex items-center gap-1">
+                                            <span class="w-1 h-1 bg-white rounded-full animate-pulse"></span> LIVE
+                                        </span>
                                     </div>
-                                    <!-- Right Controls -->
-                                    <div class="flex items-center justify-end gap-3 w-auto">
-                                        <!-- Tooltip / Popover -->
-                                        <div class="relative max-md:hidden">
-                                            <div class="absolute bottom-[120%] right-0 mb-2 bg-brand-600 text-white text-xs font-bold px-4 py-3 rounded-lg whitespace-nowrap animate-bounce shadow-xl">
-                                                Click the translation icon<br>to select your language
-                                                <div class="absolute top-full right-8 w-0 h-0 border-l-[6px] border-l-transparent border-r-[6px] border-r-transparent border-t-[6px] border-t-brand-600"></div>
+                                    <div id="demo-waveform-mobile" class="absolute inset-0 flex items-center justify-center z-10 pointer-events-none opacity-0 transition-opacity duration-500">
+                                        <div class="flex items-end gap-1 h-8">
+                                            <div class="w-1 bg-brand-500 rounded-full" style="height:8px;animation:demoWave 0.5s ease-in-out infinite alternate;"></div>
+                                            <div class="w-1 bg-brand-500 rounded-full" style="height:16px;animation:demoWave 0.6s ease-in-out infinite alternate;animation-delay:0.08s;"></div>
+                                            <div class="w-1 bg-brand-500 rounded-full" style="height:20px;animation:demoWave 0.55s ease-in-out infinite alternate;animation-delay:0.16s;"></div>
+                                            <div class="w-1 bg-brand-500 rounded-full" style="height:12px;animation:demoWave 0.7s ease-in-out infinite alternate;animation-delay:0.24s;"></div>
+                                            <div class="w-1 bg-brand-500 rounded-full" style="height:18px;animation:demoWave 0.6s ease-in-out infinite alternate;animation-delay:0.32s;"></div>
+                                        </div>
+                                    </div>
+                                    <div class="flex-1"></div>
+                                    <div class="relative z-10 bg-gradient-to-t from-black/95 via-black/80 to-transparent p-3 w-full">
+                                        <div class="flex items-center justify-between gap-2">
+                                            <button id="demo-play-btn-mobile" class="w-9 h-9 bg-brand-600 text-white rounded-full flex items-center justify-center shadow-lg flex-shrink-0" aria-label="Play">
+                                                <svg id="demo-play-icon-mobile" class="w-4 h-4 ml-0.5" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+                                                <svg id="demo-pause-icon-mobile" class="w-4 h-4 hidden" fill="currentColor" viewBox="0 0 24 24"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
+                                            </button>
+                                            <div class="flex items-center gap-1.5 flex-wrap justify-end">
+                                                <button data-demo-lang="en" class="demo-lang-btn bg-brand-600 border border-brand-500 text-white text-[10px] font-bold px-2 py-1 rounded-full transition-all">EN</button>
+                                                <button data-demo-lang="fr" class="demo-lang-btn border border-white/20 text-white/60 text-[10px] font-bold px-2 py-1 rounded-full bg-white/5 transition-all">FR</button>
+                                                <button data-demo-lang="es" class="demo-lang-btn border border-white/20 text-white/60 text-[10px] font-bold px-2 py-1 rounded-full bg-white/5 transition-all">ES</button>
+                                                <button data-demo-lang="de" class="demo-lang-btn border border-white/20 text-white/60 text-[10px] font-bold px-2 py-1 rounded-full bg-white/5 transition-all">DE</button>
                                             </div>
                                         </div>
-                                        <button class="bg-brand-600 hover:bg-brand-500 text-white p-3 rounded-full shadow-lg transition-colors border border-brand-500">
-                                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
-                                        </button>
-                                        <button class="bg-white/20 hover:bg-white/30 text-white p-3 rounded-full backdrop-blur-sm transition-colors border border-white/20">
-                                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 5h12M9 3v2m1.048 9.5A18.022 18.022 0 016.412 9m6.088 9h7M11 21l5-10 5 10M12.751 5C11.783 10.77 8.07 15.61 3 18.129"></path></svg>
-                                        </button>
-                                        <button class="bg-white/20 hover:bg-white/30 text-white p-3 rounded-full backdrop-blur-sm transition-colors border border-white/20">
-                                            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h.01M12 12h.01M19 12h.01M6 12a1 1 0 11-2 0 1 1 0 012 0zm7 0a1 1 0 11-2 0 1 1 0 012 0zm7 0a1 1 0 11-2 0 1 1 0 012 0z"></path></svg>
-                                        </button>
                                     </div>
+                                </div>
+                                <div class="bg-white p-3 rounded-[1rem] flex items-center justify-center gap-2 mt-2">
+                                    <img src="{{ url_for('static', path='img/wordmark.png') }}" alt="VoxBento" class="h-4">
+                                    <p id="demo-caption-mobile" class="text-xs font-bold text-slate-500 truncate">VoxBento translating live&hellip;</p>
                                 </div>
                             </div>
                         </div>
-                        
-                        <!-- Appended Subtitle Bar (Inside screen bezel) -->
-                        <div class="bg-white p-4 rounded-[0.5rem] flex flex-row items-center justify-between mt-2 shadow-inner mx-0">
-                            <div class="flex items-center justify-start gap-4 text-slate-800 w-full">
-                                <img src="{{ url_for('static', path='img/wordmark.png') }}" alt="VoxBento" class="h-5">
-                                <div class="w-px h-6 bg-slate-200"></div>
-                                <p class="text-base font-bold text-slate-600">This is VoxBento translating live...</p>
+
+                        <!-- MacBook desktop player -->
+                        <div class="max-md:hidden relative mx-auto w-full max-w-4xl hover:scale-[1.02] transition-transform duration-500 group/mockup mt-16">
+                            <div class="bg-black rounded-[1.5rem] p-3 pb-4 shadow-2xl relative ring-1 ring-white/20 shadow-[0_0_50px_rgba(0,0,0,0.25)] flex flex-col">
+                                <div class="absolute top-0 left-1/2 -translate-x-1/2 w-36 h-7 bg-black rounded-b-[1rem] z-20 flex justify-center items-center gap-3">
+                                    <div class="w-2 h-2 rounded-full bg-[#1a1a24] shadow-inner border border-[#2a2a35] flex items-center justify-center"><div class="w-0.5 h-0.5 rounded-full bg-blue-900/50"></div></div>
+                                    <div class="w-1 h-1 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.8)]"></div>
+                                </div>
+                                <!-- Screen -->
+                                <div class="bg-black w-full aspect-video rounded-xl relative overflow-hidden border border-white/5">
+                                    <img src="https://images.unsplash.com/photo-1540575467063-178a50c2df87?q=80&w=1200&auto=format&fit=crop" class="absolute inset-0 w-full h-full object-cover opacity-35 group-hover/mockup:scale-105 transition-transform duration-1000" alt="Conference">
+                                    <!-- Waveform -->
+                                    <div id="demo-waveform" class="absolute inset-0 flex items-center justify-center z-10 pointer-events-none opacity-0 transition-opacity duration-500">
+                                        <div class="flex items-end gap-1 h-12">
+                                            <div class="w-1.5 bg-brand-500 rounded-full" style="height:10px;animation:demoWave 0.5s ease-in-out infinite alternate;"></div>
+                                            <div class="w-1.5 bg-brand-500 rounded-full" style="height:24px;animation:demoWave 0.6s ease-in-out infinite alternate;animation-delay:0.04s;"></div>
+                                            <div class="w-1.5 bg-brand-500 rounded-full" style="height:18px;animation:demoWave 0.55s ease-in-out infinite alternate;animation-delay:0.08s;"></div>
+                                            <div class="w-1.5 bg-brand-500 rounded-full" style="height:32px;animation:demoWave 0.7s ease-in-out infinite alternate;animation-delay:0.12s;"></div>
+                                            <div class="w-1.5 bg-brand-500 rounded-full" style="height:14px;animation:demoWave 0.5s ease-in-out infinite alternate;animation-delay:0.16s;"></div>
+                                            <div class="w-1.5 bg-brand-500 rounded-full" style="height:22px;animation:demoWave 0.65s ease-in-out infinite alternate;animation-delay:0.2s;"></div>
+                                            <div class="w-1.5 bg-brand-500 rounded-full" style="height:36px;animation:demoWave 0.6s ease-in-out infinite alternate;animation-delay:0.24s;"></div>
+                                            <div class="w-1.5 bg-brand-500 rounded-full" style="height:16px;animation:demoWave 0.5s ease-in-out infinite alternate;animation-delay:0.28s;"></div>
+                                            <div class="w-1.5 bg-brand-500 rounded-full" style="height:28px;animation:demoWave 0.7s ease-in-out infinite alternate;animation-delay:0.32s;"></div>
+                                            <div class="w-1.5 bg-brand-500 rounded-full" style="height:12px;animation:demoWave 0.55s ease-in-out infinite alternate;animation-delay:0.36s;"></div>
+                                            <div class="w-1.5 bg-brand-500 rounded-full" style="height:30px;animation:demoWave 0.6s ease-in-out infinite alternate;animation-delay:0.4s;"></div>
+                                            <div class="w-1.5 bg-brand-500 rounded-full" style="height:20px;animation:demoWave 0.5s ease-in-out infinite alternate;animation-delay:0.44s;"></div>
+                                            <div class="w-1.5 bg-brand-500 rounded-full" style="height:26px;animation:demoWave 0.7s ease-in-out infinite alternate;animation-delay:0.48s;"></div>
+                                        </div>
+                                    </div>
+                                    <!-- LIVE badge -->
+                                    <div class="absolute top-4 left-4 z-20">
+                                        <span class="bg-red-600 text-white text-[11px] font-extrabold px-3 py-1 rounded-full uppercase tracking-widest flex items-center gap-1.5">
+                                            <span class="w-1.5 h-1.5 bg-white rounded-full animate-pulse"></span> LIVE DEMO
+                                        </span>
+                                    </div>
+                                    <!-- Controls -->
+                                    <div class="absolute bottom-0 left-0 right-0 z-20 bg-gradient-to-t from-black/95 via-black/80 to-transparent p-6 pt-16 flex items-end justify-between gap-4">
+                                        <button id="demo-play-btn" class="w-12 h-12 bg-brand-600 hover:bg-brand-500 text-white rounded-full flex items-center justify-center shadow-lg transition-colors flex-shrink-0" aria-label="Play">
+                                            <svg id="demo-play-icon" class="w-5 h-5 ml-0.5" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
+                                            <svg id="demo-pause-icon" class="w-5 h-5 hidden" fill="currentColor" viewBox="0 0 24 24"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
+                                        </button>
+                                        <div class="flex items-center gap-2 flex-wrap justify-end">
+                                            <button data-demo-lang="en" class="demo-lang-btn bg-brand-600 border border-brand-500 text-white text-xs font-bold px-3 py-1.5 rounded-full shadow-lg transition-all">English</button>
+                                            <button data-demo-lang="fr" class="demo-lang-btn border border-white/20 text-white/60 hover:text-white hover:border-white/50 bg-white/5 text-xs font-bold px-3 py-1.5 rounded-full transition-all">French</button>
+                                            <button data-demo-lang="es" class="demo-lang-btn border border-white/20 text-white/60 hover:text-white hover:border-white/50 bg-white/5 text-xs font-bold px-3 py-1.5 rounded-full transition-all">Spanish</button>
+                                            <button data-demo-lang="de" class="demo-lang-btn border border-white/20 text-white/60 hover:text-white hover:border-white/50 bg-white/5 text-xs font-bold px-3 py-1.5 rounded-full transition-all">German</button>
+                                        </div>
+                                    </div>
+                                </div>
+                                <!-- Caption / subtitle bar (inside bezel) -->
+                                <div class="bg-white p-4 rounded-[0.5rem] flex items-center gap-4 mt-2">
+                                    <img src="{{ url_for('static', path='img/wordmark.png') }}" alt="VoxBento" class="h-5 flex-shrink-0">
+                                    <div class="w-px h-6 bg-slate-200 flex-shrink-0"></div>
+                                    <p id="demo-caption" class="text-sm font-bold text-slate-600 flex-1 truncate">Press play to hear VoxBento translate live&hellip;</p>
+                                </div>
+                            </div>
+                            <!-- Hinge -->
+                            <div class="w-full h-1"></div>
+                            <!-- Base -->
+                            <div class="relative z-20 w-[104%] -ml-[2%]">
+                                <div class="bg-gradient-to-b from-[#e5e7eb] to-[#d1d5db] h-3.5 rounded-t-md w-full relative shadow-[inset_0_1px_1px_rgba(255,255,255,0.8)] border-b border-[#9ca3af]">
+                                    <div class="absolute top-0 left-1/2 -translate-x-1/2 w-32 h-1.5 bg-gradient-to-b from-[#d1d5db] to-[#9ca3af] rounded-b-lg shadow-[inset_0_1px_2px_rgba(0,0,0,0.15)]"></div>
+                                </div>
+                                <div class="bg-gradient-to-b from-[#9ca3af] to-[#4b5563] h-2 rounded-b-2xl w-full shadow-[0_20px_40px_rgba(0,0,0,0.5)]"></div>
                             </div>
                         </div>
                     </div>
-                    
-                    <!-- Hinge Gap -->
-                    <div class="w-full h-1 bg-transparent"></div>
 
-                    <!-- MacBook Bottom Base -->
-                    <div class="relative z-20 w-[104%] -ml-[2%]">
-                        <!-- Top silver lip -->
-                        <div class="bg-gradient-to-b from-[#e5e7eb] to-[#d1d5db] h-3.5 rounded-t-md w-full relative shadow-[inset_0_1px_1px_rgba(255,255,255,0.8)] border-b border-[#9ca3af]">
-                            <!-- Trackpad thumb indentation -->
-                            <div class="absolute top-0 left-1/2 -translate-x-1/2 w-32 h-1.5 bg-gradient-to-b from-[#d1d5db] to-[#9ca3af] rounded-b-lg shadow-[inset_0_1px_2px_rgba(0,0,0,0.15)]"></div>
-                        </div>
-                        <!-- Bottom shadow lip -->
-                        <div class="bg-gradient-to-b from-[#9ca3af] to-[#4b5563] h-2 rounded-b-2xl w-full shadow-[0_20px_40px_rgba(0,0,0,0.5)]"></div>
-                    </div>
                 </div>
             </div>
         </section>
@@ -704,5 +758,6 @@
             }
         });
     </script>
+    <script type="module" src="{{ url_for('static', path='js/demo-player.js') }}"></script>
 </body>
 </html>
