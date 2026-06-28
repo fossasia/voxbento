@@ -39,6 +39,8 @@ services:
       - /app/.venv
       # Persist database across container restarts
       - portal-data:/data
+      # Persist Supertonic ONNX model weights (~400MB) across restarts
+      - supertonic-cache:/root/.cache
     depends_on:
       - mediamtx
     restart: unless-stopped
@@ -172,6 +174,7 @@ services:
 
 volumes:
   portal-data:
+  supertonic-cache:
   jitsi-web-config:
   jitsi-prosody-config:
   jitsi-prosody-plugins:

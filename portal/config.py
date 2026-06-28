@@ -71,5 +71,18 @@ class Settings(BaseSettings):
     # Transcription Settings
     nvidia_function_id: str = ""
 
+    # Supertonic TTS — optional sidecar URL for the Voice Builder import API.
+    # Leave empty to use in-process TTS (no sidecar needed).
+    supertonic_base_url: str = ""
+
+    # Supertonic synthesis quality/speed trade-off. Fewer diffusion steps =
+    # faster (lower real-time factor) at a small quality cost. 4 keeps CPU
+    # synthesis at/below real-time so audio never backs up; 8 is reference
+    # quality but slower than real-time on CPU.
+    supertonic_total_steps: int = 4
+    # ONNX Runtime intra-op threads for synthesis. 0 = let ONNX Runtime pick
+    # (uses all physical cores).
+    supertonic_intra_op_threads: int = 0
+
 
 settings = Settings()

@@ -28,6 +28,7 @@ dependencies = [
 
 [project.optional-dependencies]
 nvidia = ["nvidia-riva-client>=2.21.1"]
+supertonic = ["supertonic>=1.3.0"]
 
 [dependency-groups]
 dev = [

@@ -514,6 +514,8 @@ async def admin_edit_room(request: Request, event_id: int, room_id: int):
     floor_translation_model = form.get("floor_translation_model", "").strip() or None
     floor_translation_languages = form.getlist("floor_translation_languages")
     floor_tts_enabled = form.get("floor_tts_enabled") == "on"
+    floor_tts_provider = form.get("floor_tts_provider", "deepgram").strip() or "deepgram"
+    floor_tts_voice = form.get("floor_tts_voice", "M1").strip() or "M1"
     async with get_session() as session:
         room = await get_room_by_id(session, room_id)
         if room and room.event_id == event_id:
@@ -530,6 +532,8 @@ async def admin_edit_room(request: Request, event_id: int, room_id: int):
             room.floor_translation_provider = floor_translation_provider
             room.floor_translation_model = floor_translation_model
             room.floor_tts_enabled = floor_tts_enabled
+            room.floor_tts_provider = floor_tts_provider
+            room.floor_tts_voice = floor_tts_voice
             existing_langs = {lang.language_code: lang for lang in room.translation_languages}
             requested_codes = set(floor_translation_languages)
             for code, lang in existing_langs.items():

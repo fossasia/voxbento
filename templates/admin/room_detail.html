@@ -197,10 +197,31 @@
       <div class="form-group" style="flex: 1;">
         <label class="checkbox-label" style="display: flex; align-items: center; gap: 0.5rem;">
           <input type="checkbox" name="floor_tts_enabled" id="floor_tts_enabled" {% if room.floor_tts_enabled %}checked{% endif %}>
-          Enable Deepgram TTS for translated floor audio
+          Enable TTS for translated floor audio
         </label>
-        <p class="form-help" style="margin-top: 0.5rem; font-size: 0.85rem; color: #666;">This requires Floor Audio Translation to be enabled. Translated text will be streamed to Deepgram and pushed directly to listeners via WebSockets.</p>
-        <p class="form-help" style="margin-top: 0.25rem; font-size: 0.85rem; color: #666;"><strong>Supported TTS Languages:</strong> English (en), Spanish (es), Dutch (nl), French (fr), German (de), Italian (it), Japanese (ja). Other translation languages will fallback to an English voice.</p>
+        <p class="form-help" style="margin-top: 0.5rem; font-size: 0.85rem; color: #666;">This requires Floor Audio Translation to be enabled. Translated text is synthesized to speech and pushed directly to listeners via WebSockets.</p>
+      </div>
+    </div>
+
+    <div class="form-row">
+      <div class="form-group" style="flex: 1;">
+        <label for="floor_tts_provider">TTS Provider</label>
+        <select id="floor_tts_provider" name="floor_tts_provider" class="input">
+          <option value="deepgram" {% if (room.floor_tts_provider or 'deepgram') == 'deepgram' %}selected{% endif %}>Deepgram Aura (Cloud)</option>
+          <option value="supertonic" {% if room.floor_tts_provider == 'supertonic' %}selected{% endif %}>Supertonic (Self-Hosted)</option>
+        </select>
+        <p class="form-help" id="tts_provider_help_deepgram" style="margin-top: 0.5rem; font-size: 0.85rem; color: #666;"><strong>Supported Deepgram languages:</strong> English (en), Spanish (es), Dutch (nl), French (fr), German (de), Italian (it), Japanese (ja). Other languages fall back to an English voice.</p>
+        <p class="form-help" id="tts_provider_help_supertonic" style="margin-top: 0.5rem; font-size: 0.85rem; color: #666; display: none;">Supertonic runs locally with no API key. 31 languages supported; unknown languages use a language-agnostic fallback. The model (~400MB) downloads on first use.</p>
+      </div>
+      <div class="form-group" id="tts_voice_group" style="flex: 1;">
+        <label for="floor_tts_voice">Supertonic Voice</label>
+        <select id="floor_tts_voice" name="floor_tts_voice" class="input">
+          {% set current_voice = room.floor_tts_voice or 'M1' %}
+          {% for v in ['M1', 'M2', 'M3', 'M4', 'M5', 'F1', 'F2', 'F3', 'F4', 'F5'] %}
+          <option value="{{ v }}" {% if current_voice == v %}selected{% endif %}>{{ v }}</option>
+          {% endfor %}
+        </select>
+        <p class="form-help" style="margin-top: 0.5rem; font-size: 0.85rem; color: #666;">M1–M5 (male) and F1–F5 (female) preset voices.</p>
       </div>
       <div class="form-group form-group-btn" style="flex: 0; align-self: flex-end;">
         <button type="submit" class="btn btn-primary">Save Settings</button>
@@ -274,6 +295,24 @@
     transProviderSelect.addEventListener('change', loadTranslationModels);
     if (transProviderSelect.value) {
       loadTranslationModels();
+    }
+
+    // TTS provider → toggle Supertonic voice picker + provider help text
+    const ttsProviderSelect = document.getElementById('floor_tts_provider');
+    if (ttsProviderSelect) {
+      const ttsVoiceGroup = document.getElementById('tts_voice_group');
+      const helpDeepgram = document.getElementById('tts_provider_help_deepgram');
+      const helpSupertonic = document.getElementById('tts_provider_help_supertonic');
+
+      function syncTtsProvider() {
+        const isSupertonic = ttsProviderSelect.value === 'supertonic';
+        if (ttsVoiceGroup) ttsVoiceGroup.style.display = isSupertonic ? '' : 'none';
+        if (helpDeepgram) helpDeepgram.style.display = isSupertonic ? 'none' : '';
+        if (helpSupertonic) helpSupertonic.style.display = isSupertonic ? '' : 'none';
+      }
+
+      ttsProviderSelect.addEventListener('change', syncTtsProvider);
+      syncTtsProvider();
     }
 
     // Language tag picker

@@ -128,6 +128,10 @@ class Room(Base):
 
     # TTS Settings
     floor_tts_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    floor_tts_provider: Mapped[str] = mapped_column(
+        String(20), default="deepgram", server_default=sa.text("'deepgram'")
+    )
+    floor_tts_voice: Mapped[str] = mapped_column(String(50), default="M1", server_default=sa.text("'M1'"))
     audio_delay_ms: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)

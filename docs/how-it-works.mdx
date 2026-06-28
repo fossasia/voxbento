@@ -78,7 +78,7 @@ To transcribe or translate the original speakers without requiring external inte
 5. **Text-to-Text (Translation):** If target languages are enabled, the Translation Worker detects the finalized segment and spawns parallel requests to LLMs (Anthropic, Groq, Gemini) to translate the sentence. 
 6. **Broadcast:** Translations are saved to the database and immediately broadcast via the dedicated WebSocket (`/ws/translations/{channel_id}`).
 
-7. **Text-to-Speech (TTS):** If the room has "Floor Audio TTS (Direct Push)" enabled, the new `TTSWorker` instantly receives the finalized translated text and streams it to the Deepgram Aura WebSocket API.
+7. **Text-to-Speech (TTS):** If the room has "Floor Audio TTS (Direct Push)" enabled, the `TTSWorker` instantly receives the finalized translated text and synthesizes speech using the room's configured provider — either **Deepgram Aura** (cloud WebSocket) or **Supertonic** (self-hosted, in-process ONNX). Both emit raw PCM (24 kHz s16le) pushed directly to listeners.
 8. **TTS Audio Delivery:** Deepgram returns synthesized speech as raw PCM binary data, which the `tts_manager` broadcasts directly to listeners over a dedicated WebSocket (`/ws/tts/{room_id}`). Listeners hear the translated audio natively via the Web Audio API with sub-second latency, bypassing the WHEP stream entirely.
 
 :::info
