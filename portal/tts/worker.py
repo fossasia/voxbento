@@ -203,8 +203,8 @@ class TTSWorker:
                     voice=voice,
                     on_audio=on_audio,
                 )
-            except Exception as e:
-                logger.error(f"[TTS] Error streaming room {room_id} lang {lang_code}: {e}")
+            except Exception:
+                logger.error(f"[TTS] Error streaming room {room_id} lang {lang_code}", exc_info=True)
 
         await asyncio.gather(*[_one(code, name) for code, name in cfg["langs"]])
 
@@ -239,8 +239,8 @@ class TTSWorker:
                     voice=voice,
                     on_audio=on_audio,
                 )
-            except Exception as e:
-                logger.error(f"[TTS] Error synthesizing room {room_id} lang {lang_code}: {e}")
+            except Exception:
+                logger.error(f"[TTS] Error synthesizing room {room_id} lang {lang_code}", exc_info=True)
 
         await asyncio.gather(*[_one(code, translated) for code, translated in items])
 
