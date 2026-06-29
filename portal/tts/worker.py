@@ -9,7 +9,8 @@ import httpx
 from portal.crypto import decrypt_val
 from portal.database import get_session
 from portal.models import Event, Room
-from portal.translations.constants import TranslationProviderEnum
+from portal.translations.constants import OPENAI_COMPATIBLE_ENDPOINTS, TranslationProviderEnum
+from portal.translations.keys import get_translation_api_key
 from portal.tts.providers.base import TTSProviderEnum, get_tts_provider
 
 logger = logging.getLogger(__name__)
@@ -255,15 +256,7 @@ class TTSWorker:
         await asyncio.gather(*[_one(code, translated) for code, translated in items])
 
     def _get_translation_api_key(self, event: Event, provider: str) -> str | None:
-        key_map = {
-            TranslationProviderEnum.OPENAI.value: event.encrypted_translation_openai_api_key,
-            TranslationProviderEnum.OPENROUTER.value: event.encrypted_openrouter_api_key,
-            TranslationProviderEnum.GEMINI.value: event.encrypted_gemini_api_key,
-            TranslationProviderEnum.ANTHROPIC.value: event.encrypted_anthropic_api_key,
-            TranslationProviderEnum.GROQ.value: event.encrypted_groq_api_key,
-        }
-        encrypted = key_map.get(provider)
-        return decrypt_val(encrypted) if encrypted else None
+        return get_translation_api_key(event, provider)
 
     async def _translate_full(
         self, provider: str, model: str, api_key: str, text: str, lang_name: str
@@ -298,11 +291,7 @@ class TTSWorker:
                 yield full_text
             return
 
-        endpoint = "https://api.openai.com/v1/chat/completions"
-        if provider == TranslationProviderEnum.OPENROUTER.value:
-            endpoint = "https://openrouter.ai/api/v1/chat/completions"
-        elif provider == TranslationProviderEnum.GROQ.value:
-            endpoint = "https://api.groq.com/openai/v1/chat/completions"
+        endpoint = OPENAI_COMPATIBLE_ENDPOINTS[provider]
 
         async with httpx.AsyncClient(timeout=10.0) as client:
             async with client.stream(

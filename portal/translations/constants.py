@@ -27,3 +27,13 @@ TRANSLATION_MODELS: Dict[str, List[str]] = {
         "qwen-2.5-7b-instruct",
     ],  # Placeholder for local models
 }
+
+
+# OpenAI-compatible chat-completions endpoints. These providers share the same
+# request/response shape, so both the translation worker (blocking) and the TTS
+# worker (streaming) select an endpoint from this single map.
+OPENAI_COMPATIBLE_ENDPOINTS: Dict[str, str] = {
+    TranslationProviderEnum.OPENAI.value: "https://api.openai.com/v1/chat/completions",
+    TranslationProviderEnum.OPENROUTER.value: "https://openrouter.ai/api/v1/chat/completions",
+    TranslationProviderEnum.GROQ.value: "https://api.groq.com/openai/v1/chat/completions",
+}
