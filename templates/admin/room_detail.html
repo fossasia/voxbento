@@ -78,8 +78,12 @@
   <div class="token-form-card" style="margin-bottom: 2rem;">
     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
       <h3 style="margin: 0;">Floor Audio Transcription</h3>
-      <div style="display: flex; gap: 0.5rem;">
+      <div style="display: flex; gap: 0.5rem; align-items: center;">
         {% if room.floor_transcription_enabled %}
+          <span id="bot-status-pill" data-room-id="{{ room.id }}" style="display: inline-flex; align-items: center; gap: 0.4rem; font-size: 0.8rem; font-weight: 600; padding: 0.25rem 0.6rem; border-radius: 999px; background: #eee; color: #666;">
+            <span id="bot-status-dot" style="width: 8px; height: 8px; border-radius: 50%; background: #999;"></span>
+            <span id="bot-status-text">Checking…</span>
+          </span>
           <button type="button" class="btn btn-sm btn-outline" id="start-bot-btn" onclick="startFloorTranscription({{ room.id }})">Start Bot</button>
           <button type="button" class="btn btn-sm btn-outline" style="border-color: #dc3545; color: #dc3545;" id="stop-bot-btn" onclick="stopFloorTranscription({{ room.id }})">Stop Bot</button>
         {% endif %}
@@ -425,59 +429,119 @@
 
 async function startFloorTranscription(roomId) {
   const btn = document.getElementById('start-bot-btn');
-  const originalText = btn.textContent;
   btn.textContent = 'Starting...';
   btn.disabled = true;
   try {
     const res = await fetch(`/api/rooms/${roomId}/floor-transcription/start`, { method: 'POST' });
-    if (res.ok) {
-      btn.textContent = 'Started!';
-      btn.classList.add('btn-success');
-      btn.classList.remove('btn-outline');
-      setTimeout(() => {
-        btn.textContent = originalText;
-        btn.classList.remove('btn-success');
-        btn.classList.add('btn-outline');
-        btn.disabled = false;
-      }, 3000);
-    } else {
-      const data = await res.json();
-      btn.textContent = "Error: " + (data.detail || "Failed");
-      setTimeout(() => { btn.textContent = originalText; btn.disabled = false; }, 3000);
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      setBotError("Error: " + (data.detail || "Failed to start"));
     }
   } catch (err) {
-    btn.textContent = "Failed";
-    setTimeout(() => { btn.textContent = originalText; btn.disabled = false; }, 3000);
+    setBotError("Failed to reach server");
+  } finally {
+    btn.textContent = 'Start Bot';
+    startBotPolling(roomId, true);
   }
 }
 
 async function stopFloorTranscription(roomId) {
   const btn = document.getElementById('stop-bot-btn');
-  const originalText = btn.textContent;
   btn.textContent = 'Stopping...';
   btn.disabled = true;
   try {
     const res = await fetch(`/api/rooms/${roomId}/floor-transcription/stop`, { method: 'POST' });
-    if (res.ok) {
-      btn.textContent = 'Stopped!';
-      btn.classList.add('btn-outline');
-      btn.classList.remove('btn-danger');
-      setTimeout(() => {
-        btn.textContent = originalText;
-        btn.classList.remove('btn-outline');
-        btn.classList.add('btn-danger');
-        btn.disabled = false;
-      }, 3000);
-    } else {
-      const data = await res.json();
-      btn.textContent = "Error: " + (data.detail || "Failed");
-      setTimeout(() => { btn.textContent = originalText; btn.disabled = false; }, 3000);
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      setBotError("Error: " + (data.detail || "Failed to stop"));
     }
   } catch (err) {
-    btn.textContent = "Failed";
-    setTimeout(() => { btn.textContent = originalText; btn.disabled = false; }, 3000);
+    setBotError("Failed to reach server");
+  } finally {
+    btn.textContent = 'Stop Bot';
+    startBotPolling(roomId, true);
   }
 }
+
+const BOT_STAGE_DISPLAY = {
+  launching: { text: 'Starting bot…', color: '#b8860b', dot: '#e0a800', pulse: true },
+  joining: { text: 'Joining meeting…', color: '#b8860b', dot: '#e0a800', pulse: true },
+  in_meeting: { text: 'In meeting · streaming', color: '#1c7c34', dot: '#28a745', pulse: false },
+  leaving: { text: 'Leaving meeting…', color: '#b8860b', dot: '#e0a800', pulse: true },
+  stopping: { text: 'Stopping…', color: '#b8860b', dot: '#e0a800', pulse: true },
+  stopped: { text: 'Stopped', color: '#666', dot: '#999', pulse: false },
+  dead: { text: 'Bot crashed', color: '#b21f2d', dot: '#dc3545', pulse: false },
+  error: { text: 'Bot crashed', color: '#b21f2d', dot: '#dc3545', pulse: false },
+  unknown: { text: 'Bot offline', color: '#b21f2d', dot: '#dc3545', pulse: false },
+};
+
+let _botPollTimer = null;
+
+function setBotError(msg) {
+  const text = document.getElementById('bot-status-text');
+  const dot = document.getElementById('bot-status-dot');
+  if (text) { text.textContent = msg; text.parentElement.style.color = '#b21f2d'; }
+  if (dot) dot.style.background = '#dc3545';
+}
+
+function applyBotStatus(stage, running) {
+  const pill = document.getElementById('bot-status-pill');
+  const text = document.getElementById('bot-status-text');
+  const dot = document.getElementById('bot-status-dot');
+  const startBtn = document.getElementById('start-bot-btn');
+  const stopBtn = document.getElementById('stop-bot-btn');
+  if (!pill || !text || !dot) return;
+
+  let info = BOT_STAGE_DISPLAY[stage];
+  if (!info) {
+    // Unknown stage (e.g. an older bot that only reports "healthy"):
+    // fall back based on whether the bot process is actually running.
+    info = running ? BOT_STAGE_DISPLAY.in_meeting : BOT_STAGE_DISPLAY.unknown;
+  }
+  text.textContent = info.text;
+  pill.style.color = info.color;
+  dot.style.background = info.dot;
+  dot.style.boxShadow = info.pulse ? `0 0 0 3px ${info.dot}33` : 'none';
+
+  const transitional = stage === 'stopping' || stage === 'leaving';
+  if (startBtn) startBtn.disabled = running || transitional;
+  if (stopBtn) stopBtn.disabled = (!running && !transitional);
+}
+
+async function pollBotStatus(roomId) {
+  try {
+    const res = await fetch(`/api/rooms/${roomId}/floor-transcription/status`);
+    if (!res.ok) { applyBotStatus('unknown', false); return; }
+    const data = await res.json();
+    const stage = data.bot_reachable ? data.stage : 'unknown';
+    applyBotStatus(stage, data.running);
+    // Slow the poll once the bot has settled into a stable state.
+    const stable = !data.running && (stage === 'stopped' || stage === 'unknown');
+    schedulePoll(roomId, stable ? 8000 : 2500);
+  } catch (err) {
+    applyBotStatus('unknown', false);
+    schedulePoll(roomId, 8000);
+  }
+}
+
+function schedulePoll(roomId, delay) {
+  if (_botPollTimer) clearTimeout(_botPollTimer);
+  _botPollTimer = setTimeout(() => pollBotStatus(roomId), delay);
+}
+
+function startBotPolling(roomId, immediate) {
+  if (_botPollTimer) clearTimeout(_botPollTimer);
+  if (immediate) {
+    pollBotStatus(roomId);
+  } else {
+    schedulePoll(roomId, 500);
+  }
+}
+
+document.addEventListener('DOMContentLoaded', function() {
+  const pill = document.getElementById('bot-status-pill');
+  if (pill) startBotPolling(pill.dataset.roomId, true);
+});
 </script>
 
 

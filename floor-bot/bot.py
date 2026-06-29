@@ -13,6 +13,9 @@ logger = logging.getLogger("floor-bot")
 class SubprocessManager:
     def __init__(self):
         self.rooms: Dict[str, subprocess.Popen] = {}
+        # Lifecycle stage per event_slug, updated from subprocess stdout markers.
+        # Possible values: launching, joining, in_meeting, leaving, stopping, stopped, dead.
+        self.room_states: Dict[str, str] = {}
         self.lock = threading.Lock()
 
     def start_room(self, event_slug: str, jitsi_url: str, mediamtx_rtsp_base: str):
@@ -52,6 +55,8 @@ async def run_capture():
     event_slug = os.environ.get("BOT_EVENT_SLUG")
     jitsi_url = os.environ.get("BOT_JITSI_URL")
     mediamtx_rtsp_base = os.environ.get("BOT_MEDIAMTX_RTSP_BASE")
+
+    print("BOT_STAGE:launching", flush=True)
 
     pulse_socket = f"/tmp/pulse-{event_slug}.sock"
     pulse_dir = f"/tmp/pulse-dir-{event_slug}"
@@ -130,6 +135,7 @@ async def run_capture():
             f"&userInfo.displayName={display_name}"
         )
 
+        print("BOT_STAGE:joining", flush=True)
         print(f"Joining: {join_url}")
         await page.goto(join_url)
 
@@ -160,19 +166,28 @@ async def run_capture():
             stderr=asyncio.subprocess.DEVNULL
         )
 
+        print("BOT_STAGE:in_meeting", flush=True)
+
         await ffmpeg_proc.wait()
 
     except asyncio.CancelledError:
         print("run_capture cancelled")
     finally:
+        print("BOT_STAGE:leaving", flush=True)
         if ffmpeg_proc is not None and ffmpeg_proc.returncode is None:
             ffmpeg_proc.terminate()
             try:
-                await ffmpeg_proc.wait()
-            except:
-                pass
+                await asyncio.wait_for(ffmpeg_proc.wait(), timeout=3)
+            except Exception:
+                try:
+                    ffmpeg_proc.kill()
+                except Exception:
+                    pass
         if browser is not None:
-            await browser.close()
+            try:
+                await asyncio.wait_for(browser.close(), timeout=4)
+            except Exception:
+                pass
         if pw is not None:
             await pw.stop()
         if pulse_proc.poll() is None:
@@ -193,20 +208,35 @@ asyncio.run(run_capture())
 
             def log_stream(stream, prefix):
                 for line in iter(stream.readline, ""):
-                    logger.info(f"{prefix}: {line.strip()}")
+                    text = line.strip()
+                    logger.info(f"{prefix}: {text}")
+                    if "BOT_STAGE:" in text:
+                        self.room_states[event_slug] = text.split("BOT_STAGE:", 1)[1].strip()
 
             threading.Thread(target=log_stream, args=(proc.stdout, f"bot[{event_slug}] stdout"), daemon=True).start()
             threading.Thread(target=log_stream, args=(proc.stderr, f"bot[{event_slug}] stderr"), daemon=True).start()
 
+            self.room_states[event_slug] = "launching"
             self.rooms[event_slug] = proc
 
     def stop_room_locked(self, event_slug: str):
         if event_slug in self.rooms:
             logger.info(f"Terminating subprocess for {event_slug}")
+            self.room_states[event_slug] = "stopping"
             proc = self.rooms[event_slug]
             if proc.poll() is None:
                 proc.terminate()
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    logger.warning(f"Graceful stop timed out for {event_slug}; sending SIGKILL")
+                    proc.kill()
+                    try:
+                        proc.wait(timeout=3)
+                    except subprocess.TimeoutExpired:
+                        logger.error(f"Subprocess for {event_slug} did not exit after SIGKILL")
             del self.rooms[event_slug]
+            self.room_states[event_slug] = "stopped"
 
     def stop_room(self, event_slug: str):
         with self.lock:
@@ -258,10 +288,11 @@ class RequestHandler(BaseHTTPRequestHandler):
             status = {}
             with manager.lock:
                 for event_slug, proc in manager.rooms.items():
+                    stage = manager.room_states.get(event_slug, "unknown")
                     if proc.poll() is not None:
-                        status[event_slug] = {"state": "dead", "exit_code": proc.returncode}
+                        status[event_slug] = {"state": "dead", "stage": "dead", "exit_code": proc.returncode}
                     else:
-                        status[event_slug] = {"state": "healthy", "pid": proc.pid}
+                        status[event_slug] = {"state": "healthy", "stage": stage, "pid": proc.pid}
             self.send_response(200)
             self.send_header("Content-type", "application/json")
             self.end_headers()

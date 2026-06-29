@@ -651,11 +651,40 @@ async def api_stop_floor_transcription(room_id: int):
         event_slug = event.slug
     try:
         async with httpx.AsyncClient() as client:
-            await client.post(f"{settings.floor_bot_base}/stop", json={"event_slug": event_slug}, timeout=5.0)
+            await client.post(f"{settings.floor_bot_base}/stop", json={"event_slug": event_slug}, timeout=15.0)
     except Exception as e:
         logger.error(f"Failed to stop floor-bot: {e}")
     await stop_transcription_worker(f"{event_slug}-floor")
     return {"status": "stopped"}
+
+
+@router.get("/api/rooms/{room_id}/floor-transcription/status", dependencies=[Depends(require_admin)])
+async def api_floor_transcription_status(room_id: int):
+    async with get_session() as session:
+        room = await get_room_by_id(session, room_id)
+        if not room:
+            raise HTTPException(status_code=404, detail="Invalid room")
+        event = await get_event_by_id(session, room.event_id)
+        if not event:
+            raise HTTPException(status_code=404, detail="Event not found")
+        event_slug = event.slug
+    running = False
+    stage = "stopped"
+    bot_reachable = True
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(f"{settings.floor_bot_base}/status", timeout=5.0)
+            resp.raise_for_status()
+            data = resp.json()
+        info = (data.get("active_rooms") or {}).get(event_slug)
+        if info:
+            stage = info.get("stage", info.get("state", "unknown"))
+            running = info.get("state") == "healthy"
+    except Exception as e:
+        logger.error(f"Failed to query floor-bot status: {e}")
+        bot_reachable = False
+        stage = "unknown"
+    return {"running": running, "stage": stage, "bot_reachable": bot_reachable}
 
 
 @router.post("/admin/events/{event_id}/rooms/{room_id}/delete", dependencies=[Depends(require_admin)])
