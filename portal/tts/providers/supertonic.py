@@ -81,8 +81,8 @@ class SupertonicTTSProvider(TTSProvider):
                 )
                 if audio:
                     await on_audio(audio)
-            except Exception as e:
-                logger.error(f"[TTS] Supertonic synthesis error for lang {language_code}: {e}")
+            except Exception:
+                logger.exception("[TTS] Supertonic synthesis error for lang %s", language_code)
 
         buffer = ""
         try:
@@ -99,23 +99,25 @@ class SupertonicTTSProvider(TTSProvider):
             remaining = buffer.strip()
             if remaining:
                 await synth_and_broadcast(remaining)
-        except Exception as e:
-            logger.error(f"[TTS] Error in Supertonic TTS stream for lang {language_code}: {e}")
+        except Exception:
+            logger.exception("[TTS] Error in Supertonic TTS stream for lang %s", language_code)
 
     def _synthesize_sync(self, text: str, language_code: str, voice: str) -> bytes:
         engine = self._get_engine()
-
-        style = self._voice_style_cache.get(voice)
-        if style is None:
-            style = engine.get_voice_style(voice_name=voice)
-            self._voice_style_cache[voice] = style
 
         primary_lang = language_code.split("-")[0].lower()
         lang_tag = primary_lang if primary_lang in SUPERTONIC_SUPPORTED_LANGS else "na"
 
         from portal.config import settings
 
+        # ONNX session and the shared style cache are not thread-safe; serialise
+        # cache population and inference under one lock.
         with self._inference_lock:
+            style = self._voice_style_cache.get(voice)
+            if style is None:
+                style = engine.get_voice_style(voice_name=voice)
+                self._voice_style_cache[voice] = style
+
             wav, _ = engine.synthesize(
                 text=text,
                 lang=lang_tag,

@@ -18,7 +18,7 @@ async def demo_manifest() -> JSONResponse:
 
     ``status`` is ``"ready"`` when audio files exist, ``"generating"`` when the
     background task is still running, or ``"pending"`` before first generation.
-    The frontend polls until status is ``"ready"``.
+    The frontend polls until status xis ``"ready"``.
     """
     from portal.tts.demo_gen import DEMO_VIDEO_URL, load_manifest
 

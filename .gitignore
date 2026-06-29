@@ -32,4 +32,4 @@ mediamtx_v*
 export.zip
 
 # Generated demo audio assets (auto-created at startup by demo_gen.py)
-static/audio/
+static/audio/demo/

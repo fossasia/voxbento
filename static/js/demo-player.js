@@ -143,12 +143,13 @@ function switchLang(code) {
 }
 
 function activateLangButton(code) {
-    const activeClass = "bg-brand-600 border-brand-500 text-white shadow-lg";
-    const inactiveClass = "border-white/20 text-white/60 hover:text-white hover:border-white/50 bg-white/5";
+    const activeTokens = ["bg-brand-600", "border-brand-500", "text-white", "shadow-lg"];
+    const inactiveTokens = ["border-white/20", "text-white/60", "hover:text-white", "hover:border-white/50", "bg-white/5"];
 
     document.querySelectorAll("[data-demo-lang]").forEach((btn) => {
         const isActive = btn.dataset.demoLang === code;
-        btn.className = `demo-lang-btn text-xs font-bold px-3 py-1.5 rounded-full border transition-all ${isActive ? activeClass : inactiveClass}`;
+        btn.classList.remove(...activeTokens, ...inactiveTokens);
+        btn.classList.add(...(isActive ? activeTokens : inactiveTokens));
     });
 
     document.querySelectorAll("[data-hero-lang]").forEach((btn) => {

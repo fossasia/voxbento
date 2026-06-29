@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import asyncio
 import json
 import logging
@@ -44,7 +46,15 @@ def enqueue_tts(room_id: int, text: str) -> None:
         return
     task = asyncio.create_task(_route(room_id, text))
     _inflight.add(task)
-    task.add_done_callback(_inflight.discard)
+
+    def _done(t: asyncio.Task) -> None:
+        _inflight.discard(t)
+        try:
+            t.result()
+        except Exception:
+            logger.exception("[TTS] enqueue_tts task failed (room_id=%s)", room_id)
+
+    task.add_done_callback(_done)
 
 
 async def _route(room_id: int, text: str) -> None:
@@ -92,8 +102,8 @@ class _RoomTTSPipeline:
                 items = await prep
                 if items:
                     await self.worker._synthesize_buffered(cfg, items)
-            except Exception as e:
-                logger.error(f"[TTS] Pipeline error for room {self.room_id}: {e}")
+            except Exception:
+                logger.exception("[TTS] Pipeline error for room %s", self.room_id)
             finally:
                 self.queue.task_done()
 
@@ -150,7 +160,7 @@ class TTSWorker:
 
             llm_api_key = self._get_translation_api_key(event, provider)
             if not llm_api_key and provider != TranslationProviderEnum.LOCAL.value:
-                logger.error(f"[TTS] Translation API key not found for provider {provider}")
+                logger.error("[TTS] Translation API key not found for provider %s", provider)
                 return None
 
             tts_provider_name = room.floor_tts_provider or TTSProviderEnum.DEEPGRAM.value
@@ -162,7 +172,7 @@ class TTSWorker:
                     decrypt_val(event.encrypted_deepgram_api_key) if event.encrypted_deepgram_api_key else None
                 )
                 if not dg_api_key:
-                    logger.error(f"[TTS] Deepgram API key not found for Event {event.id}")
+                    logger.error("[TTS] Deepgram API key not found for Event %s", event.id)
                     return None
 
             try:

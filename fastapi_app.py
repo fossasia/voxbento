@@ -16,9 +16,9 @@ from portal.config import settings
 from portal.routers.admin import router as admin_router
 from portal.routers.api import router as api_router
 from portal.routers.auth import router as auth_router
+from portal.routers.demo import router as demo_router
 from portal.routers.interpreter import router as interpreter_router
 from portal.routers.listener import router as listener_router
-from portal.routers.demo import router as demo_router
 from portal.routers.public import router as public_router
 from portal.websockets.handlers import router as ws_router
 
@@ -34,8 +34,8 @@ async def lifespan(app: FastAPI):
     import httpx
 
     import portal.transcription as ts
-    from portal.tts.demo_gen import ensure_demo_generated
     from portal.tts import demo_gen as dg
+    from portal.tts.demo_gen import ensure_demo_generated
 
     ts.shared_http_client = httpx.AsyncClient(timeout=10.0)
 
