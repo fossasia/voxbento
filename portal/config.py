@@ -68,6 +68,22 @@ class Settings(BaseSettings):
     def effective_jwt_secret(self) -> str:
         return self.jwt_secret or self.secret_key
 
+    def validate_production_secrets(self) -> None:
+        """Refuse to start with a known-weak default secret outside debug mode.
+
+        Called once at application startup. No-op in debug mode so local
+        development works without configuring a SECRET_KEY.
+        """
+        if self.debug:
+            return
+        weak_defaults = {"change-me", "", "secret", "your-secret-key"}
+        if self.effective_jwt_secret in weak_defaults:
+            raise RuntimeError(
+                "SECRET_KEY (or JWT_SECRET) is set to a known-weak default value. "
+                "Set a strong random value before running in production. "
+                "Generate one with: openssl rand -hex 32"
+            )
+
     # Transcription Settings
     nvidia_function_id: str = ""
 

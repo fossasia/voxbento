@@ -1179,3 +1179,28 @@ def test_full_isolation_flow():
         # fest2 listing must not show fest1 booths
         listing2 = client.get("/api/events/fest2/booths").json()
         assert all(b["event_slug"] == "fest2" for b in listing2["booths"])
+
+
+# --- Secret guard tests ---
+
+
+def test_weak_secret_raises_in_production():
+    from portal.config import Settings
+
+    s = Settings(debug=False, secret_key="change-me", jwt_secret="")
+    with pytest.raises(RuntimeError, match="SECRET_KEY"):
+        s.validate_production_secrets()
+
+
+def test_weak_secret_allowed_in_debug_mode():
+    from portal.config import Settings
+
+    s = Settings(debug=True, secret_key="change-me", jwt_secret="")
+    s.validate_production_secrets()  # must not raise
+
+
+def test_strong_secret_passes_production():
+    from portal.config import Settings
+
+    s = Settings(debug=False, secret_key="a-strong-random-secret-0123456789abcdef", jwt_secret="")
+    s.validate_production_secrets()  # must not raise

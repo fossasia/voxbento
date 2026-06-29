@@ -37,6 +37,8 @@ async def lifespan(app: FastAPI):
     from portal.tts import demo_gen as dg
     from portal.tts.demo_gen import ensure_demo_generated
 
+    settings.validate_production_secrets()
+
     ts.shared_http_client = httpx.AsyncClient(timeout=10.0)
 
     # Generate landing page demo audio in the background on first startup.
