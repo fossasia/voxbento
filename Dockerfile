@@ -11,7 +11,10 @@ RUN pip install --no-cache-dir uv
 # layer (the project itself is installed after the source is copied, which
 # maximises Docker layer caching when only code — not deps — changes).
 COPY pyproject.toml uv.lock ./
-RUN uv sync --no-dev --frozen --no-install-project --extra supertonic
+RUN uv sync --no-dev --frozen --no-install-project --extra supertonic \
+    # uv does not install optional-extra deps when --no-install-project is set;
+    # install them explicitly to guarantee they land in the venv at this layer.
+    && uv pip install "supertonic>=1.3.0" soundfile
 
 # Copy application code and install the project into the same venv
 COPY . .
