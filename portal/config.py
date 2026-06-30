@@ -16,7 +16,7 @@ class Settings(BaseSettings):
 
     host: str = "127.0.0.1"
     port: int = 8000
-    debug: bool = Field(default=True)
+    debug: bool = Field(default=False)
     secret_key: str = "change-me"
     api_key_encryption_key: str | None = Field(default=None)
     booth_access_token: str = ""
