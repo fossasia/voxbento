@@ -35,6 +35,10 @@ _room_pipelines: dict[int, "_RoomTTSPipeline"] = {}
 # streaming), preventing them from being garbage collected before they finish.
 _inflight: set[asyncio.Task] = set()
 
+# Strong references to in-flight pipeline shutdown tasks, so cancelling a stale
+# room's consumer is not garbage collected before it finishes unwinding.
+_pipeline_shutdowns: set[asyncio.Task] = set()
+
 # Per-room TTS config cache: room_id -> (monotonic_expiry, cfg_or_None).
 #
 # A finalized caption segment arrives many times per minute per room, while the
@@ -53,6 +57,22 @@ def invalidate_room_config(room_id: int) -> None:
     effect immediately instead of waiting for the TTL to expire.
     """
     _config_cache.pop(room_id, None)
+
+
+def remove_room_pipeline(room_id: int) -> None:
+    """Pop a room's Supertonic pipeline and schedule its consumer shutdown.
+
+    Called when a room that previously used Supertonic no longer has TTS enabled
+    (or was deleted), so its idle consumer task and queue are released instead
+    of leaking for the lifetime of the process. A no-op if the room has no
+    pipeline.
+    """
+    pipeline = _room_pipelines.pop(room_id, None)
+    if pipeline is None:
+        return
+    task = asyncio.create_task(pipeline.shutdown())
+    _pipeline_shutdowns.add(task)
+    task.add_done_callback(_pipeline_shutdowns.discard)
 
 
 def enqueue_tts(room_id: int, text: str) -> None:
@@ -85,6 +105,8 @@ async def _route(room_id: int, text: str) -> None:
     worker = TTSWorker(tts_manager.broadcast_audio)
     cfg = await worker._load_config_cached(room_id)
     if not cfg:
+        # Room is disabled or gone — release any stale Supertonic pipeline.
+        remove_room_pipeline(room_id)
         return
 
     if cfg["tts_provider_name"] == TTSProviderEnum.SUPERTONIC.value:
@@ -127,6 +149,14 @@ class _RoomTTSPipeline:
                 logger.exception("[TTS] Pipeline error for room %s", self.room_id)
             finally:
                 self.queue.task_done()
+
+    async def shutdown(self) -> None:
+        """Cancel the consumer task and wait for it to unwind."""
+        self._consumer.cancel()
+        try:
+            await self._consumer
+        except asyncio.CancelledError:
+            pass
 
 
 class TTSWorker:

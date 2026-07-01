@@ -317,3 +317,42 @@ class TestConfigCache:
         assert await worker._load_config_cached(7) is None
         assert calls["n"] == 1
 
+
+@pytest.mark.anyio
+class TestPipelineCleanup:
+    @pytest.fixture(autouse=True)
+    def _clear_pipelines(self):
+        from portal.tts import worker as worker_mod
+
+        worker_mod._room_pipelines.clear()
+        worker_mod._pipeline_shutdowns.clear()
+        yield
+        worker_mod._room_pipelines.clear()
+        worker_mod._pipeline_shutdowns.clear()
+
+    async def test_remove_room_pipeline_cancels_consumer(self):
+        import asyncio
+
+        from portal.tts import worker as worker_mod
+        from portal.tts.worker import _RoomTTSPipeline
+
+        pipeline = _RoomTTSPipeline(room_id=7)
+        worker_mod._room_pipelines[7] = pipeline
+        consumer = pipeline._consumer
+
+        worker_mod.remove_room_pipeline(7)
+
+        assert 7 not in worker_mod._room_pipelines
+        # Drain the scheduled shutdown task(s) so cancellation completes.
+        await asyncio.gather(*list(worker_mod._pipeline_shutdowns))
+        assert consumer.cancelled()
+
+    async def test_remove_missing_room_is_noop(self):
+        from portal.tts import worker as worker_mod
+
+        # No pipeline registered for this room — must not raise.
+        worker_mod.remove_room_pipeline(999)
+
+        assert 999 not in worker_mod._room_pipelines
+        assert worker_mod._pipeline_shutdowns == set()
+
