@@ -33,3 +33,6 @@ export.zip
 
 # Generated demo audio assets (auto-created at startup by demo_gen.py)
 static/audio/demo/
+
+.gemini/
+gha-creds-*.json
