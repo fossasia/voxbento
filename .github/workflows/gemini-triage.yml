@@ -22,7 +22,7 @@ jobs:
     timeout-minutes: 7
     outputs:
       available_labels: '${{ steps.get_labels.outputs.available_labels }}'
-      selected_labels: '${{ env.SELECTED_LABELS }}'
+      selected_labels: '${{ steps.gemini_analysis.outputs.output }}'
     permissions:
       contents: 'read'
       id-token: 'write'

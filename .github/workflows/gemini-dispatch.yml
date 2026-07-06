@@ -55,8 +55,7 @@ jobs:
         contains(fromJSON('["opened", "reopened"]'), github.event.action)
       ) || (
         github.event.sender.type == 'User' &&
-        startsWith(github.event.comment.body || github.event.review.body || github.event.issue.body, '@gemini-cli') &&
-        contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.comment.author_association || github.event.review.author_association || github.event.issue.author_association)
+        (startsWith(github.event.comment.body || github.event.review.body || github.event.issue.body, '@gemini-cli') || startsWith(github.event.comment.body || github.event.review.body || github.event.issue.body, '/gemini') || startsWith(github.event.comment.body || github.event.review.body || github.event.issue.body, '/ gemini'))
       )
     runs-on: 'ubuntu-latest'
     permissions:
@@ -94,19 +93,19 @@ jobs:
             core.setOutput('request', request);
 
             if (eventType === 'pull_request.opened') {
-              core.setOutput('command', 'review');
+              core.setOutput('command', 'review_and_triage');
             } else if (['issues.opened', 'issues.reopened'].includes(eventType)) {
               core.setOutput('command', 'triage');
-            } else if (request.startsWith("@gemini-cli /review")) {
+            } else if (request.startsWith("@gemini-cli /review") || request.startsWith("/gemini review") || request.startsWith("/ gemini review")) {
               core.setOutput('command', 'review');
-              const additionalContext = request.replace(/^@gemini-cli \/review/, '').trim();
+              const additionalContext = request.replace(/^(@gemini-cli \/review|\/?\s*gemini review)/, '').trim();
               core.setOutput('additional_context', additionalContext);
-            } else if (request.startsWith("@gemini-cli /triage")) {
+            } else if (request.startsWith("@gemini-cli /triage") || request.startsWith("/gemini triage") || request.startsWith("/ gemini triage")) {
               core.setOutput('command', 'triage');
-            } else if (request.startsWith("@gemini-cli /approve")) {
+            } else if (request.startsWith("@gemini-cli /approve") || request.startsWith("/gemini approve") || request.startsWith("/ gemini approve")) {
               core.setOutput('command', 'approve');
-            } else if (request.startsWith("@gemini-cli")) {
-              const additionalContext = request.replace(/^@gemini-cli/, '').trim();
+            } else if (request.startsWith("@gemini-cli") || request.startsWith("/gemini") || request.startsWith("/ gemini")) {
+              const additionalContext = request.replace(/^(@gemini-cli|\/?\s*gemini)/, '').trim();
               core.setOutput('command', 'invoke');
               core.setOutput('additional_context', additionalContext);
             } else {
@@ -128,7 +127,7 @@ jobs:
   review:
     needs: 'dispatch'
     if: |-
-      ${{ needs.dispatch.outputs.command == 'review' }}
+      ${{ needs.dispatch.outputs.command == 'review' || needs.dispatch.outputs.command == 'review_and_triage' }}
     uses: './.github/workflows/gemini-review.yml'
     permissions:
       contents: 'read'
@@ -142,7 +141,7 @@ jobs:
   triage:
     needs: 'dispatch'
     if: |-
-      ${{ needs.dispatch.outputs.command == 'triage' }}
+      ${{ needs.dispatch.outputs.command == 'triage' || needs.dispatch.outputs.command == 'review_and_triage' }}
     uses: './.github/workflows/gemini-triage.yml'
     permissions:
       contents: 'read'

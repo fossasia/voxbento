@@ -36,7 +36,7 @@ jobs:
       pull-requests: 'read'
     outputs:
       available_labels: '${{ steps.get_labels.outputs.available_labels }}'
-      triaged_issues: '${{ env.TRIAGED_ISSUES }}'
+      triaged_issues: '${{ steps.gemini_issue_analysis.outputs.output }}'
     steps:
       - name: 'Get repository labels'
         id: 'get_labels'
