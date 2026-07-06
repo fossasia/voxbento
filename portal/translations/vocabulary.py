@@ -431,11 +431,11 @@ async def get_deepgram_keywords(
     keywords: list[str] = []
     for source_term, priority in seen.values():
         if priority >= 90:
-            boost = 10
+            boost = 3
         elif priority >= 50:
-            boost = 5
-        else:
             boost = 2
+        else:
+            boost = 1
         keywords.append(f"{source_term}:{boost}")
 
     return keywords[:MAX_DEEPGRAM_KEYWORDS]

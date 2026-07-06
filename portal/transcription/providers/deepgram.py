@@ -48,7 +48,7 @@ class DeepgramProvider(TranscriptionProvider):
             keywords = await get_deepgram_keywords(config.event_id, room_id, None)
             from urllib.parse import quote
             for kw in keywords:
-                url += f"&keywords={quote(kw)}"
+                url += f"&keywords={quote(kw, safe=':')}"
                 
         headers = {"Authorization": f"Token {api_key}"}
 
