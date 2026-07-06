@@ -688,7 +688,7 @@ async def save_transcript_segment(booth_id_str: str, text: str, room_id: int | N
             if language_code != "floor":
                 stmt = (
                     select(DBBooth.id)
-                    .join(Event)
+                    .join(DBBooth.event)
                     .where(Event.slug == event_slug, DBBooth.language_code == language_code)
                 )
                 booth_id = await session.scalar(stmt)

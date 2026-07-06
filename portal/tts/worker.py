@@ -244,6 +244,7 @@ class TTSWorker:
 
         return {
             "room_id": room_id,
+            "event_id": room.event_id,
             "provider": provider,
             "model": model,
             "llm_api_key": llm_api_key,
@@ -251,6 +252,10 @@ class TTSWorker:
             "tts_provider": tts_provider,
             "tts_provider_name": tts_provider_name,
             "voice": tts_voice,
+            "persona": room.floor_ai_interpreter_persona,
+            "style": room.floor_ai_interpretation_style,
+            "source_language_code": room.floor_source_language_code,
+            "vocabulary_enabled": room.floor_ai_vocabulary_enabled,
         }
 
     async def _stream_live(self, cfg: dict, text: str) -> None:
@@ -269,7 +274,16 @@ class TTSWorker:
 
             try:
                 await tts_provider.synthesize_stream(
-                    text_chunks=self._stream_llm(cfg["provider"], cfg["model"], cfg["llm_api_key"], text, lang_name),
+                    text_chunks=self._stream_llm(
+                        cfg["provider"], cfg["model"], cfg["llm_api_key"], text, lang_name,
+                        source_language_code=cfg.get("source_language_code"),
+                        persona=cfg.get("persona"),
+                        style=cfg.get("style"),
+                        vocabulary_enabled=cfg.get("vocabulary_enabled", True),
+                        event_id=cfg.get("event_id"),
+                        room_id=cfg.get("room_id"),
+                        target_lang_code=lang_code,
+                    ),
                     language_code=lang_code,
                     voice=voice,
                     on_audio=on_audio,
@@ -284,7 +298,14 @@ class TTSWorker:
 
         async def _tr(lang_code: str, lang_name: str) -> tuple[str, str]:
             return lang_code, await self._translate_full(
-                cfg["provider"], cfg["model"], cfg["llm_api_key"], text, lang_name
+                cfg["provider"], cfg["model"], cfg["llm_api_key"], text, lang_name,
+                source_language_code=cfg.get("source_language_code"),
+                persona=cfg.get("persona"),
+                style=cfg.get("style"),
+                vocabulary_enabled=cfg.get("vocabulary_enabled", True),
+                event_id=cfg.get("event_id"),
+                room_id=cfg.get("room_id"),
+                target_lang_code=lang_code,
             )
 
         results = await asyncio.gather(*[_tr(code, name) for code, name in cfg["langs"]])
@@ -319,21 +340,73 @@ class TTSWorker:
         return get_translation_api_key(event, provider)
 
     async def _translate_full(
-        self, provider: str, model: str, api_key: str, text: str, lang_name: str
+        self, provider: str, model: str, api_key: str, text: str, lang_name: str,
+        *,
+        source_language_code: str | None = None,
+        persona: str | None = None,
+        style: str | None = None,
+        vocabulary_enabled: bool = True,
+        event_id: int | None = None,
+        room_id: int | None = None,
+        target_lang_code: str | None = None,
     ) -> str:
         """Collect the streaming LLM translation into a single string."""
         parts: list[str] = []
         try:
-            async for chunk in self._stream_llm(provider, model, api_key, text, lang_name):
+            async for chunk in self._stream_llm(
+                provider, model, api_key, text, lang_name,
+                source_language_code=source_language_code,
+                persona=persona,
+                style=style,
+                vocabulary_enabled=vocabulary_enabled,
+                event_id=event_id,
+                room_id=room_id,
+                target_lang_code=target_lang_code,
+            ):
                 parts.append(chunk)
         except Exception as e:
             logger.error(f"[TTS] Translation failed for {lang_name}: {e}")
             return ""
         return "".join(parts).strip()
 
-    async def _stream_llm(self, provider: str, model: str, api_key: str, text: str, target_lang_name: str):
+    async def _stream_llm(
+        self, provider: str, model: str, api_key: str, text: str, target_lang_name: str,
+        *,
+        source_language_code: str | None = None,
+        persona: str | None = None,
+        style: str | None = None,
+        vocabulary_enabled: bool = True,
+        event_id: int | None = None,
+        room_id: int | None = None,
+        target_lang_code: str | None = None,
+    ):
         """Yields text chunks as they arrive from the LLM."""
-        system_prompt = f"You are a professional interpreter. Translate the following text into {target_lang_name}. Output ONLY the translated text, nothing else."
+        from portal.translations.prompts import build_interpretation_messages
+
+        # Resolve vocabulary if enabled
+        vocab_entries = None
+        if vocabulary_enabled and event_id is not None and target_lang_code is not None:
+            from portal.translations.vocabulary import resolve_vocabulary_entries
+
+            async with get_session() as vocab_session:
+                vocab_entries = await resolve_vocabulary_entries(
+                    vocab_session,
+                    event_id=event_id,
+                    room_id=room_id,
+                    booth_id=None,
+                    target_language=target_lang_code,
+                    transcript_text=text,
+                ) or None
+
+        messages = build_interpretation_messages(
+            target_language_name=target_lang_name,
+            text=text,
+            source_language_code=source_language_code,
+            persona=persona,
+            style=style,
+            vocabulary_entries=vocab_entries,
+        )
+        system_prompt = messages[0]["content"]
 
         # Currently optimized for OpenAI-compatible streaming endpoints (Groq, OpenRouter, OpenAI)
         if provider not in [
@@ -346,7 +419,13 @@ class TTSWorker:
             from portal.translations.worker import TranslationWorker
 
             temp_worker = TranslationWorker(None)
-            full_text = await temp_worker._call_llm(provider, model, api_key, text, target_lang_name)
+            full_text = await temp_worker._call_llm(
+                provider, model, api_key, text, target_lang_name,
+                source_language_code=source_language_code,
+                persona=persona,
+                style=style,
+                vocabulary_entries=vocab_entries,
+            )
             if full_text:
                 yield full_text
             return
@@ -360,7 +439,7 @@ class TTSWorker:
                 headers={"Authorization": f"Bearer {api_key}"},
                 json={
                     "model": model,
-                    "messages": [{"role": "system", "content": system_prompt}, {"role": "user", "content": text}],
+                    "messages": messages,
                     "stream": True,
                 },
             ) as response:

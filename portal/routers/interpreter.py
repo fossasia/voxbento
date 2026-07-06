@@ -36,7 +36,7 @@ async def interpreter_landing_page(request: Request) -> Any:
             stmt = (
                 select(DBBooth)
                 .options(joinedload(DBBooth.event), joinedload(DBBooth.room))
-                .join(Event)
+                .join(DBBooth.event)
                 .where(Event.slug == payload["event_slug"], DBBooth.language_code == payload["language_code"])
             )
             res = await session.execute(stmt)
@@ -116,7 +116,7 @@ async def interpreter_booth_by_identity(
     async with get_session() as session:
         stmt = (
             select(DBBooth)
-            .join(Event)
+            .join(DBBooth.event)
             .options(joinedload(DBBooth.room))
             .where(Event.slug == event_slug)
             .where(DBBooth.language_code == language_code)

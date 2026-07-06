@@ -37,6 +37,7 @@ def get_api_key(event: Event, provider: ProviderEnum) -> str | None:
 @dataclass
 class ProviderConfig:
     api_key: str | None
+    event_id: int | None = None
 
     def get_key(self) -> str | None:
         return self.api_key

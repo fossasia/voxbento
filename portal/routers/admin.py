@@ -465,6 +465,20 @@ async def admin_room_detail(request: Request, event_id: int, room_id: int):
     enabled_translation_language_codes = [lang.language_code for lang in room.translation_languages if lang.enabled]
     async with get_session() as session:
         memberships = await list_memberships_for_room(session, room_id)
+    # Count vocabulary entries for this room
+    vocab_count = 0
+    async with get_session() as session:
+        from sqlalchemy import func, select
+
+        from portal.models import AIVocabularyEntry
+
+        vocab_count = (
+            await session.scalar(
+                select(func.count(AIVocabularyEntry.id))
+                .where(AIVocabularyEntry.event_id == event_id)
+                .where(AIVocabularyEntry.room_id == room_id)
+            )
+        ) or 0
     return templates.TemplateResponse(
         request,
         "admin/room_detail.html",
@@ -476,6 +490,7 @@ async def admin_room_detail(request: Request, event_id: int, room_id: int):
             "translation_languages_dataset": translation_languages_dataset,
             "enabled_translation_language_codes": enabled_translation_language_codes,
             "memberships": memberships,
+            "vocab_count": vocab_count,
             **admin_flags,
         },
     )
@@ -520,6 +535,10 @@ async def admin_edit_room(request: Request, event_id: int, room_id: int):
     floor_tts_voice = (form.get("floor_tts_voice", "M1") or "M1").strip().upper() or "M1"
     if floor_tts_voice not in {"M1", "M2", "M3", "M4", "M5", "F1", "F2", "F3", "F4", "F5"}:
         floor_tts_voice = "M1"
+    # AI Interpretation Settings
+    floor_ai_interpreter_persona = form.get("floor_ai_interpreter_persona", "").strip() or None
+    floor_ai_interpretation_style = form.get("floor_ai_interpretation_style", "").strip() or None
+    floor_ai_vocabulary_enabled = form.get("floor_ai_vocabulary_enabled") == "on"
     async with get_session() as session:
         room = await get_room_by_id(session, room_id)
         if room and room.event_id == event_id:
@@ -538,6 +557,9 @@ async def admin_edit_room(request: Request, event_id: int, room_id: int):
             room.floor_tts_enabled = floor_tts_enabled
             room.floor_tts_provider = floor_tts_provider
             room.floor_tts_voice = floor_tts_voice
+            room.floor_ai_interpreter_persona = floor_ai_interpreter_persona
+            room.floor_ai_interpretation_style = floor_ai_interpretation_style
+            room.floor_ai_vocabulary_enabled = floor_ai_vocabulary_enabled
             existing_langs = {lang.language_code: lang for lang in room.translation_languages}
             requested_codes = set(floor_translation_languages)
             for code, lang in existing_langs.items():
@@ -554,6 +576,103 @@ async def admin_edit_room(request: Request, event_id: int, room_id: int):
                     )
                     session.add(new_lang)
             await session.commit()
+    return safe_redirect(url=f"/admin/events/{event_id}/rooms/{room_id}/", status_code=status.HTTP_303_SEE_OTHER)
+
+
+# ---------------------------------------------------------------------------
+# AI Vocabulary Upload / Export / Delete
+# ---------------------------------------------------------------------------
+
+
+@router.post("/admin/events/{event_id}/rooms/{room_id}/ai-vocabulary/upload", dependencies=[Depends(require_admin)])
+async def admin_upload_vocabulary(request: Request, event_id: int, room_id: int):
+    """Upload a CSV file to import AI vocabulary entries for a room."""
+    from starlette.responses import JSONResponse
+
+    from portal.translations.vocabulary import import_vocabulary_entries, parse_vocabulary_csv
+
+    form = await request.form()
+    csv_file = form.get("vocabulary_csv")
+
+    if not csv_file or not hasattr(csv_file, "read"):
+        raise HTTPException(status_code=400, detail="No CSV file provided.")
+
+    content = (await csv_file.read()).decode("utf-8-sig")
+    entries, warnings = parse_vocabulary_csv(content)
+
+    if not entries and warnings:
+        return JSONResponse(
+            {"imported": 0, "updated": 0, "warnings": warnings, "languages": []},
+            status_code=400,
+        )
+
+    async with get_session() as session:
+        room = await get_room_by_id(session, room_id)
+        if not room or room.event_id != event_id:
+            raise HTTPException(status_code=404, detail="Room not found.")
+
+        result = await import_vocabulary_entries(
+            session, event_id=event_id, room_id=room_id, booth_id=None, entries=entries
+        )
+        result.warnings.extend(warnings)
+        await session.commit()
+
+    return safe_redirect(url=f"/admin/events/{event_id}/rooms/{room_id}/", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@router.get("/admin/events/{event_id}/rooms/{room_id}/ai-vocabulary/export", dependencies=[Depends(require_admin)])
+async def admin_export_vocabulary(event_id: int, room_id: int):
+    """Export vocabulary entries for a room as CSV download."""
+    from starlette.responses import Response
+
+    from portal.models import AIVocabularyEntry
+    from portal.translations.vocabulary import export_vocabulary_csv
+
+    async with get_session() as session:
+        from sqlalchemy import select
+
+        room = await get_room_by_id(session, room_id)
+        if not room or room.event_id != event_id:
+            raise HTTPException(status_code=404, detail="Room not found.")
+
+        q = (
+            select(AIVocabularyEntry)
+            .where(AIVocabularyEntry.event_id == event_id)
+            .where(AIVocabularyEntry.room_id == room_id)
+            .order_by(AIVocabularyEntry.priority.desc(), AIVocabularyEntry.source_term)
+        )
+        entries = list((await session.scalars(q)).all())
+
+    if not entries:
+        raise HTTPException(status_code=404, detail="No vocabulary entries found.")
+
+    csv_content = export_vocabulary_csv(entries)
+    return Response(
+        content=csv_content,
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename=vocabulary_event{event_id}_room{room_id}.csv"},
+    )
+
+
+@router.post("/admin/events/{event_id}/rooms/{room_id}/ai-vocabulary/delete", dependencies=[Depends(require_admin)])
+async def admin_delete_vocabulary(event_id: int, room_id: int):
+    """Delete all vocabulary entries for a room."""
+    from portal.models import AIVocabularyEntry
+
+    async with get_session() as session:
+        from sqlalchemy import delete
+
+        room = await get_room_by_id(session, room_id)
+        if not room or room.event_id != event_id:
+            raise HTTPException(status_code=404, detail="Room not found.")
+
+        await session.execute(
+            delete(AIVocabularyEntry)
+            .where(AIVocabularyEntry.event_id == event_id)
+            .where(AIVocabularyEntry.room_id == room_id)
+        )
+        await session.commit()
+
     return safe_redirect(url=f"/admin/events/{event_id}/rooms/{room_id}/", status_code=status.HTTP_303_SEE_OTHER)
 
 
@@ -619,7 +738,7 @@ async def api_start_floor_transcription(room_id: int):
         raise HTTPException(status_code=500, detail=f"Failed to start floor bot: {e}")
     try:
         api_key = get_api_key(event, ProviderEnum(room.floor_transcription_provider))
-        config = ProviderConfig(api_key=api_key)
+        config = ProviderConfig(api_key=api_key, event_id=event.id)
         await start_transcription_worker(
             event_slug=event_slug,
             language_code="floor",
@@ -1012,7 +1131,7 @@ async def admin_transcription_settings(
                 await stop_transcription_worker(bid)
                 await broadcast_transcription(bid, "")
                 api_key = get_api_key(event, ProviderEnum(transcription_provider))
-                config = ProviderConfig(api_key=api_key)
+                config = ProviderConfig(api_key=api_key, event_id=event.id)
                 await asyncio.sleep(0.1)
                 await start_transcription_worker(
                     event.slug,

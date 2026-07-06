@@ -1,10 +1,17 @@
+from __future__ import annotations
+
 import asyncio
 import logging
+from typing import TYPE_CHECKING
 
 from portal.database import get_session
 from portal.models import DBBooth, Event, Room, TranscriptTranslation
 from portal.translations.constants import OPENAI_COMPATIBLE_ENDPOINTS, TranslationProviderEnum
 from portal.translations.keys import get_translation_api_key
+from portal.translations.prompts import build_interpretation_messages
+
+if TYPE_CHECKING:
+    from portal.models import AIVocabularyEntry
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +40,11 @@ class TranslationWorker:
             model = None
             enabled_langs = []
             room = None
+            persona = None
+            style = None
+            source_language_code = None
+            vocabulary_enabled = True
+            booth_db_id = None
 
             if segment.booth_id is None:
                 # Floor translation
@@ -44,6 +56,10 @@ class TranslationWorker:
                 provider = room.floor_translation_provider
                 model = room.floor_translation_model
                 enabled_langs = [lang for lang in room.translation_languages if lang.enabled]
+                persona = room.floor_ai_interpreter_persona
+                style = room.floor_ai_interpretation_style
+                source_language_code = room.floor_source_language_code
+                vocabulary_enabled = room.floor_ai_vocabulary_enabled
             else:
                 # Booth translation
                 booth = await session.scalar(
@@ -57,6 +73,12 @@ class TranslationWorker:
                 model = booth.translation_model
                 enabled_langs = [lang for lang in booth.translation_languages if lang.enabled]
                 room = await session.scalar(select(Room).where(Room.id == room_id))
+                booth_db_id = booth.id
+                # Booth-level persona/style override room-level
+                persona = booth.ai_interpreter_persona or (room.floor_ai_interpreter_persona if room else None)
+                style = booth.ai_interpretation_style or (room.floor_ai_interpretation_style if room else None)
+                source_language_code = room.floor_source_language_code if room else None
+                vocabulary_enabled = booth.ai_vocabulary_enabled
 
             if not provider or not model or not enabled_langs or not room:
                 return
@@ -69,6 +91,14 @@ class TranslationWorker:
             if not api_key and provider != TranslationProviderEnum.LOCAL.value:
                 logger.error(f"[{booth_id_str}] Translation API key not found for provider {provider}")
                 return
+
+            # Resolve vocabulary entries once for all target languages
+            vocab_entries: list[AIVocabularyEntry] = []
+            if vocabulary_enabled:
+                from portal.translations.vocabulary import resolve_vocabulary_entries
+
+                # We resolve vocabulary per-language inside the task below
+                pass
 
             # Execute translation for all target languages concurrently
             tasks = [
@@ -83,6 +113,13 @@ class TranslationWorker:
                     segment_id,
                     text,
                     booth_id_str,
+                    source_language_code=source_language_code,
+                    persona=persona,
+                    style=style,
+                    vocabulary_enabled=vocabulary_enabled,
+                    event_id=event.id,
+                    room_db_id=room.id,
+                    booth_db_id=booth_db_id,
                 )
                 for lang in enabled_langs
             ]
@@ -103,9 +140,42 @@ class TranslationWorker:
         segment_id: int,
         text: str,
         booth_id_str: str,
+        *,
+        source_language_code: str | None = None,
+        persona: str | None = None,
+        style: str | None = None,
+        vocabulary_enabled: bool = True,
+        event_id: int | None = None,
+        room_db_id: int | None = None,
+        booth_db_id: int | None = None,
     ):
         try:
-            translated_text = await self._call_llm(provider, model, api_key, text, lang_name)
+            # Resolve vocabulary entries for this specific target language
+            vocab_entries: list[AIVocabularyEntry] = []
+            if vocabulary_enabled and event_id is not None:
+                from portal.translations.vocabulary import resolve_vocabulary_entries
+
+                async with get_session() as vocab_session:
+                    vocab_entries = await resolve_vocabulary_entries(
+                        vocab_session,
+                        event_id=event_id,
+                        room_id=room_db_id,
+                        booth_id=booth_db_id,
+                        target_language=lang_code,
+                        transcript_text=text,
+                    )
+
+            translated_text = await self._call_llm(
+                provider,
+                model,
+                api_key,
+                text,
+                lang_name,
+                source_language_code=source_language_code,
+                persona=persona,
+                style=style,
+                vocabulary_entries=vocab_entries or None,
+            )
             if not translated_text:
                 return
 
@@ -125,10 +195,30 @@ class TranslationWorker:
         except Exception as e:
             logger.error(f"[{booth_id_str}] Translation failed for {lang_code}: {e}")
 
-    async def _call_llm(self, provider: str, model: str, api_key: str, text: str, target_lang_name: str) -> str | None:
+    async def _call_llm(
+        self,
+        provider: str,
+        model: str,
+        api_key: str,
+        text: str,
+        target_lang_name: str,
+        *,
+        source_language_code: str | None = None,
+        persona: str | None = None,
+        style: str | None = None,
+        vocabulary_entries: list[AIVocabularyEntry] | None = None,
+    ) -> str | None:
         import httpx
 
-        system_prompt = f"You are a professional interpreter. Translate the following text into {target_lang_name}. Output ONLY the translated text, nothing else."
+        messages = build_interpretation_messages(
+            target_language_name=target_lang_name,
+            text=text,
+            source_language_code=source_language_code,
+            persona=persona,
+            style=style,
+            vocabulary_entries=vocabulary_entries,
+        )
+        system_prompt = messages[0]["content"]
 
         timeout = httpx.Timeout(10.0)
         async with httpx.AsyncClient(timeout=timeout) as client:
@@ -138,7 +228,7 @@ class TranslationWorker:
                     headers={"Authorization": f"Bearer {api_key}"},
                     json={
                         "model": model,
-                        "messages": [{"role": "system", "content": system_prompt}, {"role": "user", "content": text}],
+                        "messages": messages,
                     },
                 )
                 res.raise_for_status()
