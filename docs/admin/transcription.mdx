@@ -51,7 +51,7 @@ Uses Deepgram's WebSocket streaming API. Requires a Deepgram API key stored in t
 
 **Models available:** `nova-2`
 
-Deepgram streams partial and final transcripts over a persistent WebSocket connection, making it one of the fastest options for near-real-time captions.
+Deepgram streams partial and final transcripts over a persistent WebSocket connection, making it one of the fastest options for near-real-time captions. Voxbento uses the `numerals=true` configuration parameter by default to convert spoken numbers into numerical format, making it easier for listeners to read numbers quickly.
 
 :::tip
 For the lowest latency captions, Deepgram `nova-2` (WebSocket streaming) is an excellent choice alongside OpenAI real-time models.
