@@ -5,8 +5,6 @@ import json
 import logging
 import time
 
-import httpx
-
 from portal.crypto import decrypt_val
 from portal.database import get_session
 from portal.models import Event, Room
@@ -349,28 +347,31 @@ class TTSWorker:
 
         endpoint = OPENAI_COMPATIBLE_ENDPOINTS[provider]
 
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            async with client.stream(
-                "POST",
-                endpoint,
-                headers={"Authorization": f"Bearer {api_key}"},
-                json={
-                    "model": model,
-                    "messages": [{"role": "system", "content": system_prompt}, {"role": "user", "content": text}],
-                    "stream": True,
-                },
-            ) as response:
-                response.raise_for_status()
-                async for line in response.aiter_lines():
-                    if line.startswith("data: "):
-                        data_str = line[6:].strip()
-                        if data_str == "[DONE]":
-                            break
-                        try:
-                            data = json.loads(data_str)
-                            delta = data["choices"][0].get("delta", {})
-                            content = delta.get("content", "")
-                            if content:
-                                yield content
-                        except (json.JSONDecodeError, KeyError, IndexError):
-                            pass
+        from portal.globals import get_http_client
+
+        client = get_http_client()
+        async with client.stream(
+            "POST",
+            endpoint,
+            headers={"Authorization": f"Bearer {api_key}"},
+            json={
+                "model": model,
+                "messages": [{"role": "system", "content": system_prompt}, {"role": "user", "content": text}],
+                "stream": True,
+            },
+            timeout=10.0,
+        ) as response:
+            response.raise_for_status()
+            async for line in response.aiter_lines():
+                if line.startswith("data: "):
+                    data_str = line[6:].strip()
+                    if data_str == "[DONE]":
+                        break
+                    try:
+                        data = json.loads(data_str)
+                        delta = data["choices"][0].get("delta", {})
+                        content = delta.get("content", "")
+                        if content:
+                            yield content
+                    except (json.JSONDecodeError, KeyError, IndexError):
+                        pass
