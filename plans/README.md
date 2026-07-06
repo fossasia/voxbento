@@ -23,7 +23,7 @@ conditions, run every verification command, and update your row when done.
 | [009](009-n1-booth-queries.md) | Fix N+1 queries in admin and home page route handlers | P2 | M | 007 | DONE |
 | [010](010-tts-config-cache.md) | Cache per-room TTS config to stop per-segment DB+decrypt | P2 | M | — | DONE |
 | [011](011-tts-pipeline-cleanup.md) | Stop leaking `_RoomTTSPipeline` consumer tasks | P2 | M | — | DONE |
-| [012](012-demo-generation-race.md) | Serialize demo regen + track background tasks | P3 | S | — | TODO |
+| [012](012-demo-generation-race.md) | Serialize demo regen + track background tasks | P3 | S | — | DONE |
 | [013](013-dedupe-translation-key.md) | De-duplicate translation API-key + LLM call helpers | P2 | S | — | DONE |
 | [014](014-route-tests.md) | Add route tests for `demo.py` and `listener.py` | P2 | M | 012 | TODO |
 | [015](015-debug-default-false.md) | Default `debug` False; gate SQL echo in prod | P2 | S | 005 | DONE |

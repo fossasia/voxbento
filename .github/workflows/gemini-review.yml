@@ -47,7 +47,7 @@ jobs:
           if [ -n "${{ vars.GEMINI_MODEL }}" ]; then
             echo "model=${{ vars.GEMINI_MODEL }}" >> $GITHUB_OUTPUT
           else
-            MODELS=("gemini-3.1-flash-lite" "gemini-2.5-flash-lite" "gemini-3.5-flash" "gemini-3-flash" "gemini-2.5-flash" "gemini-2.5-pro" "gemini-3.1-pro")
+            MODELS=("gemini-3.1-flash-lite" "gemma-4-26b" "gemma-4-31b")
             SELECTED_MODEL=${MODELS[$RANDOM % ${#MODELS[@]}]}
             echo "model=$SELECTED_MODEL" >> $GITHUB_OUTPUT
           fi

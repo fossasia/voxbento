@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import struct
@@ -11,6 +12,25 @@ logger = logging.getLogger(__name__)
 # Where pre-baked demo audio lives. Served by FastAPI StaticFiles.
 DEMO_DIR = Path(__file__).resolve().parent.parent.parent / "static" / "audio" / "demo"
 MANIFEST_PATH = DEMO_DIR / "manifest.json"
+
+# Generation state, shared with portal.routers.demo and fastapi_app's lifespan.
+_generating = False
+_generation_error: str | None = None
+_generation_lock = asyncio.Lock()
+_tasks: set[asyncio.Task] = set()
+
+
+def track_task(task: asyncio.Task) -> None:
+    """Keep a strong reference to a background task so it isn't garbage
+    collected mid-run, and log any exception it raises once it completes."""
+    _tasks.add(task)
+
+    def _on_done(t: asyncio.Task) -> None:
+        _tasks.discard(t)
+        if not t.cancelled() and t.exception() is not None:
+            logger.error("[Demo] Background task failed", exc_info=t.exception())
+
+    task.add_done_callback(_on_done)
 
 # ---------------------------------------------------------------------------
 # Demo content — scripts pre-written in each language so no translation API
@@ -159,13 +179,16 @@ async def generate_demo_assets() -> dict[str, Any]:
 
 async def ensure_demo_generated() -> None:
     """Generate demo assets if they don't already exist. Safe to call at startup."""
+    global _generation_error
     if MANIFEST_PATH.exists():
         return
     logger.info("[Demo] No manifest found — generating demo audio (first run)...")
     try:
         await generate_demo_assets()
-    except Exception:
+        _generation_error = None
+    except Exception as exc:
         logger.exception("[Demo] Background demo generation failed")
+        _generation_error = str(exc)
 
 
 def load_manifest() -> dict[str, Any] | None:
