@@ -27,7 +27,7 @@ conditions, run every verification command, and update your row when done.
 | [013](013-dedupe-translation-key.md) | De-duplicate translation API-key + LLM call helpers | P2 | S | — | DONE |
 | [014](014-route-tests.md) | Add route tests for `demo.py` and `listener.py` | P2 | M | 012 | TODO |
 | [015](015-debug-default-false.md) | Default `debug` False; gate SQL echo in prod | P2 | S | 005 | DONE |
-| [016](016-listener-rate-limit.md) | Rate-limit listener join-code validation | P3 | M | — | TODO |
+| [016](016-listener-rate-limit.md) | Rate-limit listener join-code validation | P3 | M | — | DONE |
 
 Status values: `TODO` | `IN PROGRESS` | `DONE` | `BLOCKED` (one-line reason) | `REJECTED` (one-line rationale)
 
