@@ -85,6 +85,17 @@ class TestListenerRateLimit:
             assert resp.status_code == 429
 
     @pytest.mark.anyio
+    async def test_throttled_browser_request_renders_429_page(self, seed_event):
+        event, _ = seed_event
+        async with _client() as c:
+            for _ in range(10):
+                await c.get(f"/listener/{event.slug}?code=WRONGCODE")
+
+            resp = await c.get(f"/listener/{event.slug}?code=WRONGCODE", headers={"accept": "text/html"})
+            assert resp.status_code == 429
+            assert b"Too Many Attempts" in resp.content
+
+    @pytest.mark.anyio
     async def test_valid_code_succeeds_and_is_not_throttled(self, seed_event):
         event, _ = seed_event
         async with _client() as c:
