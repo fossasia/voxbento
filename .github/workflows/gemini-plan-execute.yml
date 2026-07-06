@@ -47,6 +47,8 @@ jobs:
         uses: 'google-github-actions/run-gemini-cli@v0' # ratchet:exclude
         env:
           GEMINI_CLI_TRUST_WORKSPACE: 'true'
+          GEMINI_CLI_TRUST_SKILLS: 'true'
+          GEMINI_CLI_CONSENT: 'true'
           TITLE: '${{ github.event.pull_request.title || github.event.issue.title }}'
           DESCRIPTION: '${{ github.event.pull_request.body || github.event.issue.body }}'
           EVENT_NAME: '${{ github.event_name }}'
