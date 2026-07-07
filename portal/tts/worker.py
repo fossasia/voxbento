@@ -346,7 +346,8 @@ class TTSWorker:
             from portal.translations.worker import TranslationWorker
 
             temp_worker = TranslationWorker(None)
-            full_text = await temp_worker._call_llm(provider, model, api_key, text, target_lang_name)
+            async with httpx.AsyncClient(timeout=httpx.Timeout(10.0)) as client:
+                full_text = await temp_worker._call_llm(client, provider, model, api_key, text, target_lang_name)
             if full_text:
                 yield full_text
             return

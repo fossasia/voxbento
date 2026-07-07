@@ -1,6 +1,8 @@
 import asyncio
 import logging
 
+import httpx
+
 from portal.database import get_session
 from portal.models import DBBooth, Event, Room, TranscriptTranslation
 from portal.translations.constants import OPENAI_COMPATIBLE_ENDPOINTS, TranslationProviderEnum
@@ -70,29 +72,33 @@ class TranslationWorker:
                 logger.error(f"[{booth_id_str}] Translation API key not found for provider {provider}")
                 return
 
-            # Execute translation for all target languages concurrently
-            tasks = [
-                self._translate_and_broadcast(
-                    event,
-                    room,
-                    provider,
-                    model,
-                    api_key,
-                    lang.language_code,
-                    lang.language_name,
-                    segment_id,
-                    text,
-                    booth_id_str,
-                )
-                for lang in enabled_langs
-            ]
-            await asyncio.gather(*tasks)
+            # Execute translation for all target languages concurrently, sharing a
+            # single HTTP client (and its connection pool) across the whole batch.
+            async with httpx.AsyncClient(timeout=httpx.Timeout(10.0)) as client:
+                tasks = [
+                    self._translate_and_broadcast(
+                        client,
+                        event,
+                        room,
+                        provider,
+                        model,
+                        api_key,
+                        lang.language_code,
+                        lang.language_name,
+                        segment_id,
+                        text,
+                        booth_id_str,
+                    )
+                    for lang in enabled_langs
+                ]
+                await asyncio.gather(*tasks)
 
     def _get_translation_api_key(self, event: Event, provider: str) -> str | None:
         return get_translation_api_key(event, provider)
 
     async def _translate_and_broadcast(
         self,
+        client: httpx.AsyncClient,
         event: Event,
         room: Room,
         provider: str,
@@ -105,7 +111,7 @@ class TranslationWorker:
         booth_id_str: str,
     ):
         try:
-            translated_text = await self._call_llm(provider, model, api_key, text, lang_name)
+            translated_text = await self._call_llm(client, provider, model, api_key, text, lang_name)
             if not translated_text:
                 return
 
@@ -125,55 +131,53 @@ class TranslationWorker:
         except Exception as e:
             logger.error(f"[{booth_id_str}] Translation failed for {lang_code}: {e}")
 
-    async def _call_llm(self, provider: str, model: str, api_key: str, text: str, target_lang_name: str) -> str | None:
-        import httpx
-
+    async def _call_llm(
+        self, client: httpx.AsyncClient, provider: str, model: str, api_key: str, text: str, target_lang_name: str
+    ) -> str | None:
         system_prompt = f"You are a professional interpreter. Translate the following text into {target_lang_name}. Output ONLY the translated text, nothing else."
 
-        timeout = httpx.Timeout(10.0)
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            if provider in OPENAI_COMPATIBLE_ENDPOINTS:
-                res = await client.post(
-                    OPENAI_COMPATIBLE_ENDPOINTS[provider],
-                    headers={"Authorization": f"Bearer {api_key}"},
-                    json={
-                        "model": model,
-                        "messages": [{"role": "system", "content": system_prompt}, {"role": "user", "content": text}],
-                    },
-                )
-                res.raise_for_status()
-                return res.json()["choices"][0]["message"]["content"].strip()
+        if provider in OPENAI_COMPATIBLE_ENDPOINTS:
+            res = await client.post(
+                OPENAI_COMPATIBLE_ENDPOINTS[provider],
+                headers={"Authorization": f"Bearer {api_key}"},
+                json={
+                    "model": model,
+                    "messages": [{"role": "system", "content": system_prompt}, {"role": "user", "content": text}],
+                },
+            )
+            res.raise_for_status()
+            return res.json()["choices"][0]["message"]["content"].strip()
 
-            elif provider == TranslationProviderEnum.GEMINI.value:
-                res = await client.post(
-                    f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
-                    headers={"x-goog-api-key": api_key},
-                    json={
-                        "systemInstruction": {"parts": [{"text": system_prompt}]},
-                        "contents": [{"parts": [{"text": text}]}],
-                    },
-                )
-                res.raise_for_status()
-                return res.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+        elif provider == TranslationProviderEnum.GEMINI.value:
+            res = await client.post(
+                f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+                headers={"x-goog-api-key": api_key},
+                json={
+                    "systemInstruction": {"parts": [{"text": system_prompt}]},
+                    "contents": [{"parts": [{"text": text}]}],
+                },
+            )
+            res.raise_for_status()
+            return res.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
 
-            elif provider == TranslationProviderEnum.ANTHROPIC.value:
-                res = await client.post(
-                    "https://api.anthropic.com/v1/messages",
-                    headers={"x-api-key": api_key, "anthropic-version": "2023-06-01"},
-                    json={
-                        "model": model,
-                        "max_tokens": 1024,
-                        "system": system_prompt,
-                        "messages": [{"role": "user", "content": text}],
-                    },
-                )
-                res.raise_for_status()
-                return res.json()["content"][0]["text"].strip()
+        elif provider == TranslationProviderEnum.ANTHROPIC.value:
+            res = await client.post(
+                "https://api.anthropic.com/v1/messages",
+                headers={"x-api-key": api_key, "anthropic-version": "2023-06-01"},
+                json={
+                    "model": model,
+                    "max_tokens": 1024,
+                    "system": system_prompt,
+                    "messages": [{"role": "user", "content": text}],
+                },
+            )
+            res.raise_for_status()
+            return res.json()["content"][0]["text"].strip()
 
-            elif provider == TranslationProviderEnum.LOCAL.value:
-                # Placeholder for local model inference.
-                # In a real environment, you'd route this to an internal LLM endpoint like Ollama/vLLM.
-                logger.warning("Local translation not fully implemented. Echoing text.")
-                return f"[{target_lang_name}] {text}"
+        elif provider == TranslationProviderEnum.LOCAL.value:
+            # Placeholder for local model inference.
+            # In a real environment, you'd route this to an internal LLM endpoint like Ollama/vLLM.
+            logger.warning("Local translation not fully implemented. Echoing text.")
+            return f"[{target_lang_name}] {text}"
 
         return None
