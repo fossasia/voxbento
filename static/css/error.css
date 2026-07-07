@@ -9,7 +9,8 @@
   align-items: center;
   justify-content: center;
   text-align: center;
-  min-height: calc(100vh - 60px);
+  /* Inherit base.html <main>'s min-height instead of duplicating the constant. */
+  min-height: inherit;
   padding: 2rem 1.5rem;
 }
 
