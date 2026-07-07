@@ -8,8 +8,7 @@ from portal.auth import resolve_booth_role, verify_ws_token
 from portal.booth_identity import make_booth_id as _make_booth_id
 from portal.config import settings
 from portal.globals import booths
-from portal.websockets.manager import (
-    Session,
+from portal.websockets.handlers import (
     _handle_accept_handoff,
     _handle_cancel_handoff,
     _handle_chat,
@@ -19,6 +18,9 @@ from portal.websockets.manager import (
     _handle_set_active,
     _handle_set_broadcast_unlocked,
     _handle_update_state,
+)
+from portal.websockets.manager import (
+    Session,
     listener_manager,
     manager,
     tts_manager,
