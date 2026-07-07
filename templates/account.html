@@ -63,7 +63,13 @@
           {% for m in memberships %}
           <tr>
             <td>{{ m.type }}</td>
-            <td>{{ m.context }}</td>
+            <td>
+              {% if m.link != '#' %}
+              <a href="{{ m.link }}" class="context-link">{{ m.context }} &rarr;</a>
+              {% else %}
+              {{ m.context }}
+              {% endif %}
+            </td>
             <td><span class="badge badge-role badge-{{ m.role }}">{{ m.role }}</span></td>
             <td>{{ m.created_at.strftime('%Y-%m-%d') if m.created_at else '—' }}</td>
           </tr>

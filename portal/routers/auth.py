@@ -215,22 +215,27 @@ async def account_page(request: Request):
     for m in event_memberships:
         unified_memberships.append({
             "context": m.event.display_name if m.event else '—',
+            "link": f"/mission-control/{m.event.slug}/" if m.event else "#",
             "type": "Event",
             "role": m.role,
             "created_at": m.created_at
         })
     for m in room_memberships:
         context_str = f"{m.room.event.display_name} - {m.room.display_name}" if m.room and m.room.event else (m.room.display_name if m.room else '—')
+        link_str = f"/mission-control/{m.room.event.slug}/" if m.room and m.room.event else "#"
         unified_memberships.append({
             "context": context_str,
+            "link": link_str,
             "type": "Room",
             "role": m.role,
             "created_at": m.created_at
         })
     for m in booth_memberships:
         context_str = f"{m.booth.event.display_name} - {m.booth.room.display_name} - {m.booth.language_name}" if m.booth and m.booth.event and m.booth.room else '—'
+        link_str = f"/interpreter/{m.booth.event.slug}/{m.booth.language_code}" if m.booth and m.booth.event else "#"
         unified_memberships.append({
             "context": context_str,
+            "link": link_str,
             "type": "Booth",
             "role": m.role,
             "created_at": m.created_at
