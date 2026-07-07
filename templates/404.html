@@ -2,4 +2,5 @@
 
 {% block error_title %}Page Not Found{% endblock %}
 {% block error_code %}404{% endblock %}
-{% block error_message %}{{ detail | default("The page you are looking for doesn't exist or has been moved.") }}{% endblock %}
+{# error_message defaults to {{ detail }} in error_base.html; the handler passes
+   the route's detail (e.g. "Not Found"). #}
