@@ -2,6 +2,7 @@
 
 {% block error_title %}Internal Server Error{% endblock %}
 {% block error_code %}500{% endblock %}
-{# 500-level errors deliberately show a generic message and never render `detail`,
-   which may contain internal error information (see PR #263 review). #}
+{# Do not render `detail` here: for 5xx the handler passes exc.detail, which may
+   carry internal error text. This static override replaces error_base's default
+   error_message block so nothing internal can leak to users. #}
 {% block error_message %}Something went wrong on our end. We've been notified and are looking into it.{% endblock %}
