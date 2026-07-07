@@ -1,0 +1,134 @@
+/* ── Auth & Account pages ──────────────────────────────────────────────────
+   Extracted from admin.css. Deliberately excludes :root, body, .btn,
+   .btn-primary, .btn-sm — those now come from interpreter.css via base.html.
+   Missing custom properties are scoped locally below so they don't leak
+   into or override interpreter.css's global :root variables. */
+
+.login-page,
+.account-card,
+.portal-home-header {
+  --color-primary-hover: #1d4ed8;
+  --color-danger-hover: #b91c1c;
+  --color-text-secondary: var(--color-muted);
+  --color-surface: #ffffff;
+  --color-live: #16a34a;
+  --color-offline: #9ca3af;
+  --radius: 8px;
+  --radius-sm: 4px;
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.08);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.1);
+}
+
+/* ── Header (used on account.html) ──────────────────────────────────────── */
+
+.portal-home-header {
+  background: var(--color-surface);
+  border-bottom: 1px solid var(--color-border);
+  padding: 12px 24px;
+  min-height: 56px;
+  height: auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  position: sticky;
+  top: 0;
+  z-index: 100;
+}
+.portal-home-header .brand { font-size: 1.25rem; font-weight: 700; color: var(--color-primary); text-decoration: none; }
+.header-nav { display: flex; gap: 20px; align-items: center; flex-wrap: wrap; }
+.header-nav a { font-size: 0.875rem; color: var(--color-text-secondary); text-decoration: none; }
+.header-nav a:hover { color: var(--color-primary); }
+.nav-logout { color: var(--color-danger) !important; }
+
+/* ── Admin-style main wrapper (used on account.html) ────────────────────── */
+
+.admin-main {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 24px;
+  width: 100%;
+  min-width: 0;
+  flex: 1;
+}
+
+/* ── Account card ────────────────────────────────────────────────────────── */
+
+.account-card {
+  max-width: 600px;
+  margin: 0 auto;
+  background: var(--color-surface);
+  border-radius: var(--radius);
+  padding: 32px;
+  box-shadow: var(--shadow-sm);
+}
+.account-card h1 { margin-bottom: 24px; }
+.account-info { margin-top: 24px; }
+.account-info h3 { margin-bottom: 8px; }
+
+/* ── Tables (used on account.html) ──────────────────────────────────────── */
+
+.data-table { width: 100%; border-collapse: collapse; font-size: 0.875rem; }
+.data-table th, .data-table td { padding: 10px 12px; border-bottom: 1px solid var(--color-border); vertical-align: middle; text-align: left; }
+.data-table thead th { border-bottom: 2px solid var(--color-border); font-weight: 600; color: var(--color-text-secondary); font-size: 0.8125rem; text-transform: uppercase; letter-spacing: 0.04em; }
+.data-table tbody th { font-weight: 600; color: var(--color-text-secondary); font-size: 0.8125rem; text-transform: uppercase; letter-spacing: 0.04em; }
+.data-table tbody tr:hover { background: #f8f9fa; }
+.data-table.compact th, .data-table.compact td { padding: 8px 10px; }
+
+/* ── Status + badges (used on account.html) ─────────────────────────────── */
+
+.status-live { color: var(--color-live); font-weight: 600; white-space: nowrap; }
+.status-offline { color: var(--color-offline); }
+
+.badge { display: inline-block; font-size: 0.75rem; font-weight: 600; padding: 2px 8px; border-radius: 12px; }
+.badge-role { text-transform: capitalize; }
+.badge-interpreter { background: #dbeafe; color: #1e40af; }
+.badge-coordinator { background: #fef3c7; color: #92400e; }
+.badge-listener { background: #e0e7ff; color: #4338ca; }
+.badge-event_admin { background: #fce7f3; color: #9d174d; }
+.badge-super_admin { background: #fecaca; color: #991b1b; }
+
+.muted { color: var(--color-text-secondary); font-size: 0.875rem; }
+
+/* ── Login / Register pages ─────────────────────────────────────────────── */
+
+.login-page {
+  min-height: calc(100vh - 60px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.login-card {
+  width: 100%;
+  max-width: 400px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: 40px 32px;
+  box-shadow: var(--shadow-md);
+}
+.login-brand { text-align: center; margin-bottom: 28px; }
+.login-subtitle { font-size: 0.875rem; color: var(--color-text-secondary); display: block; margin-top: 4px; }
+.login-form { display: flex; flex-direction: column; gap: 16px; }
+.login-form label { font-size: 0.875rem; font-weight: 600; color: var(--color-text-secondary); }
+.login-form input { padding: 10px 14px; font-size: 1rem; border: 1px solid var(--color-border); border-radius: var(--radius-sm); }
+.login-form input:focus { outline: none; border-color: var(--color-primary); box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.15); }
+.login-footer {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: center;
+  margin-top: 16px;
+  font-size: 0.875rem;
+  color: var(--color-text-secondary);
+}
+.login-footer a { color: var(--color-primary); }
+.alert-error { background: #fef2f2; color: var(--color-danger); border: 1px solid #fecaca; padding: 10px 14px; border-radius: var(--radius-sm); font-size: 0.875rem; margin-bottom: 8px; }
+.error-list { margin: 0; padding-left: 18px; text-align: left; }
+
+@media (max-width: 768px) {
+  .portal-home-header { padding: 12px 16px; }
+  .admin-main { padding: 16px; }
+  .header-nav { gap: 12px; }
+}

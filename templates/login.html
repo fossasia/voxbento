@@ -1,37 +1,35 @@
-<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Sign In — Voxbento</title>
-    <link rel="icon" type="image/x-icon" href="{{ url_for('static', path='img/favicon.ico') }}" />
-    <link rel="stylesheet" href="{{ url_for('static', path='css/admin.css') }}" />
-  </head>
-  <body>
-    <div class="login-page">
-      <div class="login-card">
-        <div class="login-brand">
-          <img src="{{ url_for('static', path='img/wordmark.png') }}" alt="Voxbento" class="brand-text" style="height: 48px; margin: 0 auto;" />
-          <span class="login-subtitle">Sign in to your account</span>
-        </div>
-        {% if error %}
-        <div class="alert alert-error">{{ error }}</div>
-        {% endif %}
-        <form method="post" action="/login" class="login-form">
-          <input type="hidden" name="next_url" value="{{ next_url|default('', true) }}" />
-          <label for="email">Email</label>
-          <input type="email" id="email" name="email" placeholder="you@example.com" value="{{ email|default('', true) }}" required autofocus />
+{% extends "base.html" %}
 
-          <label for="password">Password</label>
-          <input type="password" id="password" name="password" placeholder="Enter your password" required />
+{% block title %}Sign In — Voxbento{% endblock %}
 
-          <button type="submit" class="btn btn-primary">Sign In</button>
-        </form>
-        <div class="login-footer">
-          <span>Don't have an account? <a href="/register">Register</a></span>
-          <a href="/">← Back to Portal Home</a>
-        </div>
-      </div>
+{% block head %}
+<link rel="stylesheet" href="{{ url_for('static', path='css/auth.css') }}" />
+{% endblock %}
+
+{% block content %}
+<div class="login-page">
+  <div class="login-card">
+    <div class="login-brand">
+      <img src="{{ url_for('static', path='img/wordmark.png') }}" alt="Voxbento" class="brand-text" style="height: 48px; margin: 0 auto;" />
+      <span class="login-subtitle">Sign in to your account</span>
     </div>
-  </body>
-</html>
+    {% if error %}
+    <div class="alert alert-error">{{ error }}</div>
+    {% endif %}
+    <form method="post" action="/login" class="login-form">
+      <input type="hidden" name="next_url" value="{{ next_url|default('', true) }}" />
+      <label for="email">Email</label>
+      <input type="email" id="email" name="email" placeholder="you@example.com" value="{{ email|default('', true) }}" required autofocus />
+
+      <label for="password">Password</label>
+      <input type="password" id="password" name="password" placeholder="Enter your password" required />
+
+      <button type="submit" class="btn btn-primary">Sign In</button>
+    </form>
+    <div class="login-footer">
+      <span>Don't have an account? <a href="/register">Register</a></span>
+      <a href="/">← Back to Portal Home</a>
+    </div>
+  </div>
+</div>
+{% endblock %}
