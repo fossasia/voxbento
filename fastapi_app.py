@@ -53,6 +53,7 @@ async def lifespan(app: FastAPI):
             dg._generating = False
 
     import asyncio
+
     dg.track_task(asyncio.create_task(_gen()))
 
     yield

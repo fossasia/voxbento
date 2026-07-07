@@ -37,11 +37,13 @@ async def demo_manifest() -> JSONResponse:
     else:
         status = "pending"
 
-    return JSONResponse({
-        "status": status,
-        "video_url": DEMO_VIDEO_URL,
-        "languages": [],
-    })
+    return JSONResponse(
+        {
+            "status": status,
+            "video_url": DEMO_VIDEO_URL,
+            "languages": [],
+        }
+    )
 
 
 @router.post("/admin/demo/regenerate", dependencies=[Depends(require_admin)])

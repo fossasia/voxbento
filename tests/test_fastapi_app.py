@@ -639,8 +639,8 @@ def test_ws_coordinator_can_switch_active_interpreter():
     assert state_msg["state"]["active_interpreter_id"] == pid_a
 
 
-
 # ── WebSocket handoff / broadcast-unlock tests ───────────────────────────────
+
 
 def _ws_join(ws, display_name: str, role: str, language: str, channel_id: str) -> tuple[str, dict]:
     """Join a booth websocket and return (participant_id, initial_state).

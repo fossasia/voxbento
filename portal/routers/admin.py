@@ -589,7 +589,6 @@ async def admin_edit_room(request: Request, event_id: int, room_id: int):
 @router.post("/admin/events/{event_id}/rooms/{room_id}/ai-vocabulary/upload", dependencies=[Depends(require_admin)])
 async def admin_upload_vocabulary(request: Request, event_id: int, room_id: int):
     """Upload a CSV file to import AI vocabulary entries for a room."""
-    from starlette.responses import JSONResponse
 
     from portal.translations.vocabulary import import_vocabulary_entries, parse_vocabulary_csv
 
@@ -615,7 +614,7 @@ async def admin_upload_vocabulary(request: Request, event_id: int, room_id: int)
 
     return safe_redirect(
         url=f"/admin/events/{event_id}/rooms/{room_id}/?vocab_imported={result.imported}&vocab_updated={result.updated}&vocab_warnings={len(result.warnings)}",
-        status_code=status.HTTP_303_SEE_OTHER
+        status_code=status.HTTP_303_SEE_OTHER,
     )
 
 

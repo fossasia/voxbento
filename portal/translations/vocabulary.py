@@ -163,10 +163,7 @@ def parse_vocabulary_csv(file_content: str) -> tuple[list[VocabularyEntryInput],
         # --- match type ---
         match_type = _sanitize_cell(row.get("match_type", "phrase")).strip().lower() or "phrase"
         if match_type not in SUPPORTED_MATCH_TYPES:
-            warnings.append(
-                f"Row {row_num}: unsupported match_type '{match_type}', "
-                f"downgraded to 'phrase'."
-            )
+            warnings.append(f"Row {row_num}: unsupported match_type '{match_type}', downgraded to 'phrase'.")
             match_type = "phrase"
 
         # --- boolean / int fields ---
@@ -176,10 +173,7 @@ def parse_vocabulary_csv(file_content: str) -> tuple[list[VocabularyEntryInput],
         # --- duplicate detection ---
         key = (source_term.lower(), target_language)
         if key in seen:
-            warnings.append(
-                f"Row {row_num}: duplicate term '{source_term}' for "
-                f"target language '{target_language}'."
-            )
+            warnings.append(f"Row {row_num}: duplicate term '{source_term}' for target language '{target_language}'.")
             # Still import -- last-one-wins during DB upsert
 
         seen.add(key)
@@ -304,9 +298,7 @@ async def resolve_vocabulary_entries(
     q = (
         select(AIVocabularyEntry)
         .where(AIVocabularyEntry.event_id == event_id)
-        .where(
-            AIVocabularyEntry.target_language.in_([target_language, "all"])
-        )
+        .where(AIVocabularyEntry.target_language.in_([target_language, "all"]))
     )
     all_entries = list((await session.scalars(q)).all())
 
@@ -411,9 +403,7 @@ async def get_deepgram_keywords(
                 | (AIVocabularyEntry.room_id.is_(None) & AIVocabularyEntry.booth_id.is_(None))
             )
         else:
-            q = q.where(
-                AIVocabularyEntry.room_id.is_(None) & AIVocabularyEntry.booth_id.is_(None)
-            )
+            q = q.where(AIVocabularyEntry.room_id.is_(None) & AIVocabularyEntry.booth_id.is_(None))
 
         entries = list((await session.scalars(q)).all())
 
@@ -453,18 +443,27 @@ def export_vocabulary_csv(entries: list["AIVocabularyEntry"]) -> str:
     """Serialize vocabulary entries to a CSV string for download."""
     output = io.StringIO()
     writer = csv.writer(output)
-    writer.writerow([
-        "source_term", "target_language", "target_term",
-        "description", "case_sensitive", "match_type", "priority",
-    ])
+    writer.writerow(
+        [
+            "source_term",
+            "target_language",
+            "target_term",
+            "description",
+            "case_sensitive",
+            "match_type",
+            "priority",
+        ]
+    )
     for e in entries:
-        writer.writerow([
-            _escape_csv_injection(e.source_term),
-            _escape_csv_injection(e.target_language),
-            _escape_csv_injection(e.target_term),
-            _escape_csv_injection(e.description or ""),
-            str(e.case_sensitive).lower(),
-            _escape_csv_injection(e.match_type),
-            e.priority,
-        ])
+        writer.writerow(
+            [
+                _escape_csv_injection(e.source_term),
+                _escape_csv_injection(e.target_language),
+                _escape_csv_injection(e.target_term),
+                _escape_csv_injection(e.description or ""),
+                str(e.case_sensitive).lower(),
+                _escape_csv_injection(e.match_type),
+                e.priority,
+            ]
+        )
     return output.getvalue()

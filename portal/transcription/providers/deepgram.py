@@ -47,6 +47,7 @@ class DeepgramProvider(TranscriptionProvider):
             # Note: We pass None for booth_db_id since we only have the string booth_id here
             keywords = await get_deepgram_keywords(config.event_id, room_id, None)
             from urllib.parse import quote
+
             for kw in keywords:
                 url += f"&keywords={quote(kw, safe=':')}"
 

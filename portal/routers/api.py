@@ -20,8 +20,6 @@ from portal.websockets.manager import broadcast_transcription
 router = APIRouter(prefix="/api")
 
 
-
-
 @router.post("/events/{event_slug}/booths", status_code=status.HTTP_201_CREATED)
 async def create_event_booth(
     event_slug: str,
@@ -163,7 +161,7 @@ async def api_transcription_stop(
     event_slug: str,
     language_code: str,
     token: str = Query(""),
-    credentials: HTTPAuthorizationCredentials | None = Depends(security)
+    credentials: HTTPAuthorizationCredentials | None = Depends(security),
 ):
     _require_access(credentials, token)
     booth_id = make_booth_id(event_slug, language_code)

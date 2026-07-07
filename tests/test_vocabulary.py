@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from portal.models import AIVocabularyEntry, Base, Event, Room, DBBooth
+from portal.models import AIVocabularyEntry, Base, DBBooth, Event, Room
 from portal.translations.vocabulary import (
     parse_vocabulary_csv,
     resolve_vocabulary_entries,
@@ -19,7 +19,9 @@ async def db():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
-    SessionLocal = async_sessionmaker(autocommit=False, autoflush=False, bind=engine, class_=AsyncSession, expire_on_commit=False)
+    SessionLocal = async_sessionmaker(
+        autocommit=False, autoflush=False, bind=engine, class_=AsyncSession, expire_on_commit=False
+    )
 
     async with SessionLocal() as session:
         yield session
@@ -56,10 +58,7 @@ def test_parse_vocabulary_csv():
 
 def test_parse_vocabulary_csv_warnings():
     """Test invalid or missing columns."""
-    csv_content = (
-        "source_term,target_language\n"
-        "Eventyay,all"
-    )
+    csv_content = "source_term,target_language\nEventyay,all"
     entries, warnings = parse_vocabulary_csv(csv_content)
     assert len(entries) == 0
     assert len(warnings) == 1
@@ -85,17 +84,53 @@ async def test_resolve_vocabulary_entries(db: AsyncSession):
 
     # 2. Add vocabulary entries
     # Event-level
-    db.add(AIVocabularyEntry(event_id=event.id, source_term="API", target_term="API (Event)", priority=10, target_language="all"))
+    db.add(
+        AIVocabularyEntry(
+            event_id=event.id, source_term="API", target_term="API (Event)", priority=10, target_language="all"
+        )
+    )
     # Room-level (should override event-level)
-    db.add(AIVocabularyEntry(event_id=event.id, room_id=room.id, source_term="API", target_term="API (Room)", priority=20, target_language="all"))
+    db.add(
+        AIVocabularyEntry(
+            event_id=event.id,
+            room_id=room.id,
+            source_term="API",
+            target_term="API (Room)",
+            priority=20,
+            target_language="all",
+        )
+    )
     # Booth-level (should override room-level)
-    db.add(AIVocabularyEntry(event_id=event.id, room_id=room.id, booth_id=booth.id, source_term="API", target_term="API (Booth)", priority=30, target_language="all"))
-    
+    db.add(
+        AIVocabularyEntry(
+            event_id=event.id,
+            room_id=room.id,
+            booth_id=booth.id,
+            source_term="API",
+            target_term="API (Booth)",
+            priority=30,
+            target_language="all",
+        )
+    )
+
     # Unrelated booth/room (should be ignored)
-    db.add(AIVocabularyEntry(event_id=event.id, room_id=999, source_term="API", target_term="API (Other)", priority=99, target_language="all"))
+    db.add(
+        AIVocabularyEntry(
+            event_id=event.id,
+            room_id=999,
+            source_term="API",
+            target_term="API (Other)",
+            priority=99,
+            target_language="all",
+        )
+    )
 
     # High priority event-level (should be included even if transcript doesn't match directly)
-    db.add(AIVocabularyEntry(event_id=event.id, source_term="Voxbento", target_term="Voxbento", priority=100, target_language="all"))
+    db.add(
+        AIVocabularyEntry(
+            event_id=event.id, source_term="Voxbento", target_term="Voxbento", priority=100, target_language="all"
+        )
+    )
 
     await db.commit()
 
@@ -107,7 +142,7 @@ async def test_resolve_vocabulary_entries(db: AsyncSession):
         room_id=room.id,
         booth_id=booth.id,
         target_language="es",
-        transcript_text="We are discussing the new API today."
+        transcript_text="We are discussing the new API today.",
     )
 
     # We expect 2 entries:
@@ -118,6 +153,6 @@ async def test_resolve_vocabulary_entries(db: AsyncSession):
     terms = {e.source_term: e.target_term for e in resolved}
     assert "API" in terms
     assert terms["API"] == "API (Booth)"
-    
+
     assert "Voxbento" in terms
     assert terms["Voxbento"] == "Voxbento"

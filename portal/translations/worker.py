@@ -152,7 +152,6 @@ class TranslationWorker:
         vocab_entries: list["AIVocabularyEntry"] | None = None,
     ):
         try:
-
             translated_text = await self._call_llm(
                 provider,
                 model,

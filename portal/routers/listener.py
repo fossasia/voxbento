@@ -77,7 +77,8 @@ async def listen_event_page(request: Request, event_slug: str, code: str | None 
         if not has_listener_access(request, event_slug, ev.listener_join_code, code):
             if _register_failed_attempt(_client_ip(request)):
                 raise HTTPException(
-                    status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="Too many join attempts. Please try again later."
+                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                    detail="Too many join attempts. Please try again later.",
                 )
             return templates.TemplateResponse(
                 request, "listener_join.html", {"event": ev, "error": "Invalid join code." if code else None}
@@ -170,7 +171,8 @@ async def listener_room_audio_delay(
         if not has_listener_access(request, event_slug, ev.listener_join_code, code):
             if _register_failed_attempt(_client_ip(request)):
                 raise HTTPException(
-                    status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="Too many join attempts. Please try again later."
+                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                    detail="Too many join attempts. Please try again later.",
                 )
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Listener access required")
         room = await get_room_by_id(session, room_id)

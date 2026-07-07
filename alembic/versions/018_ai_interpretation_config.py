@@ -25,27 +25,15 @@ def upgrade() -> None:
     """Add AI interpretation persona/style/vocabulary fields and vocabulary table."""
     # --- Room-level AI interpretation settings ---
     with op.batch_alter_table("rooms") as batch_op:
-        batch_op.add_column(
-            sa.Column("floor_ai_interpreter_persona", sa.Text(), nullable=True)
-        )
-        batch_op.add_column(
-            sa.Column("floor_ai_interpretation_style", sa.Text(), nullable=True)
-        )
-        batch_op.add_column(
-            sa.Column("floor_ai_vocabulary_enabled", sa.Boolean(), server_default="1", nullable=False)
-        )
+        batch_op.add_column(sa.Column("floor_ai_interpreter_persona", sa.Text(), nullable=True))
+        batch_op.add_column(sa.Column("floor_ai_interpretation_style", sa.Text(), nullable=True))
+        batch_op.add_column(sa.Column("floor_ai_vocabulary_enabled", sa.Boolean(), server_default="1", nullable=False))
 
     # --- Booth-level AI interpretation settings ---
     with op.batch_alter_table("booths") as batch_op:
-        batch_op.add_column(
-            sa.Column("ai_interpreter_persona", sa.Text(), nullable=True)
-        )
-        batch_op.add_column(
-            sa.Column("ai_interpretation_style", sa.Text(), nullable=True)
-        )
-        batch_op.add_column(
-            sa.Column("ai_vocabulary_enabled", sa.Boolean(), server_default="1", nullable=False)
-        )
+        batch_op.add_column(sa.Column("ai_interpreter_persona", sa.Text(), nullable=True))
+        batch_op.add_column(sa.Column("ai_interpretation_style", sa.Text(), nullable=True))
+        batch_op.add_column(sa.Column("ai_vocabulary_enabled", sa.Boolean(), server_default="1", nullable=False))
 
     # --- Vocabulary entries table ---
     op.create_table(

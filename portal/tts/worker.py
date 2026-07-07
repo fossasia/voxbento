@@ -229,9 +229,7 @@ class TTSWorker:
 
             dg_api_key = None
             if tts_provider_name == TTSProviderEnum.DEEPGRAM.value:
-                dg_api_key = (
-                    decrypt_val(event.encrypted_deepgram_api_key) if event.encrypted_deepgram_api_key else None
-                )
+                dg_api_key = decrypt_val(event.encrypted_deepgram_api_key) if event.encrypted_deepgram_api_key else None
                 if not dg_api_key:
                     logger.error("[TTS] Deepgram API key not found for Event %s", event.id)
                     return None
@@ -275,7 +273,11 @@ class TTSWorker:
             try:
                 await tts_provider.synthesize_stream(
                     text_chunks=self._stream_llm(
-                        cfg["provider"], cfg["model"], cfg["llm_api_key"], text, lang_name,
+                        cfg["provider"],
+                        cfg["model"],
+                        cfg["llm_api_key"],
+                        text,
+                        lang_name,
                         source_language_code=cfg.get("source_language_code"),
                         persona=cfg.get("persona"),
                         style=cfg.get("style"),
@@ -298,7 +300,11 @@ class TTSWorker:
 
         async def _tr(lang_code: str, lang_name: str) -> tuple[str, str]:
             return lang_code, await self._translate_full(
-                cfg["provider"], cfg["model"], cfg["llm_api_key"], text, lang_name,
+                cfg["provider"],
+                cfg["model"],
+                cfg["llm_api_key"],
+                text,
+                lang_name,
                 source_language_code=cfg.get("source_language_code"),
                 persona=cfg.get("persona"),
                 style=cfg.get("style"),
@@ -340,7 +346,12 @@ class TTSWorker:
         return get_translation_api_key(event, provider)
 
     async def _translate_full(
-        self, provider: str, model: str, api_key: str, text: str, lang_name: str,
+        self,
+        provider: str,
+        model: str,
+        api_key: str,
+        text: str,
+        lang_name: str,
         *,
         source_language_code: str | None = None,
         persona: str | None = None,
@@ -354,7 +365,11 @@ class TTSWorker:
         parts: list[str] = []
         try:
             async for chunk in self._stream_llm(
-                provider, model, api_key, text, lang_name,
+                provider,
+                model,
+                api_key,
+                text,
+                lang_name,
                 source_language_code=source_language_code,
                 persona=persona,
                 style=style,
@@ -370,7 +385,12 @@ class TTSWorker:
         return "".join(parts).strip()
 
     async def _stream_llm(
-        self, provider: str, model: str, api_key: str, text: str, target_lang_name: str,
+        self,
+        provider: str,
+        model: str,
+        api_key: str,
+        text: str,
+        target_lang_name: str,
         *,
         source_language_code: str | None = None,
         persona: str | None = None,
@@ -389,14 +409,17 @@ class TTSWorker:
             from portal.translations.vocabulary import resolve_vocabulary_entries
 
             async with get_session() as vocab_session:
-                vocab_entries = await resolve_vocabulary_entries(
-                    vocab_session,
-                    event_id=event_id,
-                    room_id=room_id,
-                    booth_id=None,
-                    target_language=target_lang_code,
-                    transcript_text=text,
-                ) or None
+                vocab_entries = (
+                    await resolve_vocabulary_entries(
+                        vocab_session,
+                        event_id=event_id,
+                        room_id=room_id,
+                        booth_id=None,
+                        target_language=target_lang_code,
+                        transcript_text=text,
+                    )
+                    or None
+                )
 
         messages = build_interpretation_messages(
             target_language_name=target_lang_name,
@@ -406,7 +429,6 @@ class TTSWorker:
             style=style,
             vocabulary_entries=vocab_entries,
         )
-
 
         # Currently optimized for OpenAI-compatible streaming endpoints (Groq, OpenRouter, OpenAI)
         if provider not in [
@@ -420,7 +442,11 @@ class TTSWorker:
 
             temp_worker = TranslationWorker(None)
             full_text = await temp_worker._call_llm(
-                provider, model, api_key, text, target_lang_name,
+                provider,
+                model,
+                api_key,
+                text,
+                target_lang_name,
                 source_language_code=source_language_code,
                 persona=persona,
                 style=style,
