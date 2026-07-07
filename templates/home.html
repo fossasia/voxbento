@@ -46,8 +46,9 @@
     <!-- Premium Navbar -->
     <header class="fixed top-0 w-full z-50 glass transition-all duration-300 border-b border-slate-200/50 bg-white/80 backdrop-blur-md" id="navbar">
         <div class="max-w-7xl mx-auto px-6 h-16 flex items-center justify-between">
-            <a href="/" class="flex items-center gap-2">
-                <img src="{{ url_for('static', path='img/wordmark.png') }}" alt="VoxBento" class="h-6">
+            <a href="/" class="flex items-center gap-3">
+                <img src="{{ url_for('static', path='img/app_icon.png') }}" alt="VoxBento Icon" class="w-8 h-8 rounded-lg shadow-sm">
+                <img src="{{ url_for('static', path='img/wordmark.png') }}" alt="VoxBento" class="h-5">
             </a>
             <nav class="flex max-md:hidden items-center gap-8 text-sm font-bold text-slate-600">
                 <a href="#solutions" class="hover:text-brand-600 transition-colors uppercase tracking-wider">Solutions</a>
@@ -72,11 +73,6 @@
         <section class="relative max-w-7xl mx-auto px-6 pt-12 pb-24 lg:pt-20 lg:pb-32 flex flex-col lg:flex-row items-center gap-12 animate-fade-in-up">
             <!-- Left Text -->
             <div class="flex-1 text-center lg:text-left z-10">
-                <!-- Logo mark -->
-                <div class="flex items-center gap-3 mb-6 justify-center lg:justify-start">
-                    <img src="{{ url_for('static', path='img/app_icon.png') }}" alt="VoxBento" class="w-10 h-10 rounded-xl shadow-md">
-                    <span class="text-sm font-extrabold uppercase tracking-widest text-slate-500">VoxBento</span>
-                </div>
                 <h1 class="text-[2.75rem] md:text-6xl lg:text-7xl font-extrabold tracking-tight text-slate-900 mb-8 leading-[1.1] flex flex-col items-center lg:items-start text-center lg:text-left w-full">
                     <div class="relative w-full text-brand-600">
                         <!-- Invisible spacer to perfectly preserve layout size for the longest word without CLS -->

@@ -5,19 +5,19 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>{% block title %}Voxbento Interpreter Booth{% endblock %}</title>
     <link rel="icon" type="image/x-icon" href="{{ url_for('static', path='img/favicon.ico') }}" />
-    <link rel="stylesheet" href="{{ url_for('static', path='css/interpreter.css') }}?v=3" />
+    <link rel="stylesheet" href="{{ url_for('static', path='css/interpreter.css') }}?v=4" />
     {% block head %}{% endblock %}
   </head>
   <body>
 
     <main style="min-height: calc(100vh - 60px);">{% block content %}{% endblock %}</main>
     
-    <footer style="padding: 20px; text-align: center; border-top: 1px solid #e2e8f0; margin-top: 40px; font-family: Inter, sans-serif; font-size: 0.875rem; color: #718096; background: #fff;">
-        <div style="max-width: 1200px; margin: 0 auto; display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 10px;">
+    <footer class="portal-footer">
+        <div class="footer-inner">
             <div>&copy; 2026 VoxBento.</div>
-            <div style="display: flex; flex-wrap: wrap; gap: 15px;">
-                <a href="/research" style="color: #4a5568; text-decoration: none; font-weight: 500;">Research & Benchmarks</a>
-                <a href="/llms.txt" style="color: #4a5568; text-decoration: none; font-weight: 500;">LLM Index</a>
+            <div class="footer-links">
+                <a href="/research">Research & Benchmarks</a>
+                <a href="/llms.txt">LLM Index</a>
             </div>
         </div>
     </footer>

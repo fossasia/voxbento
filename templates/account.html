@@ -1,82 +1,78 @@
-<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>My Account — Voxbento</title>
-    <link rel="icon" type="image/x-icon" href="{{ url_for('static', path='img/favicon.ico') }}" />
-    <link rel="stylesheet" href="{{ url_for('static', path='css/admin.css') }}" />
-  </head>
-  <body>
-    <header class="portal-home-header">
-      <a class="brand" href="/"><img src="{{ url_for('static', path='img/wordmark.png') }}" alt="Voxbento" style="height: 32px; vertical-align: middle;" /></a>
-      <nav class="header-nav">
-        <a href="/account">My Account</a>
-        <a href="/admin/">Admin Panel</a>
-        <a href="/logout">Logout</a>
-      </nav>
-    </header>
+{% extends "base.html" %}
 
-    <main class="admin-main">
-      <div class="account-card">
-        <h1>My Account</h1>
-        <table class="data-table">
-          <tbody>
-            <tr>
-              <th>Email</th>
-              <td>{{ user.email }}</td>
-            </tr>
-            <tr>
-              <th>Display Name</th>
-              <td>{{ user.display_name }}</td>
-            </tr>
-            <tr>
-              <th>Joined</th>
-              <td>{{ user.created_at.strftime('%Y-%m-%d %H:%M UTC') if user.created_at else '—' }}</td>
-            </tr>
-            <tr>
-              <th>Status</th>
-              <td>
-                {% if user.is_active %}
-                <span class="status-live">● Active</span>
-                {% else %}
-                <span class="status-offline">○ Deactivated</span>
-                {% endif %}
-              </td>
-            </tr>
-            {% if user.is_admin %}
-            <tr>
-              <th>System Role</th>
-              <td><span class="badge badge-role badge-super_admin" style="background:var(--color-danger)">Super Admin</span><br><small class="muted">You have global admin panel and event access.</small></td>
-            </tr>
+{% block title %}My Account — Voxbento{% endblock %}
+
+{% block head %}
+<link rel="stylesheet" href="{{ url_for('static', path='css/auth.css') }}" />
+{% endblock %}
+
+{% block content %}
+<header class="portal-home-header">
+  <a class="brand" href="/"><img src="{{ url_for('static', path='img/wordmark.png') }}" alt="Voxbento" style="height: 32px; vertical-align: middle;" /></a>
+  <nav class="header-nav">
+    <a href="/account">My Account</a>
+    <a href="/admin/">Admin Panel</a>
+    <a href="/logout">Logout</a>
+  </nav>
+</header>
+
+<div class="admin-main">
+  <div class="account-card">
+    <h1>My Account</h1>
+    <table class="data-table">
+      <tbody>
+        <tr>
+          <th>Email</th>
+          <td>{{ user.email }}</td>
+        </tr>
+        <tr>
+          <th>Display Name</th>
+          <td>{{ user.display_name }}</td>
+        </tr>
+        <tr>
+          <th>Joined</th>
+          <td>{{ user.created_at.strftime('%Y-%m-%d %H:%M UTC') if user.created_at else '—' }}</td>
+        </tr>
+        <tr>
+          <th>Status</th>
+          <td>
+            {% if user.is_active %}
+            <span class="status-live">● Active</span>
+            {% else %}
+            <span class="status-offline">○ Deactivated</span>
             {% endif %}
-          </tbody>
-        </table>
+          </td>
+        </tr>
+        {% if user.is_admin %}
+        <tr>
+          <th>System Role</th>
+          <td><span class="badge badge-role badge-super_admin" style="background:var(--color-danger)">Super Admin</span><br><small class="muted">You have global admin panel and event access.</small></td>
+        </tr>
+        {% endif %}
+      </tbody>
+    </table>
 
-        <div class="account-info">
-          <h3>Your Event Roles</h3>
-          {% if memberships %}
-          <table class="data-table compact">
-            <thead>
-              <tr><th>Event</th><th>Role</th><th>Since</th></tr>
-            </thead>
-            <tbody>
-              {% for m in memberships %}
-              <tr>
-                <td>{{ m.event.display_name if m.event else '—' }}</td>
-                <td><span class="badge badge-role badge-{{ m.role }}">{{ m.role }}</span></td>
-                <td>{{ m.created_at.strftime('%Y-%m-%d') if m.created_at else '—' }}</td>
-              </tr>
-              {% endfor %}
-            </tbody>
-          </table>
-          {% else %}
-          <p class="muted">You have not been assigned a role for any event yet. An admin can assign roles on a per-event basis.</p>
-          {% endif %}
-        </div>
-      </div>
-    </main>
-
-
-  </body>
-</html>
+    <div class="account-info">
+      <h3>Your Event Roles</h3>
+      {% if memberships %}
+      <table class="data-table compact">
+        <thead>
+          <tr><th>Event</th><th>Role</th><th>Since</th></tr>
+        </thead>
+        <tbody>
+          {% for m in memberships %}
+          <tr>
+            <td>{{ m.event.display_name if m.event else '—' }}</td>
+            <td><span class="badge badge-role badge-{{ m.role }}">{{ m.role }}</span></td>
+            <td>{{ m.created_at.strftime('%Y-%m-%d') if m.created_at else '—' }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+      <p class="muted">You have not been assigned a role for any event yet. An admin can assign roles on a per-event basis.</p>
+      {% endif %}
+    </div>
+  </div>
+</div>
+{% endblock %}
