@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.security import HTTPAuthorizationCredentials
 from sqlalchemy import select

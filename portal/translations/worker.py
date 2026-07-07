@@ -146,7 +146,8 @@ class TranslationWorker:
 
             elif provider == TranslationProviderEnum.GEMINI.value:
                 res = await client.post(
-                    f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}",
+                    f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+                    headers={"x-goog-api-key": api_key},
                     json={
                         "systemInstruction": {"parts": [{"text": system_prompt}]},
                         "contents": [{"parts": [{"text": text}]}],

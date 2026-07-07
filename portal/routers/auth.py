@@ -1,3 +1,6 @@
+from __future__ import annotations
+
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated
 
@@ -19,7 +22,9 @@ from portal.database import (
     get_session,
     get_user_by_email,
     get_user_by_id,
+    list_booth_memberships_for_user,
     list_memberships_for_user,
+    list_room_memberships_for_user,
     redeem_invite_token,
 )
 from portal.schemas.auth import TokenRequest, TokenResponse
@@ -202,6 +207,40 @@ async def account_page(request: Request):
             response = safe_redirect(url="/login", status_code=status.HTTP_303_SEE_OTHER)
             response.delete_cookie("user_token")
             return response
-        memberships = await list_memberships_for_user(session, user.id)
+        event_memberships = await list_memberships_for_user(session, user.id)
+        room_memberships = await list_room_memberships_for_user(session, user.id)
+        booth_memberships = await list_booth_memberships_for_user(session, user.id)
 
-    return templates.TemplateResponse(request, "account.html", {"user": user, "memberships": memberships})
+    unified_memberships = []
+    for m in event_memberships:
+        unified_memberships.append({
+            "context": m.event.display_name if m.event else '—',
+            "link": f"/mission-control/{m.event.slug}/" if m.event else "#",
+            "type": "Event",
+            "role": m.role,
+            "created_at": m.created_at
+        })
+    for m in room_memberships:
+        context_str = f"{m.room.event.display_name} - {m.room.display_name}" if m.room and m.room.event else (m.room.display_name if m.room else '—')
+        link_str = f"/mission-control/{m.room.event.slug}/" if m.room and m.room.event else "#"
+        unified_memberships.append({
+            "context": context_str,
+            "link": link_str,
+            "type": "Room",
+            "role": m.role,
+            "created_at": m.created_at
+        })
+    for m in booth_memberships:
+        context_str = f"{m.booth.event.display_name} - {m.booth.room.display_name} - {m.booth.language_name}" if m.booth and m.booth.event and m.booth.room else '—'
+        link_str = f"/interpreter/{m.booth.event.slug}/{m.booth.language_code}" if m.booth and m.booth.event else "#"
+        unified_memberships.append({
+            "context": context_str,
+            "link": link_str,
+            "type": "Booth",
+            "role": m.role,
+            "created_at": m.created_at
+        })
+
+    unified_memberships.sort(key=lambda x: x["created_at"] or datetime.min.replace(tzinfo=timezone.utc))
+
+    return templates.TemplateResponse(request, "account.html", {"user": user, "memberships": unified_memberships})

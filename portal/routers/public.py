@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import logging
 
 # We assume templates is initialized in fastapi_app and imported here, or

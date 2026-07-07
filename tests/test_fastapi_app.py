@@ -639,6 +639,223 @@ def test_ws_coordinator_can_switch_active_interpreter():
     assert state_msg["state"]["active_interpreter_id"] == pid_a
 
 
+
+# ── WebSocket handoff / broadcast-unlock tests ───────────────────────────────
+
+def _ws_join(ws, display_name: str, role: str, language: str, channel_id: str) -> tuple[str, dict]:
+    """Join a booth websocket and return (participant_id, initial_state).
+
+    The server sends booth:joined + booth:state; order is normalised here.
+    """
+    ws.send_text(
+        json.dumps(
+            {
+                "type": "booth:join",
+                "display_name": display_name,
+                "role": role,
+                "language": language,
+                "channel_id": channel_id,
+            }
+        )
+    )
+    msg1 = json.loads(ws.receive_text())
+    msg2 = json.loads(ws.receive_text())
+
+    joined = msg1 if msg1["type"] == "booth:joined" else msg2
+    state_msg = msg2 if msg1["type"] == "booth:joined" else msg1
+    assert joined["type"] == "booth:joined"
+    assert state_msg["type"] == "booth:state"
+    return joined["participant_id"], state_msg["state"]
+
+
+def test_ws_broadcast_unlock_authorized_user_can_toggle():
+    """Authorized coordinator/admin session can toggle broadcast lock."""
+    client.post("/api/events/broadcastok/booths", json={"language_code": "en", "language": "English"})
+    booth = "broadcastok-en"
+    channel = "broadcastok/en"
+
+    with client.websocket_connect(f"/ws/booth/{booth}", cookies=_ws_auth()) as ws:
+        _pid, _state = _ws_join(ws, "Coord", "room_coordinator", "English", channel)
+
+        ws.send_text(json.dumps({"type": "booth:set-broadcast-unlocked", "unlocked": True}))
+        msg = json.loads(ws.receive_text())
+
+    assert msg["type"] == "booth:state"
+    assert msg["state"]["broadcast_unlocked"] is True
+
+
+def test_ws_broadcast_unlock_interpreter_rejected():
+    """Interpreter session cannot toggle broadcast lock."""
+    client.post("/api/events/broadcastdeny/booths", json={"language_code": "en", "language": "English"})
+    booth = "broadcastdeny-en"
+    channel = "broadcastdeny/en"
+
+    with client.websocket_connect(
+        f"/ws/booth/{booth}",
+        cookies=_interpreter_cookie("broadcastdeny", "en"),
+    ) as ws:
+        _pid, _state = _ws_join(ws, "Interp", "interpreter", "English", channel)
+
+        ws.send_text(json.dumps({"type": "booth:set-broadcast-unlocked", "unlocked": True}))
+        msg = json.loads(ws.receive_text())
+
+    assert msg["type"] == "booth:error"
+    assert "Only Room Coordinators" in msg["message"]
+
+
+def test_ws_initiate_handoff_active_interpreter_sets_offered_state():
+    """Active interpreter initiating handoff sets handoff_state='offered'."""
+    booth = "handoff-offered"
+    channel = f"{booth}-audio"
+
+    with (
+        client.websocket_connect(f"/ws/booth/{booth}", cookies=_ws_auth()) as ws_a,
+        client.websocket_connect(f"/ws/booth/{booth}", cookies=_ws_auth()) as ws_b,
+    ):
+        pid_a, _ = _ws_join(ws_a, "IntA", "interpreter", "French", channel)
+        ws_b.receive_text()  # drain broadcast from A joining on ws_b
+
+        _pid_b, _ = _ws_join(ws_b, "IntB", "interpreter", "French", channel)
+        ws_a.receive_text()  # drain broadcast to ws_a when ws_b joins
+
+        ws_a.send_text(json.dumps({"type": "booth:initiate-handoff"}))
+        msg = json.loads(ws_a.receive_text())
+        ws_b.receive_text()  # same booth:state broadcast on ws_b
+
+    assert msg["type"] == "booth:state"
+    assert msg["state"]["active_interpreter_id"] == pid_a
+    assert msg["state"]["handoff_state"] == "offered"
+    assert msg["state"]["handoff_initiator_id"] == pid_a
+
+
+def test_ws_initiate_handoff_passive_interpreter_sets_requested_state():
+    """Passive interpreter initiating handoff sets handoff_state='requested'."""
+    booth = "handoff-requested"
+    channel = f"{booth}-audio"
+
+    with (
+        client.websocket_connect(f"/ws/booth/{booth}", cookies=_ws_auth()) as ws_a,
+        client.websocket_connect(f"/ws/booth/{booth}", cookies=_ws_auth()) as ws_b,
+    ):
+        pid_a, _ = _ws_join(ws_a, "IntA", "interpreter", "French", channel)
+        ws_b.receive_text()  # drain broadcast from A joining on ws_b
+
+        pid_b, _ = _ws_join(ws_b, "IntB", "interpreter", "French", channel)
+        ws_a.receive_text()  # drain broadcast to ws_a when ws_b joins
+
+        ws_b.send_text(json.dumps({"type": "booth:initiate-handoff"}))
+        msg = json.loads(ws_b.receive_text())
+        ws_a.receive_text()  # same booth:state broadcast on ws_a
+
+    assert msg["type"] == "booth:state"
+    assert msg["state"]["active_interpreter_id"] == pid_a
+    assert msg["state"]["handoff_state"] == "requested"
+    assert msg["state"]["handoff_initiator_id"] == pid_b
+
+
+def test_ws_initiate_handoff_before_join_returns_error():
+    """Sending initiate-handoff before joining returns booth:error."""
+    with client.websocket_connect("/ws/booth/no-join-handoff", cookies=_ws_auth()) as ws:
+        ws.send_text(json.dumps({"type": "booth:initiate-handoff"}))
+        msg = json.loads(ws.receive_text())
+
+    assert msg["type"] == "booth:error"
+    assert "Join the booth first" in msg["message"]
+
+
+def test_ws_accept_handoff_from_offered_switches_active_interpreter():
+    """Active offers handoff; passive accepts; passive becomes active."""
+    booth = "handoff-accept-offered"
+    channel = f"{booth}-audio"
+
+    with (
+        client.websocket_connect(f"/ws/booth/{booth}", cookies=_ws_auth()) as ws_a,
+        client.websocket_connect(f"/ws/booth/{booth}", cookies=_ws_auth()) as ws_b,
+    ):
+        pid_a, _ = _ws_join(ws_a, "IntA", "interpreter", "French", channel)
+        ws_b.receive_text()  # drain broadcast from A joining on ws_b
+
+        pid_b, _ = _ws_join(ws_b, "IntB", "interpreter", "French", channel)
+        ws_a.receive_text()  # drain broadcast to ws_a when ws_b joins
+
+        # Active interpreter initiates -> offered
+        ws_a.send_text(json.dumps({"type": "booth:initiate-handoff"}))
+        _msg_a = json.loads(ws_a.receive_text())
+        _msg_b = json.loads(ws_b.receive_text())
+
+        # Passive accepts -> becomes active
+        ws_b.send_text(json.dumps({"type": "booth:accept-handoff"}))
+        msg = json.loads(ws_b.receive_text())
+        ws_a.receive_text()  # broadcast on ws_a
+
+    assert msg["type"] == "booth:state"
+    assert msg["state"]["active_interpreter_id"] == pid_b
+    assert msg["state"]["handoff_state"] == "idle"
+    assert msg["state"]["handoff_initiator_id"] is None
+
+
+def test_ws_accept_handoff_from_requested_switches_active_to_requester():
+    """Passive requests handoff; active accepts/yields; requester becomes active."""
+    booth = "handoff-accept-requested"
+    channel = f"{booth}-audio"
+
+    with (
+        client.websocket_connect(f"/ws/booth/{booth}", cookies=_ws_auth()) as ws_a,
+        client.websocket_connect(f"/ws/booth/{booth}", cookies=_ws_auth()) as ws_b,
+    ):
+        pid_a, _ = _ws_join(ws_a, "IntA", "interpreter", "French", channel)
+        ws_b.receive_text()  # drain broadcast from A joining on ws_b
+
+        pid_b, _ = _ws_join(ws_b, "IntB", "interpreter", "French", channel)
+        ws_a.receive_text()  # drain broadcast to ws_a when ws_b joins
+
+        # Passive interpreter initiates -> requested
+        ws_b.send_text(json.dumps({"type": "booth:initiate-handoff"}))
+        _msg_b = json.loads(ws_b.receive_text())
+        _msg_a = json.loads(ws_a.receive_text())
+
+        # Active interpreter accepts/yields -> requester becomes active
+        ws_a.send_text(json.dumps({"type": "booth:accept-handoff"}))
+        msg = json.loads(ws_a.receive_text())
+        ws_b.receive_text()  # broadcast on ws_b
+
+    assert msg["type"] == "booth:state"
+    assert msg["state"]["active_interpreter_id"] == pid_b
+    assert msg["state"]["handoff_state"] == "idle"
+    assert msg["state"]["handoff_initiator_id"] is None
+
+
+def test_ws_cancel_handoff_initiator_resets_state_to_idle():
+    """Initiator can cancel an in-progress handoff; booth returns to idle."""
+    booth = "handoff-cancel"
+    channel = f"{booth}-audio"
+
+    with (
+        client.websocket_connect(f"/ws/booth/{booth}", cookies=_ws_auth()) as ws_a,
+        client.websocket_connect(f"/ws/booth/{booth}", cookies=_ws_auth()) as ws_b,
+    ):
+        pid_a, _ = _ws_join(ws_a, "IntA", "interpreter", "French", channel)
+        ws_b.receive_text()  # drain broadcast from A joining on ws_b
+
+        _pid_b, _ = _ws_join(ws_b, "IntB", "interpreter", "French", channel)
+        ws_a.receive_text()  # drain broadcast to ws_a when ws_b joins
+
+        # Active interpreter initiates -> offered
+        ws_a.send_text(json.dumps({"type": "booth:initiate-handoff"}))
+        _msg_a = json.loads(ws_a.receive_text())
+        _msg_b = json.loads(ws_b.receive_text())
+
+        # Initiator cancels
+        ws_a.send_text(json.dumps({"type": "booth:cancel-handoff"}))
+        msg = json.loads(ws_a.receive_text())
+        ws_b.receive_text()  # broadcast on ws_b
+
+    assert msg["type"] == "booth:state"
+    assert msg["state"]["active_interpreter_id"] == pid_a
+    assert msg["state"]["handoff_state"] == "idle"
+    assert msg["state"]["handoff_initiator_id"] is None
+
+
 # ── Layer 2: WHIP URL gated endpoint tests ────────────────────────────────────
 
 
