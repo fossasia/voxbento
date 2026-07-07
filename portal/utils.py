@@ -1,3 +1,6 @@
+from __future__ import annotations
+
+import time
 from urllib.parse import urlparse
 
 import httpx
@@ -31,16 +34,40 @@ def _make_jitsi_url(base_url: str, room: str) -> str:
     return f"{base_url.rstrip('/')}/{room.lstrip('/')}"
 
 
+# Cache for MediaMTX health check — avoids redundant HTTP calls on every page
+# load. The health check is called from three endpoints (healthz, admin dashboard,
+# interpreter status). A short TTL prevents stampeding the Control API while
+# still keeping the status reasonably fresh.
+_mediamtx_cache: tuple[float, bool] | None = None
+_MEDIAMTX_CACHE_TTL = 5.0
+
+
+def _clear_mediamtx_cache() -> None:
+    """Drop the cached MediaMTX health result so the next call re-checks."""
+    global _mediamtx_cache
+    _mediamtx_cache = None
+
+
 async def _check_mediamtx() -> bool:
-    """Non-blocking reachability check for MediaMTX API endpoint."""
+    """Non-blocking reachability check for MediaMTX API endpoint (cached)."""
+    global _mediamtx_cache
+    now = time.monotonic()
+    if _mediamtx_cache is not None:
+        expiry, ok = _mediamtx_cache
+        if now < expiry:
+            return ok
     base = settings.mediamtx_api_base
     if not base:
+        _mediamtx_cache = (now + _MEDIAMTX_CACHE_TTL, False)
         return False
     try:
         async with httpx.AsyncClient(timeout=2.0) as client:
             r = await client.get(f"{base}/v3/paths/list")
-        return r.status_code < 500
+        ok = r.status_code < 500
+        _mediamtx_cache = (now + _MEDIAMTX_CACHE_TTL, ok)
+        return ok
     except (httpx.ConnectError, httpx.TimeoutException, httpx.RequestError):
+        _mediamtx_cache = (now + _MEDIAMTX_CACHE_TTL, False)
         return False
 
 
