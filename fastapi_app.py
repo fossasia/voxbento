@@ -84,6 +84,10 @@ async def http_exception_handler(request: Request, exc: StarletteHTTPException):
             return templates.TemplateResponse(
                 request, "404.html", {"request": request, "detail": exc.detail}, status_code=404
             )
+        if exc.status_code == 429:
+            return templates.TemplateResponse(
+                request, "429.html", {"request": request, "detail": exc.detail}, status_code=429
+            )
         if exc.status_code >= 500:
             return templates.TemplateResponse(
                 request, "500.html", {"request": request, "detail": exc.detail}, status_code=exc.status_code

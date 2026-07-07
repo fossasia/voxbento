@@ -1,5 +1,6 @@
 import asyncio
 import json
+import time
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +24,32 @@ templates = Jinja2Templates(directory=str(_BASE_DIR / "templates"))
 
 router = APIRouter()
 
+_JOIN_CODE_RATE_LIMIT = 10
+_JOIN_CODE_RATE_WINDOW_SECONDS = 60
+_join_code_attempts: dict[str, tuple[int, float]] = {}
+
+
+def _register_failed_attempt(client_ip: str) -> bool:
+    """Record a failed join-code attempt for `client_ip`.
+
+    Returns True if the client has exceeded the allowed attempts within the window.
+    """
+    now = time.monotonic()
+    count, window_start = _join_code_attempts.get(client_ip, (0, now))
+    if now - window_start > _JOIN_CODE_RATE_WINDOW_SECONDS:
+        count, window_start = 0, now
+    count += 1
+    _join_code_attempts[client_ip] = (count, window_start)
+    return count > _JOIN_CODE_RATE_LIMIT
+
+
+def _reset_attempts(client_ip: str) -> None:
+    _join_code_attempts.pop(client_ip, None)
+
+
+def _client_ip(request: Request) -> str:
+    return request.client.host if request.client else "unknown"
+
 
 def has_listener_access(request: Request, event_slug: str, listener_join_code: str | None, code: str | None) -> bool:
     payload = get_booth_session(request)
@@ -31,7 +58,10 @@ def has_listener_access(request: Request, event_slug: str, listener_join_code: s
 
     cookie_code = request.cookies.get(f"listener_code_{event_slug}")
     active_code = code or cookie_code
-    return bool(listener_join_code and active_code == listener_join_code)
+    if bool(listener_join_code and active_code == listener_join_code):
+        _reset_attempts(_client_ip(request))
+        return True
+    return False
 
 
 @router.get("/listener/{event_slug}")
@@ -43,6 +73,10 @@ async def listen_event_page(request: Request, event_slug: str, code: str | None 
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event not found")
 
         if not has_listener_access(request, event_slug, ev.listener_join_code, code):
+            if _register_failed_attempt(_client_ip(request)):
+                raise HTTPException(
+                    status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="Too many join attempts. Please try again later."
+                )
             return templates.TemplateResponse(
                 request, "listener_join.html", {"event": ev, "error": "Invalid join code." if code else None}
             )
@@ -132,6 +166,10 @@ async def listener_room_audio_delay(
         if not ev:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event not found")
         if not has_listener_access(request, event_slug, ev.listener_join_code, code):
+            if _register_failed_attempt(_client_ip(request)):
+                raise HTTPException(
+                    status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="Too many join attempts. Please try again later."
+                )
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Listener access required")
         room = await get_room_by_id(session, room_id)
         if room is None or room.event_id != ev.id:
