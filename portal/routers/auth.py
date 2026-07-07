@@ -215,7 +215,7 @@ async def account_page(request: Request):
     for m in event_memberships:
         unified_memberships.append({
             "context": m.event.display_name if m.event else '—',
-            "link": f"/mission-control/{m.event.slug}/" if m.event else "#",
+            "link": f"/admin/events/{m.event.id}/" if m.event else "#",
             "type": "Event",
             "role": m.role,
             "created_at": m.created_at
