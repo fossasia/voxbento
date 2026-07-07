@@ -220,7 +220,7 @@ async def account_page(request: Request):
             "created_at": m.created_at
         })
     for m in room_memberships:
-        context_str = f"{m.room.event.display_name} - {m.room.name}" if m.room and m.room.event else (m.room.name if m.room else '—')
+        context_str = f"{m.room.event.display_name} - {m.room.display_name}" if m.room and m.room.event else (m.room.display_name if m.room else '—')
         unified_memberships.append({
             "context": context_str,
             "type": "Room",
@@ -228,7 +228,7 @@ async def account_page(request: Request):
             "created_at": m.created_at
         })
     for m in booth_memberships:
-        context_str = f"{m.booth.event.display_name} - {m.booth.room.name} - {m.booth.language_name}" if m.booth and m.booth.event and m.booth.room else '—'
+        context_str = f"{m.booth.event.display_name} - {m.booth.room.display_name} - {m.booth.language_name}" if m.booth and m.booth.event and m.booth.room else '—'
         unified_memberships.append({
             "context": context_str,
             "type": "Booth",
