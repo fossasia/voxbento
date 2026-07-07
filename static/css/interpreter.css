@@ -879,3 +879,41 @@ label {
     gap: 0.5rem;
   }
 }
+
+/* ===== Portal Footer ===== */
+.portal-footer {
+  padding: 20px;
+  text-align: center;
+  border-top: 1px solid #e2e8f0;
+  margin-top: 40px;
+  font-family: Inter, sans-serif;
+  font-size: 0.875rem;
+  color: #718096;
+  background: #fff;
+}
+
+.portal-footer .footer-inner {
+  max-width: 1200px;
+  margin: 0 auto;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+}
+
+.portal-footer .footer-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 15px;
+}
+
+.portal-footer .footer-links a {
+  color: #4a5568;
+  text-decoration: none;
+  font-weight: 500;
+}
+
+.portal-footer .footer-links a:hover {
+  text-decoration: underline;
+}
