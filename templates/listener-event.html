@@ -26,7 +26,7 @@
   </div>
 
   <div id="status"><span class="status-badge waiting">Waiting for selection...</span></div>
-  <audio id="audio-player" autoplay class="full-width margin-v-1 hidden"></audio>
+  <audio id="audio-player" autoplay class="full-width margin-v-1 listener-hidden"></audio>
 
   <div class="captions-container" id="captions-container">
     <div class="captions-header captions-header-style">
@@ -39,7 +39,7 @@
             <option value="side-by-side">Side-by-Side</option>
           </select>
         </div>
-        <div class="selector-group hidden" id="translation-lang-group">
+        <div class="selector-group listener-hidden" id="translation-lang-group">
           <label for="translation-lang-select">Target Language</label>
           <select id="translation-lang-select" class="input">
             <!-- Populated dynamically via JS based on room settings -->
