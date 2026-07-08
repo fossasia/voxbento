@@ -133,7 +133,6 @@
     gap: 1rem; 
 }
 .captions-layout { 
-    display: flex; 
     gap: 20px; 
 }
 .full-width { width: 100%; }
