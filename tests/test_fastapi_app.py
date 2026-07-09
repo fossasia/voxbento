@@ -1421,3 +1421,37 @@ def test_strong_secret_passes_production():
 
     s = Settings(debug=False, secret_key="a-strong-random-secret-0123456789abcdef", jwt_secret="")
     s.validate_production_secrets()  # must not raise
+
+
+# ── Unified error pages (PR #263) ──────────────────────────────────────
+
+
+def test_500_html_page_does_not_leak_exception_detail():
+    """5xx HTML error pages must never render exc.detail — it can carry internal info."""
+    from starlette.exceptions import HTTPException as StarletteHTTPException
+
+    sentinel = "SECRET_DSN_postgres://user:pw@internal-host/db"
+
+    async def _boom():
+        raise StarletteHTTPException(status_code=500, detail=sentinel)
+
+    app.add_api_route("/_test_boom_500", _boom)
+    try:
+        res = client.get("/_test_boom_500", headers={"accept": "text/html"})
+    finally:
+        # Remove the throwaway route so it cannot affect other tests.
+        app.router.routes = [r for r in app.router.routes if getattr(r, "path", None) != "/_test_boom_500"]
+
+    assert res.status_code == 500
+    assert sentinel not in res.text
+    assert "Something went wrong on our end" in res.text
+
+
+def test_404_html_page_renders_unified_template():
+    """Unknown paths render the unified error template with no Tailwind CDN."""
+    res = client.get("/no-such-page-xyz-123", headers={"accept": "text/html"})
+
+    assert res.status_code == 404
+    assert "Page Not Found" in res.text
+    assert "cdn.tailwindcss.com" not in res.text
+    assert "/static/css/error.css" in res.text

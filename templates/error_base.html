@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+
+{% block title %}{% block error_title %}Error{% endblock %} - VoxBento{% endblock %}
+
+{% block head %}
+<link rel="stylesheet" href="{{ url_for('static', path='css/error.css') }}" />
+{% endblock %}
+
+{% block content %}
+<div class="error-container">
+  <img class="error-wordmark" src="{{ url_for('static', path='img/wordmark.png') }}" alt="VoxBento" />
+  <div class="error-card">
+    <p class="error-code">{% block error_code %}{% endblock %}</p>
+    {# Reuse the error_title block (also used in <title>) as the visible heading. #}
+    <h1 class="error-title">{{ self.error_title() }}</h1>
+    <p class="error-message">{% block error_message %}{{ detail }}{% endblock %}</p>
+    <div class="error-actions">
+      {% block error_actions %}<a href="/" class="btn btn-primary">Return to Homepage</a>{% endblock %}
+    </div>
+  </div>
+</div>
+{% endblock %}
