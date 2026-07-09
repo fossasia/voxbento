@@ -76,6 +76,17 @@
 .data-table tbody tr:hover { background: #f8f9fa; }
 .data-table.compact th, .data-table.compact td { padding: 8px 10px; }
 
+.context-link {
+  color: var(--color-primary, #2563eb);
+  text-decoration: none;
+  font-weight: 500;
+  transition: color 0.15s ease;
+}
+.context-link:hover {
+  color: var(--color-primary-hover, #1d4ed8);
+  text-decoration: underline;
+}
+
 /* ── Status + badges (used on account.html) ─────────────────────────────── */
 
 .status-live { color: var(--color-live); font-weight: 600; white-space: nowrap; }

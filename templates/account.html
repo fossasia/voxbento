@@ -53,16 +53,23 @@
     </table>
 
     <div class="account-info">
-      <h3>Your Event Roles</h3>
+      <h3>Your Roles</h3>
       {% if memberships %}
       <table class="data-table compact">
         <thead>
-          <tr><th>Event</th><th>Role</th><th>Since</th></tr>
+          <tr><th>Scope</th><th>Context</th><th>Role</th><th>Since</th></tr>
         </thead>
         <tbody>
           {% for m in memberships %}
           <tr>
-            <td>{{ m.event.display_name if m.event else '—' }}</td>
+            <td>{{ m.type }}</td>
+            <td>
+              {% if m.link != '#' %}
+              <a href="{{ m.link }}" class="context-link">{{ m.context }} &rarr;</a>
+              {% else %}
+              {{ m.context }}
+              {% endif %}
+            </td>
             <td><span class="badge badge-role badge-{{ m.role }}">{{ m.role }}</span></td>
             <td>{{ m.created_at.strftime('%Y-%m-%d') if m.created_at else '—' }}</td>
           </tr>
@@ -70,7 +77,7 @@
         </tbody>
       </table>
       {% else %}
-      <p class="muted">You have not been assigned a role for any event yet. An admin can assign roles on a per-event basis.</p>
+      <p class="muted">You have not been assigned a role for any event, room, or booth yet.</p>
       {% endif %}
     </div>
   </div>

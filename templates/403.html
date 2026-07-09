@@ -1,20 +1,6 @@
-{% extends "base.html" %}
+{% extends "error_base.html" %}
 
-{% block title %}Access Denied - VoxBento{% endblock %}
-
-{% block head %}
-<link rel="stylesheet" href="{{ url_for('static', path='css/landing.css') }}" />
-{% endblock %}
-
-{% block content %}
-<div class="lobby-container" style="justify-content: center; align-items: center; text-align: center; height: 100vh; display: flex; flex-direction: column;">
-  <img src="{{ url_for('static', path='img/wordmark.png') }}" alt="VoxBento" style="height: 48px; margin-bottom: 2rem;" />
-  <div class="card" style="padding: 3rem; max-width: 500px; width: 100%;">
-    <h1 style="margin-top: 0; color: var(--color-danger, #ef4444); font-size: 1.5rem;">Oops! Access Denied (403)</h1>
-    <p style="color: var(--color-muted); margin-bottom: 2rem;">
-      {{ detail | default("You don't have permission to access this page.") }}
-    </p>
-    <a href="/" class="btn btn-primary" style="display: inline-block; padding: 0.75rem 1.5rem;">Return to Homepage</a>
-  </div>
-</div>
-{% endblock %}
+{% block error_title %}Access Denied{% endblock %}
+{% block error_code %}403{% endblock %}
+{# error_message defaults to {{ detail }} in error_base.html; the handler always
+   passes a meaningful message (e.g. "Invalid or missing auth token."). #}
