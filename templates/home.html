@@ -10,13 +10,8 @@
     <script src="https://cdn.tailwindcss.com"></script>
     
     <!-- Custom CSS for animations and overrides -->
-    <link rel="stylesheet" href="{{ url_for('static', path='css/landing.css') }}" />
-    <style>
-        @keyframes demoWave {
-            from { transform: scaleY(0.4); }
-            to   { transform: scaleY(1.0); }
-        }
-    </style>
+    <link rel="stylesheet" href="{{ url_for('static', path='css/landing.css') }}?v={{ js_version }}" />
+    <link rel="stylesheet" href="{{ url_for('static', path='css/home.css') }}?v={{ js_version }}" />
     
     <script>
         tailwind.config = {
@@ -671,89 +666,7 @@
             </div>
         </div>
     </footer>
-
-    <!-- Script to handle rotating hero text -->
-    <script>
-        document.addEventListener("DOMContentLoaded", () => {
-            const capabilities = [
-                "Interpretation", "Live Translation", "AI Captions", "Speech-to-Text", 
-                "Text-to-Speech", "Voice Translation", "Real-Time Transcription", 
-                "Multilingual Subtitles", "AI Dubbing", "Meeting Translation", 
-                "Conference Interpretation", "Voice Cloning", "Accessibility Services", 
-                "Audio Translation"
-            ];
-
-            const audiences = [
-                "Enterprise", "Global Teams", "Meetings", "Webinars", "Conferences", 
-                "Events", "Town Halls", "Training Programs", "Customer Support", 
-                "Sales Teams", "Healthcare Organizations", "Educational Institutions", 
-                "Government Agencies", "International Summits", "Hybrid Events"
-            ];
-
-            const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-
-            function setupRotator(containerId, words, interval) {
-                const container = document.getElementById(containerId);
-                if (!container) return;
-                
-                let currentIndex = 0;
-                
-                setInterval(() => {
-                    // Outgoing animation
-                    container.classList.remove('opacity-100', 'translate-y-0', 'blur-0');
-                    container.classList.add('opacity-0');
-                    if (!prefersReducedMotion) {
-                        container.classList.add('-translate-y-4', 'blur-sm');
-                    }
-                    
-                    setTimeout(() => {
-                        // Swap text
-                        currentIndex = (currentIndex + 1) % words.length;
-                        container.innerText = words[currentIndex];
-                        
-                        // Reset starting position for incoming animation
-                        if (!prefersReducedMotion) {
-                            container.classList.remove('-translate-y-4');
-                            container.classList.add('translate-y-4');
-                        }
-                        
-                        // Force a reflow so the browser registers the starting position
-                        void container.offsetWidth;
-                        
-                        // Incoming animation
-                        container.classList.remove('opacity-0', 'translate-y-4', 'blur-sm');
-                        container.classList.add('opacity-100');
-                        if (!prefersReducedMotion) {
-                            container.classList.add('translate-y-0', 'blur-0');
-                        }
-                    }, 700); // Wait for the 700ms CSS transition to finish
-                    
-                }, interval);
-            }
-
-            // Start rotators with staggered timing
-            setupRotator('rotator-capability', capabilities, 3500);
-            setTimeout(() => {
-                setupRotator('rotator-audience', audiences, 3500);
-            }, 1750);
-        });
-    </script>
-
-    <!-- Script to handle sticky navbar background -->
-    <script>
-        window.addEventListener('scroll', () => {
-            const navbar = document.getElementById('navbar');
-            if (window.scrollY > 20) {
-                navbar.classList.add('shadow-md');
-                navbar.classList.remove('border-transparent');
-                navbar.classList.add('border-slate-200/50');
-            } else {
-                navbar.classList.remove('shadow-md');
-                navbar.classList.remove('border-slate-200/50');
-                navbar.classList.add('border-transparent');
-            }
-        });
-    </script>
-    <script type="module" src="{{ url_for('static', path='js/demo-player.js') }}"></script>
+    <script type="module" src="{{ url_for('static', path='js/home.js') }}?v={{ js_version }}"></script>
+    <script type="module" src="{{ url_for('static', path='js/demo-player.js') }}?v={{ js_version }}"></script>
 </body>
 </html>
