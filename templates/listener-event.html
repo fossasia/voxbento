@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% block title %}Listen (WebRTC) — {{ event.display_name }} | Voxbento{% endblock %}
 {% block head %}
-<link rel="stylesheet" href="{{ url_for('static', path='css/listener.css') }}" />
+<link rel="stylesheet" href="{{ url_for('static', path='css/listener.css') }}?v={{ js_version }}" />
 {% endblock %}
 {% block content %}
 <div class="listener-container">
@@ -26,11 +26,10 @@
   </div>
 
   <div id="status"><span class="status-badge waiting">Waiting for selection...</span></div>
-  <audio id="audio-player" autoplay class="full-width margin-v-1 listener-hidden"></audio>
-
+  <audio id="audio-player" autoplay></audio>
   <div class="captions-container" id="captions-container">
-    <div class="captions-header captions-header-style">
-      <div class="selectors-container captions-selectors">
+    <div class="captions-header">
+      <div class="selectors-container">
         <div class="selector-group">
           <label for="caption-mode-select">Captions Mode</label>
           <select id="caption-mode-select" class="input" disabled>
@@ -49,12 +48,12 @@
       <button id="toggle-captions-btn" class="toggle-btn minimize-captions" title="Minimize/Maximize Captions">▼</button>
     </div>
     <div id="live-captions" class="captions-box">
-      <div id="captions-content-area" class="captions-content captions-layout">
-        <div id="captions-col-original" class="col-flex-1 col-flex">
+      <div id="captions-content-area" class="captions-content">
+        <div id="captions-col-original">
           <div class="caption-history" id="caption-history"></div>
           <div class="caption-current" id="caption-current"></div>
         </div>
-        <div id="captions-col-translated" class="border-left-gray col-flex-1">
+        <div id="captions-col-translated">
           <div class="caption-history" id="translation-history"></div>
           <div class="caption-current" id="translation-current"></div>
         </div>
