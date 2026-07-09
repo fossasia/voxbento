@@ -1,25 +1,8 @@
-{% extends "base.html" %}
-{% block title %}Server Error | VoxBento{% endblock %}
-{% block head %}<script src="https://cdn.tailwindcss.com"></script>{% endblock %}
+{% extends "error_base.html" %}
 
-{% block content %}
-<div class="min-h-screen bg-gray-900 flex items-center justify-center p-4">
-    <div class="max-w-md w-full text-center">
-        <div class="inline-flex items-center justify-center w-24 h-24 rounded-full bg-red-500/10 mb-8">
-            <svg class="w-12 h-12 text-red-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path>
-            </svg>
-        </div>
-        <h2 class="text-3xl font-semibold text-white mb-4">Internal Server Error</h2>
-        <p class="text-gray-400 mb-8">Oops! Something went wrong on our end. We've been notified and are looking into it.</p>
-        <div class="flex gap-4 justify-center">
-            <button onclick="window.history.back()" class="bg-gray-800 hover:bg-gray-700 border border-gray-700 text-white font-medium py-3 px-6 rounded-lg transition-colors duration-200">
-                Go Back
-            </button>
-            <a href="/" class="bg-blue-600 hover:bg-blue-700 text-white font-medium py-3 px-6 rounded-lg transition-colors duration-200">
-                Go Home
-            </a>
-        </div>
-    </div>
-</div>
-{% endblock %}
+{% block error_title %}Internal Server Error{% endblock %}
+{% block error_code %}500{% endblock %}
+{# Do not render `detail` here: for 5xx the handler passes exc.detail, which may
+   carry internal error text. This static override replaces error_base's default
+   error_message block so nothing internal can leak to users. #}
+{% block error_message %}Something went wrong on our end. We've been notified and are looking into it.{% endblock %}
