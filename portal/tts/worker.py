@@ -229,9 +229,7 @@ class TTSWorker:
 
             dg_api_key = None
             if tts_provider_name == TTSProviderEnum.DEEPGRAM.value:
-                dg_api_key = (
-                    decrypt_val(event.encrypted_deepgram_api_key) if event.encrypted_deepgram_api_key else None
-                )
+                dg_api_key = decrypt_val(event.encrypted_deepgram_api_key) if event.encrypted_deepgram_api_key else None
                 if not dg_api_key:
                     logger.error("[TTS] Deepgram API key not found for Event %s", event.id)
                     return None
@@ -318,9 +316,7 @@ class TTSWorker:
     def _get_translation_api_key(self, event: Event, provider: str) -> str | None:
         return get_translation_api_key(event, provider)
 
-    async def _translate_full(
-        self, provider: str, model: str, api_key: str, text: str, lang_name: str
-    ) -> str:
+    async def _translate_full(self, provider: str, model: str, api_key: str, text: str, lang_name: str) -> str:
         """Collect the streaming LLM translation into a single string."""
         parts: list[str] = []
         try:

@@ -1,0 +1,56 @@
+/* Custom Status Badges */
+.status-badge {
+    display: inline-block;
+    border: 2px solid #0d0f10;
+    padding: 0.5rem 1rem;
+    font-size: 0.875rem;
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: 0.1em;
+    box-shadow: 2px 2px 0px #0d0f10;
+}
+
+.status-badge.live { background-color: #22c55e; color: #000; } /* green-500 */
+.status-badge.waiting { background-color: #fef08a; color: #713f12; } /* yellow-200 */
+.status-badge.error { background-color: #ef4444; color: #fff; } /* red-500 */
+.status-badge.recovering { background-color: #60a5fa; color: #000; } /* blue-400 */
+
+/* Captions Minimization Toggle */
+.captions-container.minimized #live-captions {
+    height: 0;
+    min-height: 0;
+    padding-top: 0;
+    padding-bottom: 0;
+    overflow: hidden;
+    opacity: 0;
+    border-bottom: none;
+    box-shadow: none;
+}
+
+.captions-container.minimized #captions-controls {
+    border-bottom-width: 3px;
+    box-shadow: 8px 8px 0px #0d0f10;
+}
+
+/* Captions animations */
+.captions-box p, .captions-box div {
+    animation: fadeIn 0.3s ease-in-out;
+}
+
+@keyframes fadeIn {
+    from { opacity: 0; transform: translateY(5px); }
+    to { opacity: 1; transform: translateY(0); }
+}
+
+/* Scrollbar for brutalist look */
+#live-captions::-webkit-scrollbar {
+    width: 12px;
+}
+#live-captions::-webkit-scrollbar-track {
+    background: #1a1c1e;
+    border-left: 2px solid #0d0f10;
+}
+#live-captions::-webkit-scrollbar-thumb {
+    background-color: #2563eb;
+    border: 2px solid #0d0f10;
+}

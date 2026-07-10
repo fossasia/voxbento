@@ -355,4 +355,3 @@ class TestPipelineCleanup:
 
         assert 999 not in worker_mod._room_pipelines
         assert worker_mod._pipeline_shutdowns == set()
-

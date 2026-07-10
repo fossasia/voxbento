@@ -252,10 +252,21 @@ jobs:
           BASE="http://${CI_HOST}:${PORTAL_PORT}"
 
           # Register a new user
-          resp=$(curl -s -D - -o /dev/null -X POST "${BASE}/register" \
+          resp=$(curl -s -o /dev/null -w '%{http_code}' -X POST "${BASE}/register" \
             -d "email=ci-test@example.com&display_name=CI+User&password=securepass123&password_confirm=securepass123")
-          echo "$resp" | head -5
-          echo "$resp" | grep -qi "set-cookie.*user_token" || { echo "FAIL: no user_token after register"; exit 1; }
+          echo "POST /register → $resp"
+          [ "$resp" = "200" ] || { echo "FAIL: expected 200 after register"; exit 1; }
+
+          # Manually verify the user's email since we can't click the magic link in CI
+          docker exec $(docker compose ps -q portal) python -c "
+import asyncio
+from portal.database import get_session, update_user, get_user_by_email
+async def verify():
+    async with get_session() as s:
+        u = await get_user_by_email(s, 'ci-test@example.com')
+        await update_user(s, u.id, email_verified=True)
+asyncio.run(verify())
+"
 
           # Login with the registered user
           resp=$(curl -s -D - -o /dev/null -X POST "${BASE}/login" \

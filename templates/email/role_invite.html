@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>You've been invited to VoxBento</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            background-color: #eef2f6;
+            margin: 0;
+            padding: 40px 20px;
+            color: #0d0f10;
+        }
+        .container {
+            max-width: 500px;
+            margin: 0 auto;
+            background: #ffffff;
+            border: 3px solid #0d0f10;
+            border-radius: 8px;
+            padding: 40px;
+            box-shadow: 8px 8px 0px #0d0f10;
+        }
+        h1 {
+            font-size: 24px;
+            font-weight: 900;
+            margin-top: 0;
+            margin-bottom: 20px;
+        }
+        p {
+            font-size: 16px;
+            line-height: 1.5;
+            margin-bottom: 24px;
+        }
+        .btn {
+            display: inline-block;
+            background: #2185d0;
+            color: #ffffff !important;
+            border: 2px solid #0d0f10;
+            border-radius: 6px;
+            box-shadow: 4px 4px 0px #0d0f10;
+            font-weight: 700;
+            font-size: 16px;
+            padding: 14px 24px;
+            text-decoration: none;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+        .footer {
+            margin-top: 40px;
+            font-size: 12px;
+            color: #666666;
+            text-align: center;
+        }
+        .meta-text {
+            font-weight: bold;
+            color: #2185d0;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Welcome to VoxBento!</h1>
+        <p>You have been invited to join the <span class="meta-text">{{ context_name }}</span> as a <span class="meta-text">{{ role_name }}</span>.</p>
+        <p>Click the button below to instantly join your lobby. No password required.</p>
+        <div style="text-align: left; margin: 30px 0;">
+            <a href="{{ invite_url }}" class="btn">Join Lobby</a>
+        </div>
+        <p style="font-size: 14px;">If you didn't expect this invitation, you can safely ignore this email.</p>
+    </div>
+    <div class="footer">
+        Powered by VoxBento Open Source Interpretation
+    </div>
+</body>
+</html>

@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+
+{% block title %}Check your email — Voxbento{% endblock %}
+
+{% block head %}
+<link rel="stylesheet" href="{{ url_for('static', path='css/auth.css') }}" />
+{% endblock %}
+
+{% block content %}
+<div class="login-page">
+  <div class="login-card" style="text-align: center;">
+    <div class="login-brand">
+      <img src="{{ url_for('static', path='img/wordmark.png') }}" alt="Voxbento" class="brand-text" style="height: 48px; margin: 0 auto;" />
+    </div>
+    
+    <h2 style="margin: 20px 0;">Check your email</h2>
+    <p style="color: #aaa; margin-bottom: 20px;">
+      We've sent a verification link to <strong>{{ email }}</strong>.<br>
+      Please click the link in the email to activate your account and sign in.
+    </p>
+
+    <div class="login-footer" style="margin-top: 30px;">
+      <a href="/">← Back to Portal Home</a>
+    </div>
+  </div>
+</div>
+{% endblock %}

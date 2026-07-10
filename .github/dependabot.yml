@@ -5,8 +5,8 @@ updates:
   - package-ecosystem: "pip"
     directory: "/"
     schedule:
-      interval: "weekly"
-    open-pull-requests-limit: 10
+      interval: "daily"
+    open-pull-requests-limit: 15
     labels:
       - "dependencies"
       - "python"

@@ -20,7 +20,7 @@ from portal.database import (
     list_events,
     list_memberships_for_user,
 )
-from portal.globals import booths
+from portal.globals import _JS_CACHE_BUST, booths
 from portal.utils import _check_mediamtx
 
 _BASE_DIR = Path(__file__).resolve().parent.parent.parent
@@ -104,6 +104,7 @@ async def home(request: Request):
             "events": event_data,
             "current_user": current_user,
             "my_booths": my_booths,
+            "js_version": _JS_CACHE_BUST,
         },
     )
 

@@ -36,27 +36,27 @@
         }
     </script>
 </head>
-<body class="bg-slate-50 text-slate-900 antialiased overflow-x-hidden selection:bg-brand-500 selection:text-white">
+<body class="bg-[#eef2f6] text-[#0d0f10] antialiased overflow-x-hidden selection:bg-brand-500 selection:text-white">
 
     <!-- Premium Navbar -->
-    <header class="fixed top-0 w-full z-50 glass transition-all duration-300 border-b border-slate-200/50 bg-white/80 backdrop-blur-md" id="navbar">
+    <header class="fixed top-0 w-full z-50 bg-[#eef2f6] border-b-[3px] border-[#0d0f10] transition-all duration-300" id="navbar">
         <div class="max-w-7xl mx-auto px-6 h-16 flex items-center justify-between">
             <a href="/" class="flex items-center gap-3">
-                <img src="{{ url_for('static', path='img/app_icon.png') }}" alt="VoxBento Icon" class="w-8 h-8 rounded-lg shadow-sm">
-                <img src="{{ url_for('static', path='img/wordmark.png') }}" alt="VoxBento" class="h-5">
+                <img src="{{ url_for('static', path='img/app_icon.png') }}" alt="VoxBento Icon" class="w-8 h-8 brutal-border rounded shadow-none">
+                <span class="text-[1.35rem] font-black tracking-tight text-[#0d0f10]">VoxBento</span>
             </a>
-            <nav class="flex max-md:hidden items-center gap-8 text-sm font-bold text-slate-600">
+            <nav class="flex max-md:hidden items-center gap-8 text-sm font-bold text-[#0d0f10]">
                 <a href="#solutions" class="hover:text-brand-600 transition-colors uppercase tracking-wider">Solutions</a>
                 <a href="#interactive-demo" class="hover:text-brand-600 transition-colors uppercase tracking-wider">Demo</a>
                 <a href="#open-source" class="hover:text-brand-600 transition-colors uppercase tracking-wider">Open Source</a>
             </nav>
             <div class="flex items-center gap-4 text-sm font-bold">
                 {% if current_user %}
-                <a href="/logout" class="text-slate-600 hover:text-brand-600 transition-colors uppercase tracking-wider">Logout</a>
-                <a href="/admin/events/" class="bg-slate-900 text-white px-5 py-2.5 rounded-full hover:bg-slate-800 transition-all shadow-sm hover:shadow-md uppercase tracking-wider">Dashboard</a>
+                <a href="/logout" class="text-[#0d0f10] hover:text-brand-600 transition-colors uppercase tracking-wider">Logout</a>
+                <a href="/admin/events/" class="brutal-btn brutal-btn-outline px-5 py-2">Dashboard</a>
                 {% else %}
-                <a href="/login" class="text-slate-600 hover:text-brand-600 transition-colors uppercase tracking-wider">Sign In</a>
-                <a href="/register" class="bg-slate-900 text-white px-5 py-2.5 rounded-full hover:bg-slate-800 transition-all shadow-sm hover:shadow-md uppercase tracking-wider">Register</a>
+                <a href="/login" class="text-[#0d0f10] hover:text-brand-600 transition-colors uppercase tracking-wider">Sign In</a>
+                <a href="/register" class="brutal-btn brutal-btn-outline px-5 py-2">Register</a>
                 {% endif %}
             </div>
         </div>
@@ -68,27 +68,27 @@
         <section class="relative max-w-7xl mx-auto px-6 pt-12 pb-24 lg:pt-20 lg:pb-32 flex flex-col lg:flex-row items-center gap-12 animate-fade-in-up">
             <!-- Left Text -->
             <div class="flex-1 text-center lg:text-left z-10">
-                <h1 class="text-[2.75rem] md:text-6xl lg:text-7xl font-extrabold tracking-tight text-slate-900 mb-8 leading-[1.1] flex flex-col items-center lg:items-start text-center lg:text-left w-full">
-                    <div class="relative w-full text-brand-600">
+                <h1 class="text-[2.75rem] md:text-6xl lg:text-7xl font-extrabold tracking-tight text-[#0d0f10] mb-8 leading-[1.1] flex flex-col items-center lg:items-start text-center lg:text-left w-full">
+                    <div class="relative w-full text-[#2563eb]">
                         <!-- Invisible spacer to perfectly preserve layout size for the longest word without CLS -->
                         <span class="opacity-0 pointer-events-none select-none block w-full" aria-hidden="true">Conference Interpretation</span>
                         <span id="rotator-capability" class="absolute bottom-0 left-0 block w-full transition-all duration-700 ease-[cubic-bezier(0.25,1,0.5,1)] opacity-100 translate-y-0 blur-0">Interpretation</span>
                     </div>
-                    <span class="block text-slate-900 my-1 lg:my-2">Built for</span>
-                    <div class="relative w-full text-brand-600">
+                    <span class="block text-[#0d0f10] my-1 lg:my-2">Built for</span>
+                    <div class="relative w-full text-[#2563eb]">
                         <!-- Invisible spacer to perfectly preserve layout size for the longest word without CLS -->
                         <span class="opacity-0 pointer-events-none select-none block w-full" aria-hidden="true">Educational Institutions</span>
                         <span id="rotator-audience" class="absolute top-0 left-0 block w-full transition-all duration-700 ease-[cubic-bezier(0.25,1,0.5,1)] opacity-100 translate-y-0 blur-0">Enterprise</span>
                     </div>
                 </h1>
-                <p class="text-lg text-slate-600 mb-10 max-w-xl mx-auto lg:mx-0 leading-relaxed font-medium">
+                <p class="text-lg text-[#0d0f10] opacity-80 mb-10 max-w-xl mx-auto lg:mx-0 leading-relaxed font-bold">
                     VoxBento helps organizations communicate across languages with real-time interpretation, AI voice translation, speech-to-text, captions, subtitles, dubbing, and accessibility services — all from a single platform.
                 </p>
                 <div class="flex flex-col sm:flex-row items-center gap-4 justify-center lg:justify-start">
-                    <a href="{% if current_user %}/admin/events/{% else %}/register{% endif %}" class="bg-brand-600 text-white px-8 py-4 rounded-full text-sm font-extrabold hover:bg-brand-700 transition-all shadow-lg hover:shadow-xl hover:-translate-y-0.5 w-full sm:w-auto text-center uppercase tracking-widest">
+                    <a href="{% if current_user %}/admin/events/{% else %}/register{% endif %}" class="brutal-btn brutal-btn-primary w-full sm:w-auto text-center">
                         Start Hosting Free
                     </a>
-                    <a href="#interactive-demo" class="bg-white text-slate-700 border border-slate-200 px-8 py-4 rounded-full text-sm font-extrabold hover:bg-slate-50 transition-all shadow-sm w-full sm:w-auto text-center uppercase tracking-widest">
+                    <a href="#interactive-demo" class="brutal-btn brutal-btn-outline w-full sm:w-auto text-center">
                         View Interactive Demo
                     </a>
                 </div>
@@ -96,43 +96,50 @@
             
             <!-- Right Visual -->
             <div class="flex-1 w-full relative max-md:hidden">
-                <div class="relative w-full aspect-[4/3] rounded-[2rem] overflow-hidden bg-slate-900 shadow-2xl">
-                    <img src="https://images.unsplash.com/photo-1541829070764-84a7d30dd3f3?q=80&w=1200&auto=format&fit=crop" alt="Conference" class="w-full h-full object-cover opacity-70">
-                    <div class="absolute inset-0 bg-slate-900 opacity-30"></div>
+                <div class="relative w-full aspect-[4/3]">
+                    <div class="absolute inset-0 rounded-lg brutal-border brutal-shadow overflow-hidden bg-slate-900">
+                        <img src="https://images.unsplash.com/photo-1541829070764-84a7d30dd3f3?q=80&w=1200&auto=format&fit=crop" alt="Conference" class="w-full h-full object-cover opacity-90">
+                        <div class="absolute inset-0 bg-slate-900 opacity-10"></div>
+                    </div>
                     
                     <!-- Floating Elements -->
-                    <div class="absolute top-8 right-8 bg-brand-600 text-white px-4 py-2 rounded-full shadow-2xl text-sm font-bold flex items-center gap-2 animate-bounce">
+                    <div class="absolute top-8 right-8 bg-[#2563eb] text-white px-4 py-2 brutal-border brutal-shadow rounded font-bold flex items-center gap-2 animate-bounce">
                         <span class="w-2 h-2 rounded-full bg-white animate-pulse"></span> LIVE
                     </div>
                     
                     <!-- Hero audio selector — clicking rows plays the pre-baked demo audio -->
-                    <div class="absolute bottom-8 left-8 bg-slate-900/90 backdrop-blur-md border border-white/10 p-5 rounded-2xl shadow-2xl w-72 text-white">
+                    <div class="absolute bottom-8 left-8 bg-[#ffffff] border-4 border-[#0d0f10] p-5 rounded-lg brutal-shadow w-72 text-[#0d0f10]">
                         <div class="flex justify-between items-center mb-4">
-                            <span class="text-xs font-bold uppercase tracking-widest text-slate-400">Audio Channel</span>
-                            <button id="hero-audio-toggle" class="w-10 h-5 bg-slate-500 rounded-full relative flex-shrink-0 transition-colors duration-200" aria-label="Play audio">
-                                <div class="absolute left-1 top-1 w-3 h-3 bg-white rounded-full" style="transition: transform 0.2s ease"></div>
-                            </button>
+                            <span class="text-xs font-bold uppercase tracking-widest text-[#0d0f10]">Audio Channel</span>
+                            <label class="toggle-cont" title="Play audio" id="hero-audio-toggle">
+                                <input class="toggle-input" type="checkbox" id="hero-audio-toggle-input">
+                                <div class="toggle-label">
+                                    <div class="cont-label-play">
+                                        <span class="label-play"></span>
+                                    </div>
+                                </div>
+                            </label>
                         </div>
-                        <div class="space-y-1">
-                            <button data-hero-lang="en" class="hero-lang-row w-full bg-slate-800 rounded-lg px-3 py-2 flex items-center justify-between border border-brand-500/30 text-white">
-                                <span class="text-sm font-medium">English (Original)</span>
-                                <svg class="hero-check w-4 h-4 text-brand-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg>
+                        <div class="space-y-2">
+                            <button data-hero-lang="en" class="hero-lang-row w-full bg-[#2563eb] text-white rounded px-3 py-2 flex items-center justify-between border-[3px] border-[#2563eb]">
+                                <span class="text-sm font-bold">English (Original)</span>
+                                <svg class="hero-check w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7"></path></svg>
                             </button>
-                            <button data-hero-lang="fr" class="hero-lang-row w-full px-3 py-2 flex items-center justify-between text-slate-400 hover:text-white hover:bg-slate-800/60 rounded-lg transition-colors">
-                                <span class="text-sm font-medium">French <span class="ml-2 bg-brand-600 text-white text-[10px] px-1.5 py-0.5 rounded font-bold">AI</span></span>
-                                <svg class="hero-check w-4 h-4 opacity-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg>
+                            <button data-hero-lang="fr" class="hero-lang-row w-full px-3 py-2 flex items-center justify-between text-[#0d0f10] bg-white border-2 border-[#0d0f10] hover:bg-slate-100 rounded transition-colors">
+                                <span class="text-sm font-bold">French <span class="ml-2 bg-[#2563eb] text-white text-[10px] px-1.5 py-0.5 rounded font-extrabold border border-[#0d0f10]">AI</span></span>
+                                <svg class="hero-check w-4 h-4 opacity-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7"></path></svg>
                             </button>
-                            <button data-hero-lang="es" class="hero-lang-row w-full px-3 py-2 flex items-center justify-between text-slate-400 hover:text-white hover:bg-slate-800/60 rounded-lg transition-colors">
-                                <span class="text-sm font-medium">Spanish <span class="ml-2 bg-brand-600 text-white text-[10px] px-1.5 py-0.5 rounded font-bold">AI</span></span>
-                                <svg class="hero-check w-4 h-4 opacity-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg>
+                            <button data-hero-lang="es" class="hero-lang-row w-full px-3 py-2 flex items-center justify-between text-[#0d0f10] bg-white border-2 border-[#0d0f10] hover:bg-slate-100 rounded transition-colors">
+                                <span class="text-sm font-bold">Spanish <span class="ml-2 bg-[#2563eb] text-white text-[10px] px-1.5 py-0.5 rounded font-extrabold border border-[#0d0f10]">AI</span></span>
+                                <svg class="hero-check w-4 h-4 opacity-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7"></path></svg>
                             </button>
                         </div>
                     </div>
                     
-                    <div class="absolute top-1/3 -left-10 bg-slate-900 p-3 rounded-2xl shadow-2xl border border-slate-700 flex items-center gap-3 animate-float">
-                        <div class="w-8 h-8 rounded-full bg-slate-800 flex items-center justify-center text-lg">🗣️</div>
+                    <div class="absolute top-12 -left-8 bg-white p-3 rounded-lg brutal-shadow brutal-border flex items-center gap-3 animate-float z-10">
+                        <div class="w-8 h-8 rounded bg-[#0d0f10] flex items-center justify-center text-lg text-white">🗣️</div>
                         <div class="pr-3">
-                            <p class="text-sm font-bold text-white flex items-center gap-2">你好 <span class="bg-brand-600 text-white text-[10px] px-1.5 py-0.5 rounded font-bold">AI</span></p>
+                            <p class="text-sm font-extrabold text-[#0d0f10] flex items-center gap-2">你好 <span class="bg-[#2563eb] text-white text-[10px] px-1.5 py-0.5 rounded font-extrabold border border-[#0d0f10]">AI</span></p>
                         </div>
                     </div>
                 </div>
@@ -141,34 +148,39 @@
         
         <!-- Dynamic User/Event Dashboard Injections -->
         {% if my_booths or events %}
-        <section class="max-w-7xl mx-auto px-6 py-12 border-t border-slate-200 bg-white rounded-3xl shadow-sm mb-24 relative z-20">
-            <div class="mb-8">
-                <h2 class="text-2xl font-bold text-slate-900">Live Dashboard</h2>
-                <p class="text-slate-600 text-sm">Access your active events and interpretation booths.</p>
+        <section class="max-w-7xl mx-auto px-6 py-16 mb-24 relative z-20">
+            <div class="mb-12 border-b-2 border-[#0d0f10] pb-6 flex items-end justify-between">
+                <div>
+                    <h2 class="text-3xl font-extrabold text-[#0d0f10] tracking-tight">Live Dashboard</h2>
+                    <p class="text-[#0d0f10] opacity-70 text-base font-bold mt-2">Access your active events and interpretation booths.</p>
+                </div>
             </div>
             
-            <div class="flex flex-col gap-8">
+            <div class="flex flex-col gap-16">
                 {% if my_booths %}
                 <div>
-                    <h3 class="text-lg font-semibold text-slate-800 mb-4">Your Assigned Booths</h3>
-                    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                    <h3 class="text-xl font-extrabold text-[#0d0f10] mb-6 flex items-center gap-3">
+                        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="square" stroke-linejoin="miter" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"></path></svg>
+                        Your Assigned Booths
+                    </h3>
+                    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
                         {% for b in my_booths %}
-                        <div class="bg-white border border-slate-200 rounded-xl p-5 shadow-sm hover:shadow-md transition-shadow">
-                            <div class="flex justify-between items-start mb-4">
+                        <div class="group bg-white border-2 border-[#0d0f10] p-6 hover:shadow-[8px_8px_0px_#0d0f10] hover:-translate-y-1 transition-all flex flex-col justify-between min-h-[160px]">
+                            <div class="flex justify-between items-start mb-6">
                                 <div>
-                                    <h4 class="font-semibold text-slate-900">{{ b.language_name }}</h4>
-                                    <p class="text-sm text-slate-500">{{ b.event_name }}</p>
+                                    <h4 class="font-extrabold text-[#0d0f10] text-lg">{{ b.language_name }}</h4>
+                                    <p class="text-sm font-bold text-[#0d0f10] opacity-60 mt-1">{{ b.event_name }}</p>
                                 </div>
                                 {% if b.is_live %}
-                                <span class="bg-red-50 text-red-600 text-xs font-bold px-2 py-1 rounded-full uppercase tracking-wide flex items-center gap-1"><span class="w-1.5 h-1.5 bg-red-600 rounded-full"></span> Live</span>
+                                <span class="bg-red-600 text-white text-[10px] font-extrabold px-2 py-1 uppercase tracking-widest flex items-center gap-1.5"><span class="w-1.5 h-1.5 bg-white rounded-full animate-pulse"></span> LIVE</span>
                                 {% endif %}
                             </div>
-                            <div class="flex justify-between items-center mt-6">
-                                <span class="text-xs font-medium text-slate-500 bg-slate-100 px-2 py-1 rounded-md capitalize">{{ b.membership.role.replace('_', ' ') }}</span>
+                            <div class="flex justify-between items-end mt-auto pt-4 border-t-2 border-[#0d0f10]/10 group-hover:border-[#0d0f10]/30 transition-colors">
+                                <span class="text-[10px] font-extrabold text-[#0d0f10] opacity-60 uppercase tracking-widest">{{ b.membership.role.replace('_', ' ') }}</span>
                                 {% if b.membership.role in ['room_coordinator', 'event_owner', 'super_admin'] %}
-                                <a href="/mission-control/{{ b.event_slug }}/" class="text-brand-600 text-sm font-bold hover:text-brand-700">Mission Control &rarr;</a>
+                                <a href="/mission-control/{{ b.event_slug }}/" class="text-[#2563eb] text-sm font-extrabold hover:text-[#1d4ed8] inline-flex items-center gap-1">Mission Control <svg class="w-4 h-4 group-hover:translate-x-1 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="square" stroke-linejoin="miter" stroke-width="2" d="M14 5l7 7m0 0l-7 7m7-7H3"></path></svg></a>
                                 {% else %}
-                                <a href="/interpreter" class="text-brand-600 text-sm font-bold hover:text-brand-700">Go to Lobby &rarr;</a>
+                                <a href="/interpreter" class="text-[#2563eb] text-sm font-extrabold hover:text-[#1d4ed8] inline-flex items-center gap-1">Go to Lobby <svg class="w-4 h-4 group-hover:translate-x-1 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="square" stroke-linejoin="miter" stroke-width="2" d="M14 5l7 7m0 0l-7 7m7-7H3"></path></svg></a>
                                 {% endif %}
                             </div>
                         </div>
@@ -179,40 +191,45 @@
 
                 {% if events %}
                 <div>
-                    <h3 class="text-lg font-semibold text-slate-800 mb-4">Public Events</h3>
-                    <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                    <h3 class="text-xl font-extrabold text-[#0d0f10] mb-6 flex items-center gap-3">
+                        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="square" stroke-linejoin="miter" stroke-width="2" d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 019-9"></path></svg>
+                        Public Events
+                    </h3>
+                    <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
                         {% for ed in events %}
-                        <div class="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm">
-                            <div class="p-5 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
-                                <h4 class="font-semibold text-slate-900">{{ ed.event.display_name }}</h4>
+                        <div class="bg-white border-2 border-[#0d0f10] flex flex-col">
+                            <div class="p-6 border-b-2 border-[#0d0f10] flex justify-between items-center bg-[#2563eb] text-white">
+                                <h4 class="font-extrabold text-lg">{{ ed.event.display_name }}</h4>
                                 {% if ed.live_count > 0 %}
-                                <span class="bg-green-50 text-green-700 text-xs font-bold px-2 py-1 rounded-full flex items-center gap-1"><span class="w-1.5 h-1.5 bg-green-600 rounded-full"></span> {{ ed.live_count }} Live</span>
+                                <span class="bg-green-500 text-[#0d0f10] text-[10px] font-extrabold px-2 py-1 uppercase tracking-widest shadow-[2px_2px_0px_#fff]">
+                                    {{ ed.live_count }} LIVE
+                                </span>
                                 {% endif %}
                             </div>
-                            <div class="p-5">
+                            <div class="p-6 flex-1 flex flex-col">
                                 {% if ed.booths %}
-                                <div class="space-y-3">
+                                <div class="space-y-4 mb-8 flex-1">
                                     {% for bs in ed.booths %}
-                                    <div class="flex items-center justify-between text-sm">
-                                        <div class="flex items-center gap-2">
-                                            <span class="font-medium text-slate-700">{{ bs.db.language_name }}</span>
+                                    <div class="flex items-center justify-between group">
+                                        <div class="flex items-center gap-3">
                                             {% if bs.is_live %}
-                                            <span class="w-2 h-2 bg-red-500 rounded-full shadow-[0_0_8px_rgba(239,68,68,0.6)]"></span>
+                                            <span class="w-2.5 h-2.5 bg-red-500 rounded-full animate-pulse"></span>
                                             {% else %}
-                                            <span class="w-2 h-2 bg-slate-300 rounded-full"></span>
+                                            <span class="w-2.5 h-2.5 bg-[#0d0f10] opacity-20 rounded-full"></span>
                                             {% endif %}
+                                            <span class="font-extrabold text-[#0d0f10]">{{ bs.db.language_name }}</span>
                                         </div>
                                         {% if bs.can_interpret %}
-                                        <a href="/interpreter" class="text-brand-600 hover:text-brand-800 font-bold text-xs">Enter Lobby &rarr;</a>
+                                        <a href="/interpreter" class="text-[#2563eb] hover:text-[#1d4ed8] font-extrabold text-xs uppercase tracking-widest opacity-0 group-hover:opacity-100 transition-opacity focus:opacity-100">Enter Lobby &rarr;</a>
                                         {% endif %}
                                     </div>
                                     {% endfor %}
                                 </div>
-                                <div class="mt-6 pt-4 border-t border-slate-100">
-                                    <a href="/listener/{{ ed.event.slug }}" class="block w-full text-center bg-slate-900 text-white px-4 py-3 rounded-xl text-sm font-bold hover:bg-slate-800 transition-colors uppercase tracking-wide">Listen as Attendee</a>
-                                </div>
+                                <a href="/listener/{{ ed.event.slug }}" class="brutal-btn w-full text-center bg-[#eef2f6] text-[#0d0f10] hover:bg-[#2563eb] hover:text-white transition-colors border-2 border-[#0d0f10] py-3 text-sm">Listen as Attendee</a>
                                 {% else %}
-                                <p class="text-sm text-slate-500 italic">No booths configured.</p>
+                                <div class="flex-1 flex items-center justify-center opacity-40 py-8">
+                                    <p class="text-sm font-extrabold uppercase tracking-widest italic">No booths configured</p>
+                                </div>
                                 {% endif %}
                             </div>
                         </div>
@@ -225,88 +242,136 @@
         {% endif %}
 
         <!-- Solutions Section -->
-        <section id="solutions" class="py-24 bg-white relative z-10 border-t border-slate-200">
+        <section id="solutions" class="py-24 bg-white relative z-10 border-t-[3px] border-[#0d0f10]">
             <div class="max-w-7xl mx-auto px-6">
                 <div class="text-center mb-16">
-                    <h2 class="text-4xl md:text-5xl font-extrabold text-slate-900 mb-6">Make Every Event Multilingual</h2>
-                    <p class="text-slate-600 max-w-3xl mx-auto text-lg leading-relaxed font-medium">
+                    <h2 class="text-4xl md:text-5xl font-extrabold text-[#0d0f10] mb-6">Make Every Event Multilingual</h2>
+                    <p class="text-[#0d0f10] opacity-80 max-w-3xl mx-auto text-lg leading-relaxed font-bold">
                         Give every attendee access to real-time captions, translations, and interpretation in their preferred language.
                     </p>
                 </div>
                 
-                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+                <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-8">
                     <!-- Card 1: Human Interpretation -->
-                    <div class="group h-80 lg:h-96 w-full [perspective:1000px]" onclick="if(window.innerWidth < 1024) this.classList.toggle('rotate-active')">
-                        <div class="relative w-full h-full transition-all duration-700 [transform-style:preserve-3d] group-hover:[transform:rotateY(180deg)] group-[.rotate-active]:[transform:rotateY(180deg)] rounded-[2rem] shadow-xl cursor-pointer">
-                            <!-- Front side -->
-                            <div class="absolute inset-0 [backface-visibility:hidden] rounded-[2rem] overflow-hidden">
-                                <img src="https://images.unsplash.com/photo-1540575467063-178a50c2df87?q=80&w=800&auto=format&fit=crop" class="absolute inset-0 w-full h-full object-cover transition-transform duration-700 group-hover:scale-110" alt="Human Interpretation">
-                                <div class="absolute inset-0 bg-gradient-to-t from-slate-900 via-slate-900/50 to-transparent opacity-90"></div>
-                                <div class="absolute inset-0 p-8 flex flex-col justify-end text-center items-center">
-                                    <h3 class="text-3xl font-extrabold text-white leading-tight">Human<br>Interpretation</h3>
+                    <div class="h-80 lg:h-96 w-full" onclick="if(window.innerWidth < 1024) this.querySelector('.solution-card').classList.toggle('rotate-active')">
+                        <div class="solution-card group">
+                            <div class="solution-card-content">
+                                <!-- Back side -->
+                                <div class="solution-card-back">
+                                    <div class="solution-card-back-content">
+                                        <p class="font-bold leading-snug text-sm">Empower professional interpreters with our latency-free virtual booths. Enable seamless handoffs, dedicated chat, and intuitive controls designed for human-led events.</p>
+                                        <span class="brutal-btn brutal-btn-primary w-full text-sm py-2 px-0 border-2">Explore More &rarr;</span>
+                                    </div>
                                 </div>
-                            </div>
-                            <!-- Back side -->
-                            <div class="absolute inset-0 [backface-visibility:hidden] [transform:rotateY(180deg)] bg-brand-600 rounded-[2rem] p-8 flex flex-col justify-center text-center items-center border border-brand-500 shadow-inner">
-                                <p class="text-white text-base font-medium mb-6 leading-snug">Empower professional interpreters with our latency-free virtual booths. Enable seamless handoffs, dedicated chat, and intuitive controls designed for human-led events.</p>
-                                <span class="text-white font-extrabold text-sm tracking-widest uppercase bg-white/10 px-4 py-2 rounded-full backdrop-blur-sm">Explore More &rarr;</span>
+                                
+                                <!-- Front side -->
+                                <div class="solution-card-front">
+                                    <div class="circle circle-1"></div>
+                                    <div class="circle circle-2"></div>
+                                    <img src="https://images.unsplash.com/photo-1540575467063-178a50c2df87?q=80&w=800&auto=format&fit=crop" class="img-bg" alt="Human Interpretation">
+                                    <div class="front-content">
+                                        <div class="badge">Professional</div>
+                                        <div class="description">
+                                            <div class="title">
+                                                <p>Human Interpretation</p>
+                                            </div>
+                                            <p class="card-footer">Virtual Booths & Controls</p>
+                                        </div>
+                                    </div>
+                                </div>
                             </div>
                         </div>
                     </div>
                     
                     <!-- Card 2: AI Speech Translation -->
-                    <div class="group h-80 lg:h-96 w-full [perspective:1000px]" onclick="if(window.innerWidth < 1024) this.classList.toggle('rotate-active')">
-                        <div class="relative w-full h-full transition-all duration-700 [transform-style:preserve-3d] group-hover:[transform:rotateY(180deg)] group-[.rotate-active]:[transform:rotateY(180deg)] rounded-[2rem] shadow-xl cursor-pointer">
-                            <!-- Front side -->
-                            <div class="absolute inset-0 [backface-visibility:hidden] rounded-[2rem] overflow-hidden">
-                                <img src="https://images.unsplash.com/photo-1516321318423-f06f85e504b3?q=80&w=800&auto=format&fit=crop" class="absolute inset-0 w-full h-full object-cover transition-transform duration-700 group-hover:scale-110" alt="AI Speech Translation">
-                                <div class="absolute inset-0 bg-gradient-to-t from-slate-900 via-slate-900/50 to-transparent opacity-90"></div>
-                                <div class="absolute inset-0 p-8 flex flex-col justify-end text-center items-center">
-                                    <h3 class="text-3xl font-extrabold text-white leading-tight">AI Speech<br>Translation</h3>
+                    <div class="h-80 lg:h-96 w-full" onclick="if(window.innerWidth < 1024) this.querySelector('.solution-card').classList.toggle('rotate-active')">
+                        <div class="solution-card group">
+                            <div class="solution-card-content">
+                                <!-- Back side -->
+                                <div class="solution-card-back">
+                                    <div class="solution-card-back-content">
+                                        <p class="font-bold leading-snug text-sm">Bridge language gaps instantly with state-of-the-art neural translation models. Deliver precise, context-aware audio streams without the overhead of physical booths.</p>
+                                        <span class="brutal-btn brutal-btn-primary w-full text-sm py-2 px-0 border-2">Explore More &rarr;</span>
+                                    </div>
                                 </div>
-                            </div>
-                            <!-- Back side -->
-                            <div class="absolute inset-0 [backface-visibility:hidden] [transform:rotateY(180deg)] bg-brand-600 rounded-[2rem] p-8 flex flex-col justify-center text-center items-center border border-brand-500 shadow-inner">
-                                <p class="text-white text-base font-medium mb-6 leading-snug">Bridge language gaps instantly with state-of-the-art neural translation models. Deliver precise, context-aware audio streams without the overhead of physical booths.</p>
-                                <span class="text-white font-extrabold text-sm tracking-widest uppercase bg-white/10 px-4 py-2 rounded-full backdrop-blur-sm">Explore More &rarr;</span>
+                                
+                                <!-- Front side -->
+                                <div class="solution-card-front">
+                                    <div class="circle circle-1"></div>
+                                    <div class="circle circle-2"></div>
+                                    <img src="https://images.unsplash.com/photo-1516321318423-f06f85e504b3?q=80&w=800&auto=format&fit=crop" class="img-bg" alt="AI Speech Translation">
+                                    <div class="front-content">
+                                        <div class="badge">Automated</div>
+                                        <div class="description">
+                                            <div class="title">
+                                                <p>AI Speech Translation</p>
+                                            </div>
+                                            <p class="card-footer">Neural Machine Models</p>
+                                        </div>
+                                    </div>
+                                </div>
                             </div>
                         </div>
                     </div>
                     
                     <!-- Card 3: Live Captions & Subtitles -->
-                    <div class="group h-80 lg:h-96 w-full [perspective:1000px]" onclick="if(window.innerWidth < 1024) this.classList.toggle('rotate-active')">
-                        <div class="relative w-full h-full transition-all duration-700 [transform-style:preserve-3d] group-hover:[transform:rotateY(180deg)] group-[.rotate-active]:[transform:rotateY(180deg)] rounded-[2rem] shadow-xl cursor-pointer">
-                            <!-- Front side -->
-                            <div class="absolute inset-0 [backface-visibility:hidden] rounded-[2rem] overflow-hidden">
-                                <img src="https://images.unsplash.com/photo-1551818255-e6e10975bc17?q=80&w=800&auto=format&fit=crop" class="absolute inset-0 w-full h-full object-cover transition-transform duration-700 group-hover:scale-110" alt="Live Captions">
-                                <div class="absolute inset-0 bg-gradient-to-t from-slate-900 via-slate-900/50 to-transparent opacity-90"></div>
-                                <div class="absolute inset-0 p-8 flex flex-col justify-end text-center items-center">
-                                    <h3 class="text-3xl font-extrabold text-white leading-tight">Live Captions<br>& Subtitles</h3>
+                    <div class="h-80 lg:h-96 w-full" onclick="if(window.innerWidth < 1024) this.querySelector('.solution-card').classList.toggle('rotate-active')">
+                        <div class="solution-card group">
+                            <div class="solution-card-content">
+                                <!-- Back side -->
+                                <div class="solution-card-back">
+                                    <div class="solution-card-back-content">
+                                        <p class="font-bold leading-snug text-sm">Boost accessibility and comprehension with real-time, highly accurate captioning. Generate readable text streams dynamically as your speakers deliver their message.</p>
+                                        <span class="brutal-btn brutal-btn-primary w-full text-sm py-2 px-0 border-2">Explore More &rarr;</span>
+                                    </div>
                                 </div>
-                            </div>
-                            <!-- Back side -->
-                            <div class="absolute inset-0 [backface-visibility:hidden] [transform:rotateY(180deg)] bg-brand-600 rounded-[2rem] p-8 flex flex-col justify-center text-center items-center border border-brand-500 shadow-inner">
-                                <p class="text-white text-base font-medium mb-6 leading-snug">Boost accessibility and comprehension with real-time, highly accurate captioning. Generate readable text streams dynamically as your speakers deliver their message.</p>
-                                <span class="text-white font-extrabold text-sm tracking-widest uppercase bg-white/10 px-4 py-2 rounded-full backdrop-blur-sm">Explore More &rarr;</span>
+                                
+                                <!-- Front side -->
+                                <div class="solution-card-front">
+                                    <div class="circle circle-1"></div>
+                                    <div class="circle circle-2"></div>
+                                    <img src="https://images.unsplash.com/photo-1551818255-e6e10975bc17?q=80&w=800&auto=format&fit=crop" class="img-bg" alt="Live Captions">
+                                    <div class="front-content">
+                                        <div class="badge">Accessible</div>
+                                        <div class="description">
+                                            <div class="title">
+                                                <p>Live Captions & Subtitles</p>
+                                            </div>
+                                            <p class="card-footer">Real-time Text Streams</p>
+                                        </div>
+                                    </div>
+                                </div>
                             </div>
                         </div>
                     </div>
                     
                     <!-- Card 4: Media Routing -->
-                    <div class="group h-80 lg:h-96 w-full [perspective:1000px]" onclick="if(window.innerWidth < 1024) this.classList.toggle('rotate-active')">
-                        <div class="relative w-full h-full transition-all duration-700 [transform-style:preserve-3d] group-hover:[transform:rotateY(180deg)] group-[.rotate-active]:[transform:rotateY(180deg)] rounded-[2rem] shadow-xl cursor-pointer">
-                            <!-- Front side -->
-                            <div class="absolute inset-0 [backface-visibility:hidden] rounded-[2rem] overflow-hidden">
-                                <img src="https://images.unsplash.com/photo-1598488035139-bdbb2231ce04?q=80&w=800&auto=format&fit=crop" class="absolute inset-0 w-full h-full object-cover transition-transform duration-700 group-hover:scale-110" alt="Media Routing">
-                                <div class="absolute inset-0 bg-gradient-to-t from-slate-900 via-slate-900/50 to-transparent opacity-90"></div>
-                                <div class="absolute inset-0 p-8 flex flex-col justify-end text-center items-center">
-                                    <h3 class="text-3xl font-extrabold text-white leading-tight">Media<br>Routing</h3>
+                    <div class="h-80 lg:h-96 w-full" onclick="if(window.innerWidth < 1024) this.querySelector('.solution-card').classList.toggle('rotate-active')">
+                        <div class="solution-card group">
+                            <div class="solution-card-content">
+                                <!-- Back side -->
+                                <div class="solution-card-back">
+                                    <div class="solution-card-back-content">
+                                        <p class="font-bold leading-snug text-sm">Leverage our robust WebRTC infrastructure to broadcast low-latency audio to thousands of concurrent listeners globally. No dedicated apps or complex hardware needed.</p>
+                                        <span class="brutal-btn brutal-btn-primary w-full text-sm py-2 px-0 border-2">Explore More &rarr;</span>
+                                    </div>
                                 </div>
-                            </div>
-                            <!-- Back side -->
-                            <div class="absolute inset-0 [backface-visibility:hidden] [transform:rotateY(180deg)] bg-brand-600 rounded-[2rem] p-8 flex flex-col justify-center text-center items-center border border-brand-500 shadow-inner">
-                                <p class="text-white text-base font-medium mb-6 leading-snug">Leverage our robust WebRTC infrastructure to broadcast low-latency audio to thousands of concurrent listeners globally. No dedicated apps or complex hardware needed.</p>
-                                <span class="text-white font-extrabold text-sm tracking-widest uppercase bg-white/10 px-4 py-2 rounded-full backdrop-blur-sm">Explore More &rarr;</span>
+                                
+                                <!-- Front side -->
+                                <div class="solution-card-front">
+                                    <div class="circle circle-1"></div>
+                                    <div class="circle circle-2"></div>
+                                    <img src="https://images.unsplash.com/photo-1598488035139-bdbb2231ce04?q=80&w=800&auto=format&fit=crop" class="img-bg" alt="Media Routing">
+                                    <div class="front-content">
+                                        <div class="badge">Infrastructure</div>
+                                        <div class="description">
+                                            <div class="title">
+                                                <p>Global Media Routing</p>
+                                            </div>
+                                            <p class="card-footer">Low-Latency WebRTC</p>
+                                        </div>
+                                    </div>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -315,15 +380,15 @@
         </section>
 
         <!-- Enterprise-Ready Section -->
-        <section class="py-24 bg-white">
+        <section class="py-24 bg-[#eef2f6]">
             <div class="max-w-7xl mx-auto px-6">
                 <div class="text-center md:text-left mb-16 md:mb-0">
-                    <h2 class="text-4xl md:text-5xl font-extrabold text-slate-900 md:max-w-2xl mx-auto md:mx-0">Enterprise-Ready for Every Event Format</h2>
+                    <h2 class="text-4xl md:text-5xl font-extrabold text-[#0d0f10] md:max-w-2xl mx-auto md:mx-0">Enterprise-Ready for Every Event Format</h2>
                 </div>
                 <div class="grid grid-cols-1 lg:grid-cols-5 gap-12 items-start mt-12">
                     <!-- Left: Floating Image / Graphic (Spans 2 cols) -->
                     <div class="lg:col-span-2 sticky top-32 max-md:hidden">
-                        <div class="relative rounded-[2rem] overflow-hidden bg-brand-500 aspect-[4/5] shadow-2xl">
+                        <div class="relative rounded-lg overflow-hidden bg-[#2563eb] aspect-[4/5] brutal-border brutal-shadow">
                             <img src="https://images.unsplash.com/photo-1505373877841-8d25f7d46678?q=80&w=1000&auto=format&fit=crop" class="w-full h-full object-cover mix-blend-overlay opacity-80" alt="Speaker">
                             <div class="absolute top-8 right-8 text-white/50">
                                 <svg class="w-16 h-16" fill="currentColor" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/></svg>
@@ -335,31 +400,31 @@
                     <div class="lg:col-span-3">
                         <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
                             <!-- Format 1 -->
-                            <div class="bg-slate-50 rounded-[2rem] p-8 hover:bg-slate-100 transition-colors border border-slate-100">
-                                <h3 class="text-2xl font-bold text-slate-900 mb-4">In-Person Events</h3>
-                                <p class="text-slate-600 mb-8 leading-relaxed font-medium">Enhance your in-person multilingual event experience with simultaneous interpretation, live speech translation and captions integrated into your AV setup.</p>
-                                <a href="#" class="text-brand-600 font-extrabold text-sm uppercase tracking-widest flex items-center gap-2 hover:text-brand-700 transition-colors">Explore More <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 5l7 7m0 0l-7 7m7-7H3"></path></svg></a>
+                            <div class="bg-white rounded-lg p-8 hover:-translate-y-1 hover:shadow-[10px_10px_0px_#0d0f10] transition-all brutal-border brutal-shadow">
+                                <h3 class="text-2xl font-bold text-[#0d0f10] mb-4">In-Person Events</h3>
+                                <p class="text-[#0d0f10] opacity-80 mb-8 leading-relaxed font-bold">Enhance your in-person multilingual event experience with simultaneous interpretation, live speech translation and captions integrated into your AV setup.</p>
+                                <a href="#" class="text-[#2563eb] font-extrabold text-sm uppercase tracking-widest flex items-center gap-2 hover:text-[#1d4ed8] transition-colors underline decoration-2 underline-offset-2">Explore More <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M14 5l7 7m0 0l-7 7m7-7H3"></path></svg></a>
                             </div>
                             
                             <!-- Format 2 -->
-                            <div class="bg-slate-50 rounded-[2rem] p-8 hover:bg-slate-100 transition-colors border border-slate-100">
-                                <h3 class="text-2xl font-bold text-slate-900 mb-4">Online Meetings & Events</h3>
-                                <p class="text-slate-600 mb-8 leading-relaxed font-medium">Host high-quality meetings in multiple languages with our enterprise-grade technology that can integrate with any meeting platform.</p>
-                                <a href="#" class="text-brand-600 font-extrabold text-sm uppercase tracking-widest flex items-center gap-2 hover:text-brand-700 transition-colors">Explore More <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 5l7 7m0 0l-7 7m7-7H3"></path></svg></a>
+                            <div class="bg-white rounded-lg p-8 hover:-translate-y-1 hover:shadow-[10px_10px_0px_#0d0f10] transition-all brutal-border brutal-shadow">
+                                <h3 class="text-2xl font-bold text-[#0d0f10] mb-4">Online Meetings & Events</h3>
+                                <p class="text-[#0d0f10] opacity-80 mb-8 leading-relaxed font-bold">Host high-quality meetings in multiple languages with our enterprise-grade technology that can integrate with any meeting platform.</p>
+                                <a href="#" class="text-[#2563eb] font-extrabold text-sm uppercase tracking-widest flex items-center gap-2 hover:text-[#1d4ed8] transition-colors underline decoration-2 underline-offset-2">Explore More <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M14 5l7 7m0 0l-7 7m7-7H3"></path></svg></a>
                             </div>
                             
                             <!-- Format 3 -->
-                            <div class="bg-slate-50 rounded-[2rem] p-8 hover:bg-slate-100 transition-colors border border-slate-100">
-                                <h3 class="text-2xl font-bold text-slate-900 mb-4">Hybrid Events</h3>
-                                <p class="text-slate-600 mb-8 leading-relaxed font-medium">Bring on-site and remote participants together with enterprise-level live translation and interpretation technology, supported end-to-end.</p>
-                                <a href="#" class="text-brand-600 font-extrabold text-sm uppercase tracking-widest flex items-center gap-2 hover:text-brand-700 transition-colors">Explore More <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 5l7 7m0 0l-7 7m7-7H3"></path></svg></a>
+                            <div class="bg-white rounded-lg p-8 hover:-translate-y-1 hover:shadow-[10px_10px_0px_#0d0f10] transition-all brutal-border brutal-shadow">
+                                <h3 class="text-2xl font-bold text-[#0d0f10] mb-4">Hybrid Events</h3>
+                                <p class="text-[#0d0f10] opacity-80 mb-8 leading-relaxed font-bold">Bring on-site and remote participants together with enterprise-level live translation and interpretation technology, supported end-to-end.</p>
+                                <a href="#" class="text-[#2563eb] font-extrabold text-sm uppercase tracking-widest flex items-center gap-2 hover:text-[#1d4ed8] transition-colors underline decoration-2 underline-offset-2">Explore More <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M14 5l7 7m0 0l-7 7m7-7H3"></path></svg></a>
                             </div>
                             
                             <!-- Format 4 -->
-                            <div class="bg-slate-50 rounded-[2rem] p-8 hover:bg-slate-100 transition-colors border border-slate-100">
-                                <h3 class="text-2xl font-bold text-slate-900 mb-4">Broadcasting</h3>
-                                <p class="text-slate-600 mb-8 leading-relaxed font-medium">Make your live broadcasts easy to follow in any language. We add real-time interpretation and captions, so everyone stays connected.</p>
-                                <a href="#" class="text-brand-600 font-extrabold text-sm uppercase tracking-widest flex items-center gap-2 hover:text-brand-700 transition-colors">Explore More <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 5l7 7m0 0l-7 7m7-7H3"></path></svg></a>
+                            <div class="bg-white rounded-lg p-8 hover:-translate-y-1 hover:shadow-[10px_10px_0px_#0d0f10] transition-all brutal-border brutal-shadow">
+                                <h3 class="text-2xl font-bold text-[#0d0f10] mb-4">Broadcasting</h3>
+                                <p class="text-[#0d0f10] opacity-80 mb-8 leading-relaxed font-bold">Make your live broadcasts easy to follow in any language. We add real-time interpretation and captions, so everyone stays connected.</p>
+                                <a href="#" class="text-[#2563eb] font-extrabold text-sm uppercase tracking-widest flex items-center gap-2 hover:text-[#1d4ed8] transition-colors underline decoration-2 underline-offset-2">Explore More <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M14 5l7 7m0 0l-7 7m7-7H3"></path></svg></a>
                             </div>
                         </div>
                     </div>
@@ -399,7 +464,7 @@
                                     </div>
                                 </div>
                                 <div class="bg-white p-3 rounded-[1rem] flex items-center justify-center gap-2 mt-2">
-                                    <img src="{{ url_for('static', path='img/wordmark.png') }}" alt="VoxBento" class="h-4">
+                                    <span class="text-lg font-black tracking-tight text-[#0d0f10]">VoxBento</span>
                                     <p class="text-xs font-bold text-slate-500">Generating&hellip;</p>
                                 </div>
                             </div>
@@ -425,7 +490,7 @@
                                     <p class="text-white/30 text-xs">VoxBento TTS — takes ~30s on first run</p>
                                 </div>
                                 <div class="bg-white p-4 rounded-[0.5rem] flex items-center gap-4 mt-2">
-                                    <img src="{{ url_for('static', path='img/wordmark.png') }}" alt="VoxBento" class="h-5">
+                                    <span class="text-xl font-black tracking-tight text-[#0d0f10]">VoxBento</span>
                                     <div class="w-px h-6 bg-slate-200"></div>
                                     <p class="text-sm font-bold text-slate-500">Generating audio in English, French, Spanish &amp; German&hellip;</p>
                                 </div>
@@ -482,7 +547,7 @@
                                     </div>
                                 </div>
                                 <div class="bg-white p-3 rounded-[1rem] flex items-center justify-center gap-2 mt-2">
-                                    <img src="{{ url_for('static', path='img/wordmark.png') }}" alt="VoxBento" class="h-4">
+                                    <span class="text-lg font-black tracking-tight text-[#0d0f10]">VoxBento</span>
                                     <p id="demo-caption-mobile" class="text-xs font-bold text-slate-500 truncate">VoxBento translating live&hellip;</p>
                                 </div>
                             </div>
@@ -538,7 +603,7 @@
                                 </div>
                                 <!-- Caption / subtitle bar (inside bezel) -->
                                 <div class="bg-white p-4 rounded-[0.5rem] flex items-center gap-4 mt-2">
-                                    <img src="{{ url_for('static', path='img/wordmark.png') }}" alt="VoxBento" class="h-5 flex-shrink-0">
+                                    <span class="text-xl font-black tracking-tight text-[#0d0f10] flex-shrink-0">VoxBento</span>
                                     <div class="w-px h-6 bg-slate-200 flex-shrink-0"></div>
                                     <p id="demo-caption" class="text-sm font-bold text-slate-600 flex-1 truncate">Press play to hear VoxBento translate live&hellip;</p>
                                 </div>
@@ -560,15 +625,15 @@
         </section>
         
         <!-- Open Source Highlight -->
-        <section id="open-source" class="py-24 bg-slate-50 border-t border-slate-200">
+        <section id="open-source" class="py-24 bg-white border-t-[3px] border-[#0d0f10]">
             <div class="max-w-7xl mx-auto px-6 flex flex-col md:flex-row items-center gap-16">
                 <div class="flex-1 space-y-8">
-                    <h2 class="text-4xl md:text-5xl font-extrabold text-slate-900">Proudly Open Source</h2>
-                    <p class="text-slate-600 text-xl leading-relaxed font-medium">
+                    <h2 class="text-4xl md:text-5xl font-extrabold text-[#0d0f10]">Proudly Open Source</h2>
+                    <p class="text-[#0d0f10] opacity-80 text-xl leading-relaxed font-bold">
                         VoxBento is built on transparent, community-driven principles. Host it on your own infrastructure for maximum privacy, or integrate it with your existing tools via our open APIs.
                     </p>
                     <div class="flex gap-4 pt-4">
-                        <a href="https://github.com/fossasia/voxbento" target="_blank" class="flex items-center gap-3 bg-slate-900 text-white px-8 py-4 rounded-full text-sm font-extrabold hover:bg-slate-800 transition-all shadow-lg hover:shadow-xl hover:-translate-y-0.5 uppercase tracking-widest">
+                        <a href="https://github.com/fossasia/voxbento" target="_blank" class="brutal-btn bg-[#0d0f10] text-white hover:bg-slate-800 flex items-center gap-3">
                             <svg class="w-6 h-6" fill="currentColor" viewBox="0 0 24 24"><path d="M12 2C6.477 2 2 6.477 2 12c0 4.42 2.865 8.166 6.839 9.489.5.092.682-.217.682-.482 0-.237-.008-.866-.013-1.7-2.782.603-3.369-1.34-3.369-1.34-.454-1.156-1.11-1.463-1.11-1.463-.908-.62.069-.608.069-.608 1.003.07 1.531 1.03 1.531 1.03.892 1.529 2.341 1.087 2.91.831.092-.646.35-1.086.636-1.336-2.22-.253-4.555-1.11-4.555-4.943 0-1.091.39-1.984 1.029-2.683-.103-.253-.446-1.27.098-2.647 0 0 .84-.269 2.75 1.025A9.578 9.578 0 0112 6.836c.85.004 1.705.114 2.504.336 1.909-1.294 2.747-1.025 2.747-1.025.546 1.377.203 2.394.1 2.647.64.699 1.028 1.592 1.028 2.683 0 3.842-2.339 4.687-4.566 4.935.359.309.678.919.678 1.852 0 1.336-.012 2.415-.012 2.743 0 .267.18.578.688.48C19.138 20.161 22 16.416 22 12c0-5.523-4.477-10-10-10z"/></svg>
                             View on GitHub
                         </a>
@@ -576,43 +641,43 @@
                 </div>
                 <div class="flex-1 w-full relative max-md:hidden">
                     <!-- GitHub style contribution graph mockup -->
-                    <div class="bg-white border border-slate-200 rounded-3xl p-8 shadow-xl transform rotate-3 hover:rotate-0 transition-transform duration-500">
+                    <div class="bg-white brutal-border rounded-lg p-8 brutal-shadow transform rotate-3 hover:rotate-0 transition-transform duration-500">
                         <div class="flex gap-2 flex-wrap">
                             <!-- Generate some randomish colored blocks for the mockup -->
-                            <div class="w-4 h-4 bg-green-200 rounded-sm"></div><div class="w-4 h-4 bg-green-400 rounded-sm"></div><div class="w-4 h-4 bg-slate-100 rounded-sm"></div><div class="w-4 h-4 bg-green-500 rounded-sm"></div>
-                            <div class="w-4 h-4 bg-slate-100 rounded-sm"></div><div class="w-4 h-4 bg-green-300 rounded-sm"></div><div class="w-4 h-4 bg-green-600 rounded-sm"></div><div class="w-4 h-4 bg-slate-100 rounded-sm"></div>
-                            <div class="w-4 h-4 bg-green-400 rounded-sm"></div><div class="w-4 h-4 bg-slate-100 rounded-sm"></div><div class="w-4 h-4 bg-green-200 rounded-sm"></div><div class="w-4 h-4 bg-green-500 rounded-sm"></div>
-                            <div class="w-4 h-4 bg-slate-100 rounded-sm"></div><div class="w-4 h-4 bg-green-400 rounded-sm"></div><div class="w-4 h-4 bg-slate-100 rounded-sm"></div><div class="w-4 h-4 bg-green-700 rounded-sm"></div>
-                            <div class="w-4 h-4 bg-green-200 rounded-sm"></div><div class="w-4 h-4 bg-green-400 rounded-sm"></div><div class="w-4 h-4 bg-slate-100 rounded-sm"></div><div class="w-4 h-4 bg-green-500 rounded-sm"></div>
+                            <div class="w-4 h-4 bg-green-200 border border-[#0d0f10] rounded-sm"></div><div class="w-4 h-4 bg-green-400 border border-[#0d0f10] rounded-sm"></div><div class="w-4 h-4 bg-slate-100 border border-[#0d0f10] rounded-sm"></div><div class="w-4 h-4 bg-green-500 border border-[#0d0f10] rounded-sm"></div>
+                            <div class="w-4 h-4 bg-slate-100 border border-[#0d0f10] rounded-sm"></div><div class="w-4 h-4 bg-green-300 border border-[#0d0f10] rounded-sm"></div><div class="w-4 h-4 bg-green-600 border border-[#0d0f10] rounded-sm"></div><div class="w-4 h-4 bg-slate-100 border border-[#0d0f10] rounded-sm"></div>
+                            <div class="w-4 h-4 bg-green-400 border border-[#0d0f10] rounded-sm"></div><div class="w-4 h-4 bg-slate-100 border border-[#0d0f10] rounded-sm"></div><div class="w-4 h-4 bg-green-200 border border-[#0d0f10] rounded-sm"></div><div class="w-4 h-4 bg-green-500 border border-[#0d0f10] rounded-sm"></div>
+                            <div class="w-4 h-4 bg-slate-100 border border-[#0d0f10] rounded-sm"></div><div class="w-4 h-4 bg-green-400 border border-[#0d0f10] rounded-sm"></div><div class="w-4 h-4 bg-slate-100 border border-[#0d0f10] rounded-sm"></div><div class="w-4 h-4 bg-green-700 border border-[#0d0f10] rounded-sm"></div>
+                            <div class="w-4 h-4 bg-green-200 border border-[#0d0f10] rounded-sm"></div><div class="w-4 h-4 bg-green-400 border border-[#0d0f10] rounded-sm"></div><div class="w-4 h-4 bg-slate-100 border border-[#0d0f10] rounded-sm"></div><div class="w-4 h-4 bg-green-500 border border-[#0d0f10] rounded-sm"></div>
                         </div>
-                        <p class="text-sm font-bold text-slate-500 mt-6 text-right">2,412 contributions in the last year</p>
+                        <p class="text-sm font-extrabold text-[#0d0f10] mt-6 text-right">2,412 contributions in the last year</p>
                     </div>
                 </div>
             </div>
         </section>
 
         <!-- Final CTA -->
-        <section class="bg-brand-600 py-32 text-center text-white px-6">
-            <h2 class="text-5xl md:text-6xl font-extrabold mb-8 leading-tight">Break Language Barriers<br>at Your Next Event</h2>
-            <p class="text-brand-100 text-xl mb-12 max-w-2xl mx-auto font-medium">Launch multilingual events in minutes with VoxBento. No complex setups, no hardware.</p>
+        <section class="bg-[#2563eb] py-32 text-center text-white px-6 border-y-[3px] border-[#0d0f10]">
+            <h2 class="text-5xl md:text-6xl font-extrabold mb-8 leading-tight text-white">Break Language Barriers<br>at Your Next Event</h2>
+            <p class="text-white opacity-90 text-xl mb-12 max-w-2xl mx-auto font-bold">Launch multilingual events in minutes with VoxBento. No complex setups, no hardware.</p>
             <div class="flex flex-col sm:flex-row justify-center gap-6">
-                <a href="{% if current_user %}/admin/events/{% else %}/register{% endif %}" class="bg-white text-brand-900 px-10 py-5 rounded-full font-extrabold shadow-2xl hover:shadow-3xl hover:-translate-y-1 transition-all w-full sm:w-auto text-sm tracking-widest uppercase">Get Started Now</a>
+                <a href="{% if current_user %}/admin/events/{% else %}/register{% endif %}" class="brutal-btn bg-white text-[#0d0f10] hover:bg-slate-100 w-full sm:w-auto text-lg py-5 px-10">Get Started Now</a>
             </div>
         </section>
         
     </main>
 
     <!-- Unified Footer -->
-    <footer class="bg-white border-t border-slate-200 py-16 text-slate-500 mt-20 relative z-10">
+    <footer class="bg-[#eef2f6] border-t-[3px] border-[#0d0f10] py-16 text-[#0d0f10] relative z-10 font-bold">
         <div class="max-w-7xl mx-auto px-6 sm:px-8 lg:px-12">
             <div class="grid grid-cols-2 md:grid-cols-5 gap-8 lg:gap-12">
                 <div class="col-span-2 md:col-span-1">
                     <a href="/" class="flex items-center gap-2 mb-6">
-                        <img src="{{ url_for('static', path='img/wordmark.png') }}" alt="VoxBento" class="h-6">
+                        <span class="text-2xl font-black tracking-tight text-[#0d0f10]">VoxBento</span>
                     </a>
-                    <p class="text-sm mb-6">Production-grade browser-first interpretation console for live events.</p>
+                    <p class="text-sm mb-6 opacity-80">Production-grade browser-first interpretation console for live events.</p>
                     <div class="flex gap-4">
-                        <a href="https://github.com/fossasia/voxbento" class="text-slate-400 hover:text-slate-900 transition-colors">
+                        <a href="https://github.com/fossasia/voxbento" class="text-[#0d0f10] hover:text-[#2563eb] transition-colors">
                             <span class="sr-only">GitHub</span>
                             <svg class="h-6 w-6" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true">
                                 <path fill-rule="evenodd" d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z" clip-rule="evenodd" />
@@ -621,47 +686,47 @@
                     </div>
                 </div>
                 <div>
-                    <h3 class="text-slate-900 font-semibold mb-4 text-sm uppercase tracking-wider">Product</h3>
-                    <ul class="space-y-3 text-sm">
-                        <li><a href="#solutions" class="hover:text-brand-600 transition-colors">Solutions</a></li>
-                        <li><a href="#interactive-demo" class="hover:text-brand-600 transition-colors">Interactive Demo</a></li>
-                        <li><a href="https://docs.voxbento.com" class="hover:text-brand-600 transition-colors">Documentation</a></li>
-                        <li><a href="/login" class="hover:text-brand-600 transition-colors">Sign In</a></li>
+                    <h3 class="text-[#0d0f10] font-extrabold mb-4 text-sm uppercase tracking-wider">Product</h3>
+                    <ul class="space-y-3 text-sm opacity-80">
+                        <li><a href="#solutions" class="hover:text-[#2563eb] transition-colors underline decoration-2 underline-offset-2">Solutions</a></li>
+                        <li><a href="#interactive-demo" class="hover:text-[#2563eb] transition-colors underline decoration-2 underline-offset-2">Interactive Demo</a></li>
+                        <li><a href="https://docs.voxbento.com" class="hover:text-[#2563eb] transition-colors underline decoration-2 underline-offset-2">Documentation</a></li>
+                        <li><a href="/login" class="hover:text-[#2563eb] transition-colors underline decoration-2 underline-offset-2">Sign In</a></li>
                     </ul>
                 </div>
                 <div>
-                    <h3 class="text-slate-900 font-semibold mb-4 text-sm uppercase tracking-wider">Research</h3>
-                    <ul class="space-y-3 text-sm">
-                        <li><a href="/research" class="hover:text-brand-600 transition-colors">Research Home</a></li>
-                        <li><a href="/research/streaming-stt-architecture" class="hover:text-brand-600 transition-colors">STT Architecture</a></li>
-                        <li><a href="/research/webrtc-vs-rtmp-vs-hls" class="hover:text-brand-600 transition-colors">WebRTC Latency</a></li>
-                        <li><a href="/research/stt-comparison" class="hover:text-brand-600 transition-colors">STT Comparison</a></li>
+                    <h3 class="text-[#0d0f10] font-extrabold mb-4 text-sm uppercase tracking-wider">Research</h3>
+                    <ul class="space-y-3 text-sm opacity-80">
+                        <li><a href="/research" class="hover:text-[#2563eb] transition-colors underline decoration-2 underline-offset-2">Research Home</a></li>
+                        <li><a href="/research/streaming-stt-architecture" class="hover:text-[#2563eb] transition-colors underline decoration-2 underline-offset-2">STT Architecture</a></li>
+                        <li><a href="/research/webrtc-vs-rtmp-vs-hls" class="hover:text-[#2563eb] transition-colors underline decoration-2 underline-offset-2">WebRTC Latency</a></li>
+                        <li><a href="/research/stt-comparison" class="hover:text-[#2563eb] transition-colors underline decoration-2 underline-offset-2">STT Comparison</a></li>
                     </ul>
                 </div>
                 <div>
-                    <h3 class="text-slate-900 font-semibold mb-4 text-sm uppercase tracking-wider">Benchmarks</h3>
-                    <ul class="space-y-3 text-sm">
-                        <li><a href="/research/whisper-benchmark" class="hover:text-brand-600 transition-colors">Whisper RTF</a></li>
-                        <li><a href="/research/real-time-audio-latency" class="hover:text-brand-600 transition-colors">Audio Latency</a></li>
-                        <li><a href="/research/speech-ai-statistics" class="hover:text-brand-600 transition-colors">Speech AI Stats</a></li>
-                        <li><a href="/research/speech-ai-glossary" class="hover:text-brand-600 transition-colors">Glossary</a></li>
+                    <h3 class="text-[#0d0f10] font-extrabold mb-4 text-sm uppercase tracking-wider">Benchmarks</h3>
+                    <ul class="space-y-3 text-sm opacity-80">
+                        <li><a href="/research/whisper-benchmark" class="hover:text-[#2563eb] transition-colors underline decoration-2 underline-offset-2">Whisper RTF</a></li>
+                        <li><a href="/research/real-time-audio-latency" class="hover:text-[#2563eb] transition-colors underline decoration-2 underline-offset-2">Audio Latency</a></li>
+                        <li><a href="/research/speech-ai-statistics" class="hover:text-[#2563eb] transition-colors underline decoration-2 underline-offset-2">Speech AI Stats</a></li>
+                        <li><a href="/research/speech-ai-glossary" class="hover:text-[#2563eb] transition-colors underline decoration-2 underline-offset-2">Glossary</a></li>
                     </ul>
                 </div>
                 <div>
-                    <h3 class="text-slate-900 font-semibold mb-4 text-sm uppercase tracking-wider">Developers</h3>
-                    <ul class="space-y-3 text-sm">
-                        <li><a href="/llms.txt" class="hover:text-brand-600 transition-colors">LLM Context</a></li>
-                        <li><a href="/llms-full.txt" class="hover:text-brand-600 transition-colors">Full LLM Index</a></li>
-                        <li><a href="/sitemap.xml" class="hover:text-brand-600 transition-colors">Sitemap</a></li>
-                        <li><a href="https://github.com/fossasia/voxbento" class="hover:text-brand-600 transition-colors">GitHub</a></li>
+                    <h3 class="text-[#0d0f10] font-extrabold mb-4 text-sm uppercase tracking-wider">Developers</h3>
+                    <ul class="space-y-3 text-sm opacity-80">
+                        <li><a href="/llms.txt" class="hover:text-[#2563eb] transition-colors underline decoration-2 underline-offset-2">LLM Context</a></li>
+                        <li><a href="/llms-full.txt" class="hover:text-[#2563eb] transition-colors underline decoration-2 underline-offset-2">Full LLM Index</a></li>
+                        <li><a href="/sitemap.xml" class="hover:text-[#2563eb] transition-colors underline decoration-2 underline-offset-2">Sitemap</a></li>
+                        <li><a href="https://github.com/fossasia/voxbento" class="hover:text-[#2563eb] transition-colors underline decoration-2 underline-offset-2">GitHub</a></li>
                     </ul>
                 </div>
             </div>
-            <div class="mt-16 pt-8 border-t border-slate-100 text-sm text-slate-500 flex flex-col md:flex-row justify-between items-center gap-4">
+            <div class="mt-16 pt-8 border-t-2 border-[#0d0f10] text-sm text-[#0d0f10] opacity-80 flex flex-col md:flex-row justify-between items-center gap-4">
                 <p>&copy; 2026 VoxBento. Open Source software by FOSSASIA.</p>
                 <div class="flex gap-6">
-                    <a href="#" class="hover:text-slate-900 transition-colors">Privacy Policy</a>
-                    <a href="#" class="hover:text-slate-900 transition-colors">Terms of Service</a>
+                    <a href="#" class="hover:text-[#2563eb] transition-colors underline decoration-2 underline-offset-2">Privacy Policy</a>
+                    <a href="#" class="hover:text-[#2563eb] transition-colors underline decoration-2 underline-offset-2">Terms of Service</a>
                 </div>
             </div>
         </div>

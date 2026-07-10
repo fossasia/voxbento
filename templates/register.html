@@ -13,30 +13,33 @@
       <img src="{{ url_for('static', path='img/wordmark.png') }}" alt="Voxbento" class="brand-text" style="height: 48px; margin: 0 auto;" />
       <span class="login-subtitle">Create your account</span>
     </div>
+    
     {% if errors %}
     <div class="alert alert-error">
-      <ul class="error-list">
+      <ul class="error-list" style="margin:0; padding-left:20px;">
         {% for err in errors %}
         <li>{{ err }}</li>
         {% endfor %}
       </ul>
     </div>
     {% endif %}
+
     <form method="post" action="/register" class="login-form">
       <label for="email">Email</label>
-      <input type="email" id="email" name="email" placeholder="you@example.com" value="{{ email|default('', true) }}" required autofocus />
+      <input type="email" id="email" name="email" placeholder="you@example.com" value="{{ email|default(request.query_params.get('email', ''), true) }}" required autofocus />
 
       <label for="display_name">Display Name</label>
       <input type="text" id="display_name" name="display_name" placeholder="Your name" value="{{ display_name|default('', true) }}" required />
 
-      <label for="password">Password</label>
-      <input type="password" id="password" name="password" placeholder="Min. 8 characters" required minlength="8" />
-
-      <label for="password_confirm">Confirm Password</label>
-      <input type="password" id="password_confirm" name="password_confirm" placeholder="Repeat password" required minlength="8" />
+      <label for="password">Password <span style="font-weight:normal; color:#888;">(Optional)</span></label>
+      <input type="password" id="password" name="password" placeholder="Leave blank for passwordless sign-in" minlength="8" />
+      <p style="font-size: 0.85em; color: #888; margin-top: -10px; margin-bottom: 15px;">
+        If you leave this blank, you'll sign in using secure email links.
+      </p>
 
       <button type="submit" class="btn btn-primary">Create Account</button>
     </form>
+    
     <div class="login-footer">
       <span>Already have an account? <a href="/login">Sign in</a></span>
       <a href="/">← Back to Portal Home</a>

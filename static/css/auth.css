@@ -109,22 +109,83 @@
   display: flex;
   align-items: center;
   justify-content: center;
+  background-color: #eef2f6; /* soft gray-blue */
+  padding: 20px;
 }
 .login-card {
   width: 100%;
-  max-width: 400px;
+  max-width: 420px;
   background: var(--color-surface);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius);
+  border: 3px solid #0d0f10;
+  border-radius: 8px;
   padding: 40px 32px;
-  box-shadow: var(--shadow-md);
+  box-shadow: 8px 8px 0px #0d0f10;
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+.login-card:hover {
+  transform: translate(-2px, -2px);
+  box-shadow: 10px 10px 0px #0d0f10;
 }
 .login-brand { text-align: center; margin-bottom: 28px; }
 .login-subtitle { font-size: 0.875rem; color: var(--color-text-secondary); display: block; margin-top: 4px; }
 .login-form { display: flex; flex-direction: column; gap: 16px; }
 .login-form label { font-size: 0.875rem; font-weight: 600; color: var(--color-text-secondary); }
-.login-form input { padding: 10px 14px; font-size: 1rem; border: 1px solid var(--color-border); border-radius: var(--radius-sm); }
-.login-form input:focus { outline: none; border-color: var(--color-primary); box-shadow: 0 0 0 2px rgba(37, 99, 235, 0.15); }
+.login-form input { 
+  padding: 12px 14px; 
+  font-size: 1rem; 
+  border: 2px solid #0d0f10; 
+  border-radius: 6px; 
+  background-color: #ffffff;
+  color: #0d0f10;
+  box-shadow: 4px 4px 0px #0d0f10;
+  transition: all 0.2s ease;
+  font-family: inherit;
+}
+.login-form input:focus { 
+  outline: none; 
+  border-color: var(--color-primary); 
+  box-shadow: 4px 4px 0px var(--color-primary);
+  transform: translate(-2px, -2px); 
+}
+
+/* Brutalist Button Styles for Login/Register */
+.login-card .btn {
+  border: 2px solid #0d0f10;
+  border-radius: 6px;
+  box-shadow: 4px 4px 0px #0d0f10;
+  font-weight: 700;
+  font-size: 1rem;
+  padding: 12px 20px;
+  transition: all 0.1s ease;
+  cursor: pointer;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-top: 10px;
+}
+.login-card .btn:active {
+  box-shadow: 0px 0px 0px #0d0f10;
+  transform: translate(4px, 4px);
+}
+.login-card .btn-primary {
+  background: var(--color-primary);
+  color: #ffffff;
+  border-color: #0d0f10;
+}
+.login-card .btn-primary:hover {
+  background: #1a69a4;
+  border-color: #0d0f10;
+  color: #ffffff;
+}
+.login-card .btn-outline {
+  background: #ffffff;
+  color: #0d0f10;
+  border-color: #0d0f10;
+}
+.login-card .btn-outline:hover {
+  background: #f8f9fa;
+  color: #0d0f10;
+  border-color: #0d0f10;
+}
 .login-footer {
   display: flex;
   flex-direction: column;

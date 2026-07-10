@@ -1,193 +1,144 @@
 {% extends "base.html" %}
 {% block title %}Listen (WebRTC) — {{ event.display_name }} | Voxbento{% endblock %}
 {% block head %}
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+    tailwind.config = {
+        theme: {
+            extend: {
+                fontFamily: {
+                    sans: ['Inter', 'sans-serif'],
+                },
+                colors: {
+                    brand: {
+                        50: '#eff6ff',
+                        100: '#dbeafe',
+                        400: '#60a5fa',
+                        500: '#3b82f6',
+                        600: '#2563eb',
+                        700: '#1d4ed8',
+                        900: '#1e3a8a',
+                    }
+                }
+            }
+        }
+    }
+</script>
 <style>
-  .listener-container {
-    max-width: 640px;
-    margin: 2rem auto;
-    text-align: center;
-    font-family: system-ui, sans-serif;
-  }
-  .listener-container h1 { font-size: 1.4rem; margin-bottom: 0.5rem; }
-  .listener-container p { color: #666; margin-bottom: 1.5rem; }
-  #audio-player { width: 100%; margin: 1rem 0; }
-
-  .status-badge {
-    display: inline-block;
-    padding: 0.3rem 0.8rem;
-    border-radius: 4px;
-    font-size: 0.85rem;
-    font-weight: 500;
-  }
-  .status-badge.live        { background: #d4edda; color: #155724; }
-  .status-badge.waiting     { background: #fff3cd; color: #856404; }
-  .status-badge.error       { background: #f8d7da; color: #721c24; }
-  .status-badge.recovering  { background: #cce5ff; color: #004085; }
-
-  /* Captions Box */
-  .captions-container {
-    margin-top: 2rem;
-    max-width: 640px;
-    margin-left: auto;
-    margin-right: auto;
-    display: flex;
-    flex-direction: column;
-    transition: all 0.3s ease;
-  }
-  .captions-header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin-bottom: 0.5rem;
-    padding: 0 0.5rem;
-  }
-  .captions-header h3 {
-    margin: 0;
-    font-size: 1.1rem;
-    color: #444;
-  }
-  .toggle-btn {
-    background: none;
-    border: none;
-    font-size: 1.2rem;
-    cursor: pointer;
-    color: #666;
-  }
-  .toggle-btn:hover {
-    color: #000;
-  }
-  .captions-box {
-    margin: 0 auto;
-    width: 100%;
-    height: 40vh;
-    min-height: 200px;
-    max-height: 500px;
-    background: #222;
-    color: #fff;
-    border-radius: 8px;
-    padding: 1rem;
-    overflow-y: auto;
-    text-align: left;
-    transition: all 0.3s ease;
-  }
-  .captions-container.minimized .captions-box {
-    height: 0;
-    min-height: 0;
-    padding-top: 0;
-    padding-bottom: 0;
-    overflow: hidden;
-    opacity: 0;
-  }
-    font-size: 1.1rem;
-    line-height: 1.5;
-    box-shadow: inset 0 2px 4px rgba(0,0,0,0.5);
-    display: flex;
-    flex-direction: column;
-    gap: 0.5rem;
-  }
-  .captions-box p {
-    margin: 0;
-    color: #eee;
-    animation: fadeIn 0.3s ease-in-out;
-  }
-  .caption-history {
-    display: flex;
-    flex-direction: column;
-    gap: 0.5rem;
-    color: #ccc;
-  }
-  .caption-current {
-    color: #fff;
-    font-weight: 500;
-    min-height: 1.5em;
-  }
-  @keyframes fadeIn {
-    from { opacity: 0; transform: translateY(5px); }
-    to { opacity: 1; transform: translateY(0); }
-  }
-
-
-  .selectors-container {
-    display: flex;
-    gap: 1rem;
-    justify-content: center;
-    margin-bottom: 1.5rem;
-  }
-  .selector-group {
-    display: flex;
-    flex-direction: column;
-    text-align: left;
-  }
-  .selector-group label {
-    font-size: 0.85rem;
-    font-weight: 600;
-    margin-bottom: 0.3rem;
-  }
-  .selector-group select {
-    min-width: 150px;
-  }
+    /* Custom Brutalist Select styling */
+    .brutal-select {
+        appearance: none;
+        background-color: #0d0f10;
+        color: white;
+        border: 2px solid #0d0f10;
+        border-radius: 4px;
+        padding: 0.75rem 2.5rem 0.75rem 1rem;
+        font-weight: 800;
+        font-size: 0.875rem;
+        cursor: pointer;
+        transition: all 0.2s ease-in-out;
+        background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='white'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='M19 9l-7 7-7-7'%3E%3C/path%3E%3C/svg%3E");
+        background-repeat: no-repeat;
+        background-position: right 0.75rem center;
+        background-size: 1rem;
+    }
+    .brutal-select:hover:not(:disabled) {
+        background-color: #2563eb;
+        border-color: #0d0f10;
+        box-shadow: 4px 4px 0px #0d0f10;
+        transform: translateY(-2px);
+    }
+    .brutal-select:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+    }
+    .brutal-select:focus {
+        outline: none;
+        box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.5);
+    }
 </style>
+<link rel="stylesheet" href="{{ url_for('static', path='css/listener.css') }}?v={{ js_version }}" />
 {% endblock %}
 {% block content %}
-<div class="listener-container">
-  <h1>Listen: {{ event.display_name }}</h1>
-  
-  <div class="selectors-container">
-    <div class="selector-group">
-      <label for="room-select">Room</label>
-      <select id="room-select" class="input">
-        <option value="">-- Select Room --</option>
-        {% for room in rooms %}
-        <option value="{{ room.id }}">{{ room.display_name }}</option>
-        {% endfor %}
-      </select>
+<div class="min-h-screen bg-[#eef2f6] text-[#0d0f10] py-12 px-4 sm:px-6 lg:px-8 font-sans selection:bg-brand-500 selection:text-white">
+  <div class="max-w-4xl mx-auto">
+    <!-- Header -->
+    <div class="mb-10 text-center">
+        <h1 class="text-4xl md:text-5xl font-extrabold tracking-tight mb-4 uppercase drop-shadow-[2px_2px_0px_rgba(13,15,16,0.1)]">Listen: {{ event.display_name }}</h1>
+        <p class="text-lg font-bold opacity-70">Tune into the live floor or translated audio streams.</p>
     </div>
-    <div class="selector-group">
-      <label for="language-select">Source Audio</label>
-      <select id="language-select" class="input" disabled>
-        <option value="">-- Select Source Audio --</option>
-      </select>
-    </div>
-  </div>
-
-  <div id="status"><span class="status-badge waiting">Waiting for selection...</span></div>
-  <audio id="audio-player" autoplay style="width:100%; margin:1rem 0; display:none;"></audio>
-
-  <div class="captions-container" id="captions-container">
-    <div class="captions-header" style="justify-content: space-between; align-items: flex-end;">
-      <div class="selectors-container" style="margin-bottom: 0; gap: 1rem;">
-        <div class="selector-group">
-          <label for="caption-mode-select">Captions Mode</label>
-          <select id="caption-mode-select" class="input" disabled>
-            <option value="original">Original</option>
-            <option value="translated">Translated</option>
-            <option value="side-by-side">Side-by-Side</option>
+    
+    <!-- Controls Container -->
+    <div class="bg-white border-[3px] border-[#0d0f10] p-6 md:p-8 mb-8 shadow-[8px_8px_0px_#0d0f10] relative z-30">
+      <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
+        <div class="flex flex-col gap-2">
+          <label for="room-select" class="font-extrabold uppercase tracking-wider text-sm">Room</label>
+          <select id="room-select" class="brutal-select w-full">
+            <option value="">-- Select Room --</option>
+            {% for room in rooms %}
+            <option value="{{ room.id }}">{{ room.display_name }}</option>
+            {% endfor %}
           </select>
         </div>
-        <div class="selector-group" id="translation-lang-group" style="display: none;">
-          <label for="translation-lang-select">Target Language</label>
-          <select id="translation-lang-select" class="input">
-            <!-- Populated dynamically via JS based on room settings -->
+        <div class="flex flex-col gap-2">
+          <label for="language-select" class="font-extrabold uppercase tracking-wider text-sm">Source Audio</label>
+          <select id="language-select" class="brutal-select w-full" disabled>
+            <option value="">-- Select Source Audio --</option>
           </select>
         </div>
       </div>
-      <button id="toggle-captions-btn" class="toggle-btn" title="Minimize/Maximize Captions" style="margin-bottom: 0.5rem;">▼</button>
-    </div>
-    <div id="live-captions" class="captions-box">
-      <div id="captions-content-area" class="captions-content" style="display: flex; gap: 20px;">
-        <div id="captions-col-original" style="flex: 1; display: flex; flex-direction: column;">
-          <div class="caption-history" id="caption-history"></div>
-          <div class="caption-current" id="caption-current"></div>
-        </div>
-        <div id="captions-col-translated" style="flex: 1; display: none; flex-direction: column; border-left: 1px solid #444; padding-left: 20px;">
-          <div class="caption-history" id="translation-history"></div>
-          <div class="caption-current" id="translation-current"></div>
-        </div>
-      </div>
-      <p id="waiting-text" style="color: #888; font-style: italic; font-size: 0.95rem;">Waiting for interpreter...</p>
-    </div>
-  </div>
 
+      <div class="flex flex-col items-center justify-center pt-6 border-t-2 border-[#0d0f10]/10">
+        <div id="status">
+            <span class="status-badge waiting">Waiting for selection...</span>
+        </div>
+        <audio id="audio-player" class="w-full mt-6" autoplay style="display:none;"></audio>
+      </div>
+    </div>
+
+    <!-- Captions Container -->
+    <div class="captions-container" id="captions-container">
+      
+      <!-- Captions Controls -->
+      <div id="captions-controls" class="bg-white text-[#0d0f10] border-[3px] border-[#0d0f10] border-b-0 p-4 flex flex-col md:flex-row justify-between items-center gap-4 relative z-20 transition-all">
+        <div class="flex flex-col md:flex-row gap-4 w-full md:w-auto">
+          <div class="flex flex-col gap-1">
+            <label for="caption-mode-select" class="font-extrabold text-[10px] uppercase tracking-widest text-gray-600">Captions Mode</label>
+            <select id="caption-mode-select" class="brutal-select w-full" disabled>
+              <option value="original">Original</option>
+              <option value="translated">Translated</option>
+              <option value="side-by-side">Side-by-Side</option>
+            </select>
+          </div>
+          <div class="flex flex-col gap-1 listener-hidden" id="translation-lang-group" style="display:none;">
+            <label for="translation-lang-select" class="font-extrabold text-[10px] uppercase tracking-widest text-gray-600">Target Language</label>
+            <select id="translation-lang-select" class="brutal-select w-full">
+              <!-- Populated dynamically -->
+            </select>
+          </div>
+        </div>
+        <button id="toggle-captions-btn" class="bg-brand-600 hover:bg-brand-500 text-white border-2 border-[#0d0f10] px-4 py-2 font-extrabold text-xs uppercase tracking-widest transition-transform hover:-translate-y-1 hover:shadow-[4px_4px_0px_#0d0f10]" title="Minimize/Maximize Captions">Minimize Captions ▼</button>
+      </div>
+
+      <!-- Captions Display Box -->
+      <div id="live-captions" class="bg-[#f8fafc] text-[#0d0f10] border-[3px] border-[#0d0f10] shadow-[8px_8px_0px_#0d0f10] p-6 h-[40vh] min-h-[300px] overflow-y-auto font-mono text-sm md:text-base leading-relaxed transition-all duration-300 relative z-10">
+        <div id="captions-content-area" class="flex gap-6 h-full">
+          <div id="captions-col-original" class="flex-1 flex flex-col gap-2">
+            <div class="caption-history text-gray-500" id="caption-history"></div>
+            <div class="caption-current font-bold text-[#0d0f10] min-h-[1.5em]" id="caption-current"></div>
+          </div>
+          <div id="captions-col-translated" class="flex-1 flex flex-col gap-2 border-l-2 border-gray-300 pl-6" style="display:none;">
+            <div class="caption-history text-gray-500" id="translation-history"></div>
+            <div class="caption-current font-bold text-brand-600 min-h-[1.5em]" id="translation-current"></div>
+          </div>
+        </div>
+        <p id="waiting-text" class="absolute inset-0 flex items-center justify-center text-gray-400 font-extrabold italic tracking-wider">
+            Waiting for interpreter...
+        </p>
+      </div>
+    </div>
+
+  </div>
 </div>
 
 <script>
@@ -195,9 +146,9 @@
     var container = document.getElementById('captions-container');
     container.classList.toggle('minimized');
     if (container.classList.contains('minimized')) {
-      this.textContent = '▲';
+      this.textContent = 'Maximize Captions ▲';
     } else {
-      this.textContent = '▼';
+      this.textContent = 'Minimize Captions ▼';
     }
   });
 </script>
@@ -683,5 +634,113 @@
 
   window.setInterval(applyCurrentRoomAudioDelay, 3000);
 })();
+</script>
+
+<script>
+// Custom Brutalist Dropdown Logic
+function upgradeSelects() {
+    document.querySelectorAll('.brutal-select').forEach(select => {
+        if (select.dataset.upgraded) return;
+        select.dataset.upgraded = "true";
+        select.style.display = 'none'; // Hide native select
+
+        const wrapper = document.createElement('div');
+        wrapper.className = 'custom-select-wrapper relative w-full';
+        select.parentNode.insertBefore(wrapper, select);
+        wrapper.appendChild(select);
+
+        const selectedDiv = document.createElement('div');
+        selectedDiv.className = 'custom-selected flex justify-between items-center bg-white border-2 border-[#0d0f10] p-3 rounded font-extrabold text-sm cursor-pointer hover:shadow-[4px_4px_0px_#2563eb] transition-all hover:-translate-y-0.5 text-[#0d0f10]';
+        
+        const textSpan = document.createElement('span');
+        selectedDiv.appendChild(textSpan);
+
+        const arrow = document.createElement('div');
+        arrow.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" height="1em" viewBox="0 0 512 512" class="w-4 h-4 transition-transform duration-300 fill-current"><path d="M233.4 406.6c12.5 12.5 32.8 12.5 45.3 0l192-192c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0L256 338.7 86.6 169.4c-12.5-12.5-32.8-12.5-45.3 0s-12.5 32.8 0 45.3l192 192z"></path></svg>`;
+        selectedDiv.appendChild(arrow);
+        
+        const optionsDiv = document.createElement('div');
+        optionsDiv.className = 'custom-options absolute left-0 right-0 top-full mt-2 bg-white border-2 border-[#0d0f10] shadow-[4px_4px_0px_#0d0f10] z-[100] opacity-0 invisible translate-y-[-10px] transition-all duration-200 block rounded max-h-[300px] overflow-y-auto overscroll-contain';
+        
+        wrapper.appendChild(selectedDiv);
+        wrapper.appendChild(optionsDiv);
+
+        function updateUI() {
+            if (select.disabled) {
+                selectedDiv.classList.add('opacity-50', 'cursor-not-allowed', 'bg-gray-100');
+                selectedDiv.classList.remove('hover:shadow-[4px_4px_0px_#2563eb]', 'hover:-translate-y-0.5', 'bg-white');
+            } else {
+                selectedDiv.classList.remove('opacity-50', 'cursor-not-allowed', 'bg-gray-100');
+                selectedDiv.classList.add('hover:shadow-[4px_4px_0px_#2563eb]', 'hover:-translate-y-0.5', 'bg-white');
+            }
+
+            textSpan.textContent = select.options[select.selectedIndex]?.textContent || select.options[0]?.textContent || '';
+            optionsDiv.innerHTML = '';
+            
+            Array.from(select.options).forEach((opt, index) => {
+                const optDiv = document.createElement('div');
+                optDiv.className = 'p-3 font-extrabold text-sm cursor-pointer hover:bg-brand-50 hover:text-brand-600 transition-colors border-b-2 border-gray-100 last:border-0 text-[#0d0f10]';
+                if (index === select.selectedIndex) {
+                    optDiv.classList.add('bg-brand-600', 'text-white');
+                    optDiv.classList.remove('hover:bg-brand-50', 'hover:text-brand-600', 'text-[#0d0f10]');
+                }
+                optDiv.textContent = opt.textContent;
+                optDiv.onclick = (e) => {
+                    e.stopPropagation();
+                    if(select.disabled) return;
+                    select.selectedIndex = index;
+                    select.dispatchEvent(new Event('change'));
+                    closeAll();
+                };
+                optionsDiv.appendChild(optDiv);
+            });
+        }
+
+        let isOpen = false;
+        function toggle() {
+            if (select.disabled) return;
+            isOpen = !isOpen;
+            if (isOpen) {
+                closeAll();
+                optionsDiv.classList.remove('opacity-0', 'invisible', 'translate-y-[-10px]');
+                arrow.querySelector('svg').style.transform = 'rotate(180deg)';
+                isOpen = true; // Ensure state is correct
+            } else {
+                close();
+            }
+        }
+        
+        function close() {
+            optionsDiv.classList.add('opacity-0', 'invisible', 'translate-y-[-10px]');
+            arrow.querySelector('svg').style.transform = 'rotate(0deg)';
+            isOpen = false;
+        }
+
+        selectedDiv.onclick = (e) => {
+            e.stopPropagation();
+            toggle();
+        };
+
+        // Sync with native select mutations
+        const observer = new MutationObserver(() => updateUI());
+        observer.observe(select, { childList: true, attributes: true, attributeFilter: ['disabled'] });
+        
+        select.addEventListener('change', updateUI);
+        updateUI();
+
+        wrapper.customSelectClose = close;
+    });
+}
+
+function closeAll() {
+    document.querySelectorAll('.custom-select-wrapper').forEach(w => w.customSelectClose && w.customSelectClose());
+}
+
+document.addEventListener('click', closeAll);
+
+// Run initial upgrade and setup a body observer in case elements are added later
+upgradeSelects();
+const bodyObserver = new MutationObserver(() => upgradeSelects());
+bodyObserver.observe(document.body, { childList: true, subtree: true });
 </script>
 {% endblock %}

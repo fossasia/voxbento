@@ -30,10 +30,12 @@ from portal.crypto import encrypt_val
 from portal.database import (
     count_events,
     count_users,
+    create_auth_token,
     create_booth,
     create_event,
     create_invite_token,
     create_room,
+    create_user,
     delete_booth,
     delete_event,
     delete_room,
@@ -66,6 +68,7 @@ from portal.database import (
     set_room_membership,
     update_user_active,
 )
+from portal.email import send_role_invite_email
 from portal.globals import _JS_CACHE_BUST, booths
 from portal.models import (
     BoothTranslationLanguage,
@@ -84,6 +87,13 @@ from portal.websockets.manager import broadcast_transcription
 _BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
 templates = Jinja2Templates(directory=str(_BASE_DIR / "templates"))
+
+
+async def _send_admin_invite(session, user: User, role_name: str, context_name: str, target_url: str):
+    token_val = secrets.token_hex(32)
+    await create_auth_token(session, jti=token_val, user_id=user.id, token_type="magic_link")
+    invite_url = f"{settings.public_base_url}/auth/magic/{token_val}?next={urllib.parse.quote(target_url)}"
+    await send_role_invite_email(user.email, invite_url, role_name, context_name)
 
 router = APIRouter()
 
@@ -801,14 +811,21 @@ async def admin_add_room_member(request: Request, event_id: int, room_id: int):
         async with get_session() as session:
             user = await get_user_by_email(session, email)
             if not user:
-                return safe_redirect(
-                    url=f"/admin/events/{event_id}/rooms/{room_id}/?error=user_not_found",
-                    status_code=status.HTTP_303_SEE_OTHER,
+                display_name = email.split("@")[0]
+                user = await create_user(
+                    session, email=email, display_name=display_name, email_verified=False
                 )
+
             uid = user.id
             if role:
                 try:
                     await set_room_membership(session, user_id=uid, room_id=room_id, role=role)
+                    # Send invite
+                    event = await get_event_by_id(session, event_id)
+                    room = await get_room_by_id(session, room_id)
+                    if event and room:
+                        target_url = "/account"
+                        await _send_admin_invite(session, user, role, f"room ({room.display_name}) for {event.display_name}", target_url)
                 except ValueError:
                     return safe_redirect(
                         url=f"/admin/events/{event_id}/rooms/{room_id}/?error=invalid_role",
@@ -821,6 +838,24 @@ async def admin_add_room_member(request: Request, event_id: int, room_id: int):
                         await remove_room_membership(session, m.id)
                         break
     return safe_redirect(url=f"/admin/events/{event_id}/rooms/{room_id}/", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@router.post(
+    "/admin/events/{event_id}/rooms/{room_id}/members/{membership_id}/invite", dependencies=[Depends(require_admin)]
+)
+async def admin_invite_room_member(request: Request, event_id: int, room_id: int, membership_id: int):
+    async with get_session() as session:
+        memberships = await list_memberships_for_room(session, room_id)
+        for m in memberships:
+            if m.id == membership_id:
+                user = await get_user_by_id(session, m.user_id)
+                event = await get_event_by_id(session, event_id)
+                room = await get_room_by_id(session, room_id)
+                if user and event and room:
+                    target_url = "/account"
+                    await _send_admin_invite(session, user, m.role, f"room ({room.display_name}) for {event.display_name}", target_url)
+                break
+    return safe_redirect(url=f"/admin/events/{event_id}/rooms/{room_id}/?success=invite_sent", status_code=status.HTTP_303_SEE_OTHER)
 
 
 @router.post(
@@ -843,14 +878,21 @@ async def admin_add_booth_member(request: Request, event_id: int, room_id: int, 
         async with get_session() as session:
             user = await get_user_by_email(session, email)
             if not user:
-                return safe_redirect(
-                    url=f"/admin/events/{event_id}/rooms/{room_id}/booths/{booth_id}/?error=user_not_found",
-                    status_code=status.HTTP_303_SEE_OTHER,
+                display_name = email.split("@")[0]
+                user = await create_user(
+                    session, email=email, display_name=display_name, email_verified=False
                 )
+
             uid = user.id
             if role:
                 try:
                     await set_booth_membership(session, user_id=uid, booth_id=booth_id, role=role)
+                    # Send invite
+                    event = await get_event_by_id(session, event_id)
+                    booth = await get_booth_by_id(session, booth_id)
+                    if event and booth:
+                        target_url = "/interpreter"
+                        await _send_admin_invite(session, user, role, f"booth ({booth.language_code}) for {event.display_name}", target_url)
                 except ValueError:
                     return safe_redirect(
                         url=f"/admin/events/{event_id}/rooms/{room_id}/booths/{booth_id}/?error=invalid_role",
@@ -864,6 +906,27 @@ async def admin_add_booth_member(request: Request, event_id: int, room_id: int, 
                         break
     return safe_redirect(
         url=f"/admin/events/{event_id}/rooms/{room_id}/booths/{booth_id}/", status_code=status.HTTP_303_SEE_OTHER
+    )
+
+
+@router.post(
+    "/admin/events/{event_id}/rooms/{room_id}/booths/{booth_id}/members/{membership_id}/invite",
+    dependencies=[Depends(require_admin)],
+)
+async def admin_invite_booth_member(request: Request, event_id: int, room_id: int, booth_id: int, membership_id: int):
+    async with get_session() as session:
+        memberships = await list_memberships_for_booth(session, booth_id)
+        for m in memberships:
+            if m.id == membership_id:
+                user = await get_user_by_id(session, m.user_id)
+                event = await get_event_by_id(session, event_id)
+                booth = await get_booth_by_id(session, booth_id)
+                if user and event and booth:
+                    target_url = "/interpreter"
+                    await _send_admin_invite(session, user, m.role, f"booth ({booth.language_code}) for {event.display_name}", target_url)
+                break
+    return safe_redirect(
+        url=f"/admin/events/{event_id}/rooms/{room_id}/booths/{booth_id}/?success=invite_sent", status_code=status.HTTP_303_SEE_OTHER
     )
 
 
@@ -1126,13 +1189,20 @@ async def admin_add_event_member(request: Request, event_id: int):
         async with get_session() as session:
             user = await get_user_by_email(session, email)
             if not user:
-                return safe_redirect(
-                    url=f"/admin/events/{event_id}/members/?error=user_not_found", status_code=status.HTTP_303_SEE_OTHER
+                display_name = email.split("@")[0]
+                user = await create_user(
+                    session, email=email, display_name=display_name, email_verified=False
                 )
+
             uid = user.id
             if role:
                 try:
                     await set_event_membership(session, user_id=uid, event_id=event_id, role=role)
+                    # Send invite
+                    event = await get_event_by_id(session, event_id)
+                    if event:
+                        target_url = "/account"
+                        await _send_admin_invite(session, user, role, f"event {event.display_name}", target_url)
                 except ValueError:
                     return safe_redirect(
                         url=f"/admin/events/{event_id}/members/?error=invalid_role",
@@ -1145,6 +1215,21 @@ async def admin_add_event_member(request: Request, event_id: int):
                         await remove_event_membership(session, m.id)
                         break
     return safe_redirect(url=f"/admin/events/{event_id}/members/", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@router.post("/admin/events/{event_id}/members/{membership_id}/invite", dependencies=[Depends(require_admin)])
+async def admin_invite_event_member(request: Request, event_id: int, membership_id: int):
+    async with get_session() as session:
+        memberships = await list_memberships_for_event(session, event_id)
+        for m in memberships:
+            if m.id == membership_id:
+                user = await get_user_by_id(session, m.user_id)
+                event = await get_event_by_id(session, event_id)
+                if user and event:
+                    target_url = "/account"
+                    await _send_admin_invite(session, user, m.role, f"event {event.display_name}", target_url)
+                break
+    return safe_redirect(url=f"/admin/events/{event_id}/members/?success=invite_sent", status_code=status.HTTP_303_SEE_OTHER)
 
 
 @router.post("/admin/events/{event_id}/members/{membership_id}/delete", dependencies=[Depends(require_admin)])

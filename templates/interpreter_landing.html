@@ -86,35 +86,45 @@
       <p class="section-desc">Select a booth to join the live session.</p>
 
       {% if my_booths %}
-        <div class="booth-cards">
-        {% for b in my_booths %}
-          <div class="card booth-card">
-            <div class="card-header">
-              <div class="card-title-group">
-                <h3>{{ b.language_name }}</h3>
-                <span class="event-name">{{ b.event_name }}</span>
-                {% if b.room_name %}
-                  <span class="room-name">· {{ b.room_name }}</span>
-                {% endif %}
-              </div>
-              {% if b.is_live %}
-                <span class="status-badge live">● LIVE</span>
-              {% else %}
-                <span class="status-badge offline">○ OFFLINE</span>
-              {% endif %}
-            </div>
+        <div class="booth-groups">
+        {% for event_name, event_booths in my_booths|groupby('event_name') %}
+          <div class="event-group" style="margin-bottom: 2rem;">
+            <h3 class="event-group-title" style="margin-bottom: 1rem; border-bottom: 2px solid var(--color-border); padding-bottom: 0.5rem;">{{ event_name }}</h3>
             
-            <div class="card-body">
-              <div class="role-badge">Role: <strong>{{ b.role }}</strong></div>
-            </div>
-
-            <div class="card-footer">
-              {% if b.role in ['coordinator', 'event_admin', 'super_admin'] %}
-                <a href="/mission-control/{{ b.event_slug }}/" class="btn btn-primary enter-btn">Go to Mission Control ↗</a>
-              {% else %}
-                <a href="/interpreter/{{ b.event_slug }}/{{ b.language_code }}" class="btn btn-primary enter-btn">Enter Booth ↗</a>
+            {% for room_name, room_booths in event_booths|groupby('room_name') %}
+              {% if room_name %}
+                <h4 class="room-group-title" style="margin-top: 1rem; margin-bottom: 0.75rem; color: var(--color-muted); font-size: 0.9rem; text-transform: uppercase; letter-spacing: 0.5px;">{{ room_name }}</h4>
               {% endif %}
-            </div>
+              
+              <div class="booth-cards">
+              {% for b in room_booths %}
+                <div class="card booth-card">
+                  <div class="card-header">
+                    <div class="card-title-group">
+                      <h3>{{ b.language_name }}</h3>
+                    </div>
+                    {% if b.is_live %}
+                      <span class="status-badge live">● LIVE</span>
+                    {% else %}
+                      <span class="status-badge offline">○ OFFLINE</span>
+                    {% endif %}
+                  </div>
+                  
+                  <div class="card-body">
+                    <div class="role-badge">Role: <strong>{{ b.role }}</strong></div>
+                  </div>
+
+                  <div class="card-footer">
+                    {% if b.role in ['coordinator', 'event_admin', 'super_admin'] %}
+                      <a href="/mission-control/{{ b.event_slug }}/" class="btn btn-primary enter-btn">Go to Mission Control ↗</a>
+                    {% else %}
+                      <a href="/interpreter/{{ b.event_slug }}/{{ b.language_code }}" class="btn btn-primary enter-btn">Enter Booth ↗</a>
+                    {% endif %}
+                  </div>
+                </div>
+              {% endfor %}
+              </div>
+            {% endfor %}
           </div>
         {% endfor %}
         </div>

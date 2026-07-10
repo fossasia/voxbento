@@ -162,5 +162,3 @@ async def interpreter_booth_by_identity(
             "js_version": _JS_CACHE_BUST,
         },
     )
-
-

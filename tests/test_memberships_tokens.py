@@ -54,9 +54,9 @@ def _client():
 async def _create_test_user(email="test@example.com", display_name="Test User", password="securepass123"):
     from portal.database import create_user, get_session
 
-    pw_hash = hash_password(password)
+    pw_hash = hash_password(password) if password else None
     async with get_session() as s:
-        user = await create_user(s, email=email, display_name=display_name, password_hash=pw_hash)
+        user = await create_user(s, email=email, display_name=display_name, password_hash=pw_hash, email_verified=True)
     return user
 
 
@@ -655,16 +655,19 @@ class TestEndToEndAdminWorkflow:
                     "email": "alice@e2e.com",
                     "display_name": "Alice",
                     "password": "securepass123",
-                    "password_confirm": "securepass123",
                 },
                 follow_redirects=False,
             )
-        assert resp.status_code == 303
+        assert resp.status_code == 200
 
         from portal.database import get_user_by_email
 
         async with get_session() as s:
             alice = await get_user_by_email(s, "alice@e2e.com")
+            # In real workflow, we would verify email, but tests can force verify
+            alice.email_verified = True
+            await s.flush()
+
         assert alice is not None
 
         # 5. Assign per-event role
