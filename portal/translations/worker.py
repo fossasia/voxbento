@@ -35,7 +35,7 @@ class TranslationWorker:
 
             provider = None
             model = None
-            enabled_langs = []
+            enabled_langs: list[tuple[str, str]] = []
             room = None
 
             if segment.booth_id is None:
@@ -47,7 +47,9 @@ class TranslationWorker:
                     return
                 provider = room.floor_translation_provider
                 model = room.floor_translation_model
-                enabled_langs = [lang for lang in room.translation_languages if lang.enabled]
+                enabled_langs = [
+                    (lang.language_code, lang.language_name) for lang in room.translation_languages if lang.enabled
+                ]
             else:
                 # Booth translation
                 booth = await session.scalar(
@@ -59,7 +61,9 @@ class TranslationWorker:
                     return
                 provider = booth.translation_provider
                 model = booth.translation_model
-                enabled_langs = [lang for lang in booth.translation_languages if lang.enabled]
+                enabled_langs = [
+                    (lang.language_code, lang.language_name) for lang in booth.translation_languages if lang.enabled
+                ]
                 room = await session.scalar(select(Room).where(Room.id == room_id))
 
             if not provider or not model or not enabled_langs or not room:
@@ -74,26 +78,26 @@ class TranslationWorker:
                 logger.error(f"[{booth_id_str}] Translation API key not found for provider {provider}")
                 return
 
-            # Execute translation for all target languages concurrently, sharing a
-            # single HTTP client (and its connection pool) across the whole batch.
-            async with httpx.AsyncClient(timeout=httpx.Timeout(10.0)) as client:
-                tasks = [
-                    self._translate_and_broadcast(
-                        client,
-                        event,
-                        room,
-                        provider,
-                        model,
-                        api_key,
-                        lang.language_code,
-                        lang.language_name,
-                        segment_id,
-                        text,
-                        booth_id_str,
-                    )
-                    for lang in enabled_langs
-                ]
-                await asyncio.gather(*tasks)
+        # The DB session is closed before the network batch so a DB transaction/connection
+        # is not held open for the duration of the (slow) LLM calls. All target languages
+        # share a single HTTP client (and its connection pool); each per-language write in
+        # _translate_and_broadcast opens its own independent session.
+        async with httpx.AsyncClient(timeout=httpx.Timeout(10.0)) as client:
+            tasks = [
+                self._translate_and_broadcast(
+                    client,
+                    provider,
+                    model,
+                    api_key,
+                    lang_code,
+                    lang_name,
+                    segment_id,
+                    text,
+                    booth_id_str,
+                )
+                for lang_code, lang_name in enabled_langs
+            ]
+            await asyncio.gather(*tasks)
 
     def _get_translation_api_key(self, event: Event, provider: str) -> str | None:
         return get_translation_api_key(event, provider)
@@ -101,11 +105,9 @@ class TranslationWorker:
     async def _translate_and_broadcast(
         self,
         client: httpx.AsyncClient,
-        event: Event,
-        room: Room,
         provider: str,
         model: str,
-        api_key: str,
+        api_key: str | None,
         lang_code: str,
         lang_name: str,
         segment_id: int,
@@ -134,7 +136,13 @@ class TranslationWorker:
             logger.error(f"[{booth_id_str}] Translation failed for {lang_code}: {e}")
 
     async def _call_llm(
-        self, client: httpx.AsyncClient, provider: str, model: str, api_key: str, text: str, target_lang_name: str
+        self,
+        client: httpx.AsyncClient,
+        provider: str,
+        model: str,
+        api_key: str | None,
+        text: str,
+        target_lang_name: str,
     ) -> str | None:
         system_prompt = f"You are a professional interpreter. Translate the following text into {target_lang_name}. Output ONLY the translated text, nothing else."
 
