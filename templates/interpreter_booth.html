@@ -110,11 +110,12 @@
       <details class='panel panel-details group bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden shrink-0' open>
         <summary class='panel-header panel-header-details flex items-center justify-between p-4 cursor-pointer hover:bg-gray-50 transition-colors select-none'>
           <h2 class='font-semibold text-sm text-gray-700 flex items-center gap-2'>
-            <span class='participants-dot text-brand-500'>●</span> Participants (<span id='participant-count'>0</span>)
+            <span class='participants-dot text-brand-500 text-[10px]'>●</span>
+            <span>Participants (<span id='participant-count'>0</span>)</span>
           </h2>
           <div class="flex gap-2 items-center">
-            <span id='connection-status' class='status-badge text-[10px] px-2 py-0.5 rounded-md font-medium bg-gray-100 text-gray-600'>Disconnected</span>
-            <span id='active-indicator' class='status-badge text-[10px] px-2 py-0.5 rounded-md font-medium bg-amber-100 text-amber-800'>No active</span>
+            <span id='connection-status' class='status-badge text-[10px] px-2 py-0.5 rounded-md font-medium bg-gray-100 text-gray-600 whitespace-nowrap'>Disconnected</span>
+            <span id='active-indicator' class='status-badge text-[10px] px-2 py-0.5 rounded-md font-medium bg-amber-100 text-amber-800 whitespace-nowrap'>No active</span>
           </div>
         </summary>
         <div class='panel-body p-4 pt-0 border-t border-gray-200 mt-2'>

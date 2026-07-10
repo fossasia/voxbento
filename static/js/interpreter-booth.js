@@ -733,13 +733,13 @@ function toggleRelayAudio() {
         if (!elements.relayStatus) return
         if (st.audioActive) {
           elements.relayStatus.textContent = 'Listening'
-          elements.relayStatus.className = 'status-badge text-[10px] px-2 py-0.5 rounded-md font-medium bg-green-50 text-green-700 border border-green-100'
+          elements.relayStatus.className = 'status-badge text-[10px] px-2 py-0.5 rounded-md font-medium bg-green-50 text-green-700 border border-green-100 whitespace-nowrap'
         } else if (st.peerConnection === 'failed') {
           elements.relayStatus.textContent = 'Error'
-          elements.relayStatus.className = 'status-badge text-[10px] px-2 py-0.5 rounded-md font-medium bg-red-50 text-red-700 border border-red-100'
+          elements.relayStatus.className = 'status-badge text-[10px] px-2 py-0.5 rounded-md font-medium bg-red-50 text-red-700 border border-red-100 whitespace-nowrap'
         } else {
           elements.relayStatus.textContent = 'Connecting...'
-          elements.relayStatus.className = 'status-badge text-[10px] px-2 py-0.5 rounded-md font-medium bg-orange-50 text-orange-700 border border-orange-100'
+          elements.relayStatus.className = 'status-badge text-[10px] px-2 py-0.5 rounded-md font-medium bg-orange-50 text-orange-700 border border-orange-100 whitespace-nowrap'
         }
       }
     })
@@ -750,7 +750,7 @@ function toggleRelayAudio() {
     }
     if (elements.relayStatus) {
       elements.relayStatus.textContent = 'Not Listening'
-      elements.relayStatus.className = 'status-badge text-[10px] px-2 py-0.5 rounded-md font-medium bg-gray-100 text-gray-600'
+      elements.relayStatus.className = 'status-badge text-[10px] px-2 py-0.5 rounded-md font-medium bg-gray-100 text-gray-600 whitespace-nowrap'
     }
     relayWhep.stop()
   }
@@ -1249,7 +1249,7 @@ function renderParticipants() {
   const activeParticipant = state.participants.find((p) => p.participant_id === state.activeInterpreterId)
   setBadge(
     elements.activeIndicator,
-    activeParticipant ? `${activeParticipant.display_name} is active` : 'No active interpreter',
+    activeParticipant ? `${activeParticipant.display_name} is active` : 'No active',
     activeParticipant ? 'success' : 'warning',
   )
   if (elements.participantCount) elements.participantCount.textContent = state.participants.length
