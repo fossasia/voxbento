@@ -27,6 +27,11 @@
     box-shadow: none;
 }
 
+.captions-container.minimized #captions-controls {
+    border-bottom-width: 3px;
+    box-shadow: 8px 8px 0px #0d0f10;
+}
+
 /* Captions animations */
 .captions-box p, .captions-box div {
     animation: fadeIn 0.3s ease-in-out;
