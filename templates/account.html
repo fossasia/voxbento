@@ -55,8 +55,9 @@
     <div class="account-info">
       <h3>Your Roles</h3>
       {% if memberships %}
-      <table class="data-table compact">
-        <thead>
+      <div style="overflow-x: auto; -webkit-overflow-scrolling: touch;">
+        <table class="data-table compact">
+          <thead>
           <tr><th>Scope</th><th>Context</th><th>Role</th><th>Since</th></tr>
         </thead>
         <tbody>
@@ -76,6 +77,7 @@
           {% endfor %}
         </tbody>
       </table>
+      </div>
       {% else %}
       <p class="muted">You have not been assigned a role for any event, room, or booth yet.</p>
       {% endif %}
