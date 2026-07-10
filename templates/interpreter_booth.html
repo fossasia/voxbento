@@ -3,6 +3,7 @@
 {% block title %}Booth {{ booth_id }} | Voxbento Interpreter Portal{% endblock %}
 
 {% block head %}
+<link rel="stylesheet" href="{{ url_for('static', path='css/booth.css') }}?v=4" />
 <script src="https://cdn.tailwindcss.com"></script>
 <script>
     tailwind.config = {
@@ -54,7 +55,7 @@
 >
 
   <!-- ── Full-Width Header Bar ──────────────────────────────────────── -->
-  <header class='flex items-center justify-between px-6 py-3 bg-white shadow-sm z-20 relative border-b border-gray-100' id='booth-header'>
+  <header class='flex items-center justify-between px-6 py-3 bg-white shadow-sm z-20 relative border-b border-gray-100' id=''>
     <!-- Far Left: Live Status Badge -->
     <div class='flex-shrink-0'>
       <span id='live-badge' class='live-badge off inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-gray-100 text-gray-500 font-medium text-xs tracking-wide transition-colors'>
@@ -94,8 +95,8 @@
     
     <!-- LEFT COLUMN: Video -->
     <div class='flex flex-col h-full bg-[#1e2022]'>
-      <section class='panel panel--jitsi h-full relative'>
-        <div class='panel-body monitoring-body h-full'>
+      <section class='--jitsi h-full relative'>
+        <div class='-body h-full'>
           <div class='monitor-frame w-full h-full relative'>
             <iframe id='jitsi-frame' class='absolute inset-0 w-full h-full border-0' title='Jitsi monitoring feed' allow='camera; microphone; autoplay; fullscreen; display-capture; speaker-selection'></iframe>
           </div>
@@ -107,8 +108,8 @@
     <div class='flex flex-col h-full bg-slate-50 overflow-y-auto overflow-x-hidden clean-scrollbar relative z-10 p-5 gap-5'>
       
       <!-- 1. Participants (Collapsible, Open by default) -->
-      <details class='panel panel-details group bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden shrink-0' open>
-        <summary class='panel-header panel-header-details flex items-center justify-between p-4 cursor-pointer hover:bg-gray-50 transition-colors select-none'>
+      <details class='-details group bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden shrink-0' open>
+        <summary class='-header -header-details flex items-center justify-between p-4 cursor-pointer hover:bg-gray-50 transition-colors select-none'>
           <h2 class='font-semibold text-sm text-gray-700 flex items-center gap-2'>
             <span class='participants-dot text-brand-500 text-[10px]'>●</span>
             <span>Participants (<span id='participant-count'>0</span>)</span>
@@ -118,20 +119,20 @@
             <span id='active-indicator' class='status-badge text-[10px] px-2 py-0.5 rounded-md font-medium bg-amber-100 text-amber-800 whitespace-nowrap'>No active</span>
           </div>
         </summary>
-        <div class='panel-body p-4 pt-0 border-t border-gray-200 mt-2'>
+        <div class='-body p-4 pt-0 border-t border-gray-200 mt-2'>
           <div id='participant-list' class='participant-list flex flex-col gap-2'></div>
         </div>
       </details>
 
       <!-- 2. Booth Audio Volume Slider (Always visible) -->
-      <div class='panel sidebar-panel bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden shrink-0'>
-        <div class='panel-header flex justify-between items-center p-4 border-b border-gray-200'>
+      <div class='bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden shrink-0'>
+        <div class='-header flex justify-between items-center p-4 border-b border-gray-200'>
           <h2 class='font-semibold text-sm text-gray-700'>Booth Audio Volume</h2>
           <span class='info-tooltip text-gray-400 hover:text-gray-600 cursor-help flex items-center justify-center text-xs transition-colors' title='Controls the volume of your boothmate&#39;s audio. Active interpreters default to 0% to prevent echo. Passive interpreters default to 80% to monitor.'>
             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
           </span>
         </div>
-        <div class='panel-body p-5'>
+        <div class='-body p-5'>
           <div class='volume-slider-row flex items-center gap-4'>
             <span class='volume-icon text-gray-400'>
               <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.536 8.464a5 5 0 010 7.072m2.828-9.9a9 9 0 010 12.728M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z"></path></svg>
@@ -144,15 +145,15 @@
       </div>
 
       <!-- 3. Booth Chat (Pinned open — not collapsible) -->
-      <div class='panel sidebar-panel panel--chat bg-white rounded-xl shadow-sm border border-gray-100 flex flex-col overflow-hidden shrink-0' style='min-height: 300px;'>
-        <div class='panel-header flex justify-between items-center p-4 border-b border-gray-200'>
+      <div class='--chat bg-white rounded-xl shadow-sm border border-gray-100 flex flex-col overflow-hidden shrink-0' style='min-height: 300px;'>
+        <div class='-header flex justify-between items-center p-4 border-b border-gray-200'>
           <h2 class='font-semibold text-sm text-gray-700 flex items-center gap-2'>
             <svg class="w-4 h-4 text-brand-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"></path></svg>
             Booth Chat
           </h2>
           <span class='status-badge text-[10px] px-2 py-0.5 rounded-md font-medium bg-gray-100 text-gray-600'>Internal</span>
         </div>
-        <div class='panel-body chat-body flex flex-col flex-grow overflow-hidden bg-white'>
+        <div class='-body flex flex-col flex-grow overflow-hidden bg-white'>
           <div id='chat-log' class='chat-log flex-grow overflow-y-auto p-4 flex flex-col gap-4 text-sm clean-scrollbar'></div>
           <form id='chat-form' class='chat-form p-3 border-t border-gray-100 flex gap-2 bg-gray-50/50'>
             <input id='chat-input' class='input flex-grow rounded-lg border border-gray-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500/50 focus:border-brand-500 transition-all placeholder-gray-400 bg-white' type='text' placeholder='Type a message...' />
@@ -162,8 +163,8 @@
       </div>
 
       <!-- 4. Relay Audio (Collapsed by default) -->
-      <details class='panel panel-details group bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden shrink-0'>
-        <summary class='panel-header panel-header-details flex items-center justify-between p-4 cursor-pointer hover:bg-gray-50 transition-colors select-none'>
+      <details class='-details group bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden shrink-0'>
+        <summary class='-header -header-details flex items-center justify-between p-4 cursor-pointer hover:bg-gray-50 transition-colors select-none'>
           <h2 class='font-semibold text-sm text-gray-700 flex items-center gap-2'>
             <svg class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z"></path></svg>
             Relay Audio
@@ -174,7 +175,7 @@
             <span class='status-badge status-warning text-[10px] px-2 py-0.5 rounded-md font-medium bg-orange-50 text-orange-700 border border-orange-100'>Unconfigured</span>
           {% endif %}
         </summary>
-        <div class='panel-body p-5 pt-0 border-t border-gray-200 mt-2 hidden group-open:block space-y-5'>
+        <div class='-body p-5 pt-0 border-t border-gray-200 mt-2 hidden group-open:block space-y-5'>
           {% if relay_whep_url %}
           <div class='form-group mb-5 mt-2'>
             <button id='pass-relay' type='button' class='btn w-full bg-white border border-gray-200 rounded-lg py-2.5 text-sm font-medium hover:bg-gray-50 hover:border-gray-300 shadow-sm transition-all text-gray-700' title='Listen to Relay'>
@@ -202,15 +203,15 @@
       </details>
       
       <!-- 5. Diagnostics (Collapsed by default) -->
-      <details class='panel panel-details group bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden shrink-0'>
-        <summary class='panel-header panel-header-details flex items-center justify-between p-4 cursor-pointer hover:bg-gray-50 transition-colors select-none'>
+      <details class='-details group bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden shrink-0'>
+        <summary class='-header -header-details flex items-center justify-between p-4 cursor-pointer hover:bg-gray-50 transition-colors select-none'>
           <h2 class='font-semibold text-sm text-gray-700 flex items-center gap-2'>
             <svg class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path></svg>
             Diagnostics
           </h2>
           <span id='ingest-status' class='status-badge text-[10px] px-2 py-0.5 rounded-md font-medium bg-red-50 text-red-700 border border-red-100'>Disconnected</span>
         </summary>
-        <div class='panel-body panel-body-sm p-5 pt-0 border-t border-gray-200 mt-2 hidden group-open:block space-y-5'>
+        <div class='-body -body-sm p-5 pt-0 border-t border-gray-200 mt-2 hidden group-open:block space-y-5'>
           
           <div class='diagnostics-section pt-2'>
             <div class='diagnostics-header flex justify-between items-center mb-3'>
