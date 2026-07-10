@@ -163,7 +163,7 @@ class TestWorkerProviderRouting:
         room_id = await self._seed_room(tts_provider="supertonic", voice="F2")
 
         # Avoid real LLM calls — yield a deterministic translated sentence.
-        async def fake_stream_llm(self, provider, model, api_key, text, target_lang_name):
+        async def fake_stream_llm(self, provider, model, api_key, text, target_lang_name, **kwargs):
             yield "Bonjour le monde."
 
         monkeypatch.setattr(TTSWorker, "_stream_llm", fake_stream_llm)
@@ -355,4 +355,3 @@ class TestPipelineCleanup:
 
         assert 999 not in worker_mod._room_pipelines
         assert worker_mod._pipeline_shutdowns == set()
-

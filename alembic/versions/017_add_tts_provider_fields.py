@@ -27,9 +27,7 @@ def upgrade() -> None:
         batch_op.add_column(
             sa.Column("floor_tts_provider", sa.String(length=20), server_default="deepgram", nullable=False)
         )
-        batch_op.add_column(
-            sa.Column("floor_tts_voice", sa.String(length=50), server_default="M1", nullable=False)
-        )
+        batch_op.add_column(sa.Column("floor_tts_voice", sa.String(length=50), server_default="M1", nullable=False))
 
 
 def downgrade() -> None:

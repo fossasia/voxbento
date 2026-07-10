@@ -350,7 +350,11 @@ async def resolve_booth_role(payload: dict | None, booth_id: str | None = None) 
         try:
             event_slug, lang_code = parse_booth_id(booth_id)
             async with get_session() as db_session:
-                stmt = select(DBBooth).join(Event).where(Event.slug == event_slug, DBBooth.language_code == lang_code)
+                stmt = (
+                    select(DBBooth)
+                    .join(DBBooth.event)
+                    .where(Event.slug == event_slug, DBBooth.language_code == lang_code)
+                )
                 booth = (await db_session.scalars(stmt)).first()
                 if booth:
                     bms = await list_booth_memberships_for_user(db_session, int(payload["sub"]))

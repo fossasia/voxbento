@@ -26,7 +26,7 @@ import secrets
 from datetime import datetime, timezone
 
 import sqlalchemy as sa
-from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, validates
 
 from portal.booth_identity import make_mediamtx_path, validate_event_slug, validate_language_code
@@ -134,6 +134,11 @@ class Room(Base):
     floor_tts_voice: Mapped[str] = mapped_column(String(50), default="M1", server_default=sa.text("'M1'"))
     audio_delay_ms: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
 
+    # AI Interpretation Settings
+    floor_ai_interpreter_persona: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
+    floor_ai_interpretation_style: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
+    floor_ai_vocabulary_enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default="1")
+
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
     event: Mapped[Event] = relationship(back_populates="rooms")
@@ -179,6 +184,11 @@ class DBBooth(Base):
     translation_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
     translation_provider: Mapped[str | None] = mapped_column(String(50), nullable=True, default=None)
     translation_model: Mapped[str | None] = mapped_column(String(100), nullable=True, default=None)
+
+    # AI Interpretation Settings
+    ai_interpreter_persona: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
+    ai_interpretation_style: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
+    ai_vocabulary_enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default="1")
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
@@ -293,6 +303,52 @@ class TranscriptTranslation(Base):
     segment_id: Mapped[int] = mapped_column(ForeignKey("transcript_segments.id", ondelete="CASCADE"))
     language_code: Mapped[str] = mapped_column(String(20))
     text: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+# ---------------------------------------------------------------------------
+# AIVocabularyEntry
+# ---------------------------------------------------------------------------
+
+
+class AIVocabularyEntry(Base):
+    """Event/room/booth-scoped vocabulary entry for AI interpretation prompts.
+
+    Organizers upload these via CSV to control how the LLM handles specific
+    terms (project names, acronyms, technical vocabulary).
+    """
+
+    __tablename__ = "ai_vocabulary_entries"
+    __table_args__ = (
+        Index("ix_ai_vocab_event_language", "event_id", "target_language"),
+        Index("ix_ai_vocab_room_language", "room_id", "target_language"),
+        Index("ix_ai_vocab_booth_language", "booth_id", "target_language"),
+        Index("ix_ai_vocab_source_term", "source_term"),
+        UniqueConstraint(
+            "event_id",
+            "room_id",
+            "booth_id",
+            "source_term",
+            "target_language",
+            name="uq_ai_vocab_scope_term_lang",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+
+    event_id: Mapped[int] = mapped_column(ForeignKey("events.id", ondelete="CASCADE"))
+    room_id: Mapped[int | None] = mapped_column(ForeignKey("rooms.id", ondelete="CASCADE"), nullable=True)
+    booth_id: Mapped[int | None] = mapped_column(ForeignKey("booths.id", ondelete="CASCADE"), nullable=True)
+
+    source_term: Mapped[str] = mapped_column(String(255))
+    target_language: Mapped[str] = mapped_column(String(20), default="all", server_default="all")
+    target_term: Mapped[str] = mapped_column(String(255))
+
+    description: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
+    case_sensitive: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    match_type: Mapped[str] = mapped_column(String(20), default="phrase", server_default="phrase")
+    priority: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
 

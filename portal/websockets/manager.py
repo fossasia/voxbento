@@ -11,7 +11,7 @@ from portal.auth import can_perform_role
 from portal.booth_identity import parse_booth_id
 from portal.database import get_session as get_db_session
 from portal.globals import booths
-from portal.models import DBBooth, Event, Room
+from portal.models import DBBooth, Event
 
 
 @dataclass
@@ -189,9 +189,8 @@ async def _handle_join(ws: WebSocket, session: Session, data: dict) -> None:
         try:
             _slug, _lang = parse_booth_id(session.booth_id)
             async with get_db_session() as _db:
-                _db_booth = await _db.scalar(
-                    select(DBBooth).join(Event).where(Event.slug == _slug, DBBooth.language_code == _lang)
-                )
+                stmt = select(DBBooth).join(DBBooth.event).where(Event.slug == _slug, DBBooth.language_code == _lang)
+                _db_booth = await _db.scalar(stmt)
                 if _db_booth and _db_booth.broadcast_unlocked:
                     state = await booths.set_broadcast_unlocked(session.booth_id, True, language, channel_id)
         except Exception as e:
@@ -283,8 +282,8 @@ async def _handle_set_broadcast_unlocked(ws: WebSocket, session: Session, data: 
         async with get_db_session() as db:
             stmt = (
                 select(DBBooth)
-                .join(Room)
-                .join(Event)
+                .join(DBBooth.room)
+                .join(DBBooth.event)
                 .where(Event.slug == event_slug, DBBooth.language_code == language_code)
             )
             result = await db.execute(stmt)

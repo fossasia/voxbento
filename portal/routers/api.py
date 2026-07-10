@@ -20,8 +20,6 @@ from portal.websockets.manager import broadcast_transcription
 router = APIRouter(prefix="/api")
 
 
-
-
 @router.post("/events/{event_slug}/booths", status_code=status.HTTP_201_CREATED)
 async def create_event_booth(
     event_slug: str,
@@ -123,7 +121,7 @@ async def api_transcription_start(
     async with get_session() as session:
         stmt = (
             select(DBBooth)
-            .join(Event)
+            .join(DBBooth.event)
             .options(selectinload(DBBooth.event))
             .where(Event.slug == event_slug, DBBooth.language_code == language_code)
         )
@@ -147,7 +145,7 @@ async def api_transcription_start(
             )
         if provider_enum != ProviderEnum.LOCAL and (not api_key):
             raise HTTPException(status_code=400, detail=f"{provider} API key missing. Cannot start transcription.")
-        config = ProviderConfig(api_key=api_key)
+        config = ProviderConfig(api_key=api_key, event_id=db_booth.event.id)
         room_id = db_booth.room_id
     try:
         await start_transcription_worker(
@@ -163,7 +161,7 @@ async def api_transcription_stop(
     event_slug: str,
     language_code: str,
     token: str = Query(""),
-    credentials: HTTPAuthorizationCredentials | None = Depends(security)
+    credentials: HTTPAuthorizationCredentials | None = Depends(security),
 ):
     _require_access(credentials, token)
     booth_id = make_booth_id(event_slug, language_code)

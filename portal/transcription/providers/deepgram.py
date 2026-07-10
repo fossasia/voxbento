@@ -40,6 +40,17 @@ class DeepgramProvider(TranscriptionProvider):
             return
 
         url = f"wss://api.deepgram.com/v1/listen?model={model_variant}&language={language_code}&encoding=linear16&sample_rate=16000&channels=1&interim_results=true&keepalive=true&endpointing=2000&smart_format=true&punctuate=true&numerals=true"
+
+        if config.event_id is not None:
+            from portal.translations.vocabulary import get_deepgram_keywords
+
+            # Note: We pass None for booth_db_id since we only have the string booth_id here
+            keywords = await get_deepgram_keywords(config.event_id, room_id, None)
+            from urllib.parse import quote
+
+            for kw in keywords:
+                url += f"&keywords={quote(kw, safe=':')}"
+
         headers = {"Authorization": f"Token {api_key}"}
 
         consecutive_errors = 0
