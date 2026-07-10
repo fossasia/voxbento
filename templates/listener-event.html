@@ -146,9 +146,9 @@
     var container = document.getElementById('captions-container');
     container.classList.toggle('minimized');
     if (container.classList.contains('minimized')) {
-      this.textContent = '▲';
+      this.textContent = 'Maximize Captions ▲';
     } else {
-      this.textContent = '▼';
+      this.textContent = 'Minimize Captions ▼';
     }
   });
 </script>
@@ -660,7 +660,7 @@ function upgradeSelects() {
         selectedDiv.appendChild(arrow);
         
         const optionsDiv = document.createElement('div');
-        optionsDiv.className = 'custom-options absolute left-0 right-0 top-full mt-2 bg-white border-2 border-[#0d0f10] shadow-[4px_4px_0px_#0d0f10] z-[100] opacity-0 invisible translate-y-[-10px] transition-all duration-200 flex flex-col rounded max-h-[300px] overflow-y-auto';
+        optionsDiv.className = 'custom-options absolute left-0 right-0 top-full mt-2 bg-white border-2 border-[#0d0f10] shadow-[4px_4px_0px_#0d0f10] z-[100] opacity-0 invisible translate-y-[-10px] transition-all duration-200 block rounded max-h-[300px] overflow-y-auto overscroll-contain';
         
         wrapper.appendChild(selectedDiv);
         wrapper.appendChild(optionsDiv);
