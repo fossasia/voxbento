@@ -236,77 +236,125 @@
                 
                 <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-8">
                     <!-- Card 1: Human Interpretation -->
-                    <div class="group h-80 lg:h-96 w-full [perspective:1000px]" onclick="if(window.innerWidth < 1024) this.classList.toggle('rotate-active')">
-                        <div class="relative w-full h-full transition-all duration-700 [transform-style:preserve-3d] group-hover:[transform:rotateY(180deg)] group-[.rotate-active]:[transform:rotateY(180deg)] rounded-lg cursor-pointer">
-                            <!-- Front side -->
-                            <div class="absolute inset-0 [backface-visibility:hidden] rounded-lg overflow-hidden brutal-border brutal-shadow">
-                                <img src="https://images.unsplash.com/photo-1540575467063-178a50c2df87?q=80&w=800&auto=format&fit=crop" class="absolute inset-0 w-full h-full object-cover transition-transform duration-700 group-hover:scale-110" alt="Human Interpretation">
-                                <div class="absolute inset-0 bg-[#0d0f10] opacity-60 mix-blend-multiply"></div>
-                                <div class="absolute inset-0 p-8 flex flex-col justify-end text-center items-center">
-                                    <h3 class="text-3xl font-extrabold text-white leading-tight">Human<br>Interpretation</h3>
+                    <div class="h-80 lg:h-96 w-full" onclick="if(window.innerWidth < 1024) this.querySelector('.solution-card').classList.toggle('rotate-active')">
+                        <div class="solution-card group">
+                            <div class="solution-card-content">
+                                <!-- Back side -->
+                                <div class="solution-card-back">
+                                    <div class="solution-card-back-content">
+                                        <p class="font-bold leading-snug text-sm">Empower professional interpreters with our latency-free virtual booths. Enable seamless handoffs, dedicated chat, and intuitive controls designed for human-led events.</p>
+                                        <span class="brutal-btn brutal-btn-primary w-full text-sm py-2 px-0 border-2">Explore More &rarr;</span>
+                                    </div>
                                 </div>
-                            </div>
-                            <!-- Back side -->
-                            <div class="absolute inset-0 [backface-visibility:hidden] [transform:rotateY(180deg)] bg-[#eef2f6] rounded-lg p-6 flex flex-col justify-center text-center items-center brutal-border brutal-shadow">
-                                <p class="text-[#0d0f10] font-bold mb-6 leading-snug">Empower professional interpreters with our latency-free virtual booths. Enable seamless handoffs, dedicated chat, and intuitive controls designed for human-led events.</p>
-                                <span class="brutal-btn brutal-btn-primary w-full text-sm py-3 px-0">Explore More &rarr;</span>
+                                
+                                <!-- Front side -->
+                                <div class="solution-card-front">
+                                    <div class="circle circle-1"></div>
+                                    <div class="circle circle-2"></div>
+                                    <img src="https://images.unsplash.com/photo-1540575467063-178a50c2df87?q=80&w=800&auto=format&fit=crop" class="img-bg" alt="Human Interpretation">
+                                    <div class="front-content">
+                                        <div class="badge">Professional</div>
+                                        <div class="description">
+                                            <div class="title">
+                                                <p>Human Interpretation</p>
+                                            </div>
+                                            <p class="card-footer">Virtual Booths & Controls</p>
+                                        </div>
+                                    </div>
+                                </div>
                             </div>
                         </div>
                     </div>
                     
                     <!-- Card 2: AI Speech Translation -->
-                    <div class="group h-80 lg:h-96 w-full [perspective:1000px]" onclick="if(window.innerWidth < 1024) this.classList.toggle('rotate-active')">
-                        <div class="relative w-full h-full transition-all duration-700 [transform-style:preserve-3d] group-hover:[transform:rotateY(180deg)] group-[.rotate-active]:[transform:rotateY(180deg)] rounded-lg cursor-pointer">
-                            <!-- Front side -->
-                            <div class="absolute inset-0 [backface-visibility:hidden] rounded-lg overflow-hidden brutal-border brutal-shadow">
-                                <img src="https://images.unsplash.com/photo-1516321318423-f06f85e504b3?q=80&w=800&auto=format&fit=crop" class="absolute inset-0 w-full h-full object-cover transition-transform duration-700 group-hover:scale-110" alt="AI Speech Translation">
-                                <div class="absolute inset-0 bg-[#0d0f10] opacity-60 mix-blend-multiply"></div>
-                                <div class="absolute inset-0 p-8 flex flex-col justify-end text-center items-center">
-                                    <h3 class="text-3xl font-extrabold text-white leading-tight">AI Speech<br>Translation</h3>
+                    <div class="h-80 lg:h-96 w-full" onclick="if(window.innerWidth < 1024) this.querySelector('.solution-card').classList.toggle('rotate-active')">
+                        <div class="solution-card group">
+                            <div class="solution-card-content">
+                                <!-- Back side -->
+                                <div class="solution-card-back">
+                                    <div class="solution-card-back-content">
+                                        <p class="font-bold leading-snug text-sm">Bridge language gaps instantly with state-of-the-art neural translation models. Deliver precise, context-aware audio streams without the overhead of physical booths.</p>
+                                        <span class="brutal-btn brutal-btn-primary w-full text-sm py-2 px-0 border-2">Explore More &rarr;</span>
+                                    </div>
                                 </div>
-                            </div>
-                            <!-- Back side -->
-                            <div class="absolute inset-0 [backface-visibility:hidden] [transform:rotateY(180deg)] bg-[#eef2f6] rounded-lg p-6 flex flex-col justify-center text-center items-center brutal-border brutal-shadow">
-                                <p class="text-[#0d0f10] font-bold mb-6 leading-snug">Bridge language gaps instantly with state-of-the-art neural translation models. Deliver precise, context-aware audio streams without the overhead of physical booths.</p>
-                                <span class="brutal-btn brutal-btn-primary w-full text-sm py-3 px-0">Explore More &rarr;</span>
+                                
+                                <!-- Front side -->
+                                <div class="solution-card-front">
+                                    <div class="circle circle-1"></div>
+                                    <div class="circle circle-2"></div>
+                                    <img src="https://images.unsplash.com/photo-1516321318423-f06f85e504b3?q=80&w=800&auto=format&fit=crop" class="img-bg" alt="AI Speech Translation">
+                                    <div class="front-content">
+                                        <div class="badge">Automated</div>
+                                        <div class="description">
+                                            <div class="title">
+                                                <p>AI Speech Translation</p>
+                                            </div>
+                                            <p class="card-footer">Neural Machine Models</p>
+                                        </div>
+                                    </div>
+                                </div>
                             </div>
                         </div>
                     </div>
                     
                     <!-- Card 3: Live Captions & Subtitles -->
-                    <div class="group h-80 lg:h-96 w-full [perspective:1000px]" onclick="if(window.innerWidth < 1024) this.classList.toggle('rotate-active')">
-                        <div class="relative w-full h-full transition-all duration-700 [transform-style:preserve-3d] group-hover:[transform:rotateY(180deg)] group-[.rotate-active]:[transform:rotateY(180deg)] rounded-lg cursor-pointer">
-                            <!-- Front side -->
-                            <div class="absolute inset-0 [backface-visibility:hidden] rounded-lg overflow-hidden brutal-border brutal-shadow">
-                                <img src="https://images.unsplash.com/photo-1551818255-e6e10975bc17?q=80&w=800&auto=format&fit=crop" class="absolute inset-0 w-full h-full object-cover transition-transform duration-700 group-hover:scale-110" alt="Live Captions">
-                                <div class="absolute inset-0 bg-[#0d0f10] opacity-60 mix-blend-multiply"></div>
-                                <div class="absolute inset-0 p-8 flex flex-col justify-end text-center items-center">
-                                    <h3 class="text-3xl font-extrabold text-white leading-tight">Live Captions<br>& Subtitles</h3>
+                    <div class="h-80 lg:h-96 w-full" onclick="if(window.innerWidth < 1024) this.querySelector('.solution-card').classList.toggle('rotate-active')">
+                        <div class="solution-card group">
+                            <div class="solution-card-content">
+                                <!-- Back side -->
+                                <div class="solution-card-back">
+                                    <div class="solution-card-back-content">
+                                        <p class="font-bold leading-snug text-sm">Boost accessibility and comprehension with real-time, highly accurate captioning. Generate readable text streams dynamically as your speakers deliver their message.</p>
+                                        <span class="brutal-btn brutal-btn-primary w-full text-sm py-2 px-0 border-2">Explore More &rarr;</span>
+                                    </div>
                                 </div>
-                            </div>
-                            <!-- Back side -->
-                            <div class="absolute inset-0 [backface-visibility:hidden] [transform:rotateY(180deg)] bg-[#eef2f6] rounded-lg p-6 flex flex-col justify-center text-center items-center brutal-border brutal-shadow">
-                                <p class="text-[#0d0f10] font-bold mb-6 leading-snug">Boost accessibility and comprehension with real-time, highly accurate captioning. Generate readable text streams dynamically as your speakers deliver their message.</p>
-                                <span class="brutal-btn brutal-btn-primary w-full text-sm py-3 px-0">Explore More &rarr;</span>
+                                
+                                <!-- Front side -->
+                                <div class="solution-card-front">
+                                    <div class="circle circle-1"></div>
+                                    <div class="circle circle-2"></div>
+                                    <img src="https://images.unsplash.com/photo-1551818255-e6e10975bc17?q=80&w=800&auto=format&fit=crop" class="img-bg" alt="Live Captions">
+                                    <div class="front-content">
+                                        <div class="badge">Accessible</div>
+                                        <div class="description">
+                                            <div class="title">
+                                                <p>Live Captions & Subtitles</p>
+                                            </div>
+                                            <p class="card-footer">Real-time Text Streams</p>
+                                        </div>
+                                    </div>
+                                </div>
                             </div>
                         </div>
                     </div>
                     
                     <!-- Card 4: Media Routing -->
-                    <div class="group h-80 lg:h-96 w-full [perspective:1000px]" onclick="if(window.innerWidth < 1024) this.classList.toggle('rotate-active')">
-                        <div class="relative w-full h-full transition-all duration-700 [transform-style:preserve-3d] group-hover:[transform:rotateY(180deg)] group-[.rotate-active]:[transform:rotateY(180deg)] rounded-lg cursor-pointer">
-                            <!-- Front side -->
-                            <div class="absolute inset-0 [backface-visibility:hidden] rounded-lg overflow-hidden brutal-border brutal-shadow">
-                                <img src="https://images.unsplash.com/photo-1598488035139-bdbb2231ce04?q=80&w=800&auto=format&fit=crop" class="absolute inset-0 w-full h-full object-cover transition-transform duration-700 group-hover:scale-110" alt="Media Routing">
-                                <div class="absolute inset-0 bg-[#0d0f10] opacity-60 mix-blend-multiply"></div>
-                                <div class="absolute inset-0 p-8 flex flex-col justify-end text-center items-center">
-                                    <h3 class="text-3xl font-extrabold text-white leading-tight">Media<br>Routing</h3>
+                    <div class="h-80 lg:h-96 w-full" onclick="if(window.innerWidth < 1024) this.querySelector('.solution-card').classList.toggle('rotate-active')">
+                        <div class="solution-card group">
+                            <div class="solution-card-content">
+                                <!-- Back side -->
+                                <div class="solution-card-back">
+                                    <div class="solution-card-back-content">
+                                        <p class="font-bold leading-snug text-sm">Leverage our robust WebRTC infrastructure to broadcast low-latency audio to thousands of concurrent listeners globally. No dedicated apps or complex hardware needed.</p>
+                                        <span class="brutal-btn brutal-btn-primary w-full text-sm py-2 px-0 border-2">Explore More &rarr;</span>
+                                    </div>
                                 </div>
-                            </div>
-                            <!-- Back side -->
-                            <div class="absolute inset-0 [backface-visibility:hidden] [transform:rotateY(180deg)] bg-[#eef2f6] rounded-lg p-6 flex flex-col justify-center text-center items-center brutal-border brutal-shadow">
-                                <p class="text-[#0d0f10] font-bold mb-6 leading-snug">Leverage our robust WebRTC infrastructure to broadcast low-latency audio to thousands of concurrent listeners globally. No dedicated apps or complex hardware needed.</p>
-                                <span class="brutal-btn brutal-btn-primary w-full text-sm py-3 px-0">Explore More &rarr;</span>
+                                
+                                <!-- Front side -->
+                                <div class="solution-card-front">
+                                    <div class="circle circle-1"></div>
+                                    <div class="circle circle-2"></div>
+                                    <img src="https://images.unsplash.com/photo-1598488035139-bdbb2231ce04?q=80&w=800&auto=format&fit=crop" class="img-bg" alt="Media Routing">
+                                    <div class="front-content">
+                                        <div class="badge">Infrastructure</div>
+                                        <div class="description">
+                                            <div class="title">
+                                                <p>Global Media Routing</p>
+                                            </div>
+                                            <p class="card-footer">Low-Latency WebRTC</p>
+                                        </div>
+                                    </div>
+                                </div>
                             </div>
                         </div>
                     </div>
