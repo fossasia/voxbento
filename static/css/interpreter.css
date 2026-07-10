@@ -1,66 +1,79 @@
-/* Base Custom CSS for brutalist interpreter booth components */
+/* Base Custom CSS for clean interpreter booth components */
 
-/* Custom Range Slider */
-.brutal-range {
+/* Clean Range Slider */
+.clean-range {
   -webkit-appearance: none;
   appearance: none;
-  background: #f8fafc;
-  height: 12px;
-  border: 2px solid #0d0f10;
+  background: #e2e8f0; /* slate-200 */
+  height: 6px;
+  border-radius: 9999px;
   outline: none;
   margin: 10px 0;
 }
 
-.brutal-range::-webkit-slider-thumb {
+.clean-range::-webkit-slider-thumb {
   -webkit-appearance: none;
   appearance: none;
-  width: 20px;
-  height: 24px;
-  background: #2563eb; /* brand-600 */
-  border: 2px solid #0d0f10;
+  width: 16px;
+  height: 16px;
+  background: #3b82f6; /* blue-500 */
+  border: 2px solid white;
+  border-radius: 50%;
   cursor: pointer;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+  transition: transform 0.1s;
 }
 
-.brutal-range::-moz-range-thumb {
-  width: 20px;
-  height: 24px;
-  background: #2563eb;
-  border: 2px solid #0d0f10;
-  cursor: pointer;
-  border-radius: 0;
+.clean-range::-webkit-slider-thumb:hover {
+  transform: scale(1.1);
 }
 
-/* Custom Scrollbar for brutalist look */
-.brutal-scrollbar::-webkit-scrollbar {
-  width: 14px;
+.clean-range::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  background: #3b82f6;
+  border: 2px solid white;
+  border-radius: 50%;
+  cursor: pointer;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+  transition: transform 0.1s;
 }
-.brutal-scrollbar::-webkit-scrollbar-track {
-  background: #f8fafc;
-  border-left: 3px solid #0d0f10;
+
+.clean-range::-moz-range-thumb:hover {
+  transform: scale(1.1);
 }
-.brutal-scrollbar::-webkit-scrollbar-thumb {
-  background-color: #0d0f10;
-  border-left: 3px solid #0d0f10;
+
+/* Clean Scrollbar */
+.clean-scrollbar::-webkit-scrollbar {
+  width: 6px;
+}
+.clean-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+.clean-scrollbar::-webkit-scrollbar-thumb {
+  background-color: #cbd5e1; /* slate-300 */
+  border-radius: 9999px;
+}
+.clean-scrollbar:hover::-webkit-scrollbar-thumb {
+  background-color: #94a3b8; /* slate-400 */
 }
 
 /* Hide arrow on select to allow styling */
-select.brutal-select {
+select.clean-select {
   appearance: none;
   background-image: none;
 }
 
 /* Animations for live badge */
-@keyframes pulseLive {
-  0% { background-color: #ef4444; color: white; transform: scale(1); }
-  50% { background-color: #dc2626; color: white; transform: scale(1.05); }
-  100% { background-color: #ef4444; color: white; transform: scale(1); }
+@keyframes pulseLiveClean {
+  0% { background-color: #fca5a5; color: #7f1d1d; } /* red-300 to red-900 */
+  50% { background-color: #ef4444; color: white; } /* red-500 to white */
+  100% { background-color: #fca5a5; color: #7f1d1d; }
 }
 
 .live-badge.live {
-  background-color: #ef4444; /* red-500 */
-  color: white;
-  border-color: #7f1d1d; /* red-900 */
-  animation: pulseLive 2s infinite;
+  animation: pulseLiveClean 2.5s infinite;
+  border-color: transparent;
 }
 
 .live-badge.live .live-dot {
@@ -78,4 +91,22 @@ details > summary {
 }
 details > summary::-webkit-details-marker {
   display: none;
+}
+
+/* Clean Progress Bar */
+progress.clean-progress {
+  -webkit-appearance: none;
+  appearance: none;
+}
+progress.clean-progress::-webkit-progress-bar {
+  background-color: #e2e8f0;
+  border-radius: 9999px;
+}
+progress.clean-progress::-webkit-progress-value {
+  background-color: #3b82f6;
+  border-radius: 9999px;
+}
+progress.clean-progress::-moz-progress-bar {
+  background-color: #3b82f6;
+  border-radius: 9999px;
 }
