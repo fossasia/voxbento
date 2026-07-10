@@ -140,7 +140,7 @@ async def register_submit(request: Request):
                     session,
                     jti=token_val,
                     user_id=user.id,
-                    token_type="verification",
+                    token_type="verification",  # nosec B105
                 )
                 await send_verification_email(email, token_val)
                 
@@ -260,7 +260,7 @@ async def request_magic_link(request: Request):
                 session,
                 jti=token_val,
                 user_id=user.id,
-                token_type="magic_link",
+                token_type="magic_link",  # nosec B105
             )
             await send_magic_login_email(email, token_val)
     
@@ -313,7 +313,7 @@ async def forgot_password_request(request: Request):
                 session,
                 jti=token_val,
                 user_id=user.id,
-                token_type="password_reset",
+                token_type="password_reset",  # nosec B105
             )
             await send_password_reset_email(email, token_val)
     
