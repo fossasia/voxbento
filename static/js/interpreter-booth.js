@@ -1344,7 +1344,7 @@ function renderMicControls() {
   if (micOffIcon) micOffIcon.classList.toggle('hidden', !state.micMuted)
   elements.toggleMic.classList.toggle('muted', state.micMuted)
   elements.toggleMic.classList.toggle('unmuted', !state.micMuted)
-  if (elements.muteLabel) elements.muteLabel.textContent = state.micMuted ? 'UNMUTE' : 'MUTE'
+  if (elements.muteLabel) elements.muteLabel.textContent = state.micMuted ? 'Unmute' : 'Mute'
   elements.toggleMic.setAttribute('aria-label', state.micMuted ? 'Unmute microphone' : 'Mute microphone')
   elements.toggleMic.setAttribute('title', state.micMuted ? 'Unmute (Space)' : 'Mute (Space)')
 
@@ -1382,8 +1382,9 @@ function renderHandoverButton() {
   if (!elements.handoverBtn) return
   if (!state.joined || !state.participantId) {
     elements.handoverBtn.disabled = true
-    elements.handoverBtn.className = 'header-btn header-btn--handover state-grey'
-    elements.handoverLabel.textContent = 'PASS MIC'
+    elements.handoverBtn.classList.remove('state-green', 'state-flash-yellow')
+    elements.handoverBtn.classList.add('state-grey')
+    elements.handoverLabel.textContent = 'Pass Mic'
     return
   }
 
@@ -1396,7 +1397,7 @@ function renderHandoverButton() {
   elements.handoverBtn.classList.remove('state-grey', 'state-green', 'state-flash-yellow')
 
   if (isActive) {
-    elements.handoverLabel.textContent = 'PASS MIC'
+    elements.handoverLabel.textContent = 'Pass Mic'
 
     if (hState === 'idle') {
       elements.handoverBtn.classList.add('state-grey')
@@ -1414,7 +1415,7 @@ function renderHandoverButton() {
       elements.handoverBtn.disabled = true
     }
   } else {
-    elements.handoverLabel.textContent = 'TAKE OVER'
+    elements.handoverLabel.textContent = 'Take Over'
 
     if (hState === 'idle') {
       elements.handoverBtn.classList.add('state-grey')
