@@ -258,7 +258,6 @@ jobs:
           [ "$resp" = "200" ] || { echo "FAIL: expected 200 after register"; exit 1; }
 
           # Manually verify the user's email since we can't click the magic link in CI
-          docker exec $(docker compose ps -q portal) python -c "
           docker exec $(docker compose ps -q portal) uv run python -c "
           import asyncio
           from portal.database import get_session, update_user, get_user_by_email
