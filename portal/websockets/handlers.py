@@ -11,12 +11,7 @@ from portal.booth_identity import parse_booth_id
 from portal.database import get_session as get_db_session
 from portal.globals import booths
 from portal.models import DBBooth, Event, Room
-from portal.websockets.manager import Session, manager, listener_manager
-
-
-
-
-
+from portal.websockets.manager import Session, listener_manager, manager
 
 
 async def _handle_join(ws: WebSocket, session: Session, data: dict) -> None:
