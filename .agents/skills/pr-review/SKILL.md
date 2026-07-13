@@ -71,7 +71,7 @@ description: Use this skill to review pull requests for VoxBento. Covers correct
 
 ### 9. Documentation
 - [ ] `README.md` updated if user-facing behavior changed.
-- [ ] `ARCHITECTURE.md` updated if system design changed.
+- [ ] `docs/how-it-works.mdx` updated if system design changed.
 - [ ] Relevant context file in `.github/.agents/context/` updated.
 - [ ] `agents.md` updated if invariants changed.
 
