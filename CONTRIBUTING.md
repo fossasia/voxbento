@@ -4,10 +4,10 @@
 
 ```bash
 uv run pytest tests/ -v
-node --check static/js/interpreter-booth.js   # JS syntax check
+npm run typecheck   # JS syntax check
 ```
 
-All 27 tests must pass before opening a PR. The same checks run in CI
+All tests must pass before opening a PR. The same checks run in CI
 (`.github/workflows/tests.yml`).
 
 ## Branch and PR workflow
@@ -415,7 +415,7 @@ Server broadcasts `booth:state` to all connections on every state change.
 ```bash
 uv sync --all-groups          # runtime + dev dependencies
 uv run pytest tests/ -v       # run test suite
-node --check static/js/interpreter-booth.js   # JS syntax
+npm run typecheck   # JS syntax
 ```
 
 ### Database

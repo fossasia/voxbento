@@ -105,7 +105,7 @@ VoxBento is a production-grade **browser-first interpretation booth console** fo
 ## Role Model
 
 ```
-super_admin > event_admin > coordinator > interpreter > listener
+super_admin > event_owner > room_coordinator > interpreter > listener
 ```
 
 | Role | Go Live (WHIP) | Set Active | Chat | Manage Booths/Events |
@@ -196,8 +196,7 @@ Max concurrent workers: 10 (`MAX_TOTAL_WORKERS`).
 ```bash
 uv sync --python 3.13 --dev
 uv run pytest tests/ -v
-node --check static/js/interpreter-booth.js
-node --check static/js/whep-listener.js
+npm run typecheck
 uv run alembic upgrade head   # if DB schema changed
 ```
 

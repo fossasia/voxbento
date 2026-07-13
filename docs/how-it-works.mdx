@@ -117,9 +117,9 @@ Listeners on the HLS fallback path experience a longer gap during handoff — ro
 
 Voxbento has three participant roles that are active during a live event:
 
-### Coordinator
+### Room Coordinator
 
-Manages the booth. Assigns which interpreter is active, initiates handoffs, and monitors participant state. Coordinators can see the full participant roster and internal booth chat. They cannot publish audio themselves.
+Manages the booth. Assigns which interpreter is active, initiates handoffs, and monitors participant state. Room coordinators can see the full participant roster and internal booth chat. They cannot publish audio themselves.
   
 
   ### Interpreter
@@ -157,7 +157,7 @@ Publishing audio to a booth is protected by three independent enforcement layers
 <Tabs>
   <TabItem value="role-and-active-interpreter-check" label="Role and active-interpreter check">
 
-Voxbento's server-side coordination layer rejects any attempt to activate a microphone or begin audio publishing unless the participant holds the `interpreter` role **and** is the currently designated active interpreter for that booth. Coordinators and listeners cannot publish audio under any circumstances.
+Voxbento's server-side coordination layer rejects any attempt to activate a microphone or begin audio publishing unless the participant holds the `interpreter` role **and** is the currently designated active interpreter for that booth. Room coordinators and listeners cannot publish audio under any circumstances.
 
 </TabItem>
   <TabItem value="whip-url-gating" label="WHIP URL gating">
