@@ -115,7 +115,7 @@ class TestListenerRoutes:
         assert resp.status_code == 200
         assert "listener_code_testcon" in resp.headers["set-cookie"]
 
-    
+
     @pytest.mark.anyio
     async def test_audio_delay_requires_listener_access(self, seed_event):
         event, room, _ = seed_event
@@ -146,4 +146,3 @@ class TestListenerRoutes:
         assert resp.status_code == 404
 
 
-    
