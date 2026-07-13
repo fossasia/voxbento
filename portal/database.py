@@ -17,13 +17,15 @@ from __future__ import annotations
 import logging
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
+import sqlalchemy as sa
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import joinedload
 
 from portal.models import (
+    AuthToken,
     Base,
     BoothMembership,
     DBBooth,
@@ -32,6 +34,7 @@ from portal.models import (
     InviteToken,
     Room,
     RoomMembership,
+    TranscriptSegment,
     User,
     generate_token,
     utc_now,
@@ -406,15 +409,34 @@ async def create_user(
     *,
     email: str,
     display_name: str,
-    password_hash: str,
+    password_hash: str | None = None,
+    email_verified: bool = False,
 ) -> User:
     user = User(
         email=email.strip().lower(),
-        display_name=display_name,
+        display_name=display_name.strip(),
         password_hash=password_hash,
+        email_verified=email_verified,
     )
     session.add(user)
     await session.flush()
+    return user
+
+
+async def update_user(
+    session: AsyncSession,
+    user_id: int,
+    *,
+    password_hash: str | None = None,
+    email_verified: bool | None = None,
+) -> User | None:
+    user = await get_user_by_id(session, user_id)
+    if user:
+        if password_hash is not None:
+            user.password_hash = password_hash
+        if email_verified is not None:
+            user.email_verified = email_verified
+        await session.flush()
     return user
 
 
@@ -655,11 +677,58 @@ async def list_booth_memberships_for_user(session: AsyncSession, user_id: int) -
 
 
 async def revoke_invite_token(session: AsyncSession, token_str: str) -> InviteToken | None:
-    """Revoke an invite token by setting used_at (prevents future use)."""
+    """Mark an invite token as used without redeeming it for a membership."""
     tok = await get_invite_token(session, token_str)
+    if tok and not tok.is_used:
+        tok.used_at = datetime.now(tz=timezone.utc)
+        await session.flush()
+    return tok
+
+
+# ---------------------------------------------------------------------------
+# Auth Tokens
+# ---------------------------------------------------------------------------
+
+
+async def create_auth_token(
+    session: AsyncSession,
+    *,
+    jti: str,
+    user_id: int,
+    token_type: str,
+    expires_in_seconds: int = 900,
+) -> AuthToken:
+    expires_at = datetime.now(tz=timezone.utc) + timedelta(seconds=expires_in_seconds)
+    tok = AuthToken(
+        jti=jti,
+        user_id=user_id,
+        token_type=token_type,
+        expires_at=expires_at,
+    )
+    session.add(tok)
+    await session.flush()
+    return tok
+
+
+async def get_auth_token(session: AsyncSession, jti: str) -> AuthToken | None:
+    stmt = sa.select(AuthToken).options(sa.orm.joinedload(AuthToken.user)).where(AuthToken.jti == jti)
+    result = await session.execute(stmt)
+    return result.scalar_one_or_none()
+
+
+async def redeem_auth_token(session: AsyncSession, jti: str, expected_type: str) -> AuthToken | None:
+    """Validate, mark as used, and return the token if valid."""
+    tok = await get_auth_token(session, jti)
     if tok is None:
-        return None
-    tok.used_at = utc_now()
+        raise ValueError("Invalid token.")
+    if tok.is_expired:
+        raise ValueError("Token has expired.")
+    if tok.is_used:
+        raise ValueError("Token has already been used.")
+    if tok.token_type != expected_type:
+        raise ValueError("Invalid token type.")
+
+    tok.used_at = datetime.now(tz=timezone.utc)
     await session.flush()
     return tok
 
@@ -673,7 +742,7 @@ async def save_transcript_segment(booth_id_str: str, text: str, room_id: int | N
     """Save a finalized transcript segment to the database asynchronously and return its ID."""
     from sqlalchemy import select
 
-    from portal.models import DBBooth, Event, TranscriptSegment
+    from portal.models import DBBooth, Event
 
     parts = booth_id_str.split("-")
     if len(parts) < 2:

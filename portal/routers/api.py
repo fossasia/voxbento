@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.security import HTTPAuthorizationCredentials
 from sqlalchemy import select
@@ -16,8 +18,6 @@ from portal.utils import _check_mediamtx, _ensure_mediamtx_path, _require_access
 from portal.websockets.manager import broadcast_transcription
 
 router = APIRouter(prefix="/api")
-
-
 
 
 @router.post("/events/{event_slug}/booths", status_code=status.HTTP_201_CREATED)
@@ -161,7 +161,7 @@ async def api_transcription_stop(
     event_slug: str,
     language_code: str,
     token: str = Query(""),
-    credentials: HTTPAuthorizationCredentials | None = Depends(security)
+    credentials: HTTPAuthorizationCredentials | None = Depends(security),
 ):
     _require_access(credentials, token)
     booth_id = make_booth_id(event_slug, language_code)

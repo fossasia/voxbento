@@ -1,82 +1,188 @@
-<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>My Account — Voxbento</title>
-    <link rel="icon" type="image/x-icon" href="{{ url_for('static', path='img/favicon.ico') }}" />
-    <link rel="stylesheet" href="{{ url_for('static', path='css/admin.css') }}" />
-  </head>
-  <body>
-    <header class="portal-home-header">
-      <a class="brand" href="/"><img src="{{ url_for('static', path='img/wordmark.png') }}" alt="Voxbento" style="height: 32px; vertical-align: middle;" /></a>
-      <nav class="header-nav">
-        <a href="/account">My Account</a>
-        <a href="/admin/">Admin Panel</a>
-        <a href="/logout">Logout</a>
-      </nav>
-    </header>
+{% extends "base.html" %}
 
-    <main class="admin-main">
-      <div class="account-card">
-        <h1>My Account</h1>
-        <table class="data-table">
-          <tbody>
-            <tr>
-              <th>Email</th>
-              <td>{{ user.email }}</td>
-            </tr>
-            <tr>
-              <th>Display Name</th>
-              <td>{{ user.display_name }}</td>
-            </tr>
-            <tr>
-              <th>Joined</th>
-              <td>{{ user.created_at.strftime('%Y-%m-%d %H:%M UTC') if user.created_at else '—' }}</td>
-            </tr>
-            <tr>
-              <th>Status</th>
-              <td>
-                {% if user.is_active %}
-                <span class="status-live">● Active</span>
-                {% else %}
-                <span class="status-offline">○ Deactivated</span>
-                {% endif %}
-              </td>
-            </tr>
-            {% if user.is_admin %}
-            <tr>
-              <th>System Role</th>
-              <td><span class="badge badge-role badge-super_admin" style="background:var(--color-danger)">Super Admin</span><br><small class="muted">You have global admin panel and event access.</small></td>
-            </tr>
+{% block title %}My Account — Voxbento{% endblock %}
+
+{% block head %}
+<link rel="stylesheet" href="{{ url_for('static', path='css/auth.css') }}" />
+{% endblock %}
+
+{% block content %}
+<header class="portal-home-header">
+  <a class="brand" href="/"><img src="{{ url_for('static', path='img/wordmark.png') }}" alt="Voxbento" style="height: 32px; vertical-align: middle;" /></a>
+  <nav class="header-nav">
+    <a href="/account">My Account</a>
+    <a href="/admin/">Admin Panel</a>
+    <a href="/logout">Logout</a>
+  </nav>
+</header>
+
+<div class="admin-main">
+  <div class="account-card">
+    <h1>My Account</h1>
+    <table class="data-table">
+      <tbody>
+        <tr>
+          <th>Email</th>
+          <td>{{ user.email }}</td>
+        </tr>
+        <tr>
+          <th>Display Name</th>
+          <td>{{ user.display_name }}</td>
+        </tr>
+        <tr>
+          <th>Joined</th>
+          <td>{{ user.created_at.strftime('%Y-%m-%d %H:%M UTC') if user.created_at else '—' }}</td>
+        </tr>
+        <tr>
+          <th>Status</th>
+          <td>
+            {% if user.is_active %}
+            <span class="status-live">● Active</span>
+            {% else %}
+            <span class="status-offline">○ Deactivated</span>
             {% endif %}
-          </tbody>
-        </table>
+          </td>
+        </tr>
+        {% if user.is_admin %}
+        <tr>
+          <th>System Role</th>
+          <td><span class="badge badge-role badge-super_admin" style="background:var(--color-danger)">Super Admin</span><br><small class="muted">You have global admin panel and event access.</small></td>
+        </tr>
+        {% endif %}
+      </tbody>
+    </table>
 
-        <div class="account-info">
-          <h3>Your Event Roles</h3>
-          {% if memberships %}
-          <table class="data-table compact">
-            <thead>
-              <tr><th>Event</th><th>Role</th><th>Since</th></tr>
-            </thead>
-            <tbody>
-              {% for m in memberships %}
-              <tr>
-                <td>{{ m.event.display_name if m.event else '—' }}</td>
-                <td><span class="badge badge-role badge-{{ m.role }}">{{ m.role }}</span></td>
-                <td>{{ m.created_at.strftime('%Y-%m-%d') if m.created_at else '—' }}</td>
-              </tr>
-              {% endfor %}
-            </tbody>
-          </table>
-          {% else %}
-          <p class="muted">You have not been assigned a role for any event yet. An admin can assign roles on a per-event basis.</p>
-          {% endif %}
-        </div>
+    <div class="account-info">
+      <h3>Your Roles</h3>
+      {% if memberships %}
+      <div style="overflow-x: auto; -webkit-overflow-scrolling: touch;">
+        <table class="data-table compact">
+          <thead>
+          <tr><th>Scope</th><th>Context</th><th>Role</th><th>Since</th></tr>
+        </thead>
+        <tbody>
+          {% for m in memberships %}
+          <tr>
+            <td>{{ m.type }}</td>
+            <td>
+              {% if m.link != '#' %}
+              <a href="{{ m.link }}" class="context-link">{{ m.context }} &rarr;</a>
+              {% else %}
+              {{ m.context }}
+              {% endif %}
+            </td>
+            <td><span class="badge badge-role badge-{{ m.role }}">{{ m.role }}</span></td>
+            <td>{{ m.created_at.strftime('%Y-%m-%d') if m.created_at else '—' }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
       </div>
-    </main>
+      {% else %}
+      <p class="muted">You have not been assigned a role for any event, room, or booth yet.</p>
+      {% endif %}
+    </div>
 
+    <div class="account-info" style="margin-top: 30px;">
+      <h3>Security Settings</h3>
+      {% if user.password_hash %}
+      <div id="has-password-section">
+        <p class="muted">You currently sign in using a password or magic link.</p>
+        <button type="button" class="btn btn-outline" id="btn-remove-pwd">Disable Password Login</button>
+        
+        <form id="remove-pwd-form" class="hidden" style="margin-top: 15px; background: #111; padding: 15px; border-radius: 6px;">
+          <p style="margin-top:0;">Confirm your current password to switch to passwordless sign-in.</p>
+          <input type="password" id="current_password" placeholder="Current Password" required style="width: 100%; box-sizing: border-box; margin-bottom: 10px;" />
+          <button type="submit" class="btn btn-primary">Disable Password</button>
+          <div id="remove-pwd-error" class="alert alert-error hidden" style="margin-top: 10px;"></div>
+        </form>
+      </div>
+      {% else %}
+      <div id="no-password-section">
+        <p class="muted">You currently use passwordless login. Want a faster way to sign in on shared devices?</p>
+        <button type="button" class="btn btn-outline" id="btn-add-pwd">Create a Password</button>
+        
+        <form id="add-pwd-form" class="hidden" style="margin-top: 15px; background: #111; padding: 15px; border-radius: 6px;">
+          <p style="margin-top:0;">Set a new password for your account.</p>
+          <input type="password" id="new_password" placeholder="Min 8 characters" minlength="8" required style="width: 100%; box-sizing: border-box; margin-bottom: 10px;" />
+          <button type="submit" class="btn btn-primary">Save Password</button>
+          <div id="add-pwd-error" class="alert alert-error hidden" style="margin-top: 10px;"></div>
+        </form>
+      </div>
+      {% endif %}
+    </div>
+  </div>
+</div>
 
-  </body>
-</html>
+<script>
+document.addEventListener("DOMContentLoaded", () => {
+  const btnRemovePwd = document.getElementById("btn-remove-pwd");
+  const removePwdForm = document.getElementById("remove-pwd-form");
+  const currentPasswordInput = document.getElementById("current_password");
+  const removePwdError = document.getElementById("remove-pwd-error");
+  
+  if (btnRemovePwd) {
+    btnRemovePwd.addEventListener("click", () => {
+      btnRemovePwd.classList.add("hidden");
+      removePwdForm.classList.remove("hidden");
+    });
+    
+    removePwdForm.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      removePwdError.classList.add("hidden");
+      try {
+        const res = await fetch("/api/auth/remove-password", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ password: currentPasswordInput.value })
+        });
+        if (res.ok) {
+          window.location.reload();
+        } else {
+          const data = await res.json();
+          removePwdError.textContent = data.detail || "Failed to remove password";
+          removePwdError.classList.remove("hidden");
+        }
+      } catch (err) {
+        removePwdError.textContent = "Network error";
+        removePwdError.classList.remove("hidden");
+      }
+    });
+  }
+
+  const btnAddPwd = document.getElementById("btn-add-pwd");
+  const addPwdForm = document.getElementById("add-pwd-form");
+  const newPasswordInput = document.getElementById("new_password");
+  const addPwdError = document.getElementById("add-pwd-error");
+  
+  if (btnAddPwd) {
+    btnAddPwd.addEventListener("click", () => {
+      btnAddPwd.classList.add("hidden");
+      addPwdForm.classList.remove("hidden");
+    });
+    
+    addPwdForm.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      addPwdError.classList.add("hidden");
+      try {
+        const res = await fetch("/api/auth/set-password", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ password: newPasswordInput.value })
+        });
+        if (res.ok) {
+          window.location.reload();
+        } else {
+          const data = await res.json();
+          addPwdError.textContent = data.detail || "Failed to set password";
+          addPwdError.classList.remove("hidden");
+        }
+      } catch (err) {
+        addPwdError.textContent = "Network error";
+        addPwdError.classList.remove("hidden");
+      }
+    });
+  }
+});
+</script>
+{% endblock %}

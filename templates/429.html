@@ -1,0 +1,6 @@
+{% extends "error_base.html" %}
+
+{% block error_title %}Too Many Attempts{% endblock %}
+{% block error_code %}429{% endblock %}
+{# error_message defaults to {{ detail }} in error_base.html; the handler passes
+   the rate-limiter's message (e.g. "Too many join attempts. Please try again later."). #}

@@ -103,5 +103,13 @@ class Settings(BaseSettings):
     # (uses all physical cores).
     supertonic_intra_op_threads: int = 0
 
+    # Email Settings
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_user: str = ""
+    smtp_password: str = ""
+    smtp_from_email: str = "noreply@voxbento.com"
+    public_base_url: str = "https://voxbento.com"
+
 
 settings = Settings()

@@ -43,7 +43,8 @@ async def lifespan(app: FastAPI):
 
     # Generate landing page demo audio in the background on first startup.
     # Uses local Supertonic — no external API key needed.
-    dg._generating = True
+    async with dg._generation_lock:
+        dg._generating = True
 
     async def _gen():
         try:
@@ -52,7 +53,8 @@ async def lifespan(app: FastAPI):
             dg._generating = False
 
     import asyncio
-    asyncio.create_task(_gen())
+
+    dg.track_task(asyncio.create_task(_gen()))
 
     yield
     if pg.shared_http_client:
@@ -82,6 +84,10 @@ async def http_exception_handler(request: Request, exc: StarletteHTTPException):
         if exc.status_code == 404:
             return templates.TemplateResponse(
                 request, "404.html", {"request": request, "detail": exc.detail}, status_code=404
+            )
+        if exc.status_code == 429:
+            return templates.TemplateResponse(
+                request, "429.html", {"request": request, "detail": exc.detail}, status_code=429
             )
         if exc.status_code >= 500:
             return templates.TemplateResponse(

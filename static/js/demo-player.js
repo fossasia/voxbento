@@ -93,7 +93,8 @@ function setupDemo(manifest) {
     document.getElementById("demo-play-btn-mobile")?.addEventListener("click", togglePlay);
 
     // Hero audio toggle (the pill toggle button in the hero card).
-    document.getElementById("hero-audio-toggle")?.addEventListener("click", () => {
+    document.getElementById("hero-audio-toggle")?.addEventListener("click", (e) => {
+        e.preventDefault(); // Prevent default checkbox toggle so JS controls state
         if (isPlaying()) {
             audioEls.get(activeCode)?.pause();
             setPlayState(false);
@@ -156,13 +157,29 @@ function activateLangButton(code) {
         const isActive = btn.dataset.heroLang === code;
         const check = btn.querySelector(".hero-check");
         if (isActive) {
-            btn.classList.add("bg-slate-800", "text-white");
-            btn.classList.remove("text-slate-400");
+            // Active: Blue background, white text, thick border
+            btn.classList.add("bg-[#2563eb]", "text-white", "border-[3px]", "border-[#2563eb]");
+            btn.classList.remove("bg-white", "text-[#0d0f10]", "border-2", "border-[#0d0f10]", "hover:bg-slate-100", "bg-[#0d0f10]");
             if (check) check.style.opacity = "1";
+            
+            // Adjust AI badge to be readable on blue
+            const badge = btn.querySelector("span > span");
+            if (badge) {
+                badge.classList.remove("bg-[#2563eb]", "text-white", "border-[#0d0f10]");
+                badge.classList.add("bg-white", "text-[#2563eb]", "border-transparent");
+            }
         } else {
-            btn.classList.remove("bg-slate-800", "text-white");
-            btn.classList.add("text-slate-400");
+            // Inactive: White background, black text, standard border, hover effect
+            btn.classList.remove("bg-[#2563eb]", "bg-[#0d0f10]", "text-white", "border-[3px]", "border-[#2563eb]");
+            btn.classList.add("bg-white", "text-[#0d0f10]", "border-2", "border-[#0d0f10]", "hover:bg-slate-100");
             if (check) check.style.opacity = "0";
+            
+            // Restore AI badge
+            const badge = btn.querySelector("span > span");
+            if (badge) {
+                badge.classList.add("bg-[#2563eb]", "text-white", "border-[#0d0f10]");
+                badge.classList.remove("bg-white", "text-[#2563eb]", "border-transparent");
+            }
         }
     });
 }
@@ -204,12 +221,10 @@ function setPlayState(playing) {
     if (waveform) waveform.style.opacity = playing ? "1" : "0";
     const waveformMobile = document.getElementById("demo-waveform-mobile");
     if (waveformMobile) waveformMobile.style.opacity = playing ? "1" : "0";
-    // Hero toggle pill — slide knob right (on) or left (off)
-    const toggle = document.getElementById("hero-audio-toggle");
-    if (toggle) {
-        const knob = toggle.querySelector("div");
-        if (knob) knob.style.transform = playing ? "translateX(20px)" : "translateX(0)";
-        toggle.style.backgroundColor = playing ? "#2563eb" : "";
+    // Hero toggle pill — set checkbox state to trigger CSS animation
+    const toggleInput = document.getElementById("hero-audio-toggle-input");
+    if (toggleInput) {
+        toggleInput.checked = playing;
     }
 }
 

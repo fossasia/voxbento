@@ -666,6 +666,12 @@ document.addEventListener('DOMContentLoaded', function() {
         </td>
         <td class="actions-cell">
           <form method="post"
+                action="/admin/events/{{ event.id }}/rooms/{{ room.id }}/members/{{ m.id }}/invite"
+                class="inline-form"
+                style="margin-right: 8px;">
+            <button type="submit" class="btn btn-sm btn-outline" style="border: 2px solid #000; background: #fff; color: #000; border-radius: 4px; box-shadow: 2px 2px 0px #000; padding: 4px 12px; font-weight: bold;">✉️ Invite</button>
+          </form>
+          <form method="post"
                 action="/admin/events/{{ event.id }}/rooms/{{ room.id }}/members/{{ m.id }}/delete"
                 class="inline-form"
                 data-confirm="Remove {{ u.display_name }} from this room?">

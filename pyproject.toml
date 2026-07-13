@@ -24,6 +24,7 @@ dependencies = [
     "tenacity>=9.1.4",
     "langcodes>=3.5.1",
     "pycountry>=26.2.16",
+    "fastapi-mail>=1.4.2",
 ]
 
 [project.optional-dependencies]

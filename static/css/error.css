@@ -1,0 +1,74 @@
+/* ── Unified Error Pages (403 / 404 / 429 / 500) ───────────────
+   Light theme built on the design tokens defined in interpreter.css
+   (loaded globally by base.html). Colors use the --color-* tokens where
+   possible; the card drop shadow is a literal value. */
+
+.error-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  /* Inherit base.html <main>'s min-height instead of duplicating the constant. */
+  min-height: inherit;
+  padding: 2rem 1.5rem;
+}
+
+.error-wordmark {
+  height: 48px;
+  margin-bottom: 2rem;
+}
+
+.error-card {
+  width: 100%;
+  max-width: 500px;
+  padding: 3rem;
+  background: var(--color-bg);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  box-shadow: 0 1px 3px rgb(0 0 0 / 0.08);
+}
+
+.error-code {
+  margin: 0 0 0.5rem 0;
+  font-size: 3.5rem;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--color-muted);
+}
+
+.error-title {
+  margin: 0 0 1rem 0;
+  font-size: 1.5rem;
+  color: var(--color-danger);
+}
+
+.error-message {
+  margin: 0 auto 2rem auto;
+  max-width: 40ch;
+  line-height: 1.6;
+  color: var(--color-muted);
+}
+
+.error-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  justify-content: center;
+}
+
+.error-actions .btn {
+  display: inline-block;
+  padding: 0.75rem 1.5rem;
+  text-decoration: none;
+}
+
+@media (max-width: 480px) {
+  .error-card {
+    padding: 2rem 1.5rem;
+  }
+
+  .error-code {
+    font-size: 3rem;
+  }
+}

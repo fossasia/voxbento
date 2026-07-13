@@ -42,9 +42,9 @@ def _client():
 async def _create_test_user(email="test@example.com", display_name="Test User", password="securepass123"):
     from portal.database import create_user, get_session
 
-    pw_hash = hash_password(password)
+    pw_hash = hash_password(password) if password else None
     async with get_session() as s:
-        user = await create_user(s, email=email, display_name=display_name, password_hash=pw_hash)
+        user = await create_user(s, email=email, display_name=display_name, password_hash=pw_hash, email_verified=True)
     return user
 
 
@@ -89,43 +89,11 @@ class TestRegistration:
                     "email": "new@example.com",
                     "display_name": "New User",
                     "password": "securepass123",
-                    "password_confirm": "securepass123",
                 },
                 follow_redirects=False,
             )
-        assert resp.status_code == 303
-        assert resp.headers["location"] == "/account"
-        assert "user_token" in resp.headers.get("set-cookie", "")
-
-    @pytest.mark.anyio
-    async def test_register_rejects_short_password(self, setup_db):
-        async with _client() as c:
-            resp = await c.post(
-                "/register",
-                data={
-                    "email": "new@example.com",
-                    "display_name": "New User",
-                    "password": "short",
-                    "password_confirm": "short",
-                },
-            )
-        assert resp.status_code == 422
-        assert b"at least 8 characters" in resp.content
-
-    @pytest.mark.anyio
-    async def test_register_rejects_mismatched_passwords(self, setup_db):
-        async with _client() as c:
-            resp = await c.post(
-                "/register",
-                data={
-                    "email": "new@example.com",
-                    "display_name": "New User",
-                    "password": "securepass123",
-                    "password_confirm": "differentpass",
-                },
-            )
-        assert resp.status_code == 422
-        assert b"do not match" in resp.content
+        assert resp.status_code == 200
+        assert b"Check your email" in resp.content
 
     @pytest.mark.anyio
     async def test_register_rejects_duplicate_email(self, setup_db):
@@ -137,7 +105,6 @@ class TestRegistration:
                     "email": "dupe@example.com",
                     "display_name": "Another User",
                     "password": "securepass123",
-                    "password_confirm": "securepass123",
                 },
             )
         assert resp.status_code == 422

@@ -96,7 +96,7 @@ Jitsi Meet Floor Conference
 |---|---|---|---|---|
 | `local` | `LocalProvider` | `tiny`, `base`, `small`, `medium`, `large-v2`, `large-v3` | None | CPU inference via `faster-whisper` (in thread pool) |
 | `openai` | `OpenAIProvider` | `whisper-1`, `gpt-4o-realtime-preview`, `gpt-4o-mini-realtime-preview` | `openai_api_key` | REST (whisper-1) or WebSocket realtime |
-| `deepgram` | `DeepgramProvider` | `nova-2` | `deepgram_api_key` | WebSocket streaming |
+| `deepgram` | `DeepgramProvider` | `nova-2` | `deepgram_api_key` | WebSocket streaming (with `numerals=true` for interpretation) |
 | `nvidia` | `NVIDIAProvider` | `parakeet-rnnt`, `parakeet-ctc` | `nvidia_api_key` | Riva gRPC |
 | `elevenlabs` | `ElevenLabsProvider` | `scribe_v2` | `elevenlabs_api_key` | — |
 

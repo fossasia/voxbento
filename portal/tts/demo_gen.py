@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import struct
@@ -12,14 +13,32 @@ logger = logging.getLogger(__name__)
 DEMO_DIR = Path(__file__).resolve().parent.parent.parent / "static" / "audio" / "demo"
 MANIFEST_PATH = DEMO_DIR / "manifest.json"
 
+# Generation state, shared with portal.routers.demo and fastapi_app's lifespan.
+_generating = False
+_generation_error: str | None = None
+_generation_lock = asyncio.Lock()
+_tasks: set[asyncio.Task] = set()
+
+
+def track_task(task: asyncio.Task) -> None:
+    """Keep a strong reference to a background task so it isn't garbage
+    collected mid-run, and log any exception it raises once it completes."""
+    _tasks.add(task)
+
+    def _on_done(t: asyncio.Task) -> None:
+        _tasks.discard(t)
+        if not t.cancelled() and t.exception() is not None:
+            logger.error("[Demo] Background task failed", exc_info=t.exception())
+
+    task.add_done_callback(_on_done)
+
+
 # ---------------------------------------------------------------------------
 # Demo content — scripts pre-written in each language so no translation API
 # is needed; Supertonic generates the audio locally at first startup.
 # ---------------------------------------------------------------------------
 
-DEMO_VIDEO_URL = (
-    "https://videos.pexels.com/video-files/3253441/3253441-sd_640_360_25fps.mp4"
-)
+DEMO_VIDEO_URL = "https://videos.pexels.com/video-files/3253441/3253441-sd_640_360_25fps.mp4"
 
 # Each language has its own pre-written script so the translated audio sounds
 # natural without a real-time LLM call.
@@ -29,9 +48,21 @@ DEMO_LANGUAGES: list[dict[str, Any]] = [
         "name": "English",
         "segments": [
             {"text": "Welcome to the Global Innovation Summit.", "start_ms": 0, "end_ms": 3200},
-            {"text": "Today we are proud to announce a breakthrough in renewable energy technology that will reshape how we power our cities.", "start_ms": 3200, "end_ms": 10000},
-            {"text": "Over the next decade, this technology promises to reduce carbon emissions by fifty percent while creating millions of new jobs worldwide.", "start_ms": 10000, "end_ms": 18500},
-            {"text": "Join us as we take the first steps toward a cleaner, more connected future.", "start_ms": 18500, "end_ms": 24000},
+            {
+                "text": "Today we are proud to announce a breakthrough in renewable energy technology that will reshape how we power our cities.",
+                "start_ms": 3200,
+                "end_ms": 10000,
+            },
+            {
+                "text": "Over the next decade, this technology promises to reduce carbon emissions by fifty percent while creating millions of new jobs worldwide.",
+                "start_ms": 10000,
+                "end_ms": 18500,
+            },
+            {
+                "text": "Join us as we take the first steps toward a cleaner, more connected future.",
+                "start_ms": 18500,
+                "end_ms": 24000,
+            },
         ],
     },
     {
@@ -39,9 +70,21 @@ DEMO_LANGUAGES: list[dict[str, Any]] = [
         "name": "French",
         "segments": [
             {"text": "Bienvenue au Sommet Mondial de l'Innovation.", "start_ms": 0, "end_ms": 3200},
-            {"text": "Aujourd'hui, nous sommes fiers d'annoncer une avancée majeure dans les technologies d'énergie renouvelable qui va transformer notre façon d'alimenter nos villes.", "start_ms": 3200, "end_ms": 10000},
-            {"text": "Au cours de la prochaine décennie, cette technologie promet de réduire les émissions de carbone de cinquante pour cent tout en créant des millions de nouveaux emplois dans le monde.", "start_ms": 10000, "end_ms": 18500},
-            {"text": "Rejoignez-nous pour franchir les premières étapes vers un avenir plus propre et plus connecté.", "start_ms": 18500, "end_ms": 24000},
+            {
+                "text": "Aujourd'hui, nous sommes fiers d'annoncer une avancée majeure dans les technologies d'énergie renouvelable qui va transformer notre façon d'alimenter nos villes.",
+                "start_ms": 3200,
+                "end_ms": 10000,
+            },
+            {
+                "text": "Au cours de la prochaine décennie, cette technologie promet de réduire les émissions de carbone de cinquante pour cent tout en créant des millions de nouveaux emplois dans le monde.",
+                "start_ms": 10000,
+                "end_ms": 18500,
+            },
+            {
+                "text": "Rejoignez-nous pour franchir les premières étapes vers un avenir plus propre et plus connecté.",
+                "start_ms": 18500,
+                "end_ms": 24000,
+            },
         ],
     },
     {
@@ -49,9 +92,21 @@ DEMO_LANGUAGES: list[dict[str, Any]] = [
         "name": "Spanish",
         "segments": [
             {"text": "Bienvenidos a la Cumbre Mundial de Innovación.", "start_ms": 0, "end_ms": 3200},
-            {"text": "Hoy nos enorgullece anunciar un avance en tecnología de energía renovable que transformará la forma en que alimentamos nuestras ciudades.", "start_ms": 3200, "end_ms": 10000},
-            {"text": "En la próxima década, esta tecnología promete reducir las emisiones de carbono en un cincuenta por ciento mientras crea millones de nuevos empleos en todo el mundo.", "start_ms": 10000, "end_ms": 18500},
-            {"text": "Únase a nosotros mientras damos los primeros pasos hacia un futuro más limpio y más conectado.", "start_ms": 18500, "end_ms": 24000},
+            {
+                "text": "Hoy nos enorgullece anunciar un avance en tecnología de energía renovable que transformará la forma en que alimentamos nuestras ciudades.",
+                "start_ms": 3200,
+                "end_ms": 10000,
+            },
+            {
+                "text": "En la próxima década, esta tecnología promete reducir las emisiones de carbono en un cincuenta por ciento mientras crea millones de nuevos empleos en todo el mundo.",
+                "start_ms": 10000,
+                "end_ms": 18500,
+            },
+            {
+                "text": "Únase a nosotros mientras damos los primeros pasos hacia un futuro más limpio y más conectado.",
+                "start_ms": 18500,
+                "end_ms": 24000,
+            },
         ],
     },
     {
@@ -59,9 +114,21 @@ DEMO_LANGUAGES: list[dict[str, Any]] = [
         "name": "German",
         "segments": [
             {"text": "Willkommen beim Globalen Innovationsgipfel.", "start_ms": 0, "end_ms": 3200},
-            {"text": "Heute sind wir stolz, einen Durchbruch in der Technologie erneuerbarer Energien anzukündigen, der die Art und Weise, wie wir unsere Städte mit Energie versorgen, grundlegend verändern wird.", "start_ms": 3200, "end_ms": 10000},
-            {"text": "Im nächsten Jahrzehnt verspricht diese Technologie, die Kohlenstoffemissionen um fünfzig Prozent zu reduzieren und gleichzeitig Millionen neuer Arbeitsplätze weltweit zu schaffen.", "start_ms": 10000, "end_ms": 18500},
-            {"text": "Begleiten Sie uns auf den ersten Schritten in eine sauberere und stärker vernetzte Zukunft.", "start_ms": 18500, "end_ms": 24000},
+            {
+                "text": "Heute sind wir stolz, einen Durchbruch in der Technologie erneuerbarer Energien anzukündigen, der die Art und Weise, wie wir unsere Städte mit Energie versorgen, grundlegend verändern wird.",
+                "start_ms": 3200,
+                "end_ms": 10000,
+            },
+            {
+                "text": "Im nächsten Jahrzehnt verspricht diese Technologie, die Kohlenstoffemissionen um fünfzig Prozent zu reduzieren und gleichzeitig Millionen neuer Arbeitsplätze weltweit zu schaffen.",
+                "start_ms": 10000,
+                "end_ms": 18500,
+            },
+            {
+                "text": "Begleiten Sie uns auf den ersten Schritten in eine sauberere und stärker vernetzte Zukunft.",
+                "start_ms": 18500,
+                "end_ms": 24000,
+            },
         ],
     },
 ]
@@ -141,12 +208,14 @@ async def generate_demo_assets() -> dict[str, Any]:
         out_path.write_bytes(wav)
         logger.info("[Demo] %s audio written: %d bytes", name, len(wav))
 
-        generated.append({
-            "code": code,
-            "name": name,
-            "audio_url": f"/static/audio/demo/{code}.wav",
-            "segments": segments,
-        })
+        generated.append(
+            {
+                "code": code,
+                "name": name,
+                "audio_url": f"/static/audio/demo/{code}.wav",
+                "segments": segments,
+            }
+        )
 
     manifest: dict[str, Any] = {
         "video_url": DEMO_VIDEO_URL,
@@ -159,13 +228,16 @@ async def generate_demo_assets() -> dict[str, Any]:
 
 async def ensure_demo_generated() -> None:
     """Generate demo assets if they don't already exist. Safe to call at startup."""
+    global _generation_error
     if MANIFEST_PATH.exists():
         return
     logger.info("[Demo] No manifest found — generating demo audio (first run)...")
     try:
         await generate_demo_assets()
-    except Exception:
+        _generation_error = None
+    except Exception as exc:
         logger.exception("[Demo] Background demo generation failed")
+        _generation_error = str(exc)
 
 
 def load_manifest() -> dict[str, Any] | None:

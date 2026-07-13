@@ -76,9 +76,7 @@ class SupertonicTTSProvider(TTSProvider):
             if not sentence:
                 return
             try:
-                audio = await asyncio.to_thread(
-                    self._synthesize_sync, sentence, language_code, resolved_voice
-                )
+                audio = await asyncio.to_thread(self._synthesize_sync, sentence, language_code, resolved_voice)
                 if audio:
                     await on_audio(audio)
             except Exception:
@@ -93,7 +91,7 @@ class SupertonicTTSProvider(TTSProvider):
                     if not match:
                         break
                     sentence = match.group(1).strip()
-                    buffer = buffer[match.end():].lstrip()
+                    buffer = buffer[match.end() :].lstrip()
                     await synth_and_broadcast(sentence)
 
             remaining = buffer.strip()

@@ -1,37 +1,197 @@
-<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Sign In — Voxbento</title>
-    <link rel="icon" type="image/x-icon" href="{{ url_for('static', path='img/favicon.ico') }}" />
-    <link rel="stylesheet" href="{{ url_for('static', path='css/admin.css') }}" />
-  </head>
-  <body>
-    <div class="login-page">
-      <div class="login-card">
-        <div class="login-brand">
-          <img src="{{ url_for('static', path='img/wordmark.png') }}" alt="Voxbento" class="brand-text" style="height: 48px; margin: 0 auto;" />
-          <span class="login-subtitle">Sign in to your account</span>
-        </div>
-        {% if error %}
-        <div class="alert alert-error">{{ error }}</div>
-        {% endif %}
-        <form method="post" action="/login" class="login-form">
-          <input type="hidden" name="next_url" value="{{ next_url|default('', true) }}" />
-          <label for="email">Email</label>
-          <input type="email" id="email" name="email" placeholder="you@example.com" value="{{ email|default('', true) }}" required autofocus />
+{% extends "base.html" %}
 
-          <label for="password">Password</label>
-          <input type="password" id="password" name="password" placeholder="Enter your password" required />
+{% block title %}Sign In — Voxbento{% endblock %}
 
-          <button type="submit" class="btn btn-primary">Sign In</button>
-        </form>
-        <div class="login-footer">
-          <span>Don't have an account? <a href="/register">Register</a></span>
-          <a href="/">← Back to Portal Home</a>
-        </div>
-      </div>
+{% block head %}
+<link rel="stylesheet" href="{{ url_for('static', path='css/auth.css') }}" />
+<style>
+  .hidden { display: none !important; }
+  .login-divider { text-align: center; margin: 20px 0; border-bottom: 2px solid #0d0f10; line-height: 0.1em; }
+  .login-divider span { background: var(--color-surface); padding: 0 10px; color: #0d0f10; font-weight: 700; font-size: 0.9em; text-transform: uppercase; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="login-page">
+  <div class="login-card">
+    <div class="login-brand">
+      <img src="{{ url_for('static', path='img/wordmark.png') }}" alt="Voxbento" class="brand-text" style="height: 48px; margin: 0 auto;" />
+      <span class="login-subtitle">Sign in to your account</span>
     </div>
-  </body>
-</html>
+    
+    {% if error %}
+    <div class="alert alert-error">{{ error }}</div>
+    {% endif %}
+
+    <div id="alert-container" class="alert alert-error hidden"></div>
+    <div id="success-container" class="alert alert-success hidden" style="background-color: #044b2a; color: #fff; border: 1px solid #0a7342; margin-bottom: 16px; padding: 12px; border-radius: 6px;"></div>
+
+    <!-- Step 1: Email Only -->
+    <form id="email-form" class="login-form">
+      <input type="hidden" id="next_url" value="{{ next_url|default('', true) }}" />
+      <label for="email">Email</label>
+      <input type="email" id="email" name="email" placeholder="you@example.com" value="{{ email|default('', true) }}" required autofocus />
+      <button type="submit" id="continue-btn" class="btn btn-primary">Continue</button>
+    </form>
+
+    <!-- Step 2: Login Methods -->
+    <div id="login-methods" class="hidden">
+      <div id="user-email-display" style="text-align: center; margin-bottom: 15px; color: #aaa; font-weight: 500;"></div>
+      
+      <!-- Password Login -->
+      <form id="password-form" method="post" action="/login" class="login-form hidden">
+        <input type="hidden" name="email" id="pass_email" />
+        <input type="hidden" name="next_url" value="{{ next_url|default('', true) }}" />
+        <label for="password">Password</label>
+        <input type="password" id="password" name="password" placeholder="Enter your password" required />
+        <button type="submit" class="btn btn-primary">Sign In</button>
+        <div style="text-align: right; margin-top: 8px;">
+          <a href="#" id="forgot-password-link" style="font-size: 0.9em; color: #888;">Forgot password?</a>
+        </div>
+      </form>
+
+      <div id="magic-divider" class="login-divider hidden"><span>or</span></div>
+
+      <!-- Magic Link -->
+      <button type="button" id="magic-link-btn" class="btn btn-outline" style="width: 100%;">Email me a magic link</button>
+    </div>
+
+    <div class="login-footer">
+      <span>Don't have an account? <a href="/register">Register</a></span>
+      <a href="/">← Back to Portal Home</a>
+    </div>
+  </div>
+</div>
+
+<script>
+document.addEventListener("DOMContentLoaded", () => {
+  const emailForm = document.getElementById("email-form");
+  const emailInput = document.getElementById("email");
+  const continueBtn = document.getElementById("continue-btn");
+  
+  const loginMethods = document.getElementById("login-methods");
+  const passwordForm = document.getElementById("password-form");
+  const magicDivider = document.getElementById("magic-divider");
+  const magicLinkBtn = document.getElementById("magic-link-btn");
+  const passEmailInput = document.getElementById("pass_email");
+  const userEmailDisplay = document.getElementById("user-email-display");
+  const alertContainer = document.getElementById("alert-container");
+  const successContainer = document.getElementById("success-container");
+  const forgotPasswordLink = document.getElementById("forgot-password-link");
+
+  let currentEmail = "";
+
+  function showError(msg) {
+    alertContainer.textContent = msg;
+    alertContainer.classList.remove("hidden");
+  }
+
+  function showSuccess(msg) {
+    successContainer.textContent = msg;
+    successContainer.classList.remove("hidden");
+    alertContainer.classList.add("hidden");
+  }
+
+  emailForm.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    currentEmail = emailInput.value.trim();
+    if (!currentEmail) return;
+
+    continueBtn.disabled = true;
+    continueBtn.textContent = "Checking...";
+    alertContainer.classList.add("hidden");
+
+    try {
+      const res = await fetch("/api/auth/check-email", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: currentEmail })
+      });
+      const data = await res.json();
+      
+      if (!res.ok) {
+        showError(data.detail || "An error occurred");
+        continueBtn.disabled = false;
+        continueBtn.textContent = "Continue";
+        return;
+      }
+
+      if (!data.exists) {
+        // Redirect to register
+        window.location.href = `/register?email=${encodeURIComponent(currentEmail)}`;
+        return;
+      }
+
+      // User exists, show login methods
+      emailForm.classList.add("hidden");
+      loginMethods.classList.remove("hidden");
+      userEmailDisplay.textContent = currentEmail;
+      passEmailInput.value = currentEmail;
+
+      if (data.has_password) {
+        passwordForm.classList.remove("hidden");
+        magicDivider.classList.remove("hidden");
+        document.getElementById("password").focus();
+      }
+
+    } catch (err) {
+      showError("Failed to connect to server");
+      continueBtn.disabled = false;
+      continueBtn.textContent = "Continue";
+    }
+  });
+
+  magicLinkBtn.addEventListener("click", async () => {
+    magicLinkBtn.disabled = true;
+    magicLinkBtn.textContent = "Sending...";
+    alertContainer.classList.add("hidden");
+
+    try {
+      const res = await fetch("/api/auth/magic-link", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: currentEmail })
+      });
+      
+      if (res.ok) {
+        passwordForm.classList.add("hidden");
+        magicDivider.classList.add("hidden");
+        magicLinkBtn.classList.add("hidden");
+        showSuccess("We've sent a magic link to your email. Please check your inbox.");
+      } else {
+        const data = await res.json();
+        showError(data.detail || "Failed to send magic link");
+        magicLinkBtn.disabled = false;
+        magicLinkBtn.textContent = "Email me a magic link";
+      }
+    } catch (err) {
+      showError("Failed to connect to server");
+      magicLinkBtn.disabled = false;
+      magicLinkBtn.textContent = "Email me a magic link";
+    }
+  });
+
+  forgotPasswordLink.addEventListener("click", async (e) => {
+    e.preventDefault();
+    alertContainer.classList.add("hidden");
+    successContainer.classList.add("hidden");
+    
+    try {
+      const res = await fetch("/api/auth/forgot-password", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: currentEmail })
+      });
+      
+      if (res.ok) {
+        showSuccess("If you have an account with a password, a reset link has been sent.");
+      } else {
+        showError("Failed to request password reset. Too many requests?");
+      }
+    } catch (err) {
+      showError("Failed to connect to server");
+    }
+  });
+});
+</script>
+{% endblock %}

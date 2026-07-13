@@ -341,6 +341,40 @@ class InviteToken(Base):
 
 
 # ---------------------------------------------------------------------------
+# AuthToken
+# ---------------------------------------------------------------------------
+
+
+class AuthToken(Base):
+    __tablename__ = "auth_tokens"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    jti: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    token_type: Mapped[str] = mapped_column(String(20))  # 'verification', 'magic_link', 'password_reset'
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+    user: Mapped["User"] = relationship()
+
+    @property
+    def is_expired(self) -> bool:
+        now = utc_now()
+        exp = self.expires_at
+        if exp.tzinfo is None:
+            exp = exp.replace(tzinfo=timezone.utc)
+        return now >= exp
+
+    @property
+    def is_used(self) -> bool:
+        return self.used_at is not None
+
+    def __repr__(self) -> str:
+        return f"<AuthToken user_id={self.user_id} type={self.token_type!r}>"
+
+
+# ---------------------------------------------------------------------------
 # User
 # ---------------------------------------------------------------------------
 
@@ -358,7 +392,8 @@ class User(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     email: Mapped[str] = mapped_column(String(320), unique=True, index=True)
     display_name: Mapped[str] = mapped_column(String(200))
-    password_hash: Mapped[str] = mapped_column(String(200))
+    password_hash: Mapped[str | None] = mapped_column(String(200), nullable=True, default=None)
+    email_verified: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
     is_admin: Mapped[bool] = mapped_column(Boolean, default=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)

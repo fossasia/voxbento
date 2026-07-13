@@ -1,16 +1,6 @@
-{% extends "base.html" %}
-{% block title %}Page Not Found | VoxBento{% endblock %}
-{% block head %}<script src="https://cdn.tailwindcss.com"></script>{% endblock %}
+{% extends "error_base.html" %}
 
-{% block content %}
-<div class="min-h-screen bg-gray-900 flex items-center justify-center p-4">
-    <div class="max-w-md w-full text-center">
-        <h1 class="text-9xl font-bold text-gray-800 mb-4">404</h1>
-        <h2 class="text-3xl font-semibold text-white mb-6">Page Not Found</h2>
-        <p class="text-gray-400 mb-8">The page you are looking for doesn't exist or has been moved.</p>
-        <a href="/" class="inline-block bg-blue-600 hover:bg-blue-700 text-white font-medium py-3 px-8 rounded-lg transition-colors duration-200">
-            Go Home
-        </a>
-    </div>
-</div>
-{% endblock %}
+{% block error_title %}Page Not Found{% endblock %}
+{% block error_code %}404{% endblock %}
+{# error_message defaults to {{ detail }} in error_base.html; the handler passes
+   the route's detail (e.g. "Not Found"). #}

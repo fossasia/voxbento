@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from pathlib import Path
 from typing import Any
 
@@ -160,5 +162,3 @@ async def interpreter_booth_by_identity(
             "js_version": _JS_CACHE_BUST,
         },
     )
-
-
