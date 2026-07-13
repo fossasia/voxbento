@@ -63,6 +63,9 @@ cp .env.example .env
 # Required: set your admin password
 echo 'ADMIN_PASSWORD=my-secure-admin-pass' >> .env
 
+# Required for API key encryption: set your encryption key (must be 32 characters or longer)
+echo 'API_KEY_ENCRYPTION_KEY=my-secure-32-char-encryption-key-for-api' >> .env
+
 # Required for Jitsi video: set your machine's LAN IP
 # macOS:  ipconfig getifaddr en0
 # Linux:  hostname -I | awk '{print $1}'

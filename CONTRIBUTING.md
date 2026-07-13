@@ -336,11 +336,15 @@ Copy `.env.example` → `.env` and adjust as needed:
 |----------|---------|---------|
 | `ADMIN_PASSWORD` | *(empty)* | Admin panel login password (**required**) |
 | `SECRET_KEY` | `change-me` | JWT signing key |
+| `API_KEY_ENCRYPTION_KEY` | *(empty)* | **[CRITICAL]** 32-character minimum string for encrypting API keys at rest. |
 | `BOOTH_ACCESS_TOKEN` | *(empty)* | Booth password (empty = open access) |
+| `JWT_SECRET` | *(empty)* | JWT settings — leave JWT_SECRET empty to fall back to SECRET_KEY |
+| `JWT_EXPIRY_SECONDS` | `86400` | Expiration time of JWT tokens |
 | `DOCKER_HOST_ADDRESS` | *(empty)* | Host LAN IP for Jitsi JVB ICE candidates |
 | `JITSI_DOMAIN` | `localhost:8080` | Jitsi Meet domain |
+| `JITSI_PUBLIC_URL` | `http://localhost:8080` | Jitsi Meet public URL |
 | `DEFAULT_JITSI_ROOM` | `eventyay-stage-room` | Default Jitsi room name |
-| `JITSI_BASE_URL` | *(empty)* | Full Jitsi URL with scheme (empty = `http://{JITSI_DOMAIN}`) |
+| `JITSI_BASE_URL` | `https://jitsi.voxbento.com` | Full Jitsi URL with scheme (empty = `http://{JITSI_DOMAIN}`) |
 | `MEDIAMTX_WHIP_BASE` | `http://localhost:8889` | Browser-facing WHIP/WHEP URL |
 | `MEDIAMTX_INTERNAL_BASE` | *(empty)* | Python→MediaMTX URL (Docker: `http://mediamtx:8888`) |
 | `MEDIAMTX_API_BASE` | `http://localhost:9997` | MediaMTX Control API |

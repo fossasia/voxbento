@@ -38,6 +38,11 @@ users (1)
 | `deepgram_api_key` | Text nullable | Fernet-encrypted |
 | `nvidia_api_key` | Text nullable | Fernet-encrypted |
 | `elevenlabs_api_key` | Text nullable | Fernet-encrypted |
+| `translation_openai_api_key` | Text nullable | Fernet-encrypted |
+| `openrouter_api_key` | Text nullable | Fernet-encrypted |
+| `gemini_api_key` | Text nullable | Fernet-encrypted |
+| `anthropic_api_key` | Text nullable | Fernet-encrypted |
+| `groq_api_key` | Text nullable | Fernet-encrypted |
 | `created_at` | DateTime(tz) | UTC |
 
 Cascade: deletes rooms + booths when event is deleted.
@@ -54,6 +59,14 @@ Cascade: deletes rooms + booths when event is deleted.
 | `eventyay_room_id` | String(200) nullable | Future Eventyay room linkage |
 | `jitsi_url` | String(500) nullable | Full Jitsi meeting URL for this room; overrides default |
 | `relay_booth_id` | FK → booths.id SET NULL nullable | Points to the booth whose WHEP stream is relayed in this room |
+| `floor_transcription_enabled` | Boolean | Default False |
+| `floor_transcription_provider` | String(20) | Default `'local'` |
+| `floor_transcription_model` | String(40) | Default `'tiny'` |
+| `floor_language_code` | String(10) nullable | — |
+| `floor_translation_enabled` | Boolean | Default False |
+| `floor_translation_provider` | String(50) nullable | — |
+| `floor_translation_model` | String(100) nullable | — |
+| `floor_source_language_code` | String(20) | Default `'en'` |
 | `floor_tts_enabled` | Boolean | Default False; controls whether TTS is generated for floor audio translations |
 | `floor_tts_provider` | String(20) | Default `'deepgram'`; TTS engine — `'deepgram'` (cloud) or `'supertonic'` (self-hosted ONNX) |
 | `floor_tts_voice` | String(50) | Default `'M1'`; Supertonic preset voice (M1–M5, F1–F5) |
@@ -75,6 +88,9 @@ Cascade: deletes rooms + booths when event is deleted.
 | `transcription_provider` | String(20) | Default `'local'`; validated against `ProviderEnum` |
 | `transcription_model` | String(20) | Default `'tiny'`; validated against `ALLOWED_MODELS` |
 | `broadcast_unlocked` | Boolean | Default False; allows unauthenticated ingest |
+| `translation_enabled` | Boolean | Default False |
+| `translation_provider` | String(50) nullable | — |
+| `translation_model` | String(100) nullable | — |
 | `created_at` | DateTime(tz) | UTC |
 
 Unique index on `(event_id, language_code)` — one booth per language per event.
