@@ -428,6 +428,36 @@ class TestRoomCRUD:
 
 
 # ---------------------------------------------------------------------------
+# Floor transcription status (uses the shared httpx client, see issue #245)
+# ---------------------------------------------------------------------------
+
+
+class TestFloorTranscriptionStatus:
+    @pytest.mark.anyio
+    async def test_status_uses_shared_http_client(self, admin_cookie, seed_event):
+        from unittest.mock import AsyncMock, MagicMock, patch
+
+        event, room, _ = seed_event
+
+        mock_response = MagicMock()
+        mock_response.raise_for_status = MagicMock()
+        mock_response.json.return_value = {"active_rooms": {event.slug: {"state": "healthy"}}}
+        mock_client = MagicMock()
+        mock_client.get = AsyncMock(return_value=mock_response)
+
+        with patch("portal.routers.admin.get_http_client", return_value=mock_client):
+            async with _client() as c:
+                resp = await c.get(
+                    f"/api/rooms/{room.id}/floor-transcription/status",
+                    cookies=admin_cookie,
+                )
+
+        assert resp.status_code == 200
+        assert resp.json() == {"running": True, "stage": "healthy", "bot_reachable": True}
+        mock_client.get.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
 # Booth CRUD
 # ---------------------------------------------------------------------------
 

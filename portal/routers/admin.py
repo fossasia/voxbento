@@ -7,7 +7,6 @@ import urllib.parse
 from datetime import timedelta
 from pathlib import Path
 
-import httpx
 import pycountry
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request, status
 from fastapi.templating import Jinja2Templates
@@ -64,7 +63,7 @@ from portal.database import (
     set_room_membership,
     update_user_active,
 )
-from portal.globals import _JS_CACHE_BUST, booths
+from portal.globals import _JS_CACHE_BUST, booths, get_http_client
 from portal.models import (
     BoothTranslationLanguage,
     RoomTranslationLanguage,
@@ -603,17 +602,17 @@ async def api_start_floor_transcription(room_id: int):
         else:
             jitsi_url = f"{settings.effective_jitsi_internal_base}/{room_id_str}"
     try:
-        async with httpx.AsyncClient() as client:
-            resp = await client.post(
-                f"{settings.floor_bot_base}/start",
-                json={
-                    "event_slug": event_slug,
-                    "jitsi_url": jitsi_url,
-                    "mediamtx_rtsp_base": settings.mediamtx_rtsp_base,
-                },
-                timeout=10.0,
-            )
-            resp.raise_for_status()
+        client = get_http_client()
+        resp = await client.post(
+            f"{settings.floor_bot_base}/start",
+            json={
+                "event_slug": event_slug,
+                "jitsi_url": jitsi_url,
+                "mediamtx_rtsp_base": settings.mediamtx_rtsp_base,
+            },
+            timeout=10.0,
+        )
+        resp.raise_for_status()
     except Exception as e:
         logger.error(f"Failed to start floor-bot: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to start floor bot: {e}")
@@ -633,8 +632,8 @@ async def api_start_floor_transcription(room_id: int):
         )
     except Exception as e:
         logger.error(f"Failed to start transcription worker: {e}")
-        async with httpx.AsyncClient() as client:
-            await client.post(f"{settings.floor_bot_base}/stop", json={"event_slug": event_slug})
+        client = get_http_client()
+        await client.post(f"{settings.floor_bot_base}/stop", json={"event_slug": event_slug})
         raise HTTPException(status_code=500, detail=f"Failed to start transcription worker: {e}")
     return {"status": "started"}
 
@@ -650,8 +649,8 @@ async def api_stop_floor_transcription(room_id: int):
             raise HTTPException(status_code=400, detail="Event not found")
         event_slug = event.slug
     try:
-        async with httpx.AsyncClient() as client:
-            await client.post(f"{settings.floor_bot_base}/stop", json={"event_slug": event_slug}, timeout=15.0)
+        client = get_http_client()
+        await client.post(f"{settings.floor_bot_base}/stop", json={"event_slug": event_slug}, timeout=15.0)
     except Exception as e:
         logger.error(f"Failed to stop floor-bot: {e}")
     await stop_transcription_worker(f"{event_slug}-floor")
@@ -672,10 +671,10 @@ async def api_floor_transcription_status(room_id: int):
     stage = "stopped"
     bot_reachable = True
     try:
-        async with httpx.AsyncClient() as client:
-            resp = await client.get(f"{settings.floor_bot_base}/status", timeout=5.0)
-            resp.raise_for_status()
-            data = resp.json()
+        client = get_http_client()
+        resp = await client.get(f"{settings.floor_bot_base}/status", timeout=5.0)
+        resp.raise_for_status()
+        data = resp.json()
         info = (data.get("active_rooms") or {}).get(event_slug)
         if info:
             stage = info.get("stage", info.get("state", "unknown"))

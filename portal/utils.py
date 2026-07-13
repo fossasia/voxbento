@@ -8,7 +8,7 @@ from fastapi.security import HTTPAuthorizationCredentials
 
 from portal.auth import decode_token
 from portal.config import settings
-from portal.globals import booths
+from portal.globals import booths, get_http_client
 
 
 def safe_redirect(url: str, status_code: int = status.HTTP_303_SEE_OTHER) -> RedirectResponse:
@@ -37,8 +37,8 @@ async def _check_mediamtx() -> bool:
     if not base:
         return False
     try:
-        async with httpx.AsyncClient(timeout=2.0) as client:
-            r = await client.get(f"{base}/v3/paths/list")
+        client = get_http_client()
+        r = await client.get(f"{base}/v3/paths/list", timeout=2.0)
         return r.status_code < 500
     except (httpx.ConnectError, httpx.TimeoutException, httpx.RequestError):
         return False
@@ -71,21 +71,23 @@ async def _ensure_mediamtx_path(channel_id: str) -> None:
         "overridePublisher": True,
     }
     try:
-        async with httpx.AsyncClient(timeout=3.0) as client:
-            r = await client.post(
-                f"{api_base}/v3/config/paths/add/{channel_id}",
+        client = get_http_client()
+        r = await client.post(
+            f"{api_base}/v3/config/paths/add/{channel_id}",
+            json=body,
+            timeout=3.0,
+        )
+        if r.status_code == 200:
+            _created_paths.add(channel_id)
+        elif r.status_code == 400 and "already exists" in r.text.lower():
+            # Path exists but may lack alwaysAvailable — patch it
+            r2 = await client.patch(
+                f"{api_base}/v3/config/paths/patch/{channel_id}",
                 json=body,
+                timeout=3.0,
             )
-            if r.status_code == 200:
+            if r2.status_code == 200:
                 _created_paths.add(channel_id)
-            elif r.status_code == 400 and "already exists" in r.text.lower():
-                # Path exists but may lack alwaysAvailable — patch it
-                r2 = await client.patch(
-                    f"{api_base}/v3/config/paths/patch/{channel_id}",
-                    json=body,
-                )
-                if r2.status_code == 200:
-                    _created_paths.add(channel_id)
     except (httpx.ConnectError, httpx.TimeoutException, httpx.RequestError):
         pass  # Non-fatal; path will use all_others defaults
 
