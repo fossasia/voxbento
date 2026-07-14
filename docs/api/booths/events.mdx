@@ -16,7 +16,7 @@ POST /api/events/{event_slug}/booths
 
 ### Authentication
 
-A Bearer token is required. See the [Authentication guide](/api/authentication) for details on obtaining a token.
+A Bearer token is required. See the [Authentication guide](../authentication.mdx) for details on obtaining a token.
 
 ### Path Parameters
 
@@ -138,7 +138,7 @@ curl https://voxbento.com/api/events/pycon2026/booths \
 
 **`event_slug`** *(string)* — The event slug echoed from the request path.
 
-**`booths`** *(array)* — An array of booth state objects. Each object has the same shape as the response from [GET booth state](/api/booths/state).
+**`booths`** *(array)* — An array of booth state objects. Each object has the same shape as the response from [GET booth state](./state.mdx).
 
   <details>
 <summary>Booth object fields</summary>
