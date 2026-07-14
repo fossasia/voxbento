@@ -126,54 +126,57 @@ class TranslationWorker:
             logger.error(f"[{booth_id_str}] Translation failed for {lang_code}: {e}")
 
     async def _call_llm(self, provider: str, model: str, api_key: str, text: str, target_lang_name: str) -> str | None:
-        import httpx
+        from portal.globals import get_http_client
 
         system_prompt = f"You are a professional interpreter. Translate the following text into {target_lang_name}. Output ONLY the translated text, nothing else."
 
-        timeout = httpx.Timeout(10.0)
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            if provider in OPENAI_COMPATIBLE_ENDPOINTS:
-                res = await client.post(
-                    OPENAI_COMPATIBLE_ENDPOINTS[provider],
-                    headers={"Authorization": f"Bearer {api_key}"},
-                    json={
-                        "model": model,
-                        "messages": [{"role": "system", "content": system_prompt}, {"role": "user", "content": text}],
-                    },
-                )
-                res.raise_for_status()
-                return res.json()["choices"][0]["message"]["content"].strip()
+        timeout = 10.0
+        client = get_http_client()
+        if provider in OPENAI_COMPATIBLE_ENDPOINTS:
+            res = await client.post(
+                OPENAI_COMPATIBLE_ENDPOINTS[provider],
+                headers={"Authorization": f"Bearer {api_key}"},
+                json={
+                    "model": model,
+                    "messages": [{"role": "system", "content": system_prompt}, {"role": "user", "content": text}],
+                },
+                timeout=timeout,
+            )
+            res.raise_for_status()
+            return res.json()["choices"][0]["message"]["content"].strip()
 
-            elif provider == TranslationProviderEnum.GEMINI.value:
-                res = await client.post(
-                    f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
-                    headers={"x-goog-api-key": api_key},
-                    json={
-                        "systemInstruction": {"parts": [{"text": system_prompt}]},
-                        "contents": [{"parts": [{"text": text}]}],
-                    },
-                )
-                res.raise_for_status()
-                return res.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+        elif provider == TranslationProviderEnum.GEMINI.value:
+            res = await client.post(
+                f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent",
+                headers={"x-goog-api-key": api_key},
+                json={
+                    "systemInstruction": {"parts": [{"text": system_prompt}]},
+                    "contents": [{"parts": [{"text": text}]}],
+                },
+                timeout=timeout,
+            )
+            res.raise_for_status()
+            return res.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
 
-            elif provider == TranslationProviderEnum.ANTHROPIC.value:
-                res = await client.post(
-                    "https://api.anthropic.com/v1/messages",
-                    headers={"x-api-key": api_key, "anthropic-version": "2023-06-01"},
-                    json={
-                        "model": model,
-                        "max_tokens": 1024,
-                        "system": system_prompt,
-                        "messages": [{"role": "user", "content": text}],
-                    },
-                )
-                res.raise_for_status()
-                return res.json()["content"][0]["text"].strip()
+        elif provider == TranslationProviderEnum.ANTHROPIC.value:
+            res = await client.post(
+                "https://api.anthropic.com/v1/messages",
+                headers={"x-api-key": api_key, "anthropic-version": "2023-06-01"},
+                json={
+                    "model": model,
+                    "max_tokens": 1024,
+                    "system": system_prompt,
+                    "messages": [{"role": "user", "content": text}],
+                },
+                timeout=timeout,
+            )
+            res.raise_for_status()
+            return res.json()["content"][0]["text"].strip()
 
-            elif provider == TranslationProviderEnum.LOCAL.value:
-                # Placeholder for local model inference.
-                # In a real environment, you'd route this to an internal LLM endpoint like Ollama/vLLM.
-                logger.warning("Local translation not fully implemented. Echoing text.")
-                return f"[{target_lang_name}] {text}"
+        elif provider == TranslationProviderEnum.LOCAL.value:
+            # Placeholder for local model inference.
+            # In a real environment, you'd route this to an internal LLM endpoint like Ollama/vLLM.
+            logger.warning("Local translation not fully implemented. Echoing text.")
+            return f"[{target_lang_name}] {text}"
 
         return None

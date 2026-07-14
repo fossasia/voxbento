@@ -33,6 +33,7 @@ templates = Jinja2Templates(directory=str(_BASE_DIR / "templates"))
 async def lifespan(app: FastAPI):
     import httpx
 
+    import portal.globals as g
     import portal.transcription as ts
     from portal.tts import demo_gen as dg
     from portal.tts.demo_gen import ensure_demo_generated
@@ -40,6 +41,7 @@ async def lifespan(app: FastAPI):
     settings.validate_production_secrets()
 
     ts.shared_http_client = httpx.AsyncClient(timeout=10.0)
+    g.shared_http_client = httpx.AsyncClient()
 
     # Generate landing page demo audio in the background on first startup.
     # Uses local Supertonic — no external API key needed.
@@ -59,6 +61,8 @@ async def lifespan(app: FastAPI):
     yield
     if ts.shared_http_client:
         await ts.shared_http_client.aclose()
+    if g.shared_http_client:
+        await g.shared_http_client.aclose()
 
 
 app = FastAPI(title="Voxbento", version="1.0.0", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
