@@ -23,7 +23,7 @@ jobs:
 
     steps:
       - name: Checkout (for reference — actual code pull happens on server)
-        uses: actions/checkout@v7
+        uses: actions/checkout@v4
 
       # ── SSH into the production server and pull latest code ──────────────
       - name: Deploy via SSH

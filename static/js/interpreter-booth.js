@@ -423,7 +423,8 @@ function setPreflightStatus(check, status, message = '') {
   const iconMap = { pass: '✅', fail: '❌', warn: '⚠️', pending: '⏳' }
   const el = document.getElementById(idMap[check])
   if (!el) return
-  el.className = `preflight-item preflight--${status}`
+  el.classList.remove('preflight--pending', 'preflight--pass', 'preflight--fail', 'preflight--warn')
+  el.classList.add(`preflight--${status}`)
   const iconEl = el.querySelector('.preflight-icon')
   if (iconEl) iconEl.textContent = iconMap[status] ?? '⏳'
   const msgEl = el.querySelector('.preflight-msg')
@@ -732,13 +733,13 @@ function toggleRelayAudio() {
         if (!elements.relayStatus) return
         if (st.audioActive) {
           elements.relayStatus.textContent = 'Listening'
-          elements.relayStatus.className = 'status-badge status-live'
+          elements.relayStatus.className = 'status-badge text-[10px] px-2 py-0.5 rounded-md font-medium bg-green-50 text-green-700 border border-green-100 whitespace-nowrap'
         } else if (st.peerConnection === 'failed') {
           elements.relayStatus.textContent = 'Error'
-          elements.relayStatus.className = 'status-badge status-disconnected'
+          elements.relayStatus.className = 'status-badge text-[10px] px-2 py-0.5 rounded-md font-medium bg-red-50 text-red-700 border border-red-100 whitespace-nowrap'
         } else {
           elements.relayStatus.textContent = 'Connecting...'
-          elements.relayStatus.className = 'status-badge status-warning'
+          elements.relayStatus.className = 'status-badge text-[10px] px-2 py-0.5 rounded-md font-medium bg-orange-50 text-orange-700 border border-orange-100 whitespace-nowrap'
         }
       }
     })
@@ -749,7 +750,7 @@ function toggleRelayAudio() {
     }
     if (elements.relayStatus) {
       elements.relayStatus.textContent = 'Not Listening'
-      elements.relayStatus.className = 'status-badge'
+      elements.relayStatus.className = 'status-badge text-[10px] px-2 py-0.5 rounded-md font-medium bg-gray-100 text-gray-600 whitespace-nowrap'
     }
     relayWhep.stop()
   }
@@ -1248,30 +1249,33 @@ function renderParticipants() {
   const activeParticipant = state.participants.find((p) => p.participant_id === state.activeInterpreterId)
   setBadge(
     elements.activeIndicator,
-    activeParticipant ? `${activeParticipant.display_name} is active` : 'No active interpreter',
+    activeParticipant ? `${activeParticipant.display_name} is active` : 'No active',
     activeParticipant ? 'success' : 'warning',
   )
   if (elements.participantCount) elements.participantCount.textContent = state.participants.length
   elements.participantList.innerHTML = ''
   for (const participant of state.participants) {
     const tile = document.createElement('article')
-    tile.className = 'participant-tile'
+    tile.className = 'flex flex-col gap-2 p-3 bg-white border border-gray-100 rounded-lg shadow-sm transition-all'
     if (participant.participant_id === state.activeInterpreterId) {
-      tile.classList.add('active')
+      tile.classList.add('ring-2', 'ring-brand-500', 'bg-brand-50/10')
     }
     const canActivateSelf = participant.participant_id === state.participantId
     const canActivate = ['interpreter', 'room_coordinator', 'event_owner', 'super_admin'].includes(participant.role) && (canReassign || canActivateSelf)
     const isThisActive = participant.participant_id === state.activeInterpreterId
 
     const top = document.createElement('div')
-    top.className = 'participant-top'
+    top.className = 'flex justify-between items-start gap-2'
     const nameEl = document.createElement('strong')
+    nameEl.className = 'font-semibold text-sm text-gray-800 leading-tight'
     nameEl.textContent = participant.display_name
     if (participant.participant_id === state.participantId) {
       nameEl.textContent += ' (You)'
     }
     const rolePill = document.createElement('span')
-    rolePill.className = `participant-pill${isThisActive ? ' live' : ''}`
+    rolePill.className = isThisActive 
+      ? 'shrink-0 text-[10px] px-2 py-0.5 rounded-md font-medium bg-amber-100 text-amber-800' 
+      : 'shrink-0 text-[10px] px-2 py-0.5 rounded-md font-medium bg-gray-100 text-gray-600'
     
     if (participant.role === 'interpreter') {
       rolePill.textContent = isThisActive ? 'Active' : 'Passive'
@@ -1283,17 +1287,18 @@ function renderParticipants() {
     top.append(nameEl, rolePill)
 
     const meta = document.createElement('div')
-    meta.className = 'participant-meta'
+    meta.className = 'text-xs text-gray-500'
     meta.textContent = `${participant.language} · ${participant.channel_id}`
 
     const bottom = document.createElement('div')
-    bottom.className = 'participant-bottom'
+    bottom.className = 'flex justify-between items-center mt-1'
     const pillGroup = document.createElement('div')
+    pillGroup.className = 'flex gap-1.5'
     const micPill = document.createElement('span')
-    micPill.className = 'participant-pill'
+    micPill.className = 'text-[10px] px-1.5 py-0.5 rounded border text-gray-500 ' + (participant.mic_active ? 'border-green-200 bg-green-50 text-green-700' : 'border-gray-200 bg-gray-50')
     micPill.textContent = participant.mic_active ? 'mic active' : 'mic muted'
     const ingestPill = document.createElement('span')
-    ingestPill.className = 'participant-pill'
+    ingestPill.className = 'text-[10px] px-1.5 py-0.5 rounded border text-gray-500 ' + (participant.ingest_connected ? 'border-blue-200 bg-blue-50 text-blue-700' : 'border-gray-200 bg-gray-50')
     ingestPill.textContent = participant.ingest_connected ? 'ingest connected' : 'ingest idle'
     pillGroup.append(micPill, ingestPill)
     bottom.append(pillGroup)
@@ -1309,19 +1314,25 @@ function renderParticipants() {
 function renderChat() {
   elements.chatLog.innerHTML = ''
   if (!state.chatMessages.length) {
+    elements.chatLog.className = 'text-sm text-gray-400 italic text-center p-4'
     elements.chatLog.textContent = 'No booth messages yet.'
     return
   }
+  elements.chatLog.className = 'flex-grow overflow-y-auto overflow-x-hidden clean-scrollbar p-5 space-y-3'
   for (const message of state.chatMessages.slice(-100)) {
     const entry = document.createElement('article')
-    entry.className = 'chat-entry'
+    entry.className = 'bg-gray-50 rounded-lg p-3 border border-gray-100'
     const header = document.createElement('header')
+    header.className = 'flex justify-between items-center mb-1'
     const senderEl = document.createElement('strong')
+    senderEl.className = 'text-xs font-semibold text-gray-700'
     senderEl.textContent = message.sender_name
     const timeEl = document.createElement('span')
+    timeEl.className = 'text-[10px] text-gray-400'
     timeEl.textContent = formatTime(message.sent_at)
     header.append(senderEl, timeEl)
     const bodyEl = document.createElement('p')
+    bodyEl.className = 'text-sm text-gray-800 whitespace-pre-wrap break-words'
     bodyEl.textContent = message.body
     entry.append(header, bodyEl)
     elements.chatLog.append(entry)
@@ -1344,7 +1355,7 @@ function renderMicControls() {
   if (micOffIcon) micOffIcon.classList.toggle('hidden', !state.micMuted)
   elements.toggleMic.classList.toggle('muted', state.micMuted)
   elements.toggleMic.classList.toggle('unmuted', !state.micMuted)
-  if (elements.muteLabel) elements.muteLabel.textContent = state.micMuted ? 'UNMUTE' : 'MUTE'
+  if (elements.muteLabel) elements.muteLabel.textContent = state.micMuted ? 'Unmute' : 'Mute'
   elements.toggleMic.setAttribute('aria-label', state.micMuted ? 'Unmute microphone' : 'Mute microphone')
   elements.toggleMic.setAttribute('title', state.micMuted ? 'Unmute (Space)' : 'Mute (Space)')
 
@@ -1382,8 +1393,9 @@ function renderHandoverButton() {
   if (!elements.handoverBtn) return
   if (!state.joined || !state.participantId) {
     elements.handoverBtn.disabled = true
-    elements.handoverBtn.className = 'header-btn header-btn--handover state-grey'
-    elements.handoverLabel.textContent = 'PASS MIC'
+    elements.handoverBtn.classList.remove('state-green', 'state-flash-yellow')
+    elements.handoverBtn.classList.add('state-grey')
+    elements.handoverLabel.textContent = 'Pass Mic'
     return
   }
 
@@ -1393,42 +1405,42 @@ function renderHandoverButton() {
   const hasPartner = state.participants.filter(p => ['interpreter', 'room_coordinator', 'event_owner', 'super_admin'].includes(p.role)).length > 1
 
   // Remove all state classes
-  elements.handoverBtn.classList.remove('state-grey', 'state-green', 'state-flash-yellow')
+  elements.handoverBtn.className = 'header-btn header-btn--handover flex items-center gap-2 px-5 py-2 rounded-lg font-semibold text-sm disabled:opacity-50 disabled:cursor-not-allowed'
 
   if (isActive) {
-    elements.handoverLabel.textContent = 'PASS MIC'
+    elements.handoverLabel.textContent = 'Pass Mic'
 
     if (hState === 'idle') {
-      elements.handoverBtn.classList.add('state-grey')
+      elements.handoverBtn.classList.add('bg-gray-100', 'text-gray-500')
       elements.handoverBtn.disabled = !hasPartner
     } else if (hState === 'offered' && iAmInitiator) {
       // I (active) offered → green, frozen (can cancel)
-      elements.handoverBtn.classList.add('state-green')
+      elements.handoverBtn.classList.add('bg-green-500', 'text-white')
       elements.handoverBtn.disabled = false
     } else if (hState === 'requested' && !iAmInitiator) {
       // Partner (passive) requested → flash yellow, clickable to yield
-      elements.handoverBtn.classList.add('state-flash-yellow')
+      elements.handoverBtn.classList.add('animate-pulse', 'bg-yellow-300', 'text-yellow-900')
       elements.handoverBtn.disabled = false
     } else {
-      elements.handoverBtn.classList.add('state-grey')
+      elements.handoverBtn.classList.add('bg-gray-100', 'text-gray-500')
       elements.handoverBtn.disabled = true
     }
   } else {
-    elements.handoverLabel.textContent = 'TAKE OVER'
+    elements.handoverLabel.textContent = 'Take Over'
 
     if (hState === 'idle') {
-      elements.handoverBtn.classList.add('state-grey')
+      elements.handoverBtn.classList.add('bg-gray-100', 'text-gray-500')
       elements.handoverBtn.disabled = !hasPartner
     } else if (hState === 'requested' && iAmInitiator) {
       // I (passive) requested → green, frozen (can cancel)
-      elements.handoverBtn.classList.add('state-green')
+      elements.handoverBtn.classList.add('bg-green-500', 'text-white')
       elements.handoverBtn.disabled = false
     } else if (hState === 'offered' && !iAmInitiator) {
       // Partner (active) offered → flash yellow, clickable to accept
-      elements.handoverBtn.classList.add('state-flash-yellow')
+      elements.handoverBtn.classList.add('animate-pulse', 'bg-yellow-300', 'text-yellow-900')
       elements.handoverBtn.disabled = false
     } else {
-      elements.handoverBtn.classList.add('state-grey')
+      elements.handoverBtn.classList.add('bg-gray-100', 'text-gray-500')
       elements.handoverBtn.disabled = true
     }
   }

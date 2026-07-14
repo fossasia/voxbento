@@ -2,10 +2,42 @@
 
 {% block title %}Booth {{ booth_id }} | Voxbento Interpreter Portal{% endblock %}
 
+{% block head %}
+<link rel="stylesheet" href="{{ url_for('static', path='css/booth.css') }}?v=4" />
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+    tailwind.config = {
+        theme: {
+            extend: {
+                colors: {
+                    brand: {
+                        50: '#eff6ff',
+                        100: '#dbeafe',
+                        500: '#3b82f6',
+                        600: '#2563eb',
+                        700: '#1d4ed8',
+                        900: '#1e3a8a',
+                    }
+                },
+                fontFamily: {
+                    sans: ['Inter', 'sans-serif'],
+                    mono: ['ui-monospace', 'SFMono-Regular', 'Menlo', 'Monaco', 'Consolas', 'monospace'],
+                }
+            }
+        }
+    }
+</script>
+<style>
+  /* Base styles that override some global elements if needed */
+  body, main { margin: 0; padding: 0; height: 100vh; overflow: hidden; background-color: #f8fafc; }
+  .portal-footer { display: none; } /* Hide footer on booth page */
+</style>
+{% endblock %}
+
 {% block content %}
 <div
   id='interpreter-portal'
-  class='booth-layout'
+  class='h-screen flex flex-col text-gray-800 font-sans overflow-hidden w-full relative'
   data-booth-id='{{ booth_id }}'
   data-booth-token='{{ booth_token }}'
   data-default-language='{{ booth_language }}'
@@ -13,7 +45,6 @@
   data-jitsi-url='{{ jitsi_url }}'
   data-jitsi-domain='{{ jitsi_domain }}'
   data-whip-base='{{ mediamtx_whip_base }}'
-
   data-event-slug='{{ event_slug | default("") }}'
   data-language-code='{{ language_code | default("") }}'
   data-whip-url='{{ whip_url | default("") }}'
@@ -24,197 +55,215 @@
 >
 
   <!-- ── Full-Width Header Bar ──────────────────────────────────────── -->
-  <header class='booth-header' id='booth-header'>
+  <header class='flex items-center justify-between px-6 py-3 bg-white shadow-sm z-20 relative border-b border-gray-100' id=''>
     <!-- Far Left: Live Status Badge -->
-    <div class='header-left'>
-      <span id='live-badge' class='live-badge off'>
-        <span class='live-dot'>●</span> <span id='live-badge-text'>OFF LIVE</span>
+    <div class='flex-shrink-0'>
+      <span id='live-badge' class='live-badge off inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-gray-100 text-gray-500 font-medium text-xs tracking-wide transition-colors'>
+        <span class='live-dot animate-none text-gray-400'>●</span> <span id='live-badge-text'>OFF LIVE</span>
       </span>
     </div>
 
     <!-- Center: Handover + Mic Controls -->
-    <div class='header-center'>
-      <button id='handover-btn' type='button' class='header-btn header-btn--handover state-grey' disabled title='Mic handover'>
-        <svg class='header-btn-icon' viewBox='0 0 24 24' fill='currentColor' aria-hidden='true'><path d='M12 14c1.66 0 2.99-1.34 2.99-3L15 5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm5.3-3c0 3-2.54 5.1-5.3 5.1S6.7 14 6.7 11H5c0 3.41 2.72 6.23 6 6.72V21h2v-3.28C16.28 17.23 19 14.41 19 11h-1.7z'/></svg>
-        <span id='handover-label'>PASS MIC</span>
+    <div class='flex gap-3 items-center justify-center flex-grow'>
+      <button id='handover-btn' type='button' class='header-btn header-btn--handover state-grey flex items-center gap-2 px-5 py-2 rounded-lg font-semibold text-sm transition-all disabled:opacity-50 disabled:cursor-not-allowed' disabled title='Mic handover'>
+        <svg class='w-4 h-4' viewBox='0 0 24 24' fill='currentColor' aria-hidden='true'><path d='M12 14c1.66 0 2.99-1.34 2.99-3L15 5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm5.3-3c0 3-2.54 5.1-5.3 5.1S6.7 14 6.7 11H5c0 3.41 2.72 6.23 6 6.72V21h2v-3.28C16.28 17.23 19 14.41 19 11h-1.7z'/></svg>
+        <span id='handover-label'>Pass Mic</span>
       </button>
 
-      <button id='toggle-mic' type='button' class='header-btn header-btn--mic muted' title='Mute / Unmute (Space)' aria-label='Mute microphone'>
-        <svg class='header-btn-icon ctrl-icon--mic-on hidden' viewBox='0 0 24 24' fill='currentColor' aria-hidden='true'>
+      <button id='toggle-mic' type='button' class='header-btn header-btn--mic muted flex items-center gap-2 px-6 py-2 rounded-lg bg-gray-800 text-white font-semibold text-sm hover:bg-gray-700 hover:shadow-md transition-all' title='Mute / Unmute (Space)' aria-label='Mute microphone'>
+        <svg class='w-4 h-4 ctrl-icon--mic-on hidden text-green-400' viewBox='0 0 24 24' fill='currentColor' aria-hidden='true'>
           <path d='M12 14c1.66 0 2.99-1.34 2.99-3L15 5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm5.3-3c0 3-2.54 5.1-5.3 5.1S6.7 14 6.7 11H5c0 3.41 2.72 6.23 6 6.72V21h2v-3.28C16.28 17.23 19 14.41 19 11h-1.7z'/>
         </svg>
-        <svg class='header-btn-icon ctrl-icon--mic-off' viewBox='0 0 24 24' fill='currentColor' aria-hidden='true'>
+        <svg class='w-4 h-4 ctrl-icon--mic-off text-red-400' viewBox='0 0 24 24' fill='currentColor' aria-hidden='true'>
           <path d='M19 11h-1.7c0 .74-.16 1.43-.43 2.05l1.23 1.23c.56-.98.9-2.09.9-3.28zm-4.02.17c0-.06.02-.11.02-.17V5c0-1.66-1.34-3-3-3S9 3.34 9 5v.18l5.98 5.99zM4.27 3 3 4.27l6.01 6.01V11c0 1.66 1.33 3 2.99 3 .22 0 .44-.03.65-.08l1.66 1.66c-.71.33-1.5.52-2.31.52-2.76 0-5.3-2.1-5.3-5.1H5c0 3.41 2.72 6.23 6 6.72V21h2v-3.28c.91-.13 1.77-.45 2.54-.9L19.73 21 21 19.73 4.27 3z'/>
         </svg>
-        <span class='header-btn-label' id='mute-label'>UNMUTE</span>
+        <span class='header-btn-label' id='mute-label'>Unmute</span>
       </button>
     </div>
 
     <!-- Far Right: Leave Booth -->
-    <div class='header-right'>
-      <a href='/interpreter' id='leave-booth' class='header-btn header-btn--leave' title='Leave booth and return to Lobby'>
-        <svg class='header-btn-icon' viewBox='0 0 24 24' fill='currentColor' aria-hidden='true'><path d='M10.09 15.59L11.5 17l5-5-5-5-1.41 1.41L12.67 11H3v2h9.67l-2.58 2.59zM19 3H5c-1.11 0-2 .9-2 2v4h2V5h14v14H5v-4H3v4c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2z'/></svg>
-        <span class='header-btn-label'>LEAVE BOOTH</span>
+    <div class='flex-shrink-0'>
+      <a href='/interpreter' id='leave-booth' class='header-btn header-btn--leave flex items-center gap-2 px-4 py-2 rounded-lg text-red-600 bg-red-50 hover:bg-red-100 font-semibold text-sm transition-colors' title='Leave booth and return to Lobby'>
+        <svg class='w-4 h-4' viewBox='0 0 24 24' fill='currentColor' aria-hidden='true'><path d='M10.09 15.59L11.5 17l5-5-5-5-1.41 1.41L12.67 11H3v2h9.67l-2.58 2.59zM19 3H5c-1.11 0-2 .9-2 2v4h2V5h14v14H5v-4H3v4c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2z'/></svg>
+        <span class='header-btn-label'>Leave Booth</span>
       </a>
     </div>
   </header>
 
   <!-- ── Main 2-Column Grid ────────────────────────────────────────────── -->
-  <div class='booth-columns'>
+  <div class='grid grid-cols-1 lg:grid-cols-[1fr_380px] flex-grow overflow-hidden relative z-10'>
     
     <!-- LEFT COLUMN: Video -->
-    <div class='booth-main-col'>
-      <!-- Video Feed -->
-      <section class='panel panel--jitsi'>
-        <div class='panel-body monitoring-body'>
-          <div class='monitor-frame'>
-            <iframe id='jitsi-frame' title='Jitsi monitoring feed' allow='camera; microphone; autoplay; fullscreen; display-capture; speaker-selection'></iframe>
+    <div class='flex flex-col h-full bg-[#1e2022]'>
+      <section class='--jitsi h-full relative'>
+        <div class='-body h-full'>
+          <div class='monitor-frame w-full h-full relative'>
+            <iframe id='jitsi-frame' class='absolute inset-0 w-full h-full border-0' title='Jitsi monitoring feed' allow='camera; microphone; autoplay; fullscreen; display-capture; speaker-selection'></iframe>
           </div>
         </div>
       </section>
     </div>
 
     <!-- RIGHT COLUMN: Sidebar -->
-    <div class='booth-sidebar-col sidebar-scrollable'>
+    <div class='flex flex-col h-full bg-slate-50 overflow-y-auto overflow-x-hidden clean-scrollbar relative z-10 p-5 gap-5'>
       
       <!-- 1. Participants (Collapsible, Open by default) -->
-      <details class='panel panel-details' open>
-        <summary class='panel-header panel-header-details'>
-          <h2><span class='participants-dot'>●</span> Participants (<span id='participant-count'>0</span>)</h2>
-          <div style="display: flex; gap: 0.5rem; align-items: center;">
-            <span id='connection-status' class='status-badge'>Disconnected</span>
-            <span id='active-indicator' class='status-badge'>No active interpreter</span>
+      <details class='-details group bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden shrink-0' open>
+        <summary class='-header -header-details flex items-center justify-between p-4 cursor-pointer hover:bg-gray-50 transition-colors select-none'>
+          <h2 class='font-semibold text-sm text-gray-700 flex items-center gap-2'>
+            <span class='participants-dot text-brand-500 text-[10px]'>●</span>
+            <span>Participants (<span id='participant-count'>0</span>)</span>
+          </h2>
+          <div class="flex gap-2 items-center">
+            <span id='connection-status' class='status-badge text-[10px] px-2 py-0.5 rounded-md font-medium bg-gray-100 text-gray-600 whitespace-nowrap'>Disconnected</span>
+            <span id='active-indicator' class='status-badge text-[10px] px-2 py-0.5 rounded-md font-medium bg-amber-100 text-amber-800 whitespace-nowrap'>No active</span>
           </div>
         </summary>
-        <div class='panel-body'>
-          <div id='participant-list' class='participant-list'></div>
+        <div class='-body p-4 pt-0 border-t border-gray-200 mt-2'>
+          <div id='participant-list' class='participant-list flex flex-col gap-2'></div>
         </div>
       </details>
 
       <!-- 2. Booth Audio Volume Slider (Always visible) -->
-      <div class='panel sidebar-panel'>
-        <div class='panel-header'>
-          <h2>BOOTH AUDIO VOLUME</h2>
-          <span class='info-tooltip' title='Controls the volume of your boothmate&#39;s audio. Active interpreters default to 0% to prevent echo. Passive interpreters default to 80% to monitor.'>ⓘ</span>
+      <div class='bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden shrink-0'>
+        <div class='-header flex justify-between items-center p-4 border-b border-gray-200'>
+          <h2 class='font-semibold text-sm text-gray-700'>Booth Audio Volume</h2>
+          <span class='info-tooltip text-gray-400 hover:text-gray-600 cursor-help flex items-center justify-center text-xs transition-colors' title='Controls the volume of your boothmate&#39;s audio. Active interpreters default to 0% to prevent echo. Passive interpreters default to 80% to monitor.'>
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+          </span>
         </div>
-        <div class='panel-body'>
-          <div class='volume-slider-row'>
-            <span class='volume-icon'>🔊</span>
-            <input type='range' id='booth-volume' class='volume-slider' min='0' max='100' step='1' value='0'>
-            <span id='booth-volume-label' class='volume-label'>0%</span>
+        <div class='-body p-5'>
+          <div class='volume-slider-row flex items-center gap-4'>
+            <span class='volume-icon text-gray-400'>
+              <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.536 8.464a5 5 0 010 7.072m2.828-9.9a9 9 0 010 12.728M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z"></path></svg>
+            </span>
+            <input type='range' id='booth-volume' class='volume-slider clean-range flex-grow' min='0' max='100' step='1' value='0'>
+            <span id='booth-volume-label' class='volume-label font-medium text-sm text-gray-600 w-10 text-right'>0%</span>
           </div>
           <audio id='booth-audio' autoplay hidden></audio>
         </div>
       </div>
 
       <!-- 3. Booth Chat (Pinned open — not collapsible) -->
-      <div class='panel sidebar-panel panel--chat'>
-        <div class='panel-header'>
-          <h2>💬 Booth Chat</h2>
-          <span class='status-badge'>Internal</span>
+      <div class='--chat bg-white rounded-xl shadow-sm border border-gray-100 flex flex-col overflow-hidden shrink-0' style='min-height: 300px;'>
+        <div class='-header flex justify-between items-center p-4 border-b border-gray-200'>
+          <h2 class='font-semibold text-sm text-gray-700 flex items-center gap-2'>
+            <svg class="w-4 h-4 text-brand-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z"></path></svg>
+            Booth Chat
+          </h2>
+          <span class='status-badge text-[10px] px-2 py-0.5 rounded-md font-medium bg-gray-100 text-gray-600'>Internal</span>
         </div>
-        <div class='panel-body chat-body'>
-          <div id='chat-log' class='chat-log'></div>
-          <form id='chat-form' class='chat-form'>
-            <input id='chat-input' class='input' type='text' placeholder='Type a message...' />
-            <button type='submit' class='btn btn-primary'>Send</button>
+        <div class='-body flex flex-col flex-grow overflow-hidden bg-white'>
+          <div id='chat-log' class='chat-log flex-grow overflow-y-auto p-4 flex flex-col gap-4 text-sm clean-scrollbar'></div>
+          <form id='chat-form' class='chat-form p-3 border-t border-gray-100 flex gap-2 bg-gray-50/50'>
+            <input id='chat-input' class='input flex-grow rounded-lg border border-gray-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500/50 focus:border-brand-500 transition-all placeholder-gray-400 bg-white' type='text' placeholder='Type a message...' />
+            <button type='submit' class='btn btn-primary bg-brand-600 hover:bg-brand-500 text-white font-medium px-4 rounded-lg shadow-sm hover:shadow transition-all'>Send</button>
           </form>
         </div>
       </div>
 
       <!-- 4. Relay Audio (Collapsed by default) -->
-      <details class='panel panel-details'>
-        <summary class='panel-header panel-header-details'>
-          <h2>🔊 Relay Audio</h2>
+      <details class='-details group bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden shrink-0'>
+        <summary class='-header -header-details flex items-center justify-between p-4 cursor-pointer hover:bg-gray-50 transition-colors select-none'>
+          <h2 class='font-semibold text-sm text-gray-700 flex items-center gap-2'>
+            <svg class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z"></path></svg>
+            Relay Audio
+          </h2>
           {% if relay_whep_url %}
-            <span id='relay-status' class='status-badge'>Not Listening</span>
+            <span id='relay-status' class='status-badge text-[10px] px-2 py-0.5 rounded-md font-medium bg-gray-100 text-gray-600'>Not Listening</span>
           {% else %}
-            <span class='status-badge status-warning'>Unconfigured</span>
+            <span class='status-badge status-warning text-[10px] px-2 py-0.5 rounded-md font-medium bg-orange-50 text-orange-700 border border-orange-100'>Unconfigured</span>
           {% endif %}
         </summary>
-        <div class='panel-body'>
+        <div class='-body p-5 pt-0 border-t border-gray-200 mt-2 hidden group-open:block space-y-5'>
           {% if relay_whep_url %}
-          <div class='form-group' style='margin-bottom: 0.5rem;'>
-            <button id='pass-relay' type='button' class='btn' style='width: 100%; margin-bottom: 0.5rem;' title='Listen to Relay'>
+          <div class='form-group mb-5 mt-2'>
+            <button id='pass-relay' type='button' class='btn w-full bg-white border border-gray-200 rounded-lg py-2.5 text-sm font-medium hover:bg-gray-50 hover:border-gray-300 shadow-sm transition-all text-gray-700' title='Listen to Relay'>
               Listen to Relay ({{ relay_language_name }})
             </button>
           </div>
-          <div class='form-group' style='margin-bottom: 0.5rem;'>
-            <label for='relay-device-select' style='font-size: 0.85rem;'>Output Device</label>
-            <select id='relay-device-select' class='input device-select' style='width: 100%; font-size: 0.8rem; padding: 0.25rem;'><option value=''>Default output</option></select>
-            <div style='display: flex; align-items: center; gap: 0.3rem; margin-top: 0.2rem;'>
-              <input type='checkbox' id='show-virtual-relay-devices' style='margin: 0;'>
-              <label for='show-virtual-relay-devices' style='font-size: 0.7rem; color: var(--color-muted); cursor: pointer;'>Show virtual devices</label>
+          <div class='form-group mb-4 flex flex-col gap-1.5'>
+            <label for='relay-device-select' class='text-xs font-medium text-gray-500'>Output Device</label>
+            <select id='relay-device-select' class='input device-select border border-gray-200 rounded-lg p-2.5 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-brand-500/50 focus:border-brand-500 text-gray-700'><option value=''>Default output</option></select>
+            <div class='flex items-center gap-2 mt-1'>
+              <input type='checkbox' id='show-virtual-relay-devices' class='rounded text-brand-600 focus:ring-brand-500 border-gray-300'>
+              <label for='show-virtual-relay-devices' class='text-xs text-gray-500 cursor-pointer'>Show virtual devices</label>
             </div>
           </div>
-          <div class='form-group'>
-            <label for='relay-volume' style='font-size: 0.85rem;'>Volume</label>
-            <input type='range' id='relay-volume' min='0' max='1' step='0.01' value='0.8' style='width: 100%;'>
+          <div class='form-group flex flex-col gap-2 mt-4'>
+            <label for='relay-volume' class='text-xs font-medium text-gray-500'>Volume</label>
+            <input type='range' id='relay-volume' class='clean-range w-full' min='0' max='1' step='0.01' value='0.8'>
           </div>
           {% else %}
-          <p style='font-size: 0.85rem; color: var(--color-muted); margin: 0;'>
-            No relay booth is configured for this room.
-          </p>
+          <div class="mt-4 p-3 bg-gray-50 rounded-lg border border-gray-100">
+            <p class='text-sm text-gray-500'>No relay booth is configured for this room.</p>
+          </div>
           {% endif %}
         </div>
       </details>
       
       <!-- 5. Diagnostics (Collapsed by default) -->
-      <details class='panel panel-details'>
-        <summary class='panel-header panel-header-details'>
-          <h2>⚙ Diagnostics</h2>
-          <span id='ingest-status' class='status-badge'>Disconnected</span>
+      <details class='-details group bg-white rounded-xl shadow-sm border border-gray-100 overflow-hidden shrink-0'>
+        <summary class='-header -header-details flex items-center justify-between p-4 cursor-pointer hover:bg-gray-50 transition-colors select-none'>
+          <h2 class='font-semibold text-sm text-gray-700 flex items-center gap-2'>
+            <svg class="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path></svg>
+            Diagnostics
+          </h2>
+          <span id='ingest-status' class='status-badge text-[10px] px-2 py-0.5 rounded-md font-medium bg-red-50 text-red-700 border border-red-100'>Disconnected</span>
         </summary>
-        <div class='panel-body panel-body-sm'>
+        <div class='-body -body-sm p-5 pt-0 border-t border-gray-200 mt-2 hidden group-open:block space-y-5'>
           
-          <div class='diagnostics-section'>
-            <div class='diagnostics-header' style='display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;'>
-              <strong style='font-size: 0.85rem; color: var(--color-muted)'>Preflight Checks</strong>
-              <button id='preflight-retry' type='button' class='btn btn-xs'>↺ Retry</button>
+          <div class='diagnostics-section pt-2'>
+            <div class='diagnostics-header flex justify-between items-center mb-3'>
+              <strong class='text-xs font-semibold text-gray-500 uppercase tracking-wider'>Preflight Checks</strong>
+              <button id='preflight-retry' type='button' class='btn btn-xs bg-white border border-gray-200 rounded px-2 py-1 text-xs text-gray-600 hover:bg-gray-50 transition-colors'>↺ Retry</button>
             </div>
-            <ul class='preflight-list'>
-              <li id='check-mic-permission' class='preflight-item preflight--pending'>
-                <span class='preflight-icon'>⏳</span>
-                <div class='preflight-info'><span class='preflight-name'>Mic</span> <span class='preflight-msg'></span></div>
+            <ul class='preflight-list flex flex-col gap-3'>
+              <li id='check-mic-permission' class='preflight-item preflight--pending flex items-center gap-3 p-3 rounded-lg border border-gray-100 bg-gray-50/50'>
+                <span class='preflight-icon text-lg'>⏳</span>
+                <div class='preflight-info text-sm text-gray-700'><strong class='preflight-name font-medium'>Mic</strong> <span class='preflight-msg text-gray-500'></span></div>
               </li>
-              <li class='preflight-item' style='flex-direction: column; align-items: stretch; gap: 0.5rem;'>
-                <div style='display: flex; justify-content: space-between; align-items: center;'>
-                  <span style='font-size: 0.85rem; font-weight: 500;'>Audio Input Device</span>
-                  <button id='mic-test-btn' type='button' class='btn btn-xs' title='Acquire mic and show live level'>⚙ Test</button>
+              <li class='preflight-item flex flex-col gap-3 p-4 rounded-lg border border-gray-100 bg-gray-50/50'>
+                <div class='flex justify-between items-center'>
+                  <span class='text-sm font-medium text-gray-700'>Audio Input Device</span>
+                  <button id='mic-test-btn' type='button' class='btn btn-xs bg-white border border-gray-200 rounded px-2.5 py-1 text-xs text-gray-600 hover:bg-gray-50 transition-colors' title='Acquire mic and show live level'>Test</button>
                 </div>
-                <select id='mic-device-select' class='input device-select' style='width: 100%; font-size: 0.8rem; padding: 0.25rem;'><option value=''>Default microphone</option></select>
-                <div style='display: flex; align-items: center; gap: 0.3rem; margin-top: 0.2rem;'>
-                  <input type='checkbox' id='show-virtual-devices' style='margin: 0;'>
-                  <label for='show-virtual-devices' style='font-size: 0.7rem; color: var(--color-muted); cursor: pointer;'>Show virtual devices</label>
+                <select id='mic-device-select' class='input device-select border border-gray-200 rounded-lg p-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-brand-500/50 focus:border-brand-500'><option value=''>Default microphone</option></select>
+                <div class='flex items-center gap-2'>
+                  <input type='checkbox' id='show-virtual-devices' class='rounded text-brand-600 focus:ring-brand-500 border-gray-300'>
+                  <label for='show-virtual-devices' class='text-xs text-gray-500 cursor-pointer'>Show virtual devices</label>
                 </div>
-                <div id='meter-row' class='meter-row hidden' style='margin-top: 0.25rem;'>
-                  <span class='meter-label' style='font-size: 0.7rem;'>Input level</span>
-                  <canvas id='mic-meter' class='mic-meter' width='400' height='10' style='width: 100%;'></canvas>
+                <div id='meter-row' class='meter-row hidden flex flex-col gap-1.5 mt-2'>
+                  <span class='meter-label text-xs text-gray-500'>Input level</span>
+                  <div class="rounded-full overflow-hidden bg-gray-200 h-2 w-full"><canvas id='mic-meter' class='mic-meter w-full h-full block'></canvas></div>
                 </div>
-                <div style='margin-top: 0.5rem; display: flex; align-items: center; justify-content: space-between;'>
-                  <span style='font-size: 0.85rem;'>Loopback Test</span>
-                  <button id='loopback-test-btn' type='button' class='btn btn-xs' title='Record 5s of audio and play it back'>Record & Play</button>
+                <div class='mt-3 flex items-center justify-between border-t border-gray-200 pt-3'>
+                  <span class='text-sm font-medium text-gray-700'>Loopback Test</span>
+                  <button id='loopback-test-btn' type='button' class='btn btn-xs bg-brand-50 border border-brand-100 text-brand-700 rounded px-2.5 py-1 text-xs hover:bg-brand-100 transition-colors' title='Record 5s of audio and play it back'>Record & Play</button>
                 </div>
-                <div id='loopback-progress-row' class='hidden' style='margin-top: 0.25rem;'>
-                  <progress id='loopback-progress' value='0' max='100' style='width: 100%; height: 8px;'></progress>
-                  <div id='loopback-status' style='font-size: 0.7rem; color: var(--color-muted); text-align: center; margin-top: 2px;'>Recording...</div>
+                <div id='loopback-progress-row' class='hidden flex flex-col gap-1.5 mt-1'>
+                  <progress id='loopback-progress' class='clean-progress w-full h-1.5 rounded-full overflow-hidden bg-gray-200' value='0' max='100'></progress>
+                  <div id='loopback-status' class='text-xs text-gray-500 text-center mt-0.5'>Recording...</div>
                 </div>
               </li>
             </ul>
           </div>
 
-          <div class='diagnostics-section' style='margin-top: 1rem; padding-top: 1rem; border-top: 1px solid var(--color-border);'>
-            <div class='diagnostics-header'>
-              <strong style='font-size: 0.85rem; color: var(--color-muted)'>Audio Status</strong>
+          <div class='diagnostics-section pt-4 border-t border-gray-200'>
+            <div class='diagnostics-header mb-3'>
+              <strong class='text-xs font-semibold text-gray-500 uppercase tracking-wider'>Audio Status</strong>
             </div>
-            <dl class='status-list status-list-compact' style='margin-top: 0.5rem'>
-              <div><dt>Mic</dt><dd id='mic-state'>Inactive</dd></div>
-              <div id='listener-url-row' class='hidden'>
-                <dt>Listener URL</dt>
-                <dd class='listener-url-cell'><code id='listener-url-display'></code><button id='copy-listener-url' type='button' class='btn btn-xs'>Copy</button></dd>
+            <dl class='status-list status-list-compact flex flex-col gap-3 text-sm'>
+              <div class='flex justify-between items-center pb-2 border-b border-gray-200'><dt class='text-gray-500'>Mic</dt><dd id='mic-state' class='font-mono font-medium text-gray-700'>Inactive</dd></div>
+              <div id='listener-url-row' class='hidden flex-col gap-1.5'>
+                <dt class='text-gray-500 text-xs'>Listener URL</dt>
+                <dd class='listener-url-cell flex gap-2 items-center'>
+                  <code id='listener-url-display' class='flex-grow bg-gray-50 border border-gray-200 rounded p-1.5 text-xs text-gray-600 truncate'></code>
+                  <button id='copy-listener-url' type='button' class='btn btn-xs bg-white border border-gray-200 rounded px-2.5 py-1 text-xs text-gray-600 hover:bg-gray-50 transition-colors'>Copy</button>
+                </dd>
               </div>
             </dl>
-            <p id='error-banner' class='error-banner'></p>
+            <p id='error-banner' class='error-banner hidden mt-4 bg-red-50 border border-red-100 text-red-700 p-3 rounded-lg text-sm font-medium'></p>
           </div>
 
         </div>
