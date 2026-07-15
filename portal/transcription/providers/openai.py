@@ -5,7 +5,7 @@ import logging
 import httpx
 from tenacity import AsyncRetrying, retry_if_exception_type, stop_after_attempt, wait_exponential
 
-import portal.transcription as ts
+from portal.globals import get_http_client
 from portal.transcription.providers.base import (
     BoothTranscriptionState,
     ProviderConfig,
@@ -14,12 +14,6 @@ from portal.transcription.providers.base import (
 )
 
 logger = logging.getLogger(__name__)
-
-
-def get_http_client() -> httpx.AsyncClient:
-    if ts.shared_http_client is None:
-        ts.shared_http_client = httpx.AsyncClient(timeout=10.0)
-    return ts.shared_http_client
 
 
 class OpenAIProvider(TranscriptionProvider):

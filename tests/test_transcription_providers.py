@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 
-import portal.transcription as ts
+import portal.globals as pg
 from portal.transcription.providers.base import ProviderConfig, TranscriptionProvider, pcm_to_wav
 
 
@@ -45,7 +45,7 @@ class TestTranscriptionProviders:
         mock_response.json.return_value = {"text": "Hello"}
         mock_client.post = AsyncMock(return_value=mock_response)
 
-        ts.shared_http_client = mock_client
+        pg.shared_http_client = mock_client
 
         try:
             result = await provider.process_chunk(b"\x00" * 3200, "en", "whisper-1", config)
@@ -55,7 +55,7 @@ class TestTranscriptionProviders:
             call_args = mock_client.post.call_args
             assert "api.openai.com" in call_args[0][0]
         finally:
-            ts.shared_http_client = None
+            pg.shared_http_client = None
 
     async def test_openai_process_chunk_returns_empty_on_api_error(self):
         from portal.transcription.providers.openai import OpenAIProvider
@@ -66,13 +66,13 @@ class TestTranscriptionProviders:
         mock_client = MagicMock()
         mock_client.post = AsyncMock(side_effect=httpx.ConnectError("Connection error"))
 
-        ts.shared_http_client = mock_client
+        pg.shared_http_client = mock_client
 
         try:
             with pytest.raises(Exception):
                 await provider.process_chunk(b"\x00" * 3200, "en", "whisper-1", config)
         finally:
-            ts.shared_http_client = None
+            pg.shared_http_client = None
 
     async def test_local_model_ref_counting(self):
         from portal.transcription.providers.local import (
