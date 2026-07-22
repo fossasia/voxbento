@@ -854,6 +854,43 @@ label {
   display: none !important;
 }
 
+.portal-main {
+  min-height: calc(100vh - 60px);
+}
+
+.toast-container {
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  z-index: 9999;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.toast {
+  padding: 12px 20px;
+  border-radius: 8px;
+  color: #fff;
+  font-family: Inter, sans-serif;
+  font-size: 14px;
+  font-weight: 500;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  transition: opacity 0.3s ease-in-out;
+}
+
+.toast-error {
+  background-color: #e53e3e;
+}
+
+.toast-info {
+  background-color: #3182ce;
+}
+
+.toast-fade {
+  opacity: 0;
+}
+
 @media (max-width: 900px) {
   .booth-columns {
     grid-template-columns: 1fr;

@@ -305,6 +305,96 @@ code { font-family: var(--font-mono); font-size: 0.875em; background: #f0f1f3; p
 }
 .login-brand { text-align: center; margin-bottom: 28px; }
 .brand-text { font-size: 1.5rem; font-weight: 700; color: var(--color-primary); display: block; }
+.brand-logo-lg {
+  height: 48px;
+  margin: 0 auto;
+  display: block;
+}
+.brand-logo-sm {
+  height: 32px;
+  vertical-align: middle;
+}
+.brand-logo-xs {
+  height: 24px;
+  vertical-align: middle;
+}
+.custom-modal-header { margin-bottom: 1rem; }
+.custom-modal-message {
+  margin-bottom: 1rem;
+  font-weight: 500;
+}
+.custom-modal-funny {
+  font-size: 0.85rem;
+  font-style: italic;
+  margin-bottom: 1.5rem;
+}
+.custom-modal-footer {
+  display: flex;
+  gap: 1rem;
+  justify-content: flex-end;
+}
+
+/* Mission Control layout */
+.mc-container {
+  max-width: 1400px;
+  padding: 1rem;
+  margin-top: 0;
+}
+.mc-container--list { margin-top: 2rem; }
+.mc-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 1.5rem;
+}
+.mc-header h2 { margin: 0; }
+.mc-header-sub {
+  margin: 0;
+  color: var(--color-muted);
+  font-size: 0.9rem;
+}
+.mc-intro {
+  margin-bottom: 1.5rem;
+  color: var(--color-muted);
+}
+.mc-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  gap: 1rem;
+}
+.mc-grid--cards {
+  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+}
+.mc-card { padding: 1.5rem; }
+.mc-card h3 { margin-top: 0; }
+.mc-card-meta {
+  color: var(--color-muted);
+  font-size: 0.9rem;
+}
+.mc-card-action {
+  display: inline-block;
+  margin-top: 1rem;
+}
+.mc-empty {
+  padding: 2rem;
+  text-align: center;
+}
+.mc-empty p {
+  color: var(--color-muted);
+  margin: 0;
+}
+
+.pagination {
+  margin-top: 20px;
+  display: flex;
+  justify-content: center;
+  gap: 10px;
+  align-items: center;
+}
+.btn-disabled {
+  opacity: 0.5;
+  pointer-events: none;
+}
 .login-subtitle { font-size: 0.875rem; color: var(--color-text-secondary); display: block; margin-top: 4px; }
 .login-form { display: flex; flex-direction: column; gap: 16px; }
 .login-form label { font-size: 0.875rem; font-weight: 600; color: var(--color-text-secondary); }

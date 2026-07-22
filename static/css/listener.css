@@ -15,6 +15,20 @@
 .status-badge.error { background-color: #ef4444; color: #fff; } /* red-500 */
 .status-badge.recovering { background-color: #60a5fa; color: #000; } /* blue-400 */
 
+#audio-player:not(.hidden) {
+  display: block;
+}
+
+.captions-col-translated--solo {
+  border-left: none !important;
+  padding-left: 0 !important;
+}
+
+.captions-col-translated--side {
+  border-left: 1px solid #444 !important;
+  padding-left: 20px !important;
+}
+
 /* Captions Minimization Toggle */
 .captions-container.minimized #live-captions {
     height: 0;

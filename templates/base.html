@@ -5,12 +5,12 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>{% block title %}Voxbento Interpreter Booth{% endblock %}</title>
     <link rel="icon" type="image/x-icon" href="{{ url_for('static', path='img/favicon.ico') }}" />
-    <link rel="stylesheet" href="{{ url_for('static', path='css/interpreter.css') }}?v=4" />
+    <link rel="stylesheet" href="{{ url_for('static', path='css/interpreter.css') }}?v=5" />
     {% block head %}{% endblock %}
   </head>
   <body>
 
-    <main style="min-height: calc(100vh - 60px);">{% block content %}{% endblock %}</main>
+    <main class="portal-main">{% block content %}{% endblock %}</main>
     
     <footer class="portal-footer">
         <div class="footer-inner">
@@ -23,27 +23,19 @@
     </footer>
     
     <!-- Toast Container -->
-    <div id="toast-container" style="position: fixed; bottom: 20px; right: 20px; z-index: 9999; display: flex; flex-direction: column; gap: 10px;"></div>
+    <div id="toast-container" class="toast-container"></div>
     
     <script>
       window.showToast = function(message, type = 'error') {
         const container = document.getElementById('toast-container');
         const toast = document.createElement('div');
-        toast.style.padding = '12px 20px';
-        toast.style.borderRadius = '8px';
-        toast.style.color = 'white';
-        toast.style.fontFamily = 'Inter, sans-serif';
-        toast.style.fontSize = '14px';
-        toast.style.fontWeight = '500';
-        toast.style.boxShadow = '0 4px 12px rgba(0,0,0,0.15)';
-        toast.style.backgroundColor = type === 'error' ? '#e53e3e' : '#3182ce';
-        toast.style.transition = 'opacity 0.3s ease-in-out';
+        toast.className = 'toast ' + (type === 'error' ? 'toast-error' : 'toast-info');
         toast.textContent = message;
         
         container.appendChild(toast);
         
         setTimeout(() => {
-          toast.style.opacity = '0';
+          toast.classList.add('toast-fade');
           setTimeout(() => toast.remove(), 300);
         }, 4000);
       };

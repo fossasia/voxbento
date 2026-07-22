@@ -1,9 +1,9 @@
 {% if total_pages > 1 %}
-<div class="pagination" style="margin-top: 20px; display: flex; justify-content: center; gap: 10px; align-items: center;">
+<div class="pagination">
   {% if page > 1 %}
     <a href="?page={{ page - 1 }}" class="btn btn-sm">Previous</a>
   {% else %}
-    <span class="btn btn-sm" style="opacity: 0.5; pointer-events: none;">Previous</span>
+    <span class="btn btn-sm btn-disabled">Previous</span>
   {% endif %}
 
   <span>Page {{ page }} of {{ total_pages }}</span>
@@ -11,7 +11,7 @@
   {% if page < total_pages %}
     <a href="?page={{ page + 1 }}" class="btn btn-sm">Next</a>
   {% else %}
-    <span class="btn btn-sm" style="opacity: 0.5; pointer-events: none;">Next</span>
+    <span class="btn btn-sm btn-disabled">Next</span>
   {% endif %}
 </div>
 {% endif %}
