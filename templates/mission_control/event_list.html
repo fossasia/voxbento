@@ -3,22 +3,22 @@
 {% block title %}Mission Control Events | Voxbento{% endblock %}
 
 {% block content %}
-<div class="container" style="margin-top: 2rem;">
-  <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem;">
+<div class="container mc-container mc-container--list">
+  <div class="mc-header">
     <h2>Mission Control</h2>
   </div>
   
-  <p style="margin-bottom: 1.5rem; color: var(--color-muted);">
+  <p class="mc-intro">
     Select an event to open the Mission Control dashboard. You can monitor and control all active booths in real-time.
   </p>
 
   {% if events %}
-  <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 1rem;">
+  <div class="mc-grid mc-grid--cards">
     {% for ev in events %}
-    <div class="card" style="padding: 1.5rem;">
-      <h3 style="margin-top: 0;">{{ ev.display_name }}</h3>
-      <p style="color: var(--color-muted); font-size: 0.9rem;">Slug: {{ ev.slug }}</p>
-      <a href="/mission-control/{{ ev.slug }}/" class="btn btn-primary" style="display: inline-block; margin-top: 1rem;">
+    <div class="card mc-card">
+      <h3>{{ ev.display_name }}</h3>
+      <p class="mc-card-meta">Slug: {{ ev.slug }}</p>
+      <a href="/mission-control/{{ ev.slug }}/" class="btn btn-primary mc-card-action">
         Open Dashboard
       </a>
     </div>
@@ -26,8 +26,8 @@
   </div>
     {% include 'admin/pagination.html' %}
 {% else %}
-  <div class="card" style="padding: 2rem; text-align: center;">
-    <p style="color: var(--color-muted); margin: 0;">You are not assigned as a Room Coordinator or Admin to any events.</p>
+  <div class="card mc-empty">
+    <p>You are not assigned as a Room Coordinator or Admin to any events.</p>
   </div>
   {% endif %}
 </div>

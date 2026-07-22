@@ -92,7 +92,7 @@
         <div id="status">
             <span class="status-badge waiting">Waiting for selection...</span>
         </div>
-        <audio id="audio-player" class="w-full mt-6" autoplay style="display:none;"></audio>
+        <audio id="audio-player" class="w-full mt-6 hidden" autoplay></audio>
       </div>
     </div>
 
@@ -110,7 +110,7 @@
               <option value="side-by-side">Side-by-Side</option>
             </select>
           </div>
-          <div class="flex flex-col gap-1 listener-hidden" id="translation-lang-group" style="display:none;">
+          <div class="flex flex-col gap-1 listener-hidden hidden" id="translation-lang-group">
             <label for="translation-lang-select" class="font-extrabold text-[10px] uppercase tracking-widest text-gray-600">Target Language</label>
             <select id="translation-lang-select" class="brutal-select w-full">
               <!-- Populated dynamically -->
@@ -127,7 +127,7 @@
             <div class="caption-history text-gray-500" id="caption-history"></div>
             <div class="caption-current font-bold text-[#0d0f10] min-h-[1.5em]" id="caption-current"></div>
           </div>
-          <div id="captions-col-translated" class="flex-1 flex flex-col gap-2 border-l-2 border-gray-300 pl-6" style="display:none;">
+          <div id="captions-col-translated" class="flex-1 flex flex-col gap-2 border-l-2 border-gray-300 pl-6 hidden">
             <div class="caption-history text-gray-500" id="translation-history"></div>
             <div class="caption-current font-bold text-brand-600 min-h-[1.5em]" id="translation-current"></div>
           </div>
@@ -182,7 +182,7 @@
   }
 
   function showAudioPlayer(show) {
-    audioEl.style.display = show ? 'block' : 'none';
+    audioEl.classList.toggle('hidden', !show);
     if (show && currentAudioDelayMs === 0) {
       audioEl.setAttribute('controls', '');
     } else {
@@ -439,23 +439,23 @@
     var colOrig = document.getElementById('captions-col-original');
     var colTrans = document.getElementById('captions-col-translated');
     var transGroup = document.getElementById('translation-lang-group');
-    
+
+    colTrans.classList.remove('captions-col-translated--solo', 'captions-col-translated--side');
+
     if (mode === 'original') {
-      colOrig.style.display = 'flex';
-      colTrans.style.display = 'none';
-      transGroup.style.display = 'none';
+      colOrig.classList.remove('hidden');
+      colTrans.classList.add('hidden');
+      transGroup.classList.add('hidden');
     } else if (mode === 'translated') {
-      colOrig.style.display = 'none';
-      colTrans.style.display = 'flex';
-      colTrans.style.borderLeft = 'none';
-      colTrans.style.paddingLeft = '0';
-      transGroup.style.display = 'flex';
+      colOrig.classList.add('hidden');
+      colTrans.classList.remove('hidden');
+      colTrans.classList.add('captions-col-translated--solo');
+      transGroup.classList.remove('hidden');
     } else if (mode === 'side-by-side') {
-      colOrig.style.display = 'flex';
-      colTrans.style.display = 'flex';
-      colTrans.style.borderLeft = '1px solid #444';
-      colTrans.style.paddingLeft = '20px';
-      transGroup.style.display = 'flex';
+      colOrig.classList.remove('hidden');
+      colTrans.classList.remove('hidden');
+      colTrans.classList.add('captions-col-translated--side');
+      transGroup.classList.remove('hidden');
     }
   }
 

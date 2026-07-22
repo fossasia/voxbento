@@ -3,16 +3,16 @@
 {% block title %}Mission Control - {{ event.display_name }} | Voxbento{% endblock %}
 
 {% block content %}
-<div class="container" style="max-width: 1400px; padding: 1rem;">
-  <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem;">
+<div class="container mc-container">
+  <div class="mc-header">
     <div>
-      <h2 style="margin: 0;">Mission Control: {{ event.display_name }}</h2>
-      <p style="margin: 0; color: var(--color-muted); font-size: 0.9rem;">Monitor and control booths in real-time.</p>
+      <h2>Mission Control: {{ event.display_name }}</h2>
+      <p class="mc-header-sub">Monitor and control booths in real-time.</p>
     </div>
     <a href="javascript:history.back()" class="btn btn-sm">Back to Events</a>
   </div>
 
-  <div id="booth-grid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 1rem;">
+  <div id="booth-grid" class="mc-grid">
     <!-- Booth cards injected here by JS -->
   </div>
 </div>
