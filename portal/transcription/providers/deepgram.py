@@ -39,13 +39,20 @@ class DeepgramProvider(TranscriptionProvider):
             logger.error("Deepgram API key missing")
             return
 
-        url = f"wss://api.deepgram.com/v1/listen?model={model_variant}&language={language_code}&encoding=linear16&sample_rate=16000&channels=1&interim_results=true&keepalive=true&endpointing=2000&smart_format=true&punctuate=true&numerals=true"
+        if language_code and language_code.lower() not in ("none", "floor"):
+            url = f"wss://api.deepgram.com/v1/listen?model={model_variant}&language={language_code}&encoding=linear16&sample_rate=16000&channels=1&interim_results=true&keepalive=true&endpointing=2000&smart_format=true&punctuate=true&numerals=true"
+        else:
+            url = f"wss://api.deepgram.com/v1/listen?model={model_variant}&detect_language=true&encoding=linear16&sample_rate=16000&channels=1&interim_results=true&keepalive=true&endpointing=2000&smart_format=true&punctuate=true&numerals=true"
+        
         headers = {"Authorization": f"Token {api_key}"}
 
         consecutive_errors = 0
-        while process.returncode is None:
+        while True:
+            if process.returncode is not None:
+                break
+
             try:
-                async with websockets.connect(url, additional_headers=headers) as ws:
+                async with websockets.connect(url, additional_headers=headers, ping_interval=None) as ws:
                     consecutive_errors = 0
 
                     async def sender():

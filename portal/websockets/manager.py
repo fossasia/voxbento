@@ -283,8 +283,7 @@ async def _handle_set_broadcast_unlocked(ws: WebSocket, session: Session, data: 
         async with get_db_session() as db:
             stmt = (
                 select(DBBooth)
-                .join(Room)
-                .join(Event)
+                .join(Event, DBBooth.event_id == Event.id)
                 .where(Event.slug == event_slug, DBBooth.language_code == language_code)
             )
             result = await db.execute(stmt)
