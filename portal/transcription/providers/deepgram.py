@@ -40,9 +40,11 @@ class DeepgramProvider(TranscriptionProvider):
             return
 
         if language_code and language_code.lower() not in ("none", "floor"):
-            url = f"wss://api.deepgram.com/v1/listen?model={model_variant}&language={language_code}&encoding=linear16&sample_rate=16000&channels=1&interim_results=true&keepalive=true&endpointing=2000&smart_format=true&punctuate=true&numerals=true"
+            lang_param = f"language={language_code}"
         else:
-            url = f"wss://api.deepgram.com/v1/listen?model={model_variant}&detect_language=true&encoding=linear16&sample_rate=16000&channels=1&interim_results=true&keepalive=true&endpointing=2000&smart_format=true&punctuate=true&numerals=true"
+            lang_param = "language=en"
+
+        url = f"wss://api.deepgram.com/v1/listen?model={model_variant}&{lang_param}&encoding=linear16&sample_rate=16000&channels=1&interim_results=true&keepalive=true&endpointing=2000&smart_format=true&punctuate=true&numerals=true"
         
         headers = {"Authorization": f"Token {api_key}"}
 
