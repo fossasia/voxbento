@@ -70,22 +70,25 @@ class TranslationWorker:
                 logger.error(f"[{booth_id_str}] Translation API key not found for provider {provider}")
                 return
 
-            # Execute translation for all target languages concurrently
-            tasks = [
-                self._translate_and_broadcast(
-                    event,
-                    room,
-                    provider,
-                    model,
-                    api_key,
-                    lang.language_code,
-                    lang.language_name,
-                    segment_id,
-                    text,
-                    booth_id_str,
+            # Execute translation for all target languages with stagger to avoid rate limits
+            tasks = []
+            for idx, lang in enumerate(enabled_langs):
+                if idx > 0:
+                    await asyncio.sleep(2.0)  # Stagger requests by 2s to avoid 429
+                tasks.append(
+                    self._translate_and_broadcast(
+                        event,
+                        room,
+                        provider,
+                        model,
+                        api_key,
+                        lang.language_code,
+                        lang.language_name,
+                        segment_id,
+                        text,
+                        booth_id_str,
+                    )
                 )
-                for lang in enabled_langs
-            ]
             await asyncio.gather(*tasks)
 
     def _get_translation_api_key(self, event: Event, provider: str) -> str | None:
