@@ -94,7 +94,7 @@ class ElevenLabsProvider(TranscriptionProvider):
 
                 import websockets
 
-                async with websockets.connect(url, additional_headers=headers) as ws:
+                async with websockets.connect(url, additional_headers=headers, ping_interval=None) as ws:
                     consecutive_errors = 0
 
                     # Wait for session initialization before sending audio
