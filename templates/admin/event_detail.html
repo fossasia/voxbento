@@ -21,7 +21,7 @@
     <span class="status-offline">○ No booths live</span>
     {% endif %}
   </div>
-  <div style="margin-top: 1rem;">
+  <div class="page-action">
     <a href="/mission-control/{{ event.slug }}/" class="btn btn-success">Open Mission Control</a>
   </div>
 </div>
@@ -45,11 +45,11 @@
       <h2>Listener Access</h2>
     </div>
     {% if event.listener_join_code %}
-    <div style="background: var(--bg-card); padding: 1rem; border-radius: var(--radius-md); border: 1px solid var(--border-color); display: flex; align-items: center; justify-content: space-between;">
+    <div class="listener-access-box">display: flex; align-items: center; justify-content: space-between;">
       <div>
-        <p style="margin: 0; font-weight: 500; font-size: 1.25rem; letter-spacing: 2px;">{{ event.listener_join_code }}</p>
-        <p class="muted" style="margin: 0.25rem 0 0 0; font-size: 0.875rem;">Share this code with listeners, or provide them with this link:</p>
-        <a href="/listener/{{ event.slug }}?code={{ event.listener_join_code }}" target="_blank" class="link-external" style="display: inline-block; margin-top: 0.5rem;">
+        <p class="listener-code">{{ event.listener_join_code }}</p>
+        <p class="muted listener-help">Share this code with listeners, or provide them with this link:</p>
+        <a href="/listener/{{ event.slug }}?code={{ event.listener_join_code }}" target="_blank" class="link-external listener-link">inline-block; margin-top: 0.5rem;">
           /listener/{{ event.slug }}?code={{ event.listener_join_code }}
         </a>
       </div>

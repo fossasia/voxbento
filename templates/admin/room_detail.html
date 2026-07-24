@@ -1,702 +1,2049 @@
 {% extends "admin/base.html" %}
-{% block title %}{{ room.display_name }} — {{ event.display_name }}{% endblock %}
+
+{% block title %}
+{{ room.display_name }} — {{ event.display_name }}
+{% endblock %}
+
 
 {% block breadcrumb %}
 <nav class="breadcrumb">
-  <a href="/admin/">Dashboard</a> <span>/</span>
-  <a href="/admin/events/">Events</a> <span>/</span>
-  <a href="/admin/events/{{ event.id }}/">{{ event.display_name }}</a> <span>/</span>
-  <a href="/admin/events/{{ event.id }}/rooms/">Rooms</a> <span>/</span>
-  <span>{{ room.display_name }}</span>
+    <a href="/admin/">Dashboard</a>
+    <span>/</span>
+
+    <a href="/admin/events/">Events</a>
+    <span>/</span>
+
+    <a href="/admin/events/{{ event.id }}/">
+        {{ event.display_name }}
+    </a>
+
+    <span>/</span>
+
+    <a href="/admin/events/{{ event.id }}/rooms/">
+        Rooms
+    </a>
+
+    <span>/</span>
+
+    <span>{{ room.display_name }}</span>
 </nav>
 {% endblock %}
 
+
+
 {% block content %}
+
+
 <div class="page-header">
-  <h1>{{ room.display_name }}</h1>
-  <div class="header-meta">
-    <span class="meta-text">Event: {{ event.display_name }}</span>
-    <span class="meta-text">Created {{ room.created_at.strftime('%Y-%m-%d') if room.created_at else '—' }}</span>
-  </div>
+
+    <div>
+        <h1>{{ room.display_name }}</h1>
+
+        <div class="header-meta">
+            <span class="meta-text">
+                Event: {{ event.display_name }}
+            </span>
+
+            <span class="meta-text">
+                Created:
+                {{ room.created_at.strftime('%Y-%m-%d')
+                if room.created_at else '—' }}
+            </span>
+        </div>
+    </div>
+
 </div>
 
-<!-- Room Settings Form -->
+
+
 {% if is_event_owner %}
-<form method="post" action="/admin/events/{{ event.id }}/rooms/{{ room.id }}/edit" class="token-form">
-  <div class="token-form-card" style="margin-bottom: 1.5rem;">
-    <h3>Room Settings</h3>
-    <div class="form-row">
-      <div class="form-group" style="flex: 1;">
-        <label for="display_name">Room Name</label>
-        <input type="text" id="display_name" name="display_name" class="input" value="{{ room.display_name }}" required>
-      </div>
-      <div class="form-group" style="flex: 2;">
-        <label for="jitsi_url">Jitsi Room URL (Floor Audio Source)</label>
-        <input type="url" id="jitsi_url" name="jitsi_url" class="input" value="{{ room.jitsi_url or fallback_jitsi_url }}" placeholder="e.g. https://jitsi.voxbento.com/Room-Event-TrackA">
-      </div>
-      <div class="form-group" style="flex: 1;">
-        <label for="audio_delay_ms">Audio Synchronization Delay (ms)</label>
-        <input type="number" id="audio_delay_ms" name="audio_delay_ms" class="input" value="{{ room.audio_delay_ms }}" min="0" max="10000" step="1">
-      </div>
-      <div class="form-group form-group-btn" style="flex: 0; align-self: flex-end;">
-        <button type="submit" class="btn btn-primary">Save Settings</button>
-      </div>
-    </div>
-    <p class="form-help" style="margin-top: 0.5rem; font-size: 0.85rem; color: #666;">Interpreters in all booths for this room will automatically join this Jitsi URL for floor monitoring.</p>
-    <p class="form-help" style="margin-top: 0.25rem; font-size: 0.85rem; color: #666;">Applies a listener-side delay to all audio sources in this room. Use this when livestream video, captions, or external media are delayed and need audio synchronization.</p>
-  </div>
 
-  <div class="token-form-card" style="margin-bottom: 2rem;">
-    <h3>Relay Settings</h3>
-    <div class="form-row">
-      <div class="form-group" style="flex: 1;">
-        <label for="relay_booth_id">Relay Booth</label>
-        <select id="relay_booth_id" name="relay_booth_id" class="input">
-          <option value="none">-- None --</option>
-          {% for bs in booths %}
-            <option value="{{ bs.db.id }}" {% if room.relay_booth_id == bs.db.id %}selected{% endif %}>{{ bs.db.language_name }} ({{ bs.db.language_code }})</option>
-          {% endfor %}
-        </select>
-      </div>
-      <div class="form-group form-group-btn">
-        <button type="submit" class="btn btn-primary">Save Settings</button>
-      </div>
-    </div>
-    <p class="form-help" style="margin-top: 0.5rem; font-size: 0.85rem; color: #666;">Designate a booth to act as the relay source for interpreters in other booths.</p>
-  </div>
 
-  <div class="token-form-card" style="margin-bottom: 2rem;">
-    <div style="display: flex; justify-content: space-between; align-items: center;">
-      <div>
-        <h3 style="margin: 0;">Stored Transcripts</h3>
-        <p class="form-help" style="margin-top: 0.25rem; font-size: 0.85rem; color: #666;">View and download past transcripts and translations generated for this room.</p>
-      </div>
-      <a href="/admin/events/{{ event.id }}/rooms/{{ room.id }}/transcripts/" class="btn btn-primary">View Transcripts</a>
-    </div>
-  </div>
+<!-- ===========================
+     ROOM SETTINGS
+=========================== -->
 
-  <div class="token-form-card" style="margin-bottom: 2rem;">
-    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
-      <h3 style="margin: 0;">Floor Audio Transcription</h3>
-      <div style="display: flex; gap: 0.5rem; align-items: center;">
-        {% if room.floor_transcription_enabled %}
-          <span id="bot-status-pill" data-room-id="{{ room.id }}" style="display: inline-flex; align-items: center; gap: 0.4rem; font-size: 0.8rem; font-weight: 600; padding: 0.25rem 0.6rem; border-radius: 999px; background: #eee; color: #666;">
-            <span id="bot-status-dot" style="width: 8px; height: 8px; border-radius: 50%; background: #999;"></span>
-            <span id="bot-status-text">Checking…</span>
-          </span>
-          <button type="button" class="btn btn-sm btn-outline" id="start-bot-btn" onclick="startFloorTranscription({{ room.id }})">Start Bot</button>
-          <button type="button" class="btn btn-sm btn-outline" style="border-color: #dc3545; color: #dc3545;" id="stop-bot-btn" onclick="stopFloorTranscription({{ room.id }})">Stop Bot</button>
-        {% endif %}
-      </div>
-    </div>
-    
-    <div class="form-row">
-      <div class="form-group" style="flex: 1;">
-        <label class="checkbox-label" style="display: flex; align-items: center; gap: 0.5rem;">
-          <input type="checkbox" name="floor_transcription_enabled" id="floor_transcription_enabled" {% if room.floor_transcription_enabled %}checked{% endif %}>
-          Enable AI Transcription for Floor Audio
-        </label>
-      </div>
-    </div>
-    
-    <div class="form-row">
-      <div class="form-group" style="flex: 1;">
-        <label for="floor_language_code">Floor Language Code</label>
-        <input type="text" id="floor_language_code" name="floor_language_code" value="{{ room.floor_language_code or '' }}" placeholder="e.g. en, fr, de" class="input">
-      </div>
-      <div class="form-group" style="flex: 1;">
-        <label for="floor_transcription_provider">Provider</label>
-        <select id="floor_transcription_provider" name="floor_transcription_provider" class="input">
-          <option value="local" {% if room.floor_transcription_provider == 'local' %}selected{% endif %}>Local (Faster-Whisper)</option>
-          <option value="openai" {% if room.floor_transcription_provider == 'openai' %}selected{% endif %}>OpenAI</option>
-          <option value="deepgram" {% if room.floor_transcription_provider == 'deepgram' %}selected{% endif %}>Deepgram</option>
-          <option value="nvidia" {% if room.floor_transcription_provider == 'nvidia' %}selected{% endif %}>NVIDIA Parakeet</option>
-          <option value="elevenlabs" {% if room.floor_transcription_provider == 'elevenlabs' %}selected{% endif %}>ElevenLabs</option>
-        </select>
-      </div>
-      <div class="form-group" style="flex: 1;">
-        <label for="floor_transcription_model">Model</label>
-        <select id="floor_transcription_model" name="floor_transcription_model" class="input">
-          <option value="tiny" data-provider="local" {% if room.floor_transcription_model == 'tiny' %}selected{% endif %}>Local: tiny (Fastest)</option>
-          <option value="base" data-provider="local" {% if room.floor_transcription_model == 'base' %}selected{% endif %}>Local: base</option>
-          <option value="gpt-realtime-whisper" data-provider="openai" {% if room.floor_transcription_model == 'gpt-realtime-whisper' %}selected{% endif %}>OpenAI: gpt-realtime-whisper</option>
-          <option value="gpt-4o-transcribe" data-provider="openai" {% if room.floor_transcription_model == 'gpt-4o-transcribe' %}selected{% endif %}>OpenAI: gpt-4o-transcribe</option>
-          <option value="gpt-4o-mini-transcribe" data-provider="openai" {% if room.floor_transcription_model == 'gpt-4o-mini-transcribe' %}selected{% endif %}>OpenAI: gpt-4o-mini-transcribe</option>
-          <option value="whisper-1" data-provider="openai" {% if room.floor_transcription_model == 'whisper-1' %}selected{% endif %}>OpenAI: whisper-1</option>
-          <option value="nova-2" data-provider="deepgram" {% if room.floor_transcription_model == 'nova-2' %}selected{% endif %}>Deepgram: nova-2</option>
-          <option value="parakeet-rnnt" data-provider="nvidia" {% if room.floor_transcription_model == 'parakeet-rnnt' %}selected{% endif %}>NVIDIA: parakeet-rnnt</option>
-          <option value="parakeet-ctc" data-provider="nvidia" {% if room.floor_transcription_model == 'parakeet-ctc' %}selected{% endif %}>NVIDIA: parakeet-ctc</option>
-          <option value="scribe_v2_realtime" data-provider="elevenlabs" {% if room.floor_transcription_model == 'scribe_v2_realtime' or room.floor_transcription_model == 'scribe_v2' %}selected{% endif %}>ElevenLabs: scribe_v2_realtime (Streaming)</option>
-        </select>
-      </div>
-      <div class="form-group form-group-btn" style="flex: 0; align-self: flex-end;">
-        <button type="submit" class="btn btn-primary">Save Settings</button>
-      </div>
-    </div>
-    <p class="form-help" style="margin-top: 0.5rem; font-size: 0.85rem; color: #666;">If enabled, listeners can select "Floor Audio" to see captions of the original floor audio. Use the Start/Stop buttons after saving to control the bot.</p>
-  </div>
+<form method="post"
+      action="/admin/events/{{ event.id }}/rooms/{{ room.id }}/edit"
+      class="token-form">
 
-  <div class="token-form-card" style="margin-bottom: 2rem;">
-    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
-      <h3 style="margin: 0;">Floor Audio Translation</h3>
-    </div>
-    
-    <div class="form-row">
-      <div class="form-group" style="flex: 1;">
-        <label class="checkbox-label" style="display: flex; align-items: center; gap: 0.5rem;">
-          <input type="checkbox" name="floor_translation_enabled" id="floor_translation_enabled" {% if room.floor_translation_enabled %}checked{% endif %}>
-          Enable Real-Time LLM Translation for Floor Audio
-        </label>
-        <p class="form-help" style="margin-top: 0.5rem; font-size: 0.85rem; color: #666;">This requires Floor Audio Transcription to be enabled, as translations are generated from the canonical transcript.</p>
-      </div>
-    </div>
-    
-    <div class="form-row">
-      <div class="form-group" style="flex: 1;">
-        <label for="floor_translation_provider">Translation Provider</label>
-        <select id="floor_translation_provider" name="floor_translation_provider" class="input">
-          <option value="">Select a Provider...</option>
-          <option value="openai" {% if room.floor_translation_provider == 'openai' %}selected{% endif %}>OpenAI</option>
-          <option value="openrouter" {% if room.floor_translation_provider == 'openrouter' %}selected{% endif %}>OpenRouter</option>
-          <option value="gemini" {% if room.floor_translation_provider == 'gemini' %}selected{% endif %}>Google Gemini</option>
-          <option value="anthropic" {% if room.floor_translation_provider == 'anthropic' %}selected{% endif %}>Anthropic</option>
-          <option value="groq" {% if room.floor_translation_provider == 'groq' %}selected{% endif %}>Groq</option>
-          <option value="local" {% if room.floor_translation_provider == 'local' %}selected{% endif %}>Local LLM</option>
-        </select>
-      </div>
-      <div class="form-group" style="flex: 1;">
-        <label for="floor_translation_model">Translation Model</label>
-        <select id="floor_translation_model" name="floor_translation_model" class="input">
-          <option value="">Select a Provider first...</option>
-        </select>
-      </div>
-    </div>
 
-    <div class="form-row">
-      <div class="form-group" style="flex: 1;">
-        <label>Target Languages</label>
-        <div class="lang-picker" id="lp_floor_translation" aria-label="Target languages picker">
-          <div class="lang-picker-tags" id="lp_floor_translation_tags"></div>
-          <div class="lang-picker-search-wrap">
-            <input type="text" class="lang-picker-input" id="lp_floor_translation_search"
-                   placeholder="Search and add a language…" autocomplete="off">
-            <ul class="lang-picker-dropdown" id="lp_floor_translation_dropdown" hidden></ul>
-          </div>
-        </div>
-        <div id="lp_floor_translation_hidden"></div>
-        <p class="form-help" style="margin-top: 0.5rem; font-size: 0.85rem; color: #666;">The translation worker will generate a translation for every selected language simultaneously.</p>
-      </div>
-      <div class="form-group form-group-btn" style="flex: 0; align-self: flex-end;">
-        <button type="submit" class="btn btn-primary">Save Settings</button>
-      </div>
-    </div>
-  </div>
+<div class="token-form-card room-settings-card">
 
-  <div class="token-form-card" style="margin-bottom: 2rem;">
-    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
-      <h3 style="margin: 0;">Floor Audio TTS (Direct Push)</h3>
-    </div>
-    
-    <div class="form-row">
-      <div class="form-group" style="flex: 1;">
-        <label class="checkbox-label" style="display: flex; align-items: center; gap: 0.5rem;">
-          <input type="checkbox" name="floor_tts_enabled" id="floor_tts_enabled" {% if room.floor_tts_enabled %}checked{% endif %}>
-          Enable TTS for translated floor audio
-        </label>
-        <p class="form-help" style="margin-top: 0.5rem; font-size: 0.85rem; color: #666;">This requires Floor Audio Translation to be enabled. Translated text is synthesized to speech and pushed directly to listeners via WebSockets.</p>
-      </div>
-    </div>
 
-    <div class="form-row">
-      <div class="form-group" style="flex: 1;">
-        <label for="floor_tts_provider">TTS Provider</label>
-        <select id="floor_tts_provider" name="floor_tts_provider" class="input">
-          <option value="deepgram" {% if (room.floor_tts_provider or 'deepgram') == 'deepgram' %}selected{% endif %}>Deepgram Aura (Cloud)</option>
-          <option value="supertonic" {% if room.floor_tts_provider == 'supertonic' %}selected{% endif %}>Supertonic (Self-Hosted)</option>
-        </select>
-        <p class="form-help" id="tts_provider_help_deepgram" style="margin-top: 0.5rem; font-size: 0.85rem; color: #666;"><strong>Supported Deepgram languages:</strong> English (en), Spanish (es), Dutch (nl), French (fr), German (de), Italian (it), Japanese (ja). Other languages fall back to an English voice.</p>
-        <p class="form-help" id="tts_provider_help_supertonic" style="margin-top: 0.5rem; font-size: 0.85rem; color: #666; display: none;">Supertonic runs locally with no API key. 31 languages supported; unknown languages use a language-agnostic fallback. The model (~400MB) downloads on first use.</p>
-      </div>
-      <div class="form-group" id="tts_voice_group" style="flex: 1;">
-        <label for="floor_tts_voice">Supertonic Voice</label>
-        <select id="floor_tts_voice" name="floor_tts_voice" class="input">
-          {% set current_voice = room.floor_tts_voice or 'M1' %}
-          {% for v in ['M1', 'M2', 'M3', 'M4', 'M5', 'F1', 'F2', 'F3', 'F4', 'F5'] %}
-          <option value="{{ v }}" {% if current_voice == v %}selected{% endif %}>{{ v }}</option>
-          {% endfor %}
-        </select>
-        <p class="form-help" style="margin-top: 0.5rem; font-size: 0.85rem; color: #666;">M1–M5 (male) and F1–F5 (female) preset voices.</p>
-      </div>
-      <div class="form-group form-group-btn" style="flex: 0; align-self: flex-end;">
-        <button type="submit" class="btn btn-primary">Save Settings</button>
-      </div>
-    </div>
-  </div>
+<h3>
+    Room Settings
+</h3>
+
+
+
+<div class="form-row">
+
+
+<div class="form-group form-flex-1">
+
+<label for="display_name">
+    Room Name
+</label>
+
+
+<input
+    type="text"
+    id="display_name"
+    name="display_name"
+    class="input"
+    value="{{ room.display_name }}"
+    required
+>
+
+</div>
+
+
+
+
+<div class="form-group form-flex-2">
+
+<label for="jitsi_url">
+    Jitsi Room URL
+    (Floor Audio Source)
+</label>
+
+
+<input
+    type="url"
+    id="jitsi_url"
+    name="jitsi_url"
+    class="input"
+    value="{{ room.jitsi_url or fallback_jitsi_url }}"
+    placeholder="https://jitsi.example.com/room"
+>
+
+</div>
+
+
+
+
+<div class="form-group">
+
+<label for="audio_delay_ms">
+    Audio Synchronization Delay (ms)
+</label>
+
+
+<input
+    type="number"
+    id="audio_delay_ms"
+    name="audio_delay_ms"
+    class="input"
+    value="{{ room.audio_delay_ms }}"
+    min="0"
+    max="10000"
+>
+
+</div>
+
+
+
+
+<div class="form-group form-group-btn form-submit-align">
+
+<button type="submit"
+        class="btn btn-primary">
+
+Save Room
+
+</button>
+
+</div>
+
+
+
+</div>
+
+
+
+<p class="form-help">
+Interpreters in all booths automatically join this Jitsi URL for floor monitoring.
+</p>
+
+
+<p class="form-help">
+Audio delay applies listener-side synchronization.
+</p>
+
+
+
+</div>
+
+
+
 </form>
+
+
+
+
+
+
+<!-- ===========================
+     RELAY SETTINGS
+=========================== -->
+
+
+<form method="post"
+      action="/admin/events/{{ event.id }}/rooms/{{ room.id }}/edit"
+      class="token-form">
+
+
+<div class="token-form-card">
+
+
+<h3>
+Relay Settings
+</h3>
+
+
+
+<div class="form-row">
+
+
+<div class="form-group form-flex-1">
+
+
+<label for="relay_booth_id">
+Relay Booth
+</label>
+
+
+
+<select
+id="relay_booth_id"
+name="relay_booth_id"
+class="input"
+>
+
+
+<option value="none">
+-- None --
+</option>
+
+
+
+{% for bs in booths %}
+
+
+<option value="{{ bs.db.id }}"
+{% if room.relay_booth_id == bs.db.id %}
+selected
+{% endif %}
+>
+
+{{ bs.db.language_name }}
+({{ bs.db.language_code }})
+
+</option>
+
+
+{% endfor %}
+
+
+</select>
+
+
+</div>
+
+
+
+
+
+<div class="form-group form-group-btn">
+
+
+<button type="submit"
+        class="btn btn-primary">
+
+Save Relay
+
+</button>
+
+
+</div>
+
+
+
+</div>
+
+
+
+<p class="form-help">
+Designate a booth as relay source for other interpreters.
+</p>
+
+
+
+</div>
+
+
+</form>
+
+
+
+
+
 {% endif %}
 
-<script>
-  document.addEventListener('DOMContentLoaded', function() {
-    const providerSelect = document.getElementById('floor_transcription_provider');
-    if (!providerSelect) return;
-    const modelSelect = document.getElementById('floor_transcription_model');
-    const allOptions = Array.from(modelSelect.options);
 
-    function filterModels() {
-      const selectedProvider = providerSelect.value;
-      let firstVisible = null;
-      let currentSelectedStillVisible = false;
-
-      allOptions.forEach(opt => {
-        if (opt.getAttribute('data-provider') === selectedProvider) {
-          opt.style.display = '';
-          opt.disabled = false;
-          if (!firstVisible) firstVisible = opt;
-          if (opt.selected) currentSelectedStillVisible = true;
-        } else {
-          opt.style.display = 'none';
-          opt.disabled = true;
-        }
-      });
-
-      if (!currentSelectedStillVisible && firstVisible) {
-        firstVisible.selected = true;
-      }
-    }
-
-    providerSelect.addEventListener('change', filterModels);
-    filterModels();
-
-    const transProviderSelect = document.getElementById('floor_translation_provider');
-    const transModelSelect = document.getElementById('floor_translation_model');
-    const initialTransModel = "{{ room.floor_translation_model or '' }}";
-
-    async function loadTranslationModels() {
-      const provider = transProviderSelect.value;
-      transModelSelect.innerHTML = '<option value="">Select a Model...</option>';
-      if (!provider) return;
-
-      try {
-        const res = await fetch('/api/admin/providers/translation/models');
-        if (res.ok) {
-          const data = await res.json();
-          const models = data[provider] || [];
-          models.forEach(model => {
-            const opt = document.createElement('option');
-            opt.value = model;
-            opt.textContent = model;
-            if (model === initialTransModel) {
-              opt.selected = true;
-            }
-            transModelSelect.appendChild(opt);
-          });
-        }
-      } catch (err) {
-        console.error("Failed to load models", err);
-      }
-    }
-
-    transProviderSelect.addEventListener('change', loadTranslationModels);
-    if (transProviderSelect.value) {
-      loadTranslationModels();
-    }
-
-    // TTS provider → toggle Supertonic voice picker + provider help text
-    const ttsProviderSelect = document.getElementById('floor_tts_provider');
-    if (ttsProviderSelect) {
-      const ttsVoiceGroup = document.getElementById('tts_voice_group');
-      const helpDeepgram = document.getElementById('tts_provider_help_deepgram');
-      const helpSupertonic = document.getElementById('tts_provider_help_supertonic');
-
-      function syncTtsProvider() {
-        const isSupertonic = ttsProviderSelect.value === 'supertonic';
-        if (ttsVoiceGroup) ttsVoiceGroup.style.display = isSupertonic ? '' : 'none';
-        if (helpDeepgram) helpDeepgram.style.display = isSupertonic ? 'none' : '';
-        if (helpSupertonic) helpSupertonic.style.display = isSupertonic ? '' : 'none';
-      }
-
-      ttsProviderSelect.addEventListener('change', syncTtsProvider);
-      syncTtsProvider();
-    }
-
-    // Language tag picker
-    function initLangPicker(cfg) {
-      const tagsEl = document.getElementById(cfg.tagsId);
-      const searchEl = document.getElementById(cfg.searchId);
-      const dropdownEl = document.getElementById(cfg.dropdownId);
-      const hiddenEl = document.getElementById(cfg.hiddenId);
-      const selected = new Set(cfg.selectedCodes);
-      let filtered = [];
-      let focusedIdx = -1;
-
-      function renderTags() {
-        tagsEl.innerHTML = '';
-        selected.forEach(code => {
-          const lang = cfg.allLanguages.find(l => l.code === code);
-          if (!lang) return;
-          const tag = document.createElement('span');
-          tag.className = 'lang-tag';
-          const nameSpan = document.createElement('span');
-          nameSpan.textContent = lang.name + ' (' + lang.code + ')';
-          const btn = document.createElement('button');
-          btn.type = 'button';
-          btn.className = 'lang-tag-remove';
-          btn.setAttribute('aria-label', 'Remove ' + lang.name);
-          btn.textContent = '×';
-          btn.addEventListener('click', () => { selected.delete(code); renderTags(); syncHidden(); });
-          tag.appendChild(nameSpan);
-          tag.appendChild(btn);
-          tagsEl.appendChild(tag);
-        });
-      }
-
-      function syncHidden() {
-        hiddenEl.innerHTML = '';
-        selected.forEach(code => {
-          const inp = document.createElement('input');
-          inp.type = 'hidden';
-          inp.name = cfg.inputName;
-          inp.value = code;
-          hiddenEl.appendChild(inp);
-        });
-      }
-
-      function renderDropdown(q) {
-        const ql = q.toLowerCase();
-        filtered = cfg.allLanguages.filter(l =>
-          !selected.has(l.code) &&
-          (l.name.toLowerCase().includes(ql) || l.code.toLowerCase().includes(ql))
-        ).slice(0, 60);
-        focusedIdx = -1;
-        dropdownEl.innerHTML = '';
-        if (filtered.length === 0) { dropdownEl.hidden = true; return; }
-        filtered.forEach(lang => {
-          const li = document.createElement('li');
-          li.textContent = lang.name + ' (' + lang.code + ')';
-          li.addEventListener('mousedown', e => { e.preventDefault(); addLang(lang.code); });
-          dropdownEl.appendChild(li);
-        });
-        dropdownEl.hidden = false;
-      }
-
-      function addLang(code) {
-        selected.add(code);
-        searchEl.value = '';
-        renderTags();
-        syncHidden();
-        dropdownEl.hidden = true;
-        searchEl.focus();
-      }
-
-      searchEl.addEventListener('input', () => renderDropdown(searchEl.value));
-      searchEl.addEventListener('focus', () => renderDropdown(searchEl.value));
-      searchEl.addEventListener('blur', () => { setTimeout(() => { dropdownEl.hidden = true; }, 150); });
-      searchEl.addEventListener('keydown', e => {
-        if (dropdownEl.hidden) return;
-        const items = dropdownEl.querySelectorAll('li');
-        if (e.key === 'ArrowDown') {
-          e.preventDefault();
-          focusedIdx = Math.min(focusedIdx + 1, filtered.length - 1);
-          items.forEach((li, i) => li.classList.toggle('lp-focused', i === focusedIdx));
-          if (items[focusedIdx]) items[focusedIdx].scrollIntoView({ block: 'nearest' });
-        } else if (e.key === 'ArrowUp') {
-          e.preventDefault();
-          focusedIdx = Math.max(focusedIdx - 1, 0);
-          items.forEach((li, i) => li.classList.toggle('lp-focused', i === focusedIdx));
-        } else if (e.key === 'Enter') {
-          e.preventDefault();
-          if (focusedIdx >= 0 && filtered[focusedIdx]) addLang(filtered[focusedIdx].code);
-        } else if (e.key === 'Escape') {
-          dropdownEl.hidden = true;
-          focusedIdx = -1;
-        }
-      });
-
-      renderTags();
-      syncHidden();
-    }
-
-    initLangPicker({
-      allLanguages: {{ translation_languages_dataset | tojson }},
-      selectedCodes: {{ enabled_translation_language_codes | tojson }},
-      inputName: 'floor_translation_languages',
-      tagsId: 'lp_floor_translation_tags',
-      searchId: 'lp_floor_translation_search',
-      dropdownId: 'lp_floor_translation_dropdown',
-      hiddenId: 'lp_floor_translation_hidden',
-    });
-  });
-
-async function startFloorTranscription(roomId) {
-  const btn = document.getElementById('start-bot-btn');
-  btn.textContent = 'Starting...';
-  btn.disabled = true;
-  try {
-    const res = await fetch(`/api/rooms/${roomId}/floor-transcription/start`, { method: 'POST' });
-    if (!res.ok) {
-      const data = await res.json().catch(() => ({}));
-      setBotError("Error: " + (data.detail || "Failed to start"));
-    }
-  } catch (err) {
-    setBotError("Failed to reach server");
-  } finally {
-    btn.textContent = 'Start Bot';
-    startBotPolling(roomId, true);
-  }
-}
-
-async function stopFloorTranscription(roomId) {
-  const btn = document.getElementById('stop-bot-btn');
-  btn.textContent = 'Stopping...';
-  btn.disabled = true;
-  try {
-    const res = await fetch(`/api/rooms/${roomId}/floor-transcription/stop`, { method: 'POST' });
-    if (!res.ok) {
-      const data = await res.json().catch(() => ({}));
-      setBotError("Error: " + (data.detail || "Failed to stop"));
-    }
-  } catch (err) {
-    setBotError("Failed to reach server");
-  } finally {
-    btn.textContent = 'Stop Bot';
-    startBotPolling(roomId, true);
-  }
-}
-
-const BOT_STAGE_DISPLAY = {
-  launching: { text: 'Starting bot…', color: '#b8860b', dot: '#e0a800', pulse: true },
-  joining: { text: 'Joining meeting…', color: '#b8860b', dot: '#e0a800', pulse: true },
-  in_meeting: { text: 'In meeting · streaming', color: '#1c7c34', dot: '#28a745', pulse: false },
-  leaving: { text: 'Leaving meeting…', color: '#b8860b', dot: '#e0a800', pulse: true },
-  stopping: { text: 'Stopping…', color: '#b8860b', dot: '#e0a800', pulse: true },
-  stopped: { text: 'Stopped', color: '#666', dot: '#999', pulse: false },
-  dead: { text: 'Bot crashed', color: '#b21f2d', dot: '#dc3545', pulse: false },
-  error: { text: 'Bot crashed', color: '#b21f2d', dot: '#dc3545', pulse: false },
-  unknown: { text: 'Bot offline', color: '#b21f2d', dot: '#dc3545', pulse: false },
-};
-
-let _botPollTimer = null;
-
-function setBotError(msg) {
-  const text = document.getElementById('bot-status-text');
-  const dot = document.getElementById('bot-status-dot');
-  if (text) { text.textContent = msg; text.parentElement.style.color = '#b21f2d'; }
-  if (dot) dot.style.background = '#dc3545';
-}
-
-function applyBotStatus(stage, running) {
-  const pill = document.getElementById('bot-status-pill');
-  const text = document.getElementById('bot-status-text');
-  const dot = document.getElementById('bot-status-dot');
-  const startBtn = document.getElementById('start-bot-btn');
-  const stopBtn = document.getElementById('stop-bot-btn');
-  if (!pill || !text || !dot) return;
-
-  let info = BOT_STAGE_DISPLAY[stage];
-  if (!info) {
-    // Unknown stage (e.g. an older bot that only reports "healthy"):
-    // fall back based on whether the bot process is actually running.
-    info = running ? BOT_STAGE_DISPLAY.in_meeting : BOT_STAGE_DISPLAY.unknown;
-  }
-  text.textContent = info.text;
-  pill.style.color = info.color;
-  dot.style.background = info.dot;
-  dot.style.boxShadow = info.pulse ? `0 0 0 3px ${info.dot}33` : 'none';
-
-  const transitional = stage === 'stopping' || stage === 'leaving';
-  if (startBtn) startBtn.disabled = running || transitional;
-  if (stopBtn) stopBtn.disabled = (!running && !transitional);
-}
-
-async function pollBotStatus(roomId) {
-  try {
-    const res = await fetch(`/api/rooms/${roomId}/floor-transcription/status`);
-    if (!res.ok) { applyBotStatus('unknown', false); return; }
-    const data = await res.json();
-    const stage = data.bot_reachable ? data.stage : 'unknown';
-    applyBotStatus(stage, data.running);
-    // Slow the poll once the bot has settled into a stable state.
-    const stable = !data.running && (stage === 'stopped' || stage === 'unknown');
-    schedulePoll(roomId, stable ? 8000 : 2500);
-  } catch (err) {
-    applyBotStatus('unknown', false);
-    schedulePoll(roomId, 8000);
-  }
-}
-
-function schedulePoll(roomId, delay) {
-  if (_botPollTimer) clearTimeout(_botPollTimer);
-  _botPollTimer = setTimeout(() => pollBotStatus(roomId), delay);
-}
-
-function startBotPolling(roomId, immediate) {
-  if (_botPollTimer) clearTimeout(_botPollTimer);
-  if (immediate) {
-    pollBotStatus(roomId);
-  } else {
-    schedulePoll(roomId, 500);
-  }
-}
-
-document.addEventListener('DOMContentLoaded', function() {
-  const pill = document.getElementById('bot-status-pill');
-  if (pill) startBotPolling(pill.dataset.roomId, true);
-});
-</script>
+<!-- ===========================
+     STORED TRANSCRIPTS
+=========================== -->
 
 
-<!-- Interpretation Schedule Table (replaces manual spreadsheet) -->
-<div class="section-card">
-  <div class="section-header">
-    <h2>Interpretation Booths ({{ booths|length }})</h2>
-    <a href="/admin/events/{{ event.id }}/rooms/{{ room.id }}/booths/" class="btn btn-sm btn-primary">Manage Booths</a>
-  </div>
+<div class="token-form-card">
 
-  {% if booths %}
-  <table class="data-table schedule-table">
-    <thead>
-      <tr>
-        <th>Language</th>
-        <th>Code</th>
-        <th>Status</th>
-        <th>Interpreter Booth URL</th>
-        <th>Listener URL (WHEP)</th>
-        <th>Details</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for bs in booths %}
-      <tr class="{{ 'row-live' if bs.is_live else '' }}">
-        <td><strong>{{ bs.db.language_name }}</strong></td>
-        <td><code>{{ bs.db.language_code }}</code></td>
-        <td>
-          {% if bs.is_live %}
-          <span class="status-live">● LIVE</span>
-          {% else %}
-          <span class="status-offline">○ Offline</span>
-          {% endif %}
-        </td>
-        <td>
-          <a href="/interpreter/{{ event.slug }}/{{ bs.db.language_code }}" target="_blank" class="link-external">
-            /interpreter/{{ event.slug }}/{{ bs.db.language_code }}
-          </a>
-        </td>
-        <td>
-          <a href="/listener/{{ event.slug }}" target="_blank" class="link-external">
-            /listener/{{ event.slug }}
-          </a>
-        </td>
-        <td>
-          <a href="/admin/events/{{ event.id }}/rooms/{{ room.id }}/booths/{{ bs.db.id }}/" class="btn btn-sm">View</a>
-        </td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
-  {% else %}
-  <p class="muted">No booths in this room. <a href="/admin/events/{{ event.id }}/rooms/{{ room.id }}/booths/">Add booths</a>.</p>
-  {% endif %}
+
+<div class="section-inline-header">
+
+
+<div>
+
+<h3>
+Stored Transcripts
+</h3>
+
+
+<p class="form-help">
+View and download previous transcripts and translations.
+</p>
+
+
 </div>
 
-<!-- Assigned Members -->
-<div class="section-card">
-  <div class="section-header">
-    <h2>Assigned Room Coordinators</h2>
-  </div>
-  
-  {% if request.query_params.get('error') == 'user_not_found' %}
-  <div class="alert alert-danger" style="margin-bottom: 1rem; color: #d32f2f; background-color: #fde0e0; padding: 10px; border-radius: 4px;">
-    <strong>Error:</strong> User with that email address was not found. They must register first.
-  </div>
-  {% endif %}
-  {% if request.query_params.get('error') == 'invalid_role' %}
-  <div class="alert alert-danger" style="margin-bottom: 1rem; color: #d32f2f; background-color: #fde0e0; padding: 10px; border-radius: 4px;">
-    <strong>Error:</strong> Invalid role selected. Only room_coordinator is allowed.
-  </div>
-  {% endif %}
 
-  <!-- Assign Member Form -->
-  <div class="token-form-card" style="margin-bottom: 1.5rem;">
-    <h3>Assign Coordinator</h3>
-    <form method="post" action="/admin/events/{{ event.id }}/rooms/{{ room.id }}/members/" class="token-form">
-      <div class="form-row">
-        <div class="form-group">
-          <label for="member_email">User Email</label>
-          <input type="email" name="email" id="member_email" class="input" placeholder="user@example.com" required />
-        </div>
-        <div class="form-group">
-          <label for="member_role">Role</label>
-          <select name="role" id="member_role" class="input" required>
-            <option value="room_coordinator" selected>room_coordinator</option>
-          </select>
-        </div>
-        <div class="form-group form-group-btn">
-          <button type="submit" class="btn btn-primary">Assign</button>
-        </div>
-      </div>
-    </form>
-  </div>
 
-  {% if memberships %}
-  <table class="data-table">
-    <thead>
-      <tr>
-        <th>Email</th>
-        <th>Display Name</th>
-        <th>Account Status</th>
-        <th>Room Role</th>
-        <th>Actions</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for m in memberships %}
-      {% set u = m.user %}
-      <tr class="row-assigned">
-        <td>{{ u.email }}</td>
-        <td>{{ u.display_name }}</td>
-        <td>
-          {% if u.is_active %}
-          <span class="status-live">● Active</span>
-          {% else %}
-          <span class="status-offline">○ Inactive</span>
-          {% endif %}
-        </td>
-        <td>
-          <span class="badge badge-role badge-{{ m.role }}">{{ m.role }}</span>
-        </td>
-        <td class="actions-cell">
-          <form method="post"
-                action="/admin/events/{{ event.id }}/rooms/{{ room.id }}/members/{{ m.id }}/invite"
-                class="inline-form"
-                style="margin-right: 8px;">
-            <button type="submit" class="btn btn-sm btn-outline" style="border: 2px solid #000; background: #fff; color: #000; border-radius: 4px; box-shadow: 2px 2px 0px #000; padding: 4px 12px; font-weight: bold;">✉️ Invite</button>
-          </form>
-          <form method="post"
-                action="/admin/events/{{ event.id }}/rooms/{{ room.id }}/members/{{ m.id }}/delete"
-                class="inline-form"
-                data-confirm="Remove {{ u.display_name }} from this room?">
-            <button type="submit" class="btn btn-sm btn-danger">Remove</button>
-          </form>
-        </td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
-  {% else %}
-  <div class="empty-state">
-    <p>No coordinators are assigned to this room yet.</p>
-  </div>
-  {% endif %}
+<a href="/admin/events/{{ event.id }}/rooms/{{ room.id }}/transcripts/"
+   class="btn btn-primary">
+
+View Transcripts
+
+</a>
+
+
 </div>
+
+
+
+</div>
+
+
+
+
+
+<!-- ===========================
+     FLOOR AUDIO TRANSCRIPTION
+=========================== -->
+
+
+<form method="post"
+      action="/admin/events/{{ event.id }}/rooms/{{ room.id }}/edit"
+      class="token-form">
+
+
+<div class="token-form-card">
+
+
+
+<div class="section-inline-header">
+
+
+<h3>
+Floor Audio Transcription
+</h3>
+
+
+
+{% if room.floor_transcription_enabled %}
+
+
+<div class="bot-controls">
+
+
+<span id="bot-status-pill"
+      data-room-id="{{ room.id }}"
+      class="bot-status-pill">
+
+
+<span id="bot-status-dot"
+      class="bot-status-dot">
+</span>
+
+
+<span id="bot-status-text">
+Checking...
+</span>
+
+
+</span>
+
+
+
+<button type="button"
+        class="btn btn-sm btn-outline"
+        id="start-bot-btn"
+        onclick="startFloorTranscription({{ room.id }})">
+
+Start Bot
+
+</button>
+
+
+
+<button type="button"
+        class="btn btn-sm btn-danger-outline"
+        id="stop-bot-btn"
+        onclick="stopFloorTranscription({{ room.id }})">
+
+Stop Bot
+
+</button>
+
+
+</div>
+
+
+{% endif %}
+
+
+
+</div>
+
+
+
+
+
+
+<div class="form-row">
+
+
+<div class="form-group">
+
+
+<label class="checkbox-label">
+
+
+<input
+type="checkbox"
+name="floor_transcription_enabled"
+{% if room.floor_transcription_enabled %}
+checked
+{% endif %}
+>
+
+
+Enable AI Transcription for Floor Audio
+
+
+</label>
+
+
+</div>
+
+
+</div>
+
+
+
+
+
+
+
+<div class="form-row">
+
+
+
+<div class="form-group">
+
+
+<label for="floor_language_code">
+
+Floor Language Code
+
+</label>
+
+
+
+<input
+type="text"
+id="floor_language_code"
+name="floor_language_code"
+class="input"
+value="{{ room.floor_language_code or '' }}"
+placeholder="en, fr, de"
+>
+
+
+</div>
+
+
+
+
+
+
+<div class="form-group">
+
+
+<label for="floor_transcription_provider">
+
+Provider
+
+</label>
+
+
+
+<select
+id="floor_transcription_provider"
+name="floor_transcription_provider"
+class="input"
+>
+
+
+
+<option value="local"
+{% if room.floor_transcription_provider == 'local' %}
+selected
+{% endif %}
+>
+
+Local (Faster Whisper)
+
+</option>
+
+
+
+
+<option value="openai"
+{% if room.floor_transcription_provider == 'openai' %}
+selected
+{% endif %}
+>
+
+OpenAI
+
+</option>
+
+
+
+
+<option value="deepgram"
+{% if room.floor_transcription_provider == 'deepgram' %}
+selected
+{% endif %}
+>
+
+Deepgram
+
+</option>
+
+
+
+
+<option value="nvidia"
+{% if room.floor_transcription_provider == 'nvidia' %}
+selected
+{% endif %}
+>
+
+NVIDIA Parakeet
+
+</option>
+
+
+
+
+<option value="elevenlabs"
+{% if room.floor_transcription_provider == 'elevenlabs' %}
+selected
+{% endif %}
+>
+
+ElevenLabs
+
+</option>
+
+
+
+</select>
+
+
+</div>
+
+
+
+
+
+
+
+<div class="form-group">
+
+
+<label for="floor_transcription_model">
+
+Model
+
+</label>
+
+
+<select
+id="floor_transcription_model"
+name="floor_transcription_model"
+class="input"
+>
+
+<option value="tiny"
+data-provider="local"
+{% if room.floor_transcription_model == 'tiny' %}
+selected
+{% endif %}
+>
+Local: tiny
+</option>
+
+
+<option value="base"
+data-provider="local"
+{% if room.floor_transcription_model == 'base' %}
+selected
+{% endif %}
+>
+Local: base
+</option>
+
+
+<option value="gpt-4o-transcribe"
+data-provider="openai"
+{% if room.floor_transcription_model == 'gpt-4o-transcribe' %}
+selected
+{% endif %}
+>
+OpenAI GPT-4o Transcribe
+</option>
+
+
+<option value="gpt-4o-mini-transcribe"
+data-provider="openai"
+{% if room.floor_transcription_model == 'gpt-4o-mini-transcribe' %}
+selected
+{% endif %}
+>
+OpenAI GPT-4o Mini
+</option>
+
+
+<option value="whisper-1"
+data-provider="openai"
+{% if room.floor_transcription_model == 'whisper-1' %}
+selected
+{% endif %}
+>
+Whisper-1
+</option>
+
+
+<option value="nova-2"
+data-provider="deepgram"
+{% if room.floor_transcription_model == 'nova-2' %}
+selected
+{% endif %}
+>
+Deepgram Nova-2
+</option>
+
+
+<option value="parakeet-rnnt"
+data-provider="nvidia"
+{% if room.floor_transcription_model == 'parakeet-rnnt' %}
+selected
+{% endif %}
+>
+NVIDIA Parakeet RNNT
+</option>
+
+
+<option value="scribe_v2_realtime"
+data-provider="elevenlabs"
+{% if room.floor_transcription_model == 'scribe_v2_realtime' %}
+selected
+{% endif %}
+>
+ElevenLabs Scribe V2
+</option>
+
+
+
+</select>
+
+
+</div>
+
+
+
+
+
+
+<div class="form-group form-group-btn form-submit-align">
+
+
+<button type="submit"
+        class="btn btn-primary">
+
+Save Transcription
+
+</button>
+
+
+</div>
+
+
+
+</div>
+
+
+
+
+
+
+<p class="form-help">
+
+When enabled, listeners can select Floor Audio captions.
+
+</p>
+
+
+
+</div>
+
+
+</form>
+
+<!-- ===========================
+     FLOOR AUDIO TRANSLATION
+=========================== -->
+
+
+<form method="post"
+      action="/admin/events/{{ event.id }}/rooms/{{ room.id }}/edit"
+      class="token-form">
+
+
+<div class="token-form-card">
+
+
+
+<div class="section-inline-header">
+
+
+<h3>
+Floor Audio Translation
+</h3>
+
+
+</div>
+
+
+
+
+
+
+<div class="form-row">
+
+
+<div class="form-group">
+
+
+<label class="checkbox-label">
+
+
+<input
+type="checkbox"
+name="floor_translation_enabled"
+id="floor_translation_enabled"
+
+{% if room.floor_translation_enabled %}
+checked
+{% endif %}
+>
+
+
+Enable Real-Time LLM Translation for Floor Audio
+
+
+</label>
+
+
+
+<p class="form-help">
+
+Requires Floor Audio Transcription. Translation is generated from the transcript.
+
+</p>
+
+
+</div>
+
+
+</div>
+
+
+
+
+
+
+
+
+
+<div class="form-row">
+
+
+
+<div class="form-group">
+
+
+<label for="floor_translation_provider">
+
+Translation Provider
+
+</label>
+
+
+
+
+<select
+id="floor_translation_provider"
+name="floor_translation_provider"
+class="input"
+>
+
+
+
+<option value="">
+Select Provider...
+</option>
+
+
+
+<option value="openai"
+{% if room.floor_translation_provider == 'openai' %}
+selected
+{% endif %}
+>
+
+OpenAI
+
+</option>
+
+
+
+
+<option value="openrouter"
+{% if room.floor_translation_provider == 'openrouter' %}
+selected
+{% endif %}
+>
+
+OpenRouter
+
+</option>
+
+
+
+
+<option value="gemini"
+{% if room.floor_translation_provider == 'gemini' %}
+selected
+{% endif %}
+>
+
+Google Gemini
+
+</option>
+
+
+
+
+<option value="anthropic"
+{% if room.floor_translation_provider == 'anthropic' %}
+selected
+{% endif %}
+>
+
+Anthropic
+
+</option>
+
+
+
+
+<option value="groq"
+{% if room.floor_translation_provider == 'groq' %}
+selected
+{% endif %}
+>
+
+Groq
+
+</option>
+
+
+
+
+<option value="local"
+{% if room.floor_translation_provider == 'local' %}
+selected
+{% endif %}
+>
+
+Local LLM
+
+</option>
+
+
+
+</select>
+
+
+
+</div>
+
+
+
+
+
+
+
+<div class="form-group">
+
+
+<label for="floor_translation_model">
+
+Translation Model
+
+</label>
+
+
+
+
+<select
+id="floor_translation_model"
+name="floor_translation_model"
+class="input"
+>
+
+
+<option value="">
+
+Select provider first...
+
+</option>
+
+
+
+</select>
+
+
+</div>
+
+
+
+</div>
+
+
+
+
+
+
+
+
+
+<div class="form-row">
+
+
+<div class="form-group">
+
+
+<label>
+
+Target Languages
+
+</label>
+
+
+
+
+
+<div class="lang-picker"
+id="lp_floor_translation">
+
+
+
+<div
+class="lang-picker-tags"
+id="lp_floor_translation_tags">
+</div>
+
+
+
+
+
+<div class="lang-picker-search-wrap">
+
+
+
+<input
+type="text"
+class="lang-picker-input"
+id="lp_floor_translation_search"
+placeholder="Search and add language..."
+autocomplete="off"
+>
+
+
+
+
+<ul
+class="lang-picker-dropdown"
+id="lp_floor_translation_dropdown"
+hidden>
+
+</ul>
+
+
+
+</div>
+
+
+
+</div>
+
+
+
+
+
+<div id="lp_floor_translation_hidden">
+</div>
+
+
+
+
+
+
+<p class="form-help">
+
+Selected languages will receive translated audio simultaneously.
+
+</p>
+
+
+
+</div>
+
+
+
+
+
+
+<div class="form-group form-group-btn form-submit-align">
+
+
+<button
+type="submit"
+class="btn btn-primary">
+
+Save Translation
+
+</button>
+
+
+</div>
+
+
+
+</div>
+
+
+
+
+</div>
+
+
+</form>
+
+<!-- ===========================
+     FLOOR AUDIO TTS
+=========================== -->
+
+
+<form method="post"
+      action="/admin/events/{{ event.id }}/rooms/{{ room.id }}/edit"
+      class="token-form">
+
+
+<div class="token-form-card">
+
+
+
+<div class="section-inline-header">
+
+
+<h3>
+Floor Audio TTS (Direct Push)
+</h3>
+
+
+</div>
+
+
+
+
+
+
+
+<div class="form-row">
+
+
+<div class="form-group">
+
+
+<label class="checkbox-label">
+
+
+<input
+type="checkbox"
+name="floor_tts_enabled"
+
+{% if room.floor_tts_enabled %}
+checked
+{% endif %}
+>
+
+
+Enable TTS for translated floor audio
+
+
+</label>
+
+
+
+<p class="form-help">
+
+Requires Floor Audio Translation. Generated speech is pushed through WebSockets.
+
+</p>
+
+
+</div>
+
+
+
+</div>
+
+
+
+
+
+
+
+
+<div class="form-row">
+
+
+
+<div class="form-group">
+
+
+<label for="floor_tts_provider">
+
+TTS Provider
+
+</label>
+
+
+
+
+<select
+id="floor_tts_provider"
+name="floor_tts_provider"
+class="input"
+>
+
+
+
+
+<option value="deepgram"
+{% if (room.floor_tts_provider or 'deepgram') == 'deepgram' %}
+selected
+{% endif %}
+>
+
+Deepgram Aura (Cloud)
+
+</option>
+
+
+
+
+
+<option value="supertonic"
+{% if room.floor_tts_provider == 'supertonic' %}
+selected
+{% endif %}
+>
+
+Supertonic (Self Hosted)
+
+</option>
+
+
+
+
+</select>
+
+
+
+
+
+<p class="form-help">
+
+Deepgram supports cloud voices. Supertonic runs locally.
+
+</p>
+
+
+
+</div>
+
+
+
+
+
+
+
+<div class="form-group"
+id="tts_voice_group">
+
+
+
+<label for="floor_tts_voice">
+
+Supertonic Voice
+
+</label>
+
+
+
+
+
+<select
+id="floor_tts_voice"
+name="floor_tts_voice"
+class="input"
+>
+
+
+
+{% set current_voice = room.floor_tts_voice or 'M1' %}
+
+
+
+{% for v in ['M1','M2','M3','M4','M5','F1','F2','F3','F4','F5'] %}
+
+
+<option value="{{v}}"
+{% if current_voice == v %}
+selected
+{% endif %}
+>
+
+{{v}}
+
+</option>
+
+
+{% endfor %}
+
+
+
+</select>
+
+
+</div>
+
+
+
+
+
+
+<div class="form-group form-group-btn form-submit-align">
+
+
+<button
+type="submit"
+class="btn btn-primary">
+
+Save TTS
+
+</button>
+
+
+</div>
+
+
+
+
+</div>
+
+
+
+
+
+</div>
+
+
+</form>
+
+
+
+
+
+
+
+
+
+<!-- ===========================
+     INTERPRETATION BOOTHS
+=========================== -->
+
+
+<div class="section-card">
+
+
+
+<div class="section-header">
+
+
+<h2>
+
+Interpretation Booths ({{ booths|length }})
+
+</h2>
+
+
+
+
+<a
+href="/admin/events/{{ event.id }}/rooms/{{ room.id }}/booths/"
+class="btn btn-sm btn-primary">
+
+Manage Booths
+
+</a>
+
+
+
+</div>
+
+
+
+
+
+
+{% if booths %}
+
+
+
+<table class="data-table schedule-table">
+
+
+<thead>
+
+
+<tr>
+
+<th>
+Language
+</th>
+
+
+<th>
+Code
+</th>
+
+
+<th>
+Status
+</th>
+
+
+<th>
+Interpreter Booth URL
+</th>
+
+
+<th>
+Listener URL
+</th>
+
+
+<th>
+Details
+</th>
+
+
+</tr>
+
+
+</thead>
+
+
+
+
+
+
+<tbody>
+
+
+{% for bs in booths %}
+
+
+
+<tr
+class="{% if bs.is_live %}row-live{% endif %}">
+
+
+<td>
+
+<strong>
+{{ bs.db.language_name }}
+</strong>
+
+</td>
+
+
+
+
+<td>
+
+<code>
+{{ bs.db.language_code }}
+</code>
+
+</td>
+
+
+
+
+
+
+<td>
+
+
+{% if bs.is_live %}
+
+
+<span class="status-live">
+
+● LIVE
+
+</span>
+
+
+
+{% else %}
+
+
+
+<span class="status-offline">
+
+○ Offline
+
+</span>
+
+
+
+{% endif %}
+
+
+</td>
+
+
+
+
+
+
+
+<td>
+
+
+<a
+href="/interpreter/{{ event.slug }}/{{ bs.db.language_code }}"
+target="_blank"
+class="link-external">
+
+
+/interpreter/{{ event.slug }}/{{ bs.db.language_code }}
+
+
+</a>
+
+
+</td>
+
+
+
+
+
+
+
+
+<td>
+
+
+<a
+href="/listener/{{ event.slug }}"
+target="_blank"
+class="link-external">
+
+
+/listener/{{ event.slug }}
+
+
+</a>
+
+
+</td>
+
+
+
+
+
+
+
+<td>
+
+
+<a
+href="/admin/events/{{ event.id }}/rooms/{{ room.id }}/booths/{{ bs.db.id }}/"
+class="btn btn-sm">
+
+
+View
+
+
+</a>
+
+
+</td>
+
+
+
+</tr>
+
+
+
+
+{% endfor %}
+
+
+
+</tbody>
+
+
+
+</table>
+
+
+
+
+{% else %}
+
+
+
+<p class="muted">
+
+No booths in this room.
+
+<a href="/admin/events/{{ event.id }}/rooms/{{ room.id }}/booths/">
+
+Add booths
+
+</a>
+
+
+</p>
+
+
+
+{% endif %}
+
+
+
+</div>
+<!-- ===========================
+     ASSIGNED MEMBERS
+=========================== -->
+
+
+<div class="section-card">
+
+
+<div class="section-header">
+
+
+<h2>
+Assigned Room Coordinators
+</h2>
+
+
+</div>
+
+
+
+
+
+{% if request.query_params.get('error') == 'user_not_found' %}
+
+
+<div class="alert-danger">
+
+<strong>Error:</strong>
+User with that email was not found. They must register first.
+
+</div>
+
+
+
+{% endif %}
+
+
+
+
+
+
+{% if request.query_params.get('error') == 'invalid_role' %}
+
+
+<div class="alert-danger">
+
+
+<strong>Error:</strong>
+Invalid role selected.
+
+
+</div>
+
+
+
+{% endif %}
+
+
+
+
+
+
+
+<div class="token-form-card">
+
+
+
+<h3>
+Assign Coordinator
+</h3>
+
+
+
+
+<form method="post"
+action="/admin/events/{{ event.id }}/rooms/{{ room.id }}/members/"
+class="token-form">
+
+
+<div class="form-row">
+
+
+
+<div class="form-group">
+
+
+<label for="member_email">
+
+User Email
+
+</label>
+
+
+<input
+type="email"
+name="email"
+id="member_email"
+class="input"
+placeholder="user@example.com"
+required
+>
+
+
+</div>
+
+
+
+
+
+<div class="form-group">
+
+
+<label for="member_role">
+
+Role
+
+</label>
+
+
+
+<select
+name="role"
+id="member_role"
+class="input"
+>
+
+
+<option value="room_coordinator">
+
+room_coordinator
+
+</option>
+
+
+</select>
+
+
+
+</div>
+
+
+
+
+
+
+<div class="form-group form-group-btn">
+
+
+<button
+type="submit"
+class="btn btn-primary">
+
+Assign
+
+</button>
+
+
+</div>
+
+
+
+</div>
+
+
+</form>
+
+
+</div>
+
+
+
+
+
+
+
+{% if memberships %}
+
+
+
+<table class="data-table">
+
+
+<thead>
+
+<tr>
+
+<th>
+Email
+</th>
+
+
+<th>
+Display Name
+</th>
+
+
+<th>
+Status
+</th>
+
+
+<th>
+Role
+</th>
+
+
+<th>
+Actions
+</th>
+
+
+</tr>
+
+
+</thead>
+
+
+
+
+
+
+<tbody>
+
+
+
+{% for m in memberships %}
+
+
+
+<tr class="row-assigned">
+
+
+<td>
+
+{{ m.user.email }}
+
+</td>
+
+
+
+
+<td>
+
+{{ m.user.display_name }}
+
+</td>
+
+
+
+
+
+<td>
+
+
+{% if m.user.is_active %}
+
+
+<span class="status-live">
+
+● Active
+
+</span>
+
+
+
+{% else %}
+
+
+<span class="status-offline">
+
+○ Inactive
+
+</span>
+
+
+
+{% endif %}
+
+
+
+</td>
+
+
+
+
+
+
+<td>
+
+
+<span class="badge badge-role badge-{{m.role}}">
+
+{{m.role}}
+
+</span>
+
+
+</td>
+
+
+
+
+
+
+<td class="actions-cell">
+
+
+
+<form method="post"
+action="/admin/events/{{ event.id }}/rooms/{{ room.id }}/members/{{ m.id }}/invite"
+class="inline-form">
+
+
+<button
+type="submit"
+class="btn btn-invite">
+
+
+✉ Invite
+
+
+</button>
+
+
+</form>
+
+
+
+
+
+
+
+<form method="post"
+action="/admin/events/{{ event.id }}/rooms/{{ room.id }}/members/{{ m.id }}/delete"
+class="inline-form"
+data-confirm="Remove {{m.user.display_name}}?">
+
+
+<button
+type="submit"
+class="btn btn-danger">
+
+
+Remove
+
+
+</button>
+
+
+</form>
+
+
+
+</td>
+
+
+
+</tr>
+
+
+
+{% endfor %}
+
+
+
+</tbody>
+
+
+
+</table>
+
+
+
+
+
+
+{% else %}
+
+
+
+<div class="empty-state">
+
+<p>
+No coordinators assigned.
+</p>
+
+</div>
+
+
+
+{% endif %}
+
+
+
+</div>
+
+
+
+
+
+
+
+
+
+<!-- ===========================
+     DANGER ZONE
+=========================== -->
+
 
 {% if is_event_owner %}
+
+
+
 <div class="danger-zone">
-  <h3>Danger Zone</h3>
-  <form method="post" action="/admin/events/{{ event.id }}/rooms/{{ room.id }}/delete" class="inline-delete"
-        data-confirm="Delete room '{{ room.display_name }}'? All booths in this room will be removed.">
-    <button type="submit" class="btn btn-danger">Delete Room</button>
-    <span class="danger-text">This removes all booths and their invite tokens.</span>
-  </form>
+
+
+<h3>
+
+Danger Zone
+
+</h3>
+
+
+
+
+<form method="post"
+action="/admin/events/{{ event.id }}/rooms/{{ room.id }}/delete"
+class="inline-delete"
+data-confirm="Delete room '{{room.display_name}}'?">
+
+
+<button
+type="submit"
+class="btn btn-danger">
+
+
+Delete Room
+
+
+</button>
+
+
+
+
+<span class="danger-text">
+
+This removes all booths and invite tokens.
+
+</span>
+
+
+
+</form>
+
+
+
 </div>
+
+
+
 {% endif %}
 {% endblock %}
