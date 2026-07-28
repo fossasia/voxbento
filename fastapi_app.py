@@ -20,7 +20,7 @@ from portal.routers.demo import router as demo_router
 from portal.routers.interpreter import router as interpreter_router
 from portal.routers.listener import router as listener_router
 from portal.routers.public import router as public_router
-from portal.websockets.handlers import router as ws_router
+from portal.websockets.routes import router as ws_router
 
 "FastAPI entry point — sole backend for the Voxbento.\n\nStart with:\n    uvicorn fastapi_app:app --host 0.0.0.0 --port 8000 --reload\n"
 
