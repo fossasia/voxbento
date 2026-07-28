@@ -108,6 +108,7 @@
               <option value="original">Original</option>
               <option value="translated">Translated</option>
               <option value="side-by-side">Side-by-Side</option>
+              <option value="stacked">Stacked</option>
             </select>
           </div>
           <div class="flex flex-col gap-1 listener-hidden" id="translation-lang-group" style="display:none;">
@@ -436,25 +437,42 @@
 
   function updateCaptionLayout() {
     var mode = captionModeSelect.value;
+    var contentArea = document.getElementById('captions-content-area');
     var colOrig = document.getElementById('captions-col-original');
     var colTrans = document.getElementById('captions-col-translated');
     var transGroup = document.getElementById('translation-lang-group');
     
     if (mode === 'original') {
+      contentArea.style.flexDirection = 'row';
       colOrig.style.display = 'flex';
       colTrans.style.display = 'none';
       transGroup.style.display = 'none';
     } else if (mode === 'translated') {
+      contentArea.style.flexDirection = 'row';
       colOrig.style.display = 'none';
       colTrans.style.display = 'flex';
       colTrans.style.borderLeft = 'none';
+      colTrans.style.borderTop = 'none';
       colTrans.style.paddingLeft = '0';
+      colTrans.style.paddingTop = '0';
       transGroup.style.display = 'flex';
     } else if (mode === 'side-by-side') {
+      contentArea.style.flexDirection = 'row';
       colOrig.style.display = 'flex';
       colTrans.style.display = 'flex';
       colTrans.style.borderLeft = '1px solid #444';
+      colTrans.style.borderTop = 'none';
       colTrans.style.paddingLeft = '20px';
+      colTrans.style.paddingTop = '0';
+      transGroup.style.display = 'flex';
+    } else if (mode === 'stacked') {
+      contentArea.style.flexDirection = 'column';
+      colOrig.style.display = 'flex';
+      colTrans.style.display = 'flex';
+      colTrans.style.borderLeft = 'none';
+      colTrans.style.borderTop = '1px solid #444';
+      colTrans.style.paddingLeft = '0';
+      colTrans.style.paddingTop = '20px';
       transGroup.style.display = 'flex';
     }
   }
