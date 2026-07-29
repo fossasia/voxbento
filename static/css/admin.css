@@ -1,23 +1,23 @@
 /* ── Eventyay Admin Panel Styles ─────────────────────────────────────────── */
 
 :root {
-  --color-bg: #f5f6fa;
+  --color-bg: #f8fafc;
   --color-surface: #ffffff;
   --color-border: #e1e4e8;
   --color-text: #24292e;
   --color-text-secondary: #586069;
-  --color-primary: #2563eb;
-  --color-primary-hover: #1d4ed8;
+  --color-primary: #7c3aed;
+  --color-primary-hover: #6d28d9;
   --color-danger: #dc2626;
   --color-danger-hover: #b91c1c;
   --color-success: #16a34a;
   --color-warning: #f59e0b;
   --color-live: #16a34a;
   --color-offline: #9ca3af;
-  --radius: 8px;
+  --radius: 14px;
   --radius-sm: 4px;
-  --shadow-sm: 0 1px 3px rgba(0,0,0,0.08);
-  --shadow-md: 0 4px 12px rgba(0,0,0,0.1);
+  --shadow-sm: 0 2px 8px rgba(0,0,0,0.06);
+  --shadow-md: 0 8px 24px rgba(0,0,0,0.12);
   --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   --font-mono: 'SF Mono', 'Fira Code', monospace;
 }
@@ -464,6 +464,58 @@ code { font-family: var(--font-mono); font-size: 0.875em; background: #f0f1f3; p
   box-shadow: var(--shadow-sm);
   min-width: 0;
 }
+
+/* ── Room Detail Page ───────────────────────────────────────── */
+
+.room-settings-card {
+    margin-bottom: 1.5rem;
+}
+
+.form-flex-1 {
+    flex: 1;
+}
+
+.form-submit-align {
+    flex: 0;
+    align-self: flex-end;
+}
+
+.form-help {
+    margin-top: 0.5rem;
+    font-size: 0.85rem;
+    color: var(--color-text-secondary);
+}
+
+.form-help-tight {
+    margin-top: 0.25rem;
+}
+
+.checkbox-label {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    cursor: pointer;
+}
+
+.btn-invite {
+    border: 2px solid #000;
+    background: #fff;
+    color: #000;
+    border-radius: 4px;
+    box-shadow: 2px 2px 0 #000;
+    padding: 4px 12px;
+    font-weight: bold;
+}
+
+.alert-danger {
+    margin-bottom: 1rem;
+    color: #d32f2f;
+    background-color: #fde0e0;
+    padding: 10px;
+    border-radius: 4px;
+}
+
+
 .token-form-card h3 { margin: 0 0 12px; font-size: 0.9375rem; font-weight: 600; }
 .token-form .form-row {
   display: flex;
@@ -604,3 +656,191 @@ code { font-family: var(--font-mono); font-size: 0.875em; background: #f0f1f3; p
 }
 .lang-picker-dropdown li:hover,
 .lang-picker-dropdown li.lp-focused { background: #f0f7ff; }
+/* ==========================================
+   Refactored inline styles
+   ========================================== */
+/* API Settings Page */
+
+.api-settings-description {
+    margin-bottom: 20px;
+}
+
+.api-settings-form {
+    max-width: 600px;
+}
+
+.api-checkbox-box {
+    padding: 15px;
+    background: #f8f9fa;
+    border: 1px solid #e2e8f0;
+    border-radius: 6px;
+    margin-bottom: 20px;
+}
+
+.api-checkbox-box label {
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 0;
+    cursor: pointer;
+}
+
+.api-checkbox-box input[type="checkbox"] {
+    width: auto;
+}
+
+.api-form-help-top {
+    margin-top: 8px;
+    margin-bottom: 0;
+}
+
+.api-form-group {
+    margin-bottom: 24px;
+}
+
+.api-form-group-large {
+    margin-bottom: 30px;
+}
+
+.api-label {
+    display: block;
+    font-weight: 600;
+    margin-bottom: 8px;
+    color: #374151;
+}
+
+.api-input {
+    width: 100%;
+    padding: 10px 12px;
+    border: 1px solid #d1d5db;
+    border-radius: 6px;
+    box-sizing: border-box;
+    font-family: monospace;
+    font-size: 14px;
+}
+
+.api-help-row {
+    margin-top: 6px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+
+.api-help-text {
+    font-size: 0.85rem;
+    color: #6b7280;
+    margin: 0;
+}
+
+.api-clear-label {
+    font-size: 0.85rem;
+    color: #ef4444;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    cursor: pointer;
+}
+
+.api-section-divider {
+    margin-top: 40px;
+    padding-top: 30px;
+    border-top: 1px solid #e5e7eb;
+}
+
+.api-actions {
+    margin-top: 20px;
+    padding-top: 20px;
+    border-top: 1px solid #e5e7eb;
+    display: flex;
+    align-items: center;
+}
+
+.api-save-btn {
+    padding: 10px 20px;
+    font-size: 14px;
+}
+
+.api-cancel-btn {
+    background: white;
+    border: 1px solid #d1d5db;
+    color: #374151;
+    margin-left: 12px;
+    padding: 10px 20px;
+    font-size: 14px;
+}
+/* ── Base Template Images ───────────────────────────────────── */
+
+.brand-logo {
+    height: 32px;
+    vertical-align: middle;
+}
+
+.modal-logo {
+    height: 24px;
+    vertical-align: middle;
+}
+
+
+/* ── Custom Modal Layout ───────────────────────────────────── */
+
+.custom-modal-overlay {
+    display: flex;
+}
+
+
+.custom-modal-header {
+    margin-bottom: 1rem;
+}
+
+
+.custom-modal-body #custom-confirm-message {
+    margin-bottom: 1rem;
+    font-weight: 500;
+}
+
+
+.custom-modal-body #custom-confirm-funny {
+    font-size: 0.85rem;
+    font-style: italic;
+    margin-bottom: 1.5rem;
+}
+
+
+.custom-modal-footer {
+    display: flex;
+    gap: 1rem;
+    justify-content: flex-end;
+} 
+
+.page-action {
+    margin-top: 1rem;
+}
+
+.listener-access-box {
+    background: var(--color-surface);
+    padding: 1rem;
+    border-radius: var(--radius);
+    border: 1px solid var(--color-border);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+
+.listener-code {
+    margin: 0;
+    font-weight: 500;
+    font-size: 1.25rem;
+    letter-spacing: 2px;
+}
+
+.listener-help {
+    margin: 0.25rem 0 0 0;
+    font-size: 0.875rem;
+}
+
+.listener-link {
+    display: inline-block;
+    margin-top: 0.5rem;
+}
+
