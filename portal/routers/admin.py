@@ -164,7 +164,9 @@ async def mission_control_grid(request: Request, event_slug: str, user=Depends(r
                     "active_interpreter_id": None,
                     "handoff_state": "idle",
                     "handoff_initiator_id": None,
-                    "broadcast_unlocked": db_b.broadcast_unlocked,
+                    # Broadcast on/off is live, in-memory session state owned by
+                    # Mission Control. A booth with no active session is off.
+                    "broadcast_unlocked": False,
                     "ingest_status": "disconnected",
                     "participants": [],
                     "chat_messages": [],
