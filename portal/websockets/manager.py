@@ -296,6 +296,18 @@ async def _handle_set_broadcast_unlocked(ws: WebSocket, session: Session, data: 
         logging.getLogger(__name__).error(f"Error persisting broadcast lock: {e}")
     try:
         state = await booths.set_broadcast_unlocked(session.booth_id, unlocked, session.language, session.channel_id)
+        # Locking the booth must immediately stop everything tied to it: the
+        # transcription worker (which pulls audio independently of any browser)
+        # is torn down here so captions stop even if the interpreter's client is
+        # unresponsive. Publisher mic/ingest state is already reset inside
+        # set_broadcast_unlocked.
+        if not unlocked:
+            try:
+                from portal.transcription.worker import stop_transcription_worker
+
+                await stop_transcription_worker(session.booth_id)
+            except Exception as e:
+                logging.getLogger(__name__).warning(f"Failed to stop transcription on lock: {e}")
         await manager.broadcast(session.booth_id, {"type": "booth:state", "state": state})
         await listener_manager.broadcast(session.booth_id, {"type": "booth:state", "state": state})
     except Exception as exc:

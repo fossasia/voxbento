@@ -260,6 +260,17 @@ class BoothRegistry:
         async with self._lock:
             booth = self._get_or_create_booth(booth_id, language, channel_id)
             booth.broadcast_unlocked = unlocked
+            # Locking the booth (Mission Control "Stop") forces every publisher
+            # offline so the room truly stops: mic + ingest flags are cleared and
+            # the aggregate ingest status returns to disconnected. This keeps the
+            # booth/Mission Control UI consistent even if a client is slow to tear
+            # down its own WHIP publish.
+            if not unlocked:
+                for participant in booth.participants.values():
+                    participant.mic_active = False
+                    participant.ingest_connected = False
+                    participant.updated_at = utc_now_iso()
+                booth.ingest_status = "disconnected"
             return booth.as_public_dict()
 
     async def set_active_interpreter(

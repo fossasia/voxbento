@@ -196,7 +196,10 @@ function handleServerMessage(data) {
   if (type === 'booth:joined') {
     state.participantId = data.participant_id
     state.joined = true
-    applyBoothState(data.state, { skipAutoStart: false })
+    // Never auto-start ingest on join/reload. Going live is driven exclusively
+    // by Mission Control toggling broadcast On (an off→on transition delivered
+    // as a subsequent booth:state message), not by simply (re)connecting.
+    applyBoothState(data.state, { skipAutoStart: true })
     joinMonitoringFeed()
     render()
     showError('')
@@ -496,10 +499,17 @@ function applyBoothState(payload, { skipAutoStart = false } = {}) {
     previousActiveInterpreterId === state.participantId
 
   const becameUnlocked = state.broadcastUnlocked && !previousBroadcastUnlocked
-  const becameLocked = !state.broadcastUnlocked && previousBroadcastUnlocked
 
-  const lostPublishingRights = 
-    lostActivePublisher || (becameLocked && state.activeInterpreterId === state.participantId)
+  // Level-triggered: while broadcast is locked, an active interpreter that is
+  // still publishing must stop — regardless of whether we observed the exact
+  // off→on transition. This makes Mission Control's "Stop" reliable even if a
+  // lock-transition state message was missed or arrived out of order.
+  const lockedWhilePublishing =
+    !state.broadcastUnlocked &&
+    state.ingestConnected &&
+    state.activeInterpreterId === state.participantId
+
+  const lostPublishingRights = lostActivePublisher || lockedWhilePublishing
 
   if (lostPublishingRights) {
     state.relayingOut = true
@@ -1140,6 +1150,8 @@ function attemptRelayStart(attempt) {
   window.setTimeout(async () => {
     if (!state.joined || !state.participantId) return
     if (state.activeInterpreterId !== state.participantId) return
+    // Broadcast must be unlocked by Mission Control before any ingest can start.
+    if (!state.broadcastUnlocked) return
     if (state.ingestConnected) return
     try {
       await ensureMicStream()
