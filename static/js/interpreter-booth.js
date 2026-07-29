@@ -23,6 +23,7 @@ const state = {
   whipResourceUrl: null,
   micMuted: true,
   ingestConnected: false,
+  ingestStarting: false,
   ingestReachable: Boolean(portal.dataset.whipBase),
   defaultJitsiRoom: portal.dataset.defaultJitsi || '',
   jitsiDomain: portal.dataset.jitsiDomain || '',
@@ -196,10 +197,12 @@ function handleServerMessage(data) {
   if (type === 'booth:joined') {
     state.participantId = data.participant_id
     state.joined = true
-    // Never auto-start ingest on join/reload. Going live is driven exclusively
-    // by Mission Control toggling broadcast On (an off→on transition delivered
-    // as a subsequent booth:state message), not by simply (re)connecting.
-    applyBoothState(data.state, { skipAutoStart: true })
+    // Re-sync to Mission Control's current broadcast state. If a coordinator
+    // already has the booth live (On), the active interpreter resumes
+    // publishing; if it is Off, we stay off. Going live is driven by broadcast
+    // being unlocked from Mission Control — never by the act of joining itself,
+    // because a booth defaults to locked (Off) until a coordinator turns it on.
+    applyBoothState(data.state)
     joinMonitoringFeed()
     render()
     showError('')
@@ -461,7 +464,6 @@ async function fetchIngestReachability() {
 
 function applyBoothState(payload, { skipAutoStart = false } = {}) {
   const previousActiveInterpreterId = state.activeInterpreterId
-  const previousBroadcastUnlocked = state.broadcastUnlocked
 
   state.participants = payload.participants || []
   state.activeInterpreterId = payload.active_interpreter_id || null
@@ -498,8 +500,6 @@ function applyBoothState(payload, { skipAutoStart = false } = {}) {
     state.activeInterpreterId !== state.participantId &&
     previousActiveInterpreterId === state.participantId
 
-  const becameUnlocked = state.broadcastUnlocked && !previousBroadcastUnlocked
-
   // Level-triggered: while broadcast is locked, an active interpreter that is
   // still publishing must stop — regardless of whether we observed the exact
   // off→on transition. This makes Mission Control's "Stop" reliable even if a
@@ -524,10 +524,22 @@ function applyBoothState(payload, { skipAutoStart = false } = {}) {
     })
   }
 
-  // Auto-start ingest when becoming active or when broadcast unlocks
-  const shouldStartIngest = (becameActive || becameUnlocked) && state.activeInterpreterId === state.participantId && state.broadcastUnlocked
+  // Level-triggered: the active interpreter publishes whenever Mission Control
+  // has broadcast unlocked (On). This keeps the booth in lock-step with the
+  // Go Live / Stop toggle without a page reload, and covers every ordering —
+  // already present when unlocked, joining after unlock, or becoming active
+  // while unlocked. The ingestStarting guard prevents overlapping starts when
+  // several state messages arrive during the WHIP handshake.
+  const shouldStartIngest =
+    state.joined &&
+    state.participantId &&
+    state.activeInterpreterId === state.participantId &&
+    state.broadcastUnlocked &&
+    !state.ingestConnected &&
+    !state.ingestStarting
 
-  if (!skipAutoStart && shouldStartIngest && !state.ingestConnected && state.ingestReachable) {
+  if (!skipAutoStart && shouldStartIngest) {
+    state.ingestStarting = true
     if (state.micMuted) {
       state.micMuted = false
       if (state.micStream) {
@@ -1138,6 +1150,7 @@ async function stopLiveIngest() {
     }
   }
   state.ingestConnected = false
+  state.ingestStarting = false
   renderMicControls()
 }
 
@@ -1146,13 +1159,13 @@ const _RELAY_RETRY_INTERVAL_MS = 200
 const _RELAY_MAX_ATTEMPTS = 8
 
 function attemptRelayStart(attempt) {
-  if (attempt >= _RELAY_MAX_ATTEMPTS) return
+  if (attempt >= _RELAY_MAX_ATTEMPTS) { state.ingestStarting = false; return }
   window.setTimeout(async () => {
-    if (!state.joined || !state.participantId) return
-    if (state.activeInterpreterId !== state.participantId) return
+    if (!state.joined || !state.participantId) { state.ingestStarting = false; return }
+    if (state.activeInterpreterId !== state.participantId) { state.ingestStarting = false; return }
     // Broadcast must be unlocked by Mission Control before any ingest can start.
-    if (!state.broadcastUnlocked) return
-    if (state.ingestConnected) return
+    if (!state.broadcastUnlocked) { state.ingestStarting = false; return }
+    if (state.ingestConnected) { state.ingestStarting = false; return }
     try {
       await ensureMicStream()
       if (state.micStream) {
@@ -1179,7 +1192,7 @@ function attemptRelayStart(attempt) {
       if (!state.whipBase) throw new Error('MEDIAMTX_WHIP_BASE is not configured')
       await doWhipIngest(pc)
       state.ingestConnected = true
-
+      state.ingestStarting = false
       // Start backend transcription worker now that WHIP ingest is live
       if (portal.dataset.eventSlug && portal.dataset.languageCode) {
         try {
@@ -1208,6 +1221,7 @@ function attemptRelayStart(attempt) {
         attemptRelayStart(attempt + 1)
         return
       }
+      state.ingestStarting = false
       showError(`Could not start relay: ${error.message}`)
     }
     renderMicControls()
