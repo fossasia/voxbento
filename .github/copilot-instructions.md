@@ -14,7 +14,7 @@ Canonical project policy is in [`../agents.md`](../agents.md). Read that first.
 
 A browser-first interpretation booth console.
 
-**Stack:** FastAPI (ASGI/uvicorn) + MediaMTX (WHIP/WHEP/HLS) + self-hosted Jitsi Meet. No Flask, no Socket.IO, no aiortc.
+**Stack:** FastAPI (ASGI/uvicorn) + MediaMTX (WHIP/WHEP/RTSP) + self-hosted Jitsi Meet. No Flask, no Socket.IO, no aiortc.
 
 - Interpreters monitor the floor session via an embedded Jitsi iframe (self-hosted)
 - Interpreters broadcast audio via browser WebRTC → WHIP → MediaMTX

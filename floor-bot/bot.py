@@ -147,28 +147,64 @@ async def run_capture():
         except Exception:
             pass
 
-        ffmpeg_proc = await asyncio.create_subprocess_exec(
-            "ffmpeg", "-y",
-            "-f", "pulse",
-            "-i", f"{sink_name}.monitor",
-            "-ac", "1",
-            "-ar", "16000",
-            "-c:a", "libopus",
-            "-b:a", "32k",
-            "-vbr", "on",
-            "-compression_level", "10",
-            "-application", "lowdelay",
-            "-f", "rtsp",
-            "-rtsp_transport", "tcp",
-            f"{mediamtx_rtsp_base}/{event_slug}/floor",
-            env=env,
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL
-        )
+        # Wait a bit for Jitsi audio to start flowing into PulseAudio
+        await asyncio.sleep(3)
 
         print("BOT_STAGE:in_meeting", flush=True)
 
-        await ffmpeg_proc.wait()
+        # Retry loop: ffmpeg can exit if RTSP or PulseAudio isn't ready yet
+        max_retries = 5
+        retry_delay = 3
+        for attempt in range(1, max_retries + 1):
+            print(f"Starting ffmpeg (attempt {attempt}/{max_retries})...", flush=True)
+            ffmpeg_proc = await asyncio.create_subprocess_exec(
+                "ffmpeg", "-y",
+                "-f", "pulse",
+                "-i", f"{sink_name}.monitor",
+                "-ac", "1",
+                "-ar", "16000",
+                "-c:a", "libopus",
+                "-b:a", "32k",
+                "-vbr", "on",
+                "-compression_level", "10",
+                "-application", "lowdelay",
+                "-f", "rtsp",
+                "-rtsp_transport", "tcp",
+                f"{mediamtx_rtsp_base}/{event_slug}/floor",
+                env=env,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.PIPE,
+            )
+
+            # Read stderr in background so we can log it
+            async def _drain_stderr(proc):
+                while True:
+                    line = await proc.stderr.readline()
+                    if not line:
+                        break
+                    text = line.decode(errors="replace").rstrip()
+                    if text:
+                        print(f"ffmpeg: {text}", flush=True)
+
+            stderr_task = asyncio.create_task(_drain_stderr(ffmpeg_proc))
+
+            await ffmpeg_proc.wait()
+            await stderr_task
+
+            rc = ffmpeg_proc.returncode
+            print(f"ffmpeg exited with code {rc}", flush=True)
+
+            if rc == 0:
+                print("ffmpeg exited cleanly", flush=True)
+                break
+
+            if attempt < max_retries:
+                print(f"Retrying ffmpeg in {retry_delay}s...", flush=True)
+                await asyncio.sleep(retry_delay)
+                retry_delay = min(retry_delay * 2, 15)
+            else:
+                print("ffmpeg failed after all retries", flush=True)
+
 
     except asyncio.CancelledError:
         print("run_capture cancelled")

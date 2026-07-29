@@ -94,7 +94,7 @@
 ## Documentation Gaps
 
 - `docs/` directory is partially outdated (pre-database auth design).
-- `ARCHITECTURE.md` needs update to reflect 8-migration DB state and transcription subsystem.
+- `docs/how-it-works.mdx` needs update to reflect 8-migration DB state and transcription subsystem.
 - No OpenAPI documentation for REST API endpoints (FastAPI generates `/docs` automatically but no custom descriptions on most routes).
 
 ---

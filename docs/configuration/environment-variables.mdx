@@ -66,6 +66,17 @@ Voxbento embeds a Jitsi Meet instance so interpreters can monitor the conference
 | `JITSI_PUBLIC_URL` | `http://localhost:8080` | The browser-accessible URL for the Jitsi interface. In production, set this to your full Jitsi HTTPS address (e.g. `https://jitsi.your-domain.com`). |
 | `DEFAULT_JITSI_ROOM` | `eventyay-stage-room` | The Jitsi room name used when a new booth is created without an explicit room name. Change this to match your event's main stage room. |
 
+## Internal Service Variables
+
+These variables configure how Voxbento talks to MediaMTX and other local Docker services.
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `MEDIAMTX_INTERNAL_BASE` | _(none)_ | Internal URL for Python→MediaMTX communication. |
+| `MEDIAMTX_API_BASE` | `http://localhost:9997` | MediaMTX Control API URL. |
+| `MEDIAMTX_RTSP_BASE` | `rtsp://mediamtx:8554` | Internal RTSP URL for floor audio transcription. |
+| `FLOOR_BOT_BASE` | `http://floor-bot:8080` | URL for the floor-bot container. |
+
 ## Jitsi Internal Auth Variables
 
 These variables set the passwords used internally between Jitsi components. **You must change these in any production deployment.**
