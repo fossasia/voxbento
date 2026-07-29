@@ -1,7 +1,6 @@
 /* ── Unified Error Pages (403 / 404 / 429 / 500) ───────────────
-   Light theme built on the design tokens defined in interpreter.css
-   (loaded globally by base.html). Colors use the --color-* tokens where
-   possible; the card drop shadow is a literal value. */
+   Built on design tokens from interpreter.css (loaded by base.html).
+   Dark mode is handled via prefers-color-scheme token overrides. */
 
 .error-container {
   display: flex;
@@ -23,10 +22,10 @@
   width: 100%;
   max-width: 500px;
   padding: 3rem;
-  background: var(--color-bg);
+  background: var(--color-surface);
   border: 1px solid var(--color-border);
   border-radius: var(--radius);
-  box-shadow: 0 1px 3px rgb(0 0 0 / 0.08);
+  box-shadow: var(--shadow-lightest);
 }
 
 .error-code {

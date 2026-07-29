@@ -19,6 +19,20 @@
   --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.1);
 }
 
+@media (prefers-color-scheme: dark) {
+  .login-page,
+  .account-card,
+  .portal-home-header {
+    --color-primary-hover: #7aa3ff;
+    --color-danger-hover: #fca5a5;
+    --color-surface: #1a1d26;
+    --color-live: #22c55e;
+    --color-offline: #6b7280;
+    --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.4);
+    --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.45);
+  }
+}
+
 /* ── Header (used on account.html) ──────────────────────────────────────── */
 
 .portal-home-header {
@@ -98,7 +112,7 @@
 .badge-coordinator { background: #fef3c7; color: #92400e; }
 .badge-listener { background: #e0e7ff; color: #4338ca; }
 .badge-event_admin { background: #fce7f3; color: #9d174d; }
-.badge-super_admin { background: #fecaca; color: #991b1b; }
+.badge-super_admin { background: var(--color-danger-soft, #fecaca); color: var(--color-danger, #991b1b); }
 
 .muted { color: var(--color-text-secondary); font-size: 0.875rem; }
 
@@ -109,22 +123,22 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  background-color: #eef2f6; /* soft gray-blue */
+  background-color: var(--color-bg, #eef2f6);
   padding: 20px;
 }
 .login-card {
   width: 100%;
   max-width: 420px;
   background: var(--color-surface);
-  border: 3px solid #0d0f10;
+  border: 3px solid var(--color-text);
   border-radius: 8px;
   padding: 40px 32px;
-  box-shadow: 8px 8px 0px #0d0f10;
+  box-shadow: 8px 8px 0px var(--color-text);
   transition: transform 0.2s ease, box-shadow 0.2s ease;
 }
 .login-card:hover {
   transform: translate(-2px, -2px);
-  box-shadow: 10px 10px 0px #0d0f10;
+  box-shadow: 10px 10px 0px var(--color-text);
 }
 .login-brand { text-align: center; margin-bottom: 28px; }
 .login-subtitle { font-size: 0.875rem; color: var(--color-text-secondary); display: block; margin-top: 4px; }
@@ -133,11 +147,11 @@
 .login-form input { 
   padding: 12px 14px; 
   font-size: 1rem; 
-  border: 2px solid #0d0f10; 
+  border: 2px solid var(--color-text); 
   border-radius: 6px; 
-  background-color: #ffffff;
-  color: #0d0f10;
-  box-shadow: 4px 4px 0px #0d0f10;
+  background-color: var(--color-surface);
+  color: var(--color-text);
+  box-shadow: 4px 4px 0px var(--color-text);
   transition: all 0.2s ease;
   font-family: inherit;
 }
@@ -150,9 +164,9 @@
 
 /* Brutalist Button Styles for Login/Register */
 .login-card .btn {
-  border: 2px solid #0d0f10;
+  border: 2px solid var(--color-text);
   border-radius: 6px;
-  box-shadow: 4px 4px 0px #0d0f10;
+  box-shadow: 4px 4px 0px var(--color-text);
   font-weight: 700;
   font-size: 1rem;
   padding: 12px 20px;
@@ -163,28 +177,28 @@
   margin-top: 10px;
 }
 .login-card .btn:active {
-  box-shadow: 0px 0px 0px #0d0f10;
+  box-shadow: 0px 0px 0px var(--color-text);
   transform: translate(4px, 4px);
 }
 .login-card .btn-primary {
   background: var(--color-primary);
   color: #ffffff;
-  border-color: #0d0f10;
+  border-color: var(--color-text);
 }
 .login-card .btn-primary:hover {
-  background: #1a69a4;
-  border-color: #0d0f10;
+  background: var(--color-primary-hover, #1a69a4);
+  border-color: var(--color-text);
   color: #ffffff;
 }
 .login-card .btn-outline {
-  background: #ffffff;
-  color: #0d0f10;
-  border-color: #0d0f10;
+  background: var(--color-surface);
+  color: var(--color-text);
+  border-color: var(--color-text);
 }
 .login-card .btn-outline:hover {
-  background: #f8f9fa;
-  color: #0d0f10;
-  border-color: #0d0f10;
+  background: var(--color-surface-muted, #f8f9fa);
+  color: var(--color-text);
+  border-color: var(--color-text);
 }
 .login-footer {
   display: flex;
@@ -196,7 +210,7 @@
   color: var(--color-text-secondary);
 }
 .login-footer a { color: var(--color-primary); }
-.alert-error { background: #fef2f2; color: var(--color-danger); border: 1px solid #fecaca; padding: 10px 14px; border-radius: var(--radius-sm); font-size: 0.875rem; margin-bottom: 8px; }
+.alert-error { background: var(--color-danger-soft, #fef2f2); color: var(--color-danger); border: 1px solid var(--color-danger-border, #fecaca); padding: 10px 14px; border-radius: var(--radius-sm); font-size: 0.875rem; margin-bottom: 8px; }
 .error-list { margin: 0; padding-left: 18px; text-align: left; }
 
 @media (max-width: 768px) {

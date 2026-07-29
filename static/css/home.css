@@ -10,22 +10,22 @@
 
 /* Brutalist aesthetics inherited from auth.css for landing page */
 .brutal-card {
-  background: #ffffff;
-  border: 3px solid #0d0f10;
+  background: var(--color-surface, #ffffff);
+  border: 3px solid var(--color-text, #0d0f10);
   border-radius: 8px;
-  box-shadow: 8px 8px 0px #0d0f10;
+  box-shadow: 8px 8px 0px var(--color-text, #0d0f10);
   transition: transform 0.2s ease, box-shadow 0.2s ease;
 }
 
 .brutal-card:hover {
   transform: translate(-2px, -2px);
-  box-shadow: 10px 10px 0px #0d0f10;
+  box-shadow: 10px 10px 0px var(--color-text, #0d0f10);
 }
 
 .brutal-btn {
-  border: 2px solid #0d0f10;
+  border: 2px solid var(--color-text, #0d0f10);
   border-radius: 6px;
-  box-shadow: 4px 4px 0px #0d0f10;
+  box-shadow: 4px 4px 0px var(--color-text, #0d0f10);
   font-weight: 800;
   padding: 12px 24px;
   transition: all 0.1s ease;
@@ -38,35 +38,35 @@
 }
 
 .brutal-btn:active {
-  box-shadow: 0px 0px 0px #0d0f10 !important;
+  box-shadow: 0px 0px 0px var(--color-text, #0d0f10) !important;
   transform: translate(4px, 4px) !important;
 }
 
 .brutal-btn-primary {
-  background: #2563eb;
+  background: var(--color-primary, #2563eb);
   color: #ffffff;
 }
 
 .brutal-btn-primary:hover {
-  background: #1d4ed8;
+  background: var(--color-primary-hover, #1d4ed8);
   color: #ffffff;
 }
 
 .brutal-btn-outline {
-  background: #ffffff;
-  color: #0d0f10;
+  background: var(--color-surface, #ffffff);
+  color: var(--color-text, #0d0f10);
 }
 
 .brutal-btn-outline:hover {
-  background: #f8f9fa;
+  background: var(--color-surface-muted, #f8f9fa);
 }
 
 .brutal-border {
-  border: 3px solid #0d0f10;
+  border: 3px solid var(--color-text, #0d0f10);
 }
 
 .brutal-shadow {
-  box-shadow: 8px 8px 0px #0d0f10;
+  box-shadow: 8px 8px 0px var(--color-text, #0d0f10);
 }
 /* Animated Flip Card (Uiverse style adapted for Brutalism) */
 .solution-card {
