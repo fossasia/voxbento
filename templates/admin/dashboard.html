@@ -2,17 +2,43 @@
 {% block title %}Dashboard{% endblock %}
 
 {% block content %}
-<div class="page-header">
-  <h1>Dashboard</h1>
-  <div class="system-health">
+{% set ns = namespace(events=event_data|length, live=0, booths=0) %}
+{% for ed in event_data %}
+  {% set ns.live = ns.live + ed.live_count %}
+  {% set ns.booths = ns.booths + ed.total_booths %}
+{% endfor %}
+
+<div class="hub-header">
+  <div>
+    <h1>Dashboard</h1>
+    <p>Manage your events, rooms and interpretation booths.</p>
   </div>
+  <a href="/admin/setup" class="btn btn-primary btn-lg">+ New event</a>
 </div>
 
 {% if not event_data %}
 <div class="empty-state">
-  <p>No events yet. <a href="/admin/events/">Create your first event</a> to get started.</p>
+  <div style="font-size:2.5rem; margin-bottom:8px;">🎧</div>
+  <h2 style="font-size:1.25rem; margin-bottom:6px;">Let's set up your first event</h2>
+  <p style="max-width:440px; margin:0 auto 20px;">Create an event, add rooms and language booths, and invite your team — all in a few guided steps.</p>
+  <a href="/admin/setup" class="btn btn-primary btn-lg">Create your first event &rarr;</a>
 </div>
 {% else %}
+<div class="stat-cards">
+  <div class="stat-card">
+    <div class="stat-num">{{ ns.events }}</div>
+    <div class="stat-name">Events</div>
+  </div>
+  <div class="stat-card">
+    <div class="stat-num">{{ ns.booths }}</div>
+    <div class="stat-name">Booths</div>
+  </div>
+  <div class="stat-card {{ 'accent' if ns.live else '' }}">
+    <div class="stat-num">{{ ns.live }}</div>
+    <div class="stat-name">Live now</div>
+  </div>
+</div>
+
 <div class="card-grid">
   {% for ed in event_data %}
   <div class="card event-card">
@@ -46,8 +72,9 @@
       </div>
       {% endif %}
     </div>
-    <div class="card-actions">
-      <a href="/admin/events/{{ ed.event.id }}/" class="btn btn-sm">Manage →</a>
+    <div class="card-actions" style="display:flex; gap:8px;">
+      <a href="/admin/events/{{ ed.event.id }}/" class="btn btn-sm">Manage</a>
+      <a href="/mission-control/{{ ed.event.slug }}/" class="btn btn-sm btn-primary">Mission Control</a>
     </div>
   </div>
   {% endfor %}

@@ -24,7 +24,7 @@ from portal.auth import (
     require_super_admin,
     require_user,
 )
-from portal.booth_identity import make_booth_id, make_mediamtx_path, validate_language_code
+from portal.booth_identity import make_booth_id, make_mediamtx_path, validate_event_slug, validate_language_code
 from portal.config import settings
 from portal.crypto import encrypt_val
 from portal.database import (
@@ -97,6 +97,36 @@ async def _send_admin_invite(session, user: User, role_name: str, context_name: 
 
 router = APIRouter()
 
+# Common languages offered in the guided setup wizard booth picker.
+COMMON_LANGUAGES: list[tuple[str, str]] = [
+    ("en", "English"),
+    ("es", "Spanish"),
+    ("fr", "French"),
+    ("de", "German"),
+    ("zh", "Chinese"),
+    ("ar", "Arabic"),
+    ("pt", "Portuguese"),
+    ("ru", "Russian"),
+    ("ja", "Japanese"),
+    ("hi", "Hindi"),
+    ("it", "Italian"),
+    ("ko", "Korean"),
+    ("nl", "Dutch"),
+    ("tr", "Turkish"),
+    ("pl", "Polish"),
+    ("uk", "Ukrainian"),
+    ("vi", "Vietnamese"),
+    ("id", "Indonesian"),
+    ("th", "Thai"),
+    ("sv", "Swedish"),
+]
+
+
+def _slugify(text: str) -> str:
+    """Derive a URL-safe event slug from free text."""
+    slug = re.sub(r"[^a-z0-9]+", "-", text.strip().lower())
+    return slug.strip("-")
+
 
 @router.get("/mission-control/")
 async def mission_control_list(request: Request, user=Depends(require_user), page: int = 1):
@@ -113,6 +143,8 @@ async def mission_control_list(request: Request, user=Depends(require_user), pag
         {
             "events": accessible_events,
             "is_super_admin": is_super_admin,
+            "is_event_owner": True,
+            "is_room_coordinator": True,
             "active_nav": "mission-control",
             "page": page,
             "total_pages": total_pages,
@@ -182,6 +214,9 @@ async def mission_control_grid(request: Request, event_slug: str, user=Depends(r
             "whip_base": settings.mediamtx_whip_base,
             "js_version": _JS_CACHE_BUST,
             "active_nav": "mission-control",
+            "is_super_admin": is_super_admin,
+            "is_event_owner": True,
+            "is_room_coordinator": True,
         },
     )
 
@@ -291,6 +326,182 @@ async def admin_create_event(request: Request):
     except Exception:
         return safe_redirect(url="/admin/events/", status_code=status.HTTP_303_SEE_OTHER)
     return safe_redirect(url="/admin/events/", status_code=status.HTTP_303_SEE_OTHER)
+
+
+# ---------------------------------------------------------------------------
+# Guided setup wizard: Event → Rooms → Booths → Invite
+# ---------------------------------------------------------------------------
+
+
+@router.get("/admin/setup", dependencies=[Depends(require_admin)])
+async def admin_setup_start(request: Request):
+    admin_flags = await get_admin_flags(request)
+    return templates.TemplateResponse(request, "admin/wizard_event.html", {**admin_flags})
+
+
+@router.post("/admin/setup", dependencies=[Depends(require_admin)])
+async def admin_setup_create_event(request: Request):
+    form = await request.form()
+    display_name = form.get("display_name", "").strip()
+    raw_slug = form.get("slug", "").strip()
+    if not display_name:
+        return templates.TemplateResponse(
+            request,
+            "admin/wizard_event.html",
+            {"error": "Please enter an event name.", "slug": raw_slug},
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+    candidate = raw_slug or _slugify(display_name)
+    try:
+        slug = validate_event_slug(candidate)
+    except ValueError:
+        return templates.TemplateResponse(
+            request,
+            "admin/wizard_event.html",
+            {
+                "error": "That URL slug isn't valid. Use lowercase letters, numbers and hyphens.",
+                "display_name": display_name,
+                "slug": candidate,
+            },
+            status_code=status.HTTP_400_BAD_REQUEST,
+        )
+    async with get_session() as session:
+        if await get_event_by_slug(session, slug) is not None:
+            return templates.TemplateResponse(
+                request,
+                "admin/wizard_event.html",
+                {
+                    "error": f"An event with the slug '{slug}' already exists. Choose another.",
+                    "display_name": display_name,
+                    "slug": slug,
+                },
+                status_code=status.HTTP_400_BAD_REQUEST,
+            )
+        event = await create_event(session, slug=slug, display_name=display_name)
+        event_id = event.id
+    return safe_redirect(url=f"/admin/events/{event_id}/setup/rooms", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@router.get("/admin/events/{event_id}/setup/rooms", dependencies=[Depends(require_admin)])
+async def admin_setup_rooms(request: Request, event_id: int):
+    admin_flags = await get_admin_flags(request, event_id=event_id)
+    async with get_session() as session:
+        event = await get_event_by_id(session, event_id)
+        if event is None:
+            raise HTTPException(status_code=404, detail="Event not found.")
+        rooms = await list_rooms_for_event(session, event_id)
+    return templates.TemplateResponse(request, "admin/wizard_rooms.html", {"event": event, "rooms": rooms, **admin_flags})
+
+
+@router.post("/admin/events/{event_id}/setup/rooms", dependencies=[Depends(require_admin)])
+async def admin_setup_add_room(request: Request, event_id: int):
+    form = await request.form()
+    display_name = form.get("display_name", "").strip()
+    if display_name:
+        async with get_session() as session:
+            ev = await get_event_by_id(session, event_id)
+            jitsi_url = None
+            if ev:
+                clean_name = re.sub("[^a-zA-Z0-9]+", "", display_name)
+                room_id_str = f"Voxbento-{ev.slug}-{clean_name}"
+                jitsi_url = _make_jitsi_url(settings.effective_jitsi_base_url, room_id_str)
+            await create_room(session, event_id=event_id, display_name=display_name, jitsi_url=jitsi_url)
+    return safe_redirect(url=f"/admin/events/{event_id}/setup/rooms", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@router.get("/admin/events/{event_id}/setup/booths", dependencies=[Depends(require_admin)])
+async def admin_setup_booths(request: Request, event_id: int):
+    admin_flags = await get_admin_flags(request, event_id=event_id)
+    async with get_session() as session:
+        event = await get_event_by_id(session, event_id)
+        if event is None:
+            raise HTTPException(status_code=404, detail="Event not found.")
+        rooms = await list_rooms_for_event(session, event_id)
+        booths_by_room = {room.id: await list_booths_for_room(session, room.id) for room in rooms}
+    return templates.TemplateResponse(
+        request,
+        "admin/wizard_booths.html",
+        {"event": event, "rooms": rooms, "booths_by_room": booths_by_room, "common_languages": COMMON_LANGUAGES, **admin_flags},
+    )
+
+
+@router.post("/admin/events/{event_id}/setup/booths", dependencies=[Depends(require_admin)])
+async def admin_setup_add_booth(request: Request, event_id: int):
+    form = await request.form()
+    room_id_str = form.get("room_id", "").strip()
+    language_code = form.get("language_code", "").strip().lower()
+    language_name = form.get("language_name", "").strip()
+    if room_id_str and language_code:
+        if not language_name:
+            lang = pycountry.languages.get(alpha_2=language_code)
+            language_name = lang.name if lang else language_code.upper()
+        try:
+            async with get_session() as session:
+                await create_booth(
+                    session,
+                    event_id=event_id,
+                    room_id=int(room_id_str),
+                    language_code=language_code,
+                    language_name=language_name,
+                )
+        except Exception as e:
+            logger.warning(f"Error creating booth in setup wizard: {e}")
+    return safe_redirect(url=f"/admin/events/{event_id}/setup/booths", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@router.get("/admin/events/{event_id}/setup/invite", dependencies=[Depends(require_admin)])
+async def admin_setup_invite(request: Request, event_id: int, success: str | None = None, error: str | None = None):
+    admin_flags = await get_admin_flags(request, event_id=event_id)
+    async with get_session() as session:
+        event = await get_event_by_id(session, event_id)
+        if event is None:
+            raise HTTPException(status_code=404, detail="Event not found.")
+        if not event.listener_join_code:
+            event.listener_join_code = "".join(secrets.choice("ABCDEFGHJKLMNPQRSTUVWXYZ23456789") for _ in range(6))
+            await session.flush()
+        memberships = await list_memberships_for_event(session, event_id)
+    return templates.TemplateResponse(
+        request,
+        "admin/wizard_invite.html",
+        {
+            "event": event,
+            "memberships": memberships,
+            "success": success,
+            "error": error,
+            "public_base_url": settings.public_base_url,
+            **admin_flags,
+        },
+    )
+
+
+@router.post("/admin/events/{event_id}/setup/invite", dependencies=[Depends(require_admin)])
+async def admin_setup_add_invite(request: Request, event_id: int):
+    form = await request.form()
+    email = form.get("email", "").strip()
+    role = form.get("role", "event_owner").strip() or "event_owner"
+    if email:
+        async with get_session() as session:
+            user = await get_user_by_email(session, email)
+            if not user:
+                user = await create_user(
+                    session, email=email, display_name=email.split("@")[0], email_verified=False
+                )
+            try:
+                await set_event_membership(session, user_id=user.id, event_id=event_id, role=role)
+            except ValueError:
+                return safe_redirect(
+                    url=f"/admin/events/{event_id}/setup/invite?error=invalid_role",
+                    status_code=status.HTTP_303_SEE_OTHER,
+                )
+            event = await get_event_by_id(session, event_id)
+            if event:
+                try:
+                    await _send_admin_invite(session, user, role, f"event {event.display_name}", "/account")
+                except Exception as e:
+                    logger.warning(f"Failed to send setup invite email to {email}: {e}")
+    return safe_redirect(
+        url=f"/admin/events/{event_id}/setup/invite?success=invite_sent", status_code=status.HTTP_303_SEE_OTHER
+    )
 
 
 @router.post("/admin/events/{event_id}/regenerate_join_code/", dependencies=[Depends(require_admin)])
@@ -1105,7 +1316,7 @@ async def admin_user_list(request: Request, page: int = 1):
         users = await list_users(session, limit=limit, offset=offset)
     total_pages = max(1, math.ceil(total_users / limit))
     return templates.TemplateResponse(
-        request, "admin/user_list.html", {"users": users, "page": page, "total_pages": total_pages}
+        request, "admin/user_list.html", {"users": users, "page": page, "total_pages": total_pages, "is_super_admin": True, "is_event_owner": True, "is_room_coordinator": True}
     )
 
 
@@ -1135,7 +1346,7 @@ async def admin_user_detail(request: Request, user_id: int):
         memberships = await list_memberships_for_user(session, user_id)
         event_owner_map = {m.event_id: m for m in memberships if m.role == "event_owner"}
     return templates.TemplateResponse(
-        request, "admin/user_detail.html", {"user_detail": user, "events": events, "event_owner_map": event_owner_map}
+        request, "admin/user_detail.html", {"user_detail": user, "events": events, "event_owner_map": event_owner_map, "is_super_admin": True, "is_event_owner": True, "is_room_coordinator": True}
     )
 
 

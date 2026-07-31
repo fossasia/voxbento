@@ -1,0 +1,66 @@
+{% extends "admin/base.html" %}
+{% block title %}Add language booths — Setup{% endblock %}
+
+{% block content %}
+<div class="wizard">
+  {% set step = 3 %}
+  {% include "admin/wizard_steps.html" %}
+
+  <div class="wizard-card">
+    <h2>Add language booths</h2>
+    <p class="wizard-sub">A booth is one interpretation channel for a language. Add a booth for each language you'll interpret into.</p>
+
+    {% if rooms %}
+    <form method="post" action="/admin/events/{{ event.id }}/setup/booths">
+      <div class="field-row" style="align-items:end;">
+        <div class="field" style="margin-bottom:0;">
+          <label for="room_id">Room</label>
+          <select id="room_id" name="room_id" required>
+            {% for room in rooms %}
+            <option value="{{ room.id }}">{{ room.display_name }}</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="field" style="margin-bottom:0;">
+          <label for="language_code">Language</label>
+          <select id="language_code" name="language_code" required>
+            {% for code, name in common_languages %}
+            <option value="{{ code }}">{{ name }} ({{ code }})</option>
+            {% endfor %}
+          </select>
+        </div>
+        <div class="field" style="margin-bottom:0;">
+          <button type="submit" class="btn btn-primary" style="min-height:42px;">Add booth</button>
+        </div>
+      </div>
+    </form>
+
+    {% set ns = namespace(total=0) %}
+    {% for room in rooms %}
+      {% set rbooths = booths_by_room.get(room.id, []) %}
+      {% if rbooths %}
+        {% set ns.total = ns.total + rbooths|length %}
+        <div style="margin-top:18px;">
+          <div class="text-secondary" style="font-weight:600; font-size:0.75rem; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:6px;">{{ room.display_name }}</div>
+          <ul class="mini-list">
+            {% for b in rbooths %}
+            <li><span>🎧 &nbsp;{{ b.language_name }} &nbsp;<code>{{ b.language_code }}</code></span></li>
+            {% endfor %}
+          </ul>
+        </div>
+      {% endif %}
+    {% endfor %}
+    {% if ns.total == 0 %}
+    <p class="text-secondary" style="margin-top:14px;">No booths yet — add at least one to continue.</p>
+    {% endif %}
+    {% else %}
+    <div class="alert alert-warning">You need a room first. <a href="/admin/events/{{ event.id }}/setup/rooms">Go back and add a room</a>.</div>
+    {% endif %}
+
+    <div class="wizard-actions">
+      <a href="/admin/events/{{ event.id }}/setup/rooms" class="btn">&larr; Back</a>
+      <a href="/admin/events/{{ event.id }}/setup/invite" class="btn btn-primary btn-lg">Continue &rarr;</a>
+    </div>
+  </div>
+</div>
+{% endblock %}

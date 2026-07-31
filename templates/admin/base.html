@@ -9,16 +9,23 @@
     {% block head %}{% endblock %}
   </head>
   <body>
+    {% set _path = request.url.path %}
     <header class="admin-header">
       <div class="header-left">
-        <a class="brand" href="/admin/"><img src="{{ url_for('static', path='img/wordmark.png') }}" alt="Voxbento" style="height: 32px; vertical-align: middle;" /></a>
-        <span class="header-badge">Admin</span>
+        <a class="brand" href="/admin/">VoxBento</a>
+        <span class="header-badge">Console</span>
       </div>
       <nav class="header-nav">
-        <a href="/admin/">Dashboard</a>
-        <a href="/admin/events/">Events</a>
-        <a href="/admin/users/">Users</a>
+        <a href="/admin/" class="{{ 'is-active' if _path == '/admin/' else '' }}">Dashboard</a>
+        <a href="/admin/events/" class="{{ 'is-active' if _path.startswith('/admin/events') or _path.startswith('/admin/setup') else '' }}">Events</a>
+        {% if is_super_admin|default(false) or is_event_owner|default(false) or is_room_coordinator|default(false) %}
+        <a href="/mission-control/" class="{{ 'is-active' if _path.startswith('/mission-control') else '' }}">Mission Control</a>
+        {% endif %}
+        {% if is_super_admin|default(false) %}
+        <a href="/admin/users/" class="{{ 'is-active' if _path.startswith('/admin/users') else '' }}">Users</a>
+        {% endif %}
         <a href="/" target="_blank">Portal Home</a>
+        <a href="/admin/setup" class="btn btn-sm btn-primary">+ New event</a>
         <a href="/admin/logout" class="nav-logout">Logout</a>
       </nav>
     </header>
@@ -33,7 +40,7 @@
     <div id="custom-confirm-modal" class="custom-modal-overlay" style="display: none;">
       <div class="custom-modal">
         <div class="custom-modal-header" style="margin-bottom: 1rem;">
-          <img src="{{ url_for('static', path='img/wordmark.png') }}" alt="Voxbento" style="height: 24px; vertical-align: middle;" />
+          <span style="font-size: 1.2rem; font-weight: 800; color: var(--color-primary);">VoxBento</span>
         </div>
         <div class="custom-modal-body">
           <p id="custom-confirm-message" style="margin-bottom: 1rem; font-weight: 500;"></p>

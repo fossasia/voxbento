@@ -11,67 +11,83 @@
 
 {% block content %}
 <div class="page-header">
-  <h1>{{ event.display_name }}</h1>
-  <div class="header-meta">
-    <span class="badge badge-slug">{{ event.slug }}</span>
-    <span class="meta-text">Created {{ event.created_at.strftime('%Y-%m-%d') if event.created_at else '—' }}</span>
-    {% if live_count > 0 %}
-    <span class="status-live">● {{ live_count }} booth{{ 's' if live_count != 1 else '' }} live</span>
-    {% else %}
-    <span class="status-offline">○ No booths live</span>
-    {% endif %}
+  <div>
+    <h1>{{ event.display_name }}</h1>
+    <div class="header-meta" style="margin-top:6px;">
+      <span class="badge badge-slug">{{ event.slug }}</span>
+      <span class="meta-text">Created {{ event.created_at.strftime('%Y-%m-%d') if event.created_at else '—' }}</span>
+      {% if live_count > 0 %}
+      <span class="status-live">● {{ live_count }} booth{{ 's' if live_count != 1 else '' }} live</span>
+      {% else %}
+      <span class="status-offline">○ No booths live</span>
+      {% endif %}
+    </div>
   </div>
-  <div style="margin-top: 1rem;">
-    <a href="/mission-control/{{ event.slug }}/" class="btn btn-success">Open Mission Control</a>
-  </div>
+  <a href="/mission-control/{{ event.slug }}/" class="btn btn-primary btn-lg">Open Mission Control &rarr;</a>
 </div>
 
-<div class="section-grid">
-  <!-- Members section -->
+<!-- Quick actions -->
+<div class="tile-grid" style="margin-bottom:28px;">
+  <a href="/admin/events/{{ event.id }}/rooms/" class="tile">
+    <span class="tile-icon">🏛️</span>
+    <span class="tile-title">Rooms &amp; booths</span>
+    <span class="tile-desc">{{ rooms|length }} room{{ 's' if rooms|length != 1 else '' }} · {{ booths|length }} booth{{ 's' if booths|length != 1 else '' }}</span>
+  </a>
   {% if is_event_owner %}
-  <div class="section-card">
-    <div class="section-header">
-      <h2>Members</h2>
-      <a href="/admin/events/{{ event.id }}/members/" class="btn btn-sm btn-primary">Manage Members</a>
-    </div>
-    <p class="muted">Assign per-event roles to registered users.</p>
-  </div>
+  <a href="/admin/events/{{ event.id }}/members/" class="tile">
+    <span class="tile-icon">👥</span>
+    <span class="tile-title">Team &amp; roles</span>
+    <span class="tile-desc">Invite owners and coordinators</span>
+  </a>
+  <a href="/admin/events/{{ event.id }}/api-settings/" class="tile">
+    <span class="tile-icon">🔑</span>
+    <span class="tile-title">API keys</span>
+    <span class="tile-desc">Transcription &amp; translation providers</span>
+  </a>
   {% endif %}
+  <a href="/admin/events/{{ event.id }}/setup/rooms" class="tile">
+    <span class="tile-icon">🧭</span>
+    <span class="tile-title">Guided setup</span>
+    <span class="tile-desc">Resume the step-by-step wizard</span>
+  </a>
+</div>
 
-  <!-- Listener Access -->
-  {% if is_event_owner %}
-  <div class="section-card">
-    <div class="section-header">
-      <h2>Listener Access</h2>
-    </div>
+{% if is_event_owner %}
+<!-- Listener Access -->
+<div class="section-card" style="margin-bottom:20px;">
+  <div class="section-header">
+    <h2>Listener access</h2>
     {% if event.listener_join_code %}
-    <div style="background: var(--bg-card); padding: 1rem; border-radius: var(--radius-md); border: 1px solid var(--border-color); display: flex; align-items: center; justify-content: space-between;">
-      <div>
-        <p style="margin: 0; font-weight: 500; font-size: 1.25rem; letter-spacing: 2px;">{{ event.listener_join_code }}</p>
-        <p class="muted" style="margin: 0.25rem 0 0 0; font-size: 0.875rem;">Share this code with listeners, or provide them with this link:</p>
-        <a href="/listener/{{ event.slug }}?code={{ event.listener_join_code }}" target="_blank" class="link-external" style="display: inline-block; margin-top: 0.5rem;">
-          /listener/{{ event.slug }}?code={{ event.listener_join_code }}
-        </a>
-      </div>
-      <form method="post" action="/admin/events/{{ event.id }}/regenerate_join_code/" data-confirm="Regenerate join code? This will invalidate the previous code.">
-        <button type="submit" class="btn btn-sm btn-outline">Regenerate</button>
-      </form>
-    </div>
-    {% else %}
-    <p class="muted">No join code set for this event.</p>
-    <form method="post" action="/admin/events/{{ event.id }}/regenerate_join_code/">
-      <button type="submit" class="btn btn-sm btn-primary">Generate Join Code</button>
+    <form method="post" action="/admin/events/{{ event.id }}/regenerate_join_code/" data-confirm="Regenerate join code? This will invalidate the previous code.">
+      <button type="submit" class="btn btn-sm btn-outline">Regenerate</button>
     </form>
     {% endif %}
   </div>
+  {% if event.listener_join_code %}
+  <div style="display:flex; gap:16px; align-items:center; flex-wrap:wrap;">
+    <span class="join-code">{{ event.listener_join_code }}</span>
+    <div class="copy-field" style="flex:1; min-width:260px;">
+      <input type="text" readonly aria-label="Listener link"
+             value="/listener/{{ event.slug }}?code={{ event.listener_join_code }}" onclick="this.select()" />
+      <a href="/listener/{{ event.slug }}?code={{ event.listener_join_code }}" target="_blank" class="btn btn-sm">Open ↗</a>
+    </div>
+  </div>
+  {% else %}
+  <p class="muted" style="margin-bottom:12px;">No join code yet. Generate one to let listeners in.</p>
+  <form method="post" action="/admin/events/{{ event.id }}/regenerate_join_code/">
+    <button type="submit" class="btn btn-sm btn-primary">Generate join code</button>
+  </form>
   {% endif %}
+</div>
+{% endif %}
 
+<div class="section-grid">
   <!-- Rooms section -->
   <div class="section-card">
     <div class="section-header">
       <h2>Rooms ({{ rooms|length }})</h2>
       {% if is_event_owner %}
-      <a href="/admin/events/{{ event.id }}/rooms/" class="btn btn-sm">Manage Rooms</a>
+      <a href="/admin/events/{{ event.id }}/rooms/" class="btn btn-sm">Manage rooms</a>
       {% endif %}
     </div>
     {% if rooms %}
@@ -83,7 +99,7 @@
       {% endfor %}
     </ul>
     {% else %}
-    <p class="muted">No rooms yet. <a href="/admin/events/{{ event.id }}/rooms/">Add one</a>.</p>
+    <p class="muted">No rooms yet. <a href="/admin/events/{{ event.id }}/setup/rooms">Add one</a>.</p>
     {% endif %}
   </div>
 
@@ -128,20 +144,12 @@
       </tbody>
     </table>
     {% else %}
-    <p class="muted">No booths configured. Add rooms first, then create booths.</p>
+    <p class="muted">No booths configured. <a href="/admin/events/{{ event.id }}/setup/booths">Add booths</a>.</p>
     {% endif %}
   </div>
 </div>
 
 {% if is_event_owner %}
-<div class="section-card">
-  <div class="section-header">
-    <h2>Global API Integrations</h2>
-    <a href="/admin/events/{{ event.id }}/api-settings/" class="btn btn-sm btn-primary">Manage API Settings</a>
-  </div>
-  <p class="muted">Configure third-party transcription provider API keys for this event. These keys are securely stored and can be selected by booths.</p>
-</div>
-
 <div class="danger-zone">
   <h3>Danger Zone</h3>
   <form method="post" action="/admin/events/{{ event.id }}/delete" class="inline-delete"
