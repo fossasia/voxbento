@@ -18,6 +18,17 @@ if str(ROOT) not in sys.path:
 pytest_plugins = ("anyio",)
 
 
+@pytest.fixture(autouse=True)
+def _reset_shared_http_client():
+    """Ensure the shared httpx client is reset between tests so a stale client
+    bound to a closed event loop never poisons subsequent tests."""
+    import portal.globals as pg
+
+    pg.shared_http_client = None
+    yield
+    pg.shared_http_client = None
+
+
 @pytest.fixture(params=["asyncio"])
 def anyio_backend(request):
     return request.param
