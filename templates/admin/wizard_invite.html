@@ -1,0 +1,58 @@
+{% extends "admin/base.html" %}
+{% block title %}Invite your team — Setup{% endblock %}
+
+{% block content %}
+<div class="wizard">
+  {% set step = 4 %}
+  {% include "admin/wizard_steps.html" %}
+
+  <div class="wizard-card">
+    <h2>Invite your team &amp; share access</h2>
+    <p class="wizard-sub">Invite the people who'll help run <strong>{{ event.display_name }}</strong>, and share the listener code with your audience.</p>
+
+    {% if success == 'invite_sent' %}<div class="alert alert-success">Invitation sent.</div>{% endif %}
+    {% if error == 'invalid_role' %}<div class="alert alert-danger">That role isn't valid.</div>{% endif %}
+
+    <h3 style="font-size:1rem; margin-bottom:10px;">Event owners</h3>
+    <form method="post" action="/admin/events/{{ event.id }}/setup/invite">
+      <div class="field-row" style="align-items:end;">
+        <div class="field" style="margin-bottom:0;">
+          <label for="email">Email address</label>
+          <input type="email" id="email" name="email" placeholder="colleague@example.com" required />
+        </div>
+        <input type="hidden" name="role" value="event_owner" />
+        <div class="field" style="margin-bottom:0;">
+          <button type="submit" class="btn btn-primary" style="min-height:42px;">Send invite</button>
+        </div>
+      </div>
+    </form>
+
+    {% if memberships %}
+    <ul class="mini-list">
+      {% for m in memberships %}
+      <li>
+        <span>✉️ &nbsp;{{ m.user.email }}</span>
+        <span class="badge badge-role badge-event_owner">{{ m.role }}</span>
+      </li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+
+    <h3 style="font-size:1rem; margin:26px 0 6px;">Listener access</h3>
+    <p class="text-secondary" style="margin-bottom:12px;">Share this code or link so your audience can listen in.</p>
+    <div style="display:flex; gap:16px; align-items:center; flex-wrap:wrap;">
+      <span class="join-code">{{ event.listener_join_code }}</span>
+      <div class="copy-field" style="flex:1; min-width:260px;">
+        <input type="text" readonly aria-label="Listener link"
+               value="{{ public_base_url }}/listener/{{ event.slug }}?code={{ event.listener_join_code }}"
+               onclick="this.select()" />
+      </div>
+    </div>
+
+    <div class="wizard-actions">
+      <a href="/admin/events/{{ event.id }}/setup/booths" class="btn">&larr; Back</a>
+      <a href="/admin/events/{{ event.id }}/" class="btn btn-primary btn-lg">Finish setup ✓</a>
+    </div>
+  </div>
+</div>
+{% endblock %}

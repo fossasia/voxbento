@@ -1,0 +1,38 @@
+{% extends "admin/base.html" %}
+{% block title %}Add rooms — Setup{% endblock %}
+
+{% block content %}
+<div class="wizard">
+  {% set step = 2 %}
+  {% include "admin/wizard_steps.html" %}
+
+  <div class="wizard-card">
+    <h2>Add rooms</h2>
+    <p class="wizard-sub">Rooms are the spaces at <strong>{{ event.display_name }}</strong> — like “Main Hall” or “Track A”. Each room can host multiple language booths.</p>
+
+    <form method="post" action="/admin/events/{{ event.id }}/setup/rooms" class="inline-form">
+      <input type="text" name="display_name" placeholder="Room name (e.g. Main Hall)" required style="flex:1;" autofocus />
+      <button type="submit" class="btn btn-primary">Add room</button>
+    </form>
+
+    {% if rooms %}
+    <ul class="mini-list">
+      {% for room in rooms %}
+      <li><span>🏛️ &nbsp;{{ room.display_name }}</span></li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p class="text-secondary" style="margin-top:14px;">No rooms yet — add at least one to continue.</p>
+    {% endif %}
+
+    <div class="wizard-actions">
+      <a href="/admin/setup" class="btn">&larr; Back</a>
+      {% if rooms %}
+      <a href="/admin/events/{{ event.id }}/setup/booths" class="btn btn-primary btn-lg">Continue &rarr;</a>
+      {% else %}
+      <span class="btn btn-primary btn-lg" style="opacity:0.5; pointer-events:none;">Continue &rarr;</span>
+      {% endif %}
+    </div>
+  </div>
+</div>
+{% endblock %}

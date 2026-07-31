@@ -5,13 +5,9 @@ import logging
 from dataclasses import dataclass
 
 from fastapi import WebSocket
-from sqlalchemy import select
 
 from portal.auth import can_perform_role
-from portal.booth_identity import parse_booth_id
-from portal.database import get_session as get_db_session
 from portal.globals import booths
-from portal.models import DBBooth, Event, Room
 
 
 @dataclass
@@ -185,19 +181,11 @@ async def _handle_join(ws: WebSocket, session: Session, data: dict) -> None:
     session.participant_id = participant.participant_id
     session.language = language
     session.channel_id = channel_id
-    if not state.get("broadcast_unlocked"):
-        try:
-            _slug, _lang = parse_booth_id(session.booth_id)
-            async with get_db_session() as _db:
-                _db_booth = await _db.scalar(
-                    select(DBBooth).join(Event).where(Event.slug == _slug, DBBooth.language_code == _lang)
-                )
-                if _db_booth and _db_booth.broadcast_unlocked:
-                    state = await booths.set_broadcast_unlocked(session.booth_id, True, language, channel_id)
-        except Exception as e:
-            import logging
-
-            logging.getLogger(__name__).warning(f"Failed to set broadcast unlocked: {e}")
+    # Broadcast on/off is a live, in-memory state owned exclusively by Mission
+    # Control (the Go Live / Stop toggle). Joining or reloading the booth must
+    # never change it, so we deliberately do NOT re-apply any persisted value
+    # here — doing so would flip an interpreter live (or Mission Control to
+    # "Stop") simply because they reconnected.
     await ws.send_text(
         json.dumps({"type": "booth:joined", "participant_id": participant.participant_id, "state": state})
     )
@@ -279,23 +267,19 @@ async def _handle_set_broadcast_unlocked(ws: WebSocket, session: Session, data: 
         return
     unlocked = bool(data.get("unlocked"))
     try:
-        event_slug, language_code = parse_booth_id(session.booth_id)
-        async with get_db_session() as db:
-            stmt = (
-                select(DBBooth)
-                .join(Room)
-                .join(Event)
-                .where(Event.slug == event_slug, DBBooth.language_code == language_code)
-            )
-            result = await db.execute(stmt)
-            db_booth = result.scalar_one_or_none()
-            if db_booth:
-                db_booth.broadcast_unlocked = unlocked
-                await db.commit()
-    except Exception as e:
-        logging.getLogger(__name__).error(f"Error persisting broadcast lock: {e}")
-    try:
         state = await booths.set_broadcast_unlocked(session.booth_id, unlocked, session.language, session.channel_id)
+        # Locking the booth must immediately stop everything tied to it: the
+        # transcription worker (which pulls audio independently of any browser)
+        # is torn down here so captions stop even if the interpreter's client is
+        # unresponsive. Publisher mic/ingest state is already reset inside
+        # set_broadcast_unlocked.
+        if not unlocked:
+            try:
+                from portal.transcription.worker import stop_transcription_worker
+
+                await stop_transcription_worker(session.booth_id)
+            except Exception as e:
+                logging.getLogger(__name__).warning(f"Failed to stop transcription on lock: {e}")
         await manager.broadcast(session.booth_id, {"type": "booth:state", "state": state})
         await listener_manager.broadcast(session.booth_id, {"type": "booth:state", "state": state})
     except Exception as exc:

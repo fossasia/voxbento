@@ -8,18 +8,25 @@
 {% endblock %}
 
 {% block content %}
-<div class="page-header">
-  <h1>Events</h1>
+<div class="toolbar">
+  <div>
+    <h1 style="font-size:1.6rem; font-weight:800; letter-spacing:-0.02em;">Events</h1>
+    <p class="text-secondary">Everything you host lives here.</p>
+  </div>
+  <a href="/admin/setup" class="btn btn-primary">+ New event</a>
 </div>
 
-<div class="form-card">
-  <h3>Create Event</h3>
-  <form method="post" action="/admin/events/" class="inline-form">
-    <input type="text" name="slug" placeholder="event-slug" required pattern="^[a-z0-9]+(-[a-z0-9]+)*$" title="Lowercase letters, numbers, hyphens only" />
-    <input type="text" name="display_name" placeholder="Display Name" required />
-    <button type="submit" class="btn btn-primary">Create</button>
-  </form>
-</div>
+<details class="create-panel">
+  <summary>Quick create (advanced)</summary>
+  <div class="create-body">
+    <p class="text-secondary" style="margin-bottom:14px; font-size:0.85rem;">Prefer a guided walkthrough? Use <a href="/admin/setup">New event</a> instead.</p>
+    <form method="post" action="/admin/events/" class="inline-form">
+      <input type="text" name="slug" placeholder="event-slug" required pattern="^[a-z0-9]+(-[a-z0-9]+)*$" title="Lowercase letters, numbers, hyphens only" />
+      <input type="text" name="display_name" placeholder="Display Name" required />
+      <button type="submit" class="btn btn-primary">Create</button>
+    </form>
+  </div>
+</details>
 
 {% if events %}
 <table class="data-table">
@@ -51,7 +58,10 @@
   {% include 'admin/pagination.html' %}
 {% else %}
 <div class="empty-state">
-  <p>No events created yet. Use the form above to create one.</p>
+  <div style="font-size:2.5rem; margin-bottom:8px;">🎧</div>
+  <h2 style="font-size:1.2rem; margin-bottom:6px;">No events yet</h2>
+  <p style="margin-bottom:20px;">Create your first event in a few guided steps.</p>
+  <a href="/admin/setup" class="btn btn-primary btn-lg">Create your first event &rarr;</a>
 </div>
 {% endif %}
 {% endblock %}

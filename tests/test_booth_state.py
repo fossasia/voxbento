@@ -68,6 +68,30 @@ async def test_active_interpreter_can_pass_relay_and_old_publisher_is_cleared():
 
 
 @pytest.mark.anyio
+async def test_locking_broadcast_stops_active_publisher():
+    """Mission Control 'Stop' (lock) must force the active publisher offline."""
+    registry = BoothRegistry()
+    interpreter = await join(registry, "Interpreter A")
+    await registry.set_broadcast_unlocked("hall-a-fr", True, "French", "hall-a-fr-audio")
+    await registry.update_participant_state(
+        "hall-a-fr",
+        interpreter.participant_id,
+        "French",
+        "hall-a-fr-audio",
+        mic_active=True,
+        ingest_connected=True,
+    )
+
+    state = await registry.set_broadcast_unlocked("hall-a-fr", False, "French", "hall-a-fr-audio")
+
+    participants = {p["participant_id"]: p for p in state["participants"]}
+    assert state["broadcast_unlocked"] is False
+    assert state["ingest_status"] == "disconnected"
+    assert participants[interpreter.participant_id]["mic_active"] is False
+    assert participants[interpreter.participant_id]["ingest_connected"] is False
+
+
+@pytest.mark.anyio
 async def test_standby_interpreter_cannot_reassign_another_interpreter():
     registry = BoothRegistry()
     await join(registry, "Interpreter A")

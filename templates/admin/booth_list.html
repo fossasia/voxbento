@@ -14,19 +14,20 @@
 
 {% block content %}
 <div class="page-header">
-  <h1>Booths — {{ room.display_name }}</h1>
-  <div class="header-meta">
-    <span class="meta-text">Event: {{ event.display_name }}</span>
+  <div>
+    <h1>Booths</h1>
+    <p class="text-secondary">{{ room.display_name }} · {{ event.display_name }}</p>
   </div>
 </div>
 
 <div class="form-card">
-  <h3>Add Interpretation Booth</h3>
+  <h3>Add an interpretation booth</h3>
+  <p class="form-card-hint">Each booth is one language channel. Use a two-letter code (ISO 639-1), e.g. <code>en</code>, <code>fr</code>, <code>zh</code>.</p>
   <form method="post" action="/admin/events/{{ event.id }}/rooms/{{ room.id }}/booths/" class="inline-form">
-    <input type="text" name="language_code" placeholder="Language code (e.g. en, fr, zh)" required
-           pattern="^[a-z]{2}$" maxlength="2" title="Two-letter ISO 639-1 code" />
-    <input type="text" name="language_name" placeholder="Language name (e.g. English, French)" required />
-    <button type="submit" class="btn btn-primary">Add Booth</button>
+    <input type="text" name="language_code" placeholder="Code (e.g. en)" required
+           pattern="^[a-z]{2}$" maxlength="2" title="Two-letter ISO 639-1 code" style="min-width:140px;" />
+    <input type="text" name="language_name" placeholder="Language name (e.g. English)" required style="flex:1;" />
+    <button type="submit" class="btn btn-primary">Add booth</button>
   </form>
 </div>
 
@@ -78,7 +79,8 @@
 </table>
 {% else %}
 <div class="empty-state">
-  <p>No booths in this room. Use the form above to add one.</p>
+  <div style="font-size:2rem; margin-bottom:8px;">🎧</div>
+  <p>No booths in this room. Add one above to get started.</p>
 </div>
 {% endif %}
 {% endblock %}

@@ -1,0 +1,43 @@
+{% extends "admin/base.html" %}
+{% block title %}Create event — Setup{% endblock %}
+
+{% block content %}
+<div class="wizard">
+  {% set step = 1 %}
+  {% set event = None %}
+  {% include "admin/wizard_steps.html" %}
+
+  <div class="wizard-card">
+    <h2>Create your event</h2>
+    <p class="wizard-sub">Give your event a name. We'll walk you through rooms, language booths and invites next.</p>
+
+    {% if error %}<div class="alert alert-danger">{{ error }}</div>{% endif %}
+
+    <form method="post" action="/admin/setup">
+      <div class="field">
+        <label for="display_name">Event name</label>
+        <input type="text" id="display_name" name="display_name" placeholder="e.g. PyCon 2026"
+               value="{{ display_name|default('', true) }}" required autofocus />
+        <span class="hint">This is what interpreters and listeners will see.</span>
+      </div>
+
+      <details class="create-panel" style="box-shadow:none;" {% if slug %}open{% endif %}>
+        <summary>Advanced — customise the URL slug</summary>
+        <div class="create-body">
+          <div class="field" style="margin-bottom:0;">
+            <label for="slug">URL slug</label>
+            <input type="text" id="slug" name="slug" placeholder="auto-generated from the name"
+                   value="{{ slug|default('', true) }}" pattern="^[a-z0-9]+(-[a-z0-9]+)*$" />
+            <span class="hint">Used in links like <code>/listener/your-slug</code>. Lowercase letters, numbers and hyphens only. Leave blank to auto-generate.</span>
+          </div>
+        </div>
+      </details>
+
+      <div class="wizard-actions">
+        <a href="/admin/" class="btn">Cancel</a>
+        <button type="submit" class="btn btn-primary btn-lg">Continue &rarr;</button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}

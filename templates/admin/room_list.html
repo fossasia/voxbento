@@ -12,14 +12,18 @@
 
 {% block content %}
 <div class="page-header">
-  <h1>Rooms — {{ event.display_name }}</h1>
+  <div>
+    <h1>Rooms</h1>
+    <p class="text-secondary">{{ event.display_name }}</p>
+  </div>
 </div>
 
 <div class="form-card">
-  <h3>Add Room</h3>
+  <h3>Add a room</h3>
+  <p class="form-card-hint">Rooms are the spaces at your event (e.g. “Main Hall”). Each room can host multiple language booths.</p>
   <form method="post" action="/admin/events/{{ event.id }}/rooms/" class="inline-form">
-    <input type="text" name="display_name" placeholder="Room name (e.g. Main Hall)" required />
-    <button type="submit" class="btn btn-primary">Add Room</button>
+    <input type="text" name="display_name" placeholder="Room name (e.g. Main Hall)" required style="flex:1;" />
+    <button type="submit" class="btn btn-primary">Add room</button>
   </form>
 </div>
 
@@ -53,7 +57,8 @@
 </table>
 {% else %}
 <div class="empty-state">
-  <p>No rooms created yet. Use the form above to add one.</p>
+  <div style="font-size:2rem; margin-bottom:8px;">🏛️</div>
+  <p>No rooms yet. Add one above to get started.</p>
 </div>
 {% endif %}
 {% endblock %}
