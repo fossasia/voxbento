@@ -193,7 +193,7 @@ class TestDashboard:
         async with _client() as c:
             resp = await c.get("/admin/", cookies=admin_cookie)
         assert resp.status_code == 200
-        assert b"No events yet" in resp.content
+        assert b"set up your first event" in resp.content
 
     @pytest.mark.anyio
     async def test_dashboard_shows_events(self, admin_cookie, seed_event):

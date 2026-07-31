@@ -554,7 +554,7 @@ class TestEventDetailMembersLink:
         async with _client() as c:
             resp = await c.get(f"/admin/events/{event.id}/", cookies=admin_cookie)
         assert resp.status_code == 200
-        assert b"Manage Members" in resp.content
+        assert b"Team &amp; roles" in resp.content
         assert f"/admin/events/{event.id}/members/".encode() in resp.content
 
 
