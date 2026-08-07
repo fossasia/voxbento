@@ -55,9 +55,6 @@ function initCustomModal() {
   function closeModal() {
     modalOverlay.classList.remove('active');
     pendingForm = null;
-    setTimeout(() => {
-      modalOverlay.style.display = 'none';
-    }, 200);
   }
 
   function openModal(message, formElement) {
@@ -65,9 +62,8 @@ function initCustomModal() {
     const randomFunny = FUNNY_WARNINGS[Math.floor(Math.random() * FUNNY_WARNINGS.length)];
     funnyEl.textContent = randomFunny;
     pendingForm = formElement;
-    
-    modalOverlay.style.display = 'flex';
-    // Force reflow
+
+    // Force reflow before activating so the CSS transition plays
     void modalOverlay.offsetWidth;
     modalOverlay.classList.add('active');
   }
