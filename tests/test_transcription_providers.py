@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from urllib.parse import urlparse
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
@@ -54,7 +55,8 @@ class TestTranscriptionProviders:
 
             mock_client.post.assert_called_once()
             call_args = mock_client.post.call_args
-            assert "api.openai.com" in call_args[0][0]
+            parsed_url = urlparse(call_args[0][0])
+            assert parsed_url.hostname == "api.openai.com"
         finally:
             pg.shared_http_client = None
 
