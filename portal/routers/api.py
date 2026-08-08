@@ -8,9 +8,9 @@ from sqlalchemy.orm import selectinload
 from portal.auth import create_listener_token, security
 from portal.booth_identity import make_booth_id, make_mediamtx_path
 from portal.config import settings
-from portal.database import get_session, log_usage_metric, verify_api_key
+from portal.database import create_invite_token, get_session, log_usage_metric, verify_api_key
 from portal.globals import booths
-from portal.models import DBBooth, Event
+from portal.models import DBBooth, Event, Room
 from portal.rate_limit import check_rate_limit
 from portal.schemas.booth import CreateBoothRequest
 from portal.transcription import ProviderConfig, ProviderEnum, get_api_key
@@ -71,6 +71,54 @@ async def create_event_booth(
     await _ensure_mediamtx_path(mediamtx_path)
     state["whip_url"] = f"{settings.mediamtx_whip_base}/{mediamtx_path}/whip"
     state["whep_url"] = f"{settings.mediamtx_whip_base}/{mediamtx_path}/whep"
+
+    async with get_session() as session:
+        # 1. Get Event
+        event_query = await session.execute(select(Event).where(Event.slug == event_slug))
+        event = event_query.scalar_one_or_none()
+        if not event:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Event {event_slug} not found in DB")
+
+        # 2. Get or Create Room (if body.room_id is provided)
+        db_room_id = None
+        if body.room_id is not None:
+            room_query = await session.execute(
+                select(Room).where(Room.event_id == event.id, Room.eventyay_room_id == str(body.room_id))
+            )
+            room = room_query.scalar_one_or_none()
+            if not room:
+                room = Room(event_id=event.id, display_name=f"Room {body.room_id}", eventyay_room_id=str(body.room_id))
+                session.add(room)
+                await session.flush()
+            db_room_id = room.id
+
+        # 3. Get or Create DBBooth
+        booth_query = await session.execute(
+            select(DBBooth).where(DBBooth.event_id == event.id, DBBooth.language_code == body.language_code)
+        )
+        db_booth = booth_query.scalar_one_or_none()
+        if not db_booth:
+            db_booth = DBBooth(
+                event_id=event.id,
+                room_id=db_room_id,
+                language_code=body.language_code,
+                language_name=body.language or body.language_code.upper()
+            )
+            session.add(db_booth)
+            await session.flush()
+
+        # 4. Generate InviteToken
+        invite = await create_invite_token(
+            session,
+            booth_id=db_booth.id,
+            role="interpreter",
+            label="API Provisioned",
+        )
+        await session.commit()
+
+        state["interpreter_invite_url"] = f"{settings.public_base_url}/auth/magic/{invite.token}"
+
+    state["caption_url"] = f"wss://{settings.public_base_url.replace('https://', '').replace('http://', '')}/ws/captions/{state['booth_id']}"
     return state
 
 
