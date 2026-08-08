@@ -73,11 +73,13 @@ async def create_event_booth(
     state["whep_url"] = f"{settings.mediamtx_whip_base}/{mediamtx_path}/whep"
 
     async with get_session() as session:
-        # 1. Get Event
+        # 1. Get or Create Event
         event_query = await session.execute(select(Event).where(Event.slug == event_slug))
         event = event_query.scalar_one_or_none()
         if not event:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Event {event_slug} not found in DB")
+            event = Event(slug=event_slug, display_name=event_slug.title())
+            session.add(event)
+            await session.flush()
 
         # 2. Get or Create Room (if body.room_id is provided)
         db_room_id = None
