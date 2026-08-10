@@ -1533,14 +1533,3 @@ def test_404_html_page_renders_unified_template():
     assert "Page Not Found" in res.text
     assert "cdn.tailwindcss.com" not in res.text
     assert "/static/css/error.css" in res.text
-
-
-def test_home_page_renders_without_tailwind_cdn():
-    """Home page renders clean HTML using tokens.css with no Tailwind CDN."""
-    res = client.get("/", headers={"accept": "text/html"})
-
-    assert res.status_code == 200
-    assert "cdn.tailwindcss.com" not in res.text
-    assert "/static/css/tokens.css" in res.text
-    assert "/static/css/utilities.css" in res.text
-

@@ -1,7 +1,29 @@
 {% extends "base.html" %}
 {% block title %}Listen (WebRTC) — {{ event.display_name }} | Voxbento{% endblock %}
 {% block head %}
-<link rel="stylesheet" href="{{ url_for('static', path='css/utilities.css') }}?v={{ js_version }}" />
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+    tailwind.config = {
+        theme: {
+            extend: {
+                fontFamily: {
+                    sans: ['Inter', 'sans-serif'],
+                },
+                colors: {
+                    brand: {
+                        50: '#eff6ff',
+                        100: '#dbeafe',
+                        400: '#60a5fa',
+                        500: '#3b82f6',
+                        600: '#2563eb',
+                        700: '#1d4ed8',
+                        900: '#1e3a8a',
+                    }
+                }
+            }
+        }
+    }
+</script>
 <style>
     /* Custom Brutalist Select styling */
     .brutal-select {
@@ -701,7 +723,6 @@ function upgradeSelects() {
                 optionsDiv.classList.remove('opacity-0', 'invisible', 'translate-y-[-10px]');
                 arrow.querySelector('svg').style.transform = 'rotate(180deg)';
                 isOpen = true; // Ensure state is correct
-                wrapper.style.zIndex = '50';
             } else {
                 close();
             }
@@ -711,7 +732,6 @@ function upgradeSelects() {
             optionsDiv.classList.add('opacity-0', 'invisible', 'translate-y-[-10px]');
             arrow.querySelector('svg').style.transform = 'rotate(0deg)';
             isOpen = false;
-            wrapper.style.zIndex = '';
         }
 
         selectedDiv.onclick = (e) => {

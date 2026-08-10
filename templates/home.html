@@ -6,32 +6,57 @@
     <title>VoxBento — Real-Time AI Interpretation for Global Events</title>
     <link rel="icon" type="image/x-icon" href="{{ url_for('static', path='img/favicon.ico') }}" />
     
-    <!-- Design Tokens & Custom CSS -->
-    <link rel="stylesheet" href="{{ url_for('static', path='css/tokens.css') }}?v={{ js_version }}" />
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- Custom CSS for animations and overrides -->
     <link rel="stylesheet" href="{{ url_for('static', path='css/landing.css') }}?v={{ js_version }}" />
-    <link rel="stylesheet" href="{{ url_for('static', path='css/utilities.css') }}?v={{ js_version }}" />
+    <link rel="stylesheet" href="{{ url_for('static', path='css/home.css') }}?v={{ js_version }}" />
+    
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif'],
+                    },
+                    colors: {
+                        brand: {
+                            50: '#eff6ff',
+                            100: '#dbeafe',
+                            400: '#60a5fa',
+                            500: '#3b82f6',
+                            600: '#2563eb',
+                            700: '#1d4ed8',
+                            900: '#1e3a8a',
+                        }
+                    }
+                }
+            }
+        }
+    </script>
 </head>
 <body class="bg-[#eef2f6] text-[#0d0f10] antialiased overflow-x-hidden selection:bg-brand-500 selection:text-white">
 
     <!-- Premium Navbar -->
     <header class="fixed top-0 w-full z-50 bg-[#eef2f6] border-b-[3px] border-[#0d0f10] transition-all duration-300" id="navbar">
-        <div class="max-w-7xl mx-auto px-4 sm:px-6 h-16 flex items-center justify-between gap-2 sm:gap-4">
-            <a href="/" class="flex items-center gap-2 sm:gap-3 flex-shrink-0">
-                <img src="{{ url_for('static', path='img/app_icon.png') }}" alt="VoxBento Icon" class="w-7 h-7 sm:w-8 sm:h-8 brutal-border rounded shadow-none flex-shrink-0">
-                <span class="text-lg sm:text-[1.35rem] font-black tracking-tight text-[#0d0f10]">VoxBento</span>
+        <div class="max-w-7xl mx-auto px-6 h-16 flex items-center justify-between">
+            <a href="/" class="flex items-center gap-3">
+                <img src="{{ url_for('static', path='img/app_icon.png') }}" alt="VoxBento Icon" class="w-8 h-8 brutal-border rounded shadow-none">
+                <span class="text-[1.35rem] font-black tracking-tight text-[#0d0f10]">VoxBento</span>
             </a>
             <nav class="flex max-md:hidden items-center gap-8 text-sm font-bold text-[#0d0f10]">
                 <a href="#solutions" class="hover:text-brand-600 transition-colors uppercase tracking-wider">Solutions</a>
                 <a href="#interactive-demo" class="hover:text-brand-600 transition-colors uppercase tracking-wider">Demo</a>
                 <a href="#open-source" class="hover:text-brand-600 transition-colors uppercase tracking-wider">Open Source</a>
             </nav>
-            <div class="flex items-center gap-2.5 sm:gap-4 text-xs sm:text-sm font-bold flex-shrink-0">
+            <div class="flex items-center gap-4 text-sm font-bold">
                 {% if current_user %}
-                <a href="/logout" class="text-[#0d0f10] hover:text-brand-600 transition-colors uppercase tracking-wider whitespace-nowrap">Logout</a>
-                <a href="/admin/events/" class="brutal-btn brutal-btn-outline px-3.5 py-1.5 sm:px-5 sm:py-2 text-xs sm:text-sm whitespace-nowrap">Dashboard</a>
+                <a href="/logout" class="text-[#0d0f10] hover:text-brand-600 transition-colors uppercase tracking-wider">Logout</a>
+                <a href="/admin/events/" class="brutal-btn brutal-btn-outline px-5 py-2">Dashboard</a>
                 {% else %}
-                <a href="/login" class="text-[#0d0f10] hover:text-brand-600 transition-colors uppercase tracking-wider whitespace-nowrap">Sign In</a>
-                <a href="/register" class="brutal-btn brutal-btn-outline px-3.5 py-1.5 sm:px-5 sm:py-2 text-xs sm:text-sm whitespace-nowrap">Register</a>
+                <a href="/login" class="text-[#0d0f10] hover:text-brand-600 transition-colors uppercase tracking-wider">Sign In</a>
+                <a href="/register" class="brutal-btn brutal-btn-outline px-5 py-2">Register</a>
                 {% endif %}
             </div>
         </div>
@@ -238,7 +263,7 @@
                                         <span class="brutal-btn brutal-btn-primary w-full text-sm py-2 px-0 border-2">Explore More &rarr;</span>
                                     </div>
                                 </div>
-
+                                
                                 <!-- Front side -->
                                 <div class="solution-card-front">
                                     <div class="circle circle-1"></div>
@@ -257,7 +282,7 @@
                             </div>
                         </div>
                     </div>
-
+                    
                     <!-- Card 2: AI Speech Translation -->
                     <div class="h-80 lg:h-96 w-full" onclick="if(window.innerWidth < 1024) this.querySelector('.solution-card').classList.toggle('rotate-active')">
                         <div class="solution-card group">
@@ -269,7 +294,7 @@
                                         <span class="brutal-btn brutal-btn-primary w-full text-sm py-2 px-0 border-2">Explore More &rarr;</span>
                                     </div>
                                 </div>
-
+                                
                                 <!-- Front side -->
                                 <div class="solution-card-front">
                                     <div class="circle circle-1"></div>
@@ -288,7 +313,7 @@
                             </div>
                         </div>
                     </div>
-
+                    
                     <!-- Card 3: Live Captions & Subtitles -->
                     <div class="h-80 lg:h-96 w-full" onclick="if(window.innerWidth < 1024) this.querySelector('.solution-card').classList.toggle('rotate-active')">
                         <div class="solution-card group">
@@ -300,7 +325,7 @@
                                         <span class="brutal-btn brutal-btn-primary w-full text-sm py-2 px-0 border-2">Explore More &rarr;</span>
                                     </div>
                                 </div>
-
+                                
                                 <!-- Front side -->
                                 <div class="solution-card-front">
                                     <div class="circle circle-1"></div>
@@ -319,7 +344,7 @@
                             </div>
                         </div>
                     </div>
-
+                    
                     <!-- Card 4: Media Routing -->
                     <div class="h-80 lg:h-96 w-full" onclick="if(window.innerWidth < 1024) this.querySelector('.solution-card').classList.toggle('rotate-active')">
                         <div class="solution-card group">
@@ -331,7 +356,7 @@
                                         <span class="brutal-btn brutal-btn-primary w-full text-sm py-2 px-0 border-2">Explore More &rarr;</span>
                                     </div>
                                 </div>
-
+                                
                                 <!-- Front side -->
                                 <div class="solution-card-front">
                                     <div class="circle circle-1"></div>
@@ -407,7 +432,7 @@
             </div>
         </section>
 
-        <!-- Interactive Demo Section (Faithfully replicating MacBook frame) -->
+        <!-- Interactive Demo Section -->
         <section id="interactive-demo" class="py-24 bg-white border-t border-slate-200">
             <div class="max-w-4xl mx-auto px-6">
                 <div class="text-center mb-14">
@@ -446,7 +471,7 @@
                         </div>
                         <!-- MacBook loading -->
                         <div class="max-md:hidden relative mx-auto w-full max-w-4xl mt-16">
-                            <div class="bg-black rounded-[1.5rem] p-3 pb-4 shadow-2xl ring-1 ring-white/20 shadow-[0_0_50px_rgba(0,0,0,0.25)] flex flex-col">
+                            <div class="bg-black rounded-[1.5rem] p-3 pb-4 shadow-2xl ring-1 ring-white/20 flex flex-col">
                                 <div class="bg-slate-800 w-full aspect-video rounded-xl flex flex-col items-center justify-center gap-4">
                                     <div class="flex items-end gap-1 h-10">
                                         <div class="w-1.5 bg-brand-500 rounded-full" style="height:14px;animation:demoWave 0.5s ease-in-out infinite alternate;"></div>
@@ -472,7 +497,7 @@
                             </div>
                             <div class="w-full h-1"></div>
                             <div class="relative z-20 w-[104%] -ml-[2%]">
-                                <div class="bg-gradient-to-b from-[#e5e7eb] to-[#d1d5db] h-3.5 rounded-t-md w-full relative shadow-[inset_0_1px_1px_rgba(255,255,255,0.8)] border-b border-[#9ca3af]">
+                                <div class="bg-gradient-to-b from-[#e5e7eb] to-[#d1d5db] h-3.5 rounded-t-md w-full shadow-[inset_0_1px_1px_rgba(255,255,255,0.8)] border-b border-[#9ca3af] relative">
                                     <div class="absolute top-0 left-1/2 -translate-x-1/2 w-32 h-1.5 bg-gradient-to-b from-[#d1d5db] to-[#9ca3af] rounded-b-lg"></div>
                                 </div>
                                 <div class="bg-gradient-to-b from-[#9ca3af] to-[#4b5563] h-2 rounded-b-2xl w-full shadow-[0_20px_40px_rgba(0,0,0,0.5)]"></div>
@@ -631,14 +656,12 @@
             </div>
         </section>
 
-        <!-- Final CTA (Compact centered button, clean margins) -->
+        <!-- Final CTA -->
         <section class="bg-[#2563eb] py-32 text-center text-white px-6 border-y-[3px] border-[#0d0f10]">
-            <div class="max-w-4xl mx-auto">
-                <h2 class="text-5xl md:text-6xl font-extrabold mb-8 leading-tight text-white">Break Language Barriers<br>at Your Next Event</h2>
-                <p class="text-white opacity-90 text-xl mb-12 max-w-2xl mx-auto font-bold">Launch multilingual events in minutes with VoxBento. No complex setups, no hardware.</p>
-                <div class="flex flex-col sm:flex-row justify-center gap-6">
-                    <a href="{% if current_user %}/admin/events/{% else %}/register{% endif %}" class="brutal-btn bg-white text-[#0d0f10] hover:bg-slate-100 w-full sm:w-auto text-lg py-5 px-10">Get Started Now</a>
-                </div>
+            <h2 class="text-5xl md:text-6xl font-extrabold mb-8 leading-tight text-white">Break Language Barriers<br>at Your Next Event</h2>
+            <p class="text-white opacity-90 text-xl mb-12 max-w-2xl mx-auto font-bold">Launch multilingual events in minutes with VoxBento. No complex setups, no hardware.</p>
+            <div class="flex flex-col sm:flex-row justify-center gap-6">
+                <a href="{% if current_user %}/admin/events/{% else %}/register{% endif %}" class="brutal-btn bg-white text-[#0d0f10] hover:bg-slate-100 w-full sm:w-auto text-lg py-5 px-10">Get Started Now</a>
             </div>
         </section>
         

@@ -1,0 +1,314 @@
+@keyframes demoWave {
+  from {
+    transform: scaleY(0.4);
+  }
+
+  to {
+    transform: scaleY(1);
+  }
+}
+
+/* Brutalist aesthetics inherited from auth.css for landing page */
+.brutal-card {
+  background: #ffffff;
+  border: 3px solid #0d0f10;
+  border-radius: 8px;
+  box-shadow: 8px 8px 0px #0d0f10;
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.brutal-card:hover {
+  transform: translate(-2px, -2px);
+  box-shadow: 10px 10px 0px #0d0f10;
+}
+
+.brutal-btn {
+  border: 2px solid #0d0f10;
+  border-radius: 6px;
+  box-shadow: 4px 4px 0px #0d0f10;
+  font-weight: 800;
+  padding: 12px 24px;
+  transition: all 0.1s ease;
+  cursor: pointer;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.brutal-btn:active {
+  box-shadow: 0px 0px 0px #0d0f10 !important;
+  transform: translate(4px, 4px) !important;
+}
+
+.brutal-btn-primary {
+  background: #2563eb;
+  color: #ffffff;
+}
+
+.brutal-btn-primary:hover {
+  background: #1d4ed8;
+  color: #ffffff;
+}
+
+.brutal-btn-outline {
+  background: #ffffff;
+  color: #0d0f10;
+}
+
+.brutal-btn-outline:hover {
+  background: #f8f9fa;
+}
+
+.brutal-border {
+  border: 3px solid #0d0f10;
+}
+
+.brutal-shadow {
+  box-shadow: 8px 8px 0px #0d0f10;
+}
+/* Animated Flip Card (Uiverse style adapted for Brutalism) */
+.solution-card {
+  overflow: visible;
+  width: 100%;
+  height: 100%;
+  perspective: 1000px;
+}
+
+.solution-card-content {
+  width: 100%;
+  height: 100%;
+  transform-style: preserve-3d;
+  transition: transform 700ms;
+  box-shadow: 6px 6px 0px #0d0f10;
+  border: 3px solid #0d0f10;
+  border-radius: 8px;
+  position: relative;
+  cursor: pointer;
+}
+
+.solution-card-front, .solution-card-back {
+  background-color: #0d0f10;
+  position: absolute;
+  width: 100%;
+  height: 100%;
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+  border-radius: 5px;
+  overflow: hidden;
+}
+
+.solution-card-back {
+  justify-content: center;
+  display: flex;
+  align-items: center;
+  transform: rotateY(180deg);
+}
+
+.solution-card-back::before {
+  position: absolute;
+  content: ' ';
+  display: block;
+  width: 160px;
+  height: 160%;
+  background: linear-gradient(90deg, transparent, #2563eb, #dc2626, #2563eb, transparent);
+  animation: rotation_481 5000ms infinite linear;
+}
+
+.solution-card-back-content {
+  position: absolute;
+  width: calc(100% - 6px);
+  height: calc(100% - 6px);
+  background-color: #eef2f6;
+  border-radius: 5px;
+  color: #0d0f10;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  gap: 20px;
+  padding: 24px;
+  text-align: center;
+}
+
+.solution-card:hover .solution-card-content,
+.solution-card.rotate-active .solution-card-content {
+  transform: rotateY(180deg);
+}
+
+@keyframes rotation_481 {
+  0% { transform: rotateZ(0deg); }
+  100% { transform: rotateZ(360deg); }
+}
+
+.solution-card-front {
+  color: white;
+}
+
+.solution-card-front .front-content {
+  position: absolute;
+  width: 100%;
+  height: 100%;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  z-index: 10;
+}
+
+.solution-card-front .badge {
+  background-color: rgba(13, 15, 16, 0.9);
+  padding: 4px 12px;
+  border-radius: 4px;
+  backdrop-filter: blur(2px);
+  width: fit-content;
+  font-weight: 800;
+  border: 2px solid #0d0f10;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  box-shadow: 2px 2px 0px #0d0f10;
+}
+
+.solution-card-front .description {
+  width: 100%;
+  padding: 16px;
+  background-color: rgba(13, 15, 16, 0.85);
+  backdrop-filter: blur(5px);
+  border-radius: 4px;
+  border: 2px solid #0d0f10;
+  box-shadow: 4px 4px 0px #0d0f10;
+}
+
+.solution-card-front .title {
+  font-size: 1.25rem;
+  font-weight: 800;
+  display: flex;
+  justify-content: space-between;
+  line-height: 1.2;
+}
+
+.solution-card-front .title p {
+  width: 100%;
+}
+
+.solution-card-front .card-footer {
+  color: rgba(255, 255, 255, 0.7);
+  margin-top: 8px;
+  font-size: 0.875rem;
+  font-weight: 700;
+}
+
+.solution-card-front .img-bg {
+  position: absolute;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center;
+  transition: transform 700ms;
+  opacity: 0.5;
+  mix-blend-mode: luminosity;
+}
+
+.solution-card:hover .img-bg {
+  transform: scale(1.1);
+}
+
+.circle {
+  width: 90px;
+  height: 90px;
+  border-radius: 50%;
+  position: absolute;
+  filter: blur(20px);
+  animation: floating 2600ms infinite linear;
+  z-index: 5;
+}
+
+.circle-1 {
+  background-color: #2563eb;
+  left: 10%;
+  top: 10%;
+  width: 120px;
+  height: 120px;
+  animation-delay: -800ms;
+}
+
+.circle-2 {
+  background-color: #dc2626;
+  right: -20px;
+  bottom: 10%;
+  width: 100px;
+  height: 100px;
+  animation-delay: -1800ms;
+}
+
+@keyframes floating {
+  0% { transform: translateY(0px); }
+  50% { transform: translateY(15px); }
+  100% { transform: translateY(0px); }
+}
+
+/* Audio Player Toggle */
+.toggle-cont {
+  width: 56px;
+  height: 28px;
+  border-radius: 9999px;
+  display: inline-block;
+  flex-shrink: 0;
+}
+
+.toggle-cont .toggle-input {
+  display: none;
+}
+
+.toggle-cont .toggle-label {
+  cursor: pointer;
+  position: relative;
+  display: inline-block;
+  width: 100%;
+  height: 100%;
+  background: #2563eb;
+  border-radius: 9999px;
+  box-sizing: border-box;
+  box-shadow: 2px 2px 0px rgba(13, 15, 16, 0.5);
+  border: 2px solid #0d0f10;
+}
+
+.toggle-cont .toggle-label .cont-label-play {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  height: 20px;
+  width: 20px;
+  background: #ffffff;
+  border-radius: 9999px;
+  transition: all 0.4s cubic-bezier(1, 0, 0, 1);
+  box-shadow: inset 0px -1px 2px rgba(0,0,0,0.2);
+}
+
+.toggle-cont .toggle-input:checked + .toggle-label .cont-label-play {
+  background: #0d0f10;
+  transform: translateX(28px);
+}
+
+.toggle-cont .toggle-label .label-play {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  background: #0d0f10;
+  border-radius: 1px;
+  clip-path: polygon(25% 0, 75% 50%, 25% 100%, 25% 51%);
+  transition: all 0.4s cubic-bezier(1, 0, 0, 1);
+}
+
+.toggle-cont .toggle-input:checked + .toggle-label .label-play {
+  width: 8px;
+  height: 8px;
+  clip-path: polygon(0 0, 100% 0, 100% 100%, 0 100%);
+  background: #ffffff;
+}
