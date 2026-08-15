@@ -58,9 +58,18 @@ async def lifespan(app: FastAPI):
     dg.track_task(asyncio.create_task(_gen()))
 
     logging.getLogger("uvicorn.access").addFilter(_UvicornTokenRedactor())
+    logging.getLogger("uvicorn.access").addFilter(_HealthCheckFilter())
     yield
     if pg.shared_http_client:
         await pg.shared_http_client.aclose()
+
+
+class _HealthCheckFilter(logging.Filter):
+    def filter(self, record):
+        try:
+            return record.getMessage().find("GET /healthz") == -1
+        except Exception:
+            return True
 
 
 class _UvicornTokenRedactor(logging.Filter):
