@@ -124,6 +124,7 @@ services:
       JVB_AUTH_PASSWORD: "${JVB_AUTH_PASSWORD:-changeme}"
       JICOFO_AUTH_USER: focus
       JICOFO_AUTH_PASSWORD: "${JICOFO_AUTH_PASSWORD:-changeme}"
+      PROSODY_LOG_LEVEL: "warn"
       TZ: "${TZ:-UTC}"
     volumes:
       - jitsi-prosody-config:/config
@@ -140,6 +141,7 @@ services:
       XMPP_SERVER: jitsi-prosody
       JICOFO_AUTH_USER: focus
       JICOFO_AUTH_PASSWORD: "${JICOFO_AUTH_PASSWORD:-changeme}"
+      JICOFO_LOG_LEVEL: "WARNING"
       TZ: "${TZ:-UTC}"
     volumes:
       - jitsi-jicofo-config:/config
@@ -165,6 +167,7 @@ services:
       # On Linux: set to your host IP — run: hostname -I | awk '{print $1}'
       DOCKER_HOST_ADDRESS: "${DOCKER_HOST_ADDRESS:-}"
       ENABLE_COLIBRI_WEBSOCKET: "true"
+      JVB_LOG_LEVEL: "WARNING"
       TZ: "${TZ:-UTC}"
     volumes:
       - jitsi-jvb-config:/config
