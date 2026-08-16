@@ -22,4 +22,5 @@ def get_http_client() -> httpx.AsyncClient:
         shared_http_client = httpx.AsyncClient(timeout=10.0)
     return shared_http_client
 
+
 # force reload

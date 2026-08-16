@@ -134,6 +134,7 @@ async def listen_event_page(request: Request, event_slug: str, code: str | None 
 
         if r.floor_transcription_enabled:
             from portal.booth_identity import make_mediamtx_path
+
             channel_id = make_mediamtx_path(ev.slug, r.id, "floor")
             booths_data.append(
                 {
@@ -239,7 +240,7 @@ async def _embed_listener_impl(
             if len(rooms) > 1:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="This event has multiple rooms. Please use the /embed/{event_slug}/{room_id}/{language_code} URL instead."
+                    detail="This event has multiple rooms. Please use the /embed/{event_slug}/{room_id}/{language_code} URL instead.",
                 )
             resolved_room_id = rooms[0].id
             audio_delay_ms = rooms[0].audio_delay_ms
@@ -259,7 +260,11 @@ async def _embed_listener_impl(
         if language_code.lower() != "floor":
             db_booths = await list_booths_for_event(session, ev.id)
             booth = next(
-                (b for b in db_booths if b.language_code.lower() == language_code.lower() and b.room_id == resolved_room_id),
+                (
+                    b
+                    for b in db_booths
+                    if b.language_code.lower() == language_code.lower() and b.room_id == resolved_room_id
+                ),
                 None,
             )
             if booth is None:
@@ -282,9 +287,7 @@ async def _embed_listener_impl(
         safe_custom_css = custom_css_url
 
     # ── Security headers ─────────────────────────────────────────────────
-    allowed_origins_list = [
-        o.strip() for o in settings.embed_allowed_origins.split(",") if o.strip()
-    ]
+    allowed_origins_list = [o.strip() for o in settings.embed_allowed_origins.split(",") if o.strip()]
 
     if allowed_origins_list:
         origins = " ".join(allowed_origins_list)
@@ -322,9 +325,7 @@ async def _embed_listener_impl(
         "audio_delay_ms": audio_delay_ms,
     }
 
-    return templates.TemplateResponse(
-        request, "embed.html", context, headers=response_headers
-    )
+    return templates.TemplateResponse(request, "embed.html", context, headers=response_headers)
 
 
 @router.get("/embed/{event_slug}/{language_code}")
@@ -343,7 +344,18 @@ async def embed_listener_legacy(
 ):
     """Serve a standalone, iframe-safe listener embed."""
     return await _embed_listener_impl(
-        request, event_slug, language_code, None, token, theme, primary_color, font, captions, custom_css_url, headless, target_lang
+        request,
+        event_slug,
+        language_code,
+        None,
+        token,
+        theme,
+        primary_color,
+        font,
+        captions,
+        custom_css_url,
+        headless,
+        target_lang,
     )
 
 
@@ -364,5 +376,16 @@ async def embed_listener_scoped(
 ):
     """Serve a standalone, iframe-safe listener embed (scoped to a room)."""
     return await _embed_listener_impl(
-        request, event_slug, language_code, room_id, token, theme, primary_color, font, captions, custom_css_url, headless, target_lang
+        request,
+        event_slug,
+        language_code,
+        room_id,
+        token,
+        theme,
+        primary_color,
+        font,
+        captions,
+        custom_css_url,
+        headless,
+        target_lang,
     )

@@ -42,10 +42,11 @@ async def ws_booth(websocket: WebSocket, booth_id: str) -> None:
 
     ws_granted_role = await resolve_booth_role(payload, booth_id)
     await websocket.accept()
-    
+
     from portal.database import get_booth_language_name
+
     language_name = await get_booth_language_name(booth_id)
-    
+
     session = Session(
         booth_id=booth_id,
         participant_id=None,

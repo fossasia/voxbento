@@ -183,7 +183,9 @@ async def test_high_concurrency_isolation_and_capacity_limits():
         for slug, room_id, lang, booth_id, provider in booths:
             data = {"event_slug": slug, "language_code": lang}
             tasks.append(
-                client.post(f"/api/events/{slug}/rooms/{room_id}/booths/{lang}/transcription/start", json=data, cookies=cookies)
+                client.post(
+                    f"/api/events/{slug}/rooms/{room_id}/booths/{lang}/transcription/start", json=data, cookies=cookies
+                )
             )
 
         responses = await asyncio.gather(*tasks)
@@ -219,7 +221,9 @@ async def test_high_concurrency_isolation_and_capacity_limits():
         stop_tasks = []
         # Try to stop all 16 booths (the 2 rate-limited ones should just gracefully do nothing)
         for slug, room_id, lang, booth_id, provider in booths:
-            stop_tasks.append(client.post(f"/api/events/{slug}/rooms/{room_id}/booths/{lang}/transcription/stop", cookies=cookies))
+            stop_tasks.append(
+                client.post(f"/api/events/{slug}/rooms/{room_id}/booths/{lang}/transcription/stop", cookies=cookies)
+            )
 
         await asyncio.gather(*stop_tasks)
 

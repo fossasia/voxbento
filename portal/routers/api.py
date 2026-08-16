@@ -125,7 +125,9 @@ async def create_event_booth(
         if room_id is None:
             rooms = await list_rooms_for_event(session, event.id)
             if len(rooms) > 1:
-                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Event has multiple rooms. room_id is required.")
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST, detail="Event has multiple rooms. room_id is required."
+                )
             if rooms:
                 room = rooms[0]
             else:
@@ -133,9 +135,7 @@ async def create_event_booth(
                 session.add(room)
                 await session.flush()
         else:
-            room_query = await session.execute(
-                select(Room).where(Room.event_id == event.id, Room.id == room_id)
-            )
+            room_query = await session.execute(select(Room).where(Room.event_id == event.id, Room.id == room_id))
             room = room_query.scalar_one_or_none()
             display_name = body.room_name or f"Room {room_id}"
             if not room:
@@ -178,7 +178,9 @@ async def create_event_booth(
 
         # Get or Create DBBooth
         booth_query = await session.execute(
-            select(DBBooth).where(DBBooth.event_id == event.id, DBBooth.room_id == db_room_id, DBBooth.language_code == body.language_code)
+            select(DBBooth).where(
+                DBBooth.event_id == event.id, DBBooth.room_id == db_room_id, DBBooth.language_code == body.language_code
+            )
         )
         db_booth = booth_query.scalar_one_or_none()
         if not db_booth:
@@ -252,7 +254,9 @@ async def delete_event_booth(
 @router.get("/events/{event_slug}/booths")
 async def list_event_booths(
     request: Request,
-    event_slug: str, token: str = Query(""), credentials: HTTPAuthorizationCredentials | None = Depends(security)
+    event_slug: str,
+    token: str = Query(""),
+    credentials: HTTPAuthorizationCredentials | None = Depends(security),
 ) -> dict:
     """List all booths for an event."""
     _require_access(request, credentials, token)
@@ -283,7 +287,9 @@ async def event_booth_state(
             if ev:
                 rooms = await list_rooms_for_event(session, ev.id)
                 if len(rooms) > 1:
-                    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Event has multiple rooms. room_id is required.")
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST, detail="Event has multiple rooms. room_id is required."
+                    )
                 if rooms:
                     room_id = rooms[0].id
         if room_id is None:
@@ -317,7 +323,9 @@ async def event_booth_whip_url(
             if ev:
                 rooms = await list_rooms_for_event(session, ev.id)
                 if len(rooms) > 1:
-                    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Event has multiple rooms. room_id is required.")
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST, detail="Event has multiple rooms. room_id is required."
+                    )
                 if rooms:
                     room_id = rooms[0].id
         if room_id is None:
@@ -358,7 +366,14 @@ async def api_transcription_start(
         )
         db_booth = await session.scalar(stmt)
         if not db_booth or not db_booth.transcription_enabled:
-            print("API START: Transcription disabled for booth", booth_id, "db_booth=", db_booth, "enabled=", getattr(db_booth, 'transcription_enabled', None))
+            print(
+                "API START: Transcription disabled for booth",
+                booth_id,
+                "db_booth=",
+                db_booth,
+                "enabled=",
+                getattr(db_booth, "transcription_enabled", None),
+            )
             return {"status": "disabled", "message": "Transcription is not enabled for this booth."}
         provider = db_booth.transcription_provider
         model_size = db_booth.transcription_model

@@ -444,9 +444,18 @@ async function fetchBoothState() {
   url.searchParams.set('token', state.token)
   url.searchParams.set('language', state.language)
   url.searchParams.set('channel', state.channelId)
-  if (portal.dataset.roomId) {
-    url.searchParams.set('room_id', portal.dataset.roomId)
+
+  const rawRoomId = portal.dataset.roomId
+  const parsedRoomId =
+    rawRoomId != null && rawRoomId !== ''
+      ? parseInt(rawRoomId, 10)
+      : undefined
+  const roomId = Number.isNaN(parsedRoomId) ? undefined : parsedRoomId
+
+  if (roomId !== undefined) {
+    url.searchParams.set('room_id', String(roomId))
   }
+
   const response = await fetch(url, { headers: authHeaders() })
   if (!response.ok) {
     const payload = await response.json().catch(() => ({ error: response.statusText }))
@@ -592,16 +601,28 @@ function joinBooth() {
   const displayName = portal.dataset.displayName || 'Interpreter'
   const requestedRole = state.grantedRole || 'interpreter'
 
-  wsSend({
+  const rawRoomId = portal.dataset.roomId
+  const parsedRoomId =
+    rawRoomId != null && rawRoomId !== ''
+      ? parseInt(rawRoomId, 10)
+      : undefined
+  const roomId = Number.isNaN(parsedRoomId) ? undefined : parsedRoomId
+
+  const payload = {
     type: 'booth:join',
-    display_name: displayName || 'Interpreter',
+    display_name: displayName,
     role: requestedRole,
     language: state.language,
     channel_id: state.channelId,
     participant_id: state.participantId,
     event_slug: portal.dataset.eventSlug || '',
-    room_id: portal.dataset.roomId ? parseInt(portal.dataset.roomId, 10) : undefined,
-  })
+  }
+
+  if (roomId !== undefined) {
+    payload.room_id = roomId
+  }
+
+  wsSend(payload)
 }
 
 function joinMonitoringFeed() {

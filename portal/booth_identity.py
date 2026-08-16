@@ -259,7 +259,9 @@ def validate_language_code(code: str) -> str:
     if normalised == "floor":
         return normalised
     if not _LANGUAGE_CODE_RE.match(normalised):
-        raise ValueError(f"Language code must be exactly two lowercase ASCII letters (ISO 639-1) or 'floor'. Got: '{code}'.")
+        raise ValueError(
+            f"Language code must be exactly two lowercase ASCII letters (ISO 639-1) or 'floor'. Got: '{code}'."
+        )
     if normalised not in ISO_639_1_CODES:
         raise ValueError(f"'{normalised}' is not a recognised ISO 639-1 language code.")
     return normalised
@@ -322,7 +324,9 @@ def mediamtx_path_to_booth_id(path: str) -> str:
     normalised = path.strip().strip("/")
     parts = normalised.split("/")
     if len(parts) != 3:
-        raise ValueError(f"MediaMTX path must have exactly three segments (event_slug/room_id/language_code). Got: '{path}'.")
+        raise ValueError(
+            f"MediaMTX path must have exactly three segments (event_slug/room_id/language_code). Got: '{path}'."
+        )
     event_slug = validate_event_slug(parts[0])
     room_id = int(parts[1])
     language_code = validate_language_code(parts[2])

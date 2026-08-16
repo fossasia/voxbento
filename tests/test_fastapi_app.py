@@ -55,6 +55,7 @@ _ws_auth = _admin_user_cookie
 
 # ── REST & page tests ─────────────────────────────────────────────────────────
 
+
 def test_token_redactor_handles_combined_request_line():
     import logging
 
@@ -62,7 +63,10 @@ def test_token_redactor_handles_combined_request_line():
 
     # Combined string shape (e.g. httptools protocol)
     record = logging.LogRecord(
-        name="uvicorn.access", level=logging.INFO, pathname="", lineno=0,
+        name="uvicorn.access",
+        level=logging.INFO,
+        pathname="",
+        lineno=0,
         msg='%s - "%s"',
         args=("127.0.0.1:1234", "GET /embed/test-event/en?token=secretjwt123 HTTP/1.1"),
         exc_info=None,
@@ -72,6 +76,7 @@ def test_token_redactor_handles_combined_request_line():
     assert "secretjwt123" not in output
     assert "[REDACTED]" in output
 
+
 def test_token_redactor_handles_split_args():
     import logging
 
@@ -79,7 +84,10 @@ def test_token_redactor_handles_split_args():
 
     # Split string shape (e.g. h11 protocol)
     record = logging.LogRecord(
-        name="uvicorn.access", level=logging.INFO, pathname="", lineno=0,
+        name="uvicorn.access",
+        level=logging.INFO,
+        pathname="",
+        lineno=0,
         msg='%s - "%s %s HTTP/%s" %d',
         args=("127.0.0.1:1234", "GET", "/embed/test-event/en?token=secretjwt123", "1.1", 200),
         exc_info=None,
@@ -629,6 +637,7 @@ def test_ws_auth_invalid_token_fails_fast(monkeypatch):
 
     # Test with flag ON
     from portal.config import settings
+
     monkeypatch.setattr(settings, "booth_access_token", "secret-test-token")
     with pytest.raises(WebSocketDisconnect) as exc_info:
         with client.websocket_connect("/ws/booth/auth-test?token=invalid-token", cookies=_ws_auth()) as ws:
@@ -640,6 +649,7 @@ def test_ws_auth_valid_generic_token_without_cookie_rejected(monkeypatch):
     """A cryptographically valid API token with no role falls back to the cookie.
     If no cookie is present, it must cleanly reject the connection."""
     from portal.config import settings
+
     monkeypatch.setattr(settings, "booth_access_token", "secret-test-token")
     from fastapi.websockets import WebSocketDisconnect
 
@@ -654,9 +664,11 @@ def test_ws_auth_valid_generic_token_without_cookie_rejected(monkeypatch):
             ws.receive_text()
     assert exc_info.value.code == 4001
 
+
 def test_ws_auth_cookie_bola_rejected(monkeypatch):
     """A valid cookie for one booth cannot be used to connect to a different booth (BOLA)."""
     from portal.config import settings
+
     monkeypatch.setattr(settings, "booth_access_token", "secret-test-token")
     from fastapi.websockets import WebSocketDisconnect
 
@@ -681,16 +693,27 @@ def test_ws_auth_cswsh_protection(monkeypatch):
 
     # Mismatched origin
     with pytest.raises(WebSocketDisconnect) as exc_info:
-        with client.websocket_connect("/ws/booth/auth-test", cookies=_ws_auth(), headers={"Origin": "https://evil.com"}) as ws:
+        with client.websocket_connect(
+            "/ws/booth/auth-test", cookies=_ws_auth(), headers={"Origin": "https://evil.com"}
+        ) as ws:
             ws.receive_text()
     assert exc_info.value.code == 4003
 
     # Matching origin
-    with client.websocket_connect("/ws/booth/auth-test", cookies=_ws_auth(), headers={"Origin": "https://voxbento.com"}) as ws:
-        ws.send_text(json.dumps({
-            "type": "booth:join", "display_name": "AuthUser", "role": "interpreter",
-            "language": "English", "channel_id": "auth-test-audio"
-        }))
+    with client.websocket_connect(
+        "/ws/booth/auth-test", cookies=_ws_auth(), headers={"Origin": "https://voxbento.com"}
+    ) as ws:
+        ws.send_text(
+            json.dumps(
+                {
+                    "type": "booth:join",
+                    "display_name": "AuthUser",
+                    "role": "interpreter",
+                    "language": "English",
+                    "channel_id": "auth-test-audio",
+                }
+            )
+        )
         msg = json.loads(ws.receive_text())
         assert msg["type"] in ("booth:joined", "booth:state")
 
@@ -1120,7 +1143,8 @@ def test_create_event_booth():
     res = client.post(
         "/api/events/pycon2026/booths",
         json={
-            "language_code": "en", "room_id": 1,
+            "language_code": "en",
+            "room_id": 1,
             "language": "English",
         },
     )
@@ -1160,7 +1184,8 @@ def test_create_event_booth_invalid_event_slug():
     res = client.post(
         "/api/events/--bad--/booths",
         json={
-            "language_code": "en", "room_id": 1,
+            "language_code": "en",
+            "room_id": 1,
             "language": "English",
         },
     )
@@ -1568,6 +1593,7 @@ def test_404_html_page_renders_unified_template():
     assert "cdn.tailwindcss.com" not in res.text
     assert "/static/css/error.css" in res.text
 
+
 # ── Embed route tests ──────────────────────────────────────────────────────────
 
 
@@ -1663,6 +1689,7 @@ def test_embed_valid_token_booth_offline_returns_200():
     res = client.get(f"/embed/test-event/en?token={token}", headers={"accept": "text/html"})
     assert res.status_code == 200, res.text
     assert "text/html" in res.headers["content-type"]
+
 
 def test_embed_xss_tojson_escaping():
     """WHEP and caption URLs injected via tojson must not break out of the JS string.
@@ -1765,50 +1792,53 @@ def test_embed_headless_mode_config():
     # Normal request
     res = client.get(f"/embed/test-event/en?token={token}", headers={"accept": "text/html"})
     assert res.status_code == 200
-    assert "class=\"player headless\"" not in res.text
-    assert "\"headless\": false" in res.text
+    assert 'class="player headless"' not in res.text
+    assert '"headless": false' in res.text
 
     # Headless request
     res = client.get(f"/embed/test-event/en?token={token}&headless=true", headers={"accept": "text/html"})
     assert res.status_code == 200
-    assert "class=\"player headless\"" in res.text
-    assert "\"headless\": true" in res.text
+    assert 'class="player headless"' in res.text
+    assert '"headless": true' in res.text
 
 
 def test_embed_postmessage_target_origin_single(monkeypatch):
     """When one origin is configured, target_origin matches it exactly."""
     from portal.config import settings
+
     monkeypatch.setattr(settings, "embed_allowed_origins", "https://eventyay.com")
     _seed_embed_event("test-event", "en")
 
     token = _embed_listener_token(event_slug="test-event")
     res = client.get(f"/embed/test-event/en?token={token}", headers={"accept": "text/html"})
-    assert "\"target_origin\": \"https://eventyay.com\"" in res.text
-    assert "\"allowed_origins\": [\"https://eventyay.com\"]" in res.text
+    assert '"target_origin": "https://eventyay.com"' in res.text
+    assert '"allowed_origins": ["https://eventyay.com"]' in res.text
 
 
 def test_embed_postmessage_target_origin_multi(monkeypatch):
     """When multiple origins are configured, target_origin falls back to '*' for the browser API limitation, but allowed_origins contains the full list."""
     from portal.config import settings
+
     monkeypatch.setattr(settings, "embed_allowed_origins", "https://a.com, https://b.com")
     _seed_embed_event("test-event", "en")
 
     token = _embed_listener_token(event_slug="test-event")
     res = client.get(f"/embed/test-event/en?token={token}", headers={"accept": "text/html"})
-    assert "\"target_origin\": \"*\"" in res.text
-    assert "\"allowed_origins\": [\"https://a.com\", \"https://b.com\"]" in res.text
+    assert '"target_origin": "*"' in res.text
+    assert '"allowed_origins": ["https://a.com", "https://b.com"]' in res.text
 
 
 def test_embed_postmessage_target_origin_empty(monkeypatch):
     """When no origins are configured, target_origin falls back to '*' and allowed_origins is empty."""
     from portal.config import settings
+
     monkeypatch.setattr(settings, "embed_allowed_origins", "")
     _seed_embed_event("test-event", "en")
 
     token = _embed_listener_token(event_slug="test-event")
     res = client.get(f"/embed/test-event/en?token={token}", headers={"accept": "text/html"})
-    assert "\"target_origin\": \"*\"" in res.text
-    assert "\"allowed_origins\": []" in res.text
+    assert '"target_origin": "*"' in res.text
+    assert '"allowed_origins": []' in res.text
 
 
 def test_embed_captions_opt_in_websocket_auth():

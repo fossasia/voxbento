@@ -142,10 +142,13 @@ def _require_access(
 
     # Cookie Fallback
     from portal.auth import get_booth_session
+
     payload = get_booth_session(request)
     if payload:
         if payload.get("role") == "listener":
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Listener tokens cannot be used for this API.")
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN, detail="Listener tokens cannot be used for this API."
+            )
         return
 
     raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid or missing auth token.")

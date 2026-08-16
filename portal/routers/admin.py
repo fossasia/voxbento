@@ -963,7 +963,9 @@ async def api_stop_floor_transcription(room_id: int):
         event_slug = event.slug
     try:
         client = get_http_client()
-        await client.post(f"{settings.floor_bot_base}/stop", json={"event_slug": event_slug, "room_id": room_id}, timeout=15.0)
+        await client.post(
+            f"{settings.floor_bot_base}/stop", json={"event_slug": event_slug, "room_id": room_id}, timeout=15.0
+        )
     except Exception as e:
         logger.error(f"Failed to stop floor-bot: {e}")
     await stop_transcription_worker(make_booth_id(event_slug, room_id, "floor"))

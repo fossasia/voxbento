@@ -98,6 +98,7 @@ def verify_bearer(credentials: HTTPAuthorizationCredentials | None) -> None:
 
 class WSAuthError(Exception):
     """Raised when WebSocket authentication fails."""
+
     pass
 
 
@@ -385,7 +386,6 @@ def get_booth_session(request: Request | WebSocket) -> dict | None:
 
 
 async def resolve_ws_auth(websocket: WebSocket, booth_id: str) -> dict:
-
     """Resolves authentication for a WebSocket connection"""
 
     token = websocket.query_params.get("token", "")
@@ -402,7 +402,9 @@ async def resolve_ws_auth(websocket: WebSocket, booth_id: str) -> dict:
 
         token_event = payload.get("event_slug", "")
         if payload.get("role") == "listener":
-            if not token_event or not (booth_id.startswith(f"{token_event}-") or booth_id.startswith(f"{token_event}/")):
+            if not token_event or not (
+                booth_id.startswith(f"{token_event}-") or booth_id.startswith(f"{token_event}/")
+            ):
                 await websocket.close(code=4003)
                 raise WSAuthError("Listener token event_slug does not match booth_id.")
             return payload
@@ -411,20 +413,24 @@ async def resolve_ws_auth(websocket: WebSocket, booth_id: str) -> dict:
         token_room = payload.get("room_id")
         if token_event and token_lang:
             from portal.booth_identity import parse_booth_id
+
             try:
                 actual_event, actual_room, actual_lang = parse_booth_id(booth_id)
             except ValueError:
                 await websocket.close(code=4003)
                 raise WSAuthError("Invalid booth_id format.")
 
-            if token_event != actual_event or token_lang != actual_lang or (token_room is not None and str(token_room) != str(actual_room)):
+            if (
+                token_event != actual_event
+                or token_lang != actual_lang
+                or (token_room is not None and str(token_room) != str(actual_room))
+            ):
                 await websocket.close(code=4003)
                 raise WSAuthError("Participant token scope does not match booth_id.")
             return payload
 
         if payload.get("role") or payload.get("is_admin") or payload.get("admin"):
             return payload
-
 
     if not settings.booth_access_token:
         return get_booth_session(websocket) or {}
@@ -433,6 +439,7 @@ async def resolve_ws_auth(websocket: WebSocket, booth_id: str) -> dict:
     origin = websocket.headers.get("origin")
     if origin:
         from urllib.parse import urlparse
+
         expected_host = urlparse(settings.public_base_url).netloc
         actual_host = urlparse(origin).netloc or origin
         allowed_hosts = {expected_host, websocket.url.netloc}
@@ -462,13 +469,18 @@ async def resolve_ws_auth(websocket: WebSocket, booth_id: str) -> dict:
     token_room = payload.get("room_id")
     if token_event and token_lang:
         from portal.booth_identity import parse_booth_id
+
         try:
             actual_event, actual_room, actual_lang = parse_booth_id(booth_id)
         except ValueError:
             await websocket.close(code=4003)
             raise WSAuthError("Invalid booth_id format.")
 
-        if token_event != actual_event or token_lang != actual_lang or (token_room is not None and str(token_room) != str(actual_room)):
+        if (
+            token_event != actual_event
+            or token_lang != actual_lang
+            or (token_room is not None and str(token_room) != str(actual_room))
+        ):
             await websocket.close(code=4003)
             raise WSAuthError("Participant cookie scope does not match booth_id.")
 
@@ -505,8 +517,10 @@ async def resolve_booth_role(payload: dict | None, booth_id: str | None = None) 
         try:
             event_slug, room_id, lang_code = parse_booth_id(booth_id)
             async with get_session() as db_session:
-                stmt = select(DBBooth).join(Event).where(
-                    Event.slug == event_slug, DBBooth.room_id == room_id, DBBooth.language_code == lang_code
+                stmt = (
+                    select(DBBooth)
+                    .join(Event)
+                    .where(Event.slug == event_slug, DBBooth.room_id == room_id, DBBooth.language_code == lang_code)
                 )
                 booth = (await db_session.scalars(stmt)).first()
                 if booth:

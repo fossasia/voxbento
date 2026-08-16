@@ -195,8 +195,8 @@ async def test_create_booth_rejects_duplicate():
 
     with pytest.raises(ValueError, match="already exists"):
         await registry.create_booth(
-        room_id=1,
-        event_slug="pycon2026",
+            room_id=1,
+            event_slug="pycon2026",
             language_code="en",
             language="English",
         )
@@ -208,8 +208,8 @@ async def test_create_booth_rejects_invalid_slug():
 
     with pytest.raises(ValueError):
         await registry.create_booth(
-        room_id=1,
-        event_slug="--bad--",
+            room_id=1,
+            event_slug="--bad--",
             language_code="en",
             language="English",
         )
@@ -221,8 +221,8 @@ async def test_create_booth_rejects_invalid_language_code():
 
     with pytest.raises(ValueError):
         await registry.create_booth(
-        room_id=1,
-        event_slug="pycon2026",
+            room_id=1,
+            event_slug="pycon2026",
             language_code="xyz",
             language="English",
         )

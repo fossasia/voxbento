@@ -74,6 +74,7 @@ class _HealthCheckFilter(logging.Filter):
 
 class _UvicornTokenRedactor(logging.Filter):
     import re as _re
+
     _TOKEN_RE = _re.compile(r"(?i)((?:^|&|\?)token=)[^&\s]*")
 
     def filter(self, record):
@@ -89,6 +90,7 @@ class _UvicornTokenRedactor(logging.Filter):
 
 
 app = FastAPI(title="Voxbento", version="1.0.0", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
+
 
 @app.get("/docs", include_in_schema=False)
 async def custom_swagger_ui_html(request: Request, _=Depends(require_admin)):

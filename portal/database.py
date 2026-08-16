@@ -237,6 +237,7 @@ async def delete_room(session: AsyncSession, room_id: int) -> bool:
     # delete all booths belonging to this room explicitly
     from sqlalchemy import delete as sa_delete
     from sqlalchemy import select as sa_select
+
     # First delete booth memberships and tokens to avoid orphans since SQLite FKs are OFF
     booth_ids = sa_select(DBBooth.id).where(DBBooth.room_id == room_id)
     await session.execute(sa_delete(BoothMembership).where(BoothMembership.booth_id.in_(booth_ids)))
@@ -785,7 +786,7 @@ async def save_transcript_segment(booth_id_str: str, text: str, room_id: int | N
                     .where(
                         Event.slug == event_slug,
                         DBBooth.room_id == parsed_room_id,
-                        DBBooth.language_code == language_code
+                        DBBooth.language_code == language_code,
                     )
                 )
                 booth_id = await session.scalar(stmt)
@@ -868,20 +869,21 @@ async def log_usage_metric(session: AsyncSession, event_id: int, metric_name: st
 
 async def get_booth_language_name(booth_id: str) -> str:
     """Resolve the real language name for a booth_id from the database.
-    
+
     Returns 'English' as a fallback if the booth is not found or parsing fails.
     """
     from sqlalchemy import select
-    from portal.models import DBBooth, Event
+
     from portal.booth_identity import parse_booth_id
+    from portal.models import DBBooth, Event
 
     try:
         event_slug, room_id, language_code = parse_booth_id(booth_id)
         async with get_session() as db_session:
-            stmt = select(DBBooth.language_name).join(Event).where(
-                Event.slug == event_slug,
-                DBBooth.room_id == room_id,
-                DBBooth.language_code == language_code
+            stmt = (
+                select(DBBooth.language_name)
+                .join(Event)
+                .where(Event.slug == event_slug, DBBooth.room_id == room_id, DBBooth.language_code == language_code)
             )
             res = await db_session.scalar(stmt)
             if res:

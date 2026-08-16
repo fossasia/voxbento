@@ -104,7 +104,8 @@ async def interpreter_booth_by_identity(
     payload = get_booth_session(request)
     if payload is None:
         return safe_redirect(
-            url=f"/login?next=/interpreter/{event_slug}/{room_id}/{language_code}", status_code=status.HTTP_303_SEE_OTHER
+            url=f"/login?next=/interpreter/{event_slug}/{room_id}/{language_code}",
+            status_code=status.HTTP_303_SEE_OTHER,
         )
     booth_id = make_booth_id(event_slug, room_id, language_code)
     granted_role = await resolve_booth_role(payload, booth_id)
