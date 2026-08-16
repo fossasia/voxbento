@@ -53,10 +53,10 @@
             <div class="flex items-center gap-4 text-sm font-bold">
                 {% if current_user %}
                 <a href="/logout" class="text-[#0d0f10] hover:text-brand-600 transition-colors uppercase tracking-wider">Logout</a>
-                <a href="/admin/events/" class="brutal-btn brutal-btn-outline px-5 py-2">Dashboard</a>
+                <a href="/admin/events/" class="brutal-btn brutal-btn-outline">Dashboard</a>
                 {% else %}
-                <a href="/login" class="text-[#0d0f10] hover:text-brand-600 transition-colors uppercase tracking-wider">Sign In</a>
-                <a href="/register" class="brutal-btn brutal-btn-outline px-5 py-2">Register</a>
+                <a href="/login" class="brutal-btn brutal-btn-primary">Sign In</a>
+                <a href="/register" class="brutal-btn brutal-btn-outline">Register</a>
                 {% endif %}
             </div>
         </div>

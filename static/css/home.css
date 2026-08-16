@@ -23,42 +23,54 @@
 }
 
 .brutal-btn {
-  border: 2px solid #0d0f10;
-  border-radius: 6px;
-  box-shadow: 4px 4px 0px #0d0f10;
-  font-weight: 800;
-  padding: 12px 24px;
-  transition: all 0.1s ease;
-  cursor: pointer;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  text-decoration: none;
+  font-weight: 700;
+  font-size: 0.8rem;
+  line-height: 1.2;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 0.5rem 1.25rem; /* py-2 px-5 */
+  border-radius: 8px;
+  border: 3px solid #0d0f10;
+  cursor: pointer;
+  user-select: none;
+  text-align: center;
+  transition: all 0.15s ease;
 }
 
-.brutal-btn:active {
-  box-shadow: 0px 0px 0px #0d0f10 !important;
-  transform: translate(4px, 4px) !important;
-}
-
+/* ── Primary solid (blue) ── */
 .brutal-btn-primary {
-  background: #2563eb;
+  background: #3b82f6; /* solid blue */
   color: #ffffff;
+  box-shadow: 4px 4px 0 #0d0f10;
 }
-
 .brutal-btn-primary:hover {
-  background: #1d4ed8;
-  color: #ffffff;
+  transform: translate(-2px, -2px);
+  box-shadow: 6px 6px 0 #0d0f10;
+  background: #2563eb;
+}
+.brutal-btn-primary:active {
+  transform: translate(2px, 2px);
+  box-shadow: 0 0 0 #0d0f10;
 }
 
+/* ── Outline white ── */
 .brutal-btn-outline {
   background: #ffffff;
   color: #0d0f10;
+  box-shadow: 4px 4px 0 #0d0f10;
 }
-
 .brutal-btn-outline:hover {
-  background: #f8f9fa;
+  transform: translate(-2px, -2px);
+  box-shadow: 6px 6px 0 #0d0f10;
+  background: #f5f3f0;
+}
+.brutal-btn-outline:active {
+  transform: translate(2px, 2px);
+  box-shadow: 0 0 0 #0d0f10;
 }
 
 .brutal-border {
