@@ -1,18 +1,19 @@
 <!DOCTYPE html>
 <html lang="en" class="scroll-smooth">
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>VoxBento — Real-Time AI Interpretation for Global Events</title>
     <link rel="icon" type="image/x-icon" href="{{ url_for('static', path='img/favicon.ico') }}" />
-    
+
     <!-- Tailwind CSS CDN -->
     <script src="https://cdn.tailwindcss.com"></script>
-    
+
     <!-- Custom CSS for animations and overrides -->
     <link rel="stylesheet" href="{{ url_for('static', path='css/landing.css') }}?v={{ js_version }}" />
     <link rel="stylesheet" href="{{ url_for('static', path='css/home.css') }}?v={{ js_version }}" />
-    
+
     <script>
         tailwind.config = {
             theme: {
@@ -36,56 +37,72 @@
         }
     </script>
 </head>
+
 <body class="bg-[#eef2f6] text-[#0d0f10] antialiased overflow-x-hidden selection:bg-brand-500 selection:text-white">
 
     <!-- Premium Navbar -->
-    <header class="fixed top-0 w-full z-50 bg-[#eef2f6] border-b-[3px] border-[#0d0f10] transition-all duration-300" id="navbar">
+    <header class="fixed top-0 w-full z-50 bg-[#eef2f6] border-b-[3px] border-[#0d0f10] transition-all duration-300"
+        id="navbar">
         <div class="max-w-7xl mx-auto px-6 h-16 flex items-center justify-between">
             <a href="/" class="flex items-center gap-3">
-                <img src="{{ url_for('static', path='img/app_icon.png') }}" alt="VoxBento Icon" class="w-8 h-8 brutal-border rounded shadow-none">
+                <img src="{{ url_for('static', path='img/app_icon.png') }}" alt="VoxBento Icon"
+                    class="w-8 h-8 brutal-border rounded shadow-none">
                 <span class="text-[1.35rem] font-black tracking-tight text-[#0d0f10]">VoxBento</span>
             </a>
             <nav class="flex max-md:hidden items-center gap-8 text-sm font-bold text-[#0d0f10]">
-                <a href="#solutions" class="hover:text-brand-600 transition-colors uppercase tracking-wider">Solutions</a>
-                <a href="#interactive-demo" class="hover:text-brand-600 transition-colors uppercase tracking-wider">Demo</a>
-                <a href="#open-source" class="hover:text-brand-600 transition-colors uppercase tracking-wider">Open Source</a>
+                <a href="#solutions"
+                    class="hover:text-brand-600 transition-colors uppercase tracking-wider">Solutions</a>
+                <a href="#interactive-demo"
+                    class="hover:text-brand-600 transition-colors uppercase tracking-wider">Demo</a>
+                <a href="#open-source" class="hover:text-brand-600 transition-colors uppercase tracking-wider">Open
+                    Source</a>
             </nav>
             <div class="flex items-center gap-4 text-sm font-bold">
                 {% if current_user %}
-                <a href="/logout" class="text-[#0d0f10] hover:text-brand-600 transition-colors uppercase tracking-wider">Logout</a>
-                <a href="/admin/events/" class="brutal-btn brutal-btn-outline">Dashboard</a>
+                <a href="/logout"
+                    class="text-[#0d0f10] hover:text-brand-600 transition-colors uppercase tracking-wider">Logout</a>
+                <a href="/admin/events/" class="brutal-btn brutal-btn-outline brutal-btn-nav">Dashboard</a>
                 {% else %}
-                <a href="/login" class="brutal-btn brutal-btn-primary">Sign In</a>
-                <a href="/register" class="brutal-btn brutal-btn-outline">Register</a>
+                <a href="/login" class="brutal-btn brutal-btn-primary brutal-btn-nav">Sign In</a>
+                <a href="/register" class="brutal-btn brutal-btn-outline brutal-btn-nav">Register</a>
                 {% endif %}
             </div>
         </div>
     </header>
 
     <main class="pt-24">
-        
+
         <!-- Hero Section -->
-        <section class="relative max-w-7xl mx-auto px-6 pt-12 pb-24 lg:pt-20 lg:pb-32 flex flex-col lg:flex-row items-center gap-12 animate-fade-in-up">
+        <section
+            class="relative max-w-7xl mx-auto px-6 pt-12 pb-24 lg:pt-20 lg:pb-32 flex flex-col lg:flex-row items-center gap-12 animate-fade-in-up">
             <!-- Left Text -->
             <div class="flex-1 text-center lg:text-left z-10">
-                <h1 class="text-[2.75rem] md:text-6xl lg:text-7xl font-extrabold tracking-tight text-[#0d0f10] mb-8 leading-[1.1] flex flex-col items-center lg:items-start text-center lg:text-left w-full">
+                <h1
+                    class="text-[2.75rem] md:text-6xl lg:text-7xl font-extrabold tracking-tight text-[#0d0f10] mb-8 leading-[1.1] flex flex-col items-center lg:items-start text-center lg:text-left w-full">
                     <div class="relative w-full text-[#2563eb]">
                         <!-- Invisible spacer to perfectly preserve layout size for the longest word without CLS -->
-                        <span class="opacity-0 pointer-events-none select-none block w-full" aria-hidden="true">Conference Interpretation</span>
-                        <span id="rotator-capability" class="absolute bottom-0 left-0 block w-full transition-all duration-700 ease-[cubic-bezier(0.25,1,0.5,1)] opacity-100 translate-y-0 blur-0">Interpretation</span>
+                        <span class="opacity-0 pointer-events-none select-none block w-full"
+                            aria-hidden="true">Conference Interpretation</span>
+                        <span id="rotator-capability"
+                            class="absolute bottom-0 left-0 block w-full transition-all duration-700 ease-[cubic-bezier(0.25,1,0.5,1)] opacity-100 translate-y-0 blur-0">Interpretation</span>
                     </div>
                     <span class="block text-[#0d0f10] my-1 lg:my-2">Built for</span>
                     <div class="relative w-full text-[#2563eb]">
                         <!-- Invisible spacer to perfectly preserve layout size for the longest word without CLS -->
-                        <span class="opacity-0 pointer-events-none select-none block w-full" aria-hidden="true">Educational Institutions</span>
-                        <span id="rotator-audience" class="absolute top-0 left-0 block w-full transition-all duration-700 ease-[cubic-bezier(0.25,1,0.5,1)] opacity-100 translate-y-0 blur-0">Enterprise</span>
+                        <span class="opacity-0 pointer-events-none select-none block w-full"
+                            aria-hidden="true">Educational Institutions</span>
+                        <span id="rotator-audience"
+                            class="absolute top-0 left-0 block w-full transition-all duration-700 ease-[cubic-bezier(0.25,1,0.5,1)] opacity-100 translate-y-0 blur-0">Enterprise</span>
                     </div>
                 </h1>
                 <p class="text-lg text-[#0d0f10] opacity-80 mb-10 max-w-xl mx-auto lg:mx-0 leading-relaxed font-bold">
-                    VoxBento helps organizations communicate across languages with real-time interpretation, AI voice translation, speech-to-text, captions, subtitles, dubbing, and accessibility services — all from a single platform.
+                    VoxBento helps organizations communicate across languages with real-time interpretation, AI voice
+                    translation, speech-to-text, captions, subtitles, dubbing, and accessibility services — all from a
+                    single platform.
                 </p>
                 <div class="flex flex-col sm:flex-row items-center gap-4 justify-center lg:justify-start">
-                    <a href="{% if current_user %}/admin/events/{% else %}/register{% endif %}" class="brutal-btn brutal-btn-primary w-full sm:w-auto text-center">
+                    <a href="{% if current_user %}/admin/events/{% else %}/register{% endif %}"
+                        class="brutal-btn brutal-btn-primary w-full sm:w-auto text-center">
                         Start Hosting Free
                     </a>
                     <a href="#interactive-demo" class="brutal-btn brutal-btn-outline w-full sm:w-auto text-center">
@@ -93,24 +110,28 @@
                     </a>
                 </div>
             </div>
-            
+
             <!-- Right Visual -->
             <div class="flex-1 w-full relative max-md:hidden">
                 <div class="relative w-full aspect-[4/3]">
                     <div class="absolute inset-0 rounded-lg brutal-border brutal-shadow overflow-hidden bg-slate-900">
-                        <img src="https://images.unsplash.com/photo-1541829070764-84a7d30dd3f3?q=80&w=1200&auto=format&fit=crop" alt="Conference" class="w-full h-full object-cover opacity-90">
+                        <img src="https://images.unsplash.com/photo-1541829070764-84a7d30dd3f3?q=80&w=1200&auto=format&fit=crop"
+                            alt="Conference" class="w-full h-full object-cover opacity-90">
                         <div class="absolute inset-0 bg-slate-900 opacity-10"></div>
                     </div>
-                    
+
                     <!-- Floating Elements -->
-                    <div class="absolute top-8 right-8 bg-[#2563eb] text-white px-4 py-2 brutal-border brutal-shadow rounded font-bold flex items-center gap-2 animate-bounce">
+                    <div
+                        class="absolute top-8 right-8 bg-[#2563eb] text-white px-4 py-2 brutal-border brutal-shadow rounded font-bold flex items-center gap-2 animate-bounce">
                         <span class="w-2 h-2 rounded-full bg-white animate-pulse"></span> LIVE
                     </div>
-                    
+
                     <!-- Hero audio selector — clicking rows plays the pre-baked demo audio -->
-                    <div class="absolute bottom-8 left-8 bg-[#ffffff] border-4 border-[#0d0f10] p-5 rounded-lg brutal-shadow w-72 text-[#0d0f10]">
+                    <div
+                        class="absolute bottom-8 left-8 bg-[#ffffff] border-4 border-[#0d0f10] p-5 rounded-lg brutal-shadow w-72 text-[#0d0f10]">
                         <div class="flex justify-between items-center mb-4">
-                            <span class="text-xs font-bold uppercase tracking-widest text-[#0d0f10]">Audio Channel</span>
+                            <span class="text-xs font-bold uppercase tracking-widest text-[#0d0f10]">Audio
+                                Channel</span>
                             <label class="toggle-cont" title="Play audio" id="hero-audio-toggle">
                                 <input class="toggle-input" type="checkbox" id="hero-audio-toggle-input">
                                 <div class="toggle-label">
@@ -121,66 +142,110 @@
                             </label>
                         </div>
                         <div class="space-y-2">
-                            <button data-hero-lang="en" class="hero-lang-row w-full bg-[#2563eb] text-white rounded px-3 py-2 flex items-center justify-between border-[3px] border-[#2563eb]">
+                            <button data-hero-lang="en"
+                                class="hero-lang-row w-full bg-[#2563eb] text-white rounded px-3 py-2 flex items-center justify-between border-[3px] border-[#2563eb]">
                                 <span class="text-sm font-bold">English (Original)</span>
-                                <svg class="hero-check w-4 h-4 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7"></path></svg>
+                                <svg class="hero-check w-4 h-4 text-white" fill="none" stroke="currentColor"
+                                    viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="3"
+                                        d="M5 13l4 4L19 7"></path>
+                                </svg>
                             </button>
-                            <button data-hero-lang="fr" class="hero-lang-row w-full px-3 py-2 flex items-center justify-between text-[#0d0f10] bg-white border-2 border-[#0d0f10] hover:bg-slate-100 rounded transition-colors">
-                                <span class="text-sm font-bold">French <span class="ml-2 bg-[#2563eb] text-white text-[10px] px-1.5 py-0.5 rounded font-extrabold border border-[#0d0f10]">AI</span></span>
-                                <svg class="hero-check w-4 h-4 opacity-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7"></path></svg>
+                            <button data-hero-lang="fr"
+                                class="hero-lang-row w-full px-3 py-2 flex items-center justify-between text-[#0d0f10] bg-white border-2 border-[#0d0f10] hover:bg-slate-100 rounded transition-colors">
+                                <span class="text-sm font-bold">French <span
+                                        class="ml-2 bg-[#2563eb] text-white text-[10px] px-1.5 py-0.5 rounded font-extrabold border border-[#0d0f10]">AI</span></span>
+                                <svg class="hero-check w-4 h-4 opacity-0" fill="none" stroke="currentColor"
+                                    viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="3"
+                                        d="M5 13l4 4L19 7"></path>
+                                </svg>
                             </button>
-                            <button data-hero-lang="es" class="hero-lang-row w-full px-3 py-2 flex items-center justify-between text-[#0d0f10] bg-white border-2 border-[#0d0f10] hover:bg-slate-100 rounded transition-colors">
-                                <span class="text-sm font-bold">Spanish <span class="ml-2 bg-[#2563eb] text-white text-[10px] px-1.5 py-0.5 rounded font-extrabold border border-[#0d0f10]">AI</span></span>
-                                <svg class="hero-check w-4 h-4 opacity-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7"></path></svg>
+                            <button data-hero-lang="es"
+                                class="hero-lang-row w-full px-3 py-2 flex items-center justify-between text-[#0d0f10] bg-white border-2 border-[#0d0f10] hover:bg-slate-100 rounded transition-colors">
+                                <span class="text-sm font-bold">Spanish <span
+                                        class="ml-2 bg-[#2563eb] text-white text-[10px] px-1.5 py-0.5 rounded font-extrabold border border-[#0d0f10]">AI</span></span>
+                                <svg class="hero-check w-4 h-4 opacity-0" fill="none" stroke="currentColor"
+                                    viewBox="0 0 24 24">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="3"
+                                        d="M5 13l4 4L19 7"></path>
+                                </svg>
                             </button>
                         </div>
                     </div>
-                    
-                    <div class="absolute top-12 -left-8 bg-white p-3 rounded-lg brutal-shadow brutal-border flex items-center gap-3 animate-float z-10">
-                        <div class="w-8 h-8 rounded bg-[#0d0f10] flex items-center justify-center text-lg text-white">🗣️</div>
+
+                    <div
+                        class="absolute top-12 -left-8 bg-white p-3 rounded-lg brutal-shadow brutal-border flex items-center gap-3 animate-float z-10">
+                        <div class="w-8 h-8 rounded bg-[#0d0f10] flex items-center justify-center text-lg text-white">
+                            🗣️</div>
                         <div class="pr-3">
-                            <p class="text-sm font-extrabold text-[#0d0f10] flex items-center gap-2">你好 <span class="bg-[#2563eb] text-white text-[10px] px-1.5 py-0.5 rounded font-extrabold border border-[#0d0f10]">AI</span></p>
+                            <p class="text-sm font-extrabold text-[#0d0f10] flex items-center gap-2">你好 <span
+                                    class="bg-[#2563eb] text-white text-[10px] px-1.5 py-0.5 rounded font-extrabold border border-[#0d0f10]">AI</span>
+                            </p>
                         </div>
                     </div>
                 </div>
             </div>
         </section>
-        
+
         <!-- Dynamic User/Event Dashboard Injections -->
         {% if my_booths or events %}
         <section class="max-w-7xl mx-auto px-6 py-16 mb-24 relative z-20">
             <div class="mb-12 border-b-2 border-[#0d0f10] pb-6 flex items-end justify-between">
                 <div>
                     <h2 class="text-3xl font-extrabold text-[#0d0f10] tracking-tight">Live Dashboard</h2>
-                    <p class="text-[#0d0f10] opacity-70 text-base font-bold mt-2">Access your active events and interpretation booths.</p>
+                    <p class="text-[#0d0f10] opacity-70 text-base font-bold mt-2">Access your active events and
+                        interpretation booths.</p>
                 </div>
             </div>
-            
+
             <div class="flex flex-col gap-16">
                 {% if my_booths %}
                 <div>
                     <h3 class="text-xl font-extrabold text-[#0d0f10] mb-6 flex items-center gap-3">
-                        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="square" stroke-linejoin="miter" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"></path></svg>
+                        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="square" stroke-linejoin="miter" stroke-width="2"
+                                d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10">
+                            </path>
+                        </svg>
                         Your Assigned Booths
                     </h3>
                     <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
                         {% for b in my_booths %}
-                        <div class="group bg-white border-2 border-[#0d0f10] p-6 hover:shadow-[8px_8px_0px_#0d0f10] hover:-translate-y-1 transition-all flex flex-col justify-between min-h-[160px]">
+                        <div
+                            class="group bg-white border-2 border-[#0d0f10] p-6 hover:shadow-[8px_8px_0px_#0d0f10] hover:-translate-y-1 transition-all flex flex-col justify-between min-h-[160px]">
                             <div class="flex justify-between items-start mb-6">
                                 <div>
                                     <h4 class="font-extrabold text-[#0d0f10] text-lg">{{ b.language_name }}</h4>
                                     <p class="text-sm font-bold text-[#0d0f10] opacity-60 mt-1">{{ b.event_name }}</p>
                                 </div>
                                 {% if b.is_live %}
-                                <span class="bg-red-600 text-white text-[10px] font-extrabold px-2 py-1 uppercase tracking-widest flex items-center gap-1.5"><span class="w-1.5 h-1.5 bg-white rounded-full animate-pulse"></span> LIVE</span>
+                                <span
+                                    class="bg-red-600 text-white text-[10px] font-extrabold px-2 py-1 uppercase tracking-widest flex items-center gap-1.5"><span
+                                        class="w-1.5 h-1.5 bg-white rounded-full animate-pulse"></span> LIVE</span>
                                 {% endif %}
                             </div>
-                            <div class="flex justify-between items-end mt-auto pt-4 border-t-2 border-[#0d0f10]/10 group-hover:border-[#0d0f10]/30 transition-colors">
-                                <span class="text-[10px] font-extrabold text-[#0d0f10] opacity-60 uppercase tracking-widest">{{ b.membership.role.replace('_', ' ') }}</span>
+                            <div
+                                class="flex justify-between items-end mt-auto pt-4 border-t-2 border-[#0d0f10]/10 group-hover:border-[#0d0f10]/30 transition-colors">
+                                <span
+                                    class="text-[10px] font-extrabold text-[#0d0f10] opacity-60 uppercase tracking-widest">{{
+                                    b.membership.role.replace('_', ' ') }}</span>
                                 {% if b.membership.role in ['room_coordinator', 'event_owner', 'super_admin'] %}
-                                <a href="/mission-control/{{ b.event_slug }}/" class="text-[#2563eb] text-sm font-extrabold hover:text-[#1d4ed8] inline-flex items-center gap-1">Mission Control <svg class="w-4 h-4 group-hover:translate-x-1 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="square" stroke-linejoin="miter" stroke-width="2" d="M14 5l7 7m0 0l-7 7m7-7H3"></path></svg></a>
+                                <a href="/mission-control/{{ b.event_slug }}/"
+                                    class="text-[#2563eb] text-sm font-extrabold hover:text-[#1d4ed8] inline-flex items-center gap-1">Mission
+                                    Control <svg class="w-4 h-4 group-hover:translate-x-1 transition-transform"
+                                        fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="square" stroke-linejoin="miter" stroke-width="2"
+                                            d="M14 5l7 7m0 0l-7 7m7-7H3"></path>
+                                    </svg></a>
                                 {% else %}
-                                <a href="/interpreter" class="text-[#2563eb] text-sm font-extrabold hover:text-[#1d4ed8] inline-flex items-center gap-1">Go to Lobby <svg class="w-4 h-4 group-hover:translate-x-1 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="square" stroke-linejoin="miter" stroke-width="2" d="M14 5l7 7m0 0l-7 7m7-7H3"></path></svg></a>
+                                <a href="/interpreter"
+                                    class="text-[#2563eb] text-sm font-extrabold hover:text-[#1d4ed8] inline-flex items-center gap-1">Go
+                                    to Lobby <svg class="w-4 h-4 group-hover:translate-x-1 transition-transform"
+                                        fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="square" stroke-linejoin="miter" stroke-width="2"
+                                            d="M14 5l7 7m0 0l-7 7m7-7H3"></path>
+                                    </svg></a>
                                 {% endif %}
                             </div>
                         </div>
@@ -192,16 +257,22 @@
                 {% if events %}
                 <div>
                     <h3 class="text-xl font-extrabold text-[#0d0f10] mb-6 flex items-center gap-3">
-                        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="square" stroke-linejoin="miter" stroke-width="2" d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 019-9"></path></svg>
+                        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="square" stroke-linejoin="miter" stroke-width="2"
+                                d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 019-9">
+                            </path>
+                        </svg>
                         Public Events
                     </h3>
                     <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
                         {% for ed in events %}
                         <div class="bg-white border-2 border-[#0d0f10] flex flex-col">
-                            <div class="p-6 border-b-2 border-[#0d0f10] flex justify-between items-center bg-[#2563eb] text-white">
+                            <div
+                                class="p-6 border-b-2 border-[#0d0f10] flex justify-between items-center bg-[#2563eb] text-white">
                                 <h4 class="font-extrabold text-lg">{{ ed.event.display_name }}</h4>
                                 {% if ed.live_count > 0 %}
-                                <span class="bg-green-500 text-[#0d0f10] text-[10px] font-extrabold px-2 py-1 uppercase tracking-widest shadow-[2px_2px_0px_#fff]">
+                                <span
+                                    class="bg-green-500 text-[#0d0f10] text-[10px] font-extrabold px-2 py-1 uppercase tracking-widest shadow-[2px_2px_0px_#fff]">
                                     {{ ed.live_count }} LIVE
                                 </span>
                                 {% endif %}
@@ -220,15 +291,20 @@
                                             <span class="font-extrabold text-[#0d0f10]">{{ bs.db.language_name }}</span>
                                         </div>
                                         {% if bs.can_interpret %}
-                                        <a href="/interpreter" class="text-[#2563eb] hover:text-[#1d4ed8] font-extrabold text-xs uppercase tracking-widest opacity-0 group-hover:opacity-100 transition-opacity focus:opacity-100">Enter Lobby &rarr;</a>
+                                        <a href="/interpreter"
+                                            class="text-[#2563eb] hover:text-[#1d4ed8] font-extrabold text-xs uppercase tracking-widest opacity-0 group-hover:opacity-100 transition-opacity focus:opacity-100">Enter
+                                            Lobby &rarr;</a>
                                         {% endif %}
                                     </div>
                                     {% endfor %}
                                 </div>
-                                <a href="/listener/{{ ed.event.slug }}" class="brutal-btn w-full text-center bg-[#eef2f6] text-[#0d0f10] hover:bg-[#2563eb] hover:text-white transition-colors border-2 border-[#0d0f10] py-3 text-sm">Listen as Attendee</a>
+                                <a href="/listener/{{ ed.event.slug }}"
+                                    class="brutal-btn w-full text-center bg-[#eef2f6] text-[#0d0f10] hover:bg-[#2563eb] hover:text-white transition-colors border-2 border-[#0d0f10] py-3 text-sm">Listen
+                                    as Attendee</a>
                                 {% else %}
                                 <div class="flex-1 flex items-center justify-center opacity-40 py-8">
-                                    <p class="text-sm font-extrabold uppercase tracking-widest italic">No booths configured</p>
+                                    <p class="text-sm font-extrabold uppercase tracking-widest italic">No booths
+                                        configured</p>
                                 </div>
                                 {% endif %}
                             </div>
@@ -245,30 +321,38 @@
         <section id="solutions" class="py-24 bg-white relative z-10 border-t-[3px] border-[#0d0f10]">
             <div class="max-w-7xl mx-auto px-6">
                 <div class="text-center mb-16">
-                    <h2 class="text-4xl md:text-5xl font-extrabold text-[#0d0f10] mb-6">Make Every Event Multilingual</h2>
+                    <h2 class="text-4xl md:text-5xl font-extrabold text-[#0d0f10] mb-6">Make Every Event Multilingual
+                    </h2>
                     <p class="text-[#0d0f10] opacity-80 max-w-3xl mx-auto text-lg leading-relaxed font-bold">
-                        Give every attendee access to real-time captions, translations, and interpretation in their preferred language.
+                        Give every attendee access to real-time captions, translations, and interpretation in their
+                        preferred language.
                     </p>
                 </div>
-                
+
                 <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-8">
                     <!-- Card 1: Human Interpretation -->
-                    <div class="h-80 lg:h-96 w-full" onclick="if(window.innerWidth < 1024) this.querySelector('.solution-card').classList.toggle('rotate-active')">
+                    <div class="h-80 lg:h-96 w-full"
+                        onclick="if(window.innerWidth < 1024) this.querySelector('.solution-card').classList.toggle('rotate-active')">
                         <div class="solution-card group">
                             <div class="solution-card-content">
                                 <!-- Back side -->
                                 <div class="solution-card-back">
                                     <div class="solution-card-back-content">
-                                        <p class="font-bold leading-snug text-sm">Empower professional interpreters with our latency-free virtual booths. Enable seamless handoffs, dedicated chat, and intuitive controls designed for human-led events.</p>
-                                        <span class="brutal-btn brutal-btn-primary w-full text-sm py-2 px-0 border-2">Explore More &rarr;</span>
+                                        <p class="font-bold leading-snug text-sm">Empower professional interpreters with
+                                            our latency-free virtual booths. Enable seamless handoffs, dedicated chat,
+                                            and intuitive controls designed for human-led events.</p>
+                                        <span
+                                            class="brutal-btn brutal-btn-primary w-full text-sm py-2 px-0 border-2">Explore
+                                            More &rarr;</span>
                                     </div>
                                 </div>
-                                
+
                                 <!-- Front side -->
                                 <div class="solution-card-front">
                                     <div class="circle circle-1"></div>
                                     <div class="circle circle-2"></div>
-                                    <img src="https://images.unsplash.com/photo-1540575467063-178a50c2df87?q=80&w=800&auto=format&fit=crop" class="img-bg" alt="Human Interpretation">
+                                    <img src="https://images.unsplash.com/photo-1540575467063-178a50c2df87?q=80&w=800&auto=format&fit=crop"
+                                        class="img-bg" alt="Human Interpretation">
                                     <div class="front-content">
                                         <div class="badge">Professional</div>
                                         <div class="description">
@@ -282,24 +366,30 @@
                             </div>
                         </div>
                     </div>
-                    
+
                     <!-- Card 2: AI Speech Translation -->
-                    <div class="h-80 lg:h-96 w-full" onclick="if(window.innerWidth < 1024) this.querySelector('.solution-card').classList.toggle('rotate-active')">
+                    <div class="h-80 lg:h-96 w-full"
+                        onclick="if(window.innerWidth < 1024) this.querySelector('.solution-card').classList.toggle('rotate-active')">
                         <div class="solution-card group">
                             <div class="solution-card-content">
                                 <!-- Back side -->
                                 <div class="solution-card-back">
                                     <div class="solution-card-back-content">
-                                        <p class="font-bold leading-snug text-sm">Bridge language gaps instantly with state-of-the-art neural translation models. Deliver precise, context-aware audio streams without the overhead of physical booths.</p>
-                                        <span class="brutal-btn brutal-btn-primary w-full text-sm py-2 px-0 border-2">Explore More &rarr;</span>
+                                        <p class="font-bold leading-snug text-sm">Bridge language gaps instantly with
+                                            state-of-the-art neural translation models. Deliver precise, context-aware
+                                            audio streams without the overhead of physical booths.</p>
+                                        <span
+                                            class="brutal-btn brutal-btn-primary w-full text-sm py-2 px-0 border-2">Explore
+                                            More &rarr;</span>
                                     </div>
                                 </div>
-                                
+
                                 <!-- Front side -->
                                 <div class="solution-card-front">
                                     <div class="circle circle-1"></div>
                                     <div class="circle circle-2"></div>
-                                    <img src="https://images.unsplash.com/photo-1516321318423-f06f85e504b3?q=80&w=800&auto=format&fit=crop" class="img-bg" alt="AI Speech Translation">
+                                    <img src="https://images.unsplash.com/photo-1516321318423-f06f85e504b3?q=80&w=800&auto=format&fit=crop"
+                                        class="img-bg" alt="AI Speech Translation">
                                     <div class="front-content">
                                         <div class="badge">Automated</div>
                                         <div class="description">
@@ -313,24 +403,30 @@
                             </div>
                         </div>
                     </div>
-                    
+
                     <!-- Card 3: Live Captions & Subtitles -->
-                    <div class="h-80 lg:h-96 w-full" onclick="if(window.innerWidth < 1024) this.querySelector('.solution-card').classList.toggle('rotate-active')">
+                    <div class="h-80 lg:h-96 w-full"
+                        onclick="if(window.innerWidth < 1024) this.querySelector('.solution-card').classList.toggle('rotate-active')">
                         <div class="solution-card group">
                             <div class="solution-card-content">
                                 <!-- Back side -->
                                 <div class="solution-card-back">
                                     <div class="solution-card-back-content">
-                                        <p class="font-bold leading-snug text-sm">Boost accessibility and comprehension with real-time, highly accurate captioning. Generate readable text streams dynamically as your speakers deliver their message.</p>
-                                        <span class="brutal-btn brutal-btn-primary w-full text-sm py-2 px-0 border-2">Explore More &rarr;</span>
+                                        <p class="font-bold leading-snug text-sm">Boost accessibility and comprehension
+                                            with real-time, highly accurate captioning. Generate readable text streams
+                                            dynamically as your speakers deliver their message.</p>
+                                        <span
+                                            class="brutal-btn brutal-btn-primary w-full text-sm py-2 px-0 border-2">Explore
+                                            More &rarr;</span>
                                     </div>
                                 </div>
-                                
+
                                 <!-- Front side -->
                                 <div class="solution-card-front">
                                     <div class="circle circle-1"></div>
                                     <div class="circle circle-2"></div>
-                                    <img src="https://images.unsplash.com/photo-1551818255-e6e10975bc17?q=80&w=800&auto=format&fit=crop" class="img-bg" alt="Live Captions">
+                                    <img src="https://images.unsplash.com/photo-1551818255-e6e10975bc17?q=80&w=800&auto=format&fit=crop"
+                                        class="img-bg" alt="Live Captions">
                                     <div class="front-content">
                                         <div class="badge">Accessible</div>
                                         <div class="description">
@@ -344,24 +440,30 @@
                             </div>
                         </div>
                     </div>
-                    
+
                     <!-- Card 4: Media Routing -->
-                    <div class="h-80 lg:h-96 w-full" onclick="if(window.innerWidth < 1024) this.querySelector('.solution-card').classList.toggle('rotate-active')">
+                    <div class="h-80 lg:h-96 w-full"
+                        onclick="if(window.innerWidth < 1024) this.querySelector('.solution-card').classList.toggle('rotate-active')">
                         <div class="solution-card group">
                             <div class="solution-card-content">
                                 <!-- Back side -->
                                 <div class="solution-card-back">
                                     <div class="solution-card-back-content">
-                                        <p class="font-bold leading-snug text-sm">Leverage our robust WebRTC infrastructure to broadcast low-latency audio to thousands of concurrent listeners globally. No dedicated apps or complex hardware needed.</p>
-                                        <span class="brutal-btn brutal-btn-primary w-full text-sm py-2 px-0 border-2">Explore More &rarr;</span>
+                                        <p class="font-bold leading-snug text-sm">Leverage our robust WebRTC
+                                            infrastructure to broadcast low-latency audio to thousands of concurrent
+                                            listeners globally. No dedicated apps or complex hardware needed.</p>
+                                        <span
+                                            class="brutal-btn brutal-btn-primary w-full text-sm py-2 px-0 border-2">Explore
+                                            More &rarr;</span>
                                     </div>
                                 </div>
-                                
+
                                 <!-- Front side -->
                                 <div class="solution-card-front">
                                     <div class="circle circle-1"></div>
                                     <div class="circle circle-2"></div>
-                                    <img src="https://images.unsplash.com/photo-1598488035139-bdbb2231ce04?q=80&w=800&auto=format&fit=crop" class="img-bg" alt="Media Routing">
+                                    <img src="https://images.unsplash.com/photo-1598488035139-bdbb2231ce04?q=80&w=800&auto=format&fit=crop"
+                                        class="img-bg" alt="Media Routing">
                                     <div class="front-content">
                                         <div class="badge">Infrastructure</div>
                                         <div class="description">
@@ -383,48 +485,86 @@
         <section class="py-24 bg-[#eef2f6]">
             <div class="max-w-7xl mx-auto px-6">
                 <div class="text-center md:text-left mb-16 md:mb-0">
-                    <h2 class="text-4xl md:text-5xl font-extrabold text-[#0d0f10] md:max-w-2xl mx-auto md:mx-0">Enterprise-Ready for Every Event Format</h2>
+                    <h2 class="text-4xl md:text-5xl font-extrabold text-[#0d0f10] md:max-w-2xl mx-auto md:mx-0">
+                        Enterprise-Ready for Every Event Format</h2>
                 </div>
                 <div class="grid grid-cols-1 lg:grid-cols-5 gap-12 items-start mt-12">
                     <!-- Left: Floating Image / Graphic (Spans 2 cols) -->
                     <div class="lg:col-span-2 sticky top-32 max-md:hidden">
-                        <div class="relative rounded-lg overflow-hidden bg-[#2563eb] aspect-[4/5] brutal-border brutal-shadow">
-                            <img src="https://images.unsplash.com/photo-1505373877841-8d25f7d46678?q=80&w=1000&auto=format&fit=crop" class="w-full h-full object-cover mix-blend-overlay opacity-80" alt="Speaker">
+                        <div
+                            class="relative rounded-lg overflow-hidden bg-[#2563eb] aspect-[4/5] brutal-border brutal-shadow">
+                            <img src="https://images.unsplash.com/photo-1505373877841-8d25f7d46678?q=80&w=1000&auto=format&fit=crop"
+                                class="w-full h-full object-cover mix-blend-overlay opacity-80" alt="Speaker">
                             <div class="absolute top-8 right-8 text-white/50">
-                                <svg class="w-16 h-16" fill="currentColor" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 15h-2v-2h2v2zm0-4h-2V7h2v6z"/></svg>
+                                <svg class="w-16 h-16" fill="currentColor" viewBox="0 0 24 24">
+                                    <path
+                                        d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 15h-2v-2h2v2zm0-4h-2V7h2v6z" />
+                                </svg>
                             </div>
                         </div>
                     </div>
-                    
+
                     <!-- Right: Text Blocks (Spans 3 cols) -->
                     <div class="lg:col-span-3">
                         <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
                             <!-- Format 1 -->
-                            <div class="bg-white rounded-lg p-8 hover:-translate-y-1 hover:shadow-[10px_10px_0px_#0d0f10] transition-all brutal-border brutal-shadow">
+                            <div
+                                class="bg-white rounded-lg p-8 hover:-translate-y-1 hover:shadow-[10px_10px_0px_#0d0f10] transition-all brutal-border brutal-shadow">
                                 <h3 class="text-2xl font-bold text-[#0d0f10] mb-4">In-Person Events</h3>
-                                <p class="text-[#0d0f10] opacity-80 mb-8 leading-relaxed font-bold">Enhance your in-person multilingual event experience with simultaneous interpretation, live speech translation and captions integrated into your AV setup.</p>
-                                <a href="#" class="text-[#2563eb] font-extrabold text-sm uppercase tracking-widest flex items-center gap-2 hover:text-[#1d4ed8] transition-colors underline decoration-2 underline-offset-2">Explore More <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M14 5l7 7m0 0l-7 7m7-7H3"></path></svg></a>
+                                <p class="text-[#0d0f10] opacity-80 mb-8 leading-relaxed font-bold">Enhance your
+                                    in-person multilingual event experience with simultaneous interpretation, live
+                                    speech translation and captions integrated into your AV setup.</p>
+                                <a href="#"
+                                    class="text-[#2563eb] font-extrabold text-sm uppercase tracking-widest flex items-center gap-2 hover:text-[#1d4ed8] transition-colors underline decoration-2 underline-offset-2">Explore
+                                    More <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="3"
+                                            d="M14 5l7 7m0 0l-7 7m7-7H3"></path>
+                                    </svg></a>
                             </div>
-                            
+
                             <!-- Format 2 -->
-                            <div class="bg-white rounded-lg p-8 hover:-translate-y-1 hover:shadow-[10px_10px_0px_#0d0f10] transition-all brutal-border brutal-shadow">
+                            <div
+                                class="bg-white rounded-lg p-8 hover:-translate-y-1 hover:shadow-[10px_10px_0px_#0d0f10] transition-all brutal-border brutal-shadow">
                                 <h3 class="text-2xl font-bold text-[#0d0f10] mb-4">Online Meetings & Events</h3>
-                                <p class="text-[#0d0f10] opacity-80 mb-8 leading-relaxed font-bold">Host high-quality meetings in multiple languages with our enterprise-grade technology that can integrate with any meeting platform.</p>
-                                <a href="#" class="text-[#2563eb] font-extrabold text-sm uppercase tracking-widest flex items-center gap-2 hover:text-[#1d4ed8] transition-colors underline decoration-2 underline-offset-2">Explore More <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M14 5l7 7m0 0l-7 7m7-7H3"></path></svg></a>
+                                <p class="text-[#0d0f10] opacity-80 mb-8 leading-relaxed font-bold">Host high-quality
+                                    meetings in multiple languages with our enterprise-grade technology that can
+                                    integrate with any meeting platform.</p>
+                                <a href="#"
+                                    class="text-[#2563eb] font-extrabold text-sm uppercase tracking-widest flex items-center gap-2 hover:text-[#1d4ed8] transition-colors underline decoration-2 underline-offset-2">Explore
+                                    More <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="3"
+                                            d="M14 5l7 7m0 0l-7 7m7-7H3"></path>
+                                    </svg></a>
                             </div>
-                            
+
                             <!-- Format 3 -->
-                            <div class="bg-white rounded-lg p-8 hover:-translate-y-1 hover:shadow-[10px_10px_0px_#0d0f10] transition-all brutal-border brutal-shadow">
+                            <div
+                                class="bg-white rounded-lg p-8 hover:-translate-y-1 hover:shadow-[10px_10px_0px_#0d0f10] transition-all brutal-border brutal-shadow">
                                 <h3 class="text-2xl font-bold text-[#0d0f10] mb-4">Hybrid Events</h3>
-                                <p class="text-[#0d0f10] opacity-80 mb-8 leading-relaxed font-bold">Bring on-site and remote participants together with enterprise-level live translation and interpretation technology, supported end-to-end.</p>
-                                <a href="#" class="text-[#2563eb] font-extrabold text-sm uppercase tracking-widest flex items-center gap-2 hover:text-[#1d4ed8] transition-colors underline decoration-2 underline-offset-2">Explore More <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M14 5l7 7m0 0l-7 7m7-7H3"></path></svg></a>
+                                <p class="text-[#0d0f10] opacity-80 mb-8 leading-relaxed font-bold">Bring on-site and
+                                    remote participants together with enterprise-level live translation and
+                                    interpretation technology, supported end-to-end.</p>
+                                <a href="#"
+                                    class="text-[#2563eb] font-extrabold text-sm uppercase tracking-widest flex items-center gap-2 hover:text-[#1d4ed8] transition-colors underline decoration-2 underline-offset-2">Explore
+                                    More <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="3"
+                                            d="M14 5l7 7m0 0l-7 7m7-7H3"></path>
+                                    </svg></a>
                             </div>
-                            
+
                             <!-- Format 4 -->
-                            <div class="bg-white rounded-lg p-8 hover:-translate-y-1 hover:shadow-[10px_10px_0px_#0d0f10] transition-all brutal-border brutal-shadow">
+                            <div
+                                class="bg-white rounded-lg p-8 hover:-translate-y-1 hover:shadow-[10px_10px_0px_#0d0f10] transition-all brutal-border brutal-shadow">
                                 <h3 class="text-2xl font-bold text-[#0d0f10] mb-4">Broadcasting</h3>
-                                <p class="text-[#0d0f10] opacity-80 mb-8 leading-relaxed font-bold">Make your live broadcasts easy to follow in any language. We add real-time interpretation and captions, so everyone stays connected.</p>
-                                <a href="#" class="text-[#2563eb] font-extrabold text-sm uppercase tracking-widest flex items-center gap-2 hover:text-[#1d4ed8] transition-colors underline decoration-2 underline-offset-2">Explore More <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M14 5l7 7m0 0l-7 7m7-7H3"></path></svg></a>
+                                <p class="text-[#0d0f10] opacity-80 mb-8 leading-relaxed font-bold">Make your live
+                                    broadcasts easy to follow in any language. We add real-time interpretation and
+                                    captions, so everyone stays connected.</p>
+                                <a href="#"
+                                    class="text-[#2563eb] font-extrabold text-sm uppercase tracking-widest flex items-center gap-2 hover:text-[#1d4ed8] transition-colors underline decoration-2 underline-offset-2">Explore
+                                    More <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="3"
+                                            d="M14 5l7 7m0 0l-7 7m7-7H3"></path>
+                                    </svg></a>
                             </div>
                         </div>
                     </div>
@@ -438,7 +578,8 @@
                 <div class="text-center mb-14">
                     <h2 class="text-5xl font-extrabold text-brand-600 mb-6">VoxBento Demo</h2>
                     <p class="text-slate-600 max-w-3xl mx-auto text-lg leading-relaxed font-medium">
-                        Real-time AI translation isn't something you can fully grasp from a product page — you have to hear it.
+                        Real-time AI translation isn't something you can fully grasp from a product page — you have to
+                        hear it.
                         Hit play, pick your language, and experience instant AI-powered translation in action.
                     </p>
                 </div>
@@ -450,17 +591,30 @@
                     <!-- Mobile phone loading -->
                     <div id="demo-loading" class="">
                         <div class="md:hidden relative mx-auto w-full max-w-[280px] sm:max-w-[320px]">
-                            <div class="bg-slate-900 rounded-[2.5rem] p-2 shadow-2xl border-[8px] border-slate-800 flex flex-col">
-                                <div class="bg-slate-800 w-full rounded-[1.5rem] overflow-hidden" style="aspect-ratio:9/19;">
+                            <div
+                                class="bg-slate-900 rounded-[2.5rem] p-2 shadow-2xl border-[8px] border-slate-800 flex flex-col">
+                                <div class="bg-slate-800 w-full rounded-[1.5rem] overflow-hidden"
+                                    style="aspect-ratio:9/19;">
                                     <div class="w-full h-full flex flex-col items-center justify-center gap-3">
                                         <div class="flex items-end gap-1 h-8">
-                                            <div class="w-1.5 bg-brand-500 rounded-full" style="height:10px;animation:demoWave 0.5s ease-in-out infinite alternate;"></div>
-                                            <div class="w-1.5 bg-brand-500 rounded-full" style="height:18px;animation:demoWave 0.6s ease-in-out infinite alternate;animation-delay:0.1s;"></div>
-                                            <div class="w-1.5 bg-brand-500 rounded-full" style="height:24px;animation:demoWave 0.55s ease-in-out infinite alternate;animation-delay:0.2s;"></div>
-                                            <div class="w-1.5 bg-brand-500 rounded-full" style="height:14px;animation:demoWave 0.7s ease-in-out infinite alternate;animation-delay:0.3s;"></div>
-                                            <div class="w-1.5 bg-brand-500 rounded-full" style="height:20px;animation:demoWave 0.5s ease-in-out infinite alternate;animation-delay:0.4s;"></div>
+                                            <div class="w-1.5 bg-brand-500 rounded-full"
+                                                style="height:10px;animation:demoWave 0.5s ease-in-out infinite alternate;">
+                                            </div>
+                                            <div class="w-1.5 bg-brand-500 rounded-full"
+                                                style="height:18px;animation:demoWave 0.6s ease-in-out infinite alternate;animation-delay:0.1s;">
+                                            </div>
+                                            <div class="w-1.5 bg-brand-500 rounded-full"
+                                                style="height:24px;animation:demoWave 0.55s ease-in-out infinite alternate;animation-delay:0.2s;">
+                                            </div>
+                                            <div class="w-1.5 bg-brand-500 rounded-full"
+                                                style="height:14px;animation:demoWave 0.7s ease-in-out infinite alternate;animation-delay:0.3s;">
+                                            </div>
+                                            <div class="w-1.5 bg-brand-500 rounded-full"
+                                                style="height:20px;animation:demoWave 0.5s ease-in-out infinite alternate;animation-delay:0.4s;">
+                                            </div>
                                         </div>
-                                        <p class="text-white/50 text-xs font-medium px-4 text-center">Generating audio&hellip;</p>
+                                        <p class="text-white/50 text-xs font-medium px-4 text-center">Generating
+                                            audio&hellip;</p>
                                     </div>
                                 </div>
                                 <div class="bg-white p-3 rounded-[1rem] flex items-center justify-center gap-2 mt-2">
@@ -471,20 +625,44 @@
                         </div>
                         <!-- MacBook loading -->
                         <div class="max-md:hidden relative mx-auto w-full max-w-4xl mt-16">
-                            <div class="bg-black rounded-[1.5rem] p-3 pb-4 shadow-2xl ring-1 ring-white/20 flex flex-col">
-                                <div class="bg-slate-800 w-full aspect-video rounded-xl flex flex-col items-center justify-center gap-4">
+                            <div
+                                class="bg-black rounded-[1.5rem] p-3 pb-4 shadow-2xl ring-1 ring-white/20 flex flex-col">
+                                <div
+                                    class="bg-slate-800 w-full aspect-video rounded-xl flex flex-col items-center justify-center gap-4">
                                     <div class="flex items-end gap-1 h-10">
-                                        <div class="w-1.5 bg-brand-500 rounded-full" style="height:14px;animation:demoWave 0.5s ease-in-out infinite alternate;"></div>
-                                        <div class="w-1.5 bg-brand-500 rounded-full" style="height:22px;animation:demoWave 0.6s ease-in-out infinite alternate;animation-delay:0.05s;"></div>
-                                        <div class="w-1.5 bg-brand-500 rounded-full" style="height:18px;animation:demoWave 0.55s ease-in-out infinite alternate;animation-delay:0.1s;"></div>
-                                        <div class="w-1.5 bg-brand-500 rounded-full" style="height:28px;animation:demoWave 0.7s ease-in-out infinite alternate;animation-delay:0.15s;"></div>
-                                        <div class="w-1.5 bg-brand-500 rounded-full" style="height:12px;animation:demoWave 0.5s ease-in-out infinite alternate;animation-delay:0.2s;"></div>
-                                        <div class="w-1.5 bg-brand-500 rounded-full" style="height:20px;animation:demoWave 0.65s ease-in-out infinite alternate;animation-delay:0.25s;"></div>
-                                        <div class="w-1.5 bg-brand-500 rounded-full" style="height:30px;animation:demoWave 0.6s ease-in-out infinite alternate;animation-delay:0.3s;"></div>
-                                        <div class="w-1.5 bg-brand-500 rounded-full" style="height:16px;animation:demoWave 0.5s ease-in-out infinite alternate;animation-delay:0.35s;"></div>
-                                        <div class="w-1.5 bg-brand-500 rounded-full" style="height:24px;animation:demoWave 0.7s ease-in-out infinite alternate;animation-delay:0.4s;"></div>
-                                        <div class="w-1.5 bg-brand-500 rounded-full" style="height:10px;animation:demoWave 0.55s ease-in-out infinite alternate;animation-delay:0.45s;"></div>
-                                        <div class="w-1.5 bg-brand-500 rounded-full" style="height:26px;animation:demoWave 0.6s ease-in-out infinite alternate;animation-delay:0.5s;"></div>
+                                        <div class="w-1.5 bg-brand-500 rounded-full"
+                                            style="height:14px;animation:demoWave 0.5s ease-in-out infinite alternate;">
+                                        </div>
+                                        <div class="w-1.5 bg-brand-500 rounded-full"
+                                            style="height:22px;animation:demoWave 0.6s ease-in-out infinite alternate;animation-delay:0.05s;">
+                                        </div>
+                                        <div class="w-1.5 bg-brand-500 rounded-full"
+                                            style="height:18px;animation:demoWave 0.55s ease-in-out infinite alternate;animation-delay:0.1s;">
+                                        </div>
+                                        <div class="w-1.5 bg-brand-500 rounded-full"
+                                            style="height:28px;animation:demoWave 0.7s ease-in-out infinite alternate;animation-delay:0.15s;">
+                                        </div>
+                                        <div class="w-1.5 bg-brand-500 rounded-full"
+                                            style="height:12px;animation:demoWave 0.5s ease-in-out infinite alternate;animation-delay:0.2s;">
+                                        </div>
+                                        <div class="w-1.5 bg-brand-500 rounded-full"
+                                            style="height:20px;animation:demoWave 0.65s ease-in-out infinite alternate;animation-delay:0.25s;">
+                                        </div>
+                                        <div class="w-1.5 bg-brand-500 rounded-full"
+                                            style="height:30px;animation:demoWave 0.6s ease-in-out infinite alternate;animation-delay:0.3s;">
+                                        </div>
+                                        <div class="w-1.5 bg-brand-500 rounded-full"
+                                            style="height:16px;animation:demoWave 0.5s ease-in-out infinite alternate;animation-delay:0.35s;">
+                                        </div>
+                                        <div class="w-1.5 bg-brand-500 rounded-full"
+                                            style="height:24px;animation:demoWave 0.7s ease-in-out infinite alternate;animation-delay:0.4s;">
+                                        </div>
+                                        <div class="w-1.5 bg-brand-500 rounded-full"
+                                            style="height:10px;animation:demoWave 0.55s ease-in-out infinite alternate;animation-delay:0.45s;">
+                                        </div>
+                                        <div class="w-1.5 bg-brand-500 rounded-full"
+                                            style="height:26px;animation:demoWave 0.6s ease-in-out infinite alternate;animation-delay:0.5s;">
+                                        </div>
                                     </div>
                                     <p class="text-white/60 text-sm font-medium">Generating demo audio&hellip;</p>
                                     <p class="text-white/30 text-xs">VoxBento TTS — takes ~30s on first run</p>
@@ -492,15 +670,21 @@
                                 <div class="bg-white p-4 rounded-[0.5rem] flex items-center gap-4 mt-2">
                                     <span class="text-xl font-black tracking-tight text-[#0d0f10]">VoxBento</span>
                                     <div class="w-px h-6 bg-slate-200"></div>
-                                    <p class="text-sm font-bold text-slate-500">Generating audio in English, French, Spanish &amp; German&hellip;</p>
+                                    <p class="text-sm font-bold text-slate-500">Generating audio in English, French,
+                                        Spanish &amp; German&hellip;</p>
                                 </div>
                             </div>
                             <div class="w-full h-1"></div>
                             <div class="relative z-20 w-[104%] -ml-[2%]">
-                                <div class="bg-gradient-to-b from-[#e5e7eb] to-[#d1d5db] h-3.5 rounded-t-md w-full shadow-[inset_0_1px_1px_rgba(255,255,255,0.8)] border-b border-[#9ca3af] relative">
-                                    <div class="absolute top-0 left-1/2 -translate-x-1/2 w-32 h-1.5 bg-gradient-to-b from-[#d1d5db] to-[#9ca3af] rounded-b-lg"></div>
+                                <div
+                                    class="bg-gradient-to-b from-[#e5e7eb] to-[#d1d5db] h-3.5 rounded-t-md w-full shadow-[inset_0_1px_1px_rgba(255,255,255,0.8)] border-b border-[#9ca3af] relative">
+                                    <div
+                                        class="absolute top-0 left-1/2 -translate-x-1/2 w-32 h-1.5 bg-gradient-to-b from-[#d1d5db] to-[#9ca3af] rounded-b-lg">
+                                    </div>
                                 </div>
-                                <div class="bg-gradient-to-b from-[#9ca3af] to-[#4b5563] h-2 rounded-b-2xl w-full shadow-[0_20px_40px_rgba(0,0,0,0.5)]"></div>
+                                <div
+                                    class="bg-gradient-to-b from-[#9ca3af] to-[#4b5563] h-2 rounded-b-2xl w-full shadow-[0_20px_40px_rgba(0,0,0,0.5)]">
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -509,113 +693,204 @@
 
                     <!-- Mobile phone player -->
                     <div id="demo-player" class="hidden">
-                        <div class="md:hidden relative mx-auto w-full max-w-[280px] sm:max-w-[320px] hover:scale-[1.02] transition-transform duration-500 group/mockup">
-                            <div class="bg-slate-900 rounded-[2.5rem] p-2 shadow-2xl relative border-[8px] border-slate-800 flex flex-col">
-                                <div class="absolute top-0 left-1/2 -translate-x-1/2 w-32 h-6 bg-slate-800 rounded-b-xl z-20 flex justify-center items-end pb-1.5">
+                        <div
+                            class="md:hidden relative mx-auto w-full max-w-[280px] sm:max-w-[320px] hover:scale-[1.02] transition-transform duration-500 group/mockup">
+                            <div
+                                class="bg-slate-900 rounded-[2.5rem] p-2 shadow-2xl relative border-[8px] border-slate-800 flex flex-col">
+                                <div
+                                    class="absolute top-0 left-1/2 -translate-x-1/2 w-32 h-6 bg-slate-800 rounded-b-xl z-20 flex justify-center items-end pb-1.5">
                                     <div class="w-12 h-1 bg-slate-900 rounded-full"></div>
                                 </div>
-                                <div class="bg-black w-full rounded-[1.5rem] relative overflow-hidden flex flex-col border border-white/5" style="aspect-ratio:9/19;">
-                                    <img src="https://images.unsplash.com/photo-1540575467063-178a50c2df87?q=80&w=800&auto=format&fit=crop" class="absolute inset-0 w-full h-full object-cover opacity-30" alt="Conference">
+                                <div class="bg-black w-full rounded-[1.5rem] relative overflow-hidden flex flex-col border border-white/5"
+                                    style="aspect-ratio:9/19;">
+                                    <img src="https://images.unsplash.com/photo-1540575467063-178a50c2df87?q=80&w=800&auto=format&fit=crop"
+                                        class="absolute inset-0 w-full h-full object-cover opacity-30" alt="Conference">
                                     <div class="absolute top-4 left-4 z-20">
-                                        <span class="bg-red-600 text-white text-[10px] font-extrabold px-2 py-0.5 rounded-full uppercase tracking-widest flex items-center gap-1">
+                                        <span
+                                            class="bg-red-600 text-white text-[10px] font-extrabold px-2 py-0.5 rounded-full uppercase tracking-widest flex items-center gap-1">
                                             <span class="w-1 h-1 bg-white rounded-full animate-pulse"></span> LIVE
                                         </span>
                                     </div>
-                                    <div id="demo-waveform-mobile" class="absolute inset-0 flex items-center justify-center z-10 pointer-events-none opacity-0 transition-opacity duration-500">
+                                    <div id="demo-waveform-mobile"
+                                        class="absolute inset-0 flex items-center justify-center z-10 pointer-events-none opacity-0 transition-opacity duration-500">
                                         <div class="flex items-end gap-1 h-8">
-                                            <div class="w-1 bg-brand-500 rounded-full" style="height:8px;animation:demoWave 0.5s ease-in-out infinite alternate;"></div>
-                                            <div class="w-1 bg-brand-500 rounded-full" style="height:16px;animation:demoWave 0.6s ease-in-out infinite alternate;animation-delay:0.08s;"></div>
-                                            <div class="w-1 bg-brand-500 rounded-full" style="height:20px;animation:demoWave 0.55s ease-in-out infinite alternate;animation-delay:0.16s;"></div>
-                                            <div class="w-1 bg-brand-500 rounded-full" style="height:12px;animation:demoWave 0.7s ease-in-out infinite alternate;animation-delay:0.24s;"></div>
-                                            <div class="w-1 bg-brand-500 rounded-full" style="height:18px;animation:demoWave 0.6s ease-in-out infinite alternate;animation-delay:0.32s;"></div>
+                                            <div class="w-1 bg-brand-500 rounded-full"
+                                                style="height:8px;animation:demoWave 0.5s ease-in-out infinite alternate;">
+                                            </div>
+                                            <div class="w-1 bg-brand-500 rounded-full"
+                                                style="height:16px;animation:demoWave 0.6s ease-in-out infinite alternate;animation-delay:0.08s;">
+                                            </div>
+                                            <div class="w-1 bg-brand-500 rounded-full"
+                                                style="height:20px;animation:demoWave 0.55s ease-in-out infinite alternate;animation-delay:0.16s;">
+                                            </div>
+                                            <div class="w-1 bg-brand-500 rounded-full"
+                                                style="height:12px;animation:demoWave 0.7s ease-in-out infinite alternate;animation-delay:0.24s;">
+                                            </div>
+                                            <div class="w-1 bg-brand-500 rounded-full"
+                                                style="height:18px;animation:demoWave 0.6s ease-in-out infinite alternate;animation-delay:0.32s;">
+                                            </div>
                                         </div>
                                     </div>
                                     <div class="flex-1"></div>
-                                    <div class="relative z-10 bg-gradient-to-t from-black/95 via-black/80 to-transparent p-3 w-full">
+                                    <div
+                                        class="relative z-10 bg-gradient-to-t from-black/95 via-black/80 to-transparent p-3 w-full">
                                         <div class="flex items-center justify-between gap-2">
-                                            <button id="demo-play-btn-mobile" class="w-9 h-9 bg-brand-600 text-white rounded-full flex items-center justify-center shadow-lg flex-shrink-0" aria-label="Play">
-                                                <svg id="demo-play-icon-mobile" class="w-4 h-4 ml-0.5" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
-                                                <svg id="demo-pause-icon-mobile" class="w-4 h-4 hidden" fill="currentColor" viewBox="0 0 24 24"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
+                                            <button id="demo-play-btn-mobile"
+                                                class="w-9 h-9 bg-brand-600 text-white rounded-full flex items-center justify-center shadow-lg flex-shrink-0"
+                                                aria-label="Play">
+                                                <svg id="demo-play-icon-mobile" class="w-4 h-4 ml-0.5"
+                                                    fill="currentColor" viewBox="0 0 24 24">
+                                                    <path d="M8 5v14l11-7z" />
+                                                </svg>
+                                                <svg id="demo-pause-icon-mobile" class="w-4 h-4 hidden"
+                                                    fill="currentColor" viewBox="0 0 24 24">
+                                                    <path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z" />
+                                                </svg>
                                             </button>
                                             <div class="flex items-center gap-1.5 flex-wrap justify-end">
-                                                <button data-demo-lang="en" class="demo-lang-btn bg-brand-600 border border-brand-500 text-white text-[10px] font-bold px-2 py-1 rounded-full transition-all">EN</button>
-                                                <button data-demo-lang="fr" class="demo-lang-btn border border-white/20 text-white/60 text-[10px] font-bold px-2 py-1 rounded-full bg-white/5 transition-all">FR</button>
-                                                <button data-demo-lang="es" class="demo-lang-btn border border-white/20 text-white/60 text-[10px] font-bold px-2 py-1 rounded-full bg-white/5 transition-all">ES</button>
-                                                <button data-demo-lang="de" class="demo-lang-btn border border-white/20 text-white/60 text-[10px] font-bold px-2 py-1 rounded-full bg-white/5 transition-all">DE</button>
+                                                <button data-demo-lang="en"
+                                                    class="demo-lang-btn bg-brand-600 border border-brand-500 text-white text-[10px] font-bold px-2 py-1 rounded-full transition-all">EN</button>
+                                                <button data-demo-lang="fr"
+                                                    class="demo-lang-btn border border-white/20 text-white/60 text-[10px] font-bold px-2 py-1 rounded-full bg-white/5 transition-all">FR</button>
+                                                <button data-demo-lang="es"
+                                                    class="demo-lang-btn border border-white/20 text-white/60 text-[10px] font-bold px-2 py-1 rounded-full bg-white/5 transition-all">ES</button>
+                                                <button data-demo-lang="de"
+                                                    class="demo-lang-btn border border-white/20 text-white/60 text-[10px] font-bold px-2 py-1 rounded-full bg-white/5 transition-all">DE</button>
                                             </div>
                                         </div>
                                     </div>
                                 </div>
                                 <div class="bg-white p-3 rounded-[1rem] flex items-center justify-center gap-2 mt-2">
                                     <span class="text-lg font-black tracking-tight text-[#0d0f10]">VoxBento</span>
-                                    <p id="demo-caption-mobile" class="text-xs font-bold text-slate-500 truncate">VoxBento translating live&hellip;</p>
+                                    <p id="demo-caption-mobile" class="text-xs font-bold text-slate-500 truncate">
+                                        VoxBento translating live&hellip;</p>
                                 </div>
                             </div>
                         </div>
 
                         <!-- MacBook desktop player -->
-                        <div class="max-md:hidden relative mx-auto w-full max-w-4xl hover:scale-[1.02] transition-transform duration-500 group/mockup mt-16">
-                            <div class="bg-black rounded-[1.5rem] p-3 pb-4 shadow-2xl relative ring-1 ring-white/20 shadow-[0_0_50px_rgba(0,0,0,0.25)] flex flex-col">
-                                <div class="absolute top-0 left-1/2 -translate-x-1/2 w-36 h-7 bg-black rounded-b-[1rem] z-20 flex justify-center items-center gap-3">
-                                    <div class="w-2 h-2 rounded-full bg-[#1a1a24] shadow-inner border border-[#2a2a35] flex items-center justify-center"><div class="w-0.5 h-0.5 rounded-full bg-blue-900/50"></div></div>
-                                    <div class="w-1 h-1 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.8)]"></div>
+                        <div
+                            class="max-md:hidden relative mx-auto w-full max-w-4xl hover:scale-[1.02] transition-transform duration-500 group/mockup mt-16">
+                            <div
+                                class="bg-black rounded-[1.5rem] p-3 pb-4 shadow-2xl relative ring-1 ring-white/20 shadow-[0_0_50px_rgba(0,0,0,0.25)] flex flex-col">
+                                <div
+                                    class="absolute top-0 left-1/2 -translate-x-1/2 w-36 h-7 bg-black rounded-b-[1rem] z-20 flex justify-center items-center gap-3">
+                                    <div
+                                        class="w-2 h-2 rounded-full bg-[#1a1a24] shadow-inner border border-[#2a2a35] flex items-center justify-center">
+                                        <div class="w-0.5 h-0.5 rounded-full bg-blue-900/50"></div>
+                                    </div>
+                                    <div
+                                        class="w-1 h-1 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.8)]">
+                                    </div>
                                 </div>
                                 <!-- Screen -->
-                                <div class="bg-black w-full aspect-video rounded-xl relative overflow-hidden border border-white/5">
-                                    <img src="https://images.unsplash.com/photo-1540575467063-178a50c2df87?q=80&w=1200&auto=format&fit=crop" class="absolute inset-0 w-full h-full object-cover opacity-35 group-hover/mockup:scale-105 transition-transform duration-1000" alt="Conference">
+                                <div
+                                    class="bg-black w-full aspect-video rounded-xl relative overflow-hidden border border-white/5">
+                                    <img src="https://images.unsplash.com/photo-1540575467063-178a50c2df87?q=80&w=1200&auto=format&fit=crop"
+                                        class="absolute inset-0 w-full h-full object-cover opacity-35 group-hover/mockup:scale-105 transition-transform duration-1000"
+                                        alt="Conference">
                                     <!-- Waveform -->
-                                    <div id="demo-waveform" class="absolute inset-0 flex items-center justify-center z-10 pointer-events-none opacity-0 transition-opacity duration-500">
+                                    <div id="demo-waveform"
+                                        class="absolute inset-0 flex items-center justify-center z-10 pointer-events-none opacity-0 transition-opacity duration-500">
                                         <div class="flex items-end gap-1 h-12">
-                                            <div class="w-1.5 bg-brand-500 rounded-full" style="height:10px;animation:demoWave 0.5s ease-in-out infinite alternate;"></div>
-                                            <div class="w-1.5 bg-brand-500 rounded-full" style="height:24px;animation:demoWave 0.6s ease-in-out infinite alternate;animation-delay:0.04s;"></div>
-                                            <div class="w-1.5 bg-brand-500 rounded-full" style="height:18px;animation:demoWave 0.55s ease-in-out infinite alternate;animation-delay:0.08s;"></div>
-                                            <div class="w-1.5 bg-brand-500 rounded-full" style="height:32px;animation:demoWave 0.7s ease-in-out infinite alternate;animation-delay:0.12s;"></div>
-                                            <div class="w-1.5 bg-brand-500 rounded-full" style="height:14px;animation:demoWave 0.5s ease-in-out infinite alternate;animation-delay:0.16s;"></div>
-                                            <div class="w-1.5 bg-brand-500 rounded-full" style="height:22px;animation:demoWave 0.65s ease-in-out infinite alternate;animation-delay:0.2s;"></div>
-                                            <div class="w-1.5 bg-brand-500 rounded-full" style="height:36px;animation:demoWave 0.6s ease-in-out infinite alternate;animation-delay:0.24s;"></div>
-                                            <div class="w-1.5 bg-brand-500 rounded-full" style="height:16px;animation:demoWave 0.5s ease-in-out infinite alternate;animation-delay:0.28s;"></div>
-                                            <div class="w-1.5 bg-brand-500 rounded-full" style="height:28px;animation:demoWave 0.7s ease-in-out infinite alternate;animation-delay:0.32s;"></div>
-                                            <div class="w-1.5 bg-brand-500 rounded-full" style="height:12px;animation:demoWave 0.55s ease-in-out infinite alternate;animation-delay:0.36s;"></div>
-                                            <div class="w-1.5 bg-brand-500 rounded-full" style="height:30px;animation:demoWave 0.6s ease-in-out infinite alternate;animation-delay:0.4s;"></div>
-                                            <div class="w-1.5 bg-brand-500 rounded-full" style="height:20px;animation:demoWave 0.5s ease-in-out infinite alternate;animation-delay:0.44s;"></div>
-                                            <div class="w-1.5 bg-brand-500 rounded-full" style="height:26px;animation:demoWave 0.7s ease-in-out infinite alternate;animation-delay:0.48s;"></div>
+                                            <div class="w-1.5 bg-brand-500 rounded-full"
+                                                style="height:10px;animation:demoWave 0.5s ease-in-out infinite alternate;">
+                                            </div>
+                                            <div class="w-1.5 bg-brand-500 rounded-full"
+                                                style="height:24px;animation:demoWave 0.6s ease-in-out infinite alternate;animation-delay:0.04s;">
+                                            </div>
+                                            <div class="w-1.5 bg-brand-500 rounded-full"
+                                                style="height:18px;animation:demoWave 0.55s ease-in-out infinite alternate;animation-delay:0.08s;">
+                                            </div>
+                                            <div class="w-1.5 bg-brand-500 rounded-full"
+                                                style="height:32px;animation:demoWave 0.7s ease-in-out infinite alternate;animation-delay:0.12s;">
+                                            </div>
+                                            <div class="w-1.5 bg-brand-500 rounded-full"
+                                                style="height:14px;animation:demoWave 0.5s ease-in-out infinite alternate;animation-delay:0.16s;">
+                                            </div>
+                                            <div class="w-1.5 bg-brand-500 rounded-full"
+                                                style="height:22px;animation:demoWave 0.65s ease-in-out infinite alternate;animation-delay:0.2s;">
+                                            </div>
+                                            <div class="w-1.5 bg-brand-500 rounded-full"
+                                                style="height:36px;animation:demoWave 0.6s ease-in-out infinite alternate;animation-delay:0.24s;">
+                                            </div>
+                                            <div class="w-1.5 bg-brand-500 rounded-full"
+                                                style="height:16px;animation:demoWave 0.5s ease-in-out infinite alternate;animation-delay:0.28s;">
+                                            </div>
+                                            <div class="w-1.5 bg-brand-500 rounded-full"
+                                                style="height:28px;animation:demoWave 0.7s ease-in-out infinite alternate;animation-delay:0.32s;">
+                                            </div>
+                                            <div class="w-1.5 bg-brand-500 rounded-full"
+                                                style="height:12px;animation:demoWave 0.55s ease-in-out infinite alternate;animation-delay:0.36s;">
+                                            </div>
+                                            <div class="w-1.5 bg-brand-500 rounded-full"
+                                                style="height:30px;animation:demoWave 0.6s ease-in-out infinite alternate;animation-delay:0.4s;">
+                                            </div>
+                                            <div class="w-1.5 bg-brand-500 rounded-full"
+                                                style="height:20px;animation:demoWave 0.5s ease-in-out infinite alternate;animation-delay:0.44s;">
+                                            </div>
+                                            <div class="w-1.5 bg-brand-500 rounded-full"
+                                                style="height:26px;animation:demoWave 0.7s ease-in-out infinite alternate;animation-delay:0.48s;">
+                                            </div>
                                         </div>
                                     </div>
                                     <!-- LIVE badge -->
                                     <div class="absolute top-4 left-4 z-20">
-                                        <span class="bg-red-600 text-white text-[11px] font-extrabold px-3 py-1 rounded-full uppercase tracking-widest flex items-center gap-1.5">
-                                            <span class="w-1.5 h-1.5 bg-white rounded-full animate-pulse"></span> LIVE DEMO
+                                        <span
+                                            class="bg-red-600 text-white text-[11px] font-extrabold px-3 py-1 rounded-full uppercase tracking-widest flex items-center gap-1.5">
+                                            <span class="w-1.5 h-1.5 bg-white rounded-full animate-pulse"></span> LIVE
+                                            DEMO
                                         </span>
                                     </div>
                                     <!-- Controls -->
-                                    <div class="absolute bottom-0 left-0 right-0 z-20 bg-gradient-to-t from-black/95 via-black/80 to-transparent p-6 pt-16 flex items-end justify-between gap-4">
-                                        <button id="demo-play-btn" class="w-12 h-12 bg-brand-600 hover:bg-brand-500 text-white rounded-full flex items-center justify-center shadow-lg transition-colors flex-shrink-0" aria-label="Play">
-                                            <svg id="demo-play-icon" class="w-5 h-5 ml-0.5" fill="currentColor" viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg>
-                                            <svg id="demo-pause-icon" class="w-5 h-5 hidden" fill="currentColor" viewBox="0 0 24 24"><path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z"/></svg>
+                                    <div
+                                        class="absolute bottom-0 left-0 right-0 z-20 bg-gradient-to-t from-black/95 via-black/80 to-transparent p-6 pt-16 flex items-end justify-between gap-4">
+                                        <button id="demo-play-btn"
+                                            class="w-12 h-12 bg-brand-600 hover:bg-brand-500 text-white rounded-full flex items-center justify-center shadow-lg transition-colors flex-shrink-0"
+                                            aria-label="Play">
+                                            <svg id="demo-play-icon" class="w-5 h-5 ml-0.5" fill="currentColor"
+                                                viewBox="0 0 24 24">
+                                                <path d="M8 5v14l11-7z" />
+                                            </svg>
+                                            <svg id="demo-pause-icon" class="w-5 h-5 hidden" fill="currentColor"
+                                                viewBox="0 0 24 24">
+                                                <path d="M6 19h4V5H6v14zm8-14v14h4V5h-4z" />
+                                            </svg>
                                         </button>
                                         <div class="flex items-center gap-2 flex-wrap justify-end">
-                                            <button data-demo-lang="en" class="demo-lang-btn bg-brand-600 border border-brand-500 text-white text-xs font-bold px-3 py-1.5 rounded-full shadow-lg transition-all">English</button>
-                                            <button data-demo-lang="fr" class="demo-lang-btn border border-white/20 text-white/60 hover:text-white hover:border-white/50 bg-white/5 text-xs font-bold px-3 py-1.5 rounded-full transition-all">French</button>
-                                            <button data-demo-lang="es" class="demo-lang-btn border border-white/20 text-white/60 hover:text-white hover:border-white/50 bg-white/5 text-xs font-bold px-3 py-1.5 rounded-full transition-all">Spanish</button>
-                                            <button data-demo-lang="de" class="demo-lang-btn border border-white/20 text-white/60 hover:text-white hover:border-white/50 bg-white/5 text-xs font-bold px-3 py-1.5 rounded-full transition-all">German</button>
+                                            <button data-demo-lang="en"
+                                                class="demo-lang-btn bg-brand-600 border border-brand-500 text-white text-xs font-bold px-3 py-1.5 rounded-full shadow-lg transition-all">English</button>
+                                            <button data-demo-lang="fr"
+                                                class="demo-lang-btn border border-white/20 text-white/60 hover:text-white hover:border-white/50 bg-white/5 text-xs font-bold px-3 py-1.5 rounded-full transition-all">French</button>
+                                            <button data-demo-lang="es"
+                                                class="demo-lang-btn border border-white/20 text-white/60 hover:text-white hover:border-white/50 bg-white/5 text-xs font-bold px-3 py-1.5 rounded-full transition-all">Spanish</button>
+                                            <button data-demo-lang="de"
+                                                class="demo-lang-btn border border-white/20 text-white/60 hover:text-white hover:border-white/50 bg-white/5 text-xs font-bold px-3 py-1.5 rounded-full transition-all">German</button>
                                         </div>
                                     </div>
                                 </div>
                                 <!-- Caption / subtitle bar (inside bezel) -->
                                 <div class="bg-white p-4 rounded-[0.5rem] flex items-center gap-4 mt-2">
-                                    <span class="text-xl font-black tracking-tight text-[#0d0f10] flex-shrink-0">VoxBento</span>
+                                    <span
+                                        class="text-xl font-black tracking-tight text-[#0d0f10] flex-shrink-0">VoxBento</span>
                                     <div class="w-px h-6 bg-slate-200 flex-shrink-0"></div>
-                                    <p id="demo-caption" class="text-sm font-bold text-slate-600 flex-1 truncate">Press play to hear VoxBento translate live&hellip;</p>
+                                    <p id="demo-caption" class="text-sm font-bold text-slate-600 flex-1 truncate">Press
+                                        play to hear VoxBento translate live&hellip;</p>
                                 </div>
                             </div>
                             <!-- Hinge -->
                             <div class="w-full h-1"></div>
                             <!-- Base -->
                             <div class="relative z-20 w-[104%] -ml-[2%]">
-                                <div class="bg-gradient-to-b from-[#e5e7eb] to-[#d1d5db] h-3.5 rounded-t-md w-full relative shadow-[inset_0_1px_1px_rgba(255,255,255,0.8)] border-b border-[#9ca3af]">
-                                    <div class="absolute top-0 left-1/2 -translate-x-1/2 w-32 h-1.5 bg-gradient-to-b from-[#d1d5db] to-[#9ca3af] rounded-b-lg shadow-[inset_0_1px_2px_rgba(0,0,0,0.15)]"></div>
+                                <div
+                                    class="bg-gradient-to-b from-[#e5e7eb] to-[#d1d5db] h-3.5 rounded-t-md w-full relative shadow-[inset_0_1px_1px_rgba(255,255,255,0.8)] border-b border-[#9ca3af]">
+                                    <div
+                                        class="absolute top-0 left-1/2 -translate-x-1/2 w-32 h-1.5 bg-gradient-to-b from-[#d1d5db] to-[#9ca3af] rounded-b-lg shadow-[inset_0_1px_2px_rgba(0,0,0,0.15)]">
+                                    </div>
                                 </div>
-                                <div class="bg-gradient-to-b from-[#9ca3af] to-[#4b5563] h-2 rounded-b-2xl w-full shadow-[0_20px_40px_rgba(0,0,0,0.5)]"></div>
+                                <div
+                                    class="bg-gradient-to-b from-[#9ca3af] to-[#4b5563] h-2 rounded-b-2xl w-full shadow-[0_20px_40px_rgba(0,0,0,0.5)]">
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -623,34 +898,56 @@
                 </div>
             </div>
         </section>
-        
+
         <!-- Open Source Highlight -->
         <section id="open-source" class="py-24 bg-white border-t-[3px] border-[#0d0f10]">
             <div class="max-w-7xl mx-auto px-6 flex flex-col md:flex-row items-center gap-16">
                 <div class="flex-1 space-y-8">
                     <h2 class="text-4xl md:text-5xl font-extrabold text-[#0d0f10]">Proudly Open Source</h2>
                     <p class="text-[#0d0f10] opacity-80 text-xl leading-relaxed font-bold">
-                        VoxBento is built on transparent, community-driven principles. Host it on your own infrastructure for maximum privacy, or integrate it with your existing tools via our open APIs.
+                        VoxBento is built on transparent, community-driven principles. Host it on your own
+                        infrastructure for maximum privacy, or integrate it with your existing tools via our open APIs.
                     </p>
                     <div class="flex gap-4 pt-4">
-                        <a href="https://github.com/fossasia/voxbento" target="_blank" class="brutal-btn bg-[#0d0f10] text-white hover:bg-slate-800 flex items-center gap-3">
-                            <svg class="w-6 h-6" fill="currentColor" viewBox="0 0 24 24"><path d="M12 2C6.477 2 2 6.477 2 12c0 4.42 2.865 8.166 6.839 9.489.5.092.682-.217.682-.482 0-.237-.008-.866-.013-1.7-2.782.603-3.369-1.34-3.369-1.34-.454-1.156-1.11-1.463-1.11-1.463-.908-.62.069-.608.069-.608 1.003.07 1.531 1.03 1.531 1.03.892 1.529 2.341 1.087 2.91.831.092-.646.35-1.086.636-1.336-2.22-.253-4.555-1.11-4.555-4.943 0-1.091.39-1.984 1.029-2.683-.103-.253-.446-1.27.098-2.647 0 0 .84-.269 2.75 1.025A9.578 9.578 0 0112 6.836c.85.004 1.705.114 2.504.336 1.909-1.294 2.747-1.025 2.747-1.025.546 1.377.203 2.394.1 2.647.64.699 1.028 1.592 1.028 2.683 0 3.842-2.339 4.687-4.566 4.935.359.309.678.919.678 1.852 0 1.336-.012 2.415-.012 2.743 0 .267.18.578.688.48C19.138 20.161 22 16.416 22 12c0-5.523-4.477-10-10-10z"/></svg>
+                        <a href="https://github.com/fossasia/voxbento" target="_blank"
+                            class="brutal-btn bg-[#0d0f10] text-white hover:bg-slate-800 flex items-center gap-3">
+                            <svg class="w-6 h-6" fill="currentColor" viewBox="0 0 24 24">
+                                <path
+                                    d="M12 2C6.477 2 2 6.477 2 12c0 4.42 2.865 8.166 6.839 9.489.5.092.682-.217.682-.482 0-.237-.008-.866-.013-1.7-2.782.603-3.369-1.34-3.369-1.34-.454-1.156-1.11-1.463-1.11-1.463-.908-.62.069-.608.069-.608 1.003.07 1.531 1.03 1.531 1.03.892 1.529 2.341 1.087 2.91.831.092-.646.35-1.086.636-1.336-2.22-.253-4.555-1.11-4.555-4.943 0-1.091.39-1.984 1.029-2.683-.103-.253-.446-1.27.098-2.647 0 0 .84-.269 2.75 1.025A9.578 9.578 0 0112 6.836c.85.004 1.705.114 2.504.336 1.909-1.294 2.747-1.025 2.747-1.025.546 1.377.203 2.394.1 2.647.64.699 1.028 1.592 1.028 2.683 0 3.842-2.339 4.687-4.566 4.935.359.309.678.919.678 1.852 0 1.336-.012 2.415-.012 2.743 0 .267.18.578.688.48C19.138 20.161 22 16.416 22 12c0-5.523-4.477-10-10-10z" />
+                            </svg>
                             View on GitHub
                         </a>
                     </div>
                 </div>
                 <div class="flex-1 w-full relative max-md:hidden">
                     <!-- GitHub style contribution graph mockup -->
-                    <div class="bg-white brutal-border rounded-lg p-8 brutal-shadow transform rotate-3 hover:rotate-0 transition-transform duration-500">
+                    <div
+                        class="bg-white brutal-border rounded-lg p-8 brutal-shadow transform rotate-3 hover:rotate-0 transition-transform duration-500">
                         <div class="flex gap-2 flex-wrap">
                             <!-- Generate some randomish colored blocks for the mockup -->
-                            <div class="w-4 h-4 bg-green-200 border border-[#0d0f10] rounded-sm"></div><div class="w-4 h-4 bg-green-400 border border-[#0d0f10] rounded-sm"></div><div class="w-4 h-4 bg-slate-100 border border-[#0d0f10] rounded-sm"></div><div class="w-4 h-4 bg-green-500 border border-[#0d0f10] rounded-sm"></div>
-                            <div class="w-4 h-4 bg-slate-100 border border-[#0d0f10] rounded-sm"></div><div class="w-4 h-4 bg-green-300 border border-[#0d0f10] rounded-sm"></div><div class="w-4 h-4 bg-green-600 border border-[#0d0f10] rounded-sm"></div><div class="w-4 h-4 bg-slate-100 border border-[#0d0f10] rounded-sm"></div>
-                            <div class="w-4 h-4 bg-green-400 border border-[#0d0f10] rounded-sm"></div><div class="w-4 h-4 bg-slate-100 border border-[#0d0f10] rounded-sm"></div><div class="w-4 h-4 bg-green-200 border border-[#0d0f10] rounded-sm"></div><div class="w-4 h-4 bg-green-500 border border-[#0d0f10] rounded-sm"></div>
-                            <div class="w-4 h-4 bg-slate-100 border border-[#0d0f10] rounded-sm"></div><div class="w-4 h-4 bg-green-400 border border-[#0d0f10] rounded-sm"></div><div class="w-4 h-4 bg-slate-100 border border-[#0d0f10] rounded-sm"></div><div class="w-4 h-4 bg-green-700 border border-[#0d0f10] rounded-sm"></div>
-                            <div class="w-4 h-4 bg-green-200 border border-[#0d0f10] rounded-sm"></div><div class="w-4 h-4 bg-green-400 border border-[#0d0f10] rounded-sm"></div><div class="w-4 h-4 bg-slate-100 border border-[#0d0f10] rounded-sm"></div><div class="w-4 h-4 bg-green-500 border border-[#0d0f10] rounded-sm"></div>
+                            <div class="w-4 h-4 bg-green-200 border border-[#0d0f10] rounded-sm"></div>
+                            <div class="w-4 h-4 bg-green-400 border border-[#0d0f10] rounded-sm"></div>
+                            <div class="w-4 h-4 bg-slate-100 border border-[#0d0f10] rounded-sm"></div>
+                            <div class="w-4 h-4 bg-green-500 border border-[#0d0f10] rounded-sm"></div>
+                            <div class="w-4 h-4 bg-slate-100 border border-[#0d0f10] rounded-sm"></div>
+                            <div class="w-4 h-4 bg-green-300 border border-[#0d0f10] rounded-sm"></div>
+                            <div class="w-4 h-4 bg-green-600 border border-[#0d0f10] rounded-sm"></div>
+                            <div class="w-4 h-4 bg-slate-100 border border-[#0d0f10] rounded-sm"></div>
+                            <div class="w-4 h-4 bg-green-400 border border-[#0d0f10] rounded-sm"></div>
+                            <div class="w-4 h-4 bg-slate-100 border border-[#0d0f10] rounded-sm"></div>
+                            <div class="w-4 h-4 bg-green-200 border border-[#0d0f10] rounded-sm"></div>
+                            <div class="w-4 h-4 bg-green-500 border border-[#0d0f10] rounded-sm"></div>
+                            <div class="w-4 h-4 bg-slate-100 border border-[#0d0f10] rounded-sm"></div>
+                            <div class="w-4 h-4 bg-green-400 border border-[#0d0f10] rounded-sm"></div>
+                            <div class="w-4 h-4 bg-slate-100 border border-[#0d0f10] rounded-sm"></div>
+                            <div class="w-4 h-4 bg-green-700 border border-[#0d0f10] rounded-sm"></div>
+                            <div class="w-4 h-4 bg-green-200 border border-[#0d0f10] rounded-sm"></div>
+                            <div class="w-4 h-4 bg-green-400 border border-[#0d0f10] rounded-sm"></div>
+                            <div class="w-4 h-4 bg-slate-100 border border-[#0d0f10] rounded-sm"></div>
+                            <div class="w-4 h-4 bg-green-500 border border-[#0d0f10] rounded-sm"></div>
                         </div>
-                        <p class="text-sm font-extrabold text-[#0d0f10] mt-6 text-right">2,412 contributions in the last year</p>
+                        <p class="text-sm font-extrabold text-[#0d0f10] mt-6 text-right">2,412 contributions in the last
+                            year</p>
                     </div>
                 </div>
             </div>
@@ -658,13 +955,17 @@
 
         <!-- Final CTA -->
         <section class="bg-[#2563eb] py-32 text-center text-white px-6 border-y-[3px] border-[#0d0f10]">
-            <h2 class="text-5xl md:text-6xl font-extrabold mb-8 leading-tight text-white">Break Language Barriers<br>at Your Next Event</h2>
-            <p class="text-white opacity-90 text-xl mb-12 max-w-2xl mx-auto font-bold">Launch multilingual events in minutes with VoxBento. No complex setups, no hardware.</p>
+            <h2 class="text-5xl md:text-6xl font-extrabold mb-8 leading-tight text-white">Break Language Barriers<br>at
+                Your Next Event</h2>
+            <p class="text-white opacity-90 text-xl mb-12 max-w-2xl mx-auto font-bold">Launch multilingual events in
+                minutes with VoxBento. No complex setups, no hardware.</p>
             <div class="flex flex-col sm:flex-row justify-center gap-6">
-                <a href="{% if current_user %}/admin/events/{% else %}/register{% endif %}" class="brutal-btn bg-white text-[#0d0f10] hover:bg-slate-100 w-full sm:w-auto text-lg py-5 px-10">Get Started Now</a>
+                <a href="{% if current_user %}/admin/events/{% else %}/register{% endif %}"
+                    class="brutal-btn bg-white text-[#0d0f10] hover:bg-slate-100 w-full sm:w-auto text-lg py-5 px-10">Get
+                    Started Now</a>
             </div>
         </section>
-        
+
     </main>
 
     <!-- Unified Footer -->
@@ -675,12 +976,16 @@
                     <a href="/" class="flex items-center gap-2 mb-6">
                         <span class="text-2xl font-black tracking-tight text-[#0d0f10]">VoxBento</span>
                     </a>
-                    <p class="text-sm mb-6 opacity-80">Production-grade browser-first interpretation console for live events.</p>
+                    <p class="text-sm mb-6 opacity-80">Production-grade browser-first interpretation console for live
+                        events.</p>
                     <div class="flex gap-4">
-                        <a href="https://github.com/fossasia/voxbento" class="text-[#0d0f10] hover:text-[#2563eb] transition-colors">
+                        <a href="https://github.com/fossasia/voxbento"
+                            class="text-[#0d0f10] hover:text-[#2563eb] transition-colors">
                             <span class="sr-only">GitHub</span>
                             <svg class="h-6 w-6" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true">
-                                <path fill-rule="evenodd" d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z" clip-rule="evenodd" />
+                                <path fill-rule="evenodd"
+                                    d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"
+                                    clip-rule="evenodd" />
                             </svg>
                         </a>
                     </div>
@@ -688,45 +993,82 @@
                 <div>
                     <h3 class="text-[#0d0f10] font-extrabold mb-4 text-sm uppercase tracking-wider">Product</h3>
                     <ul class="space-y-3 text-sm opacity-80">
-                        <li><a href="#solutions" class="hover:text-[#2563eb] transition-colors underline decoration-2 underline-offset-2">Solutions</a></li>
-                        <li><a href="#interactive-demo" class="hover:text-[#2563eb] transition-colors underline decoration-2 underline-offset-2">Interactive Demo</a></li>
-                        <li><a href="https://docs.voxbento.com" class="hover:text-[#2563eb] transition-colors underline decoration-2 underline-offset-2">Documentation</a></li>
-                        <li><a href="/login" class="hover:text-[#2563eb] transition-colors underline decoration-2 underline-offset-2">Sign In</a></li>
+                        <li><a href="#solutions"
+                                class="hover:text-[#2563eb] transition-colors underline decoration-2 underline-offset-2">Solutions</a>
+                        </li>
+                        <li><a href="#interactive-demo"
+                                class="hover:text-[#2563eb] transition-colors underline decoration-2 underline-offset-2">Interactive
+                                Demo</a></li>
+                        <li><a href="https://docs.voxbento.com"
+                                class="hover:text-[#2563eb] transition-colors underline decoration-2 underline-offset-2">Documentation</a>
+                        </li>
+                        <li><a href="/login"
+                                class="hover:text-[#2563eb] transition-colors underline decoration-2 underline-offset-2">Sign
+                                In</a></li>
                     </ul>
                 </div>
                 <div>
                     <h3 class="text-[#0d0f10] font-extrabold mb-4 text-sm uppercase tracking-wider">Research</h3>
                     <ul class="space-y-3 text-sm opacity-80">
-                        <li><a href="/research" class="hover:text-[#2563eb] transition-colors underline decoration-2 underline-offset-2">Research Home</a></li>
-                        <li><a href="/research/streaming-stt-architecture" class="hover:text-[#2563eb] transition-colors underline decoration-2 underline-offset-2">STT Architecture</a></li>
-                        <li><a href="/research/webrtc-vs-rtmp-vs-hls" class="hover:text-[#2563eb] transition-colors underline decoration-2 underline-offset-2">WebRTC Latency</a></li>
-                        <li><a href="/research/stt-comparison" class="hover:text-[#2563eb] transition-colors underline decoration-2 underline-offset-2">STT Comparison</a></li>
+                        <li><a href="/research"
+                                class="hover:text-[#2563eb] transition-colors underline decoration-2 underline-offset-2">Research
+                                Home</a></li>
+                        <li><a href="/research/streaming-stt-architecture"
+                                class="hover:text-[#2563eb] transition-colors underline decoration-2 underline-offset-2">STT
+                                Architecture</a></li>
+                        <li><a href="/research/webrtc-vs-rtmp-vs-hls"
+                                class="hover:text-[#2563eb] transition-colors underline decoration-2 underline-offset-2">WebRTC
+                                Latency</a></li>
+                        <li><a href="/research/stt-comparison"
+                                class="hover:text-[#2563eb] transition-colors underline decoration-2 underline-offset-2">STT
+                                Comparison</a></li>
                     </ul>
                 </div>
                 <div>
                     <h3 class="text-[#0d0f10] font-extrabold mb-4 text-sm uppercase tracking-wider">Benchmarks</h3>
                     <ul class="space-y-3 text-sm opacity-80">
-                        <li><a href="/research/whisper-benchmark" class="hover:text-[#2563eb] transition-colors underline decoration-2 underline-offset-2">Whisper RTF</a></li>
-                        <li><a href="/research/real-time-audio-latency" class="hover:text-[#2563eb] transition-colors underline decoration-2 underline-offset-2">Audio Latency</a></li>
-                        <li><a href="/research/speech-ai-statistics" class="hover:text-[#2563eb] transition-colors underline decoration-2 underline-offset-2">Speech AI Stats</a></li>
-                        <li><a href="/research/speech-ai-glossary" class="hover:text-[#2563eb] transition-colors underline decoration-2 underline-offset-2">Glossary</a></li>
+                        <li><a href="/research/whisper-benchmark"
+                                class="hover:text-[#2563eb] transition-colors underline decoration-2 underline-offset-2">Whisper
+                                RTF</a></li>
+                        <li><a href="/research/real-time-audio-latency"
+                                class="hover:text-[#2563eb] transition-colors underline decoration-2 underline-offset-2">Audio
+                                Latency</a></li>
+                        <li><a href="/research/speech-ai-statistics"
+                                class="hover:text-[#2563eb] transition-colors underline decoration-2 underline-offset-2">Speech
+                                AI Stats</a></li>
+                        <li><a href="/research/speech-ai-glossary"
+                                class="hover:text-[#2563eb] transition-colors underline decoration-2 underline-offset-2">Glossary</a>
+                        </li>
                     </ul>
                 </div>
                 <div>
                     <h3 class="text-[#0d0f10] font-extrabold mb-4 text-sm uppercase tracking-wider">Developers</h3>
                     <ul class="space-y-3 text-sm opacity-80">
-                        <li><a href="/llms.txt" class="hover:text-[#2563eb] transition-colors underline decoration-2 underline-offset-2">LLM Context</a></li>
-                        <li><a href="/llms-full.txt" class="hover:text-[#2563eb] transition-colors underline decoration-2 underline-offset-2">Full LLM Index</a></li>
-                        <li><a href="/sitemap.xml" class="hover:text-[#2563eb] transition-colors underline decoration-2 underline-offset-2">Sitemap</a></li>
-                        <li><a href="https://github.com/fossasia/voxbento" class="hover:text-[#2563eb] transition-colors underline decoration-2 underline-offset-2">GitHub</a></li>
+                        <li><a href="/llms.txt"
+                                class="hover:text-[#2563eb] transition-colors underline decoration-2 underline-offset-2">LLM
+                                Context</a></li>
+                        <li><a href="/llms-full.txt"
+                                class="hover:text-[#2563eb] transition-colors underline decoration-2 underline-offset-2">Full
+                                LLM Index</a></li>
+                        <li><a href="/sitemap.xml"
+                                class="hover:text-[#2563eb] transition-colors underline decoration-2 underline-offset-2">Sitemap</a>
+                        </li>
+                        <li><a href="https://github.com/fossasia/voxbento"
+                                class="hover:text-[#2563eb] transition-colors underline decoration-2 underline-offset-2">GitHub</a>
+                        </li>
                     </ul>
                 </div>
             </div>
-            <div class="mt-16 pt-8 border-t-2 border-[#0d0f10] text-sm text-[#0d0f10] opacity-80 flex flex-col md:flex-row justify-between items-center gap-4">
+            <div
+                class="mt-16 pt-8 border-t-2 border-[#0d0f10] text-sm text-[#0d0f10] opacity-80 flex flex-col md:flex-row justify-between items-center gap-4">
                 <p>&copy; 2026 VoxBento. Open Source software by FOSSASIA.</p>
                 <div class="flex gap-6">
-                    <a href="#" class="hover:text-[#2563eb] transition-colors underline decoration-2 underline-offset-2">Privacy Policy</a>
-                    <a href="#" class="hover:text-[#2563eb] transition-colors underline decoration-2 underline-offset-2">Terms of Service</a>
+                    <a href="#"
+                        class="hover:text-[#2563eb] transition-colors underline decoration-2 underline-offset-2">Privacy
+                        Policy</a>
+                    <a href="#"
+                        class="hover:text-[#2563eb] transition-colors underline decoration-2 underline-offset-2">Terms
+                        of Service</a>
                 </div>
             </div>
         </div>
@@ -734,4 +1076,5 @@
     <script type="module" src="{{ url_for('static', path='js/home.js') }}?v={{ js_version }}"></script>
     <script type="module" src="{{ url_for('static', path='js/demo-player.js') }}?v={{ js_version }}"></script>
 </body>
+
 </html>
