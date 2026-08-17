@@ -12,6 +12,9 @@ from portal.translations.providers.gemini import GeminiProvider
 from portal.translations.providers.local import LocalProvider
 from portal.translations.providers.openai import OpenAIProvider
 
+LANGUAGE_SEMAPHORES: dict[str, asyncio.Semaphore] = {}
+LANGUAGE_QUEUES: dict[str, int] = {}
+
 logger = logging.getLogger(__name__)
 
 openai_provider = OpenAIProvider()
@@ -33,12 +36,15 @@ class TranslationWorker:
     def __init__(self, broadcast_callback):
         self.broadcast_callback = broadcast_callback
 
-    async def handle_translation(self, room_id: int, segment_id: int, text: str, booth_id_str: str):
+
+
+    async def handle_translation(self, room_id: int, segment_id: int, text: str, booth_id_str: str, uuid_segment_id: str = "", seq: int = 0):
         """Called when a finalized STT segment is saved. Fires off LLM requests for enabled target languages."""
         from sqlalchemy import select
         from sqlalchemy.orm import selectinload
 
         from portal.models import TranscriptSegment
+        from portal.websockets.manager import tts_manager
 
         async with get_session() as session:
             segment = await session.scalar(select(TranscriptSegment).where(TranscriptSegment.id == segment_id))
@@ -104,25 +110,39 @@ class TranslationWorker:
             source_lang_obj = pycountry.languages.get(alpha_2=source_lang_code) if source_lang_code else None
             source_lang_name = source_lang_obj.name if source_lang_obj else (source_lang_code or "English")
 
-            # Execute translation for all target languages concurrently
-            tasks = [
-                self._translate_and_broadcast(
-                    event,
-                    room,
-                    provider,
-                    model,
-                    api_key,
-                    lang.language_code,
-                    lang.language_name,
-                    source_lang_name,
-                    segment_id,
-                    text,
-                    booth_id_str,
-                )
-                for lang in enabled_langs
-            ]
-            logger.error(f"[{booth_id_str}] Spawning {len(tasks)} translation tasks for {enabled_langs}")
-            await asyncio.gather(*tasks)
+            tasks = []
+            for lang in enabled_langs:
+                if lang.language_code == source_lang_code:
+                    # Target == Source: bypass translation/TTS entirely. It was already broadcast instantly
+                    # on the base room. We just need to mark it done for anyone who might have connected
+                    # specifically to the source-language target websocket.
+                    tasks.append(tts_manager.broadcast_bundle(
+                        room.id, lang.language_code, booth_id_str, b"", uuid_segment_id, seq, text, text, None
+                    ))
+                else:
+                    # Lazy translation: only translate if someone is actually listening!
+                    if not tts_manager.has_listeners(room.id, lang.language_code, booth_id_str):
+                        continue
+
+                    tasks.append(self._translate_and_broadcast(
+                        event,
+                        room,
+                        provider,
+                        model,
+                        api_key,
+                        lang.language_code,
+                        lang.language_name,
+                        source_lang_name,
+                        segment_id,
+                        text,
+                        booth_id_str,
+                        uuid_segment_id,
+                        seq
+                    ))
+
+            if tasks:
+                logger.error(f"[{booth_id_str}] Spawning {len(tasks)} translation tasks for active listeners")
+                await asyncio.gather(*tasks)
 
     def _get_translation_api_key(self, event: Event, provider: str) -> str | None:
         return get_translation_api_key(event, provider)
@@ -140,27 +160,80 @@ class TranslationWorker:
         segment_id: int,
         text: str,
         booth_id_str: str,
+        uuid_segment_id: str,
+        seq: int,
     ):
+        from portal.websockets.manager import tts_manager
+
+        sem = LANGUAGE_SEMAPHORES.setdefault(lang_code, asyncio.Semaphore(2))
+        q_depth = LANGUAGE_QUEUES.setdefault(lang_code, 0)
+
+        if q_depth >= 15:
+            logger.warning(f"[{booth_id_str}] Queue full for {lang_code}. Dropping segment {seq}.")
+            await tts_manager.broadcast_bundle(room.id, lang_code, booth_id_str, b"", uuid_segment_id, seq, text, "", "pipeline_failed")
+            return
+
+        LANGUAGE_QUEUES[lang_code] += 1
+
         try:
-            translated_text = await self._call_llm(provider, model, api_key, text, lang_name, source_lang_name)
-            if not translated_text:
-                return
+            queue_decremented = False
+            async with sem:
+                try:
+                    # Enforce a strict 12-second timeout on LLM inference. If the local CPU is pegged,
+                    # NLLB can take 30+ seconds or deadlock, which permanently fills the queue.
+                    translated_text = await asyncio.wait_for(
+                        self._call_llm(provider, model, api_key, text, lang_name, source_lang_name),
+                        timeout=12.0
+                    )
+                except asyncio.TimeoutError:
+                    logger.error(f"[{booth_id_str}] Translation LLM timed out after 12s for {lang_code}.")
+                    translated_text = None
 
-            # Save to DB using an independent session to avoid concurrent transaction crashes
-            async with get_session() as local_session:
-                translation = TranscriptTranslation(
-                    segment_id=segment_id, language_code=lang_code, text=translated_text
-                )
-                local_session.add(translation)
-                await local_session.commit()
+                if not translated_text:
+                    await tts_manager.broadcast_bundle(room.id, lang_code, booth_id_str, b"", uuid_segment_id, seq, text, "", "pipeline_failed")
+                    return
 
-            # Broadcast to WebSocket
-            await self.broadcast_callback(
-                booth_id_str, {"type": "translation", "language_code": lang_code, "text": translated_text}
-            )
+                # Save to DB using an independent session to avoid concurrent transaction crashes
+                async with get_session() as local_session:
+                    translation = TranscriptTranslation(
+                        segment_id=segment_id, language_code=lang_code, text=translated_text
+                    )
+                    local_session.add(translation)
+                    await local_session.commit()
+
+                # Broadcast Stage 1 (Text Ready) immediately with empty audio
+                await tts_manager.broadcast_bundle(room.id, lang_code, booth_id_str, b"", uuid_segment_id, seq, text, translated_text, None)
+
+            # Decrement queue early so slow TTS doesn't cause new incoming segments to be dropped
+            LANGUAGE_QUEUES[lang_code] -= 1
+            queue_decremented = True
+
+            from portal.tts.worker import synthesize
+
+            timeout_s = max(2.0, 0.3 * len(translated_text))
+            error = None
+            audio_bytes = b""
+
+            try:
+                synth_bytes = await asyncio.wait_for(synthesize(room.id, translated_text, lang_code), timeout=timeout_s)
+                if synth_bytes:
+                    audio_bytes = synth_bytes
+            except asyncio.TimeoutError:
+                logger.warning(f"[{booth_id_str}] TTS timeout for {lang_code} after {timeout_s}s.")
+                error = "tts_timeout"
+            except Exception as e:
+                logger.error(f"[{booth_id_str}] TTS error for {lang_code}: {e}")
+                error = "tts_error"
+
+            # Broadcast Stage 2 (Audio Ready)
+            await tts_manager.broadcast_bundle(room.id, lang_code, booth_id_str, audio_bytes, uuid_segment_id, seq, text, translated_text, error)
 
         except Exception as e:
             logger.error(f"[{booth_id_str}] Translation failed for {lang_code}: {e}")
+            await tts_manager.broadcast_bundle(room.id, lang_code, booth_id_str, b"", uuid_segment_id, seq, text, "", "pipeline_failed")
+        finally:
+            if not queue_decremented:
+                LANGUAGE_QUEUES[lang_code] -= 1
 
     async def _call_llm(
         self,
@@ -176,7 +249,7 @@ class TranslationWorker:
             logger.error(f"Translation provider {provider} not supported.")
             return None
 
-        return await provider_instance.translate(
+        translated = await provider_instance.translate(
             provider_name=provider,
             text=text,
             target_lang_name=target_lang_name,
@@ -185,3 +258,6 @@ class TranslationWorker:
             model=model,
             api_key=api_key,
         )
+        if not translated:
+            logger.warning(f"Provider {provider} returned empty translation for text: '{text}'")
+        return translated

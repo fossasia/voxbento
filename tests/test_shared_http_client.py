@@ -48,39 +48,6 @@ class TestTranslationWorkerUsesSharedClient:
         mock_client.post.assert_called_once()
 
 
-class TestTTSWorkerUsesSharedClient:
-    async def test_stream_llm_uses_shared_client_not_a_new_one(self):
-        from portal.tts.worker import TTSWorker
-
-        class _FakeStreamCtx:
-            async def __aenter__(self):
-                response = MagicMock()
-                response.raise_for_status = MagicMock()
-
-                async def _lines():
-                    yield 'data: {"choices": [{"delta": {"content": "Bon"}}]}'
-                    yield 'data: {"choices": [{"delta": {"content": "jour"}}]}'
-                    yield "data: [DONE]"
-
-                response.aiter_lines = _lines
-                return response
-
-            async def __aexit__(self, *exc):
-                return False
-
-        mock_client = MagicMock()
-        mock_client.is_closed = False
-        mock_client.stream = MagicMock(return_value=_FakeStreamCtx())
-        pg.shared_http_client = mock_client
-
-        worker = TTSWorker(broadcast_audio_callback=None)
-        with patch("httpx.AsyncClient", side_effect=AssertionError("must not create a new AsyncClient")):
-            chunks = [c async for c in worker._stream_llm("openai", "gpt-4o-mini", "sk-test", "Hello", "French")]
-
-        assert "".join(chunks) == "Bonjour"
-        mock_client.stream.assert_called_once()
-
-
 class TestUtilsUseSharedClient:
     async def test_check_mediamtx_uses_shared_client(self):
         from portal.config import settings

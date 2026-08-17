@@ -26,6 +26,55 @@ SENTENCE_BOUNDARY = re.compile(r"([^.?!]+[.?!]+)")
 SUPERTONIC_SAMPLE_RATE = 44100
 TARGET_SAMPLE_RATE = 24000
 
+_download_progress = {"n": 0, "total": 0, "rate": 0, "status": "pending"}
+_progress_lock = threading.Lock()
+
+def get_supertonic_download_progress():
+    with _progress_lock:
+        if SupertonicTTSProvider._tts is not None:
+            _download_progress["status"] = "completed"
+        return dict(_download_progress)
+
+def trigger_supertonic_download():
+    """Trigger the Supertonic ONNX model download in a background thread."""
+    with _progress_lock:
+        if _download_progress["status"] in ("downloading", "completed"):
+            return
+        _download_progress.update({"n": 0, "total": 100, "rate": 0, "status": "downloading"})
+
+    def _do_download():
+        import tqdm
+        import tqdm.auto
+
+        class SupertonicDownloadTqdm(tqdm.tqdm):
+            def update(self, n=1):
+                super().update(n)
+                if hasattr(self, "total") and self.total is not None and self.total > 5 * 1024 * 1024:
+                    with _progress_lock:
+                        if self.total >= _download_progress.get("total", 0):
+                            _download_progress["n"] = self.n
+                            _download_progress["total"] = self.total
+                            _download_progress["rate"] = self.format_dict.get("rate", 0)
+                            _download_progress["status"] = "downloading"
+
+        original_tqdm = tqdm.tqdm
+        original_auto_tqdm = tqdm.auto.tqdm
+        tqdm.tqdm = SupertonicDownloadTqdm
+        tqdm.auto.tqdm = SupertonicDownloadTqdm
+        try:
+            SupertonicTTSProvider._get_engine()
+            with _progress_lock:
+                _download_progress["status"] = "completed"
+        except Exception as e:
+            logger.error(f"Failed to download Supertonic model: {e}")
+            with _progress_lock:
+                _download_progress["status"] = "error"
+        finally:
+            tqdm.tqdm = original_tqdm
+            tqdm.auto.tqdm = original_auto_tqdm
+
+    threading.Thread(target=_do_download, daemon=True).start()
+
 
 class SupertonicTTSProvider(TTSProvider):
     """In-process Supertonic (ONNX) TTS provider.

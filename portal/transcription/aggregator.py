@@ -19,6 +19,7 @@ class CaptionAggregator:
         self.broadcast_callback = broadcast_callback
         self.room_id = room_id
         self.states: dict[str, CaptionState] = {}
+        self._seq_counter = 0
 
     def _get_state(self, booth_id: str) -> CaptionState:
         if booth_id not in self.states:
@@ -67,22 +68,26 @@ class CaptionAggregator:
         import re
 
         has_finalized = False
-        while True:
-            # Find the FIRST sentence boundary
-            match = re.search(r"^([^.?!]*[.?!]+)(?:\s+|$)", state.current_utterance)
-            if not match:
-                break
 
-            sentence = match.group(1).strip()
-            split_idx = match.end()
+        # Find ALL sentence boundaries in the current utterance
+        matches = list(re.finditer(r"([^.?!]*[.?!]+)(?:\s+|$)", state.current_utterance))
+        if matches:
+            split_point = None
+            for match in matches:
+                candidate_text = state.current_utterance[:match.end()].strip()
+                if len(candidate_text.split()) >= 10:
+                    split_point = match.end()
+                    break
 
-            remainder = state.current_utterance[split_idx:].strip()
+            if split_point is not None:
+                sentence = state.current_utterance[:split_point].strip()
+                remainder = state.current_utterance[split_point:].strip()
 
-            if sentence:
-                await self.handle_final(booth_id, sentence)
-                has_finalized = True
+                if sentence:
+                    await self.handle_final(booth_id, sentence)
+                    has_finalized = True
 
-            state.current_utterance = remainder
+                state.current_utterance = remainder
 
         state.current_word_count = len(state.current_utterance.split()) if state.current_utterance else 0
         if state.current_utterance:
@@ -114,28 +119,25 @@ class CaptionAggregator:
         if not final_text:
             return
 
-        await self.broadcast_callback(booth_id, {"type": "caption", "status": "final", "text": final_text})
+        import uuid
+        self._seq_counter += 1
+        seq = self._seq_counter
+        segment_id = str(uuid.uuid4())
+
+        await self.broadcast_callback(booth_id, {"type": "caption", "status": "final", "text": final_text, "segment_id": segment_id, "seq": seq})
 
         if self.room_id is not None:
             import asyncio
 
             from portal.database import save_transcript_segment
-            from portal.tts.worker import enqueue_tts
-
-            # Queue TTS immediately. Supertonic rooms serialize synthesis per room
-            # to preserve final-arrival order; Deepgram rooms may overlap segments
-            # to preserve low-latency streaming. This runs synchronously before any
-            # await that could reorder concurrent finals.
-            enqueue_tts(self.room_id, final_text)
 
             async def _save_and_translate():
                 try:
-                    segment_id = await save_transcript_segment(booth_id, final_text, self.room_id)
-                    if segment_id is not None:
+                    db_segment_id = await save_transcript_segment(booth_id, final_text, self.room_id)
+                    if db_segment_id is not None:
                         from portal.translations.worker import TranslationWorker
-
                         worker = TranslationWorker(self.broadcast_callback)
-                        await worker.handle_translation(self.room_id, segment_id, final_text, booth_id)
+                        await worker.handle_translation(self.room_id, db_segment_id, final_text, booth_id, segment_id, seq)
                 except Exception as e:
                     logger.error(f"[{booth_id}] _save_and_translate failed: {e}", exc_info=True)
 

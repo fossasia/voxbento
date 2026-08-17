@@ -120,14 +120,14 @@ async def ws_captions(websocket: WebSocket, booth_id: str) -> None:
         listener_manager.remove(websocket, booth_id)
 
 
-@router.websocket("/ws/tts/{room_id}/{language_code}")
-async def ws_tts(websocket: WebSocket, room_id: int, language_code: str) -> None:
+@router.websocket("/ws/tts/{room_id}/{language_code}/{booth_id}")
+async def ws_tts(websocket: WebSocket, room_id: int, language_code: str, booth_id: str) -> None:
     await websocket.accept()
-    tts_manager.add(websocket, room_id, language_code)
+    tts_manager.add(websocket, room_id, language_code, booth_id)
     try:
         while True:
             await websocket.receive_text()
     except WebSocketDisconnect:
         pass
     finally:
-        tts_manager.remove(websocket, room_id, language_code)
+        tts_manager.remove(websocket, room_id, language_code, booth_id)

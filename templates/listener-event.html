@@ -2,28 +2,7 @@
 {% block title %}Listen (WebRTC) — {{ event.display_name }} | Voxbento{% endblock %}
 {% block head %}
 <script src="https://cdn.tailwindcss.com"></script>
-<script>
-    tailwind.config = {
-        theme: {
-            extend: {
-                fontFamily: {
-                    sans: ['Inter', 'sans-serif'],
-                },
-                colors: {
-                    brand: {
-                        50: '#eff6ff',
-                        100: '#dbeafe',
-                        400: '#60a5fa',
-                        500: '#3b82f6',
-                        600: '#2563eb',
-                        700: '#1d4ed8',
-                        900: '#1e3a8a',
-                    }
-                }
-            }
-        }
-    }
-</script>
+<script src="{{ url_for('static', path='js/tailwind-config.js') }}?v={{ js_version }}"></script>
 <style>
     /* Custom Brutalist Select styling */
     .brutal-select {
@@ -73,7 +52,7 @@
       <div class="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
         <div class="flex flex-col gap-2">
           <label for="room-select" class="font-extrabold uppercase tracking-wider text-sm">Room</label>
-          <select id="room-select" class="brutal-select w-full">
+          <select id="room-select" class="brutal-select w-full" autocomplete="off">
             <option value="">-- Select Room --</option>
             {% for room in rooms %}
             <option value="{{ room.id }}">{{ room.display_name }}</option>
@@ -82,7 +61,7 @@
         </div>
         <div class="flex flex-col gap-2">
           <label for="language-select" class="font-extrabold uppercase tracking-wider text-sm">Source Audio</label>
-          <select id="language-select" class="brutal-select w-full" disabled>
+          <select id="language-select" class="brutal-select w-full" autocomplete="off" disabled>
             <option value="">-- Select Source Audio --</option>
           </select>
         </div>
@@ -107,15 +86,21 @@
             <select id="caption-mode-select" class="brutal-select w-full" disabled>
               <option value="original">Original</option>
               <option value="translated">Translated</option>
-              <option value="side-by-side">Side-by-Side</option>
               <option value="stacked">Stacked</option>
             </select>
           </div>
           <div class="flex flex-col gap-1 listener-hidden" id="translation-lang-group" style="display:none;">
             <label for="translation-lang-select" class="font-extrabold text-[10px] uppercase tracking-widest text-gray-600">Target Language</label>
             <select id="translation-lang-select" class="brutal-select w-full">
-              <!-- Populated dynamically -->
+              <option value="">Original</option>
             </select>
+          </div>
+          <div class="flex flex-col gap-1 listener-hidden" id="tts-sync-group" style="display:none;">
+            <label class="font-extrabold text-[10px] uppercase tracking-widest text-gray-600">Read Aloud (TTS)</label>
+            <label class="flex items-center gap-2 cursor-pointer h-[42px]">
+              <input type="checkbox" id="tts-sync-toggle" class="w-5 h-5 border-2 border-[#0d0f10] rounded-none focus:ring-0 cursor-pointer">
+              <span class="font-bold text-sm text-[#0d0f10]">Enable</span>
+            </label>
           </div>
         </div>
         <button id="toggle-captions-btn" class="bg-brand-600 hover:bg-brand-500 text-white border-2 border-[#0d0f10] px-4 py-2 font-extrabold text-xs uppercase tracking-widest transition-transform hover:-translate-y-1 hover:shadow-[4px_4px_0px_#0d0f10]" title="Minimize/Maximize Captions">Minimize Captions ▼</button>
@@ -123,15 +108,9 @@
 
       <!-- Captions Display Box -->
       <div id="live-captions" class="bg-[#f8fafc] text-[#0d0f10] border-[3px] border-[#0d0f10] shadow-[8px_8px_0px_#0d0f10] p-6 h-[40vh] min-h-[300px] overflow-y-auto font-mono text-sm md:text-base leading-relaxed transition-all duration-300 relative z-10">
-        <div id="captions-content-area" class="flex gap-6 h-full">
-          <div id="captions-col-original" class="flex-1 flex flex-col gap-2">
-            <div class="caption-history text-gray-500" id="caption-history"></div>
-            <div class="caption-current font-bold text-[#0d0f10] min-h-[1.5em]" id="caption-current"></div>
-          </div>
-          <div id="captions-col-translated" class="flex-1 flex flex-col gap-2 border-l-2 border-gray-300 pl-6" style="display:none;">
-            <div class="caption-history text-gray-500" id="translation-history"></div>
-            <div class="caption-current font-bold text-brand-600 min-h-[1.5em]" id="translation-current"></div>
-          </div>
+        <div id="captions-content-area" class="w-full flex flex-col gap-2">
+          <div class="caption-history flex flex-col w-full" id="caption-history"></div>
+          <div class="caption-current font-bold text-[#0d0f10] min-h-[1.5em]" id="caption-current"></div>
         </div>
         <p id="waiting-text" class="absolute inset-0 flex items-center justify-center text-gray-400 font-extrabold italic tracking-wider">
             Waiting for interpreter...
@@ -142,623 +121,17 @@
   </div>
 </div>
 
-<script>
-  document.getElementById('toggle-captions-btn').addEventListener('click', function() {
-    var container = document.getElementById('captions-container');
-    container.classList.toggle('minimized');
-    if (container.classList.contains('minimized')) {
-      this.textContent = 'Maximize Captions ▲';
-    } else {
-      this.textContent = 'Minimize Captions ▼';
-    }
-  });
+<script id="listener-data" type="application/json">
+{
+  "eventSlug": "{{ event.slug }}",
+  "booths": {{ booths_json | safe }},
+  "rooms": {{ rooms_json | safe }}
+}
 </script>
 
 <script src="{{ url_for('static', path='js/whep-listener.js') }}?v={{ js_version }}"></script>
-<script>
-(function () {
-  var boothsData = {{ booths_json | safe }};
-  
-  var roomsData = {{ rooms_json | safe }};
-  
-  var roomSelect = document.getElementById('room-select');
-  var languageSelect = document.getElementById('language-select');
-  var captionModeSelect = document.getElementById('caption-mode-select');
-  var translationLangSelect = document.getElementById('translation-lang-select');
-  
-  var audioEl = document.getElementById('audio-player');
-  var statusEl = document.getElementById('status');
-  var captionsBox = document.getElementById('live-captions');
-  var captionsWs = null;
+<script src="{{ url_for('static', path='js/tts-parser.js') }}?v={{ js_version }}"></script>
+<script type="module" src="{{ url_for('static', path='js/listener-event.js') }}?v={{ js_version }}"></script>
 
-  var ttsWs = null;
-  var audioCtx = null;
-  var nextStartTime = 0;
-  var currentAudioDelayMs = 0;
-  var currentRoomId = null;
-  var currentSourceType = null;
-
-  function setStatus(text, cls) {
-    statusEl.innerHTML = '<span class="status-badge ' + cls + '">' + text + '</span>';
-  }
-
-  function showAudioPlayer(show) {
-    audioEl.style.display = show ? 'block' : 'none';
-    if (show && currentAudioDelayMs === 0) {
-      audioEl.setAttribute('controls', '');
-    } else {
-      audioEl.removeAttribute('controls');
-    }
-  }
-
-  function onState(s) {
-    if (s.peerConnection === 'connected' && s.audioActive) {
-      setStatus('Live (WebRTC)', 'live');
-      showAudioPlayer(true);
-    } else if (s.peerConnection === 'connecting' || s.ice === 'checking') {
-      setStatus('Connecting...', 'recovering');
-    } else if (s.peerConnection === 'failed' || s.peerConnection === 'disconnected') {
-      setStatus('Reconnecting...', 'recovering');
-    } else if (s.peerConnection === 'connected') {
-      setStatus('Connected — waiting for audio', 'waiting');
-    } else if (s.peerConnection === 'closed') {
-      setStatus('Disconnected', 'error');
-    }
-  }
-
-  var pendingBoothId = null;   // booth currently being watched (pre-live)
-  var pendingWhepUrl = null;   // WHEP URL to start once live
-  var pendingAudioDelayMs = 0;
-  var pendingTtsLang = null;   // TTS language to start once live
-  var pendingRoomId = null;
-
-  function normalizeAudioDelayMs(value) {
-    var delayMs = parseInt(value || 0, 10);
-    if (!Number.isFinite(delayMs) || delayMs < 0) return 0;
-    return Math.min(delayMs, 10000);
-  }
-
-  function stopCurrentStream() {
-    WhepListener.stop();
-    stopTtsWs();
-    pendingBoothId = null;
-    pendingWhepUrl = null;
-    pendingAudioDelayMs = 0;
-    currentAudioDelayMs = 0;
-    pendingTtsLang = null;
-    pendingRoomId = null;
-    currentRoomId = null;
-    currentSourceType = null;
-    if (captionsWs) {
-      captionsWs.close();
-      captionsWs = null;
-    }
-    showAudioPlayer(false);
-    audioEl.muted = false;
-    document.getElementById('caption-history').innerHTML = '';
-    document.getElementById('caption-current').innerHTML = '';
-    document.getElementById('translation-history').innerHTML = '';
-    document.getElementById('translation-current').innerHTML = '';
-    
-    setStatus('Waiting for selection...', 'waiting');
-  }
-
-  function startTtsWs(roomId, langCode, audioDelayMs) {
-    stopTtsWs();
-    if (!audioCtx) {
-      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-    }
-    if (audioCtx.state === 'suspended') {
-      audioCtx.resume();
-    }
-    
-    var wsProto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    ttsWs = new WebSocket(wsProto + '//' + window.location.host + '/ws/tts/' + roomId + '/' + langCode);
-    ttsWs.binaryType = 'arraybuffer';
-    
-    nextStartTime = audioCtx.currentTime + (normalizeAudioDelayMs(audioDelayMs) / 1000);
-    
-    ttsWs.onmessage = function(event) {
-      if (event.data instanceof ArrayBuffer) {
-        var int16 = new Int16Array(event.data);
-        var float32 = new Float32Array(int16.length);
-        for (var i = 0; i < int16.length; i++) {
-          float32[i] = int16[i] / 32768.0;
-        }
-        var audioBuffer = audioCtx.createBuffer(1, float32.length, 24000);
-        audioBuffer.copyToChannel(float32, 0);
-        
-        var source = audioCtx.createBufferSource();
-        source.buffer = audioBuffer;
-        source.connect(audioCtx.destination);
-        
-        if (nextStartTime < audioCtx.currentTime) {
-          nextStartTime = audioCtx.currentTime;
-        }
-        source.start(nextStartTime);
-        nextStartTime += audioBuffer.duration;
-      }
-    };
-    
-    ttsWs.onclose = function() {
-      console.log('TTS WS closed');
-    };
-  }
-
-  function stopTtsWs() {
-    if (ttsWs) {
-      ttsWs.close();
-      ttsWs = null;
-    }
-    nextStartTime = 0;
-  }
-
-  function startWhepStream(whepUrl, audioDelayMs) {
-    currentAudioDelayMs = normalizeAudioDelayMs(audioDelayMs);
-    WhepListener.start({
-      whepUrl: whepUrl,
-      audioEl: audioEl,
-      audioDelayMs: currentAudioDelayMs,
-      onState: onState
-    });
-  }
-
-  function updateRoomDelayData(roomId, audioDelayMs) {
-    var normalized = normalizeAudioDelayMs(audioDelayMs);
-    roomsData.forEach(function(room) {
-      if (room.id.toString() === roomId.toString()) {
-        room.audio_delay_ms = normalized;
-      }
-    });
-    boothsData.forEach(function(source) {
-      if (source.room_id.toString() === roomId.toString()) {
-        source.audio_delay_ms = normalized;
-      }
-    });
-  }
-
-  function fetchRoomAudioDelay(roomId) {
-    if (!roomId) return Promise.resolve(currentAudioDelayMs);
-    return fetch('/listener/{{ event.slug }}/rooms/' + roomId + '/audio-delay')
-      .then(function(resp) {
-        if (!resp.ok) throw new Error('Failed to fetch room audio delay: ' + resp.status);
-        return resp.json();
-      })
-      .then(function(data) {
-        var delayMs = normalizeAudioDelayMs(data.audio_delay_ms);
-        updateRoomDelayData(roomId, delayMs);
-        return delayMs;
-      });
-  }
-
-  function applyCurrentRoomAudioDelay() {
-    if (!currentRoomId) return;
-    fetchRoomAudioDelay(currentRoomId)
-      .then(function(delayMs) {
-        if (delayMs === currentAudioDelayMs) return;
-        currentAudioDelayMs = delayMs;
-        if (currentSourceType === 'whep' && WhepListener.setAudioDelayMs) {
-          WhepListener.setAudioDelayMs(delayMs);
-        }
-      })
-      .catch(function(err) {
-        console.warn('Could not refresh room audio delay', err);
-      });
-  }
-
-  function startWhepAndCaptions(whepUrl, boothId, audioDelayMs) {
-    setStatus('Connecting...', 'recovering');
-    startWhepStream(whepUrl, audioDelayMs);
-    openCaptionsWs(boothId);
-  }
-
-  function openCaptionsWs(boothId) {
-    if (!boothId) return;
-    var wsProto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    captionsWs = new WebSocket(wsProto + '//' + window.location.host + '/ws/captions/' + boothId);
-    captionsWs.onmessage = handleCaptionsMessage;
-  }
-
-  function handleCaptionsMessage(event) {
-    try {
-      var data = JSON.parse(event.data);
-      var waitingText = document.getElementById('waiting-text');
-
-      if (data.type === 'booth:state') {
-        var bstate = data.state || {};
-        // If we were waiting for the broadcast to go live, start WHEP or TTS now.
-        if (bstate.ingest_status === 'connected') {
-          if (pendingWhepUrl) {
-            var url = pendingWhepUrl;
-            var delayMs = pendingAudioDelayMs;
-            pendingWhepUrl = null;
-            pendingAudioDelayMs = 0;
-            pendingBoothId = null;
-            startWhepStream(url, delayMs);
-          } else if (pendingTtsLang) {
-            var plang = pendingTtsLang;
-            var prid = pendingRoomId;
-            var ttsDelayMs = pendingAudioDelayMs;
-            pendingTtsLang = null;
-            pendingAudioDelayMs = 0;
-            pendingRoomId = null;
-            startTtsWs(prid, plang, ttsDelayMs);
-            setStatus('Live (TTS Audio)', 'live');
-          }
-        }
-        // If broadcast was locked, tear down (floor booths are never locked this way).
-        if (bstate.broadcast_unlocked === false) {
-          WhepListener.stop();
-          showAudioPlayer(false);
-          setStatus('Broadcast is currently locked by the organizers.', 'error');
-          roomSelect.value = '';
-          languageSelect.innerHTML = '<option value="">-- Select Language --</option>';
-          languageSelect.disabled = true;
-          captionModeSelect.disabled = true;
-          captionModeSelect.value = 'original';
-          translationLangSelect.innerHTML = '';
-          updateCaptionLayout();
-        }
-        return;
-      }
-
-      if (data.type === 'caption') {
-        if (waitingText) waitingText.remove();
-        var historyBox = document.getElementById('caption-history');
-        var currentBox = document.getElementById('caption-current');
-        if (data.status === 'partial') {
-          currentBox.textContent = data.text || '';
-        } else if (data.status === 'final') {
-          if (data.text) {
-            var p = document.createElement('div');
-            p.textContent = data.text;
-            historyBox.appendChild(p);
-            while (historyBox.children.length > 50) historyBox.removeChild(historyBox.firstChild);
-          }
-          currentBox.textContent = '';
-        } else if (data.status === 'clear') {
-          currentBox.textContent = '';
-        }
-        captionsBox.scrollTop = captionsBox.scrollHeight;
-      } else if (data.type === 'translation') {
-        if (data.language_code === translationLangSelect.value) {
-          var tHistoryBox = document.getElementById('translation-history');
-          var tp = document.createElement('div');
-          tp.textContent = data.text;
-          tHistoryBox.appendChild(tp);
-          while (tHistoryBox.children.length > 50) tHistoryBox.removeChild(tHistoryBox.firstChild);
-          captionsBox.scrollTop = captionsBox.scrollHeight;
-        }
-      }
-    } catch (e) {
-      console.error('Failed to parse caption data', e);
-    }
-  }
-
-  function updateCaptionLayout() {
-    var mode = captionModeSelect.value;
-    var contentArea = document.getElementById('captions-content-area');
-    var colOrig = document.getElementById('captions-col-original');
-    var colTrans = document.getElementById('captions-col-translated');
-    var transGroup = document.getElementById('translation-lang-group');
-    
-    if (mode === 'original') {
-      contentArea.style.flexDirection = 'row';
-      colOrig.style.display = 'flex';
-      colTrans.style.display = 'none';
-      transGroup.style.display = 'none';
-    } else if (mode === 'translated') {
-      contentArea.style.flexDirection = 'row';
-      colOrig.style.display = 'none';
-      colTrans.style.display = 'flex';
-      colTrans.style.borderLeft = 'none';
-      colTrans.style.borderTop = 'none';
-      colTrans.style.paddingLeft = '0';
-      colTrans.style.paddingTop = '0';
-      transGroup.style.display = 'flex';
-    } else if (mode === 'side-by-side') {
-      contentArea.style.flexDirection = 'row';
-      colOrig.style.display = 'flex';
-      colTrans.style.display = 'flex';
-      colTrans.style.borderLeft = '1px solid #444';
-      colTrans.style.borderTop = 'none';
-      colTrans.style.paddingLeft = '20px';
-      colTrans.style.paddingTop = '0';
-      transGroup.style.display = 'flex';
-    } else if (mode === 'stacked') {
-      contentArea.style.flexDirection = 'column';
-      colOrig.style.display = 'flex';
-      colTrans.style.display = 'flex';
-      colTrans.style.borderLeft = 'none';
-      colTrans.style.borderTop = '1px solid #444';
-      colTrans.style.paddingLeft = '0';
-      colTrans.style.paddingTop = '20px';
-      transGroup.style.display = 'flex';
-    }
-  }
-
-  captionModeSelect.addEventListener('change', updateCaptionLayout);
-
-  roomSelect.addEventListener('change', function() {
-    var roomId = parseInt(this.value, 10);
-    languageSelect.innerHTML = '<option value="">-- Select Source Audio --</option>';
-    
-    stopCurrentStream();
-
-    if (!roomId) {
-      languageSelect.disabled = true;
-      captionModeSelect.disabled = true;
-      captionModeSelect.value = 'original';
-      updateCaptionLayout();
-      return;
-    }
-    
-    languageSelect.disabled = false;
-    var roomBooths = boothsData.filter(function(b) { return b.room_id === roomId; });
-    
-    roomBooths.forEach(function(b) {
-      var opt = document.createElement('option');
-      opt.value = b.whep_url;
-      opt.textContent = b.language_name;
-      opt.dataset.type = 'whep';
-      if (b.language_code === 'floor') {
-        opt.dataset.boothId = '{{ event.slug }}-' + roomId + '-floor';
-        opt.dataset.languageCode = 'floor';
-      } else {
-        opt.dataset.boothId = '{{ event.slug }}-' + roomId + '-' + b.language_code;
-        opt.dataset.languageCode = b.language_code;
-      }
-      opt.dataset.boothObjId = b.id;
-      languageSelect.appendChild(opt);
-
-      // Append TTS translations if available
-      if (b.language_code === 'floor') {
-        var rData = roomsData.find(r => r.id.toString() === roomId.toString());
-        if (rData && rData.floor_tts_enabled && rData.translation_languages && rData.translation_languages.length > 0) {
-          rData.translation_languages.forEach(lang => {
-            var ttsOpt = document.createElement('option');
-            ttsOpt.value = '';
-            ttsOpt.textContent = '🤖 Floor Audio (' + lang.name + ' TTS)';
-            ttsOpt.dataset.type = 'tts';
-            ttsOpt.dataset.ttsLang = lang.code;
-            ttsOpt.dataset.boothId = '{{ event.slug }}-floor';
-            ttsOpt.dataset.languageCode = 'floor';
-            ttsOpt.dataset.boothObjId = b.id;
-            languageSelect.appendChild(ttsOpt);
-          });
-        }
-      }
-    });
-    
-    // Reset translation dropdown until language is selected
-    captionModeSelect.disabled = true;
-    captionModeSelect.value = 'original';
-    translationLangSelect.innerHTML = '';
-    updateCaptionLayout();
-  });
-
-  languageSelect.addEventListener('change', function() {
-    stopCurrentStream();
-    var whepUrl = this.value;
-    var selectedOpt = this.options[this.selectedIndex];
-    var boothId = selectedOpt ? selectedOpt.dataset.boothId : null;
-    var languageCode = selectedOpt ? selectedOpt.dataset.languageCode : null;
-    var boothObjId = selectedOpt ? selectedOpt.dataset.boothObjId : null;
-    var type = selectedOpt ? selectedOpt.dataset.type : null;
-    var ttsLang = selectedOpt ? selectedOpt.dataset.ttsLang : null;
-    var roomId = parseInt(roomSelect.value, 10);
-    var sourceData = boothObjId ? boothsData.find(b => b.id.toString() === boothObjId.toString()) : null;
-    var selectedAudioDelayMs = normalizeAudioDelayMs(sourceData ? sourceData.audio_delay_ms : 0);
-    currentRoomId = roomId || null;
-    currentSourceType = type;
-    
-    // Setup translation options based on the selected audio source
-    if (sourceData) {
-      var bData = sourceData;
-      if (bData && bData.translation_enabled && bData.translation_languages && bData.translation_languages.length > 0) {
-        captionModeSelect.disabled = false;
-        translationLangSelect.innerHTML = '';
-        bData.translation_languages.forEach(lang => {
-          var opt = document.createElement('option');
-          opt.value = lang.code;
-          opt.textContent = lang.name;
-          translationLangSelect.appendChild(opt);
-        });
-      } else {
-        captionModeSelect.disabled = true;
-        captionModeSelect.value = 'original';
-        translationLangSelect.innerHTML = '';
-      }
-    } else {
-      captionModeSelect.disabled = true;
-      captionModeSelect.value = 'original';
-      translationLangSelect.innerHTML = '';
-    }
-
-    updateCaptionLayout();
-    
-    if (type === 'whep') {
-      if (whepUrl) {
-        if (boothId && languageCode) {
-          openCaptionsWs(boothId);
-          if (languageCode === 'floor') {
-            // Floor audio has no WHIP ingest — start WHEP immediately.
-            startWhepAndCaptions(whepUrl, null, selectedAudioDelayMs);
-          } else {
-            // Check booth live status before starting WHEP to avoid phantom timer.
-            fetch('/api/events/{{ event.slug }}/booths/' + languageCode + '/state')
-              .then(function(r) { return r.ok ? r.json() : null; })
-              .then(function(bstate) {
-                if (bstate && bstate.ingest_status === 'connected') {
-                  startWhepAndCaptions(whepUrl, null, selectedAudioDelayMs);
-                } else {
-                  // Not live yet — wait for booth:state via WS
-                  pendingWhepUrl = whepUrl;
-                  pendingAudioDelayMs = selectedAudioDelayMs;
-                  pendingBoothId = boothId;
-                  setStatus('Broadcast not live yet — waiting...', 'waiting');
-                  showAudioPlayer(false);
-                }
-              })
-              .catch(function() {
-                // Can't determine state — start anyway
-                startWhepAndCaptions(whepUrl, null, selectedAudioDelayMs);
-              });
-          }
-        } else {
-          startWhepAndCaptions(whepUrl, null, selectedAudioDelayMs);
-        }
-      }
-    } else if (type === 'tts') {
-      audioEl.muted = true;
-      if (boothId && languageCode) {
-        openCaptionsWs(boothId);
-        if (languageCode === 'floor') {
-          // Floor audio has no WHIP ingest — start TTS immediately.
-          startTtsWs(roomId, ttsLang, selectedAudioDelayMs);
-          setStatus('Live (TTS Audio)', 'live');
-        } else {
-          // Check booth live status before starting TTS to avoid phantom timer.
-          fetch('/api/events/{{ event.slug }}/booths/' + languageCode + '/state')
-            .then(function(r) { return r.ok ? r.json() : null; })
-            .then(function(bstate) {
-              if (bstate && bstate.ingest_status === 'connected') {
-                startTtsWs(roomId, ttsLang, selectedAudioDelayMs);
-                setStatus('Live (TTS Audio)', 'live');
-              } else {
-                // Not live yet — wait for booth:state via WS
-                pendingTtsLang = ttsLang;
-                pendingAudioDelayMs = selectedAudioDelayMs;
-                pendingRoomId = roomId;
-                setStatus('Broadcast not live yet — waiting...', 'waiting');
-                showAudioPlayer(false);
-              }
-            })
-            .catch(function() {
-              // Can't determine state — start anyway
-              startTtsWs(roomId, ttsLang, selectedAudioDelayMs);
-              setStatus('Live (TTS Audio)', 'live');
-            });
-        }
-      }
-    }
-  });
-
-  // Clean up on page unload.
-  window.addEventListener('beforeunload', function () {
-    WhepListener.stop();
-    stopTtsWs();
-  });
-
-  window.setInterval(applyCurrentRoomAudioDelay, 3000);
-})();
-</script>
-
-<script>
-// Custom Brutalist Dropdown Logic
-function upgradeSelects() {
-    document.querySelectorAll('.brutal-select').forEach(select => {
-        if (select.dataset.upgraded) return;
-        select.dataset.upgraded = "true";
-        select.style.display = 'none'; // Hide native select
-
-        const wrapper = document.createElement('div');
-        wrapper.className = 'custom-select-wrapper relative w-full';
-        select.parentNode.insertBefore(wrapper, select);
-        wrapper.appendChild(select);
-
-        const selectedDiv = document.createElement('div');
-        selectedDiv.className = 'custom-selected flex justify-between items-center bg-white border-2 border-[#0d0f10] p-3 rounded font-extrabold text-sm cursor-pointer hover:shadow-[4px_4px_0px_#2563eb] transition-all hover:-translate-y-0.5 text-[#0d0f10]';
-        
-        const textSpan = document.createElement('span');
-        selectedDiv.appendChild(textSpan);
-
-        const arrow = document.createElement('div');
-        arrow.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" height="1em" viewBox="0 0 512 512" class="w-4 h-4 transition-transform duration-300 fill-current"><path d="M233.4 406.6c12.5 12.5 32.8 12.5 45.3 0l192-192c12.5-12.5 12.5-32.8 0-45.3s-32.8-12.5-45.3 0L256 338.7 86.6 169.4c-12.5-12.5-32.8-12.5-45.3 0s-12.5 32.8 0 45.3l192 192z"></path></svg>`;
-        selectedDiv.appendChild(arrow);
-        
-        const optionsDiv = document.createElement('div');
-        optionsDiv.className = 'custom-options absolute left-0 right-0 top-full mt-2 bg-white border-2 border-[#0d0f10] shadow-[4px_4px_0px_#0d0f10] z-[100] opacity-0 invisible translate-y-[-10px] transition-all duration-200 block rounded max-h-[300px] overflow-y-auto overscroll-contain';
-        
-        wrapper.appendChild(selectedDiv);
-        wrapper.appendChild(optionsDiv);
-
-        function updateUI() {
-            if (select.disabled) {
-                selectedDiv.classList.add('opacity-50', 'cursor-not-allowed', 'bg-gray-100');
-                selectedDiv.classList.remove('hover:shadow-[4px_4px_0px_#2563eb]', 'hover:-translate-y-0.5', 'bg-white');
-            } else {
-                selectedDiv.classList.remove('opacity-50', 'cursor-not-allowed', 'bg-gray-100');
-                selectedDiv.classList.add('hover:shadow-[4px_4px_0px_#2563eb]', 'hover:-translate-y-0.5', 'bg-white');
-            }
-
-            textSpan.textContent = select.options[select.selectedIndex]?.textContent || select.options[0]?.textContent || '';
-            optionsDiv.innerHTML = '';
-            
-            Array.from(select.options).forEach((opt, index) => {
-                const optDiv = document.createElement('div');
-                optDiv.className = 'p-3 font-extrabold text-sm cursor-pointer hover:bg-brand-50 hover:text-brand-600 transition-colors border-b-2 border-gray-100 last:border-0 text-[#0d0f10]';
-                if (index === select.selectedIndex) {
-                    optDiv.classList.add('bg-brand-600', 'text-white');
-                    optDiv.classList.remove('hover:bg-brand-50', 'hover:text-brand-600', 'text-[#0d0f10]');
-                }
-                optDiv.textContent = opt.textContent;
-                optDiv.onclick = (e) => {
-                    e.stopPropagation();
-                    if(select.disabled) return;
-                    select.selectedIndex = index;
-                    select.dispatchEvent(new Event('change'));
-                    closeAll();
-                };
-                optionsDiv.appendChild(optDiv);
-            });
-        }
-
-        let isOpen = false;
-        function toggle() {
-            if (select.disabled) return;
-            isOpen = !isOpen;
-            if (isOpen) {
-                closeAll();
-                optionsDiv.classList.remove('opacity-0', 'invisible', 'translate-y-[-10px]');
-                arrow.querySelector('svg').style.transform = 'rotate(180deg)';
-                isOpen = true; // Ensure state is correct
-            } else {
-                close();
-            }
-        }
-        
-        function close() {
-            optionsDiv.classList.add('opacity-0', 'invisible', 'translate-y-[-10px]');
-            arrow.querySelector('svg').style.transform = 'rotate(0deg)';
-            isOpen = false;
-        }
-
-        selectedDiv.onclick = (e) => {
-            e.stopPropagation();
-            toggle();
-        };
-
-        // Sync with native select mutations
-        const observer = new MutationObserver(() => updateUI());
-        observer.observe(select, { childList: true, attributes: true, attributeFilter: ['disabled'] });
-        
-        select.addEventListener('change', updateUI);
-        updateUI();
-
-        wrapper.customSelectClose = close;
-    });
-}
-
-function closeAll() {
-    document.querySelectorAll('.custom-select-wrapper').forEach(w => w.customSelectClose && w.customSelectClose());
-}
-
-document.addEventListener('click', closeAll);
-
-// Run initial upgrade and setup a body observer in case elements are added later
-upgradeSelects();
-const bodyObserver = new MutationObserver(() => upgradeSelects());
-bodyObserver.observe(document.body, { childList: true, subtree: true });
-</script>
+<script type="module" src="{{ url_for('static', path='js/brutal-select.js') }}?v={{ js_version }}"></script>
 {% endblock %}
