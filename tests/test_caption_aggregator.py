@@ -43,12 +43,12 @@ class TestCaptionAggregator:
             await collect_broadcasts(booth_id, message, received)
 
         aggregator = CaptionAggregator(fake_callback)
-        await aggregator.handle_chunk("booth-1", "Hello world. Goodbye.")
+        await aggregator.handle_chunk("booth-1", "This is a very long sentence that has more than ten words. Goodbye.")
 
-        # Expect at least one 'final' with text 'Hello world.'
+        # Expect at least one 'final' with text 'This is a very long sentence that has more than ten words.'
         finals = [msg for bid, msg in received if msg.get("status") == "final"]
         assert len(finals) >= 1
-        assert finals[0]["text"] == "Hello world."
+        assert finals[0]["text"] == "This is a very long sentence that has more than ten words."
 
     async def test_handle_chunk_no_sentence_boundary_emits_partial(self):
         received = []

@@ -1665,3 +1665,15 @@ async def api_download_progress(model: str = Query("nllb-200-distilled-600M")):
 
     progress = get_download_progress(model)
     return progress
+
+@router.post("/admin/models/supertonic/trigger_download", dependencies=[Depends(require_admin)])
+async def api_supertonic_trigger_download():
+    from portal.tts.providers.supertonic import trigger_supertonic_download
+    trigger_supertonic_download()
+    return {"status": "started"}
+
+@router.get("/admin/models/supertonic/download_progress", dependencies=[Depends(require_admin)])
+async def api_supertonic_download_progress():
+    from portal.tts.providers.supertonic import get_supertonic_download_progress
+    progress = get_supertonic_download_progress()
+    return progress

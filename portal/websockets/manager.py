@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import struct
 from dataclasses import dataclass
 
 from fastapi import WebSocket
@@ -79,34 +80,54 @@ class ListenerConnectionManager:
             self.remove(ws, booth_id)
 
 
+
+logger = logging.getLogger(__name__)
+
 class TTSConnectionManager:
     def __init__(self) -> None:
         self._rooms: dict[str, set[WebSocket]] = {}
 
-    def _get_key(self, room_id: int, language_code: str) -> str:
-        return f"{room_id}-{language_code}"
+    def _get_key(self, room_id: int, language_code: str, booth_id: str) -> str:
+        return f"{room_id}-{language_code}-{booth_id}"
 
-    def add(self, ws: WebSocket, room_id: int, language_code: str) -> None:
-        key = self._get_key(room_id, language_code)
+    def add(self, ws: WebSocket, room_id: int, language_code: str, booth_id: str) -> None:
+        key = self._get_key(room_id, language_code, booth_id)
         self._rooms.setdefault(key, set()).add(ws)
 
-    def remove(self, ws: WebSocket, room_id: int, language_code: str) -> None:
-        key = self._get_key(room_id, language_code)
+    def remove(self, ws: WebSocket, room_id: int, language_code: str, booth_id: str) -> None:
+        key = self._get_key(room_id, language_code, booth_id)
         room = self._rooms.get(key, set())
         room.discard(ws)
         if not room:
             self._rooms.pop(key, None)
 
-    async def broadcast_audio(self, room_id: int, language_code: str, audio_bytes: bytes) -> None:
-        key = self._get_key(room_id, language_code)
+    def has_listeners(self, room_id: int, language_code: str, booth_id: str) -> bool:
+        key = self._get_key(room_id, language_code, booth_id)
+        return bool(self._rooms.get(key, set()))
+
+
+    async def broadcast_bundle(self, room_id: int, language_code: str, booth_id: str, audio_bytes: bytes, segment_id: str, seq: int, caption: str = "", translation: str = "", error: str | None = None) -> None:
+        key = self._get_key(room_id, language_code, booth_id)
+        header = {
+            "segment_id": segment_id,
+            "seq": seq,
+            "caption": caption,
+            "translation": translation,
+            "error": error
+        }
+        header_bytes = json.dumps(header).encode('utf-8')
+        # Frame: [1-byte version][4-byte length L][L-bytes header][audio_bytes]
+        frame = struct.pack(">BI", 1, len(header_bytes)) + header_bytes + audio_bytes
+
         dead: list[WebSocket] = []
         for ws in list(self._rooms.get(key, set())):
             try:
-                await ws.send_bytes(audio_bytes)
+                await ws.send_bytes(frame)
             except Exception:
                 dead.append(ws)
-        for ws in dead:
-            self.remove(ws, room_id, language_code)
+        if dead:
+            for ws in dead:
+                self.remove(ws, room_id, language_code, booth_id)
 
 
 manager = ConnectionManager()

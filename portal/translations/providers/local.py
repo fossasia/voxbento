@@ -166,7 +166,15 @@ def get_model_and_tokenizer(model_size: str):
                 _download_progress[model_size] = {"status": "completed"}
 
         tokenizer = transformers.AutoTokenizer.from_pretrained(local_model_path, src_lang="eng_Latn", revision="main")  # nosec
-        model = ctranslate2.Translator(local_model_path, device="cpu", compute_type="int8")
+        cpu_count = os.cpu_count() or 4
+        intra_threads = min(cpu_count, 2)
+        model = ctranslate2.Translator(
+            local_model_path,
+            device="cpu",
+            compute_type="int8",
+            inter_threads=1,
+            intra_threads=intra_threads,
+        )
 
         with _model_lock:
             _loaded_models[model_size] = ModelEntry(model=model, tokenizer=tokenizer, last_used=time.time())
@@ -229,16 +237,31 @@ class LocalProvider(TranslationProvider):
         return await asyncio.to_thread(self._run_inference, text, source_lang_token, target_lang_token, model)
 
     def _run_inference(self, text: str, source_lang_token: str, target_lang_token: str, model_size: str) -> str | None:
+        if not text or not text.strip():
+            return ""
         increment_model_ref(model_size)
         try:
             model, tokenizer = get_model_and_tokenizer(model_size)
-            source = tokenizer.convert_ids_to_tokens(tokenizer.encode(text))
+            source = tokenizer.convert_ids_to_tokens(tokenizer.encode(text.strip()))
+            if not source:
+                return ""
 
             # The NLLB tokenizer hardcodes eng_Latn as the first token based on how we initialized it.
             # We must replace it with the actual source language token for the model to translate correctly.
             source[0] = source_lang_token
-            results = model.translate_batch([source], target_prefix=[[target_lang_token]])
-            target = results[0].hypotheses[0][1:]
+            # beam_size=1 provides 3x-4x speedup with high accuracy for real-time text
+            results = model.translate_batch(
+                [source],
+                target_prefix=[[target_lang_token]],
+                beam_size=1,
+                max_decoding_length=256,
+            )
+            if not results or not results[0].hypotheses:
+                return ""
+            target = results[0].hypotheses[0]
+            # Strip target language prefix token if present
+            if target and target[0] == target_lang_token:
+                target = target[1:]
             translated_text = tokenizer.decode(tokenizer.convert_tokens_to_ids(target))
             return translated_text.strip()
 

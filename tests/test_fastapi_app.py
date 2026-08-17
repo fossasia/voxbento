@@ -1036,49 +1036,43 @@ def test_whip_url_standby_interpreter_rejected():
     client.post("/api/events/whip-standby/booths", json={"language_code": "en", "room_id": 1, "language": "English"})
     booth = "whip-standby-1-en"
     channel = "whip-standby/1/en"
-    with (
-        client.websocket_connect(f"/ws/booth/{booth}", cookies=_ws_auth()) as ws_a,
-        client.websocket_connect(f"/ws/booth/{booth}", cookies=_ws_auth()) as ws_b,
-    ):
-        # IntA joins first → becomes active
-        ws_a.send_text(
-            json.dumps(
-                {
-                    "type": "booth:join",
-                    "display_name": "IntA",
-                    "role": "interpreter",
-                    "language": "English",
-                    "channel_id": channel,
-                }
-            )
-        )
-        ws_a.receive_text()  # booth:joined
-        ws_a.receive_text()  # booth:state
-        ws_b.receive_text()  # booth:state broadcast
 
-        # IntB joins → standby
-        ws_b.send_text(
-            json.dumps(
-                {
-                    "type": "booth:join",
-                    "display_name": "IntB",
-                    "role": "interpreter",
-                    "language": "English",
-                    "channel_id": channel,
-                }
-            )
-        )
-        joined_b = json.loads(ws_b.receive_text())
-        if joined_b["type"] != "booth:joined":
+    with client.websocket_connect(f"/ws/booth/{booth}", cookies=_ws_auth()) as ws_a:
+        ws_a.send_text(json.dumps({
+            "type": "booth:join", "display_name": "IntA", "role": "interpreter",
+            "language": "English", "channel_id": channel,
+        }))
+        joined_a = json.loads(ws_a.receive_text())
+        if joined_a["type"] != "booth:joined":
+            joined_a = json.loads(ws_a.receive_text())
+        ws_a.receive_text()  # drain booth:state for IntA
+
+        with client.websocket_connect(f"/ws/booth/{booth}", cookies=_ws_auth()) as ws_b:
+            ws_b.send_text(json.dumps({
+                "type": "booth:join", "display_name": "IntB", "role": "interpreter",
+                "language": "English", "channel_id": channel,
+            }))
             joined_b = json.loads(ws_b.receive_text())
-        pid_b = joined_b["participant_id"]
-        ws_b.receive_text()  # drain booth:state
-        ws_a.receive_text()  # drain broadcast to ws_a
+            if joined_b["type"] != "booth:joined":
+                joined_b = json.loads(ws_b.receive_text())
+            pid_b = joined_b["participant_id"]
+            ws_b.receive_text()  # drain booth:state for IntB
 
-        res = client.get(
-            "/api/events/whip-standby/booths/en/whip-url",
-            params={"participant_id": pid_b},
-        )
+            ws_a.receive_text()  # drain IntB's join broadcast on ws_a
+
+            res = client.get(
+                "/api/events/whip-standby/booths/en/whip-url",
+                params={"participant_id": pid_b},
+                cookies=_ws_auth(),
+            )
+
+            # Cleanly leave to prevent broadcast deadlock during context manager exit
+            ws_b.send_text(json.dumps({"type": "booth:leave"}))
+            ws_b.receive_text()  # ws_b receives its own leave broadcast
+            ws_a.receive_text()  # ws_a receives ws_b's leave broadcast
+
+        ws_a.send_text(json.dumps({"type": "booth:leave"}))
+        ws_a.receive_text()  # ws_a receives its own leave broadcast
 
     assert res.status_code == 403
     assert "active interpreter" in res.json()["detail"].lower()
