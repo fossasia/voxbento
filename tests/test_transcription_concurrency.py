@@ -8,7 +8,7 @@ import os
 os.environ["BOOTH_ACCESS_TOKEN"] = ""
 os.environ["API_KEY_ENCRYPTION_KEY"] = "test-key-encryption-key-for-transcription"
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -18,7 +18,7 @@ from portal.auth import create_user_token
 from portal.crypto import encrypt_val
 from portal.database import configure, dispose, get_session, init_db
 from portal.models import DBBooth, Event, Room
-from portal.transcription.worker import active_processes, active_workers
+from portal.transcription.worker import active_workers
 
 # Bypass token requirements for WS/REST endpoints where applicable,
 # and use an admin token to satisfy _require_access.
@@ -32,6 +32,18 @@ def setup_db():
     anyio.run(init_db)
     yield
     anyio.run(dispose)
+
+@pytest.fixture(autouse=True)
+async def clean_registry():
+    for booth_id, session in list(active_workers.items()):
+        session.stop()
+        await session.wait_until_stopped()
+    active_workers.clear()
+    yield
+    for booth_id, session in list(active_workers.items()):
+        session.stop()
+        await session.wait_until_stopped()
+    active_workers.clear()
 
 
 class MockProvider:
@@ -65,17 +77,28 @@ mock_providers = {
 @pytest.fixture(autouse=True)
 def patch_transcription_dependencies():
     with patch("portal.transcription.worker.PROVIDERS", mock_providers):
-        # Mock ffmpeg subprocess creation
-        mock_process = AsyncMock()
-        mock_process.returncode = None
+        # Instead of mocking create_subprocess_exec (which leaves a real pid=MagicMock
+        # that causes os.killpg() to signal the wrong process group and crash WSL),
+        # we patch the entire FfmpegProcess context manager to return a safe dummy.
+        class _DummyFfmpegCM:
+            """A safe, no-op async context manager replacing FfmpegProcess in tests."""
+            def __init__(self, *args, **kwargs):
+                pass
 
-        async def dummy_readline(*args, **kwargs):
-            await asyncio.sleep(0.01)
-            return b""
+            async def __aenter__(self):
+                # Return a minimal object with a real integer pid and returncode.
+                class _FakeProcess:
+                    pid = 99999  # unreachable fake pid — never passed to os.killpg
+                    returncode = 0
+                    class stdout:
+                        async def read(n=-1):
+                            return b""
+                return _FakeProcess()
 
-        mock_process.stderr.readline = dummy_readline
+            async def __aexit__(self, *args):
+                pass  # No cleanup needed — no real process was ever spawned.
 
-        with patch("asyncio.create_subprocess_exec", return_value=mock_process):
+        with patch("portal.transcription.worker.FfmpegProcess", _DummyFfmpegCM):
             yield
 
 
@@ -161,16 +184,10 @@ async def seed_data():
 async def test_high_concurrency_isolation_and_capacity_limits():
     """
     Spawns 16 concurrent POST requests to start transcription booths across 3 events.
-    Verifies:
-    1. Lock-safe global worker dictionaries (`active_workers`, `active_processes`).
-    2. Capacity limit (12 external booths requested -> 10 succeed, 2 hit 429 error).
-    3. API Key Isolation (Event A's worker gets Event A's decrypted key, no cross-contamination).
     """
     booths = await seed_data()
 
     # Ensure fresh state
-    active_workers.clear()
-    active_processes.clear()
     for p in mock_providers.values():
         p.received_configs.clear()
 
@@ -202,7 +219,7 @@ async def test_high_concurrency_isolation_and_capacity_limits():
     await asyncio.sleep(0.1)
 
     # 1. Verify Global Locking limits worked
-    assert len(active_processes) == 10
+    assert len(active_workers) == 10
 
     # 2. Verify API Key Cross-Contamination did not occur
     openai_provider = mock_providers["openai"]
@@ -227,6 +244,5 @@ async def test_high_concurrency_isolation_and_capacity_limits():
 
         await asyncio.gather(*stop_tasks)
 
-    # Verify cleanup is completely clean with no ProcessLookupErrors or deadlocks
+    # Verify cleanup is completely clean with no deadlocks
     assert len(active_workers) == 0
-    assert len(active_processes) == 0
