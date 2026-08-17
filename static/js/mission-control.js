@@ -47,6 +47,10 @@ function connectWs(boothId) {
   const ws = new WebSocket(wsUrl);
   entry.ws = ws;
 
+  ws.onopen = () => {
+    renderCard(boothId);
+  };
+
   ws.onmessage = (e) => {
     let data;
     try { data = JSON.parse(e.data); } catch { return; }
@@ -60,6 +64,7 @@ function connectWs(boothId) {
 
   ws.onclose = () => {
     entry.ws = null;
+    renderCard(boothId);
     setTimeout(() => connectWs(boothId), 3000);
   };
 
@@ -150,9 +155,17 @@ function renderCard(boothId) {
     : '<div style="font-size:0.85rem;color:var(--color-muted);">No interpreters present</div>';
 
   // Broadcast control
+  const isWsOpen = entry.ws && entry.ws.readyState === WebSocket.OPEN;
   const isLive = s.broadcast_unlocked;
-  const btnClass = isLive ? 'btn-danger' : 'btn-success';
-  const btnText = isLive ? 'Stop' : 'Go Live';
+  let btnClass = isLive ? 'btn-danger' : 'btn-success';
+  let btnText = isLive ? 'Stop' : 'Go Live';
+  let disabledAttr = '';
+  
+  if (!isWsOpen) {
+    btnClass = 'btn-outline';
+    btnText = 'Connecting...';
+    disabledAttr = 'disabled';
+  }
 
   // Ingest status
   const ingestBadge = s.ingest_status === 'connected'
@@ -187,7 +200,7 @@ function renderCard(boothId) {
     </div>
 
     <div style="margin-top:auto;padding-top:1rem;">
-      <button id="mc-live-${boothId}" class="btn ${btnClass}" style="width:100%;font-weight:600;">
+      <button id="mc-live-${boothId}" class="btn ${btnClass}" style="width:100%;font-weight:600;" ${disabledAttr}>
         ${btnText}
       </button>
     </div>
