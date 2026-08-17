@@ -17,7 +17,15 @@ const boothMap = new Map();
 
 function init() {
   if (!config.initialBooths || config.initialBooths.length === 0) {
-    grid.innerHTML = '<div class="card" style="padding:2rem;text-align:center;grid-column:1/-1;"><p style="color:var(--color-muted);margin:0;">No booths are configured for this event yet.</p></div>';
+    const emptyDiv = document.createElement('div');
+    emptyDiv.className = 'card';
+    emptyDiv.style.cssText = 'padding:2rem;text-align:center;grid-column:1/-1;';
+    const p = document.createElement('p');
+    p.style.cssText = 'color:var(--color-muted);margin:0;';
+    p.textContent = 'No booths are configured for this event yet.';
+    emptyDiv.appendChild(p);
+    grid.innerHTML = '';
+    grid.appendChild(emptyDiv);
     return;
   }
 
@@ -136,90 +144,139 @@ function renderCard(boothId) {
     grid.appendChild(card);
   }
 
-  // Interpreter rows — show all roles that can go live (interpreter, coordinator,
-  // event_admin, super_admin). Users with elevated roles may join a booth and act
-  // as the active interpreter, so they must appear here too.
+  // Interpreters and rows
   const LIVE_ROLES = new Set(['interpreter', 'coordinator', 'event_admin', 'super_admin']);
   const interpreters = (s.participants || []).filter(p => LIVE_ROLES.has(p.role));
-
-  const interpretersHtml = interpreters.length
-    ? interpreters.map(p => {
-        const isActive = p.participant_id === s.active_interpreter_id;
-        const isMuted = !p.mic_active;
-        return `
-          <div style="display:flex;align-items:center;justify-content:space-between;font-size:0.85rem;padding:0.25rem 0;">
-            <span style="${isActive ? 'font-weight:bold;color:var(--color-primary);' : ''}">${escHtml(p.display_name)}${isActive ? ' <em style="font-weight:normal">(active)</em>' : ''}</span>
-            <span class="status-badge ${isMuted ? '' : 'status-success'}">${isMuted ? 'Muted' : '&#9654; Speaking'}</span>
-          </div>`;
-      }).join('')
-    : '<div style="font-size:0.85rem;color:var(--color-muted);">No interpreters present</div>';
 
   // Broadcast control
   const isWsOpen = entry.ws && entry.ws.readyState === WebSocket.OPEN;
   const isLive = s.broadcast_unlocked;
   let btnClass = isLive ? 'btn-danger' : 'btn-success';
   let btnText = isLive ? 'Stop' : 'Go Live';
-  let disabledAttr = '';
+  let isDisabled = false;
   
   if (!isWsOpen) {
     btnClass = 'btn-outline';
     btnText = 'Connecting...';
-    disabledAttr = 'disabled';
+    isDisabled = true;
   }
 
-  // Ingest status
-  const ingestBadge = s.ingest_status === 'connected'
-    ? '<span class="status-badge status-success">&#9679; Ingest Live</span>'
-    : '<span class="status-badge">&#9675; No Ingest</span>';
+  card.innerHTML = '';
 
-  // Room label (populated from DB even for empty booths)
-  const roomLabel = s.room_name
-    ? `<div style="font-size:0.8rem;color:var(--color-muted);margin-top:0.2rem;">${escHtml(s.room_name)}</div>`
-    : `<div style="font-size:0.8rem;color:var(--color-muted);margin-top:0.2rem;">Room ID: ${s.room_id ?? 'N/A'}</div>`;
+  const headerDiv = document.createElement('div');
+  headerDiv.style.cssText = 'display:flex;justify-content:space-between;align-items:flex-start;';
+  
+  const titleDiv = document.createElement('div');
+  const h3 = document.createElement('h3');
+  h3.style.margin = '0';
+  h3.textContent = s.language + ' ';
+  const langCodeSpan = document.createElement('span');
+  langCodeSpan.style.cssText = 'font-size:0.8rem;font-weight:normal;color:var(--color-muted);';
+  langCodeSpan.textContent = `(${s.language_code})`;
+  h3.appendChild(langCodeSpan);
+  titleDiv.appendChild(h3);
+  
+  const roomDiv = document.createElement('div');
+  roomDiv.style.cssText = 'font-size:0.8rem;color:var(--color-muted);margin-top:0.2rem;';
+  roomDiv.textContent = s.room_name ? s.room_name : `Room ID: ${s.room_id ?? 'N/A'}`;
+  titleDiv.appendChild(roomDiv);
+  headerDiv.appendChild(titleDiv);
+  
+  const ingestSpan = document.createElement('span');
+  if (s.ingest_status === 'connected') {
+    ingestSpan.className = 'status-badge status-success';
+    ingestSpan.textContent = '● Ingest Live';
+  } else {
+    ingestSpan.className = 'status-badge';
+    ingestSpan.textContent = '○ No Ingest';
+  }
+  headerDiv.appendChild(ingestSpan);
+  card.appendChild(headerDiv);
 
-  card.innerHTML = `
-    <div style="display:flex;justify-content:space-between;align-items:flex-start;">
-      <div>
-        <h3 style="margin:0;">${escHtml(s.language)} <span style="font-size:0.8rem;font-weight:normal;color:var(--color-muted);">(${escHtml(s.language_code)})</span></h3>
-        ${roomLabel}
-      </div>
-      ${ingestBadge}
-    </div>
+  const interpContainer = document.createElement('div');
+  interpContainer.style.cssText = 'border-top:1px solid var(--color-border);padding-top:0.75rem;';
+  const interpH4 = document.createElement('h4');
+  interpH4.style.cssText = 'margin:0 0 0.5rem 0;font-size:0.8rem;text-transform:uppercase;color:var(--color-muted);';
+  interpH4.textContent = 'Interpreters';
+  interpContainer.appendChild(interpH4);
 
-    <div style="border-top:1px solid var(--color-border);padding-top:0.75rem;">
-      <h4 style="margin:0 0 0.5rem 0;font-size:0.8rem;text-transform:uppercase;color:var(--color-muted);">Interpreters</h4>
-      ${interpretersHtml}
-    </div>
+  if (interpreters.length) {
+    interpreters.forEach(p => {
+      const isActive = p.participant_id === s.active_interpreter_id;
+      const isMuted = !p.mic_active;
+      const row = document.createElement('div');
+      row.style.cssText = 'display:flex;align-items:center;justify-content:space-between;font-size:0.85rem;padding:0.25rem 0;';
+      
+      const nameSpan = document.createElement('span');
+      if (isActive) {
+        nameSpan.style.cssText = 'font-weight:bold;color:var(--color-primary);';
+      }
+      nameSpan.textContent = p.display_name;
+      if (isActive) {
+        const activeEm = document.createElement('em');
+        activeEm.style.fontWeight = 'normal';
+        activeEm.textContent = ' (active)';
+        nameSpan.appendChild(activeEm);
+      }
+      row.appendChild(nameSpan);
 
-    <div style="border-top:1px solid var(--color-border);padding-top:0.75rem;display:flex;flex-direction:column;gap:0.5rem;">
-      <div style="display:flex;align-items:center;justify-content:space-between;">
-        <label style="font-size:0.8rem;font-weight:500;">Monitor Audio</label>
-        <span id="mc-vol-lbl-${boothId}" style="font-size:0.8rem;color:var(--color-muted);">0%</span>
-      </div>
-      <input type="range" id="mc-vol-${boothId}" min="0" max="100" value="0" style="width:100%;">
-    </div>
+      const statusSpan = document.createElement('span');
+      statusSpan.className = `status-badge ${isMuted ? '' : 'status-success'}`;
+      statusSpan.textContent = isMuted ? 'Muted' : '▶ Speaking';
+      row.appendChild(statusSpan);
+      interpContainer.appendChild(row);
+    });
+  } else {
+    const noInterpDiv = document.createElement('div');
+    noInterpDiv.style.cssText = 'font-size:0.85rem;color:var(--color-muted);';
+    noInterpDiv.textContent = 'No interpreters present';
+    interpContainer.appendChild(noInterpDiv);
+  }
+  card.appendChild(interpContainer);
 
-    <div style="margin-top:auto;padding-top:1rem;">
-      <button id="mc-live-${boothId}" class="btn ${btnClass}" style="width:100%;font-weight:600;" ${disabledAttr}>
-        ${btnText}
-      </button>
-    </div>
-  `;
+  const volContainer = document.createElement('div');
+  volContainer.style.cssText = 'border-top:1px solid var(--color-border);padding-top:0.75rem;display:flex;flex-direction:column;gap:0.5rem;';
+  const volHeader = document.createElement('div');
+  volHeader.style.cssText = 'display:flex;align-items:center;justify-content:space-between;';
+  const volLabel = document.createElement('label');
+  volLabel.style.cssText = 'font-size:0.8rem;font-weight:500;';
+  volLabel.textContent = 'Monitor Audio';
+  volHeader.appendChild(volLabel);
+  const volSpan = document.createElement('span');
+  volSpan.id = `mc-vol-lbl-${boothId}`;
+  volSpan.style.cssText = 'font-size:0.8rem;color:var(--color-muted);';
+  volSpan.textContent = entry.currentVolume > 0 ? `${entry.currentVolume}%` : '0%';
+  volHeader.appendChild(volSpan);
+  volContainer.appendChild(volHeader);
+  
+  const volInput = document.createElement('input');
+  volInput.type = 'range';
+  volInput.id = `mc-vol-${boothId}`;
+  volInput.min = '0';
+  volInput.max = '100';
+  volInput.value = entry.currentVolume > 0 ? entry.currentVolume.toString() : '0';
+  volInput.style.width = '100%';
+  volContainer.appendChild(volInput);
+  card.appendChild(volContainer);
 
-  // Re-attach audio element (innerHTML replacement removes it from DOM)
+  const btnContainer = document.createElement('div');
+  btnContainer.style.cssText = 'margin-top:auto;padding-top:1rem;';
+  const btn = document.createElement('button');
+  btn.id = `mc-live-${boothId}`;
+  btn.className = `btn ${btnClass}`;
+  btn.style.cssText = 'width:100%;font-weight:600;';
+  if (isDisabled) {
+    btn.disabled = true;
+  }
+  btn.textContent = btnText;
+  btnContainer.appendChild(btn);
+  card.appendChild(btnContainer);
+
   card.appendChild(entry.audioElement);
-
-  // Restore volume slider after re-render
-  const volInput = card.querySelector(`#mc-vol-${boothId}`);
-  const volLbl = card.querySelector(`#mc-vol-lbl-${boothId}`);
-  if (entry.currentVolume > 0) {
-    volInput.value = entry.currentVolume;
-    volLbl.textContent = `${entry.currentVolume}%`;
-  }
 
   volInput.addEventListener('input', (e) => {
     const val = parseInt(e.target.value, 10);
-    volLbl.textContent = `${val}%`;
+    volSpan.textContent = `${val}%`;
     entry.currentVolume = val;
   });
 
@@ -227,7 +284,7 @@ function renderCard(boothId) {
     handleVolumeChange(boothId, e.target.value);
   });
 
-  card.querySelector(`#mc-live-${boothId}`).addEventListener('click', () => {
+  btn.addEventListener('click', () => {
     setBroadcastLive(boothId, !isLive);
   });
 }
@@ -235,14 +292,6 @@ function renderCard(boothId) {
 // ---------------------------------------------------------------------------
 // Utilities
 // ---------------------------------------------------------------------------
-
-function escHtml(str) {
-  return String(str ?? '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
-}
 
 function showToast(msg, type = 'info') {
   const t = document.createElement('div');
