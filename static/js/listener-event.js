@@ -843,7 +843,7 @@ languageSelect.addEventListener("change", function () {
         startWhepAndCaptions(whepUrl, null, selectedAudioDelayMs);
       } else {
         // Check booth live status before starting WHEP to avoid phantom timer.
-        fetch("/api/events/" + eventSlug + "/booths/" + languageCode + "/state")
+        fetch("/api/events/" + eventSlug + "/booths/" + languageCode + "/state?room_id=" + roomId)
           .then(function (r) {
             return r.ok ? r.json() : null;
           })
