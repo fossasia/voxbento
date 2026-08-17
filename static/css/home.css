@@ -22,7 +22,7 @@
   box-shadow: 10px 10px 0px #0d0f10;
 }
 
-:where(.brutal-btn) {
+.brutal-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -31,8 +31,8 @@
   text-transform: uppercase;
   letter-spacing: 0.5px;
   padding: 12px 24px;
-  border-radius: 6px;
-  border: 2px solid #0d0f10;
+  border-radius: 8px;
+  border: 3px solid #0d0f10;
   background: #ffffff;
   color: #0d0f10;
   box-shadow: 4px 4px 0px #0d0f10;
@@ -42,12 +42,17 @@
   transition: transform 0.15s ease, box-shadow 0.15s ease, background-color 0.15s ease, border-color 0.15s ease;
 }
 
-:where(.brutal-btn):active {
-  box-shadow: 0px 0px 0px #0d0f10 !important;
-  transform: translate(4px, 4px) !important;
+.brutal-btn:hover {
+  transform: translate(-2px, -2px);
+  box-shadow: 6px 6px 0px #0d0f10;
 }
 
-:where(.brutal-btn):focus-visible {
+.brutal-btn:active {
+  transform: translate(2px, 2px);
+  box-shadow: 0 0 0 #0d0f10;
+}
+
+.brutal-btn:focus-visible {
   outline: 3px solid #3b82f6;
   outline-offset: 2px;
 }
@@ -81,9 +86,6 @@
   color: #ffffff;
 }
 .brutal-btn-primary:hover {
-  background: #1d4ed8;
-}
-.brutal-btn-nav.brutal-btn-primary:hover {
   background: #2563eb;
 }
 
@@ -93,9 +95,6 @@
   color: #0d0f10;
 }
 .brutal-btn-outline:hover {
-  background: #f8f9fa;
-}
-.brutal-btn-nav.brutal-btn-outline:hover {
   background: #f5f3f0;
 }
 
