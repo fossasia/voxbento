@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from portal.auth import require_user
 from portal.database import get_session
-from portal.models import DeveloperAccount, OAuthClient, User
+from portal.models import DeveloperAccount, OAuthClient
 
 logger = logging.getLogger(__name__)
 
@@ -23,10 +23,10 @@ templates = Jinja2Templates(directory=str(_BASE_DIR / "templates"))
 @router.get("/developer", include_in_schema=False)
 async def developer_dashboard(
     request: Request,
-    user: User = Depends(require_user),
+    user: dict = Depends(require_user),
     db: AsyncSession = Depends(get_session),
 ):
-    result = await db.execute(select(DeveloperAccount).where(DeveloperAccount.user_id == user.id))
+    result = await db.execute(select(DeveloperAccount).where(DeveloperAccount.user_id == int(user["sub"])))
     account = result.scalars().first()
 
     clients = []
@@ -47,17 +47,17 @@ async def developer_dashboard(
 @router.post("/api/developer/apply")
 async def apply_for_developer(
     organization_name: str = Form(...),
-    user: User = Depends(require_user),
+    user: dict = Depends(require_user),
     db: AsyncSession = Depends(get_session),
 ):
-    result = await db.execute(select(DeveloperAccount).where(DeveloperAccount.user_id == user.id))
+    result = await db.execute(select(DeveloperAccount).where(DeveloperAccount.user_id == int(user["sub"])))
     existing = result.scalars().first()
 
     if existing:
         return RedirectResponse(url="/developer", status_code=status.HTTP_303_SEE_OTHER)
 
     account = DeveloperAccount(
-        user_id=user.id,
+        user_id=int(user["sub"]),
         status="pending",
         organization_name=organization_name,
     )

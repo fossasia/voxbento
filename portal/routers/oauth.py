@@ -26,7 +26,6 @@ from portal.models import (
     OAuthClient,
     OAuthConsentGrant,
     OAuthToken,
-    User,
 )
 from portal.rate_limit import auth_rate_limiter, token_rate_limiter
 
@@ -62,11 +61,11 @@ def verify_pkce(code_verifier: str, code_challenge: str, method: str) -> bool:
         return encoded == code_challenge
     return False
 
-async def get_effective_scopes(db: AsyncSession, user: User, event_id: int, requested_scopes: list[str]) -> list[str]:
+async def get_effective_scopes(db: AsyncSession, user: dict, event_id: int, requested_scopes: list[str]) -> list[str]:
     # Check if user has EventMembership
     result = await db.execute(
         select(EventMembership).where(
-            EventMembership.user_id == user.id,
+            EventMembership.user_id == int(user["sub"]),
             EventMembership.event_id == event_id
         )
     )
@@ -104,7 +103,7 @@ async def authorize_get(
     code_challenge: str = "",
     code_challenge_method: str = "",
     event: str = "",
-    user: User = Depends(require_user),
+    user: dict = Depends(require_user),
     db: AsyncSession = Depends(get_session),
 ):
     if response_type != "code":
@@ -169,7 +168,7 @@ async def authorize_post(
     event_id: Annotated[int, Form()],
     scope: Annotated[str, Form()],
     action: Annotated[str, Form()],
-    user: User = Depends(require_user),
+    user: dict = Depends(require_user),
     db: AsyncSession = Depends(get_session),
 ):
     if action == "deny":
@@ -190,7 +189,7 @@ async def authorize_post(
     # Save consent
     consent = OAuthConsentGrant(
         client_id=client.id,
-        user_id=user.id,
+        user_id=int(user["sub"]),
         event_id=event_id,
         scopes=effective_scopes
     )
@@ -200,7 +199,7 @@ async def authorize_post(
     code = generate_token()
     auth_code = OAuthAuthorizationCode(
         client_id=client.id,
-        user_id=user.id,
+        user_id=int(user["sub"]),
         event_id=event_id,
         scopes=effective_scopes,
         code_hash=hash_token(code),
