@@ -23,6 +23,7 @@
         {% endif %}
         {% if is_super_admin|default(false) %}
         <a href="/admin/users/" class="{{ 'is-active' if _path.startswith('/admin/users') else '' }}">Users</a>
+        <a href="/admin/developer-accounts" class="{{ 'is-active' if _path.startswith('/admin/developer-accounts') else '' }}">Dev Accounts</a>
         {% endif %}
         <a href="/" target="_blank">Portal Home</a>
         <a href="/admin/setup" class="btn btn-sm btn-primary">+ New event</a>

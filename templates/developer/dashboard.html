@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Developer Dashboard — Voxbento</title>
+    <link rel="stylesheet" href="{{ url_for('static', path='css/admin.css') }}" />
+  </head>
+  <body>
+    <header class="admin-header">
+      <div class="header-left">
+        <a class="brand" href="/">VoxBento</a>
+        <span class="header-badge">Developers</span>
+      </div>
+      <nav class="header-nav">
+        <a href="/">Portal Home</a>
+      </nav>
+    </header>
+
+    <main class="admin-main">
+      <h1>Developer Dashboard</h1>
+      
+      {% if not account %}
+      <div class="card">
+        <h3>Apply for Developer Access</h3>
+        <p>You need an approved Developer Account to create OAuth clients.</p>
+        <form method="POST" action="/api/developer/apply">
+          <div class="form-group">
+            <label>Organization / Project Name</label>
+            <input type="text" name="organization_name" required class="form-control" />
+          </div>
+          <button type="submit" class="btn btn-primary">Submit Application</button>
+        </form>
+      </div>
+      
+      {% elif account.status == 'pending' %}
+      <div class="card info">
+        <h3>Application Pending</h3>
+        <p>Your application for <strong>{{ account.organization_name }}</strong> is currently being reviewed by an administrator. Please check back later.</p>
+      </div>
+      
+      {% elif account.status == 'rejected' %}
+      <div class="card error">
+        <h3>Application Rejected</h3>
+        <p>Your developer application was rejected.</p>
+      </div>
+      
+      {% elif account.status == 'suspended' %}
+      <div class="card error">
+        <h3>Account Suspended</h3>
+        <p>Your developer account is currently suspended. All OAuth clients are disabled.</p>
+      </div>
+      
+      {% elif account.status == 'approved' %}
+      <div class="card success">
+        <h3>Approved Developer Account</h3>
+        <p>Welcome! You can now create OAuth clients for <strong>{{ account.organization_name }}</strong>.</p>
+      </div>
+      
+      <h2>Your Apps</h2>
+      <button class="btn btn-primary" disabled title="Phase 2 Feature">Create New App</button>
+      
+      {% if clients %}
+      <table class="table">
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>Client ID</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for client in clients %}
+          <tr>
+            <td>{{ client.name }}</td>
+            <td><code>{{ client.client_id }}</code></td>
+            <td><span class="badge {{ client.status }}">{{ client.status }}</span></td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+      {% else %}
+      <p class="muted">You haven't created any apps yet.</p>
+      {% endif %}
+      
+      {% endif %}
+    </main>
+  </body>
+</html>

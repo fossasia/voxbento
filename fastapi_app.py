@@ -17,6 +17,7 @@ from portal.config import settings
 from portal.routers.admin import router as admin_router
 from portal.routers.api import router as api_router
 from portal.routers.auth import router as auth_router
+from portal.routers.developer import router as developer_router
 from portal.routers.demo import router as demo_router
 from portal.routers.interpreter import router as interpreter_router
 from portal.routers.listener import router as listener_router
@@ -141,6 +142,7 @@ app.mount("/static", StaticFiles(directory=_BASE_DIR / "static"), name="static")
 app.include_router(public_router)
 
 app.include_router(auth_router)
+app.include_router(developer_router)
 
 app.include_router(interpreter_router)
 
