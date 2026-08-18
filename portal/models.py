@@ -574,3 +574,129 @@ class UsageMetric(Base):
 
     def __repr__(self) -> str:
         return f"<UsageMetric event={self.event_id} metric={self.metric_name!r} value={self.value}>"
+
+# ---------------------------------------------------------------------------
+# OAuth2 & Developer Platform
+# ---------------------------------------------------------------------------
+
+class DeveloperAccount(Base):
+    __tablename__ = "developer_accounts"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    status: Mapped[str] = mapped_column(String(20), default="pending")  # pending, approved, suspended, rejected
+    organization_name: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    reviewed_by: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+    user: Mapped[User] = relationship(foreign_keys=[user_id])
+    reviewer: Mapped[User | None] = relationship(foreign_keys=[reviewed_by])
+    clients: Mapped[list["OAuthClient"]] = relationship(back_populates="developer_account", cascade="all, delete-orphan")
+
+    def __repr__(self) -> str:
+        return f"<DeveloperAccount id={self.id} user={self.user_id} status={self.status!r}>"
+
+
+class OAuthClient(Base):
+    __tablename__ = "oauth_clients"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    developer_account_id: Mapped[int] = mapped_column(ForeignKey("developer_accounts.id", ondelete="CASCADE"))
+    client_id: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    client_secret_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)  # SHA-256
+    name: Mapped[str] = mapped_column(String(200))
+    redirect_uris: Mapped[list[str]] = mapped_column(sa.JSON, default=list)
+    scopes_requested: Mapped[list[str]] = mapped_column(sa.JSON, default=list)
+    is_confidential: Mapped[bool] = mapped_column(Boolean, default=True)
+    status: Mapped[str] = mapped_column(String(20), default="active")  # active, suspended, revoked
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+    developer_account: Mapped[DeveloperAccount] = relationship(back_populates="clients")
+
+    def __repr__(self) -> str:
+        return f"<OAuthClient id={self.client_id} name={self.name!r} status={self.status!r}>"
+
+
+class OAuthAuthorizationCode(Base):
+    __tablename__ = "oauth_authorization_codes"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    client_id: Mapped[int] = mapped_column(ForeignKey("oauth_clients.id", ondelete="CASCADE"))
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    event_id: Mapped[int] = mapped_column(ForeignKey("events.id", ondelete="CASCADE"))
+    scopes: Mapped[list[str]] = mapped_column(sa.JSON, default=list)
+    code_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    code_challenge: Mapped[str] = mapped_column(String(128))
+    code_challenge_method: Mapped[str] = mapped_column(String(20))
+    redirect_uri: Mapped[str] = mapped_column(String(500))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    used: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+    client: Mapped[OAuthClient] = relationship()
+    user: Mapped[User] = relationship()
+    event: Mapped[Event] = relationship()
+
+    def __repr__(self) -> str:
+        return f"<OAuthAuthorizationCode id={self.id} client_id={self.client_id}>"
+
+
+class OAuthToken(Base):
+    __tablename__ = "oauth_tokens"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    client_id: Mapped[int] = mapped_column(ForeignKey("oauth_clients.id", ondelete="CASCADE"))
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    event_id: Mapped[int] = mapped_column(ForeignKey("events.id", ondelete="CASCADE"))
+    scopes: Mapped[list[str]] = mapped_column(sa.JSON, default=list)
+    access_token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    refresh_token_hash: Mapped[str | None] = mapped_column(String(64), unique=True, index=True, nullable=True)
+    parent_token_id: Mapped[int | None] = mapped_column(ForeignKey("oauth_tokens.id", ondelete="SET NULL"), nullable=True)
+    revoked: Mapped[bool] = mapped_column(Boolean, default=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    client: Mapped[OAuthClient] = relationship()
+    user: Mapped[User] = relationship()
+    event: Mapped[Event] = relationship()
+
+    def __repr__(self) -> str:
+        return f"<OAuthToken id={self.id} client_id={self.client_id} revoked={self.revoked}>"
+
+
+class OAuthConsentGrant(Base):
+    __tablename__ = "oauth_consent_grants"
+    __table_args__ = (Index("ix_oauth_consent_client_user_event", "client_id", "user_id", "event_id", unique=True),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    client_id: Mapped[int] = mapped_column(ForeignKey("oauth_clients.id", ondelete="CASCADE"))
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"))
+    event_id: Mapped[int] = mapped_column(ForeignKey("events.id", ondelete="CASCADE"))
+    scopes: Mapped[list[str]] = mapped_column(sa.JSON, default=list)
+    granted_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    client: Mapped[OAuthClient] = relationship()
+    user: Mapped[User] = relationship()
+    event: Mapped[Event] = relationship()
+
+    def __repr__(self) -> str:
+        return f"<OAuthConsentGrant id={self.id} client_id={self.client_id} user_id={self.user_id}>"
+
+
+class OAuthAuditLog(Base):
+    __tablename__ = "oauth_audit_logs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    token_id: Mapped[int | None] = mapped_column(ForeignKey("oauth_tokens.id", ondelete="SET NULL"), nullable=True)
+    client_id: Mapped[int] = mapped_column(ForeignKey("oauth_clients.id", ondelete="CASCADE"))
+    event_id: Mapped[int | None] = mapped_column(ForeignKey("events.id", ondelete="SET NULL"), nullable=True)
+    action: Mapped[str] = mapped_column(String(100))
+    request_path: Mapped[str] = mapped_column(String(500))
+    status_code: Mapped[int] = mapped_column(Integer)
+    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+    def __repr__(self) -> str:
+        return f"<OAuthAuditLog id={self.id} action={self.action!r} status={self.status_code}>"

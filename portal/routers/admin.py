@@ -11,9 +11,11 @@ from pathlib import Path
 
 import pycountry
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request, status
+from fastapi.responses import RedirectResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
-from sqlalchemy import update
+from sqlalchemy import select, update
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from portal.auth import (
     create_admin_token,
@@ -1678,3 +1680,76 @@ async def api_supertonic_download_progress():
     from portal.tts.providers.supertonic import get_supertonic_download_progress
     progress = get_supertonic_download_progress()
     return progress
+
+# ---------------------------------------------------------------------------
+# Developer Accounts
+# ---------------------------------------------------------------------------
+
+@router.get("/admin/developer-accounts", include_in_schema=False)
+async def admin_developer_accounts(
+    request: Request,
+    user: User = Depends(require_super_admin),
+    db: AsyncSession = Depends(get_session),
+):
+    from sqlalchemy.orm import selectinload
+
+    from portal.models import DeveloperAccount
+
+    result = await db.execute(
+        select(DeveloperAccount)
+        .options(selectinload(DeveloperAccount.user))
+        .order_by(DeveloperAccount.created_at.desc())
+    )
+    accounts = result.scalars().all()
+
+    return templates.TemplateResponse(
+        "admin/developer_accounts.html",
+        {
+            "request": request,
+            "user": user,
+            "accounts": accounts,
+        },
+    )
+
+@router.post("/api/admin/developer-accounts/{account_id}/approve", include_in_schema=False)
+async def admin_developer_approve(
+    account_id: int,
+    user: User = Depends(require_super_admin),
+    db: AsyncSession = Depends(get_session),
+):
+    from datetime import datetime, timezone
+
+    from portal.models import DeveloperAccount
+
+    account = await db.get(DeveloperAccount, account_id)
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    account.status = "approved"
+    account.reviewed_by = user.id
+    account.reviewed_at = datetime.now(timezone.utc)
+    await db.commit()
+
+    return RedirectResponse(url="/admin/developer-accounts", status_code=status.HTTP_303_SEE_OTHER)
+
+@router.post("/api/admin/developer-accounts/{account_id}/reject", include_in_schema=False)
+async def admin_developer_reject(
+    account_id: int,
+    user: User = Depends(require_super_admin),
+    db: AsyncSession = Depends(get_session),
+):
+    from datetime import datetime, timezone
+
+    from portal.models import DeveloperAccount
+
+    account = await db.get(DeveloperAccount, account_id)
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    account.status = "rejected"
+    account.reviewed_by = user.id
+    account.reviewed_at = datetime.now(timezone.utc)
+    await db.commit()
+
+    return RedirectResponse(url="/admin/developer-accounts", status_code=status.HTTP_303_SEE_OTHER)
+

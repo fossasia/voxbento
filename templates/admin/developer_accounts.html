@@ -1,0 +1,68 @@
+{% extends "admin/base.html" %}
+
+{% block title %}Developer Accounts{% endblock %}
+
+{% block breadcrumb %}
+<div class="breadcrumb">
+  <a href="/admin/">Admin</a> &gt; Developer Accounts
+</div>
+{% endblock %}
+
+{% block content %}
+<div class="panel-header">
+  <div class="panel-title-group">
+    <h1 class="panel-title">Developer Accounts</h1>
+    <p class="panel-subtitle">Review and manage third-party API access requests.</p>
+  </div>
+</div>
+
+<div class="card">
+  <table class="table">
+    <thead>
+      <tr>
+        <th>Applicant</th>
+        <th>Organization</th>
+        <th>Date Applied</th>
+        <th>Status</th>
+        <th>Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for acc in accounts %}
+      <tr>
+        <td>{{ acc.user.email }}</td>
+        <td>{{ acc.organization_name or '-' }}</td>
+        <td>{{ acc.created_at.strftime('%Y-%m-%d %H:%M') }}</td>
+        <td>
+          <span class="badge {{ 'bg-success' if acc.status == 'approved' else 'bg-warning' if acc.status == 'pending' else 'bg-danger' }}">
+            {{ acc.status }}
+          </span>
+        </td>
+        <td class="actions-cell">
+          {% if acc.status == 'pending' %}
+          <form method="POST" action="/api/admin/developer-accounts/{{ acc.id }}/approve" style="display:inline;">
+            <button type="submit" class="btn btn-sm btn-primary">Approve</button>
+          </form>
+          <form method="POST" action="/api/admin/developer-accounts/{{ acc.id }}/reject" style="display:inline;">
+            <button type="submit" class="btn btn-sm btn-danger">Reject</button>
+          </form>
+          {% elif acc.status == 'approved' %}
+          <form method="POST" action="/api/admin/developer-accounts/{{ acc.id }}/reject" style="display:inline;">
+            <button type="submit" class="btn btn-sm btn-outline">Suspend</button>
+          </form>
+          {% elif acc.status in ['suspended', 'rejected'] %}
+          <form method="POST" action="/api/admin/developer-accounts/{{ acc.id }}/approve" style="display:inline;">
+            <button type="submit" class="btn btn-sm btn-outline">Restore</button>
+          </form>
+          {% endif %}
+        </td>
+      </tr>
+      {% else %}
+      <tr>
+        <td colspan="5" class="text-center muted">No developer applications found.</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}
