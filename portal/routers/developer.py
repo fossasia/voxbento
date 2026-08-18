@@ -20,6 +20,7 @@ router = APIRouter()
 _BASE_DIR = Path(__file__).resolve().parent.parent.parent
 templates = Jinja2Templates(directory=str(_BASE_DIR / "templates"))
 
+
 @router.get("/developer", include_in_schema=False)
 async def developer_dashboard(
     request: Request,
@@ -35,14 +36,15 @@ async def developer_dashboard(
         clients = client_result.scalars().all()
 
     return templates.TemplateResponse(
-        request,
-        "developer/dashboard.html",
-        {
+        request=request,
+        name="developer/dashboard.html",
+        context={
             "user": user,
             "account": account,
             "clients": clients,
         },
     )
+
 
 @router.post("/api/developer/apply")
 async def apply_for_developer(

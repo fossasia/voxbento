@@ -89,7 +89,9 @@ async def listen_event_page(request: Request, event_slug: str, code: str | None 
                     detail="Too many join attempts. Please try again later.",
                 )
             return templates.TemplateResponse(
-                request, "listener_join.html", {"event": ev, "error": "Invalid join code." if code else None}
+                request=request,
+                name="listener_join.html",
+                context={"event": ev, "error": "Invalid join code." if code else None},
             )
 
         rooms = await list_rooms_for_event(session, ev.id)
@@ -155,9 +157,9 @@ async def listen_event_page(request: Request, event_slug: str, code: str | None 
         await asyncio.gather(*ensure_tasks)
 
     response = templates.TemplateResponse(
-        request,
-        "listener-event.html",
-        {
+        request=request,
+        name="listener-event.html",
+        context={
             "event": ev,
             "rooms": rooms,
             "rooms_json": json.dumps(rooms_data),
@@ -325,7 +327,7 @@ async def _embed_listener_impl(
         "audio_delay_ms": audio_delay_ms,
     }
 
-    return templates.TemplateResponse(request, "embed.html", context, headers=response_headers)
+    return templates.TemplateResponse(request=request, name="embed.html", context=context, headers=response_headers)
 
 
 @router.get("/embed/{event_slug}/{language_code}")

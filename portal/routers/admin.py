@@ -146,9 +146,9 @@ async def mission_control_list(request: Request, user=Depends(require_user), pag
         accessible_events = await list_events(session, limit=limit, offset=offset, allowed_event_ids=allowed_event_ids)
     total_pages = max(1, math.ceil(total_events / limit))
     return templates.TemplateResponse(
-        request,
-        "mission_control/event_list.html",
-        {
+        request=request,
+        name="mission_control/event_list.html",
+        context={
             "events": accessible_events,
             "is_super_admin": is_super_admin,
             "is_event_owner": True,
@@ -214,9 +214,9 @@ async def mission_control_grid(request: Request, event_slug: str, user=Depends(r
             state["room_name"] = db_b.room.display_name if db_b.room else "Unknown Room"
             event_booths.append(state)
     return templates.TemplateResponse(
-        request,
-        "mission_control/grid.html",
-        {
+        request=request,
+        name="mission_control/grid.html",
+        context={
             "event": event,
             "booths": event_booths,
             "whip_base": settings.mediamtx_whip_base,
@@ -234,7 +234,7 @@ async def admin_login_page(request: Request):
     user = await get_current_user(request)
     if user and user.get("is_admin"):
         return safe_redirect(url="/admin/", status_code=status.HTTP_303_SEE_OTHER)
-    return templates.TemplateResponse(request, "admin/login.html", {})
+    return templates.TemplateResponse(request=request, name="admin/login.html", context={})
 
 
 @router.post("/admin/login")
@@ -243,7 +243,10 @@ async def admin_login_submit(request: Request):
     password = form.get("password", "")
     if not settings.admin_password or password != settings.admin_password:
         return templates.TemplateResponse(
-            request, "admin/login.html", {"error": "Invalid password."}, status_code=status.HTTP_403_FORBIDDEN
+            request=request,
+            name="admin/login.html",
+            context={"error": "Invalid password."},
+            status_code=status.HTTP_403_FORBIDDEN,
         )
     token = create_admin_token()
     response = safe_redirect(url="/admin/", status_code=status.HTTP_303_SEE_OTHER)
@@ -298,9 +301,15 @@ async def admin_dashboard(request: Request, page: int = 1):
     mediamtx_ok = await _check_mediamtx()
     total_pages = max(1, math.ceil(total_events / limit))
     return templates.TemplateResponse(
-        request,
-        "admin/dashboard.html",
-        {"event_data": event_data, "mediamtx_ok": mediamtx_ok, "page": page, "total_pages": total_pages, **admin_flags},
+        request=request,
+        name="admin/dashboard.html",
+        context={
+            "event_data": event_data,
+            "mediamtx_ok": mediamtx_ok,
+            "page": page,
+            "total_pages": total_pages,
+            **admin_flags,
+        },
     )
 
 
@@ -317,7 +326,9 @@ async def admin_event_list(request: Request, page: int = 1):
         events = await list_events(session, limit=limit, offset=offset, allowed_event_ids=allowed_event_ids)
     total_pages = max(1, math.ceil(total_events / limit))
     return templates.TemplateResponse(
-        request, "admin/event_list.html", {"events": events, "page": page, "total_pages": total_pages, **admin_flags}
+        request=request,
+        name="admin/event_list.html",
+        context={"events": events, "page": page, "total_pages": total_pages, **admin_flags},
     )
 
 
@@ -344,7 +355,7 @@ async def admin_create_event(request: Request):
 @router.get("/admin/setup", dependencies=[Depends(require_admin)])
 async def admin_setup_start(request: Request):
     admin_flags = await get_admin_flags(request)
-    return templates.TemplateResponse(request, "admin/wizard_event.html", {**admin_flags})
+    return templates.TemplateResponse(request=request, name="admin/wizard_event.html", context={**admin_flags})
 
 
 @router.post("/admin/setup", dependencies=[Depends(require_admin)])
@@ -354,9 +365,9 @@ async def admin_setup_create_event(request: Request):
     raw_slug = form.get("slug", "").strip()
     if not display_name:
         return templates.TemplateResponse(
-            request,
-            "admin/wizard_event.html",
-            {"error": "Please enter an event name.", "slug": raw_slug},
+            request=request,
+            name="admin/wizard_event.html",
+            context={"error": "Please enter an event name.", "slug": raw_slug},
             status_code=status.HTTP_400_BAD_REQUEST,
         )
     candidate = raw_slug or _slugify(display_name)
@@ -364,9 +375,9 @@ async def admin_setup_create_event(request: Request):
         slug = validate_event_slug(candidate)
     except ValueError:
         return templates.TemplateResponse(
-            request,
-            "admin/wizard_event.html",
-            {
+            request=request,
+            name="admin/wizard_event.html",
+            context={
                 "error": "That URL slug isn't valid. Use lowercase letters, numbers and hyphens.",
                 "display_name": display_name,
                 "slug": candidate,
@@ -376,9 +387,9 @@ async def admin_setup_create_event(request: Request):
     async with get_session() as session:
         if await get_event_by_slug(session, slug) is not None:
             return templates.TemplateResponse(
-                request,
-                "admin/wizard_event.html",
-                {
+                request=request,
+                name="admin/wizard_event.html",
+                context={
                     "error": f"An event with the slug '{slug}' already exists. Choose another.",
                     "display_name": display_name,
                     "slug": slug,
@@ -399,7 +410,7 @@ async def admin_setup_rooms(request: Request, event_id: int):
             raise HTTPException(status_code=404, detail="Event not found.")
         rooms = await list_rooms_for_event(session, event_id)
     return templates.TemplateResponse(
-        request, "admin/wizard_rooms.html", {"event": event, "rooms": rooms, **admin_flags}
+        request=request, name="admin/wizard_rooms.html", context={"event": event, "rooms": rooms, **admin_flags}
     )
 
 
@@ -429,9 +440,9 @@ async def admin_setup_booths(request: Request, event_id: int):
         rooms = await list_rooms_for_event(session, event_id)
         booths_by_room = {room.id: await list_booths_for_room(session, room.id) for room in rooms}
     return templates.TemplateResponse(
-        request,
-        "admin/wizard_booths.html",
-        {
+        request=request,
+        name="admin/wizard_booths.html",
+        context={
             "event": event,
             "rooms": rooms,
             "booths_by_room": booths_by_room,
@@ -482,9 +493,9 @@ async def admin_setup_invite(request: Request, event_id: int, success: str | Non
             await session.flush()
         memberships = await list_memberships_for_event(session, event_id)
     return templates.TemplateResponse(
-        request,
-        "admin/wizard_invite.html",
-        {
+        request=request,
+        name="admin/wizard_invite.html",
+        context={
             "event": event,
             "memberships": memberships,
             "success": success,
@@ -550,9 +561,9 @@ async def admin_event_detail(request: Request, event_id: int):
         is_live = mem_booth is not None and mem_booth.ingest_status == "connected"
         booth_statuses.append({"db": b, "booth_id": bid, "is_live": is_live})
     return templates.TemplateResponse(
-        request,
-        "admin/event_detail.html",
-        {
+        request=request,
+        name="admin/event_detail.html",
+        context={
             "event": event,
             "rooms": rooms,
             "booths": booth_statuses,
@@ -569,7 +580,9 @@ async def admin_event_api_settings_get(request: Request, event_id: int):
         if event is None:
             raise HTTPException(status_code=404, detail="Event not found.")
     admin_flags = await get_admin_flags(request, event_id=event_id)
-    return templates.TemplateResponse(request, "admin/api_settings.html", {"event": event, **admin_flags})
+    return templates.TemplateResponse(
+        request=request, name="admin/api_settings.html", context={"event": event, **admin_flags}
+    )
 
 
 @router.post("/admin/events/{event_id}/api-settings", dependencies=[Depends(require_admin)])
@@ -662,7 +675,9 @@ async def admin_room_list(request: Request, event_id: int):
         for room in rooms:
             room_booths = await list_booths_for_room(session, room.id)
             room_data.append({"room": room, "booth_count": len(room_booths)})
-    return templates.TemplateResponse(request, "admin/room_list.html", {"event": event, "room_data": room_data})
+    return templates.TemplateResponse(
+        request=request, name="admin/room_list.html", context={"event": event, "room_data": room_data}
+    )
 
 
 @router.post("/admin/events/{event_id}/rooms/", dependencies=[Depends(require_admin)])
@@ -710,9 +725,9 @@ async def admin_room_detail(request: Request, event_id: int, room_id: int):
     async with get_session() as session:
         memberships = await list_memberships_for_room(session, room_id)
     return templates.TemplateResponse(
-        request,
-        "admin/room_detail.html",
-        {
+        request=request,
+        name="admin/room_detail.html",
+        context={
             "event": event,
             "room": room,
             "booths": booth_statuses,
@@ -737,7 +752,9 @@ async def admin_room_transcripts(request: Request, event_id: int, room_id: int):
         booths = await list_booths_for_room(session, room_id)
     admin_flags = await get_admin_flags(request, event_id=event_id, room_id=room_id)
     return templates.TemplateResponse(
-        request, "admin/room_transcripts.html", {"event": event, "room": room, "booths": booths, **admin_flags}
+        request=request,
+        name="admin/room_transcripts.html",
+        context={"event": event, "room": room, "booths": booths, **admin_flags},
     )
 
 
@@ -1030,7 +1047,9 @@ async def admin_booth_list(request: Request, event_id: int, room_id: int):
         booth_statuses.append({"db": b, "booth_id": bid, "is_live": is_live})
     admin_flags = await get_admin_flags(request, event_id=event_id, room_id=room_id)
     return templates.TemplateResponse(
-        request, "admin/booth_list.html", {"event": event, "room": room, "booths": booth_statuses, **admin_flags}
+        request=request,
+        name="admin/booth_list.html",
+        context={"event": event, "room": room, "booths": booth_statuses, **admin_flags},
     )
 
 
@@ -1085,9 +1104,9 @@ async def admin_booth_detail(request: Request, event_id: int, room_id: int, boot
     translation_languages_dataset.sort(key=lambda x: x["name"])
     enabled_translation_language_codes = [lang.language_code for lang in db_booth.translation_languages if lang.enabled]
     return templates.TemplateResponse(
-        request,
-        "admin/booth_detail.html",
-        {
+        request=request,
+        name="admin/booth_detail.html",
+        context={
             "event": event,
             "room": room,
             "booth": db_booth,
@@ -1416,9 +1435,9 @@ async def admin_user_list(request: Request, page: int = 1, search: str | None = 
         users = await list_users(session, limit=limit, offset=offset, search=search)
     total_pages = max(1, math.ceil(total_users / limit))
     return templates.TemplateResponse(
-        request,
-        "admin/user_list.html",
-        {
+        request=request,
+        name="admin/user_list.html",
+        context={
             "users": users,
             "page": page,
             "total_pages": total_pages,
@@ -1456,9 +1475,9 @@ async def admin_user_detail(request: Request, user_id: int):
         memberships = await list_memberships_for_user(session, user_id)
         event_owner_map = {m.event_id: m for m in memberships if m.role == "event_owner"}
     return templates.TemplateResponse(
-        request,
-        "admin/user_detail.html",
-        {
+        request=request,
+        name="admin/user_detail.html",
+        context={
             "user_detail": user,
             "events": events,
             "event_owner_map": event_owner_map,
@@ -1506,9 +1525,9 @@ async def admin_event_members(request: Request, event_id: int):
         users = await list_users(session)
     membership_map = {m.user_id: m for m in memberships}
     return templates.TemplateResponse(
-        request,
-        "admin/event_members.html",
-        {"event": event, "memberships": memberships, "membership_map": membership_map, "users": users},
+        request=request,
+        name="admin/event_members.html",
+        context={"event": event, "memberships": memberships, "membership_map": membership_map, "users": users},
     )
 
 
@@ -1670,21 +1689,27 @@ async def api_download_progress(model: str = Query("nllb-200-distilled-600M")):
     progress = get_download_progress(model)
     return progress
 
+
 @router.post("/admin/models/supertonic/trigger_download", dependencies=[Depends(require_admin)])
 async def api_supertonic_trigger_download():
     from portal.tts.providers.supertonic import trigger_supertonic_download
+
     trigger_supertonic_download()
     return {"status": "started"}
+
 
 @router.get("/admin/models/supertonic/download_progress", dependencies=[Depends(require_admin)])
 async def api_supertonic_download_progress():
     from portal.tts.providers.supertonic import get_supertonic_download_progress
+
     progress = get_supertonic_download_progress()
     return progress
+
 
 # ---------------------------------------------------------------------------
 # Developer Accounts
 # ---------------------------------------------------------------------------
+
 
 @router.get("/admin/developer-accounts", include_in_schema=False, dependencies=[Depends(require_super_admin)])
 async def admin_developer_accounts(
@@ -1704,15 +1729,20 @@ async def admin_developer_accounts(
     accounts = result.scalars().all()
 
     return templates.TemplateResponse(
-        request,
-        "admin/developer_accounts.html",
-        {
+        request=request,
+        name="admin/developer_accounts.html",
+        context={
             "user": user,
             "accounts": accounts,
         },
     )
 
-@router.post("/api/admin/developer-accounts/{account_id}/approve", include_in_schema=False, dependencies=[Depends(require_super_admin)])
+
+@router.post(
+    "/api/admin/developer-accounts/{account_id}/approve",
+    include_in_schema=False,
+    dependencies=[Depends(require_super_admin)],
+)
 async def admin_developer_approve(
     account_id: int,
     user: dict = Depends(require_user),
@@ -1733,7 +1763,12 @@ async def admin_developer_approve(
 
     return RedirectResponse(url="/admin/developer-accounts", status_code=status.HTTP_303_SEE_OTHER)
 
-@router.post("/api/admin/developer-accounts/{account_id}/reject", include_in_schema=False, dependencies=[Depends(require_super_admin)])
+
+@router.post(
+    "/api/admin/developer-accounts/{account_id}/reject",
+    include_in_schema=False,
+    dependencies=[Depends(require_super_admin)],
+)
 async def admin_developer_reject(
     account_id: int,
     user: dict = Depends(require_user),
@@ -1753,4 +1788,3 @@ async def admin_developer_reject(
     await db.commit()
 
     return RedirectResponse(url="/admin/developer-accounts", status_code=status.HTTP_303_SEE_OTHER)
-

@@ -88,7 +88,7 @@ async def interpreter_landing_page(request: Request) -> Any:
         except ValueError:
             pass
     return templates.TemplateResponse(
-        request, "interpreter_landing.html", {"my_booths": my_booths, "js_version": _JS_CACHE_BUST}
+        request=request, name="interpreter_landing.html", context={"my_booths": my_booths, "js_version": _JS_CACHE_BUST}
     )
 
 
@@ -147,9 +147,9 @@ async def interpreter_booth_by_identity(
     final_jitsi_url = room_jitsi_url or default_jitsi_url
     display_name = payload.get("display_name", "") or payload.get("email", "")
     return templates.TemplateResponse(
-        request,
-        "interpreter_booth.html",
-        {
+        request=request,
+        name="interpreter_booth.html",
+        context={
             "booth_id": booth_id,
             "booth_token": token,
             "booth_language": display_language,

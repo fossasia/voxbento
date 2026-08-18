@@ -98,9 +98,9 @@ async def home(request: Request):
         event_data = []
 
     return templates.TemplateResponse(
-        request,
-        "home.html",
-        {
+        request=request,
+        name="home.html",
+        context={
             "events": event_data,
             "current_user": current_user,
             "my_booths": my_booths,
@@ -112,42 +112,42 @@ async def home(request: Request):
 @router.get("/research")
 @router.get("/research/")
 async def research_index(request: Request):
-    return templates.TemplateResponse(request, "research/index.html", {})
+    return templates.TemplateResponse(request=request, name="research/index.html", context={})
 
 
 @router.get("/research/speech-ai-statistics")
 async def research_speech_ai_statistics(request: Request):
-    return templates.TemplateResponse(request, "research/speech_ai_statistics.html", {})
+    return templates.TemplateResponse(request=request, name="research/speech_ai_statistics.html", context={})
 
 
 @router.get("/research/whisper-benchmark")
 async def research_whisper_benchmark(request: Request):
-    return templates.TemplateResponse(request, "research/whisper_benchmark.html", {})
+    return templates.TemplateResponse(request=request, name="research/whisper_benchmark.html", context={})
 
 
 @router.get("/research/stt-comparison")
 async def research_stt_comparison(request: Request):
-    return templates.TemplateResponse(request, "research/stt_comparison.html", {})
+    return templates.TemplateResponse(request=request, name="research/stt_comparison.html", context={})
 
 
 @router.get("/research/real-time-audio-latency")
 async def research_real_time_audio_latency(request: Request):
-    return templates.TemplateResponse(request, "research/real_time_audio_latency.html", {})
+    return templates.TemplateResponse(request=request, name="research/real_time_audio_latency.html", context={})
 
 
 @router.get("/research/webrtc-vs-rtmp-vs-hls")
 async def research_webrtc_vs_rtmp_vs_hls(request: Request):
-    return templates.TemplateResponse(request, "research/webrtc_vs_rtmp_vs_hls.html", {})
+    return templates.TemplateResponse(request=request, name="research/webrtc_vs_rtmp_vs_hls.html", context={})
 
 
 @router.get("/research/speech-ai-glossary")
 async def research_speech_ai_glossary(request: Request):
-    return templates.TemplateResponse(request, "research/speech_ai_glossary.html", {})
+    return templates.TemplateResponse(request=request, name="research/speech_ai_glossary.html", context={})
 
 
 @router.get("/research/streaming-stt-architecture")
 async def research_streaming_stt_architecture(request: Request):
-    return templates.TemplateResponse(request, "research/streaming_stt_architecture.html", {})
+    return templates.TemplateResponse(request=request, name="research/streaming_stt_architecture.html", context={})
 
 
 @router.get("/llms.txt")

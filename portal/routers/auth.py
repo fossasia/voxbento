@@ -104,7 +104,7 @@ async def register_page(request: Request):
     current_user = await get_current_user(request)
     if current_user:
         return safe_redirect(url="/account", status_code=status.HTTP_303_SEE_OTHER)
-    return templates.TemplateResponse(request, "register.html", {})
+    return templates.TemplateResponse(request=request, name="register.html", context={})
 
 
 @router.post("/register")
@@ -148,15 +148,15 @@ async def register_submit(request: Request):
                 await send_verification_email(email, token_val)
 
                 return templates.TemplateResponse(
-                    request,
-                    "register_success.html",
-                    {"email": email},
+                    request=request,
+                    name="register_success.html",
+                    context={"email": email},
                 )
 
     return templates.TemplateResponse(
-        request,
-        "register.html",
-        {"errors": errors, "email": email, "display_name": display_name},
+        request=request,
+        name="register.html",
+        context={"errors": errors, "email": email, "display_name": display_name},
         status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
     )
 
@@ -190,7 +190,7 @@ async def user_login_page(request: Request, next: str = ""):
     if current_user:
         redirect_to = next if next and next.startswith("/") and not next.startswith("//") else "/account"
         return safe_redirect(url=redirect_to, status_code=status.HTTP_303_SEE_OTHER)
-    return templates.TemplateResponse(request, "login.html", {"next_url": next})
+    return templates.TemplateResponse(request=request, name="login.html", context={"next_url": next})
 
 
 @router.post("/login")
@@ -202,9 +202,9 @@ async def user_login_submit(request: Request):
 
     if not check_rate_limit("login", email, max_requests=10, window_seconds=3600):
         return templates.TemplateResponse(
-            request,
-            "login.html",
-            {"error": "Too many attempts. Try again later.", "email": email, "next_url": next_url},
+            request=request,
+            name="login.html",
+            context={"error": "Too many attempts. Try again later.", "email": email, "next_url": next_url},
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
         )
 
@@ -213,23 +213,27 @@ async def user_login_submit(request: Request):
 
     if user is None or not user.password_hash or not verify_password(password, user.password_hash):
         return templates.TemplateResponse(
-            request,
-            "login.html",
-            {"error": "Invalid email or password.", "email": email, "next_url": next_url},
+            request=request,
+            name="login.html",
+            context={"error": "Invalid email or password.", "email": email, "next_url": next_url},
             status_code=status.HTTP_403_FORBIDDEN,
         )
     if not user.is_active:
         return templates.TemplateResponse(
-            request,
-            "login.html",
-            {"error": "Your account has been deactivated. Contact an admin.", "email": email, "next_url": next_url},
+            request=request,
+            name="login.html",
+            context={
+                "error": "Your account has been deactivated. Contact an admin.",
+                "email": email,
+                "next_url": next_url,
+            },
             status_code=status.HTTP_403_FORBIDDEN,
         )
     if not user.email_verified:
         return templates.TemplateResponse(
-            request,
-            "login.html",
-            {"error": "Please verify your email address first.", "email": email, "next_url": next_url},
+            request=request,
+            name="login.html",
+            context={"error": "Please verify your email address first.", "email": email, "next_url": next_url},
             status_code=status.HTTP_403_FORBIDDEN,
         )
 
@@ -330,7 +334,7 @@ async def forgot_password_request(request: Request):
 
 @router.get("/auth/reset/{token}")
 async def reset_password_page(request: Request, token: str):
-    return templates.TemplateResponse(request, "reset_password.html", {"token": token})
+    return templates.TemplateResponse(request=request, name="reset_password.html", context={"token": token})
 
 
 @router.post("/auth/reset/{token}")
@@ -340,7 +344,9 @@ async def reset_password_submit(request: Request, token: str):
 
     if len(password) < 8:
         return templates.TemplateResponse(
-            request, "reset_password.html", {"token": token, "error": "Password must be at least 8 characters"}
+            request=request,
+            name="reset_password.html",
+            context={"token": token, "error": "Password must be at least 8 characters"},
         )
 
     async with get_session() as session:
@@ -362,7 +368,9 @@ async def reset_password_submit(request: Request, token: str):
             )
             return response
         except ValueError as e:
-            return templates.TemplateResponse(request, "reset_password.html", {"token": token, "error": str(e)})
+            return templates.TemplateResponse(
+                request=request, name="reset_password.html", context={"token": token, "error": str(e)}
+            )
 
 
 @router.get("/logout")
@@ -424,7 +432,9 @@ async def account_page(request: Request):
 
     unified_memberships.sort(key=lambda x: x["created_at"] or datetime.min.replace(tzinfo=timezone.utc))
 
-    return templates.TemplateResponse(request, "account.html", {"user": user, "memberships": unified_memberships})
+    return templates.TemplateResponse(
+        request=request, name="account.html", context={"user": user, "memberships": unified_memberships}
+    )
 
 
 @router.post("/api/auth/set-password")

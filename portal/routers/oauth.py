@@ -48,11 +48,14 @@ VALID_SCOPES = {
     "webhooks:manage": "Manage webhook subscriptions",
 }
 
+
 def generate_token() -> str:
     return secrets.token_urlsafe(32)
 
+
 def hash_token(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
+
 
 def verify_pkce(code_verifier: str, code_challenge: str, method: str) -> bool:
     if method == "S256":
@@ -61,13 +64,11 @@ def verify_pkce(code_verifier: str, code_challenge: str, method: str) -> bool:
         return encoded == code_challenge
     return False
 
+
 async def get_effective_scopes(db: AsyncSession, user: dict, event_id: int, requested_scopes: list[str]) -> list[str]:
     # Check if user has EventMembership
     result = await db.execute(
-        select(EventMembership).where(
-            EventMembership.user_id == int(user["sub"]),
-            EventMembership.event_id == event_id
-        )
+        select(EventMembership).where(EventMembership.user_id == int(user["sub"]), EventMembership.event_id == event_id)
     )
     event_membership = result.scalars().first()
 
@@ -85,12 +86,19 @@ async def get_effective_scopes(db: AsyncSession, user: dict, event_id: int, requ
         allowed = set(VALID_SCOPES.keys())
     elif is_room_coordinator:
         allowed = {
-            "rooms:read", "rooms:write", "booths:read", "booths:write",
-            "sessions:manage", "sessions:read", "transcripts:read", "listeners:provision"
+            "rooms:read",
+            "rooms:write",
+            "booths:read",
+            "booths:write",
+            "sessions:manage",
+            "sessions:read",
+            "transcripts:read",
+            "listeners:provision",
         }
 
     # Intersection
     return list(set(requested_scopes) & allowed)
+
 
 @router.get("/oauth/authorize", include_in_schema=False)
 async def authorize_get(
@@ -137,16 +145,18 @@ async def authorize_get(
     effective_scopes = await get_effective_scopes(db, user, evt.id, requested_scopes)
 
     if not effective_scopes:
-        raise HTTPException(status_code=403, detail="You do not have permission to grant the requested scopes for this event.")
+        raise HTTPException(
+            status_code=403, detail="You do not have permission to grant the requested scopes for this event."
+        )
 
     # 4. For now, require explicit consent (can auto-approve if consent exists and covers scopes)
 
     # For now, require explicit consent (can auto-approve if consent exists and covers scopes)
 
     return templates.TemplateResponse(
-        request,
-        "oauth/consent.html",
-        {
+        request=request,
+        name="oauth/consent.html",
+        context={
             "client": client,
             "event": evt,
             "scopes": [(s, VALID_SCOPES.get(s, s)) for s in effective_scopes],
@@ -157,6 +167,7 @@ async def authorize_get(
             "scope_string": " ".join(effective_scopes),
         },
     )
+
 
 @router.post("/oauth/authorize", include_in_schema=False)
 async def authorize_post(
@@ -188,10 +199,7 @@ async def authorize_post(
 
     # Save consent
     consent = OAuthConsentGrant(
-        client_id=client.id,
-        user_id=int(user["sub"]),
-        event_id=event_id,
-        scopes=effective_scopes
+        client_id=client.id, user_id=int(user["sub"]), event_id=event_id, scopes=effective_scopes
     )
     db.add(consent)
 
@@ -206,10 +214,14 @@ async def authorize_post(
         code_challenge=code_challenge,
         code_challenge_method=code_challenge_method,
         redirect_uri=redirect_uri,
-        expires_at=datetime.now(timezone.utc) + timedelta(minutes=5)
+        expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
     )
     db.add(auth_code)
-    db.add(OAuthAuditLog(client_id=client.id, event_id=event_id, action='authorize', request_path='/oauth/authorize', status_code=303))
+    db.add(
+        OAuthAuditLog(
+            client_id=client.id, event_id=event_id, action="authorize", request_path="/oauth/authorize", status_code=303
+        )
+    )
     await db.commit()
 
     redirect_url = f"{redirect_uri}?code={code}&state={urllib.parse.quote(state)}"
@@ -258,7 +270,9 @@ async def token_exchange(
             return JSONResponse(status_code=400, content={"error": "invalid_grant"})
 
         if not verify_pkce(code_verifier, auth_code.code_challenge, auth_code.code_challenge_method):
-            return JSONResponse(status_code=400, content={"error": "invalid_grant", "error_description": "PKCE verification failed"})
+            return JSONResponse(
+                status_code=400, content={"error": "invalid_grant", "error_description": "PKCE verification failed"}
+            )
 
         # Mark code as used
         auth_code.used = True
@@ -274,10 +288,19 @@ async def token_exchange(
             scopes=auth_code.scopes,
             access_token_hash=hash_token(access_token_raw),
             refresh_token_hash=hash_token(refresh_token_raw),
-            expires_at=datetime.now(timezone.utc) + timedelta(hours=1)
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
         )
         db.add(token_record)
-        db.add(OAuthAuditLog(token_id=token_record.id, client_id=client.id, event_id=auth_code.event_id, action='token_exchange_code', request_path='/oauth/token', status_code=200))
+        db.add(
+            OAuthAuditLog(
+                token_id=token_record.id,
+                client_id=client.id,
+                event_id=auth_code.event_id,
+                action="token_exchange_code",
+                request_path="/oauth/token",
+                status_code=200,
+            )
+        )
         await db.commit()
 
         return {
@@ -285,7 +308,7 @@ async def token_exchange(
             "token_type": "Bearer",
             "expires_in": 3600,
             "refresh_token": refresh_token_raw,
-            "scope": " ".join(auth_code.scopes)
+            "scope": " ".join(auth_code.scopes),
         }
 
     elif grant_type == "refresh_token":
@@ -294,10 +317,9 @@ async def token_exchange(
 
         refresh_hash = hash_token(refresh_token)
         token_result = await db.execute(
-            select(OAuthToken).options(
-                selectinload(OAuthToken.client),
-                selectinload(OAuthToken.event)
-            ).where(OAuthToken.refresh_token_hash == refresh_hash)
+            select(OAuthToken)
+            .options(selectinload(OAuthToken.client), selectinload(OAuthToken.event))
+            .where(OAuthToken.refresh_token_hash == refresh_hash)
         )
         token_record = token_result.scalars().first()
 
@@ -313,9 +335,19 @@ async def token_exchange(
                 .where(OAuthToken.event_id == token_record.event_id)
                 .values(revoked=True)
             )
-            db.add(OAuthAuditLog(client_id=client.id, event_id=token_record.event_id, action='token_reuse_detected', request_path='/oauth/token', status_code=400))
+            db.add(
+                OAuthAuditLog(
+                    client_id=client.id,
+                    event_id=token_record.event_id,
+                    action="token_reuse_detected",
+                    request_path="/oauth/token",
+                    status_code=400,
+                )
+            )
             await db.commit()
-            return JSONResponse(status_code=400, content={"error": "invalid_grant", "error_description": "Token reuse detected"})
+            return JSONResponse(
+                status_code=400, content={"error": "invalid_grant", "error_description": "Token reuse detected"}
+            )
 
         # Revoke the old token
         token_record.revoked = True
@@ -328,14 +360,23 @@ async def token_exchange(
             client_id=client.id,
             user_id=token_record.user_id,
             event_id=token_record.event_id,
-            scopes=token_record.scopes, # Can be narrowed down, but keep same for now
+            scopes=token_record.scopes,  # Can be narrowed down, but keep same for now
             access_token_hash=hash_token(new_access_token_raw),
             refresh_token_hash=hash_token(new_refresh_token_raw),
             parent_token_id=token_record.id,
-            expires_at=datetime.now(timezone.utc) + timedelta(hours=1)
+            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
         )
         db.add(new_token_record)
-        db.add(OAuthAuditLog(token_id=new_token_record.id, client_id=client.id, event_id=token_record.event_id, action='token_exchange_refresh', request_path='/oauth/token', status_code=200))
+        db.add(
+            OAuthAuditLog(
+                token_id=new_token_record.id,
+                client_id=client.id,
+                event_id=token_record.event_id,
+                action="token_exchange_refresh",
+                request_path="/oauth/token",
+                status_code=200,
+            )
+        )
         await db.commit()
 
         return {
@@ -343,10 +384,11 @@ async def token_exchange(
             "token_type": "Bearer",
             "expires_in": 3600,
             "refresh_token": new_refresh_token_raw,
-            "scope": " ".join(token_record.scopes)
+            "scope": " ".join(token_record.scopes),
         }
 
     return JSONResponse(status_code=400, content={"error": "unsupported_grant_type"})
+
 
 @router.post("/oauth/revoke")
 async def revoke_token(
@@ -377,8 +419,16 @@ async def revoke_token(
 
     if token_record and token_record.client_id == client.id:
         token_record.revoked = True
-        db.add(OAuthAuditLog(token_id=token_record.id, client_id=client.id, event_id=token_record.event_id, action='token_revoke', request_path='/oauth/revoke', status_code=200))
+        db.add(
+            OAuthAuditLog(
+                token_id=token_record.id,
+                client_id=client.id,
+                event_id=token_record.event_id,
+                action="token_revoke",
+                request_path="/oauth/revoke",
+                status_code=200,
+            )
+        )
         await db.commit()
 
     return JSONResponse(status_code=200, content={})
-
