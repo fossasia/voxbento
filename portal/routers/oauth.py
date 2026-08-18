@@ -134,7 +134,6 @@ async def authorize_get(
     if not effective_scopes:
         raise HTTPException(status_code=403, detail="You do not have permission to grant the requested scopes for this event.")
 
-    # 4. For now, require explicit consent (can auto-approve if consent exists and covers scopes)
 
     # For now, require explicit consent (can auto-approve if consent exists and covers scopes)
 
