@@ -77,7 +77,7 @@ class _HealthCheckFilter(logging.Filter):
 class _UvicornTokenRedactor(logging.Filter):
     import re as _re
 
-    _TOKEN_RE = _re.compile(r"(?i)((?:^|&|\?)token=)[^&\s]*")
+    _TOKEN_RE = _re.compile(r"(?i)((?:^|&|\?)(?:token|client_secret|code|access_token|refresh_token)=)[^&\s]*")
 
     def filter(self, record):
         try:
@@ -85,7 +85,7 @@ class _UvicornTokenRedactor(logging.Filter):
         except Exception:
             return True
 
-        if "token=" in message and ("/embed/" in message or "/ws/" in message):
+        if any(x in message for x in ["token=", "client_secret=", "code="]) and any(x in message for x in ["/embed/", "/ws/", "/oauth/"]):
             record.msg = self._TOKEN_RE.sub(r"\1[REDACTED]", message)
             record.args = ()
         return True

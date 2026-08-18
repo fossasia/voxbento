@@ -21,12 +21,14 @@ from portal.database import get_session
 from portal.models import (
     Event,
     EventMembership,
+    OAuthAuditLog,
     OAuthAuthorizationCode,
     OAuthClient,
     OAuthConsentGrant,
     OAuthToken,
     User,
 )
+from portal.rate_limit import auth_rate_limiter, token_rate_limiter
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["oauth"])
@@ -112,6 +114,10 @@ async def authorize_get(
     if not event:
         raise HTTPException(status_code=400, detail="Missing 'event' parameter.")
 
+    client_ip = request.client.host if request.client else "unknown"
+    if await auth_rate_limiter.is_rate_limited(f"auth_{client_ip}"):
+        raise HTTPException(status_code=429, detail="Too many authorization requests.")
+
     # 1. Validate Client
     result = await db.execute(select(OAuthClient).where(OAuthClient.client_id == client_id))
     client = result.scalars().first()
@@ -134,6 +140,7 @@ async def authorize_get(
     if not effective_scopes:
         raise HTTPException(status_code=403, detail="You do not have permission to grant the requested scopes for this event.")
 
+    # 4. For now, require explicit consent (can auto-approve if consent exists and covers scopes)
 
     # For now, require explicit consent (can auto-approve if consent exists and covers scopes)
 
@@ -165,15 +172,15 @@ async def authorize_post(
     user: User = Depends(require_user),
     db: AsyncSession = Depends(get_session),
 ):
-    # Re-validate client to prevent open redirect
+    if action == "deny":
+        error_url = f"{redirect_uri}?error=access_denied&state={urllib.parse.quote(state)}"
+        return RedirectResponse(url=error_url, status_code=303)
+
+    # Re-validate client
     result = await db.execute(select(OAuthClient).where(OAuthClient.client_id == client_id))
     client = result.scalars().first()
     if not client or client.status != "active" or redirect_uri not in client.redirect_uris:
         raise HTTPException(status_code=400, detail="Invalid client or redirect URI.")
-
-    if action == "deny":
-        error_url = f"{redirect_uri}?error=access_denied&state={urllib.parse.quote(state)}"
-        return RedirectResponse(url=error_url, status_code=303)
 
     # Re-validate scopes live
     effective_scopes = await get_effective_scopes(db, user, event_id, scope.split(" "))
@@ -203,6 +210,7 @@ async def authorize_post(
         expires_at=datetime.now(timezone.utc) + timedelta(minutes=5)
     )
     db.add(auth_code)
+    db.add(OAuthAuditLog(client_id=client.id, event_id=event_id, action='authorize', request_path='/oauth/authorize', status_code=303))
     await db.commit()
 
     redirect_url = f"{redirect_uri}?code={code}&state={urllib.parse.quote(state)}"
@@ -226,6 +234,9 @@ async def token_exchange(
     client = result.scalars().first()
     if not client or client.status != "active":
         return JSONResponse(status_code=400, content={"error": "invalid_client"})
+
+    if await token_rate_limiter.is_rate_limited(f"token_{client_id}"):
+        return JSONResponse(status_code=429, content={"error": "slow_down", "error_description": "Rate limit exceeded"})
 
     if client.is_confidential:
         if not client_secret or client.client_secret_hash != hash_token(client_secret):
@@ -267,11 +278,12 @@ async def token_exchange(
             expires_at=datetime.now(timezone.utc) + timedelta(hours=1)
         )
         db.add(token_record)
+        db.add(OAuthAuditLog(token_id=token_record.id, client_id=client.id, event_id=auth_code.event_id, action='token_exchange_code', request_path='/oauth/token', status_code=200))
         await db.commit()
 
         return {
             "access_token": access_token_raw,
-            "token_type": "Bearer",  # nosec B105
+            "token_type": "Bearer",
             "expires_in": 3600,
             "refresh_token": refresh_token_raw,
             "scope": " ".join(auth_code.scopes)
@@ -302,6 +314,7 @@ async def token_exchange(
                 .where(OAuthToken.event_id == token_record.event_id)
                 .values(revoked=True)
             )
+            db.add(OAuthAuditLog(client_id=client.id, event_id=token_record.event_id, action='token_reuse_detected', request_path='/oauth/token', status_code=400))
             await db.commit()
             return JSONResponse(status_code=400, content={"error": "invalid_grant", "error_description": "Token reuse detected"})
 
@@ -323,11 +336,12 @@ async def token_exchange(
             expires_at=datetime.now(timezone.utc) + timedelta(hours=1)
         )
         db.add(new_token_record)
+        db.add(OAuthAuditLog(token_id=new_token_record.id, client_id=client.id, event_id=token_record.event_id, action='token_exchange_refresh', request_path='/oauth/token', status_code=200))
         await db.commit()
 
         return {
             "access_token": new_access_token_raw,
-            "token_type": "Bearer",  # nosec B105
+            "token_type": "Bearer",
             "expires_in": 3600,
             "refresh_token": new_refresh_token_raw,
             "scope": " ".join(token_record.scopes)
@@ -364,6 +378,7 @@ async def revoke_token(
 
     if token_record and token_record.client_id == client.id:
         token_record.revoked = True
+        db.add(OAuthAuditLog(token_id=token_record.id, client_id=client.id, event_id=token_record.event_id, action='token_revoke', request_path='/oauth/revoke', status_code=200))
         await db.commit()
 
     return JSONResponse(status_code=200, content={})
