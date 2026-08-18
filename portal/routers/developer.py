@@ -3,13 +3,13 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Form, Request, status
 from fastapi.responses import RedirectResponse
 from fastapi.templating import Jinja2Templates
-from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from portal.auth import get_current_user, require_user
+from portal.auth import require_user
 from portal.database import get_session
 from portal.models import DeveloperAccount, OAuthClient, User
 
@@ -52,7 +52,7 @@ async def apply_for_developer(
 ):
     result = await db.execute(select(DeveloperAccount).where(DeveloperAccount.user_id == user.id))
     existing = result.scalars().first()
-    
+
     if existing:
         return RedirectResponse(url="/developer", status_code=status.HTTP_303_SEE_OTHER)
 
