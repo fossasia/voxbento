@@ -10,7 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from portal.auth import require_user
-from portal.database import get_session
+from portal.database import get_db_session
 from portal.models import DeveloperAccount, OAuthClient
 
 logger = logging.getLogger(__name__)
@@ -24,7 +24,7 @@ templates = Jinja2Templates(directory=str(_BASE_DIR / "templates"))
 async def developer_dashboard(
     request: Request,
     user: dict = Depends(require_user),
-    db: AsyncSession = Depends(get_session),
+    db: AsyncSession = Depends(get_db_session),
 ):
     result = await db.execute(select(DeveloperAccount).where(DeveloperAccount.user_id == int(user["sub"])))
     account = result.scalars().first()
@@ -48,7 +48,7 @@ async def developer_dashboard(
 async def apply_for_developer(
     organization_name: str = Form(...),
     user: dict = Depends(require_user),
-    db: AsyncSession = Depends(get_session),
+    db: AsyncSession = Depends(get_db_session),
 ):
     result = await db.execute(select(DeveloperAccount).where(DeveloperAccount.user_id == int(user["sub"])))
     existing = result.scalars().first()

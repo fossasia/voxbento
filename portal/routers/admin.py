@@ -46,6 +46,7 @@ from portal.database import (
     delete_user,
     get_api_keys_for_event,
     get_booth_by_id,
+    get_db_session,
     get_event_by_id,
     get_event_by_slug,
     get_room_by_id,
@@ -1689,7 +1690,7 @@ async def api_supertonic_download_progress():
 async def admin_developer_accounts(
     request: Request,
     user: dict = Depends(require_user),
-    db: AsyncSession = Depends(get_session),
+    db: AsyncSession = Depends(get_db_session),
 ):
     from sqlalchemy.orm import selectinload
 
@@ -1715,7 +1716,7 @@ async def admin_developer_accounts(
 async def admin_developer_approve(
     account_id: int,
     user: dict = Depends(require_user),
-    db: AsyncSession = Depends(get_session),
+    db: AsyncSession = Depends(get_db_session),
 ):
     from datetime import datetime, timezone
 
@@ -1736,7 +1737,7 @@ async def admin_developer_approve(
 async def admin_developer_reject(
     account_id: int,
     user: dict = Depends(require_user),
-    db: AsyncSession = Depends(get_session),
+    db: AsyncSession = Depends(get_db_session),
 ):
     from datetime import datetime, timezone
 

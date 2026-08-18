@@ -105,6 +105,13 @@ async def get_session() -> AsyncGenerator[AsyncSession]:
         async with session.begin():
             yield session
 
+async def get_db_session() -> AsyncGenerator[AsyncSession]:
+    """FastAPI dependency for database sessions."""
+    async with get_session() as session:
+        yield session
+
+
+
 
 async def init_db() -> None:
     """Create all tables (for testing / development without Alembic)."""

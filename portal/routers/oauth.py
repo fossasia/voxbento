@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from portal.auth import require_user
-from portal.database import get_session
+from portal.database import get_db_session
 from portal.models import (
     Event,
     EventMembership,
@@ -104,7 +104,7 @@ async def authorize_get(
     code_challenge_method: str = "",
     event: str = "",
     user: dict = Depends(require_user),
-    db: AsyncSession = Depends(get_session),
+    db: AsyncSession = Depends(get_db_session),
 ):
     if response_type != "code":
         raise HTTPException(status_code=400, detail="Unsupported response_type. Only 'code' is supported.")
@@ -169,7 +169,7 @@ async def authorize_post(
     scope: Annotated[str, Form()],
     action: Annotated[str, Form()],
     user: dict = Depends(require_user),
-    db: AsyncSession = Depends(get_session),
+    db: AsyncSession = Depends(get_db_session),
 ):
     if action == "deny":
         error_url = f"{redirect_uri}?error=access_denied&state={urllib.parse.quote(state)}"
@@ -226,7 +226,7 @@ async def token_exchange(
     redirect_uri: Annotated[str | None, Form()] = None,
     code_verifier: Annotated[str | None, Form()] = None,
     refresh_token: Annotated[str | None, Form()] = None,
-    db: AsyncSession = Depends(get_session),
+    db: AsyncSession = Depends(get_db_session),
 ):
     # Basic client validation
     result = await db.execute(select(OAuthClient).where(OAuthClient.client_id == client_id))
@@ -353,7 +353,7 @@ async def revoke_token(
     token: Annotated[str, Form()],
     client_id: Annotated[str, Form()],
     client_secret: Annotated[str | None, Form()] = None,
-    db: AsyncSession = Depends(get_session),
+    db: AsyncSession = Depends(get_db_session),
 ):
     result = await db.execute(select(OAuthClient).where(OAuthClient.client_id == client_id))
     client = result.scalars().first()
