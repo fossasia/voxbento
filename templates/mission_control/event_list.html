@@ -3,7 +3,7 @@
 {% block title %}Mission Control Events | Voxbento{% endblock %}
 
 {% block content %}
-<div class="admin-main" style="padding-top:0;">
+<div class="admin-main admin-main--flush-top">
   <div class="hub-header">
     <div>
       <h1>Mission Control</h1>
@@ -19,7 +19,7 @@
         <span class="card-title">{{ ev.display_name }}</span>
         <span class="badge badge-slug">{{ ev.slug }}</span>
       </div>
-      <div class="card-actions" style="border-top:none; padding-top:0;">
+      <div class="card-actions card-actions--flush">
         <a href="/mission-control/{{ ev.slug }}/" class="btn btn-primary btn-block">Open dashboard &rarr;</a>
       </div>
     </div>
@@ -28,8 +28,8 @@
     {% include 'admin/pagination.html' %}
   {% else %}
   <div class="empty-state">
-    <div style="font-size:2.5rem; margin-bottom:8px;">🛰️</div>
-    <h2 style="font-size:1.2rem; margin-bottom:6px;">Nothing to control yet</h2>
+    <div class="empty-state-icon" aria-hidden="true">🛰️</div>
+    <h2 class="empty-state-title">Nothing to control yet</h2>
     <p>You aren't assigned as a Room Coordinator or Event Owner on any events.</p>
   </div>
   {% endif %}

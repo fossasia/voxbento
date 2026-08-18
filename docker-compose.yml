@@ -19,7 +19,7 @@ services:
       DEFAULT_JITSI_ROOM: "${DEFAULT_JITSI_ROOM:-eventyay-stage-room}"
       JITSI_DOMAIN: "${JITSI_DOMAIN:-jitsi.voxbento.com}"
       JITSI_BASE_URL: "${JITSI_BASE_URL:-http://${JITSI_DOMAIN:-localhost:8080}}"
-      JITSI_INTERNAL_BASE: "http://jitsi-web:80"
+      JITSI_INTERNAL_BASE: "https://jitsi-web:443"
       # Browser-facing URLs — must be reachable from the user's machine
       MEDIAMTX_WHIP_BASE: "${MEDIAMTX_WHIP_BASE:-http://localhost:8889}"
       FLOOR_BOT_BASE: "http://floor-bot:8080"

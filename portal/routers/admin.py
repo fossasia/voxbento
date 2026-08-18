@@ -1405,12 +1405,12 @@ async def admin_transcription_settings(
 
 
 @router.get("/admin/users/", dependencies=[Depends(require_super_admin)])
-async def admin_user_list(request: Request, page: int = 1):
+async def admin_user_list(request: Request, page: int = 1, search: str | None = None):
     limit = 20
     offset = (page - 1) * limit
     async with get_session() as session:
-        total_users = await count_users(session)
-        users = await list_users(session, limit=limit, offset=offset)
+        total_users = await count_users(session, search=search)
+        users = await list_users(session, limit=limit, offset=offset, search=search)
     total_pages = max(1, math.ceil(total_users / limit))
     return templates.TemplateResponse(
         request,
@@ -1422,6 +1422,7 @@ async def admin_user_list(request: Request, page: int = 1):
             "is_super_admin": True,
             "is_event_owner": True,
             "is_room_coordinator": True,
+            "search": search,
         },
     )
 

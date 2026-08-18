@@ -41,13 +41,11 @@
 <body class="bg-[#eef2f6] text-[#0d0f10] antialiased overflow-x-hidden selection:bg-brand-500 selection:text-white">
 
     <!-- Premium Navbar -->
-    <header class="fixed top-0 w-full z-50 bg-[#eef2f6] border-b-[3px] border-[#0d0f10] transition-all duration-300"
-        id="navbar">
-        <div class="max-w-7xl mx-auto px-6 h-16 flex items-center justify-between">
-            <a href="/" class="flex items-center gap-3">
-                <img src="{{ url_for('static', path='img/app_icon.png') }}" alt="VoxBento Icon"
-                    class="w-8 h-8 brutal-border rounded shadow-none">
-                <span class="text-[1.35rem] font-black tracking-tight text-[#0d0f10]">VoxBento</span>
+    <header class="fixed top-0 w-full z-50 bg-[#eef2f6] border-b-[3px] border-[#0d0f10] transition-all duration-300" id="navbar">
+        <div class="max-w-7xl mx-auto px-4 md:px-6 h-16 flex items-center justify-between">
+            <a href="/" class="flex items-center gap-2 md:gap-3 flex-shrink-0">
+                <img src="{{ url_for('static', path='img/app_icon.png') }}" alt="VoxBento Icon" class="w-7 h-7 md:w-8 md:h-8 brutal-border rounded shadow-none">
+                <span class="text-lg md:text-[1.35rem] font-black tracking-tight text-[#0d0f10]">VoxBento</span>
             </a>
             <nav class="flex max-md:hidden items-center gap-8 text-sm font-bold text-[#0d0f10]">
                 <a href="#solutions"
@@ -57,14 +55,13 @@
                 <a href="#open-source" class="hover:text-brand-600 transition-colors uppercase tracking-wider">Open
                     Source</a>
             </nav>
-            <div class="flex items-center gap-4 text-sm font-bold">
+            <div class="flex items-center gap-3 md:gap-4 text-[10px] sm:text-xs md:text-sm font-bold flex-shrink-0">
                 {% if current_user %}
-                <a href="/logout"
-                    class="text-[#0d0f10] hover:text-brand-600 transition-colors uppercase tracking-wider">Logout</a>
-                <a href="/admin/events/" class="brutal-btn brutal-btn-outline brutal-btn-nav">Dashboard</a>
+                <a href="/logout" class="text-[#0d0f10] hover:text-brand-600 transition-colors uppercase tracking-wider">Logout</a>
+                <a href="/admin/events/" class="brutal-btn brutal-btn-outline brutal-btn-nav !px-2.5 !py-1.5 md:!px-5 md:!py-2">Dashboard</a>
                 {% else %}
-                <a href="/login" class="brutal-btn brutal-btn-primary brutal-btn-nav">Sign In</a>
-                <a href="/register" class="brutal-btn brutal-btn-outline brutal-btn-nav">Register</a>
+                <a href="/login" class="brutal-btn brutal-btn-primary brutal-btn-nav !px-2.5 !py-1.5 md:!px-5 md:!py-2">Sign In</a>
+                <a href="/register" class="brutal-btn brutal-btn-outline brutal-btn-nav !px-2.5 !py-1.5 md:!px-5 md:!py-2">Register</a>
                 {% endif %}
             </div>
         </div>

@@ -63,7 +63,8 @@
   font-size: 0.8rem;
   line-height: 1.2;
   letter-spacing: 0.06em;
-  padding: 0.5rem 1.25rem; /* py-2 px-5 */
+  padding: 0.5rem 1.25rem;
+  /* py-2 px-5 */
   border-radius: 8px;
   border-width: 3px;
   border-style: solid;
@@ -82,9 +83,11 @@
 
 /* ── Primary solid (blue) ── */
 .brutal-btn-primary {
-  background: #3b82f6; /* solid blue */
+  background: #3b82f6;
+  /* solid blue */
   color: #ffffff;
 }
+
 .brutal-btn-primary:hover {
   background: #2563eb;
 }
@@ -94,7 +97,12 @@
   background: #ffffff;
   color: #0d0f10;
 }
+
 .brutal-btn-outline:hover {
+  background: #f5f3f0;
+}
+
+.brutal-btn-nav.brutal-btn-outline:hover {
   background: #f5f3f0;
 }
 

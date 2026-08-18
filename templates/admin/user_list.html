@@ -11,7 +11,17 @@
 {% block content %}
 <div class="page-header">
   <h1>Registered Users</h1>
-  <span class="badge">{{ users|length }} total</span>
+  <span class="badge">{{ users|length }} displayed</span>
+</div>
+
+<div class="search-bar" style="margin-bottom: 24px;">
+  <form method="get" action="/admin/users/" style="display: flex; gap: 10px; max-width: 500px;">
+    <input type="text" name="search" value="{{ search or '' }}" placeholder="Search by email or name..." style="min-height: 42px; padding: 10px 12px; font-size: 0.95rem; border: 1px solid var(--color-border-strong); border-radius: 10px; background: var(--color-surface); width: 100%; box-sizing: border-box; font-family: inherit; color: var(--color-text); outline: none;">
+    <button type="submit" class="btn btn-primary">Search</button>
+    {% if search %}
+      <a href="/admin/users/" class="btn">Clear</a>
+    {% endif %}
+  </form>
 </div>
 
 {% if users %}
@@ -22,6 +32,7 @@
       <th>Email</th>
       <th>Display Name</th>
       <th>Admin</th>
+      <th>2FA Status</th>
       <th>Status</th>
       <th>Joined</th>
       <th>Actions</th>
@@ -38,6 +49,13 @@
         <span class="badge badge-role badge-event_admin">Admin</span>
 {% else %}
         <span class="muted">—</span>
+        {% endif %}
+      </td>
+      <td>
+        {% if user.email_verified %}
+        <span class="badge badge-valid">Completed</span>
+        {% else %}
+        <span class="badge badge-used">Pending</span>
         {% endif %}
       </td>
       <td>

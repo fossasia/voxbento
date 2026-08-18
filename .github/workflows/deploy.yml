@@ -1,8 +1,10 @@
 name: Deploy to Production
 
-# Trigger: auto-deploy whenever a commit lands on main (direct push or PR merge)
 on:
-  push:
+  workflow_run:
+    workflows: ["CI"]
+    types:
+      - completed
     branches:
       - main
 
@@ -18,6 +20,7 @@ permissions:
 
 jobs:
   deploy:
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
     name: SSH deploy → voxbento.com
     runs-on: ubuntu-latest
 
@@ -55,10 +58,15 @@ jobs:
             fi
 
             # ── Apply changes from docker-compose.yml ──────────────────────
-            # Running 'up -d' ensures new environment variables and port mappings
-            # (like the new RTSP port 8554) are actually applied.
-            echo "--- docker compose up -d ---"
-            docker compose up -d --remove-orphans
+            # Running 'up -d --build' ensures new environment variables, port mappings,
+            # and Dockerfile changes are applied to services without volume mounts.
+            echo "--- docker compose up -d --build ---"
+            docker compose up -d --build --remove-orphans
+
+            # ── Clean up dangling images ────────────────────────────────────
+            # Prevents storage from filling up with old <none> images created by --build
+            echo "--- cleaning up unused images ---"
+            docker image prune -f
 
             # ── Restart portal (loads fresh code since --reload is disabled) ────
             # Because we disabled uvicorn --reload for production performance,

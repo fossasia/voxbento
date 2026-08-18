@@ -4,6 +4,7 @@ import logging
 import time
 import wave
 from dataclasses import dataclass
+from typing import AsyncGenerator, AsyncIterator, Awaitable, Callable
 
 from portal.models import Event
 from portal.transcription.constants import ProviderEnum
@@ -174,3 +175,258 @@ class TranscriptionProvider:
 
         reader.cancel()
         inference.cancel()
+
+
+@dataclass(frozen=True)
+class AudioFrame:
+    """
+    Represents a discrete chunk of audio data.
+    `start_timestamp` is audio-relative (derived strictly from bytes read / sample rate),
+    NOT monotonic wall-clock, ensuring it strictly aligns with the audio stream's true duration.
+    """
+    data: bytes
+    start_timestamp: float
+    duration: float
+    seq: int
+
+class AudioIngester:
+    def __init__(self, process: asyncio.subprocess.Process, sample_rate: int = 16000, channels: int = 1, sample_width: int = 2):
+        self.process = process
+        self.sample_rate = sample_rate
+        self.channels = channels
+        self.sample_width = sample_width
+        self.bytes_per_second = sample_rate * channels * sample_width
+
+    async def stream(self, chunk_size: int = 4096) -> AsyncGenerator[AudioFrame, None]:
+        seq = 0
+        total_bytes = 0
+        while self.process.returncode is None:
+            try:
+                chunk = await self.process.stdout.read(chunk_size)
+                if not chunk:
+                    break
+                duration = len(chunk) / self.bytes_per_second
+                start_timestamp = total_bytes / self.bytes_per_second
+                yield AudioFrame(
+                    data=chunk,
+                    start_timestamp=start_timestamp,
+                    duration=duration,
+                    seq=seq
+                )
+                seq += 1
+                total_bytes += len(chunk)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                logger.error(f"AudioIngester error: {e}")
+                break
+
+class StreamingProvider:
+    async def process_stream(
+        self,
+        audio_generator: AsyncIterator[AudioFrame],
+        aggregator,
+        notify_gap: Callable[[float, float], Awaitable[None]],
+        language_code: str,
+        model_variant: str,
+        config: ProviderConfig,
+        booth_id: str,
+    ) -> None:
+        raise NotImplementedError
+
+class ContinuousProvider(StreamingProvider):
+    async def process_stream(
+        self,
+        audio_generator: AsyncIterator[AudioFrame],
+        aggregator,
+        notify_gap: Callable[[float, float], Awaitable[None]],
+        language_code: str,
+        model_variant: str,
+        config: ProviderConfig,
+        booth_id: str,
+    ) -> None:
+        self.aggregator = aggregator
+        self.notify_gap = notify_gap
+        self.language_code = language_code
+        self.model_variant = model_variant
+        self.config = config
+        self.booth_id = booth_id
+
+        self.queue = asyncio.Queue()
+        self.queue_duration = 0.0
+        self.MAX_QUEUE_DURATION = 10.0
+        self.eof_event = asyncio.Event()
+        self._dropped_start = None
+        self._dropped_end = None
+
+        self.consumer_task = asyncio.create_task(self._consume_generator(audio_generator))
+
+        try:
+            await self._run_reconnect_loop()
+        finally:
+            self.consumer_task.cancel()
+            try:
+                await self.consumer_task
+            except asyncio.CancelledError:
+                pass
+
+    async def _consume_generator(self, audio_generator: AsyncIterator[AudioFrame]):
+        try:
+            async for frame in audio_generator:
+                self.queue.put_nowait(frame)
+                self.queue_duration += frame.duration
+
+                while self.queue_duration > self.MAX_QUEUE_DURATION:
+                    try:
+                        dropped = self.queue.get_nowait()
+                        self.queue_duration -= dropped.duration
+                        if self._dropped_start is None:
+                            self._dropped_start = dropped.start_timestamp
+                        self._dropped_end = dropped.start_timestamp + dropped.duration
+                    except asyncio.QueueEmpty:
+                        break
+
+            await self.queue.put(None)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.error(f"[{self.booth_id}] Error in audio consumer: {e}")
+            await self.queue.put(None)
+        finally:
+            self.eof_event.set()
+
+    async def _run_reconnect_loop(self):
+        retries = 0
+        while retries <= 5:
+            try:
+                if self._dropped_start is not None:
+                    await self.notify_gap(self._dropped_start, self._dropped_end)
+                    self._dropped_start = None
+                    self._dropped_end = None
+
+                await self.connect_and_stream()
+                return
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                retries += 1
+                if retries > 5:
+                    logger.error(f"[{self.booth_id}] Terminal error: {e}")
+                    if hasattr(self.aggregator, "broadcast_callback"):
+                        await self.aggregator.broadcast_callback(self.booth_id, "[Server disconnected: transcription failed. Please refresh.]")
+                    return
+
+                backoff = min(10.0, 2 ** retries)
+                logger.warning(f"[{self.booth_id}] Connection failed: {e}. Reconnecting in {backoff}s...")
+
+                try:
+                    await asyncio.wait_for(self.eof_event.wait(), timeout=backoff)
+                    logger.info(f"[{self.booth_id}] EOF reached during reconnect backoff. Terminating cleanly.")
+                    return
+                except asyncio.TimeoutError:
+                    pass
+
+    async def connect_and_stream(self):
+        raise NotImplementedError
+
+class ChunkedProvider(StreamingProvider):
+    async def process_block(self, audio_bytes: bytes, start_timestamp: float, language_code: str, model_variant: str, config: ProviderConfig) -> str:
+        raise NotImplementedError
+
+    async def process_stream(
+        self,
+        audio_generator: AsyncIterator[AudioFrame],
+        aggregator,
+        notify_gap: Callable[[float, float], Awaitable[None]],
+        language_code: str,
+        model_variant: str,
+        config: ProviderConfig,
+        booth_id: str,
+    ) -> None:
+        self.aggregator = aggregator
+        self.notify_gap = notify_gap
+        self.language_code = language_code
+        self.model_variant = model_variant
+        self.config = config
+        self.booth_id = booth_id
+
+        self.MAX_PENDING_BLOCKS = 3
+        self.BLOCK_DURATION = 3.0
+
+        self.block_queue = asyncio.Queue()
+        self.consumer_task = asyncio.create_task(self._assemble_blocks(audio_generator))
+
+        consecutive_errors = 0
+        try:
+            while True:
+                block_data = await self.block_queue.get()
+                if block_data is None:
+                    break
+
+                audio_bytes, start_ts, duration, is_partial = block_data
+
+                try:
+                    text = await self.process_block(audio_bytes, start_ts, language_code, model_variant, config)
+                    consecutive_errors = 0
+                    if text:
+                        await self.aggregator.handle_chunk(self.booth_id, text)
+                    else:
+                        await self.aggregator.handle_clear(self.booth_id)
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    consecutive_errors += 1
+                    logger.error(f"[{self.booth_id}] Provider error ({consecutive_errors}/3): {e}")
+                    if consecutive_errors >= 3:
+                        if hasattr(self.aggregator, "broadcast_callback"):
+                            await self.aggregator.broadcast_callback(self.booth_id, "[Transcription provider failed. Check logs.]")
+                        break
+        except asyncio.CancelledError:
+            raise
+        finally:
+            self.consumer_task.cancel()
+            try:
+                await self.consumer_task
+            except asyncio.CancelledError:
+                pass
+
+    async def _assemble_blocks(self, audio_generator: AsyncIterator[AudioFrame]):
+        current_block = bytearray()
+        current_duration = 0.0
+        start_ts = None
+
+        try:
+            async for frame in audio_generator:
+                if start_ts is None:
+                    start_ts = frame.start_timestamp
+
+                current_block.extend(frame.data)
+                current_duration += frame.duration
+
+                if current_duration >= self.BLOCK_DURATION:
+                    await self._enqueue_block(bytes(current_block), start_ts, current_duration, False)
+                    current_block = bytearray()
+                    current_duration = 0.0
+                    start_ts = None
+
+            if current_block:
+                await self._enqueue_block(bytes(current_block), start_ts, current_duration, True)
+            await self.block_queue.put(None)
+
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.error(f"[{self.booth_id}] Error assembling blocks: {e}")
+            await self.block_queue.put(None)
+
+    async def _enqueue_block(self, audio_bytes: bytes, start_ts: float, duration: float, is_partial: bool):
+        while self.block_queue.qsize() >= self.MAX_PENDING_BLOCKS:
+            try:
+                dropped = self.block_queue.get_nowait()
+                if dropped is not None:
+                    _, drop_start, drop_duration, _ = dropped
+                    await self.notify_gap(drop_start, drop_start + drop_duration)
+            except asyncio.QueueEmpty:
+                break
+
+        self.block_queue.put_nowait((audio_bytes, start_ts, duration, is_partial))

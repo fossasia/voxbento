@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import json
 import logging
 import os
@@ -134,7 +136,7 @@ async def run_capture():
 
         join_url = (
             f"{jitsi_url}"
-            f"#config.startWithAudioMuted=false"
+            f"#config.startWithAudioMuted=true"
             f"&config.startWithVideoMuted=true"
             f"&config.prejoinPageEnabled=false"
             f"&config.disableDeepLinking=true"

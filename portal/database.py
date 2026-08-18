@@ -23,7 +23,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 
 import sqlalchemy as sa
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import joinedload, selectinload
 
@@ -473,8 +473,11 @@ async def get_user_by_id(session: AsyncSession, user_id: int) -> User | None:
     return result.scalar_one_or_none()
 
 
-async def count_users(session: AsyncSession) -> int:
-    result = await session.execute(select(func.count(User.id)))
+async def count_users(session: AsyncSession, search: str | None = None) -> int:
+    stmt = select(func.count(User.id))
+    if search:
+        stmt = stmt.where(or_(User.email.ilike(f"%{search}%"), User.display_name.ilike(f"%{search}%")))
+    result = await session.execute(stmt)
     return result.scalar_one()
 
 
@@ -483,8 +486,12 @@ async def list_users(
     *,
     limit: int = 100,
     offset: int = 0,
+    search: str | None = None,
 ) -> list[User]:
-    result = await session.execute(select(User).order_by(User.created_at).limit(limit).offset(offset))
+    stmt = select(User).order_by(User.created_at).limit(limit).offset(offset)
+    if search:
+        stmt = stmt.where(or_(User.email.ilike(f"%{search}%"), User.display_name.ilike(f"%{search}%")))
+    result = await session.execute(stmt)
     return list(result.scalars().all())
 
 

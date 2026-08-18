@@ -4,18 +4,13 @@
 
 {% block head %}
 <link rel="stylesheet" href="{{ url_for('static', path='css/auth.css') }}" />
-<style>
-  .hidden { display: none !important; }
-  .login-divider { text-align: center; margin: 20px 0; border-bottom: 2px solid #0d0f10; line-height: 0.1em; }
-  .login-divider span { background: var(--color-surface); padding: 0 10px; color: #0d0f10; font-weight: 700; font-size: 0.9em; text-transform: uppercase; }
-</style>
 {% endblock %}
 
 {% block content %}
 <div class="login-page">
   <div class="login-card">
     <div class="login-brand">
-      <img src="{{ url_for('static', path='img/wordmark.png') }}" alt="Voxbento" class="brand-text" style="height: 48px; margin: 0 auto;" />
+      <img src="{{ url_for('static', path='img/wordmark.png') }}" alt="Voxbento" class="brand-text brand-logo-lg" />
       <span class="login-subtitle">Sign in to your account</span>
     </div>
     
@@ -24,7 +19,7 @@
     {% endif %}
 
     <div id="alert-container" class="alert alert-error hidden"></div>
-    <div id="success-container" class="alert alert-success hidden" style="background-color: #044b2a; color: #fff; border: 1px solid #0a7342; margin-bottom: 16px; padding: 12px; border-radius: 6px;"></div>
+    <div id="success-container" class="alert alert-success hidden"></div>
 
     <!-- Step 1: Email Only -->
     <form id="email-form" class="login-form">
@@ -36,7 +31,7 @@
 
     <!-- Step 2: Login Methods -->
     <div id="login-methods" class="hidden">
-      <div id="user-email-display" style="text-align: center; margin-bottom: 15px; color: #aaa; font-weight: 500;"></div>
+      <div id="user-email-display" class="login-email-display"></div>
       
       <!-- Password Login -->
       <form id="password-form" method="post" action="/login" class="login-form hidden">
@@ -45,15 +40,15 @@
         <label for="password">Password</label>
         <input type="password" id="password" name="password" placeholder="Enter your password" required />
         <button type="submit" class="btn btn-primary">Sign In</button>
-        <div style="text-align: right; margin-top: 8px;">
-          <a href="#" id="forgot-password-link" style="font-size: 0.9em; color: #888;">Forgot password?</a>
+        <div class="login-forgot-row">
+          <a href="#" id="forgot-password-link" class="login-forgot-link">Forgot password?</a>
         </div>
       </form>
 
       <div id="magic-divider" class="login-divider hidden"><span>or</span></div>
 
       <!-- Magic Link -->
-      <button type="button" id="magic-link-btn" class="btn btn-outline" style="width: 100%;">Email me a magic link</button>
+      <button type="button" id="magic-link-btn" class="btn btn-outline btn-block">Email me a magic link</button>
     </div>
 
     <div class="login-footer">

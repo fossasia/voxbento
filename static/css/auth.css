@@ -127,7 +127,78 @@
   box-shadow: 10px 10px 0px #0d0f10;
 }
 .login-brand { text-align: center; margin-bottom: 28px; }
+.login-brand .brand-text,
+.brand-logo-lg {
+  height: 48px;
+  margin: 0 auto;
+  display: block;
+}
+.brand-logo-sm {
+  height: 32px;
+  vertical-align: middle;
+}
 .login-subtitle { font-size: 0.875rem; color: var(--color-text-secondary); display: block; margin-top: 4px; }
+.login-card--centered { text-align: center; }
+.login-card--centered h2 { margin: 20px 0; }
+.login-card--centered .login-message { color: #aaa; margin-bottom: 20px; }
+.login-footer--spaced { margin-top: 30px; }
+.login-email-display {
+  text-align: center;
+  margin-bottom: 15px;
+  color: #aaa;
+  font-weight: 500;
+}
+.login-forgot-row { text-align: right; margin-top: 8px; }
+.login-forgot-link { font-size: 0.9em; color: #888; }
+.btn-block { width: 100%; }
+.field-hint-optional { font-weight: normal; color: #888; }
+.field-hint {
+  font-size: 0.85em;
+  color: #888;
+  margin-top: -10px;
+  margin-bottom: 15px;
+}
+.alert-success {
+  background-color: #044b2a;
+  color: #fff;
+  border: 1px solid #0a7342;
+  margin-bottom: 16px;
+  padding: 12px;
+  border-radius: 6px;
+}
+.table-scroll {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+.account-section-spaced { margin-top: 30px; }
+.security-form {
+  margin-top: 15px;
+  background: #111;
+  padding: 15px;
+  border-radius: 6px;
+  color: #fff;
+}
+.security-form > p:first-child { margin-top: 0; }
+.security-form input {
+  width: 100%;
+  box-sizing: border-box;
+  margin-bottom: 10px;
+}
+.security-form .alert-error { margin-top: 10px; }
+.login-divider {
+  text-align: center;
+  margin: 20px 0;
+  border-bottom: 2px solid #0d0f10;
+  line-height: 0.1em;
+}
+.login-divider span {
+  background: var(--color-surface);
+  padding: 0 10px;
+  color: #0d0f10;
+  font-weight: 700;
+  font-size: 0.9em;
+  text-transform: uppercase;
+}
 .login-form { display: flex; flex-direction: column; gap: 16px; }
 .login-form label { font-size: 0.875rem; font-weight: 600; color: var(--color-text-secondary); }
 .login-form input { 
