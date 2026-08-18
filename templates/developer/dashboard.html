@@ -3,8 +3,12 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Developer Dashboard — Voxbento</title>
+    <title>Developer Dashboard — VoxBento</title>
     <link rel="stylesheet" href="{{ url_for('static', path='css/admin.css') }}" />
+    <style>
+      .create-panel { max-width: 600px; margin-top: 1rem; }
+      .app-list { margin-top: 2rem; }
+    </style>
   </head>
   <body>
     <header class="admin-header">
@@ -18,71 +22,85 @@
     </header>
 
     <main class="admin-main">
-      <h1>Developer Dashboard</h1>
+      <div class="mission-header">
+        <h1>Developer Dashboard</h1>
+      </div>
       
       {% if not account %}
-      <div class="card">
-        <h3>Apply for Developer Access</h3>
-        <p>You need an approved Developer Account to create OAuth clients.</p>
-        <form method="POST" action="/api/developer/apply">
-          <div class="form-group">
-            <label>Organization / Project Name</label>
-            <input type="text" name="organization_name" required class="form-control" />
-          </div>
-          <button type="submit" class="btn btn-primary">Submit Application</button>
-        </form>
+      <div class="create-panel" style="box-shadow: 0 4px 12px rgba(0,0,0,0.1);">
+        <div class="create-header">
+          <h3>Apply for Developer Access</h3>
+          <p class="muted">You need an approved Developer Account to create OAuth clients for VoxBento.</p>
+        </div>
+        <div class="create-body">
+          <form method="POST" action="/api/developer/apply">
+            <div class="field">
+              <label for="organization_name">Organization / Project Name</label>
+              <input type="text" id="organization_name" name="organization_name" required autofocus placeholder="e.g. Eventyay Interpretation Plugin" />
+              <span class="hint">What is the name of the app or organization requesting access?</span>
+            </div>
+            <div class="form-actions" style="margin-top: 1.5rem;">
+              <button type="submit" class="btn btn-primary">Submit Application</button>
+            </div>
+          </form>
+        </div>
       </div>
       
       {% elif account.status == 'pending' %}
-      <div class="card info">
+      <div class="card info" style="max-width: 600px;">
         <h3>Application Pending</h3>
         <p>Your application for <strong>{{ account.organization_name }}</strong> is currently being reviewed by an administrator. Please check back later.</p>
       </div>
       
       {% elif account.status == 'rejected' %}
-      <div class="card error">
+      <div class="card error" style="max-width: 600px;">
         <h3>Application Rejected</h3>
-        <p>Your developer application was rejected.</p>
+        <p>Your developer application for <strong>{{ account.organization_name }}</strong> was rejected. Please contact an administrator if you believe this is a mistake.</p>
       </div>
       
       {% elif account.status == 'suspended' %}
-      <div class="card error">
+      <div class="card error" style="max-width: 600px;">
         <h3>Account Suspended</h3>
         <p>Your developer account is currently suspended. All OAuth clients are disabled.</p>
       </div>
       
       {% elif account.status == 'approved' %}
-      <div class="card success">
+      <div class="card success" style="max-width: 600px;">
         <h3>Approved Developer Account</h3>
         <p>Welcome! You can now create OAuth clients for <strong>{{ account.organization_name }}</strong>.</p>
       </div>
       
-      <h2>Your Apps</h2>
-      <button class="btn btn-primary" disabled title="Phase 2 Feature">Create New App</button>
-      
-      {% if clients %}
-      <table class="table">
-        <thead>
-          <tr>
-            <th>Name</th>
-            <th>Client ID</th>
-            <th>Status</th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for client in clients %}
-          <tr>
-            <td>{{ client.name }}</td>
-            <td><code>{{ client.client_id }}</code></td>
-            <td><span class="badge {{ client.status }}">{{ client.status }}</span></td>
-          </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-      {% else %}
-      <p class="muted">You haven't created any apps yet.</p>
-      {% endif %}
-      
+      <div class="app-list">
+        <div class="mission-header">
+          <h2>Your Apps</h2>
+          <button class="btn btn-primary" disabled title="Phase 2 Feature">Create New App</button>
+        </div>
+        
+        {% if clients %}
+        <table class="grid-table">
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th>Client ID</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for client in clients %}
+            <tr>
+              <td><strong>{{ client.name }}</strong></td>
+              <td><code class="copyable">{{ client.client_id }}</code></td>
+              <td><span class="status-badge status-{{ client.status }}">{{ client.status }}</span></td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        {% else %}
+        <div class="empty-state" style="margin-top: 1rem; text-align: center; padding: 3rem; background: var(--color-surface); border-radius: 12px;">
+          <p class="muted">You haven't created any apps yet.</p>
+        </div>
+        {% endif %}
+      </div>
       {% endif %}
     </main>
   </body>
