@@ -104,13 +104,32 @@
 
 /* ── Login / Register pages ─────────────────────────────────────────────── */
 
+/* Auth pages have no header, so undo the header-height reservation
+   inherited from .portal-main and size to the real viewport instead. */
+body:has(.login-page) {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+body:has(.login-page) .portal-main {
+  flex: 1 0 auto;
+  min-height: 0;
+  padding: 0;
+  display: flex;
+}
+body:has(.login-page) .portal-footer {
+  flex-shrink: 0;
+  margin-top: 0; /* avoid gap against .portal-main's background */
+}
+
 .login-page {
-  min-height: calc(100vh - 60px);
+  flex: 1;
   display: flex;
   align-items: center;
   justify-content: center;
   background-color: #eef2f6; /* soft gray-blue */
   padding: 20px;
+  box-sizing: border-box;
 }
 .login-card {
   width: 100%;
