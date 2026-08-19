@@ -600,7 +600,9 @@ def require_oauth_scope(required_scope: str):
         if oauth_token.revoked:
             raise HTTPException(status_code=401, detail="Token revoked")
 
-        if oauth_token.expires_at < datetime.now(timezone.utc):
+        # SQLAlchemy with SQLite might return naive datetimes for expires_at
+        expires_at_aware = oauth_token.expires_at.replace(tzinfo=timezone.utc) if oauth_token.expires_at.tzinfo is None else oauth_token.expires_at
+        if expires_at_aware < datetime.now(timezone.utc):
             raise HTTPException(status_code=401, detail="Token expired")
 
         if required_scope not in oauth_token.scopes:

@@ -4,6 +4,7 @@ import uuid
 from enum import Enum
 from typing import Dict
 
+import portal.webhooks.worker as _wh_worker
 from portal.config import settings
 from portal.transcription.process import FfmpegProcess
 from portal.transcription.providers.base import ProviderConfig
@@ -99,6 +100,7 @@ class TranscriptionWorkerSession:
                     break
 
                 self.state = State.RUNNING
+                await _wh_worker.enqueue_webhook("booth.transcription.started", {"booth_id": self.booth_id, "session_id": self.session_id})
 
                 # The context manager entirely encapsulates ffmpeg process lifecycle and cleanup.
                 async with FfmpegProcess(self.rtsp_url, self.sample_rate, self.booth_id) as process:
@@ -146,6 +148,7 @@ class TranscriptionWorkerSession:
                     pass
         finally:
             self.state = State.STOPPED
+            await _wh_worker.enqueue_webhook("booth.transcription.stopped", {"booth_id": self.booth_id, "session_id": self.session_id})
             if self.provider_name == "local":
                 from portal.transcription.providers.local import decrement_model_ref
                 decrement_model_ref(self.model_size)

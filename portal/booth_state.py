@@ -272,6 +272,16 @@ class BoothRegistry:
                     participant.ingest_connected = False
                     participant.updated_at = utc_now_iso()
                 booth.ingest_status = "disconnected"
+
+            # Enqueue webhook in background
+            import asyncio
+
+            import portal.webhooks.worker as _wh
+            asyncio.create_task(_wh.enqueue_webhook(
+                "session.status_changed",
+                {"booth_id": booth_id, "is_active": unlocked}
+            ))
+
             return booth.as_public_dict()
 
     async def set_active_interpreter(

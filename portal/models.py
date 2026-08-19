@@ -700,3 +700,41 @@ class OAuthAuditLog(Base):
 
     def __repr__(self) -> str:
         return f"<OAuthAuditLog id={self.id} action={self.action!r} status={self.status_code}>"
+
+
+class WebhookSubscription(Base):
+    __tablename__ = "webhook_subscriptions"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    developer_account_id: Mapped[int] = mapped_column(ForeignKey("developer_accounts.id", ondelete="CASCADE"))
+    target_url: Mapped[str] = mapped_column(String(2000))
+    event_types: Mapped[list[str]] = mapped_column(sa.JSON, default=list)
+    secret_key: Mapped[str] = mapped_column(String(64))
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    consecutive_failures: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+    developer_account: Mapped[DeveloperAccount] = relationship()
+
+    def __repr__(self) -> str:
+        return f"<WebhookSubscription id={self.id} target_url={self.target_url!r} is_active={self.is_active}>"
+
+
+class WebhookDelivery(Base):
+    __tablename__ = "webhook_deliveries"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    subscription_id: Mapped[int] = mapped_column(ForeignKey("webhook_subscriptions.id", ondelete="CASCADE"))
+    event_type: Mapped[str] = mapped_column(String(100))
+    payload: Mapped[dict] = mapped_column(sa.JSON, default=dict)
+    payload_version: Mapped[str] = mapped_column(String(20), default="1")
+    status: Mapped[str] = mapped_column(String(20), default="pending")  # pending, delivering, succeeded, failed, dead
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0)
+    next_attempt_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    last_error: Mapped[str | None] = mapped_column(String(2000), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+    subscription: Mapped[WebhookSubscription] = relationship()
+
+    def __repr__(self) -> str:
+        return f"<WebhookDelivery id={self.id} status={self.status!r} attempt={self.attempt_count}>"

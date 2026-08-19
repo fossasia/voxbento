@@ -7,6 +7,7 @@ from dataclasses import dataclass
 
 from fastapi import WebSocket
 
+import portal.webhooks.worker as _wh_worker
 from portal.auth import can_perform_role
 from portal.globals import booths
 
@@ -211,6 +212,17 @@ async def _handle_join(ws: WebSocket, session: Session, data: dict) -> None:
         json.dumps({"type": "booth:joined", "participant_id": participant.participant_id, "state": state})
     )
     await manager.broadcast(session.booth_id, {"type": "booth:state", "state": state})
+
+    if role == "interpreter":
+        await _wh_worker.enqueue_webhook(
+            "booth.interpreter.joined",
+            {
+                "booth_id": session.booth_id,
+                "participant_id": participant.participant_id,
+                "display_name": display_name,
+                "language": language
+            }
+        )
 
 
 async def _handle_leave(session: Session) -> None:
