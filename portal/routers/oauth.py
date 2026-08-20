@@ -75,7 +75,8 @@ async def get_effective_scopes(db: AsyncSession, user: dict, event_id: int, requ
     # Check if user has RoomMembership in this event (for room_coordinators)
     # simplified for now: if they have any role in the event, we grant scopes they requested
     # that map to their role.
-    is_event_admin = event_membership and event_membership.role in ("event_owner", "super_admin")
+    # Accept "owner" as a synonym for "event_owner" (e.g. roles synced from Eventyay)
+    is_event_admin = event_membership and event_membership.role in ("event_owner", "super_admin", "owner")
     is_room_coordinator = event_membership and event_membership.role == "room_coordinator"
 
     # In a full implementation, we would narrow this down per-room.
@@ -197,11 +198,24 @@ async def authorize_post(
     if not effective_scopes:
         raise HTTPException(status_code=403, detail="Forbidden")
 
-    # Save consent
-    consent = OAuthConsentGrant(
-        client_id=client.id, user_id=int(user["sub"]), event_id=event_id, scopes=effective_scopes
-    )
-    db.add(consent)
+    # Save consent — handle race conditions with a savepoint
+    from sqlalchemy.exc import IntegrityError
+    try:
+        async with db.begin_nested():
+            consent = OAuthConsentGrant(
+                client_id=client.id, user_id=int(user["sub"]), event_id=event_id, scopes=effective_scopes
+            )
+            db.add(consent)
+            await db.flush()
+    except IntegrityError:
+        # Another request inserted it concurrently. Just update the scopes.
+        await db.execute(
+            update(OAuthConsentGrant).where(
+                OAuthConsentGrant.client_id == client.id,
+                OAuthConsentGrant.user_id == int(user["sub"]),
+                OAuthConsentGrant.event_id == event_id,
+            ).values(scopes=effective_scopes)
+        )
 
     # Generate authorization code
     code = generate_token()
@@ -263,7 +277,7 @@ async def token_exchange(
         )
         auth_code = code_result.scalars().first()
 
-        if not auth_code or auth_code.used or auth_code.expires_at < datetime.now(timezone.utc):
+        if not auth_code or auth_code.used or auth_code.expires_at.replace(tzinfo=timezone.utc) < datetime.now(timezone.utc):
             return JSONResponse(status_code=400, content={"error": "invalid_grant"})
 
         if auth_code.client_id != client.id or auth_code.redirect_uri != redirect_uri:
