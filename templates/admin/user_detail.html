@@ -76,7 +76,7 @@
   </thead>
   <tbody>
     {% for event in events %}
-    {% set is_event_admin = event.id in event_admin_map %}
+    {% set is_event_admin = event.id in event_owner_map %}
     <tr class="{{ 'row-assigned' if is_event_admin else '' }}">
       <td><strong>{{ event.display_name }}</strong> ({{ event.slug }})</td>
       <td>

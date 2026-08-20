@@ -219,9 +219,12 @@ async def require_event_owner(request: Request) -> None:
                 if payload.get("is_admin"):
                     return
                 if payload.get("sub"):
-                    from portal.database import get_session, list_memberships_for_user
+                    from portal.database import get_session, get_user_by_id, list_memberships_for_user
 
                     async with get_session() as db_session:
+                        user = await get_user_by_id(db_session, int(payload["sub"]))
+                        if user and user.is_admin:
+                            return
                         memberships = await list_memberships_for_user(db_session, int(payload["sub"]))
                         if event_id is not None:
                             if any((m.event_id == event_id and m.role == "event_owner" for m in memberships)):
@@ -266,11 +269,18 @@ async def get_admin_flags(request: Request, event_id: int | None = None, room_id
                 if payload.get("sub"):
                     from portal.database import (
                         get_session,
+                        get_user_by_id,
                         list_memberships_for_user,
                         list_room_memberships_for_user,
                     )
 
                     async with get_session() as db_session:
+                        user = await get_user_by_id(db_session, int(payload["sub"]))
+                        if user and user.is_admin:
+                            flags["is_super_admin"] = True
+                            flags["is_event_owner"] = True
+                            flags["is_room_coordinator"] = True
+                            return flags
                         memberships = await list_memberships_for_user(db_session, int(payload["sub"]))
                         rms = await list_room_memberships_for_user(db_session, int(payload["sub"]))
                         if event_id is not None:
@@ -364,7 +374,13 @@ async def get_accessible_event_ids(request: Request, *, user_id: int | None) -> 
             pass
     if is_super_admin or user_id is None:
         return (is_super_admin, None)
+
+    from portal.database import get_user_by_id
+
     async with get_session() as session:
+        user = await get_user_by_id(session, user_id)
+        if user and user.is_admin:
+            return (True, None)
         memberships = await list_memberships_for_user(session, user_id)
         room_memberships = await list_room_memberships_for_user(session, user_id)
     allowed_event_ids: set[int] = {m.event_id for m in memberships if m.role == "event_owner"}
