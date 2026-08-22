@@ -1,8 +1,16 @@
 {% if total_pages > 1 %}
 {% set search_qs = '&search=' ~ search if search else '' %}
+{% set sort_qs = '' %}
+{% if sort_by %}
+  {% set sort_qs = sort_qs ~ '&sort_by=' ~ sort_by %}
+{% endif %}
+{% if sort_order %}
+  {% set sort_qs = sort_qs ~ '&sort_order=' ~ sort_order %}
+{% endif %}
+{% set qs = search_qs ~ sort_qs %}
 <div class="pagination">
   {% if page > 1 %}
-    <a href="?page={{ page - 1 }}{{ search_qs }}" class="btn btn-sm">Previous</a>
+    <a href="?page={{ page - 1 }}{{ qs }}" class="btn btn-sm">Previous</a>
   {% else %}
     <span class="btn btn-sm btn-disabled">Previous</span>
   {% endif %}
@@ -10,7 +18,7 @@
   <span>Page {{ page }} of {{ total_pages }}</span>
 
   {% if page < total_pages %}
-    <a href="?page={{ page + 1 }}{{ search_qs }}" class="btn btn-sm">Next</a>
+    <a href="?page={{ page + 1 }}{{ qs }}" class="btn btn-sm">Next</a>
   {% else %}
     <span class="btn btn-sm btn-disabled">Next</span>
   {% endif %}

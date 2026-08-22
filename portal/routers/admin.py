@@ -1427,12 +1427,21 @@ async def admin_transcription_settings(
 
 
 @router.get("/admin/users/", dependencies=[Depends(require_super_admin)])
-async def admin_user_list(request: Request, page: int = 1, search: str | None = None):
-    limit = 20
+async def admin_users(
+    request: Request,
+    page: int = 1,
+    limit: int = 50,
+    search: str | None = None,
+    sort_by: str = "created_at",
+    sort_order: str = "asc",
+):
+    """List all registered users (super admin only)."""
     offset = (page - 1) * limit
     async with get_session() as session:
         total_users = await count_users(session, search=search)
-        users = await list_users(session, limit=limit, offset=offset, search=search)
+        users = await list_users(
+            session, limit=limit, offset=offset, search=search, sort_by=sort_by, sort_order=sort_order
+        )
     total_pages = max(1, math.ceil(total_users / limit))
     return templates.TemplateResponse(
         request=request,
@@ -1441,10 +1450,12 @@ async def admin_user_list(request: Request, page: int = 1, search: str | None = 
             "users": users,
             "page": page,
             "total_pages": total_pages,
+            "search": search,
+            "sort_by": sort_by,
+            "sort_order": sort_order,
             "is_super_admin": True,
             "is_event_owner": True,
             "is_room_coordinator": True,
-            "search": search,
         },
     )
 
@@ -1729,6 +1740,7 @@ async def admin_developer_accounts(
     accounts = result.scalars().all()
 
     from portal.auth import get_admin_flags
+
     admin_flags = await get_admin_flags(request)
 
     return templates.TemplateResponse(

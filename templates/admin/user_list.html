@@ -14,8 +14,24 @@
   <span class="badge">{{ users|length }} displayed</span>
 </div>
 
+{% macro sortable_header(column, label) %}
+  {% set new_sort_order = 'desc' if sort_by == column and sort_order == 'asc' else 'asc' %}
+  <th>
+    <a href="?sort_by={{ column }}&sort_order={{ new_sort_order }}{% if search %}&search={{ search }}{% endif %}" style="text-decoration: none; color: inherit; display: flex; align-items: center; gap: 4px;">
+      {{ label }}
+      {% if sort_by == column %}
+        <span style="font-size: 0.8em;">{% if sort_order == 'asc' %}▲{% else %}▼{% endif %}</span>
+      {% else %}
+        <span style="font-size: 0.8em; color: transparent;">▲</span>
+      {% endif %}
+    </a>
+  </th>
+{% endmacro %}
+
 <div class="search-bar" style="margin-bottom: 24px;">
   <form method="get" action="/admin/users/" style="display: flex; gap: 10px; max-width: 500px;">
+    {% if sort_by %}<input type="hidden" name="sort_by" value="{{ sort_by }}">{% endif %}
+    {% if sort_order %}<input type="hidden" name="sort_order" value="{{ sort_order }}">{% endif %}
     <input type="text" name="search" value="{{ search or '' }}" placeholder="Search by email or name..." style="min-height: 42px; padding: 10px 12px; font-size: 0.95rem; border: 1px solid var(--color-border-strong); border-radius: 10px; background: var(--color-surface); width: 100%; box-sizing: border-box; font-family: inherit; color: var(--color-text); outline: none;">
     <button type="submit" class="btn btn-primary">Search</button>
     {% if search %}
@@ -28,13 +44,13 @@
 <table class="data-table">
   <thead>
     <tr>
-      <th>ID</th>
-      <th>Email</th>
-      <th>Display Name</th>
-      <th>Admin</th>
-      <th>2FA Status</th>
-      <th>Status</th>
-      <th>Joined</th>
+      {{ sortable_header('id', 'ID') }}
+      {{ sortable_header('email', 'Email') }}
+      {{ sortable_header('display_name', 'Display Name') }}
+      {{ sortable_header('is_admin', 'Admin') }}
+      {{ sortable_header('email_verified', '2FA Status') }}
+      {{ sortable_header('is_active', 'Status') }}
+      {{ sortable_header('created_at', 'Joined') }}
       <th>Actions</th>
     </tr>
   </thead>

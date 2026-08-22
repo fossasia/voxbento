@@ -105,12 +105,11 @@ async def get_session() -> AsyncGenerator[AsyncSession]:
         async with session.begin():
             yield session
 
+
 async def get_db_session() -> AsyncGenerator[AsyncSession]:
     """FastAPI dependency for database sessions."""
     async with get_session() as session:
         yield session
-
-
 
 
 async def init_db() -> None:
@@ -494,10 +493,22 @@ async def list_users(
     limit: int = 100,
     offset: int = 0,
     search: str | None = None,
+    sort_by: str = "created_at",
+    sort_order: str = "asc",
 ) -> list[User]:
-    stmt = select(User).order_by(User.created_at).limit(limit).offset(offset)
+    stmt = select(User)
+
     if search:
         stmt = stmt.where(or_(User.email.ilike(f"%{search}%"), User.display_name.ilike(f"%{search}%")))
+
+    sort_column = getattr(User, sort_by, User.created_at)
+    if sort_order == "desc":
+        sort_column = sort_column.desc()
+    else:
+        sort_column = sort_column.asc()
+
+    stmt = stmt.order_by(sort_column).limit(limit).offset(offset)
+
     result = await session.execute(stmt)
     return list(result.scalars().all())
 
