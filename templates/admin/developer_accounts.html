@@ -3,63 +3,77 @@
 {% block title %}Developer Accounts{% endblock %}
 
 {% block breadcrumb %}
-<div class="breadcrumb">
-  <a href="/admin/">Admin</a> &gt; Developer Accounts
-</div>
+<nav class="breadcrumb">
+  <a href="/admin/">Dashboard</a> › <span>Developer Accounts</span>
+</nav>
 {% endblock %}
 
 {% block content %}
-<div class="panel-header">
-  <div class="panel-title-group">
-    <h1 class="panel-title">Developer Accounts</h1>
-    <p class="panel-subtitle">Review and manage third-party API access requests.</p>
+<div class="page-header" style="margin-bottom: 2rem; border-bottom: 1px solid var(--color-border); padding-bottom: 1.5rem;">
+  <div>
+    <h1 style="font-size: 2rem; font-weight: 800; letter-spacing: -0.02em; color: var(--color-text);">Developer Accounts</h1>
+    <p style="font-size: 1.05rem; color: var(--color-text-secondary); margin-top: 0.25rem;">Review and manage third-party API access requests.</p>
   </div>
 </div>
 
-<div class="card">
-  <table class="table">
-    <thead>
+<div style="background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 12px; overflow: hidden; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);">
+  <table class="data-table" style="border: none; margin: 0;">
+    <thead style="background: #f8fafc;">
       <tr>
-        <th>Applicant</th>
-        <th>Organization</th>
-        <th>Date Applied</th>
-        <th>Status</th>
-        <th>Actions</th>
+        <th style="padding: 16px 24px; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; color: #64748b; border-bottom: 1px solid var(--color-border);">Applicant</th>
+        <th style="padding: 16px 24px; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; color: #64748b; border-bottom: 1px solid var(--color-border);">Organization</th>
+        <th style="padding: 16px 24px; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; color: #64748b; border-bottom: 1px solid var(--color-border);">Date Applied</th>
+        <th style="padding: 16px 24px; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; color: #64748b; border-bottom: 1px solid var(--color-border);">Status</th>
+        <th style="padding: 16px 24px; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; color: #64748b; border-bottom: 1px solid var(--color-border); text-align: right;">Actions</th>
       </tr>
     </thead>
     <tbody>
       {% for acc in accounts %}
-      <tr>
-        <td>{{ acc.user.email }}</td>
-        <td>{{ acc.organization_name or '-' }}</td>
-        <td>{{ acc.created_at.strftime('%Y-%m-%d %H:%M') }}</td>
-        <td>
-          <span class="badge {{ 'bg-success' if acc.status == 'approved' else 'bg-warning' if acc.status == 'pending' else 'bg-danger' }}">
-            {{ acc.status }}
-          </span>
+      <tr style="border-bottom: 1px solid var(--color-border);">
+        <td style="padding: 16px 24px; border: none; font-weight: 500;">
+          {{ acc.user.email }}
         </td>
-        <td class="actions-cell">
+        <td style="padding: 16px 24px; border: none; color: var(--color-text-secondary);">
+          {{ acc.organization_name or '-' }}
+        </td>
+        <td style="padding: 16px 24px; border: none; font-variant-numeric: tabular-nums; color: var(--color-text-secondary);">
+          {{ acc.created_at.strftime('%Y-%m-%d %H:%M') }}
+        </td>
+        <td style="padding: 16px 24px; border: none;">
+          {% if acc.status == 'approved' %}
+            <span style="background: #ecfdf5; color: #059669; border: 1px solid #a7f3d0; padding: 4px 10px; border-radius: 9999px; font-size: 0.75rem; font-weight: 600; text-transform: capitalize;">{{ acc.status }}</span>
+          {% elif acc.status == 'pending' %}
+            <span style="background: #fffbeb; color: #d97706; border: 1px solid #fde68a; padding: 4px 10px; border-radius: 9999px; font-size: 0.75rem; font-weight: 600; text-transform: capitalize;">{{ acc.status }}</span>
+          {% else %}
+            <span style="background: #fef2f2; color: #dc2626; border: 1px solid #fecaca; padding: 4px 10px; border-radius: 9999px; font-size: 0.75rem; font-weight: 600; text-transform: capitalize;">{{ acc.status }}</span>
+          {% endif %}
+        </td>
+        <td style="padding: 16px 24px; border: none; text-align: right; white-space: nowrap;">
           {% if acc.status == 'pending' %}
           <form method="POST" action="/api/admin/developer-accounts/{{ acc.id }}/approve" style="display:inline;">
-            <button type="submit" class="btn btn-sm btn-primary">Approve</button>
+            <button type="submit" style="background: #3b82f6; color: white; border: none; padding: 6px 14px; border-radius: 6px; font-size: 0.85rem; font-weight: 600; cursor: pointer; box-shadow: 0 1px 2px rgba(59,130,246,0.3);">Approve</button>
           </form>
-          <form method="POST" action="/api/admin/developer-accounts/{{ acc.id }}/reject" style="display:inline;">
-            <button type="submit" class="btn btn-sm btn-danger">Reject</button>
+          <form method="POST" action="/api/admin/developer-accounts/{{ acc.id }}/reject" style="display:inline; margin-left: 8px;">
+            <button type="submit" style="background: #ef4444; color: white; border: none; padding: 6px 14px; border-radius: 6px; font-size: 0.85rem; font-weight: 600; cursor: pointer; box-shadow: 0 1px 2px rgba(239,68,68,0.3);">Reject</button>
           </form>
           {% elif acc.status == 'approved' %}
           <form method="POST" action="/api/admin/developer-accounts/{{ acc.id }}/reject" style="display:inline;">
-            <button type="submit" class="btn btn-sm btn-outline">Suspend</button>
+            <button type="submit" style="background: white; color: #ef4444; border: 1px solid #fca5a5; padding: 6px 14px; border-radius: 6px; font-size: 0.85rem; font-weight: 600; cursor: pointer; transition: all 0.2s;">Suspend</button>
           </form>
           {% elif acc.status in ['suspended', 'rejected'] %}
           <form method="POST" action="/api/admin/developer-accounts/{{ acc.id }}/approve" style="display:inline;">
-            <button type="submit" class="btn btn-sm btn-outline">Restore</button>
+            <button type="submit" style="background: white; color: #3b82f6; border: 1px solid #93c5fd; padding: 6px 14px; border-radius: 6px; font-size: 0.85rem; font-weight: 600; cursor: pointer; transition: all 0.2s;">Restore</button>
           </form>
           {% endif %}
         </td>
       </tr>
       {% else %}
       <tr>
-        <td colspan="5" class="text-center muted">No developer applications found.</td>
+        <td colspan="5" style="text-align: center; padding: 48px 24px; color: var(--color-text-secondary); border: none;">
+          <svg style="width: 48px; height: 48px; color: #cbd5e1; margin: 0 auto 1rem auto; display: block;" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"></path></svg>
+          <p style="margin: 0; font-size: 1.05rem; font-weight: 500; color: var(--color-text);">No developer applications</p>
+          <p style="margin: 4px 0 0 0; font-size: 0.95rem;">There are currently no developer accounts requesting access.</p>
+        </td>
       </tr>
       {% endfor %}
     </tbody>
