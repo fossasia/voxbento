@@ -8,14 +8,135 @@
     <style>
       .create-panel { max-width: 600px; margin-top: 1rem; }
       .app-list { margin-top: 2rem; }
-      .secret-box {
-        background: #f1f5f9;
-        padding: 12px;
+      
+      /* Sexy Copy Wrapper */
+      .copy-wrapper {
+        position: relative;
+        display: inline-flex;
+        align-items: center;
+        gap: 12px;
+        padding: 6px 10px;
+        background: var(--color-surface, #ffffff);
+        border: 1px solid var(--color-border-strong, #cbd5e1);
+        border-radius: 8px;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        font-size: 0.85rem;
+        color: var(--color-text, #1e293b);
+        cursor: pointer;
+        transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+      }
+
+      .copy-wrapper:hover {
+        background: #f8fafc;
+        border-color: #94a3b8;
+        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -1px rgba(0, 0, 0, 0.03);
+        transform: translateY(-1px);
+      }
+
+      .copy-wrapper:active {
+        transform: translateY(0);
+        box-shadow: none;
+      }
+
+      .copy-text {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .copy-icon-container {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: #94a3b8;
+        transition: all 0.2s ease;
+      }
+
+      .copy-wrapper:hover .copy-icon-container {
+        color: var(--color-primary, #3b82f6);
+      }
+
+      .copy-wrapper.copied {
+        border-color: #10b981;
+        background: #ecfdf5;
+        color: #065f46;
+      }
+
+      .copy-wrapper.copied .copy-icon-container {
+        color: #10b981;
+      }
+
+      .copy-tooltip {
+        position: absolute;
+        top: -34px;
+        left: 50%;
+        transform: translateX(-50%) translateY(8px) scale(0.95);
+        background: #1e293b;
+        color: white;
+        padding: 5px 10px;
         border-radius: 6px;
-        font-family: monospace;
-        word-break: break-all;
-        margin: 12px 0;
-        border: 1px solid #cbd5e1;
+        font-size: 0.75rem;
+        font-family: system-ui, -apple-system, sans-serif;
+        font-weight: 500;
+        opacity: 0;
+        visibility: hidden;
+        transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+        pointer-events: none;
+        white-space: nowrap;
+        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+        z-index: 10;
+      }
+
+      .copy-tooltip::after {
+        content: '';
+        position: absolute;
+        bottom: -4px;
+        left: 50%;
+        transform: translateX(-50%);
+        border-width: 4px 4px 0;
+        border-style: solid;
+        border-color: #1e293b transparent transparent transparent;
+      }
+
+      .copy-wrapper:hover .copy-tooltip {
+        opacity: 1;
+        visibility: visible;
+        transform: translateX(-50%) translateY(0) scale(1);
+      }
+
+      .copy-wrapper.copied .copy-tooltip {
+        opacity: 1;
+        visibility: visible;
+        transform: translateX(-50%) translateY(0) scale(1);
+        background: #10b981;
+      }
+
+      .copy-wrapper.copied .copy-tooltip::after {
+        border-color: #10b981 transparent transparent transparent;
+      }
+
+      /* Specific styling for the modal secrets */
+      .secret-box.copy-wrapper {
+        width: 100%;
+        justify-content: space-between;
+        padding: 12px 16px;
+        font-size: 0.95rem;
+        margin: 8px 0;
+      }
+
+      .secret-box-danger.copy-wrapper {
+        background: #fffbeb;
+        border-color: #fde047;
+      }
+
+      .secret-box-danger.copy-wrapper:hover {
+        background: #fef3c7;
+        border-color: #facc15;
+      }
+
+      .secret-box-danger.copy-wrapper.copied {
+        background: #ecfdf5;
+        border-color: #10b981;
       }
     </style>
   </head>
@@ -98,7 +219,16 @@
             {% for client in clients %}
             <tr>
               <td><strong>{{ client.name }}</strong></td>
-              <td><code class="copyable">{{ client.client_id }}</code></td>
+              <td>
+                <div class="copy-wrapper" onclick="copyToClipboard(this, '{{ client.client_id }}')">
+                  <span class="copy-text">{{ client.client_id }}</span>
+                  <div class="copy-icon-container">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon-copy"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon-check" style="display:none;"><polyline points="20 6 9 17 4 12"></polyline></svg>
+                  </div>
+                  <span class="copy-tooltip">Copy to clipboard</span>
+                </div>
+              </td>
               <td><span class="status-badge status-{{ client.status }}">{{ client.status }}</span></td>
             </tr>
             {% endfor %}
@@ -150,11 +280,25 @@
           <p>Your new OAuth Client <strong>{{ new_client.name }}</strong> has been created.</p>
           <div style="margin-top: 1rem;">
             <label style="font-size: 0.8rem; color: var(--color-text-secondary); font-weight: 500;">Client ID</label>
-            <div class="secret-box">{{ new_client.client_id }}</div>
+            <div class="secret-box copy-wrapper" onclick="copyToClipboard(this, '{{ new_client.client_id }}')">
+              <span class="copy-text">{{ new_client.client_id }}</span>
+              <div class="copy-icon-container">
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon-copy"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon-check" style="display:none;"><polyline points="20 6 9 17 4 12"></polyline></svg>
+              </div>
+              <span class="copy-tooltip">Copy to clipboard</span>
+            </div>
           </div>
           <div style="margin-top: 1rem;">
             <label style="font-size: 0.8rem; color: var(--color-text-secondary); font-weight: 500;">Client Secret</label>
-            <div class="secret-box" style="background: #fffbea; border-color: #fde047;">{{ new_secret }}</div>
+            <div class="secret-box secret-box-danger copy-wrapper" onclick="copyToClipboard(this, '{{ new_secret }}')">
+              <span class="copy-text">{{ new_secret }}</span>
+              <div class="copy-icon-container">
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon-copy"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon-check" style="display:none;"><polyline points="20 6 9 17 4 12"></polyline></svg>
+              </div>
+              <span class="copy-tooltip">Copy to clipboard</span>
+            </div>
             <p class="hint" style="color: #b45309; font-weight: 500;">Please copy this secret and store it securely. You will not be able to see it again!</p>
           </div>
         </div>
@@ -173,6 +317,40 @@
         btnCreate.addEventListener('click', () => {
           modalCreate.classList.add('active');
         });
+      }
+
+      async function copyToClipboard(element, text) {
+        try {
+          await navigator.clipboard.writeText(text);
+          element.classList.add('copied');
+          
+          const iconCopy = element.querySelector('.icon-copy');
+          const iconCheck = element.querySelector('.icon-check');
+          const tooltip = element.querySelector('.copy-tooltip');
+          
+          if (iconCopy && iconCheck) {
+            iconCopy.style.display = 'none';
+            iconCheck.style.display = 'block';
+          }
+          if (tooltip) {
+            tooltip.textContent = 'Copied!';
+            tooltip.classList.add('copied-tooltip');
+          }
+          
+          setTimeout(() => {
+            element.classList.remove('copied');
+            if (iconCopy && iconCheck) {
+              iconCopy.style.display = 'block';
+              iconCheck.style.display = 'none';
+            }
+            if (tooltip) {
+              tooltip.textContent = 'Copy to clipboard';
+              tooltip.classList.remove('copied-tooltip');
+            }
+          }, 2000);
+        } catch (err) {
+          console.error('Failed to copy text: ', err);
+        }
       }
     </script>
   </body>
