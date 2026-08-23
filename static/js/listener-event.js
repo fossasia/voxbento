@@ -437,6 +437,8 @@ function pumpSegmentQueue() {
     var tText = nextSeg.translation;
     if (!tText && nextSeg.error === "pipeline_failed") {
       tText = "(Translation failed)";
+    } else if (!tText && nextSeg.error === "model_downloading") {
+      tText = "(Downloading translation model...)";
     } else if (!tText) {
       tText = "(Translation pending...)";
     }

@@ -181,11 +181,26 @@ class TranslationWorker:
                 try:
                     # Enforce a strict 12-second timeout on LLM inference. If the local CPU is pegged,
                     # NLLB can take 30+ seconds or deadlock, which permanently fills the queue.
+                    timeout_val = 12.0
+                    if provider == "local":
+                        try:
+                            from portal.translations.providers.local import get_download_progress
+                            prog = get_download_progress(model)
+                            if prog and prog.get("status") == "downloading":
+                                timeout_val = 0.1  # Fail fast if downloading
+                        except Exception:
+                            pass
+
                     translated_text = await asyncio.wait_for(
                         self._call_llm(provider, model, api_key, text, lang_name, source_lang_name),
-                        timeout=12.0
+                        timeout=timeout_val
                     )
                 except asyncio.TimeoutError:
+                    if provider == "local" and timeout_val == 0.1:
+                        logger.info(f"[{booth_id_str}] Local model {model} is downloading. Dropping segment for {lang_code}.")
+                        await tts_manager.broadcast_bundle(room.id, lang_code, booth_id_str, b"", uuid_segment_id, seq, text, "", "model_downloading")
+                        return
+
                     logger.error(f"[{booth_id_str}] Translation LLM timed out after 12s for {lang_code}.")
                     translated_text = None
 
