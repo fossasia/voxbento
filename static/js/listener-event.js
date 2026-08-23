@@ -140,7 +140,7 @@ function startTtsWs(roomId, langCode, boothId, audioDelayMs) {
   }
   audioScheduler = window.AudioScheduler.create(audioCtx, {
     jitterBufferSec: 0.25,
-    comfortNoiseEnabled: true,
+    comfortNoiseEnabled: false,
     comfortNoiseLevelDb: -40,
   });
 
