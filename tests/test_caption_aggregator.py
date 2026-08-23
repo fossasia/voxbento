@@ -142,3 +142,35 @@ class TestCaptionAggregator:
 
         metrics = aggregator.get_metrics("b")
         assert metrics["current_word_count"] == 3
+
+    async def test_handle_chunk_splits_short_sentence_at_5_word_boundary(self):
+        """Sentences with >= 5 words should trigger finalization (lowered from 10)."""
+        received = []
+
+        async def fake_callback(booth_id, message):
+            await collect_broadcasts(booth_id, message, received)
+
+        aggregator = CaptionAggregator(fake_callback)
+        # "Thank you so much everyone." has 5 words and ends with a period.
+        # Under the old 10-word threshold this would NOT finalize; under the
+        # new 5-word threshold it MUST finalize.
+        await aggregator.handle_chunk("booth-1", "Thank you so much everyone.")
+
+        finals = [msg for bid, msg in received if msg.get("status") == "final"]
+        assert len(finals) >= 1
+        assert "Thank you so much everyone." in finals[0]["text"]
+
+    async def test_handle_chunk_does_not_split_very_short_sentence(self):
+        """Sentences with < 5 words should not trigger finalization from handle_chunk."""
+        received = []
+
+        async def fake_callback(booth_id, message):
+            await collect_broadcasts(booth_id, message, received)
+
+        aggregator = CaptionAggregator(fake_callback)
+        # "Hi there." has only 2 words — should remain as partial, not finalize.
+        await aggregator.handle_chunk("booth-1", "Hi there.")
+
+        finals = [msg for bid, msg in received if msg.get("status") == "final"]
+        assert len(finals) == 0
+

@@ -75,7 +75,7 @@ class CaptionAggregator:
             split_point = None
             for match in matches:
                 candidate_text = state.current_utterance[:match.end()].strip()
-                if len(candidate_text.split()) >= 10:
+                if len(candidate_text.split()) >= 5:
                     split_point = match.end()
                     break
 

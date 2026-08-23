@@ -44,6 +44,7 @@ Jitsi Meet Floor Conference
         ▼
    CaptionAggregator (aggregator.py)
    partial / final / chunk events
+   Sentence split threshold: ≥5 words at punctuation boundary
         ├───────────────────────────────────────────────────────┐
         ▼                                                       ▼
    Database (TranscriptSegment)                            broadcast_transcription()
@@ -63,7 +64,10 @@ Jitsi Meet Floor Conference
    (Deepgram Aura cloud WebSocket OR Supertonic self-hosted in-process ONNX)
         │
         ▼
-   broadcast_tts() (WebSocket /ws/tts/{room_id}) -> Listener Web Audio API
+   broadcast_tts() (WebSocket /ws/tts/{room_id}) -> AudioScheduler -> Web Audio API
+   Client uses a jitter-buffered playback queue (audio-scheduler.js) to schedule
+   each audio segment seamlessly after the previous one ends, with comfort noise
+   during gaps. See static/js/audio-scheduler.js.
 ```
 
 ---

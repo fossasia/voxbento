@@ -33,6 +33,8 @@ var nextStartTime = 0;
 var currentAudioDelayMs = 0;
 var currentRoomId = null;
 var currentSourceType = null;
+/** @type {ReturnType<typeof window.AudioScheduler.create>|null} */
+var audioScheduler = null;
 
 function setStatus(text, cls) {
   statusEl.innerHTML =
@@ -106,6 +108,10 @@ function stopCurrentStream() {
   segmentStore = Object.create(null);
   expectedSeq = 1;
   isSegmentPlaying = false;
+  if (audioScheduler) {
+    audioScheduler.reset();
+    audioScheduler = null;
+  }
 
   if (captionsWs) {
     captionsWs.close();
@@ -127,6 +133,16 @@ function startTtsWs(roomId, langCode, boothId, audioDelayMs) {
   if (audioCtx.state === "suspended") {
     audioCtx.resume();
   }
+
+  // Create jitter-buffered audio scheduler for gapless playback
+  if (audioScheduler) {
+    audioScheduler.reset();
+  }
+  audioScheduler = window.AudioScheduler.create(audioCtx, {
+    jitterBufferSec: 0.25,
+    comfortNoiseEnabled: true,
+    comfortNoiseLevelDb: -40,
+  });
 
   var wsProto = window.location.protocol === "https:" ? "wss:" : "ws:";
   var wsUrl =
@@ -444,16 +460,34 @@ function pumpSegmentQueue() {
   if (isTtsActive && !nextSeg.error && audioCtx) {
     if (nextSeg.audioBuffer) {
       try {
-        var source = audioCtx.createBufferSource();
-        source.buffer = nextSeg.audioBuffer;
-        source.connect(audioCtx.destination);
-        source.onended = function () {
+        // Use the AudioScheduler for jitter-buffered, gapless playback.
+        // The scheduler queues each buffer to start exactly when the previous
+        // one ends, with a small jitter buffer when re-anchoring after a gap.
+        // This eliminates the silence gaps between sentences.
+        if (audioScheduler) {
+          var timing = audioScheduler.scheduleBuffer(nextSeg.audioBuffer);
+          // Advance sequence immediately so the next segment can be scheduled
+          // in parallel — don't wait for onended.
+          var finishedSeq = expectedSeq;
           isSegmentPlaying = false;
-          delete segmentStore[expectedSeq];
+          delete segmentStore[finishedSeq];
           expectedSeq++;
-          fallbackQueueTimer = setTimeout(pumpSegmentQueue, 60);
-        };
-        source.start(0);
+          // Pump the queue again after a short delay to pick up any
+          // already-buffered segments.
+          fallbackQueueTimer = setTimeout(pumpSegmentQueue, 30);
+        } else {
+          // Fallback: instant playback if scheduler unavailable
+          var source = audioCtx.createBufferSource();
+          source.buffer = nextSeg.audioBuffer;
+          source.connect(audioCtx.destination);
+          source.onended = function () {
+            isSegmentPlaying = false;
+            delete segmentStore[expectedSeq];
+            expectedSeq++;
+            fallbackQueueTimer = setTimeout(pumpSegmentQueue, 60);
+          };
+          source.start(0);
+        }
       } catch (e) {
         console.error("Audio playback error:", e);
         finishSegmentWithDelay(nextSeg, expectedSeq);
