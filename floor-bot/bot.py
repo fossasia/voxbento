@@ -112,6 +112,7 @@ async def run_capture():
             args=[
                 "--use-fake-ui-for-media-stream",
                 "--use-fake-device-for-media-stream",
+                "--use-file-for-fake-audio-capture=/dev/null",
                 "--disable-gesture-requirement-for-media-playback",
                 "--ignore-certificate-errors",
                 "--unsafely-treat-insecure-origin-as-secure=http://jitsi-web,http://jitsi-web:80,https://jitsi-web",
