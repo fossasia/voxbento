@@ -1038,20 +1038,34 @@ def test_whip_url_standby_interpreter_rejected():
     channel = "whip-standby/1/en"
 
     with client.websocket_connect(f"/ws/booth/{booth}", cookies=_ws_auth()) as ws_a:
-        ws_a.send_text(json.dumps({
-            "type": "booth:join", "display_name": "IntA", "role": "interpreter",
-            "language": "English", "channel_id": channel,
-        }))
+        ws_a.send_text(
+            json.dumps(
+                {
+                    "type": "booth:join",
+                    "display_name": "IntA",
+                    "role": "interpreter",
+                    "language": "English",
+                    "channel_id": channel,
+                }
+            )
+        )
         joined_a = json.loads(ws_a.receive_text())
         if joined_a["type"] != "booth:joined":
             joined_a = json.loads(ws_a.receive_text())
         ws_a.receive_text()  # drain booth:state for IntA
 
         with client.websocket_connect(f"/ws/booth/{booth}", cookies=_ws_auth()) as ws_b:
-            ws_b.send_text(json.dumps({
-                "type": "booth:join", "display_name": "IntB", "role": "interpreter",
-                "language": "English", "channel_id": channel,
-            }))
+            ws_b.send_text(
+                json.dumps(
+                    {
+                        "type": "booth:join",
+                        "display_name": "IntB",
+                        "role": "interpreter",
+                        "language": "English",
+                        "channel_id": channel,
+                    }
+                )
+            )
             joined_b = json.loads(ws_b.receive_text())
             if joined_b["type"] != "booth:joined":
                 joined_b = json.loads(ws_b.receive_text())

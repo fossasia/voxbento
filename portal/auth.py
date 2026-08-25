@@ -563,7 +563,7 @@ async def resolve_booth_role(payload: dict | None, booth_id: str | None = None) 
                         Event.slug == event_slug,
                         Event.deleted_at.is_(None),
                         DBBooth.room_id == room_id,
-                        DBBooth.language_code == lang_code
+                        DBBooth.language_code == lang_code,
                     )
                 )
                 booth = (await db_session.scalars(stmt)).first()

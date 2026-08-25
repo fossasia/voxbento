@@ -99,7 +99,9 @@ class _UvicornTokenRedactor(logging.Filter):
         except Exception:
             return True
 
-        if any(x in message for x in ["token=", "client_secret=", "code="]) and any(x in message for x in ["/embed/", "/ws/", "/oauth/"]):
+        if any(x in message for x in ["token=", "client_secret=", "code="]) and any(
+            x in message for x in ["/embed/", "/ws/", "/oauth/"]
+        ):
             record.msg = self._TOKEN_RE.sub(r"\1[REDACTED]", message)
             record.args = ()
         return True
@@ -144,6 +146,7 @@ async def http_exception_handler(request: Request, exc: StarletteHTTPException):
 async def general_exception_handler(request: Request, exc: Exception):
     import logging
     import traceback
+
     traceback.print_exc()
 
     logging.exception("Unhandled Server Error:")

@@ -184,13 +184,17 @@ class AudioFrame:
     `start_timestamp` is audio-relative (derived strictly from bytes read / sample rate),
     NOT monotonic wall-clock, ensuring it strictly aligns with the audio stream's true duration.
     """
+
     data: bytes
     start_timestamp: float
     duration: float
     seq: int
 
+
 class AudioIngester:
-    def __init__(self, process: asyncio.subprocess.Process, sample_rate: int = 16000, channels: int = 1, sample_width: int = 2):
+    def __init__(
+        self, process: asyncio.subprocess.Process, sample_rate: int = 16000, channels: int = 1, sample_width: int = 2
+    ):
         self.process = process
         self.sample_rate = sample_rate
         self.channels = channels
@@ -207,12 +211,7 @@ class AudioIngester:
                     break
                 duration = len(chunk) / self.bytes_per_second
                 start_timestamp = total_bytes / self.bytes_per_second
-                yield AudioFrame(
-                    data=chunk,
-                    start_timestamp=start_timestamp,
-                    duration=duration,
-                    seq=seq
-                )
+                yield AudioFrame(data=chunk, start_timestamp=start_timestamp, duration=duration, seq=seq)
                 seq += 1
                 total_bytes += len(chunk)
             except asyncio.CancelledError:
@@ -220,6 +219,7 @@ class AudioIngester:
             except Exception as e:
                 logger.error(f"AudioIngester error: {e}")
                 break
+
 
 class StreamingProvider:
     async def process_stream(
@@ -233,6 +233,7 @@ class StreamingProvider:
         booth_id: str,
     ) -> None:
         raise NotImplementedError
+
 
 class ContinuousProvider(StreamingProvider):
     async def process_stream(
@@ -313,10 +314,12 @@ class ContinuousProvider(StreamingProvider):
                 if retries > 5:
                     logger.error(f"[{self.booth_id}] Terminal error: {e}")
                     if hasattr(self.aggregator, "broadcast_callback"):
-                        await self.aggregator.broadcast_callback(self.booth_id, "[Server disconnected: transcription failed. Please refresh.]")
+                        await self.aggregator.broadcast_callback(
+                            self.booth_id, "[Server disconnected: transcription failed. Please refresh.]"
+                        )
                     return
 
-                backoff = min(10.0, 2 ** retries)
+                backoff = min(10.0, 2**retries)
                 logger.warning(f"[{self.booth_id}] Connection failed: {e}. Reconnecting in {backoff}s...")
 
                 try:
@@ -329,8 +332,11 @@ class ContinuousProvider(StreamingProvider):
     async def connect_and_stream(self):
         raise NotImplementedError
 
+
 class ChunkedProvider(StreamingProvider):
-    async def process_block(self, audio_bytes: bytes, start_timestamp: float, language_code: str, model_variant: str, config: ProviderConfig) -> str:
+    async def process_block(
+        self, audio_bytes: bytes, start_timestamp: float, language_code: str, model_variant: str, config: ProviderConfig
+    ) -> str:
         raise NotImplementedError
 
     async def process_stream(
@@ -379,7 +385,9 @@ class ChunkedProvider(StreamingProvider):
                     logger.error(f"[{self.booth_id}] Provider error ({consecutive_errors}/3): {e}")
                     if consecutive_errors >= 3:
                         if hasattr(self.aggregator, "broadcast_callback"):
-                            await self.aggregator.broadcast_callback(self.booth_id, "[Transcription provider failed. Check logs.]")
+                            await self.aggregator.broadcast_callback(
+                                self.booth_id, "[Transcription provider failed. Check logs.]"
+                            )
                         break
         except asyncio.CancelledError:
             raise

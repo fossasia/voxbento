@@ -8,11 +8,13 @@ from portal.config import settings
 
 logger = logging.getLogger(__name__)
 
+
 class FfmpegProcess:
     """
     Robust async context manager for ffmpeg subprocess lifecycle.
     Guarantees process group termination even during severe cascading cancellations.
     """
+
     def __init__(self, rtsp_url: str, sample_rate: str, booth_id: str):
         self.rtsp_url = rtsp_url
         self.sample_rate = sample_rate
@@ -27,23 +29,26 @@ class FfmpegProcess:
     async def __aenter__(self):
         ffmpeg_cmd = [
             "ffmpeg",
-            "-rtsp_transport", "tcp",
-            "-i", self.rtsp_url,
+            "-rtsp_transport",
+            "tcp",
+            "-i",
+            self.rtsp_url,
             "-vn",
-            "-acodec", "pcm_s16le",
-            "-ar", self.sample_rate,
-            "-ac", "1",
-            "-f", "s16le",
-            "-"
+            "-acodec",
+            "pcm_s16le",
+            "-ar",
+            self.sample_rate,
+            "-ac",
+            "1",
+            "-f",
+            "s16le",
+            "-",
         ]
 
         # start_new_session=True places ffmpeg and all descendants into their own process group.
         # This is strictly required so that SIGTERM/SIGKILL can clean up the entire tree.
         self.process = await asyncio.create_subprocess_exec(
-            *ffmpeg_cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            start_new_session=True
+            *ffmpeg_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, start_new_session=True
         )
 
         self.stderr_task = asyncio.create_task(self._log_stderr())
@@ -88,7 +93,9 @@ class FfmpegProcess:
                     await asyncio.wait_for(self.process.wait(), timeout=self.termination_timeout)
                     logger.info(f"[{self.booth_id}] ffmpeg process group terminated cleanly.")
                 except TimeoutError:
-                    logger.warning(f"[{self.booth_id}] ffmpeg did not exit within {self.termination_timeout}s. Escalating to SIGKILL.")
+                    logger.warning(
+                        f"[{self.booth_id}] ffmpeg did not exit within {self.termination_timeout}s. Escalating to SIGKILL."
+                    )
                     os.killpg(self.process.pid, signal.SIGKILL)
                     await self.process.wait()
                     logger.info(f"[{self.booth_id}] ffmpeg process group killed.")

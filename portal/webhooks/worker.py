@@ -17,6 +17,7 @@ from portal.routers.webhooks import validate_ssrf
 
 logger = logging.getLogger(__name__)
 
+
 async def enqueue_webhook(event_type: str, payload: dict) -> None:
     """Helper to insert a new webhook delivery into the queue."""
     try:
@@ -32,7 +33,7 @@ async def enqueue_webhook(event_type: str, payload: dict) -> None:
                         event_type=event_type,
                         payload=payload,
                         payload_version="1",
-                        status="pending"
+                        status="pending",
                     )
                     deliveries.append(delivery)
 
@@ -50,9 +51,7 @@ def sign_payload(secret: str, payload_str: str, timestamp: int) -> str:
 
 
 async def process_delivery(client: httpx.AsyncClient, db, delivery: WebhookDelivery) -> None:
-    result = await db.execute(
-        select(WebhookSubscription).where(WebhookSubscription.id == delivery.subscription_id)
-    )
+    result = await db.execute(select(WebhookSubscription).where(WebhookSubscription.id == delivery.subscription_id))
     sub = result.scalars().first()
 
     if not sub or not sub.is_active:
@@ -71,16 +70,13 @@ async def process_delivery(client: httpx.AsyncClient, db, delivery: WebhookDeliv
         "delivery_id": delivery.id,
         "event_type": delivery.event_type,
         "payload_version": delivery.payload_version,
-        "data": delivery.payload
+        "data": delivery.payload,
     }
     payload_str = json.dumps(envelope)
     timestamp = int(time.time())
     signature = sign_payload(sub.secret_key, payload_str, timestamp)
 
-    headers = {
-        "Content-Type": "application/json",
-        "X-VoxBento-Signature": f"t={timestamp},v1={signature}"
-    }
+    headers = {"Content-Type": "application/json", "X-VoxBento-Signature": f"t={timestamp},v1={signature}"}
 
     delivery.attempt_count += 1
     success = False
@@ -113,13 +109,13 @@ async def process_delivery(client: httpx.AsyncClient, db, delivery: WebhookDeliv
                     client_id=sub.developer_account_id,
                     action="webhook.circuit_breaker_tripped",
                     request_path=f"/dispatch/{sub.id}",
-                    status_code=500
+                    status_code=500,
                 )
                 db.add(audit)
             db.add(sub)
         else:
             delivery.status = "failed"
-            backoff_seconds = 2 ** delivery.attempt_count
+            backoff_seconds = 2**delivery.attempt_count
             delivery.next_attempt_at = datetime.now(timezone.utc) + timedelta(seconds=backoff_seconds)
 
 

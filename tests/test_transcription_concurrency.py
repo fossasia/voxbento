@@ -33,6 +33,7 @@ def setup_db():
     yield
     anyio.run(dispose)
 
+
 @pytest.fixture(autouse=True)
 async def clean_registry():
     for booth_id, session in list(active_workers.items()):
@@ -82,6 +83,7 @@ def patch_transcription_dependencies():
         # we patch the entire FfmpegProcess context manager to return a safe dummy.
         class _DummyFfmpegCM:
             """A safe, no-op async context manager replacing FfmpegProcess in tests."""
+
             def __init__(self, *args, **kwargs):
                 pass
 
@@ -90,9 +92,11 @@ def patch_transcription_dependencies():
                 class _FakeProcess:
                     pid = 99999  # unreachable fake pid — never passed to os.killpg
                     returncode = 0
+
                     class stdout:
                         async def read(n=-1):
                             return b""
+
                 return _FakeProcess()
 
             async def __aexit__(self, *args):

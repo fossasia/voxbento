@@ -30,16 +30,19 @@ async def clean_registry():
         await session.wait_until_stopped()
     active_workers.clear()
 
+
 @pytest.fixture
 def mock_provider():
     provider = MagicMock()
     provider.run_stream = AsyncMock()
     return provider
 
+
 @pytest.fixture
 def mock_providers(mock_provider):
     with patch("portal.transcription.worker.PROVIDERS", {"local": mock_provider}):
         yield {"local": mock_provider}
+
 
 @pytest.fixture(autouse=True)
 def mock_ffmpeg_subprocess():
@@ -52,10 +55,12 @@ def mock_ffmpeg_subprocess():
 
     async def dummy_aenter(self):
         self.process = await asyncio.create_subprocess_exec(
-            "bash", "-c", "sleep 1000",
+            "bash",
+            "-c",
+            "sleep 1000",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            start_new_session=True
+            start_new_session=True,
         )
         self.stderr_task = asyncio.create_task(self._log_stderr())
         return self.process
@@ -80,9 +85,7 @@ async def test_transcription_worker_cancellation(mock_providers):
 
     mock_providers["local"].run_stream = mock_run_stream
 
-    await start_transcription_worker(
-        "evt", "fr", booth_id, None, "local", "base", None
-    )
+    await start_transcription_worker("evt", "fr", booth_id, None, "local", "base", None)
 
     assert booth_id in active_workers
     worker = active_workers[booth_id]
@@ -124,9 +127,7 @@ async def test_transcription_worker_retry_race(mock_providers):
 
     mock_providers["local"].run_stream = mock_run_stream
 
-    await start_transcription_worker(
-        "evt", "fr", booth_id, None, "local", "base", None
-    )
+    await start_transcription_worker("evt", "fr", booth_id, None, "local", "base", None)
 
     worker = active_workers[booth_id]
 
@@ -152,9 +153,7 @@ async def test_transcription_worker_unexpected_exception(mock_providers):
 
     mock_providers["local"].run_stream = mock_run_stream
 
-    await start_transcription_worker(
-        "evt", "fr", booth_id, None, "local", "base", None
-    )
+    await start_transcription_worker("evt", "fr", booth_id, None, "local", "base", None)
 
     worker = active_workers[booth_id]
 
@@ -168,9 +167,7 @@ async def test_transcription_worker_unexpected_exception(mock_providers):
     assert booth_id not in active_workers
 
     # Replacement can start
-    await start_transcription_worker(
-        "evt", "fr", booth_id, None, "local", "base", None
-    )
+    await start_transcription_worker("evt", "fr", booth_id, None, "local", "base", None)
     assert booth_id in active_workers
     assert active_workers[booth_id].state == State.STARTING
 
@@ -209,9 +206,7 @@ async def test_serialized_replacement(mock_providers):
     # Now start another replacement concurrently.
     # Because of our strict serialization, this must wait for stop_task to finish
     # tearing down the old worker before it spawns a new one.
-    start_task = asyncio.create_task(
-        start_transcription_worker("evt", "fr", booth_id, None, "local", "base", None)
-    )
+    start_task = asyncio.create_task(start_transcription_worker("evt", "fr", booth_id, None, "local", "base", None))
 
     # Wait for both
     await stop_task
@@ -244,10 +239,12 @@ async def test_real_subprocess_integration():
         # We read that PID before cleanup so we can explicitly assert it is dead afterward.
         bash_script = "sleep 1000 & echo $!; wait"
         self.process = await asyncio.create_subprocess_exec(
-            "bash", "-c", bash_script,
+            "bash",
+            "-c",
+            bash_script,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            start_new_session=True
+            start_new_session=True,
         )
         self.stderr_task = asyncio.create_task(self._log_stderr())
         return self.process
@@ -285,9 +282,7 @@ async def test_real_subprocess_integration():
             except ProcessLookupError:
                 break  # Expected: grandchild was terminated by process group signal
         else:
-            pytest.fail(
-                f"Grandchild process {grandchild_pid} is still alive after process-group cleanup"
-            )
+            pytest.fail(f"Grandchild process {grandchild_pid} is still alive after process-group cleanup")
 
     finally:
         FfmpegProcess.__aenter__ = old_cmd
@@ -304,10 +299,12 @@ async def test_escalation_zombie():
         # trap SIGTERM so it doesn't die, forcing timeout -> SIGKILL
         bash_script = "trap '' SIGTERM; sleep 1000"
         self.process = await asyncio.create_subprocess_exec(
-            "bash", "-c", bash_script,
+            "bash",
+            "-c",
+            bash_script,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
-            start_new_session=True
+            start_new_session=True,
         )
         self.stderr_task = asyncio.create_task(self._log_stderr())
         return self.process

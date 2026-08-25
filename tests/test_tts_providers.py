@@ -120,4 +120,3 @@ class TestSupertonicStreaming:
             voice="M1",
             on_audio=on_audio,
         )
-

@@ -32,7 +32,7 @@ async def test_tts_binary_framing():
         seq=1,
         caption="hello",
         translation="hola",
-        error=None
+        error=None,
     )
 
     assert len(ws.sent_messages) == 1
@@ -45,8 +45,8 @@ async def test_tts_binary_framing():
     json_length = struct.unpack(">I", frame[1:5])[0]
 
     # Verify JSON content
-    header_bytes = frame[5:5+json_length]
-    header = json.loads(header_bytes.decode('utf-8'))
+    header_bytes = frame[5 : 5 + json_length]
+    header = json.loads(header_bytes.decode("utf-8"))
 
     assert header["segment_id"] == "1234-uuid"
     assert header["seq"] == 1
@@ -55,7 +55,7 @@ async def test_tts_binary_framing():
     assert header["error"] is None
 
     # Verify audio content
-    audio = frame[5+json_length:]
+    audio = frame[5 + json_length :]
     assert audio == b"fakeaudio"
 
 
@@ -76,7 +76,7 @@ async def test_tts_manager_does_not_buffer():
         seq=2,
         caption="world",
         translation="mundo",
-        error=None
+        error=None,
     )
 
     # It should send immediately, frontend handles ordering now

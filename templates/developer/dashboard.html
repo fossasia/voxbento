@@ -167,6 +167,7 @@
         </div>
         <div style="padding: 32px;">
           <form method="POST" action="/api/developer/apply">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <div class="field">
               <label for="organization_name" style="font-weight: 600; margin-bottom: 0.5rem; display: block;">Organization / Project Name</label>
               <input type="text" id="organization_name" name="organization_name" required autofocus placeholder="e.g. Eventyay Interpretation Plugin" style="width: 100%; padding: 12px; border-radius: 8px; border: 1px solid var(--color-border);" />
@@ -253,6 +254,12 @@
                 <td style="padding: 20px 24px; border: none;">
                   <span class="status-badge status-{{ client.status }}" style="padding: 6px 12px; border-radius: 9999px; font-size: 0.75rem; font-weight: 600;">{{ client.status }}</span>
                 </td>
+                <td style="padding: 20px 24px; border: none; text-align: right;">
+                  <form method="POST" action="/api/developer/clients/{{ client.client_id }}/delete" onsubmit="return confirm('Are you sure you want to delete this app? This will break any integrations using it.');" style="display:inline;">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                    <button type="submit" class="btn btn-outline" style="color: #ef4444; border-color: #ef4444; padding: 4px 8px; font-size: 0.8rem;">Delete</button>
+                  </form>
+                </td>
               </tr>
               {% endfor %}
             </tbody>
@@ -266,6 +273,56 @@
         </div>
         {% endif %}
       </div>
+
+      <div style="margin-top: 4rem;">
+        <div style="display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 1.5rem;">
+          <div>
+            <h2 style="font-size: 1.5rem; font-weight: 700; color: var(--color-text);">Your Webhooks</h2>
+            <p style="color: var(--color-text-secondary); font-size: 0.95rem; margin-top: 0.25rem;">Active webhook subscriptions across your clients.</p>
+          </div>
+        </div>
+        
+        {% if webhooks %}
+        <div style="background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 12px; overflow: hidden; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);">
+          <table class="data-table" style="border: none; margin: 0;">
+            <thead style="background: #f8fafc;">
+              <tr>
+                <th style="padding: 16px 24px; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; color: #64748b; border-bottom: 1px solid var(--color-border);">Target URL</th>
+                <th style="padding: 16px 24px; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; color: #64748b; border-bottom: 1px solid var(--color-border);">Status</th>
+                <th style="padding: 16px 24px; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; color: #64748b; border-bottom: 1px solid var(--color-border); width: 120px;"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for webhook in webhooks %}
+              <tr style="border-bottom: 1px solid var(--color-border);">
+                <td style="padding: 20px 24px; border: none; word-break: break-all;">
+                  <strong style="font-size: 0.9rem; color: var(--color-text);">{{ webhook.target_url }}</strong>
+                </td>
+                <td style="padding: 20px 24px; border: none;">
+                  {% if webhook.is_active %}
+                    <span class="status-badge status-active" style="padding: 6px 12px; border-radius: 9999px; font-size: 0.75rem; font-weight: 600; background: #ecfdf5; color: #065f46;">Active</span>
+                  {% else %}
+                    <span class="status-badge" style="padding: 6px 12px; border-radius: 9999px; font-size: 0.75rem; font-weight: 600; background: #fef2f2; color: #991b1b;">Disabled</span>
+                  {% endif %}
+                </td>
+                <td style="padding: 20px 24px; border: none; text-align: right;">
+                  <form method="POST" action="/api/developer/webhooks/{{ webhook.id }}/delete" onsubmit="return confirm('Are you sure you want to delete this webhook subscription?');" style="display:inline;">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                    <button type="submit" class="btn btn-outline" style="color: #ef4444; border-color: #ef4444; padding: 4px 8px; font-size: 0.8rem;">Delete</button>
+                  </form>
+                </td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+        {% else %}
+        <div style="margin-top: 1rem; text-align: center; padding: 4rem 2rem; background: var(--color-surface); border: 1px dashed var(--color-border-strong); border-radius: 12px;">
+          <h3 style="font-size: 1.1rem; font-weight: 600; color: var(--color-text); margin-bottom: 0.5rem;">No webhooks</h3>
+          <p style="color: var(--color-text-secondary); font-size: 0.95rem; max-width: 400px; margin: 0 auto;">No webhook subscriptions have been created yet.</p>
+        </div>
+        {% endif %}
+      </div>
       {% endif %}
     </main>
 
@@ -276,6 +333,7 @@
           <span class="brand-text brand-text--modal">Create OAuth Client</span>
         </div>
         <form method="POST" action="/api/developer/clients">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
           <div class="custom-modal-body">
             <div class="field">
               <label for="app_name">App Name</label>

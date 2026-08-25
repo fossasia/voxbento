@@ -42,6 +42,7 @@ class InMemoryRateLimiter:
     is lost on restart and does not scale horizontally. If VoxBento scales
     out, this should be replaced with a Redis-backed token bucket.
     """
+
     def __init__(self, max_requests: int, window_seconds: int):
         self.max_requests = max_requests
         self.window_seconds = window_seconds
@@ -78,6 +79,7 @@ class InMemoryRateLimiter:
             to_delete = [k for k, v in self._store.items() if now > v[1]]
             for k in to_delete:
                 del self._store[k]
+
 
 # Global instances
 # 10 requests per minute per IP for authorization

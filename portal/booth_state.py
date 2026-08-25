@@ -278,10 +278,10 @@ class BoothRegistry:
             import asyncio
 
             import portal.webhooks.worker as _wh
-            asyncio.create_task(_wh.enqueue_webhook(
-                "session.status_changed",
-                {"booth_id": booth_id, "is_active": unlocked}
-            ))
+
+            asyncio.create_task(
+                _wh.enqueue_webhook("session.status_changed", {"booth_id": booth_id, "is_active": unlocked})
+            )
 
             return booth.as_public_dict()
 

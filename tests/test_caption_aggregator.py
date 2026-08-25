@@ -173,4 +173,3 @@ class TestCaptionAggregator:
 
         finals = [msg for bid, msg in received if msg.get("status") == "final"]
         assert len(finals) == 0
-

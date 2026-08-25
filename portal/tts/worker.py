@@ -14,8 +14,10 @@ logger = logging.getLogger(__name__)
 _config_cache: dict[int, tuple[float, dict | None]] = {}
 _CONFIG_TTL_SECONDS = 300.0
 
+
 def invalidate_room_config(room_id: int) -> None:
     _config_cache.pop(room_id, None)
+
 
 async def _load_config_cached(room_id: int) -> dict | None:
     now = time.monotonic()
@@ -25,6 +27,7 @@ async def _load_config_cached(room_id: int) -> dict | None:
     cfg = await _load_config(room_id)
     _config_cache[room_id] = (now + _CONFIG_TTL_SECONDS, cfg)
     return cfg
+
 
 async def _load_config(room_id: int) -> dict | None:
     from sqlalchemy import select
@@ -62,6 +65,7 @@ async def _load_config(room_id: int) -> dict | None:
         "voice": tts_voice,
     }
 
+
 async def synthesize(room_id: int, text: str, language_code: str) -> bytes | None:
     """Atomic TTS synthesis for the Server-Side Sync pipeline."""
     cfg = await _load_config_cached(room_id)
@@ -80,10 +84,7 @@ async def synthesize(room_id: int, text: str, language_code: str) -> bytes | Non
         yield text
 
     await tts_provider.synthesize_stream(
-        text_chunks=_text_iterator(),
-        language_code=language_code,
-        voice=voice,
-        on_audio=_on_audio
+        text_chunks=_text_iterator(), language_code=language_code, voice=voice, on_audio=_on_audio
     )
 
     return b"".join(chunks)

@@ -146,7 +146,7 @@ async def authorize_get(
         await db.flush()
 
         # Give the authorizing user ownership
-        membership = EventMembership(user_id=int(user['sub']), event_id=evt.id, role='event_owner')
+        membership = EventMembership(user_id=int(user["sub"]), event_id=evt.id, role="event_owner")
         db.add(membership)
         await db.flush()
 
@@ -209,6 +209,7 @@ async def authorize_post(
 
     # Save consent — handle race conditions with a savepoint
     from sqlalchemy.exc import IntegrityError
+
     try:
         async with db.begin_nested():
             consent = OAuthConsentGrant(
@@ -219,11 +220,13 @@ async def authorize_post(
     except IntegrityError:
         # Another request inserted it concurrently. Just update the scopes.
         await db.execute(
-            update(OAuthConsentGrant).where(
+            update(OAuthConsentGrant)
+            .where(
                 OAuthConsentGrant.client_id == client.id,
                 OAuthConsentGrant.user_id == int(user["sub"]),
                 OAuthConsentGrant.event_id == event_id,
-            ).values(scopes=effective_scopes)
+            )
+            .values(scopes=effective_scopes)
         )
 
     # Generate authorization code
@@ -286,7 +289,11 @@ async def token_exchange(
         )
         auth_code = code_result.scalars().first()
 
-        if not auth_code or auth_code.used or auth_code.expires_at.replace(tzinfo=timezone.utc) < datetime.now(timezone.utc):
+        if (
+            not auth_code
+            or auth_code.used
+            or auth_code.expires_at.replace(tzinfo=timezone.utc) < datetime.now(timezone.utc)
+        ):
             return JSONResponse(status_code=400, content={"error": "invalid_grant"})
 
         if auth_code.client_id != client.id or auth_code.redirect_uri != redirect_uri:

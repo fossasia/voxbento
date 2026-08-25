@@ -32,6 +32,7 @@ def _reset_shared_http_client():
 
     async def _dummy_loop():
         pass
+
     async def _dummy_enqueue(event_type: str, payload: dict):
         pass
 

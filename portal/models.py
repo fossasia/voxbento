@@ -577,9 +577,11 @@ class UsageMetric(Base):
     def __repr__(self) -> str:
         return f"<UsageMetric event={self.event_id} metric={self.metric_name!r} value={self.value}>"
 
+
 # ---------------------------------------------------------------------------
 # OAuth2 & Developer Platform
 # ---------------------------------------------------------------------------
+
 
 class DeveloperAccount(Base):
     __tablename__ = "developer_accounts"
@@ -594,7 +596,9 @@ class DeveloperAccount(Base):
 
     user: Mapped[User] = relationship(foreign_keys=[user_id])
     reviewer: Mapped[User | None] = relationship(foreign_keys=[reviewed_by])
-    clients: Mapped[list["OAuthClient"]] = relationship(back_populates="developer_account", cascade="all, delete-orphan")
+    clients: Mapped[list["OAuthClient"]] = relationship(
+        back_populates="developer_account", cascade="all, delete-orphan"
+    )
 
     def __repr__(self) -> str:
         return f"<DeveloperAccount id={self.id} user={self.user_id} status={self.status!r}>"
@@ -654,7 +658,9 @@ class OAuthToken(Base):
     scopes: Mapped[list[str]] = mapped_column(sa.JSON, default=list)
     access_token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
     refresh_token_hash: Mapped[str | None] = mapped_column(String(64), unique=True, index=True, nullable=True)
-    parent_token_id: Mapped[int | None] = mapped_column(ForeignKey("oauth_tokens.id", ondelete="SET NULL"), nullable=True)
+    parent_token_id: Mapped[int | None] = mapped_column(
+        ForeignKey("oauth_tokens.id", ondelete="SET NULL"), nullable=True
+    )
     revoked: Mapped[bool] = mapped_column(Boolean, default=False)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
@@ -693,7 +699,7 @@ class OAuthAuditLog(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True)
     token_id: Mapped[int | None] = mapped_column(ForeignKey("oauth_tokens.id", ondelete="SET NULL"), nullable=True)
-    client_id: Mapped[int] = mapped_column(ForeignKey("oauth_clients.id", ondelete="CASCADE"))
+    client_id: Mapped[int | None] = mapped_column(ForeignKey("oauth_clients.id", ondelete="SET NULL"), nullable=True)
     event_id: Mapped[int | None] = mapped_column(ForeignKey("events.id", ondelete="SET NULL"), nullable=True)
     action: Mapped[str] = mapped_column(String(100))
     request_path: Mapped[str] = mapped_column(String(500))

@@ -29,11 +29,13 @@ TARGET_SAMPLE_RATE = 24000
 _download_progress = {"n": 0, "total": 0, "rate": 0, "status": "pending"}
 _progress_lock = threading.Lock()
 
+
 def get_supertonic_download_progress():
     with _progress_lock:
         if SupertonicTTSProvider._tts is not None:
             _download_progress["status"] = "completed"
         return dict(_download_progress)
+
 
 def trigger_supertonic_download():
     """Trigger the Supertonic ONNX model download in a background thread."""

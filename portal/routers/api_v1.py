@@ -205,10 +205,7 @@ async def delete_event(
     await _verify_token_rbac(db, token, event)
 
     active_booths = await booths.list_booths_for_event(event_slug)
-    has_active_session = any(
-        b.get("ingest_status") == "connected"
-        for b in active_booths
-    )
+    has_active_session = any(b.get("ingest_status") == "connected" for b in active_booths)
     if has_active_session:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT, detail="Cannot delete event while active booths are running."
@@ -284,6 +281,7 @@ async def upsert_room(
         if code not in requested_langs:
             # Active Session Guard — use BoothRegistry.get_booth_sync() (not .items())
             from portal.booth_identity import make_booth_id
+
             booth_id = make_booth_id(event_slug, room.id, code)
             active_booth = booths.get_booth_sync(booth_id)
             if active_booth is not None:
@@ -346,6 +344,7 @@ async def upsert_room(
 
     returned_booths = []
     from portal.config import settings
+
     try:
         for b in final_booths:
             whip_path = make_mediamtx_path(event.slug, room.id, b.language_code)
@@ -379,15 +378,9 @@ async def delete_room(
     if not room:
         raise HTTPException(status_code=404, detail="Room not found")
 
-    room_booths = [
-        b for b in await booths.list_booths_for_event(event_slug)
-        if b["room_id"] == room.id
-    ]
+    room_booths = [b for b in await booths.list_booths_for_event(event_slug) if b["room_id"] == room.id]
 
-    has_active_session = any(
-        b.get("ingest_status") == "connected"
-        for b in room_booths
-    )
+    has_active_session = any(b.get("ingest_status") == "connected" for b in room_booths)
     if has_active_session:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT, detail="Cannot delete room while active booths are running."

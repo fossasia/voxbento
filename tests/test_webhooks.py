@@ -18,6 +18,7 @@ from portal.webhooks.worker import process_delivery, sign_payload
 # Fixtures
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture
 async def db():
     """Yield an async session backed by an in-memory SQLite database."""
@@ -34,6 +35,7 @@ async def db():
 # ---------------------------------------------------------------------------
 # Tests for Webhook Utilities
 # ---------------------------------------------------------------------------
+
 
 def test_sign_payload():
     secret = "whsec_test123"
@@ -79,6 +81,7 @@ def test_validate_ssrf():
 # Tests for Background Worker
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.anyio
 async def test_process_delivery_success(db):
     # Setup Data
@@ -87,16 +90,13 @@ async def test_process_delivery_success(db):
         target_url="https://example.com/webhook",
         event_types=["session.status_changed"],
         secret_key="secret",
-        is_active=True
+        is_active=True,
     )
     db.add(sub)
     await db.flush()
 
     delivery = WebhookDelivery(
-        subscription_id=sub.id,
-        event_type="session.status_changed",
-        payload={"is_active": True},
-        status="delivering"
+        subscription_id=sub.id, event_type="session.status_changed", payload={"is_active": True}, status="delivering"
     )
     db.add(delivery)
     await db.flush()
@@ -139,16 +139,13 @@ async def test_process_delivery_http_error_retry(db):
         target_url="https://example.com/webhook",
         event_types=["session.status_changed"],
         secret_key="secret",
-        is_active=True
+        is_active=True,
     )
     db.add(sub)
     await db.flush()
 
     delivery = WebhookDelivery(
-        subscription_id=sub.id,
-        event_type="session.status_changed",
-        payload={"is_active": True},
-        status="delivering"
+        subscription_id=sub.id, event_type="session.status_changed", payload={"is_active": True}, status="delivering"
     )
     db.add(delivery)
     await db.flush()
@@ -181,7 +178,7 @@ async def test_process_delivery_circuit_breaker(db):
         event_types=["session.status_changed"],
         secret_key="secret",
         is_active=True,
-        consecutive_failures=4 # 1 more to disable
+        consecutive_failures=4,  # 1 more to disable
     )
     db.add(sub)
     await db.flush()
@@ -191,7 +188,7 @@ async def test_process_delivery_circuit_breaker(db):
         event_type="session.status_changed",
         payload={"is_active": True},
         status="delivering",
-        attempt_count=3 # Next attempt will be 4th (max)
+        attempt_count=3,  # Next attempt will be 4th (max)
     )
     db.add(delivery)
     await db.flush()
@@ -207,7 +204,7 @@ async def test_process_delivery_circuit_breaker(db):
     assert delivery.attempt_count == 4
 
     assert sub.consecutive_failures == 5
-    assert sub.is_active is False # Circuit broken
+    assert sub.is_active is False  # Circuit broken
 
     # Audit log should be created
     audit_result = await db.execute(select(OAuthAuditLog))
@@ -224,7 +221,7 @@ async def test_atomic_queue_claim(db):
         target_url="https://example.com/webhook",
         event_types=["session.status_changed"],
         secret_key="secret",
-        is_active=True
+        is_active=True,
     )
     db.add(sub)
     await db.flush()
@@ -232,10 +229,7 @@ async def test_atomic_queue_claim(db):
     # Create 5 pending deliveries
     for i in range(5):
         delivery = WebhookDelivery(
-            subscription_id=sub.id,
-            event_type="session.status_changed",
-            payload={"id": i},
-            status="pending"
+            subscription_id=sub.id, event_type="session.status_changed", payload={"id": i}, status="pending"
         )
         db.add(delivery)
     await db.flush()

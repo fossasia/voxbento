@@ -74,7 +74,7 @@ class CaptionAggregator:
         if matches:
             split_point = None
             for match in matches:
-                candidate_text = state.current_utterance[:match.end()].strip()
+                candidate_text = state.current_utterance[: match.end()].strip()
                 if len(candidate_text.split()) >= 5:
                     split_point = match.end()
                     break
@@ -120,11 +120,14 @@ class CaptionAggregator:
             return
 
         import uuid
+
         self._seq_counter += 1
         seq = self._seq_counter
         segment_id = str(uuid.uuid4())
 
-        await self.broadcast_callback(booth_id, {"type": "caption", "status": "final", "text": final_text, "segment_id": segment_id, "seq": seq})
+        await self.broadcast_callback(
+            booth_id, {"type": "caption", "status": "final", "text": final_text, "segment_id": segment_id, "seq": seq}
+        )
 
         if self.room_id is not None:
             import asyncio
@@ -136,8 +139,11 @@ class CaptionAggregator:
                     db_segment_id = await save_transcript_segment(booth_id, final_text, self.room_id)
                     if db_segment_id is not None:
                         from portal.translations.worker import TranslationWorker
+
                         worker = TranslationWorker(self.broadcast_callback)
-                        await worker.handle_translation(self.room_id, db_segment_id, final_text, booth_id, segment_id, seq)
+                        await worker.handle_translation(
+                            self.room_id, db_segment_id, final_text, booth_id, segment_id, seq
+                        )
                 except Exception as e:
                     logger.error(f"[{booth_id}] _save_and_translate failed: {e}", exc_info=True)
 
