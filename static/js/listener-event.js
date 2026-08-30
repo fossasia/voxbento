@@ -523,6 +523,7 @@ function finishSegmentWithDelay(seg, seqId) {
   var text = seg.translation || seg.caption || "";
   var wordCount = text.trim().split(/\s+/).filter(Boolean).length;
   var readingDelayMs = Math.max(2500, wordCount * 350);
+  if (seg.error && !seg.translation) { readingDelayMs = 2500; }
   fallbackQueueTimer = setTimeout(function () {
     isSegmentPlaying = false;
     delete segmentStore[seqId];
