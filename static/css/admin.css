@@ -412,6 +412,22 @@ code { font-family: var(--font-mono); font-size: 0.85em; background: var(--color
   margin-bottom: 1.5rem;
   color: var(--color-muted);
 }
+.mc-rooms-container {
+  display: flex;
+  flex-direction: column;
+  gap: 2rem;
+}
+.mc-room-group {
+  background: #e2e8f0; /* matching the user's mockup aesthetic (slate 200) */
+  border-radius: var(--radius-lg);
+  padding: 1.5rem;
+}
+.mc-room-title {
+  margin: 0 0 1.25rem 0;
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: var(--color-text);
+}
 .mc-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));

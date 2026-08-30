@@ -7,7 +7,6 @@
       console.error('Embed configuration not found.');
       return;
     }
-    console.log("Embed Player v2 Initialized");
     
     let config;
     try {
@@ -120,7 +119,6 @@
           }
           
           if (isValid) {
-            console.log("Caption WS MSG:", msg);
             var status = msg.type === 'translation' ? 'final' : (msg.status || 'final');
             var text = (msg.text || '').trim();
 

@@ -217,6 +217,7 @@
                                 <div>
                                     <h4 class="font-extrabold text-[#0d0f10] text-lg">{{ b.language_name }}</h4>
                                     <p class="text-sm font-bold text-[#0d0f10] opacity-60 mt-1">{{ b.event_name }}</p>
+                                    <p class="text-xs font-bold text-[#2563eb] mt-0.5">{{ b.room_name }}</p>
                                 </div>
                                 {% if b.is_live %}
                                 <span
@@ -277,23 +278,33 @@
                                 {% endif %}
                             </div>
                             <div class="p-6 flex-1 flex flex-col">
-                                {% if ed.booths %}
-                                <div class="space-y-4 mb-8 flex-1">
-                                    {% for bs in ed.booths %}
-                                    <div class="flex items-center justify-between group">
-                                        <div class="flex items-center gap-3">
-                                            {% if bs.is_live %}
-                                            <span class="w-2.5 h-2.5 bg-red-500 rounded-full animate-pulse"></span>
-                                            {% else %}
-                                            <span class="w-2.5 h-2.5 bg-[#0d0f10] opacity-20 rounded-full"></span>
-                                            {% endif %}
-                                            <span class="font-extrabold text-[#0d0f10]">{{ bs.db.language_name }}</span>
+                                {% if ed.rooms %}
+                                <div class="space-y-5 mb-8 flex-1">
+                                    {% for room in ed.rooms %}
+                                    <div>
+                                        <p class="text-[10px] font-extrabold uppercase tracking-widest text-[#0d0f10] opacity-50 mb-2 flex items-center gap-1.5">
+                                            <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="square" stroke-linejoin="miter" stroke-width="2" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"></path></svg>
+                                            {{ room.room_name }}
+                                        </p>
+                                        <div class="space-y-2 pl-2 border-l-2 border-[#0d0f10]/10">
+                                            {% for bs in room.booths %}
+                                            <div class="flex items-center justify-between group">
+                                                <div class="flex items-center gap-3">
+                                                    {% if bs.is_live %}
+                                                    <span class="w-2.5 h-2.5 bg-red-500 rounded-full animate-pulse"></span>
+                                                    {% else %}
+                                                    <span class="w-2.5 h-2.5 bg-[#0d0f10] opacity-20 rounded-full"></span>
+                                                    {% endif %}
+                                                    <span class="font-extrabold text-[#0d0f10]">{{ bs.db.language_name }}</span>
+                                                </div>
+                                                {% if bs.can_interpret %}
+                                                <a href="/interpreter"
+                                                    class="text-[#2563eb] hover:text-[#1d4ed8] font-extrabold text-xs uppercase tracking-widest opacity-0 group-hover:opacity-100 transition-opacity focus:opacity-100">Enter
+                                                    Lobby &rarr;</a>
+                                                {% endif %}
+                                            </div>
+                                            {% endfor %}
                                         </div>
-                                        {% if bs.can_interpret %}
-                                        <a href="/interpreter"
-                                            class="text-[#2563eb] hover:text-[#1d4ed8] font-extrabold text-xs uppercase tracking-widest opacity-0 group-hover:opacity-100 transition-opacity focus:opacity-100">Enter
-                                            Lobby &rarr;</a>
-                                        {% endif %}
                                     </div>
                                     {% endfor %}
                                 </div>

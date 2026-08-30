@@ -57,6 +57,7 @@ async def home(request: Request):
                             "booth_id": bid,
                             "is_live": is_live,
                             "event_name": bm.booth.event.display_name,
+                            "room_name": bm.booth.room.display_name,
                             "language_name": bm.booth.language_name,
                             "event_slug": bm.booth.event.slug,
                             "language_code": bm.booth.language_code,
@@ -69,7 +70,9 @@ async def home(request: Request):
             event_data = []
             for ev in events:
                 db_booths = booths_by_event.get(ev.id, [])
-                booth_statuses = []
+
+                # Group booths by room so the template can show room headers
+                rooms_dict: dict[int, dict] = {}
                 for b in db_booths:
                     bid = make_booth_id(ev.slug, b.room_id, b.language_code)
                     mem_booth = booths.get_booth_sync(bid)
@@ -83,14 +86,25 @@ async def home(request: Request):
                         if is_admin or ev_role == "event_owner" or booth_role == "interpreter":
                             can_interpret = True
 
-                    booth_statuses.append(
+                    if b.room_id not in rooms_dict:
+                        rooms_dict[b.room_id] = {
+                            "room_name": b.room.display_name,
+                            "booths": [],
+                        }
+                    rooms_dict[b.room_id]["booths"].append(
                         {"db": b, "booth_id": bid, "is_live": is_live, "can_interpret": can_interpret}
                     )
+
+                rooms_with_booths = list(rooms_dict.values())
+                all_booth_statuses = [
+                    bs for r in rooms_with_booths for bs in r["booths"]
+                ]
                 event_data.append(
                     {
                         "event": ev,
-                        "booths": booth_statuses,
-                        "live_count": sum(1 for bs in booth_statuses if bs["is_live"]),
+                        "rooms": rooms_with_booths,
+                        "booths": all_booth_statuses,  # kept for live_count
+                        "live_count": sum(1 for bs in all_booth_statuses if bs["is_live"]),
                     }
                 )
     except Exception as _exc:

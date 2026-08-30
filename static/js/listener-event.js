@@ -155,7 +155,6 @@ function startTtsWs(roomId, langCode, boothId, audioDelayMs) {
     langCode +
     "/" +
     boothId;
-  console.log("Connecting TTS WS to:", wsUrl);
   ttsWs = new WebSocket(wsUrl);
   ttsWs.binaryType = "arraybuffer";
 
@@ -221,7 +220,7 @@ function startTtsWs(roomId, langCode, boothId, audioDelayMs) {
   };
 
   ttsWs.onclose = function () {
-    console.log("TTS WS closed");
+    // closed
   };
 }
 

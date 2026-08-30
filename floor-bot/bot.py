@@ -137,7 +137,7 @@ async def run_capture():
 
         join_url = (
             f"{jitsi_url}"
-            f"#config.startWithAudioMuted=true"
+            f"#config.startWithAudioMuted=false"
             f"&config.startWithVideoMuted=true"
             f"&config.prejoinPageEnabled=false"
             f"&config.disableDeepLinking=true"

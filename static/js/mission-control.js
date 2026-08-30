@@ -10,7 +10,7 @@
  */
 
 const config = window.MISSION_CONTROL_CONFIG;
-const grid = document.getElementById('booth-grid');
+const roomsContainer = document.getElementById('rooms-container');
 
 /** @type {Map<string, {state:object, ws:WebSocket|null, whep:object|null, audioElement:HTMLAudioElement|null, currentVolume:number}>} */
 const boothMap = new Map();
@@ -24,10 +24,42 @@ function init() {
     p.style.cssText = 'color:var(--color-muted);margin:0;';
     p.textContent = 'No booths are configured for this event yet.';
     emptyDiv.appendChild(p);
-    grid.innerHTML = '';
-    grid.appendChild(emptyDiv);
+    roomsContainer.innerHTML = '';
+    roomsContainer.appendChild(emptyDiv);
     return;
   }
+
+  // Group booths by room_id
+  const rooms = new Map();
+  config.initialBooths.forEach(b => {
+    if (!rooms.has(b.room_id)) {
+      rooms.set(b.room_id, {
+        room_name: b.room_name || `Room ${b.room_id}`,
+        booths: []
+      });
+    }
+    rooms.get(b.room_id).booths.push(b);
+  });
+
+  roomsContainer.innerHTML = '';
+  
+  // Create room groups
+  rooms.forEach((roomInfo, roomId) => {
+    const roomGroup = document.createElement('div');
+    roomGroup.className = 'mc-room-group';
+    
+    const roomTitle = document.createElement('h3');
+    roomTitle.className = 'mc-room-title';
+    roomTitle.textContent = `Room: ${roomInfo.room_name}`;
+    roomGroup.appendChild(roomTitle);
+    
+    const roomGrid = document.createElement('div');
+    roomGrid.className = 'mc-grid';
+    roomGrid.id = `booth-grid-${roomId}`;
+    roomGroup.appendChild(roomGrid);
+    
+    roomsContainer.appendChild(roomGroup);
+  });
 
   config.initialBooths.forEach(b => {
     boothMap.set(b.booth_id, {
@@ -141,7 +173,12 @@ function renderCard(boothId) {
     entry.audioElement = audio;
     card.appendChild(audio);
 
-    grid.appendChild(card);
+    const roomGrid = document.getElementById(`booth-grid-${s.room_id}`);
+    if (roomGrid) {
+      roomGrid.appendChild(card);
+    } else {
+      roomsContainer.appendChild(card); // fallback
+    }
   }
 
   // Interpreters and rows
