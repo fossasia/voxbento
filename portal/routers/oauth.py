@@ -204,9 +204,17 @@ async def authorize_post(
     if not client or client.status != "active" or redirect_uri not in client.redirect_uris:
         raise HTTPException(status_code=400, detail="Invalid client or redirect URI.")
 
+    # Use the canonical registered redirect URI value for all redirects.
+    validated_redirect_uri = next((uri for uri in client.redirect_uris if uri == redirect_uri), None)
+    if not validated_redirect_uri:
+        raise HTTPException(status_code=400, detail="Invalid client or redirect URI.")
+
     if action == "deny":
-        error_query = urllib.parse.urlencode({"error": "access_denied", "state": state})
-        error_url = f"{redirect_uri}?{error_query}"
+        parsed_redirect = urllib.parse.urlparse(validated_redirect_uri)
+        existing_query = urllib.parse.parse_qsl(parsed_redirect.query, keep_blank_values=True)
+        existing_query.extend([("error", "access_denied"), ("state", state)])
+        error_query = urllib.parse.urlencode(existing_query)
+        error_url = urllib.parse.urlunparse(parsed_redirect._replace(query=error_query))
         return RedirectResponse(url=error_url, status_code=303)
 
     # Re-validate scopes live
@@ -257,8 +265,11 @@ async def authorize_post(
     )
     await db.flush()
 
-    redirect_query = urllib.parse.urlencode({"code": code, "state": state})
-    redirect_url = f"{redirect_uri}?{redirect_query}"
+    parsed_redirect = urllib.parse.urlparse(validated_redirect_uri)
+    existing_query = urllib.parse.parse_qsl(parsed_redirect.query, keep_blank_values=True)
+    existing_query.extend([("code", code), ("state", state)])
+    redirect_query = urllib.parse.urlencode(existing_query)
+    redirect_url = urllib.parse.urlunparse(parsed_redirect._replace(query=redirect_query))
     return RedirectResponse(url=redirect_url, status_code=303)
 
 
