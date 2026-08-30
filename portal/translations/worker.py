@@ -189,6 +189,7 @@ class TranslationWorker:
                     # NLLB can take 30+ seconds or deadlock, which permanently fills the queue.
                     timeout_val = 12.0
                     if provider == "local":
+                        timeout_val = 60.0
                         try:
                             from portal.translations.providers.local import get_download_progress
 
