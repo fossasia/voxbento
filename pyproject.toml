@@ -49,6 +49,12 @@ package = false
 [tool.ruff]
 target-version = "py313"
 line-length = 120
+exclude = [
+    ".git",
+    ".venv",
+    "scratch",
+    "website",
+]
 
 [tool.ruff.lint]
 # E/W: pycodestyle, F: pyflakes, I: isort, C4: flake8-comprehensions

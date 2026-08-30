@@ -1,6 +1,7 @@
 def upgrade() -> None:
-    from alembic import op
     import sqlalchemy as sa
+
+    from alembic import op
     bind = op.get_bind()
     if bind.dialect.name == "sqlite":
         with op.batch_alter_table("oauth_audit_logs") as batch_op:
