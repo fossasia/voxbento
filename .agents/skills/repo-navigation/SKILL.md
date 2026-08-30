@@ -25,10 +25,10 @@ description: Use this skill to find files, understand module ownership, and loca
 | Transcription provider logic | `portal/transcription/providers/{provider}.py` |
 | Worker lifecycle (start/stop) | `portal/transcription/worker.py` |
 | Caption aggregation | `portal/transcription/aggregator.py` |
-| Interpreter UI (JS) | `static/js/interpreter-booth.js` |
-| Listener WHEP client (JS) | `static/js/whep-listener.js` |
-| Admin JS | `static/js/admin.js` |
-| HTML templates | `templates/` (base, booth, listener, auth) + `templates/admin/` |
+| Interpreter UI (JS) | `portal/static/js/interpreter-booth.js` |
+| Listener WHEP client (JS) | `portal/static/js/whep-listener.js` |
+| Admin JS | `portal/static/js/admin.js` |
+| HTML templates | `portal/templates/` (base, booth, listener, auth) + `portal/templates/admin/` |
 | DB migrations | `alembic/versions/001_*.py` through `008_*.py` |
 | MediaMTX configuration | `mediamtx.yml` |
 | Docker services | `docker-compose.yml` |
@@ -96,7 +96,7 @@ grep -rn "DBBooth\|InviteToken\|BoothMembership" portal/
 | `portal/models.py` | ~250 | Medium |
 | `portal/booth_state.py` | ~300 | Medium |
 | `portal/auth.py` | ~230 | Medium |
-| `static/js/interpreter-booth.js` | ~900 | High — use search |
+| `portal/static/js/interpreter-booth.js` | ~900 | High — use search |
 | `portal/transcription/worker.py` | ~130 | Low |
 | `portal/transcription/aggregator.py` | ~120 | Low |
 
@@ -108,4 +108,4 @@ grep -rn "DBBooth\|InviteToken\|BoothMembership" portal/
 2. **Admin routes** all start with `/admin/` and use `dependencies=[Depends(require_admin)]`.
 3. **WebSocket handlers** are `_handle_join`, `_handle_leave`, `_handle_chat`, `_handle_set_active`, `_handle_update_state` — all in `portal/websockets/handlers.py`.
 4. **The in-memory `booths` variable** is a module-level `BoothRegistry()` instance in `portal/booth_state.py` — the only source of live booth state.
-5. **Templates inherit from** `templates/base.html` (user pages) or `templates/admin/base.html` (admin pages).
+5. **Templates inherit from** `portal/templates/base.html` (user pages) or `portal/templates/admin/base.html` (admin pages).

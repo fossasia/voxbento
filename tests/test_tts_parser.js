@@ -5,7 +5,7 @@ const fs = require('fs');
 global.window = {};
 
 // Load the script
-const scriptContent = fs.readFileSync('static/js/tts-parser.js', 'utf-8');
+const scriptContent = fs.readFileSync('portal/static/js/tts-parser.js', 'utf-8');
 eval(scriptContent);
 
 const parser = global.window.TTSParser;

@@ -10,7 +10,7 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 # Where pre-baked demo audio lives. Served by FastAPI StaticFiles.
-DEMO_DIR = Path(__file__).resolve().parent.parent.parent / "static" / "audio" / "demo"
+DEMO_DIR = Path(__file__).resolve().parent.parent / "static" / "audio" / "demo"
 MANIFEST_PATH = DEMO_DIR / "manifest.json"
 
 # Generation state, shared with portal.routers.demo and fastapi_app's lifespan.

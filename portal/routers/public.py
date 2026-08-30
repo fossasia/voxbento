@@ -23,7 +23,7 @@ from portal.database import (
 from portal.globals import _JS_CACHE_BUST, booths
 from portal.utils import _check_mediamtx
 
-_BASE_DIR = Path(__file__).resolve().parent.parent.parent
+_BASE_DIR = Path(__file__).resolve().parent.parent
 templates = Jinja2Templates(directory=str(_BASE_DIR / "templates"))
 
 router = APIRouter()
@@ -96,9 +96,7 @@ async def home(request: Request):
                     )
 
                 rooms_with_booths = list(rooms_dict.values())
-                all_booth_statuses = [
-                    bs for r in rooms_with_booths for bs in r["booths"]
-                ]
+                all_booth_statuses = [bs for r in rooms_with_booths for bs in r["booths"]]
                 event_data.append(
                     {
                         "event": ev,

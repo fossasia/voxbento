@@ -31,7 +31,7 @@ from portal.websockets.handlers import router as ws_router
 
 _BASE_DIR = Path(__file__).resolve().parent
 
-templates = Jinja2Templates(directory=str(_BASE_DIR / "templates"))
+templates = Jinja2Templates(directory=str(_BASE_DIR / "portal" / "templates"))
 
 
 @asynccontextmanager
@@ -157,7 +157,7 @@ async def general_exception_handler(request: Request, exc: Exception):
     return JSONResponse({"detail": "Internal Server Error"}, status_code=500)
 
 
-app.mount("/static", StaticFiles(directory=_BASE_DIR / "static"), name="static")
+app.mount("/static", StaticFiles(directory=_BASE_DIR / "portal" / "static"), name="static")
 
 app.include_router(public_router)
 

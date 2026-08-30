@@ -54,7 +54,7 @@ description: Use this skill to evaluate proposed architecture changes against Vo
 - For SQLite compatibility: use `batch_alter_table` in the migration (see migration 008 as reference).
 
 ### Does this change the WebSocket protocol?
-- The protocol is used by `static/js/interpreter-booth.js` — both files must change together.
+- The protocol is used by `portal/static/js/interpreter-booth.js` — both files must change together.
 - New message types must be handled in `portal/websockets/manager.py` `ws_booth` loop + `_handle_*` function.
 - Role enforcement: role is always from `session.granted_role`, never from client `data['role']`.
 

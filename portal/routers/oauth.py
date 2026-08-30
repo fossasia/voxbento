@@ -32,7 +32,7 @@ from portal.rate_limit import auth_rate_limiter, token_rate_limiter
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["oauth"])
 
-_BASE_DIR = Path(__file__).resolve().parent.parent.parent
+_BASE_DIR = Path(__file__).resolve().parent.parent
 templates = Jinja2Templates(directory=str(_BASE_DIR / "templates"))
 
 VALID_SCOPES = {

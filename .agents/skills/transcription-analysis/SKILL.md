@@ -50,7 +50,7 @@ Interpreter browser
 7. Add to `PROVIDERS` dict in `worker.py`
 8. If API key needed: add encrypted column to `Event` model (migration 008 pattern) + update `get_api_key` key_map in `base.py`
 9. Update `admin_event_api_settings_post` in `portal/routers/admin/settings.py` to handle new key
-10. Update `templates/admin/api_settings.html`
+10. Update `portal/templates/admin/api_settings.html`
 
 ---
 

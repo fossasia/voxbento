@@ -28,8 +28,8 @@ Attendees receive sub-second audio via WHEP. All coordination flows through Fast
 | API key crypto | Fernet (cryptography) | `portal/crypto.py`; keys hashed via SHA-256 |
 | Transcription | faster-whisper + 4 cloud providers | `portal/transcription/` |
 | Package manager | uv | `uv.lock` is the source of truth — never use pip |
-| Templates | Jinja2 | `templates/`, no build step |
-| Frontend JS | Vanilla ES modules | `static/js/`, no framework |
+| Templates | Jinja2 | `portal/templates/`, no build step |
+| Frontend JS | Vanilla ES modules | `portal/static/js/`, no framework |
 | Dependencies | See `pyproject.toml` | — |
 
 ---
@@ -50,10 +50,10 @@ Attendees receive sub-second audio via WHEP. All coordination flows through Fast
 | `portal/roles.py` | `Permission` enum, `ROLE_PERMISSIONS` mapping |
 | `portal/crypto.py` | `encrypt_val`/`decrypt_val` using Fernet |
 | `portal/transcription/` | Transcription subsystem (see `TRANSCRIPTION_MAP.md`) |
-| `static/js/interpreter-booth.js` | Interpreter UI — WebRTC/WHIP, WebSocket, Jitsi, mic controls |
-| `static/js/whep-listener.js` | Listener WHEP client — RTCPeerConnection, auto-reconnect |
-| `static/js/admin.js` | Admin panel helpers |
-| `templates/` | Jinja2 HTML (base, booth, listener, auth, admin/) |
+| `portal/static/js/interpreter-booth.js` | Interpreter UI — WebRTC/WHIP, WebSocket, Jitsi, mic controls |
+| `portal/static/js/whep-listener.js` | Listener WHEP client — RTCPeerConnection, auto-reconnect |
+| `portal/static/js/admin.js` | Admin panel helpers |
+| `portal/templates/` | Jinja2 HTML (base, booth, listener, auth, admin/) |
 | `mediamtx.yml` | MediaMTX config — WHIP/WHEP paths, RTSP, Control API |
 | `docker-compose.yml` | portal + mediamtx + jitsi-web/prosody/jicofo/jvb |
 | `Dockerfile` | Portal container (uv-based, runs alembic then uvicorn) |

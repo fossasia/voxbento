@@ -116,7 +116,7 @@ global.setTimeout = global.setTimeout;
 global.clearTimeout = global.clearTimeout;
 
 // Load the module (it attaches to window.AudioScheduler)
-require('../static/js/audio-scheduler.js');
+require('../portal/static/js/audio-scheduler.js');
 
 const createAudioScheduler = window.AudioScheduler.create;
 

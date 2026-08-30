@@ -19,7 +19,7 @@ Before starting any task, read:
 - Backend route? → Read `portal/routers/` around similar routes, [ROUTE_MAP.md](ROUTE_MAP.md)
 - Database change? → Read `portal/models.py`, `portal/database.py`, [DATABASE_MAP.md](DATABASE_MAP.md)
 - Transcription? → Read `portal/transcription/`, [TRANSCRIPTION_MAP.md](TRANSCRIPTION_MAP.md)
-- Frontend UI? → Read `static/js/interpreter-booth.js` or `whep-listener.js`; see `.github/instructions/js.instructions.md`
+- Frontend UI? → Read `portal/static/js/interpreter-booth.js` or `whep-listener.js`; see `.github/instructions/js.instructions.md`
 - Python? → See `.github/instructions/python.instructions.md`
 
 ### Step 2 — Check invariants
@@ -38,8 +38,8 @@ Before starting any task, read:
 ### Step 4 — Validate
 ```bash
 uv run pytest tests/ -v
-node --check static/js/interpreter-booth.js
-node --check static/js/whep-listener.js
+node --check portal/static/js/interpreter-booth.js
+node --check portal/static/js/whep-listener.js
 uv run alembic upgrade head   # if DB changes
 ```
 
@@ -50,7 +50,7 @@ uv run alembic upgrade head   # if DB changes
 ### Step 1 — Reproduce
 - Read the failing test in `tests/` if one exists.
 - If HTTP bug: check `portal/routers/` route + relevant template.
-- If WebSocket bug: check `portal/websockets/handlers.py` WS handler + `portal/booth_state.py` + `static/js/interpreter-booth.js`.
+- If WebSocket bug: check `portal/websockets/handlers.py` WS handler + `portal/booth_state.py` + `portal/static/js/interpreter-booth.js`.
 - If DB bug: check `portal/models.py` + `portal/database.py`.
 - If auth bug: check `portal/auth.py` + cookie handling in `portal/routers/`.
 
@@ -82,7 +82,7 @@ uv run pytest tests/ -v
 8. Create Alembic migration.
 9. Update `get_api_key` in `providers/base.py` key_map.
 10. Update `admin_event_api_settings_post` in `portal/routers/admin/settings.py`.
-11. Update `templates/admin/api_settings.html`.
+11. Update `portal/templates/admin/api_settings.html`.
 12. Run: `uv run pytest tests/test_transcription_concurrency.py -v`
 
 ---
@@ -98,7 +98,7 @@ uv run pytest tests/ -v
 7. Run tests + linting:
 ```bash
 uv run pytest tests/ -v
-node --check static/js/*.js
+node --check portal/static/js/*.js
 ```
 
 ---

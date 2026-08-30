@@ -6,7 +6,7 @@ Canonical project policy is in [`../agents.md`](../agents.md). Read that first.
 
 - Match the existing code style in the file you are editing.
 - For Python: follow the patterns in `portal/routers/` and `portal/`. Keep `from __future__ import annotations` at the top of every Python file.
-- For JavaScript: plain ES modules in `static/js/`. No frameworks, no build step, no jQuery, no inline scripts.
+- For JavaScript: plain ES modules in `portal/static/js/`. No frameworks, no build step, no jQuery, no inline scripts.
 - Prefer minimal, local edits. Do not refactor code that is not directly related to the current task.
 - If you are unsure whether a change is safe, leave a comment rather than guessing.
 
@@ -21,7 +21,7 @@ A browser-first interpretation booth console.
 - Attendees listen via `/listener-webrtc/{booth_id}` (WHEP WebRTC, primary) or `/listen/{booth_id}` (hls.js fallback)
 - Coordination (booth state, roles, chat) is via native WebSocket on FastAPI
 
-**Frontend:** Jinja2 templates + vanilla ES module JavaScript in `templates/` and `static/js/`. No Vue, no React, no build step. The `src/` directory has been removed.
+**Frontend:** Jinja2 templates + vanilla ES module JavaScript in `portal/templates/` and `portal/static/js/`. No Vue, no React, no build step. The `src/` directory has been removed.
 
 ## Non-negotiable rules
 

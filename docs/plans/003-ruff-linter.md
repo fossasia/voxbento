@@ -56,7 +56,7 @@ gives instant feedback with zero config overhead.
 | Lint fix     | `uv run ruff check --fix .`                                                                    | exit 0 after fixing auto-fixable |
 | Format check | `uv run ruff format --check .`                                                                 | exit 0 (no unformatted files) |
 | Tests        | `API_KEY_ENCRYPTION_KEY="ci-test-encryption-key-must-be-32-chars-long" uv run pytest tests/ -q` | 385 passed (or more) |
-| JS check     | `node --check static/js/interpreter-booth.js && node --check static/js/whep-listener.js && node --check static/js/admin.js` | exit 0 |
+| JS check     | `node --check portal/static/js/interpreter-booth.js && node --check portal/static/js/whep-listener.js && node --check portal/static/js/admin.js` | exit 0 |
 
 ## Scope
 

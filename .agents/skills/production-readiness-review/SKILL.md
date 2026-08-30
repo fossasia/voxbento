@@ -51,8 +51,8 @@ Run the full test suite:
 ```bash
 uv sync --python 3.13 --dev
 uv run pytest tests/ -v
-node --check static/js/interpreter-booth.js
-node --check static/js/whep-listener.js
+node --check portal/static/js/interpreter-booth.js
+node --check portal/static/js/whep-listener.js
 uv run alembic upgrade head
 ```
 

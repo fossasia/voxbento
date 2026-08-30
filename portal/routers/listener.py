@@ -29,7 +29,7 @@ _ALLOWED_FONTS = {"inter", "roboto", "outfit"}
 _PRIMARY_COLOR_RE = re.compile(r"^[0-9a-fA-F]{3,6}$")
 _DEFAULT_PRIMARY = "3b82f6"  # VoxBento blue
 
-_BASE_DIR = Path(__file__).resolve().parent.parent.parent
+_BASE_DIR = Path(__file__).resolve().parent.parent
 templates = Jinja2Templates(directory=str(_BASE_DIR / "templates"))
 
 router = APIRouter()

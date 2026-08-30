@@ -5,13 +5,7 @@ on:
     branches:
       - main
     paths:
-      - "docs/**"
-      - "src/**"
-      - "static/**"
-      - "docusaurus.config.ts"
-      - "sidebars.ts"
-      - "package.json"
-      - "package-lock.json"
+      - "website/**"
       - ".github/workflows/docs.yml"
 
 permissions:
@@ -36,17 +30,20 @@ jobs:
         with:
           node-version: 22
           cache: npm
+          cache-dependency-path: website/package-lock.json
 
       - name: Install dependencies
+        working-directory: website
         run: npm ci
 
       - name: Build docs
+        working-directory: website
         run: npm run build
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v5
         with:
-          path: build
+          path: website/build
 
   deploy:
     needs: build

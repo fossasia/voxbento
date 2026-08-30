@@ -57,9 +57,9 @@ jobs:
 
       - name: Validate JS syntax
         run: |
-          node --check static/js/interpreter-booth.js
-          node --check static/js/whep-listener.js
-          node --check static/js/admin.js
+          node --check portal/static/js/interpreter-booth.js
+          node --check portal/static/js/whep-listener.js
+          node --check portal/static/js/admin.js
 
       - name: Run unit tests
         run: uv run pytest tests/ -v

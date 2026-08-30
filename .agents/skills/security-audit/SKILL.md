@@ -119,5 +119,5 @@ grep -n "debug" portal/config.py
 grep -n "change-me\|secret_key" portal/config.py
 
 # Check no inline scripts in templates
-grep -rn "<script>" templates/
+grep -rn "<script>" portal/templates/
 ```

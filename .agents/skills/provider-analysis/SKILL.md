@@ -47,7 +47,7 @@ Used by `/healthz` and booth page template.
 **Role:** Floor session monitoring — receive-only iframe embedded in interpreter booth.
 
 ### Integration
-- Embedded as an iframe in `templates/interpreter_booth.html`.
+- Embedded as an iframe in `portal/templates/interpreter_booth.html`.
 - URL: room-specific Jitsi URL from `DBBooth.room.jitsi_url` (admin-configured) OR `_make_jitsi_url(base_url, default_jitsi_room)`.
 - URL format: `{effective_jitsi_base_url}/{room_name}` (if room is not already a full URL).
 - Domain passed to template as `jitsi_domain` (derived from `effective_jitsi_base_url`).

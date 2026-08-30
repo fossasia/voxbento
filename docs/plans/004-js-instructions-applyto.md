@@ -23,7 +23,7 @@
 ## Why this matters
 
 `.github/instructions/js.instructions.md` has `applyTo: 'app/**/*.{js,ts,vue}'`
-in its YAML frontmatter. Actual JavaScript source files are in `static/js/`
+in its YAML frontmatter. Actual JavaScript source files are in `portal/static/js/`
 (not `app/`), so VS Code and agent tooling that honour the `applyTo` filter
 will never load these instructions when editing or reviewing JS files. The fix
 is a one-line frontmatter change.
@@ -39,12 +39,12 @@ applyTo: 'app/**/*.{js,ts,vue}'
 ---
 ```
 
-Actual JS files (confirmed by `ls static/js/`):
-- `static/js/interpreter-booth.js`
-- `static/js/whep-listener.js`
-- `static/js/admin.js`
-- `static/js/interpreter-landing.js`
-- `static/js/mission-control.js`
+Actual JS files (confirmed by `ls portal/static/js/`):
+- `portal/static/js/interpreter-booth.js`
+- `portal/static/js/whep-listener.js`
+- `portal/static/js/admin.js`
+- `portal/static/js/interpreter-landing.js`
+- `portal/static/js/mission-control.js`
 
 There are no `.ts` or `.vue` files in this repo (vanilla ES modules only, no
 build step). There are no JS files under `app/`.
@@ -73,7 +73,7 @@ that style.
 ## Git workflow
 
 - Branch: `advisor/004-js-instructions-applyto`
-- One commit: `dx: fix js.instructions.md applyTo glob to match static/js/`
+- One commit: `dx: fix js.instructions.md applyTo glob to match portal/static/js/`
 
 ## Steps
 
@@ -93,15 +93,15 @@ To:
 ```yaml
 ---
 description: 'JavaScript development standards'
-applyTo: 'static/**/*.js'
+applyTo: 'portal/static/**/*.js'
 ---
 ```
 
-The glob `static/**/*.js` matches all `.js` files in `static/js/` and any
+The glob `portal/static/**/*.js` matches all `.js` files in `portal/static/js/` and any
 future subdirectories, which is exactly where all JavaScript lives in this
 repo.
 
-**Verify**: `grep 'applyTo' .github/instructions/js.instructions.md` → `applyTo: 'static/**/*.js'`
+**Verify**: `grep 'applyTo' .github/instructions/js.instructions.md` → `applyTo: 'portal/static/**/*.js'`
 
 ### Step 2: Confirm no other instruction files reference the old path
 
@@ -127,7 +127,7 @@ runtime code.
 
 ## Done criteria
 
-- [ ] `grep 'applyTo' .github/instructions/js.instructions.md` → `applyTo: 'static/**/*.js'`
+- [ ] `grep 'applyTo' .github/instructions/js.instructions.md` → `applyTo: 'portal/static/**/*.js'`
 - [ ] `grep -r 'app/\*\*' .github/instructions/` → no matches
 - [ ] `API_KEY_ENCRYPTION_KEY="ci-test-encryption-key-must-be-32-chars-long" uv run pytest tests/ -q` exits 0
 - [ ] `git diff --name-only HEAD` shows only `.github/instructions/js.instructions.md`
@@ -140,7 +140,7 @@ runtime code.
 
 ## Maintenance notes
 
-- If JS files are ever moved out of `static/js/` or a `src/` directory is
+- If JS files are ever moved out of `portal/static/js/` or a `src/` directory is
   re-introduced with a build step, update the glob accordingly.
 - If TypeScript is ever introduced, change the glob to
   `static/**/*.{js,ts}` or the build-output directory.

@@ -8,7 +8,7 @@ from fastapi_mail import ConnectionConfig, FastMail, MessageSchema, MessageType
 
 from portal.config import settings
 
-_BASE_DIR = Path(__file__).resolve().parent.parent
+_BASE_DIR = Path(__file__).resolve().parent
 _TEMPLATE_DIR = _BASE_DIR / "templates" / "email"
 
 # If SMTP host is not configured, we'll log the email instead of failing.

@@ -91,7 +91,7 @@ from portal.translations.constants import TRANSLATION_MODELS, TranslationProvide
 from portal.utils import _check_mediamtx, _make_jitsi_url, safe_redirect
 from portal.websockets.manager import broadcast_transcription
 
-_BASE_DIR = Path(__file__).resolve().parent.parent.parent
+_BASE_DIR = Path(__file__).resolve().parent.parent
 
 templates = Jinja2Templates(directory=str(_BASE_DIR / "templates"))
 

@@ -67,7 +67,7 @@ Jitsi Meet Floor Conference
    broadcast_tts() (WebSocket /ws/tts/{room_id}) -> AudioScheduler -> Web Audio API
    Client uses a jitter-buffered playback queue (audio-scheduler.js) to schedule
    each audio segment seamlessly after the previous one ends, with comfort noise
-   during gaps. See static/js/audio-scheduler.js.
+   during gaps. See portal/static/js/audio-scheduler.js.
 ```
 
 ---

@@ -18,7 +18,7 @@ from portal.utils import _ensure_mediamtx_path, _make_jitsi_url, safe_redirect
 
 router = APIRouter()
 
-_BASE_DIR = Path(__file__).resolve().parent.parent.parent
+_BASE_DIR = Path(__file__).resolve().parent.parent
 
 templates = Jinja2Templates(directory=str(_BASE_DIR / "templates"))
 

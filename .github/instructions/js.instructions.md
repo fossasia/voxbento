@@ -1,6 +1,6 @@
 ---
 description: 'JavaScript development standards'
-applyTo: 'static/**/*.js'
+applyTo: 'portal/static/**/*.js'
 ---
 
 ## Development Standards

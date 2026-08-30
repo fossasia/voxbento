@@ -57,7 +57,7 @@ description: Use this skill to review pull requests for VoxBento. Covers correct
 
 ### 7. Frontend Changes
 - [ ] Plain ES modules — no import maps, no build step, no npm.
-- [ ] `node --check static/js/*.js` passes.
+- [ ] `node --check portal/static/js/*.js` passes.
 - [ ] No `AudioContext.destination` for mic audio.
 - [ ] New UI elements have IDs/data attributes expected by JS (not hardcoded strings).
 - [ ] WHIP/WHEP URLs constructed from `portal.dataset.*` — not hardcoded.
@@ -95,7 +95,7 @@ description: Use this skill to review pull requests for VoxBento. Covers correct
 ```bash
 uv sync --python 3.13 --dev
 uv run pytest tests/ -v
-node --check static/js/interpreter-booth.js
-node --check static/js/whep-listener.js
+node --check portal/static/js/interpreter-booth.js
+node --check portal/static/js/whep-listener.js
 uv run alembic upgrade head   # if migration added
 ```

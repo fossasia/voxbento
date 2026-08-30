@@ -24,7 +24,7 @@ Read these files in order before any task:
 |---|---|
 | `**/*.py` | [`.github/instructions/python.instructions.md`](.github/instructions/python.instructions.md) |
 | `**/*.{js,ts,vue}` | [`.github/instructions/js.instructions.md`](.github/instructions/js.instructions.md) |
-| `**/jinja-templates/**/*.jinja` | [`.github/instructions/jinja.instructions.md`](.github/instructions/jinja.instructions.md) |
+| `**/portal/templates/**/*.html` | [`.github/instructions/jinja.instructions.md`](.github/instructions/jinja.instructions.md) |
 
 ### Skills (use for specialised tasks)
 
@@ -76,10 +76,10 @@ VoxBento is a production-grade **browser-first interpretation booth console** fo
 | `portal/roles.py` | `Permission` enum, `ROLE_PERMISSIONS` dict, `ALL_ROLES` set, `_ROLE_RANK` |
 | `portal/crypto.py` | `encrypt_val` / `decrypt_val` (Fernet, SHA-256 key derivation) |
 | `portal/transcription/` | Transcription subsystem — see `TRANSCRIPTION_MAP.md` |
-| `templates/` | Jinja2 HTML — `base.html`, `interpreter_booth.html`, `listener-event.html`, `admin/` |
-| `static/js/interpreter-booth.js` | Booth UI — WebRTC/WHIP, WebSocket, Jitsi iframe, mic controls, level meter |
-| `static/js/whep-listener.js` | WHEP playback client — RTCPeerConnection, auto-reconnect with exponential back-off |
-| `static/js/admin.js` | Admin panel JS helpers |
+| `portal/templates/` | Jinja2 HTML — `base.html`, `interpreter_booth.html`, `listener-event.html`, `admin/` |
+| `portal/static/js/interpreter-booth.js` | Booth UI — WebRTC/WHIP, WebSocket, Jitsi iframe, mic controls, level meter |
+| `portal/static/js/whep-listener.js` | WHEP playback client — RTCPeerConnection, auto-reconnect with exponential back-off |
+| `portal/static/js/admin.js` | Admin panel JS helpers |
 | `mediamtx.yml` | MediaMTX config — WHIP/WHEP paths, RTSP, Control API, `overridePublisher` |
 | `docker-compose.yml` | portal + mediamtx + jitsi-web/prosody/jicofo/jvb |
 | `alembic/versions/` | 8 migrations (001–008); run `uv run alembic upgrade head` |
@@ -92,7 +92,7 @@ VoxBento is a production-grade **browser-first interpretation booth console** fo
 2. **Interpreter mic audio never routes to `AudioContext.destination`.** No local loopback.
 3. **No OBS/RTMP/external encoder.** Browser-only ingest via WHIP.
 4. **Jitsi is monitoring only** — receive-only iframe. Not the ingest transport.
-5. **No framework.** Frontend is plain ES modules in `static/js/`. No Vue, React, jQuery, inline `<script>` blocks.
+5. **No framework.** Frontend is plain ES modules in `portal/static/js/`. No Vue, React, jQuery, inline `<script>` blocks.
 6. **No Flask, Socket.IO, aiortc.**
 7. **`uv.lock` is the dependency source of truth.** Never modify without running `uv sync --python 3.13 --dev` and confirming tests pass.
 8. **`from __future__ import annotations`** at the top of every Python file.
