@@ -96,9 +96,7 @@ async def home(request: Request):
                     )
 
                 rooms_with_booths = list(rooms_dict.values())
-                all_booth_statuses = [
-                    bs for r in rooms_with_booths for bs in r["booths"]
-                ]
+                all_booth_statuses = [bs for r in rooms_with_booths for bs in r["booths"]]
                 event_data.append(
                     {
                         "event": ev,
