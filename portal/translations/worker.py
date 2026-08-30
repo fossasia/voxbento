@@ -185,8 +185,8 @@ class TranslationWorker:
             queue_decremented = False
             async with sem:
                 try:
-                    # Enforce a strict 12-second timeout on LLM inference. If the local CPU is pegged,
-                    # NLLB can take 30+ seconds or deadlock, which permanently fills the queue.
+                    # Enforce a strict timeout on LLM inference (12s for cloud, 60s for local).
+                    # If the local CPU is pegged, NLLB can take 30+ seconds.
                     timeout_val = 12.0
                     if provider == "local":
                         timeout_val = 60.0
@@ -212,7 +212,7 @@ class TranslationWorker:
                         )
                         return
 
-                    logger.error(f"[{booth_id_str}] Translation LLM timed out after 12s for {lang_code}.")
+                    logger.error(f"[{booth_id_str}] Translation LLM timed out after {timeout_val}s for {lang_code}.")
                     translated_text = None
 
                 if not translated_text:

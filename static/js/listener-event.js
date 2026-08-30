@@ -394,7 +394,7 @@ function pumpSegmentQueue() {
 
   var nextSeg = segmentStore[expectedSeq];
   if (!nextSeg) {
-    // It hasn't arrived yet. Set the 10s last-resort timeout if not already set.
+    // It hasn't arrived yet. Set the 65s last-resort timeout if not already set (to accommodate slow local translation).
     if (!seqWaitTimer) {
       seqWaitTimer = setTimeout(function () {
         console.warn(
@@ -405,7 +405,7 @@ function pumpSegmentQueue() {
         expectedSeq++;
         seqWaitTimer = null;
         pumpSegmentQueue();
-      }, 10000);
+      }, 65000);
     }
     return;
   }
