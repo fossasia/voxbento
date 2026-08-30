@@ -198,15 +198,16 @@ async def authorize_post(
     user: dict = Depends(require_user),
     db: AsyncSession = Depends(get_db_session),
 ):
-    if action == "deny":
-        error_url = f"{redirect_uri}?error=access_denied&state={urllib.parse.quote(state)}"
-        return RedirectResponse(url=error_url, status_code=303)
-
-    # Re-validate client
+    # Re-validate client and redirect URI before any redirect response
     result = await db.execute(select(OAuthClient).where(OAuthClient.client_id == client_id))
     client = result.scalars().first()
     if not client or client.status != "active" or redirect_uri not in client.redirect_uris:
         raise HTTPException(status_code=400, detail="Invalid client or redirect URI.")
+
+    if action == "deny":
+        error_query = urllib.parse.urlencode({"error": "access_denied", "state": state})
+        error_url = f"{redirect_uri}?{error_query}"
+        return RedirectResponse(url=error_url, status_code=303)
 
     # Re-validate scopes live
     effective_scopes = await get_effective_scopes(db, user, event_id, scope.split(" "))
@@ -256,7 +257,8 @@ async def authorize_post(
     )
     await db.flush()
 
-    redirect_url = f"{redirect_uri}?code={code}&state={urllib.parse.quote(state)}"
+    redirect_query = urllib.parse.urlencode({"code": code, "state": state})
+    redirect_url = f"{redirect_uri}?{redirect_query}"
     return RedirectResponse(url=redirect_url, status_code=303)
 
 
