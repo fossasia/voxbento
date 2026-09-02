@@ -10,6 +10,7 @@ from pathlib import Path
 from fastapi import APIRouter, Request
 from fastapi.responses import PlainTextResponse, Response
 from fastapi.templating import Jinja2Templates
+from pydantic import BaseModel
 
 from portal.auth import get_current_user
 from portal.booth_identity import make_booth_id
@@ -20,6 +21,7 @@ from portal.database import (
     list_events,
     list_memberships_for_user,
 )
+from portal.email_sender import send_demo_request_email
 from portal.globals import _JS_CACHE_BUST, booths
 from portal.utils import _check_mediamtx
 
@@ -250,3 +252,25 @@ async def healthz() -> dict:
         "server": "fastapi",
         "mediamtx_ok": await _check_mediamtx(),
     }
+
+
+class DemoRequestModel(BaseModel):
+    email: str
+    firstName: str | None = None
+    lastName: str | None = None
+    phoneNumber: str | None = None
+    companyName: str | None = None
+    country: str | None = None
+    industry: str | None = None
+    companySize: str | None = None
+    languageSupport: str | None = None
+
+
+@router.post("/api/request-demo")
+async def request_demo(data: DemoRequestModel):
+    try:
+        await send_demo_request_email(data.model_dump())
+        return {"ok": True}
+    except Exception as e:
+        logging.getLogger(__name__).error(f"Error processing demo request: {e}", exc_info=True)
+        return {"ok": False, "detail": "An internal error occurred while processing the request."}

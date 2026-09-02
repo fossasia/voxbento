@@ -25,8 +25,15 @@ cd voxbento
 # 2. Install local Python dependencies (required for IDE linting & running tests)
 uv sync --all-groups
 
-# 3. Set up your environment variables
+# 3. Set up your environment variables and generate required secrets
 cp .env.example .env
+uv run python -c "
+import secrets, re
+env = open('.env').read()
+env = re.sub(r'API_KEY_ENCRYPTION_KEY=.*', f'API_KEY_ENCRYPTION_KEY={secrets.token_hex(16)}', env)
+env = re.sub(r'ADMIN_PASSWORD=.*', 'ADMIN_PASSWORD=admin', env)
+open('.env', 'w').write(env)
+"
 
 # 4. Start the entire stack (FastAPI, MediaMTX, and Jitsi)
 docker compose up -d --build
@@ -87,10 +94,11 @@ Always commit the generated migration files in `alembic/versions/`. Do **not** c
 
 ## 5. Development Workflow
 
-1. Create a branch for your feature: `git checkout -b feat/your-feature-name`
-2. Keep your commits atomic and focused.
-3. Make sure you don't use inline scripts in HTML templates (strict CSP is enforced).
-4. Do not use jQuery or external UI frameworks.
-5. Push your branch and open a PR against `main`.
+1. Fork the repository on GitHub, then clone your fork.
+2. Create a branch for your feature: `git checkout -b feat/your-feature-name`
+3. Keep your commits atomic and focused.
+4. Make sure you don't use inline scripts in HTML templates (strict CSP is enforced).
+5. Do not use jQuery or external UI frameworks.
+6. Push your branch and open a PR against `main`.
 
 Thank you for contributing!

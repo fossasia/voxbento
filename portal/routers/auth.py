@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import APIRouter, Body, HTTPException, Request, status
+from fastapi import APIRouter, BackgroundTasks, Body, HTTPException, Request, status
 from fastapi.responses import RedirectResponse
 from fastapi.templating import Jinja2Templates
 
@@ -32,6 +32,7 @@ from portal.database import (
     update_user,
 )
 from portal.email import send_magic_login_email, send_password_reset_email, send_verification_email
+from portal.email_sender import send_delayed_onboarding_email
 from portal.rate_limit import check_rate_limit
 from portal.schemas.auth import TokenRequest, TokenResponse
 from portal.utils import safe_redirect
@@ -162,11 +163,12 @@ async def register_submit(request: Request):
 
 
 @router.get("/auth/verify/{token}")
-async def verify_email_route(request: Request, token: str):
+async def verify_email_route(request: Request, token: str, background_tasks: BackgroundTasks):
     async with get_session() as session:
         try:
             auth_token = await redeem_auth_token(session, token, "verification")
             user = await update_user(session, auth_token.user_id, email_verified=True)
+            background_tasks.add_task(send_delayed_onboarding_email, user.email, user.display_name)
 
             jwt_token = create_user_token(
                 user_id=user.id, email=user.email, display_name=user.display_name, is_admin=user.is_admin
@@ -278,7 +280,7 @@ async def request_magic_link(request: Request):
 
 
 @router.get("/auth/magic/{token}")
-async def redeem_magic_link(request: Request, token: str, next: str | None = None):
+async def redeem_magic_link(request: Request, token: str, background_tasks: BackgroundTasks, next: str | None = None):
     async with get_session() as session:
         try:
             auth_token = await redeem_auth_token(session, token, "magic_link")
@@ -289,6 +291,7 @@ async def redeem_magic_link(request: Request, token: str, next: str | None = Non
             # If they log in via magic link, we can implicitly consider their email verified
             if not user.email_verified:
                 await update_user(session, user.id, email_verified=True)
+                background_tasks.add_task(send_delayed_onboarding_email, user.email, user.display_name)
 
             jwt_token = create_user_token(
                 user_id=user.id, email=user.email, display_name=user.display_name, is_admin=user.is_admin

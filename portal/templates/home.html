@@ -55,15 +55,28 @@
                 <a href="#open-source" class="hover:text-brand-600 transition-colors uppercase tracking-wider">Open
                     Source</a>
             </nav>
-            <div class="flex items-center gap-3 md:gap-4 text-[10px] sm:text-xs md:text-sm font-bold flex-shrink-0">
+            <div class="flex items-center gap-1.5 sm:gap-3 md:gap-4 text-[10px] sm:text-xs md:text-sm font-bold flex-shrink-0">
+                <button onclick="openDemoModal()" class="brutal-btn brutal-btn-secondary brutal-btn-nav !bg-[#fbbf24] !border-[#0d0f10] hover:!bg-[#f59e0b] !px-2 sm:!px-2.5 !py-1 sm:!py-1.5 md:!px-5 md:!py-2 rounded-full whitespace-nowrap">
+                    <span class="max-sm:hidden">Request a demo</span>
+                    <span class="sm:hidden">Demo</span>
+                </button>
                 {% if current_user %}
-                <a href="/developer" class="brutal-btn brutal-btn-outline brutal-btn-nav max-md:hidden !px-2.5 !py-1.5 md:!px-5 md:!py-2">Developer</a>
-                <a href="/account" class="brutal-btn brutal-btn-outline brutal-btn-nav !px-2.5 !py-1.5 md:!px-5 md:!py-2">Account</a>
-                <a href="/admin/events/" class="brutal-btn brutal-btn-primary brutal-btn-nav !px-2.5 !py-1.5 md:!px-5 md:!py-2">Dashboard</a>
-                <a href="/logout" class="brutal-btn brutal-btn-outline brutal-btn-nav !px-2.5 !py-1.5 md:!px-5 md:!py-2">Logout</a>
+                <a href="/developer" class="brutal-btn brutal-btn-outline brutal-btn-nav max-md:hidden !px-2.5 !py-1.5 md:!px-5 md:!py-2 whitespace-nowrap">Developer</a>
+                <a href="/account" class="brutal-btn brutal-btn-outline brutal-btn-nav !px-2 sm:!px-2.5 !py-1 sm:!py-1.5 md:!px-5 md:!py-2 max-sm:hidden whitespace-nowrap">Account</a>
+                <a href="/admin/events/" class="brutal-btn brutal-btn-primary brutal-btn-nav !px-2 sm:!px-2.5 !py-1 sm:!py-1.5 md:!px-5 md:!py-2 whitespace-nowrap">
+                    <span class="max-sm:hidden">Dashboard</span>
+                    <span class="sm:hidden">Dash</span>
+                </a>
+                <a href="/logout" class="brutal-btn brutal-btn-outline brutal-btn-nav !px-2 sm:!px-2.5 !py-1 sm:!py-1.5 md:!px-5 md:!py-2 whitespace-nowrap">
+                    <span class="max-sm:hidden">Logout</span>
+                    <span class="sm:hidden">Exit</span>
+                </a>
                 {% else %}
-                <a href="/login" class="brutal-btn brutal-btn-primary brutal-btn-nav !px-2.5 !py-1.5 md:!px-5 md:!py-2">Sign In</a>
-                <a href="/register" class="brutal-btn brutal-btn-outline brutal-btn-nav !px-2.5 !py-1.5 md:!px-5 md:!py-2">Register</a>
+                <a href="/login" class="brutal-btn brutal-btn-primary brutal-btn-nav !px-2 sm:!px-2.5 !py-1 sm:!py-1.5 md:!px-5 md:!py-2 whitespace-nowrap">
+                    <span class="max-sm:hidden">Sign In</span>
+                    <span class="sm:hidden">Login</span>
+                </a>
+                <a href="/register" class="brutal-btn brutal-btn-outline brutal-btn-nav !px-2 sm:!px-2.5 !py-1 sm:!py-1.5 md:!px-5 md:!py-2 max-sm:hidden whitespace-nowrap">Register</a>
                 {% endif %}
             </div>
         </div>
@@ -1085,6 +1098,202 @@
     </footer>
     <script type="module" src="{{ url_for('static', path='js/home.js') }}?v={{ js_version }}"></script>
     <script type="module" src="{{ url_for('static', path='js/demo-player.js') }}?v={{ js_version }}"></script>
+
+    <!-- Demo Request Modal -->
+    <div id="demo-modal" class="fixed inset-0 z-[100] flex items-center justify-center hidden">
+        <!-- Backdrop -->
+        <div class="absolute inset-0 bg-[#0d0f10]/60 backdrop-blur-sm" onclick="closeDemoModal()"></div>
+        
+        <!-- Modal Content -->
+        <div class="relative bg-white rounded-xl shadow-2xl border-2 border-[#0d0f10] w-full max-w-lg mx-4 overflow-hidden flex flex-col max-h-[90vh]">
+            <!-- Header -->
+            <div class="p-6 border-b border-gray-200 flex justify-between items-center bg-gray-50">
+                <h2 class="text-xl font-extrabold text-[#0d0f10]">Request a Live Demo</h2>
+                <button onclick="closeDemoModal()" class="text-gray-500 hover:text-[#0d0f10] transition-colors p-1">
+                    <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+                </button>
+            </div>
+            
+            <!-- Form Body -->
+            <div class="p-6 overflow-y-auto">
+                <form id="demo-request-form" class="space-y-4">
+                    <!-- Step 1: Email -->
+                    <div id="demo-step-1" class="space-y-4">
+                        <div>
+                            <input type="email" id="demo-email" required placeholder="Your work email*" class="w-full px-4 py-3 rounded bg-gray-50 border border-gray-300 text-[#0d0f10] focus:outline-none focus:ring-2 focus:ring-[#2563eb] transition-all">
+                        </div>
+                        
+                        <div class="flex items-start gap-2">
+                            <input type="checkbox" id="demo-privacy" required class="mt-1 w-4 h-4 text-[#2563eb] rounded border-gray-300 focus:ring-[#2563eb]">
+                            <label for="demo-privacy" class="text-xs text-gray-600">I agree to VoxBento's <a href="#" class="text-[#2563eb] hover:underline">Privacy Policy</a> and consent to receive communications.</label>
+                        </div>
+                    </div>
+
+                    <!-- Step 2: Details (Hidden initially) -->
+                    <div id="demo-step-2" class="space-y-4 hidden animate-fade-in">
+                        <div class="grid grid-cols-2 gap-4">
+                            <input type="text" id="demo-firstname" placeholder="First Name*" class="w-full px-4 py-3 rounded bg-gray-50 border border-gray-300 text-[#0d0f10] focus:outline-none focus:ring-2 focus:ring-[#2563eb]">
+                            <input type="text" id="demo-lastname" placeholder="Last Name*" class="w-full px-4 py-3 rounded bg-gray-50 border border-gray-300 text-[#0d0f10] focus:outline-none focus:ring-2 focus:ring-[#2563eb]">
+                        </div>
+                        <div class="grid grid-cols-[1fr_2fr] gap-4">
+                            <select id="demo-phonecode" class="w-full px-4 py-3 rounded bg-gray-50 border border-gray-300 text-[#0d0f10] focus:outline-none focus:ring-2 focus:ring-[#2563eb]">
+                                <option value="+1">+1 (US)</option>
+                                <option value="+44">+44 (UK)</option>
+                                <option value="+91">+91 (IN)</option>
+                                <option value="other">Other</option>
+                            </select>
+                            <input type="tel" id="demo-phone" placeholder="Phone Number*" class="w-full px-4 py-3 rounded bg-gray-50 border border-gray-300 text-[#0d0f10] focus:outline-none focus:ring-2 focus:ring-[#2563eb]">
+                        </div>
+                        <div>
+                            <input type="text" id="demo-company" placeholder="Company Name*" class="w-full px-4 py-3 rounded bg-gray-50 border border-gray-300 text-[#0d0f10] focus:outline-none focus:ring-2 focus:ring-[#2563eb]">
+                        </div>
+                        <div>
+                            <select id="demo-country" class="w-full px-4 py-3 rounded bg-gray-50 border border-gray-300 text-[#0d0f10] focus:outline-none focus:ring-2 focus:ring-[#2563eb]">
+                                <option value="" disabled selected>Country*</option>
+                                <option value="US">United States</option>
+                                <option value="UK">United Kingdom</option>
+                                <option value="IN">India</option>
+                                <option value="CA">Canada</option>
+                                <option value="AU">Australia</option>
+                                <option value="Other">Other</option>
+                            </select>
+                        </div>
+                        <div class="grid grid-cols-2 gap-4">
+                            <select id="demo-industry" class="w-full px-4 py-3 rounded bg-gray-50 border border-gray-300 text-[#0d0f10] focus:outline-none focus:ring-2 focus:ring-[#2563eb]">
+                                <option value="" disabled selected>Industry</option>
+                                <option value="Technology">Technology</option>
+                                <option value="Education">Education</option>
+                                <option value="Enterprise">Enterprise</option>
+                                <option value="Other">Other</option>
+                            </select>
+                            <select id="demo-size" class="w-full px-4 py-3 rounded bg-gray-50 border border-gray-300 text-[#0d0f10] focus:outline-none focus:ring-2 focus:ring-[#2563eb]">
+                                <option value="" disabled selected>Company Size</option>
+                                <option value="1-50">1-50</option>
+                                <option value="51-200">51-200</option>
+                                <option value="201-1000">201-1000</option>
+                                <option value="1000+">1000+</option>
+                            </select>
+                        </div>
+                        <div>
+                            <select id="demo-language" class="w-full px-4 py-3 rounded bg-gray-50 border border-gray-300 text-[#0d0f10] focus:outline-none focus:ring-2 focus:ring-[#2563eb]">
+                                <option value="" disabled selected>I need language support for...*</option>
+                                <option value="Conferences">Conferences</option>
+                                <option value="Internal Meetings">Internal Meetings</option>
+                                <option value="Webinars">Webinars</option>
+                                <option value="Other">Other</option>
+                            </select>
+                        </div>
+                    </div>
+                    
+                    <button type="submit" id="demo-submit-btn" class="w-full mt-2 bg-[#fbbf24] hover:bg-[#f59e0b] border-2 border-[#0d0f10] text-[#0d0f10] font-bold py-3 px-4 rounded transition-colors flex items-center justify-center gap-2">
+                        <span>Request a demo</span>
+                        <svg class="hidden animate-spin h-5 w-5" id="demo-spinner" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                        </svg>
+                    </button>
+                    
+                    <div id="demo-success" class="hidden text-green-600 bg-green-50 border border-green-200 p-4 rounded text-sm text-center font-bold">
+                        Thank you! We've received your request and will be in touch shortly.
+                    </div>
+                    <div id="demo-error" class="hidden text-red-600 bg-red-50 border border-red-200 p-4 rounded text-sm text-center font-bold">
+                        Oops! Something went wrong. Please try again.
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+    <script>
+        let demoStep = 1;
+
+        function openDemoModal() {
+            document.getElementById('demo-modal').classList.remove('hidden');
+            document.body.style.overflow = 'hidden';
+            demoStep = 1;
+            document.getElementById('demo-step-1').classList.remove('hidden');
+            document.getElementById('demo-step-2').classList.add('hidden');
+            document.getElementById('demo-success').classList.add('hidden');
+            document.getElementById('demo-error').classList.add('hidden');
+            document.getElementById('demo-request-form').reset();
+            document.getElementById('demo-submit-btn').classList.remove('hidden');
+        }
+
+        function closeDemoModal() {
+            document.getElementById('demo-modal').classList.add('hidden');
+            document.body.style.overflow = '';
+        }
+
+        document.getElementById('demo-request-form').addEventListener('submit', async function(e) {
+            e.preventDefault();
+            
+            if (demoStep === 1) {
+                // If on step 1, check validity and go to step 2
+                const email = document.getElementById('demo-email').value;
+                const privacy = document.getElementById('demo-privacy').checked;
+                
+                if (email && privacy) {
+                    demoStep = 2;
+                    document.getElementById('demo-step-1').classList.add('hidden');
+                    document.getElementById('demo-step-2').classList.remove('hidden');
+                    
+                    // Add required attributes for step 2 fields
+                    document.getElementById('demo-firstname').required = true;
+                    document.getElementById('demo-lastname').required = true;
+                    document.getElementById('demo-phone').required = true;
+                    document.getElementById('demo-company').required = true;
+                    document.getElementById('demo-country').required = true;
+                    document.getElementById('demo-language').required = true;
+                }
+            } else {
+                // Submit form
+                const btn = document.getElementById('demo-submit-btn');
+                const spinner = document.getElementById('demo-spinner');
+                
+                btn.disabled = true;
+                spinner.classList.remove('hidden');
+                document.getElementById('demo-error').classList.add('hidden');
+                
+                const data = {
+                    email: document.getElementById('demo-email').value,
+                    firstName: document.getElementById('demo-firstname').value,
+                    lastName: document.getElementById('demo-lastname').value,
+                    phoneNumber: document.getElementById('demo-phonecode').value + " " + document.getElementById('demo-phone').value,
+                    companyName: document.getElementById('demo-company').value,
+                    country: document.getElementById('demo-country').value,
+                    industry: document.getElementById('demo-industry').value,
+                    companySize: document.getElementById('demo-size').value,
+                    languageSupport: document.getElementById('demo-language').value
+                };
+                
+                try {
+                    const response = await fetch('/api/request-demo', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify(data)
+                    });
+                    
+                    const result = await response.json();
+                    
+                    if (result.ok) {
+                        document.getElementById('demo-step-2').classList.add('hidden');
+                        btn.classList.add('hidden');
+                        document.getElementById('demo-success').classList.remove('hidden');
+                        setTimeout(closeDemoModal, 3000);
+                    } else {
+                        document.getElementById('demo-error').classList.remove('hidden');
+                    }
+                } catch(err) {
+                    document.getElementById('demo-error').classList.remove('hidden');
+                } finally {
+                    btn.disabled = false;
+                    spinner.classList.add('hidden');
+                }
+            }
+        });
+    </script>
 </body>
+
 
 </html>
