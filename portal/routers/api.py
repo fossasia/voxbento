@@ -259,13 +259,53 @@ async def list_event_booths(
     credentials: HTTPAuthorizationCredentials | None = Depends(security),
 ) -> dict:
     """List all booths for an event."""
-    _require_access(request, credentials, token)
+    try:
+        _require_access(request, credentials, token)
+    except HTTPException as orig_exc:
+        # Fallback to checking API Key
+        async with get_session() as session:
+            key = None
+            if credentials and credentials.scheme.lower() == 'bearer':
+                key = await verify_api_key(session, credentials.credentials)
+            if not key:
+                raise orig_exc
+
     booth_list = await booths.list_booths_for_event(event_slug)
     for b in booth_list:
         mtx = b.get("mediamtx_path", "")
         if mtx:
             b["whip_url"] = f"{settings.mediamtx_whip_base}/{mtx}/whip"
             b["whep_url"] = f"{settings.mediamtx_whip_base}/{mtx}/whep"
+        b["type"] = "human"
+        b["label"] = f"{b.get('language_name', b.get('language_code', ''))} (Human)"
+
+    async with get_session() as session:
+        from sqlalchemy import select
+        from sqlalchemy.orm import selectinload
+
+        from portal.models import Event, Room
+
+        stmt = select(Event).where(Event.slug == event_slug).options(
+            selectinload(Event.rooms).selectinload(Room.translation_languages)
+        )
+        event = await session.scalar(stmt)
+        if event:
+            for room in event.rooms:
+                if room.floor_translation_enabled:
+                    for tl in room.translation_languages:
+                        ai_stream = {
+                            "id": f"ai_{room.id}_{tl.language_code}",
+                            "room_id": room.id,
+                            "eventyay_room_id": room.eventyay_room_id,
+                            "language_code": tl.language_code,
+                            "language_name": tl.language_name,
+                            "type": "ai",
+                            "label": f"{tl.language_name} (AI)",
+                            "is_ai": True,
+                            "floor_tts_enabled": room.floor_tts_enabled,
+                        }
+                        booth_list.append(ai_stream)
+
     return {"event_slug": event_slug, "booths": booth_list}
 
 

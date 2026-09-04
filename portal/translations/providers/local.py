@@ -225,15 +225,38 @@ class LocalProvider(TranslationProvider):
         model: str,
         api_key: str | None,
     ) -> str | None:
+        logger.info(
+            f"[NLLB] translate called: source='{source_lang_name}' -> target='{target_lang_name}' "
+            f"model='{model}' text_len={len(text)}"
+        )
+
+
+        _CODE_TO_NAME = {
+            'af': 'Afrikaans', 'ak': 'Akan', 'am': 'Amharic', 'ar': 'Arabic', 'an': 'Aragonese', 'hy': 'Armenian', 'as': 'Assamese', 'av': 'Avaric', 'ae': 'Avestan', 'ay': 'Aymara', 'az': 'Azerbaijani', 'bm': 'Bambara', 'ba': 'Bashkir', 'eu': 'Basque', 'be': 'Belarusian', 'bn': 'Bengali', 'bi': 'Bislama', 'bs': 'Bosnian', 'br': 'Breton', 'bg': 'Bulgarian', 'my': 'Burmese', 'ca': 'Catalan', 'ch': 'Chamorro', 'ce': 'Chechen', 'ny': 'Chichewa', 'zh': 'Chinese', 'cv': 'Chuvash', 'kw': 'Cornish', 'co': 'Corsican', 'cr': 'Cree', 'hr': 'Croatian', 'cs': 'Czech', 'da': 'Danish', 'dv': 'Divehi', 'nl': 'Dutch', 'dz': 'Dzongkha', 'en': 'English', 'eo': 'Esperanto', 'et': 'Estonian', 'ee': 'Ewe', 'fo': 'Faroese', 'fj': 'Fijian', 'fi': 'Finnish', 'fr': 'French', 'ff': 'Fula', 'gl': 'Galician', 'lg': 'Ganda', 'ka': 'Georgian', 'de': 'German', 'el': 'Greek', 'gn': 'Guaraní', 'gu': 'Gujarati', 'ht': 'Haitian', 'ha': 'Hausa', 'he': 'Hebrew', 'hz': 'Herero', 'hi': 'Hindi', 'ho': 'Hiri Motu', 'hu': 'Hungarian', 'is': 'Icelandic', 'io': 'Ido', 'ig': 'Igbo', 'id': 'Indonesian', 'ia': 'Interlingua', 'ie': 'Interlingue', 'iu': 'Inuktitut', 'ik': 'Inupiaq', 'ga': 'Irish', 'it': 'Italian', 'ja': 'Japanese', 'jv': 'Javanese', 'kl': 'Kalaallisut', 'kn': 'Kannada', 'kr': 'Kanuri', 'ks': 'Kashmiri', 'kk': 'Kazakh', 'km': 'Khmer', 'ki': 'Kikuyu', 'rw': 'Kinyarwanda', 'rn': 'Kirundi', 'kv': 'Komi', 'kg': 'Kongo', 'ko': 'Korean', 'ku': 'Kurdish', 'kj': 'Kwanyama', 'ky': 'Kyrgyz', 'lo': 'Lao', 'la': 'Latin', 'lv': 'Latvian', 'li': 'Limburgish', 'ln': 'Lingala', 'lt': 'Lithuanian', 'lu': 'Luba-Katanga', 'lb': 'Luxembourgish', 'mi': 'Māori', 'mk': 'Macedonian', 'mg': 'Malagasy', 'ms': 'Malay', 'ml': 'Malayalam', 'mt': 'Maltese', 'gv': 'Manx', 'mr': 'Marathi', 'mh': 'Marshallese', 'mn': 'Mongolian', 'na': 'Nauru', 'nv': 'Navajo', 'ng': 'Ndonga', 'ne': 'Nepali', 'nd': 'Northern Ndebele', 'se': 'Northern Sami', 'no': 'Norwegian', 'nb': 'Norwegian Bokmål', 'nn': 'Norwegian Nynorsk', 'ii': 'Nuosu', 'oc': 'Occitan', 'oj': 'Ojibwe', 'cu': 'Old Church Slavonic', 'or': 'Oriya', 'om': 'Oromo', 'os': 'Ossetian', 'pi': 'Pāli', 'pa': 'Panjabi', 'ps': 'Pashto', 'fa': 'Persian', 'pl': 'Polish', 'pt': 'Portuguese', 'qu': 'Quechua', 'ro': 'Romanian', 'rm': 'Romansh', 'ru': 'Russian', 'sm': 'Samoan', 'sg': 'Sango', 'sa': 'Sanskrit', 'sc': 'Sardinian', 'gd': 'Scottish Gaelic', 'sr': 'Serbian', 'sn': 'Shona', 'sd': 'Sindhi', 'si': 'Sinhala', 'sk': 'Slovak', 'sl': 'Slovenian', 'so': 'Somali', 'nr': 'Southern Ndebele', 'st': 'Southern Sotho', 'es': 'Spanish', 'su': 'Sundanese', 'sw': 'Swahili', 'ss': 'Swati', 'sv': 'Swedish', 'tl': 'Tagalog', 'ty': 'Tahitian', 'tg': 'Tajik', 'ta': 'Tamil', 'tt': 'Tatar', 'te': 'Telugu', 'th': 'Thai', 'bo': 'Tibetan', 'ti': 'Tigrinya', 'to': 'Tonga', 'ts': 'Tsonga', 'tn': 'Tswana', 'tr': 'Turkish', 'tk': 'Turkmen', 'tw': 'Twi', 'uk': 'Ukrainian', 'ur': 'Urdu', 'ug': 'Uyghur', 'uz': 'Uzbek', 've': 'Venda', 'vi': 'Vietnamese', 'vo': 'Volapük', 'wa': 'Walloon', 'cy': 'Welsh', 'fy': 'Western Frisian', 'wo': 'Wolof', 'xh': 'Xhosa', 'yi': 'Yiddish', 'yo': 'Yoruba', 'za': 'Zhuang', 'zu': 'Zulu'
+        }
+        if target_lang_name in _CODE_TO_NAME:
+            target_lang_name = _CODE_TO_NAME[target_lang_name]
+        if source_lang_name in _CODE_TO_NAME:
+            source_lang_name = _CODE_TO_NAME[source_lang_name]
+
         target_lang_token = NLLB_LANGUAGE_MAP.get(target_lang_name)
         source_lang_token = NLLB_LANGUAGE_MAP.get(source_lang_name)
         if not target_lang_token:
-            logger.error(f"Target language {target_lang_name} not found in NLLB_LANGUAGE_MAP")
+            logger.error(
+                f"[NLLB] Target language '{target_lang_name}' not found in NLLB_LANGUAGE_MAP. "
+                f"Available keys (sample): {list(NLLB_LANGUAGE_MAP.keys())[:10]}"
+            )
             return None
         if not source_lang_token:
-            logger.error(f"Source language {source_lang_name} not found in NLLB_LANGUAGE_MAP")
+            logger.error(
+                f"[NLLB] Source language '{source_lang_name}' not found in NLLB_LANGUAGE_MAP. "
+                f"Available keys (sample): {list(NLLB_LANGUAGE_MAP.keys())[:10]}"
+            )
             return None
 
+        logger.info(
+            f"[NLLB] Language tokens resolved: source_token='{source_lang_token}' target_token='{target_lang_token}'"
+        )
         return await asyncio.to_thread(self._run_inference, text, source_lang_token, target_lang_token, model)
 
     def _run_inference(self, text: str, source_lang_token: str, target_lang_token: str, model_size: str) -> str | None:
@@ -266,7 +289,12 @@ class LocalProvider(TranslationProvider):
             return translated_text.strip()
 
         except Exception as e:
-            logger.error(f"NLLB local translation failed: {e}")
+            import traceback
+            logger.error(
+                f"[NLLB] _run_inference failed: {e}\n"
+                f"source_token={source_lang_token}, target_token={target_lang_token}, model={model_size}\n"
+                f"{traceback.format_exc()}"
+            )
             return None
         finally:
             decrement_model_ref(model_size)

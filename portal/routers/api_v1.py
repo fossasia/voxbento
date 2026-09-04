@@ -630,7 +630,7 @@ async def provision_listener_token(
     event_slug: str,
     room_id: int,
     db: AsyncSession = Depends(get_db_session),
-    token: OAuthToken = Depends(require_oauth_scope("listeners:provision")),
+    token: OAuthToken = Depends(require_oauth_scope("events:read")),
 ):
     result = await db.execute(select(Event).where(Event.slug == event_slug))
     event = result.scalars().first()
