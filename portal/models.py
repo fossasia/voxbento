@@ -72,6 +72,9 @@ class Event(Base):
     encrypted_elevenlabs_api_key: Mapped[str | None] = mapped_column(
         "elevenlabs_api_key", Text, nullable=True, default=None
     )
+    encrypted_atlascloud_api_key: Mapped[str | None] = mapped_column(
+        "atlascloud_api_key", Text, nullable=True, default=None
+    )
     encrypted_translation_openai_api_key: Mapped[str | None] = mapped_column(
         "translation_openai_api_key", Text, nullable=True, default=None
     )
@@ -174,7 +177,7 @@ class DBBooth(Base):
     language_name: Mapped[str] = mapped_column(String(100))
     transcription_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
     transcription_provider: Mapped[str] = mapped_column(String(20), default="local", server_default=sa.text("'local'"))
-    transcription_model: Mapped[str] = mapped_column(String(20), default="tiny", server_default=sa.text("'tiny'"))
+    transcription_model: Mapped[str] = mapped_column(String(40), default="tiny", server_default=sa.text("'tiny'"))
 
     # Broadcast Lock
     broadcast_unlocked: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
