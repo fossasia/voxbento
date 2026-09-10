@@ -42,10 +42,10 @@ async def db_data(setup_db):
         await s.flush()
 
         # Add fr and es languages
-        s.add(RoomTranslationLanguage(room_id=room.id, language_code="fr", language_name="French", enabled=True))
-        s.add(RoomTranslationLanguage(room_id=room.id, language_code="es", language_name="Spanish", enabled=True))
+        s.add(RoomTranslationLanguage(room_id=room.id, language_code="fr", language_name="French", enabled=True, tts_enabled=True))
+        s.add(RoomTranslationLanguage(room_id=room.id, language_code="es", language_name="Spanish", enabled=True, tts_enabled=True))
         # source language (en) as a target to test bypass
-        s.add(RoomTranslationLanguage(room_id=room.id, language_code="en", language_name="English", enabled=True))
+        s.add(RoomTranslationLanguage(room_id=room.id, language_code="en", language_name="English", enabled=True, tts_enabled=True))
 
         segment = TranscriptSegment(room_id=room.id, text="Hello world", language_code="en")
         s.add(segment)
@@ -75,38 +75,39 @@ async def test_language_independence(db_data, mock_broadcast):
     with patch.object(worker, "_call_llm", new=fake_call_llm):
         with patch("portal.tts.worker.synthesize", new=fake_synthesize):
             with patch("portal.websockets.manager.tts_manager.has_listeners", return_value=True):
-                with patch(
-                    "portal.websockets.manager.TTSConnectionManager.broadcast_bundle", new_callable=AsyncMock
-                ) as mock_bundle:
-                    # Start the pipeline
-                    await worker.handle_translation(
-                        room_id=db_data["room"].id,
-                        segment_id=db_data["segment"].id,
-                        text="Hello world",
-                        booth_id_str="floor",
-                        uuid_segment_id="1234-uuid",
-                        seq=1,
-                    )
+                with patch("portal.websockets.manager.listener_manager.has_listeners", return_value=True):
+                    with patch(
+                        "portal.websockets.manager.TTSConnectionManager.broadcast_bundle", new_callable=AsyncMock
+                    ) as mock_bundle:
+                        # Start the pipeline
+                        await worker.handle_translation(
+                            room_id=db_data["room"].id,
+                            segment_id=db_data["segment"].id,
+                            text="Hello world",
+                            booth_id_str="floor",
+                            uuid_segment_id="1234-uuid",
+                            seq=1,
+                        )
 
                 # We expect 5 broadcasts: Spanish (2: text, audio), French (2: text, audio), and English (1 bypass)
                 assert mock_bundle.call_count == 5
 
                 calls = mock_bundle.call_args_list
-                lang_order = [call.args[1] for call in calls]
+                lang_order = [call.args[0].split("-")[-1] for call in calls]
 
                 # Fast things should finish first. English (bypass) is instant. Spanish is instant.
                 # French takes 0.2s.
                 assert "fr" == lang_order[-1]  # French must be last
 
                 # Check Spanish bundle
-                es_call = next(c for c in calls if c.args[1] == "es")
-                assert es_call.args[7] == "Hola mundo"  # translation
-                assert es_call.args[8] is None  # error is None
+                es_call = next(c for c in calls if c.args[0].endswith("-es"))
+                assert es_call.args[5] == "Hola mundo"  # translation
+                assert es_call.args[6] is None  # error is None
 
                 # Check French bundle
-                fr_call = next(c for c in calls if c.args[1] == "fr")
-                assert fr_call.args[7] == "Bonjour le monde"
-                assert fr_call.args[8] is None
+                fr_call = next(c for c in calls if c.args[0].endswith("-fr"))
+                assert fr_call.args[5] == "Bonjour le monde"
+                assert fr_call.args[6] is None
 
 
 @pytest.mark.anyio
@@ -126,36 +127,37 @@ async def test_pipeline_failure_degrades_gracefully(db_data, mock_broadcast):
     with patch.object(worker, "_call_llm", new=fake_call_llm):
         with patch("portal.tts.worker.synthesize", new=fake_synthesize):
             with patch("portal.websockets.manager.tts_manager.has_listeners", return_value=True):
-                with patch(
-                    "portal.websockets.manager.TTSConnectionManager.broadcast_bundle", new_callable=AsyncMock
-                ) as mock_bundle:
-                    # Force dynamic timeout to be very short so it times out instantly
-                    with patch("portal.translations.worker.max", return_value=0.1):
-                        await worker.handle_translation(
-                            room_id=db_data["room"].id,
-                            segment_id=db_data["segment"].id,
-                            text="Hello world",
-                            booth_id_str="floor",
-                            uuid_segment_id="1234-uuid",
-                            seq=1,
-                        )
+                with patch("portal.websockets.manager.listener_manager.has_listeners", return_value=True):
+                    with patch(
+                        "portal.websockets.manager.TTSConnectionManager.broadcast_bundle", new_callable=AsyncMock
+                    ) as mock_bundle:
+                        # Force dynamic timeout to be very short so it times out instantly
+                        with patch("portal.translations.worker.max", return_value=0.1):
+                            await worker.handle_translation(
+                                room_id=db_data["room"].id,
+                                segment_id=db_data["segment"].id,
+                                text="Hello world",
+                                booth_id_str="floor",
+                                uuid_segment_id="1234-uuid",
+                                seq=1,
+                            )
 
                     assert mock_bundle.call_count == 4
 
                     calls = mock_bundle.call_args_list
 
                     # Check Spanish bundle (pipeline_failed)
-                    es_call = next(c for c in calls if c.args[1] == "es")
-                    assert es_call.args[3] == b""  # no audio
-                    assert es_call.args[8] == "pipeline_failed"
+                    es_call = next(c for c in calls if c.args[0].endswith("-es"))
+                    assert es_call.args[1] == b""  # no audio
+                    assert es_call.args[6] == "pipeline_failed"
 
                     # Check French bundle (tts_timeout)
-                    fr_calls = [c for c in calls if c.args[1] == "fr"]
+                    fr_calls = [c for c in calls if c.args[0].endswith("-fr")]
                     assert len(fr_calls) == 2
                     fr_call = fr_calls[-1]
-                    assert fr_call.args[3] == b""  # no audio
-                    assert fr_call.args[7] == "Bonjour le monde"  # text still there
-                    assert fr_call.args[8] == "tts_timeout"
+                    assert fr_call.args[1] == b""  # no audio
+                    assert fr_call.args[5] == "Bonjour le monde"  # text still there
+                    assert fr_call.args[6] == "tts_timeout"
 
 
 @pytest.mark.anyio
@@ -175,8 +177,8 @@ async def test_source_language_bypass(db_data, mock_broadcast):
         )
 
         # English should be bypassed instantly with empty audio and text==text
-        en_call = next(c for c in mock_bundle.call_args_list if c.args[1] == "en")
-        assert en_call.args[3] == b""  # no audio
-        assert en_call.args[6] == "Hello world"  # original text
-        assert en_call.args[7] == "Hello world"  # translation == original text
-        assert en_call.args[8] is None  # no error
+        en_call = next(c for c in mock_bundle.call_args_list if c.args[0].endswith("-en"))
+        assert en_call.args[1] == b""  # no audio
+        assert en_call.args[4] == "Hello world"  # original text
+        assert en_call.args[5] == "Hello world"  # translation == original text
+        assert en_call.args[6] is None  # no error

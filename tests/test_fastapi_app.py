@@ -1219,6 +1219,68 @@ def test_list_event_booths():
         assert "whep_url" in b
 
 
+def test_ai_booth_precedence():
+    """Test AI synthetic booth creation and human precedence."""
+    from portal.database import get_session
+    from portal.models import Event, Room, RoomTranslationLanguage, DBBooth, BoothTranslationLanguage
+    import asyncio
+    
+    async def setup_db():
+        async with get_session() as session:
+            # Create a test event and room
+            event = Event(slug="aitest", display_name="AI Test")
+            session.add(event)
+            await session.flush()
+            room = Room(event_id=event.id, display_name="AI Room", floor_translation_enabled=True, floor_tts_enabled=True)
+            session.add(room)
+            await session.flush()
+            # Floor wants fr and de
+            session.add(RoomTranslationLanguage(room_id=room.id, language_code="fr", language_name="French", enabled=True, tts_enabled=True))
+            session.add(RoomTranslationLanguage(room_id=room.id, language_code="de", language_name="German", enabled=True, tts_enabled=True))
+            await session.flush()
+            
+            # Create a human booth for fr
+            b_fr = DBBooth(event_id=event.id, room_id=room.id, language_code="fr", language_name="French")
+            session.add(b_fr)
+            await session.flush()
+            
+            # The human booth wants es
+            b_fr.translation_enabled = True
+            session.add(BoothTranslationLanguage(booth_id=b_fr.id, language_code="es", language_name="Spanish", enabled=True, tts_enabled=True))
+            await session.flush()
+
+    # Need to run async setup manually in test
+    import anyio
+    anyio.run(setup_db)
+
+    res = client.get("/api/events/aitest/booths")
+    assert res.status_code == 200, res.text
+    body = res.json()
+    booths = body["booths"]
+    
+    # We should have:
+    # Human booth for 'fr' (if it were in memory state, but since we didn't put it there, the api might not return it as human, but let's check).
+    # Wait, list_event_booths only returns human booths from memory `booths.list_booths_for_event()`.
+    # But for AI booths, it uses the DB query.
+    ai_booths = [b for b in booths if b.get("is_ai")]
+    
+    # Floor wants fr, de.
+    # Human booth wants es.
+    # Human booth exists for fr.
+    # So we should get AI booths for 'de' and 'es', but NOT 'fr' because of Human Precedence.
+    
+    ai_langs = {b["language_code"] for b in ai_booths}
+    assert ai_langs == {"de", "es"}, f"Expected de and es, got {ai_langs}"
+    
+    # Verify AI booth properties
+    for b in ai_booths:
+        assert b["whip_url"] is None
+        assert b["whep_url"] is None
+        assert "tts_ws_url" in b
+        assert b["id"].startswith("aitest-")
+        assert "-ai-" in b["id"]
+        assert b["label"].endswith("(AI)")
+    
 def test_list_event_booths_empty():
     """Listing booths for a non-existent event returns empty list."""
     res = client.get("/api/events/nonexistent/booths")
@@ -1868,3 +1930,28 @@ def test_embed_captions_opt_in_websocket_auth():
     # Verify the booth_id produced by make_booth_id satisfies the startswith check.
     booth_id = "test-event-1-en"  # make_booth_id("test-event", 1, 1,  "en")
     assert booth_id.startswith(f"{payload['event_slug']}-")
+
+
+def test_ws_tts_authentication():
+    """Connecting to /ws/tts requires a valid token in the query string."""
+    from fastapi.websockets import WebSocketDisconnect
+    from portal.auth import create_user_token
+    import pytest
+    
+    # 1. No token -> fails
+    with pytest.raises(WebSocketDisconnect) as exc_info:
+        with client.websocket_connect("/ws/tts/test-event-1-ai-fr") as ws:
+            ws.receive_text()
+    assert exc_info.value.code == 4001
+
+    # 2. Invalid token -> fails
+    with pytest.raises(WebSocketDisconnect) as exc_info:
+        with client.websocket_connect("/ws/tts/test-event-1-ai-fr?token=invalid") as ws:
+            ws.receive_text()
+    assert exc_info.value.code == 4001
+    
+    # 3. Valid listener token -> success
+    token = _embed_listener_token(event_slug="test-event")
+    with client.websocket_connect(f"/ws/tts/test-event-1-ai-fr?token={token}") as ws:
+        # If it doesn't raise WebSocketDisconnect, auth succeeded and it's waiting for text
+        pass

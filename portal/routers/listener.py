@@ -114,6 +114,9 @@ async def listen_event_page(request: Request, event_slug: str, code: str | None 
                 "room_id": b.room_id,
                 "language_code": b.language_code,
                 "language_name": b.language_name,
+                "type": "human",
+                "label": f"{b.language_name} (Human)",
+                "is_ai": False,
                 "channel_id": channel_id,
                 "whep_url": f"{settings.mediamtx_whip_base}/{channel_id}/whep",
                 "audio_delay_ms": b.room.audio_delay_ms,
@@ -148,6 +151,9 @@ async def listen_event_page(request: Request, event_slug: str, code: str | None 
                     "room_id": r.id,
                     "language_code": "floor",
                     "language_name": "Floor Audio (Original)",
+                    "type": "human",
+                    "label": "Floor Audio (Original)",
+                    "is_ai": False,
                     "channel_id": channel_id,
                     "whep_url": f"{settings.mediamtx_whip_base}/{channel_id}/whep",
                     "audio_delay_ms": r.audio_delay_ms,
@@ -156,6 +162,42 @@ async def listen_event_page(request: Request, event_slug: str, code: str | None 
                 }
             )
             ensure_tasks.append(_ensure_mediamtx_path(channel_id))
+
+        # Add AI Booths
+        ai_targets = {}
+        if r.floor_tts_enabled and r.floor_translation_enabled:
+            for tl in r.translation_languages:
+                if tl.enabled and tl.tts_enabled:
+                    ai_targets[tl.language_code] = tl.language_name
+        
+        for b in [booth for booth in db_booths if booth.room_id == r.id]:
+            if b.translation_enabled:
+                for tl in b.translation_languages:
+                    if tl.enabled and tl.tts_enabled:
+                        ai_targets[tl.language_code] = tl.language_name
+        
+        human_langs = {b.language_code for b in db_booths if b.room_id == r.id}
+        for lang_code, lang_name in ai_targets.items():
+            if lang_code in human_langs:
+                continue
+            
+            target_booth_id = f"{ev.slug}-{r.id}-ai-{lang_code}"
+            booths_data.append(
+                {
+                    "id": target_booth_id,
+                    "room_id": r.id,
+                    "language_code": lang_code,
+                    "language_name": lang_name,
+                    "type": "ai",
+                    "label": f"{lang_name} (AI)",
+                    "is_ai": True,
+                    "channel_id": None,
+                    "whep_url": None,
+                    "audio_delay_ms": r.audio_delay_ms,
+                    "translation_enabled": False,
+                    "translation_languages": [],
+                }
+            )
 
     if ensure_tasks:
         await asyncio.gather(*ensure_tasks)

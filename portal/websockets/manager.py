@@ -63,6 +63,9 @@ class ListenerConnectionManager:
     def add(self, ws: WebSocket, booth_id: str) -> None:
         self._rooms.setdefault(booth_id, set()).add(ws)
 
+    def has_listeners(self, booth_id: str) -> bool:
+        return bool(self._rooms.get(booth_id, set()))
+
     def remove(self, ws: WebSocket, booth_id: str) -> None:
         room = self._rooms.get(booth_id, set())
         room.discard(ws)
@@ -88,29 +91,21 @@ class TTSConnectionManager:
     def __init__(self) -> None:
         self._rooms: dict[str, set[WebSocket]] = {}
 
-    def _get_key(self, room_id: int, language_code: str, booth_id: str) -> str:
-        return f"{room_id}-{language_code}-{booth_id}"
+    def add(self, ws: WebSocket, target_booth_id: str) -> None:
+        self._rooms.setdefault(target_booth_id, set()).add(ws)
 
-    def add(self, ws: WebSocket, room_id: int, language_code: str, booth_id: str) -> None:
-        key = self._get_key(room_id, language_code, booth_id)
-        self._rooms.setdefault(key, set()).add(ws)
-
-    def remove(self, ws: WebSocket, room_id: int, language_code: str, booth_id: str) -> None:
-        key = self._get_key(room_id, language_code, booth_id)
-        room = self._rooms.get(key, set())
+    def remove(self, ws: WebSocket, target_booth_id: str) -> None:
+        room = self._rooms.get(target_booth_id, set())
         room.discard(ws)
         if not room:
-            self._rooms.pop(key, None)
+            self._rooms.pop(target_booth_id, None)
 
-    def has_listeners(self, room_id: int, language_code: str, booth_id: str) -> bool:
-        key = self._get_key(room_id, language_code, booth_id)
-        return bool(self._rooms.get(key, set()))
+    def has_listeners(self, target_booth_id: str) -> bool:
+        return bool(self._rooms.get(target_booth_id, set()))
 
     async def broadcast_bundle(
         self,
-        room_id: int,
-        language_code: str,
-        booth_id: str,
+        target_booth_id: str,
         audio_bytes: bytes,
         segment_id: str,
         seq: int,
@@ -118,21 +113,20 @@ class TTSConnectionManager:
         translation: str = "",
         error: str | None = None,
     ) -> None:
-        key = self._get_key(room_id, language_code, booth_id)
         header = {"segment_id": segment_id, "seq": seq, "caption": caption, "translation": translation, "error": error}
         header_bytes = json.dumps(header).encode("utf-8")
         # Frame: [1-byte version][4-byte length L][L-bytes header][audio_bytes]
         frame = struct.pack(">BI", 1, len(header_bytes)) + header_bytes + audio_bytes
 
         dead: list[WebSocket] = []
-        for ws in list(self._rooms.get(key, set())):
+        for ws in list(self._rooms.get(target_booth_id, set())):
             try:
                 await ws.send_bytes(frame)
             except Exception:
                 dead.append(ws)
         if dead:
             for ws in dead:
-                self.remove(ws, room_id, language_code, booth_id)
+                self.remove(ws, target_booth_id)
 
 
 manager = ConnectionManager()

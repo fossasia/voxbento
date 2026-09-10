@@ -259,13 +259,75 @@ async def list_event_booths(
     credentials: HTTPAuthorizationCredentials | None = Depends(security),
 ) -> dict:
     """List all booths for an event."""
-    _require_access(request, credentials, token)
+    try:
+        _require_access(request, credentials, token)
+    except HTTPException as orig_exc:
+        # Fallback to checking API Key
+        async with get_session() as session:
+            key = None
+            if credentials and credentials.scheme.lower() == 'bearer':
+                key = await verify_api_key(session, credentials.credentials)
+            if not key or (key.event.slug != event_slug and str(key.event_id) != event_slug):
+                raise orig_exc
+
     booth_list = await booths.list_booths_for_event(event_slug)
     for b in booth_list:
         mtx = b.get("mediamtx_path", "")
         if mtx:
             b["whip_url"] = f"{settings.mediamtx_whip_base}/{mtx}/whip"
             b["whep_url"] = f"{settings.mediamtx_whip_base}/{mtx}/whep"
+        b["type"] = "human"
+        b["label"] = f"{b.get('language_name', b.get('language_code', ''))} (Human)"
+
+    async with get_session() as session:
+        from sqlalchemy import select
+        from sqlalchemy.orm import selectinload
+
+        from portal.models import DBBooth, Event, Room
+
+        stmt = select(Event).where(Event.slug == event_slug).options(
+            selectinload(Event.rooms).selectinload(Room.translation_languages),
+            selectinload(Event.rooms).selectinload(Room.booths).selectinload(DBBooth.translation_languages)
+        )
+        event = await session.scalar(stmt)
+        if event:
+            for room in event.rooms:
+                human_languages = {b.language_code for b in room.booths}
+                
+                # Gather all requested AI target languages (from floor and human booths)
+                ai_targets = {}  # lang_code -> lang_name
+                if room.floor_tts_enabled and room.floor_translation_enabled:
+                    for tl in room.translation_languages:
+                        if tl.enabled and tl.tts_enabled:
+                            ai_targets[tl.language_code] = tl.language_name
+                            
+                for b in room.booths:
+                    if b.translation_enabled:
+                        for tl in b.translation_languages:
+                            if tl.enabled and tl.tts_enabled:
+                                ai_targets[tl.language_code] = tl.language_name
+
+                for lang_code, lang_name in ai_targets.items():
+                    if lang_code in human_languages:
+                        continue  # Human precedence: skip AI booth if human booth exists for this language
+                        
+                    target_booth_id = f"{event.slug}-{room.id}-ai-{lang_code}"
+                    
+                    ai_stream = {
+                        "id": target_booth_id,
+                        "room_id": room.id,
+                        "eventyay_room_id": room.eventyay_room_id,
+                        "language_code": lang_code,
+                        "language_name": lang_name,
+                        "type": "ai",
+                        "label": f"{lang_name} (AI)",
+                        "is_ai": True,
+                        "whip_url": None,
+                        "whep_url": None,
+                        "tts_ws_url": f"wss://{settings.public_base_url.replace('https://', '').replace('http://', '')}/ws/tts/{target_booth_id}",
+                    }
+                    booth_list.append(ai_stream)
+
     return {"event_slug": event_slug, "booths": booth_list}
 
 

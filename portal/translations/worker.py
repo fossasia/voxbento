@@ -116,14 +116,26 @@ class TranslationWorker:
                     # Target == Source: bypass translation/TTS entirely. It was already broadcast instantly
                     # on the base room. We just need to mark it done for anyone who might have connected
                     # specifically to the source-language target websocket.
-                    tasks.append(
-                        tts_manager.broadcast_bundle(
-                            room.id, lang.language_code, booth_id_str, b"", uuid_segment_id, seq, text, text, None
+                    async def _broadcast_source(u_seg_id, sq, txt, t_booth_id, tts_t_booth_id):
+                        from portal.websockets.manager import listener_manager
+                        await tts_manager.broadcast_bundle(
+                            tts_t_booth_id, b"", u_seg_id, sq, txt, txt, None
                         )
+                        await listener_manager.broadcast(t_booth_id, {"type": "translated_caption", "status": "final", "text": txt})
+
+                    target_booth_id = f"{event.slug}-{room.id}-{lang.language_code}"
+                    tts_target_booth_id = f"{event.slug}-{room.id}-ai-{lang.language_code}"
+                    tasks.append(
+                        _broadcast_source(uuid_segment_id, seq, text, target_booth_id, tts_target_booth_id)
                     )
                 else:
                     # Lazy translation: only translate if someone is actually listening!
-                    if not tts_manager.has_listeners(room.id, lang.language_code, booth_id_str):
+                    target_booth_id = f"{event.slug}-{room.id}-{lang.language_code}"
+                    tts_target_booth_id = f"{event.slug}-{room.id}-ai-{lang.language_code}"
+                    from portal.websockets.manager import listener_manager
+                    has_tts = tts_manager.has_listeners(tts_target_booth_id) if lang.tts_enabled else False
+                    has_text = listener_manager.has_listeners(target_booth_id)
+                    if not has_tts and not has_text:
                         continue
 
                     tasks.append(
@@ -141,6 +153,9 @@ class TranslationWorker:
                             booth_id_str,
                             uuid_segment_id,
                             seq,
+                            target_booth_id,
+                            tts_target_booth_id,
+                            lang.tts_enabled,
                         )
                     )
 
@@ -166,6 +181,9 @@ class TranslationWorker:
         booth_id_str: str,
         uuid_segment_id: str,
         seq: int,
+        target_booth_id: str = None,
+        tts_target_booth_id: str = None,
+        tts_enabled: bool = False,
     ):
         from portal.websockets.manager import tts_manager
 
@@ -175,7 +193,7 @@ class TranslationWorker:
         if q_depth >= 15:
             logger.warning(f"[{booth_id_str}] Queue full for {lang_code}. Dropping segment {seq}.")
             await tts_manager.broadcast_bundle(
-                room.id, lang_code, booth_id_str, b"", uuid_segment_id, seq, text, "", "pipeline_failed"
+                tts_target_booth_id, b"", uuid_segment_id, seq, text, "", "pipeline_failed"
             )
             return
 
@@ -208,7 +226,7 @@ class TranslationWorker:
                             f"[{booth_id_str}] Local model {model} is downloading. Dropping segment for {lang_code}."
                         )
                         await tts_manager.broadcast_bundle(
-                            room.id, lang_code, booth_id_str, b"", uuid_segment_id, seq, text, "", "model_downloading"
+                            tts_target_booth_id, b"", uuid_segment_id, seq, text, "", "model_downloading"
                         )
                         return
 
@@ -217,7 +235,7 @@ class TranslationWorker:
 
                 if not translated_text:
                     await tts_manager.broadcast_bundle(
-                        room.id, lang_code, booth_id_str, b"", uuid_segment_id, seq, text, "", "pipeline_failed"
+                        tts_target_booth_id, b"", uuid_segment_id, seq, text, "", "pipeline_failed"
                     )
                     return
 
@@ -231,8 +249,11 @@ class TranslationWorker:
 
                 # Broadcast Stage 1 (Text Ready) immediately with empty audio
                 await tts_manager.broadcast_bundle(
-                    room.id, lang_code, booth_id_str, b"", uuid_segment_id, seq, text, translated_text, None
+                    tts_target_booth_id, b"", uuid_segment_id, seq, text, translated_text, None
                 )
+                if target_booth_id:
+                    from portal.websockets.manager import listener_manager
+                    await listener_manager.broadcast(target_booth_id, {"type": "translated_caption", "status": "final", "text": translated_text})
 
             # Decrement queue early so slow TTS doesn't cause new incoming segments to be dropped
             LANGUAGE_QUEUES[lang_code] -= 1
@@ -244,26 +265,27 @@ class TranslationWorker:
             error = None
             audio_bytes = b""
 
-            try:
-                synth_bytes = await asyncio.wait_for(synthesize(room.id, translated_text, lang_code), timeout=timeout_s)
-                if synth_bytes:
-                    audio_bytes = synth_bytes
-            except asyncio.TimeoutError:
-                logger.warning(f"[{booth_id_str}] TTS timeout for {lang_code} after {timeout_s}s.")
-                error = "tts_timeout"
-            except Exception as e:
-                logger.error(f"[{booth_id_str}] TTS error for {lang_code}: {e}")
-                error = "tts_error"
+            if tts_enabled:
+                try:
+                    synth_bytes = await asyncio.wait_for(synthesize(room.id, translated_text, lang_code), timeout=timeout_s)
+                    if synth_bytes:
+                        audio_bytes = synth_bytes
+                except asyncio.TimeoutError:
+                    logger.warning(f"[{booth_id_str}] TTS timeout for {lang_code} after {timeout_s}s.")
+                    error = "tts_timeout"
+                except Exception as e:
+                    logger.error(f"[{booth_id_str}] TTS error for {lang_code}: {e}")
+                    error = "tts_error"
 
             # Broadcast Stage 2 (Audio Ready)
             await tts_manager.broadcast_bundle(
-                room.id, lang_code, booth_id_str, audio_bytes, uuid_segment_id, seq, text, translated_text, error
+                tts_target_booth_id, audio_bytes, uuid_segment_id, seq, text, translated_text, error
             )
 
         except Exception as e:
-            logger.error(f"[{booth_id_str}] Translation failed for {lang_code}: {e}")
+            logger.error(f"[{booth_id_str}] Translation failed for {lang_code}: {e} (api_key is None? {api_key is None})")
             await tts_manager.broadcast_bundle(
-                room.id, lang_code, booth_id_str, b"", uuid_segment_id, seq, text, "", "pipeline_failed"
+                tts_target_booth_id, b"", uuid_segment_id, seq, text, "", "pipeline_failed"
             )
         finally:
             if not queue_decremented:
