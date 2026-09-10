@@ -63,6 +63,9 @@ class ListenerConnectionManager:
     def add(self, ws: WebSocket, booth_id: str) -> None:
         self._rooms.setdefault(booth_id, set()).add(ws)
 
+    def has_listeners(self, booth_id: str) -> bool:
+        return bool(self._rooms.get(booth_id, set()))
+
     def remove(self, ws: WebSocket, booth_id: str) -> None:
         room = self._rooms.get(booth_id, set())
         room.discard(ws)
