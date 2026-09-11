@@ -120,6 +120,7 @@
           <option value="deepgram" {% if room.floor_transcription_provider == 'deepgram' %}selected{% endif %}>Deepgram</option>
           <option value="nvidia" {% if room.floor_transcription_provider == 'nvidia' %}selected{% endif %}>NVIDIA Parakeet</option>
           <option value="elevenlabs" {% if room.floor_transcription_provider == 'elevenlabs' %}selected{% endif %}>ElevenLabs</option>
+          <option value="atlascloud" {% if room.floor_transcription_provider == 'atlascloud' %}selected{% endif %}>Atlas Cloud</option>
         </select>
       </div>
       <div class="form-group" style="flex: 1;">
@@ -135,6 +136,7 @@
           <option value="parakeet-rnnt" data-provider="nvidia" {% if room.floor_transcription_model == 'parakeet-rnnt' %}selected{% endif %}>NVIDIA: parakeet-rnnt</option>
           <option value="parakeet-ctc" data-provider="nvidia" {% if room.floor_transcription_model == 'parakeet-ctc' %}selected{% endif %}>NVIDIA: parakeet-ctc</option>
           <option value="scribe_v2_realtime" data-provider="elevenlabs" {% if room.floor_transcription_model == 'scribe_v2_realtime' or room.floor_transcription_model == 'scribe_v2' %}selected{% endif %}>ElevenLabs: scribe_v2_realtime (Streaming)</option>
+          <option value="bytedance/seed-asr-2.0" data-provider="atlascloud" {% if room.floor_transcription_model == 'bytedance/seed-asr-2.0' %}selected{% endif %}>Atlas Cloud: Seed ASR 2.0</option>
         </select>
       </div>
       <div class="form-group form-group-btn" style="flex: 0; align-self: flex-end;">

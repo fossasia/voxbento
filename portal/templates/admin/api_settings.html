@@ -80,6 +80,17 @@
       </div>
     </div>
 
+    <div class="form-group" style="margin-bottom: 30px;">
+      <label for="atlascloud_api_key" style="display: block; font-weight: 600; margin-bottom: 8px; color: #374151;">Atlas Cloud API Key</label>
+      <input type="password" id="atlascloud_api_key" name="atlascloud_api_key" placeholder="{{ 'Configured' if event.encrypted_atlascloud_api_key else '' }}" value="" class="input" style="width: 100%; padding: 10px 12px; border: 1px solid #d1d5db; border-radius: 6px; box-sizing: border-box; font-family: monospace; font-size: 14px;">
+      <div style="margin-top: 6px; display: flex; align-items: center; justify-content: space-between;">
+        <p class="form-help" style="font-size: 0.85rem; color: #6b7280; margin: 0;">Required for Atlas Cloud Seed ASR 2.0</p>
+        <label style="font-size: 0.85rem; color: #ef4444; display: flex; align-items: center; gap: 4px; cursor: pointer;">
+          <input type="checkbox" name="clear_atlascloud_api_key" value="1"> Clear Key
+        </label>
+      </div>
+    </div>
+
     <div class="section-header" style="margin-top: 40px; padding-top: 30px; border-top: 1px solid #e5e7eb;">
       <h2>Translation Providers</h2>
     </div>

@@ -9,6 +9,7 @@ class ProviderEnum(str, Enum):
     DEEPGRAM = "deepgram"
     NVIDIA = "nvidia"
     ELEVENLABS = "elevenlabs"
+    ATLASCLOUD = "atlascloud"
 
 
 ALLOWED_MODELS: Dict[ProviderEnum, Set[str]] = {
@@ -17,4 +18,5 @@ ALLOWED_MODELS: Dict[ProviderEnum, Set[str]] = {
     ProviderEnum.DEEPGRAM: {"nova-2"},
     ProviderEnum.NVIDIA: {"parakeet-rnnt", "parakeet-ctc"},
     ProviderEnum.ELEVENLABS: {"scribe_v2_realtime"},
+    ProviderEnum.ATLASCLOUD: {"bytedance/seed-asr-2.0"},
 }

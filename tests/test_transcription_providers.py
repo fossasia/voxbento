@@ -13,6 +13,52 @@ from portal.transcription.providers.base import ProviderConfig, TranscriptionPro
 
 @pytest.mark.anyio
 class TestTranscriptionProviders:
+    async def test_atlascloud_process_chunk_submits_once_and_polls(self):
+        from portal.transcription.providers.atlascloud import AtlasCloudProvider
+
+        provider = AtlasCloudProvider()
+        config = ProviderConfig(api_key="fake")
+        submit_response = MagicMock()
+        submit_response.json.return_value = {"code": 200, "data": {"id": "prediction-1", "status": "created"}}
+        poll_response = MagicMock()
+        poll_response.json.return_value = {
+            "code": 200,
+            "data": {"id": "prediction-1", "status": "completed", "outputs": ["Hello from Atlas"]},
+        }
+        mock_client = MagicMock()
+        mock_client.post = AsyncMock(return_value=submit_response)
+        mock_client.get = AsyncMock(return_value=poll_response)
+
+        with (
+            patch("portal.transcription.providers.atlascloud.get_http_client", return_value=mock_client),
+            patch("portal.transcription.providers.atlascloud.asyncio.sleep", new_callable=AsyncMock),
+        ):
+            result = await provider.process_chunk(b"\x00" * 3200, "en-US", "bytedance/seed-asr-2.0", config)
+
+        assert result == "Hello from Atlas"
+        mock_client.post.assert_awaited_once()
+        mock_client.get.assert_awaited_once()
+        payload = mock_client.post.await_args.kwargs["json"]
+        assert payload["model"] == "bytedance/seed-asr-2.0"
+        assert payload["audio_url"].startswith("data:audio/wav;base64,")
+        assert payload["format"] == "wav"
+        assert payload["language"] == "en-US"
+
+    async def test_atlascloud_process_chunk_returns_empty_on_missing_key(self):
+        from portal.transcription.providers.atlascloud import AtlasCloudProvider
+
+        provider = AtlasCloudProvider()
+        with patch("portal.transcription.providers.atlascloud.get_http_client") as mock_get_client:
+            result = await provider.process_chunk(
+                b"\x00" * 100,
+                "en-US",
+                "bytedance/seed-asr-2.0",
+                ProviderConfig(api_key=None),
+            )
+
+        assert result == ""
+        mock_get_client.assert_not_called()
+
     async def test_pcm_to_wav_produces_valid_wav_header(self):
         result = pcm_to_wav(b"\x00" * 3200, sample_rate=16000)
         assert result.startswith(b"RIFF")

@@ -73,7 +73,7 @@ To transcribe or translate the original speakers without requiring external inte
 ### Pipeline Steps
 1. **Audio Ingest:** The worker uses FFmpeg to pull the live audio stream from MediaMTX via RTSP (`rtsp://mediamtx:8554/{event_slug}/{language_code}` or `rtsp://mediamtx:8554/{event_slug}/floor`).
 2. **Transcoding:** FFmpeg transcodes the audio to PCM S16LE (mono, 16kHz or 24kHz depending on the provider) and pipes it to the selected `TranscriptionProvider`.
-3. **Speech-to-Text (Transcription):** The provider sends audio to an AI service (OpenAI, Deepgram, ElevenLabs, NVIDIA, or Local Whisper). The `CaptionAggregator` receives raw text, splitting sentences and instantly broadcasting partial updates to listeners (`/ws/captions/{channel_id}`).
+3. **Speech-to-Text (Transcription):** The provider sends audio to an AI service (OpenAI, Deepgram, Atlas Cloud, ElevenLabs, NVIDIA, or Local Whisper). The Atlas Cloud adapter submits WAV chunks to Seed ASR 2.0 once and polls the asynchronous prediction. The `CaptionAggregator` receives raw text, splitting sentences and instantly broadcasting partial updates to listeners (`/ws/captions/{channel_id}`).
 4. **Finalization:** Once a full sentence is formed, the aggregator saves it to the database as a canonical `transcript_segment`.
 5. **Text-to-Text (Translation):** If target languages are enabled, the Translation Worker detects the finalized segment and spawns parallel requests to LLMs (Anthropic, Groq, Gemini) to translate the sentence. 
 6. **Broadcast:** Translations are saved to the database and immediately broadcast via the dedicated WebSocket (`/ws/translations/{channel_id}`).
@@ -134,7 +134,7 @@ Manages the booth. Assigns which interpreter is active, initiates handoffs, and 
 
 ## Live Captions
 
-When transcription is enabled for a booth, Voxbento pipes the active interpreter's audio to a transcription backend (Whisper, OpenAI, Deepgram, ElevenLabs, or NVIDIA Riva) and broadcasts the resulting text to all listeners in real time.
+When transcription is enabled for a booth, Voxbento pipes the active interpreter's audio to a transcription backend (Whisper, OpenAI, Deepgram, Atlas Cloud Seed ASR, ElevenLabs, or NVIDIA Riva) and broadcasts the resulting text to all listeners in real time.
 
 Captions are delivered over a dedicated WebSocket endpoint:
 
