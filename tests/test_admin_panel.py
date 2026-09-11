@@ -264,6 +264,86 @@ class TestEventCRUD:
         assert b"testcon" not in resp.content
 
     @pytest.mark.anyio
+    async def test_delete_event_with_a_relay_booth(self, admin_cookie, seed_event):
+        """Relay Settings sets rooms.relay_booth_id; the event must still be deletable."""
+        event, room, booth = seed_event
+        async with _client() as c:
+            resp = await c.post(
+                f"/admin/events/{event.id}/rooms/{room.id}/edit",
+                data={"form_section": "relay", "relay_booth_id": str(booth.id)},
+                cookies=admin_cookie,
+                follow_redirects=False,
+            )
+            assert resp.status_code == 303
+
+        # 303 alone does not prove the relay was stored, and without it stored
+        # this test would delete an ordinary event and miss the FK cycle.
+        from portal.database import get_room_by_id, get_session
+
+        async with get_session() as s:
+            assert (await get_room_by_id(s, room.id)).relay_booth_id == booth.id
+
+        async with _client() as c:
+            resp = await c.post(
+                f"/admin/events/{event.id}/delete",
+                cookies=admin_cookie,
+                follow_redirects=False,
+            )
+        assert resp.status_code == 303
+        async with _client() as c:
+            resp = await c.get("/admin/events/", cookies=admin_cookie)
+        assert b"testcon" not in resp.content
+
+    @pytest.mark.anyio
+    async def test_delete_event_rejects_a_room_coordinator(self, admin_cookie, seed_event):
+        """require_admin admits a room_coordinator for the whole event, and deleting one
+        now destroys transcripts and OAuth grant state. Match the API-key routes and
+        require an event owner."""
+        from portal.auth import create_user_token
+        from portal.database import create_room, create_user, get_session
+        from portal.models import RoomMembership
+
+        event, room, _ = seed_event
+        async with get_session() as s:
+            side = await create_room(s, event_id=event.id, display_name="Side Room")
+            carol = await create_user(s, email="carol@example.com", display_name="Carol")
+            s.add(RoomMembership(user_id=carol.id, room_id=side.id, role="room_coordinator"))
+            carol_id = carol.id
+
+        cookie = {"user_token": create_user_token(user_id=carol_id, email="carol@example.com")}
+        async with _client() as c:
+            # she really is a coordinator: her own room's page is allowed
+            allowed = await c.get(f"/admin/events/{event.id}/rooms/{side.id}/", cookies=cookie)
+            resp = await c.post(f"/admin/events/{event.id}/delete", cookies=cookie, follow_redirects=False)
+        assert allowed.status_code == 200, "fixture is wrong; she is not a coordinator"
+        assert resp.status_code == 403
+
+        from portal.database import get_event_by_id
+
+        async with get_session() as s:
+            assert await get_event_by_id(s, event.id) is not None
+
+    @pytest.mark.anyio
+    async def test_delete_event_allows_an_event_owner(self, seed_event):
+        """The tightened guard must still admit the event's own owner."""
+        from portal.auth import create_user_token
+        from portal.database import create_user, get_event_by_id, get_session
+        from portal.models import EventMembership
+
+        event, _, _ = seed_event
+        async with get_session() as s:
+            owner = await create_user(s, email="owner@example.com", display_name="Owner")
+            s.add(EventMembership(user_id=owner.id, event_id=event.id, role="event_owner"))
+            owner_id = owner.id
+
+        cookie = {"user_token": create_user_token(user_id=owner_id, email="owner@example.com")}
+        async with _client() as c:
+            resp = await c.post(f"/admin/events/{event.id}/delete", cookies=cookie, follow_redirects=False)
+        assert resp.status_code == 303
+        async with get_session() as s:
+            assert await get_event_by_id(s, event.id) is None
+
+    @pytest.mark.anyio
     async def test_event_not_found(self, admin_cookie):
         async with _client() as c:
             resp = await c.get("/admin/events/99999/", cookies=admin_cookie)

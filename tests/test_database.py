@@ -10,6 +10,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 
 import pytest
+import sqlalchemy as sa
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 # We import CRUD helpers and test them against our isolated test DB.
@@ -38,7 +39,17 @@ from portal.database import (
     list_users,
     redeem_invite_token,
 )
-from portal.models import Base, DBBooth, Event, InviteToken, Room, generate_token, utc_now
+from portal.models import (
+    Base,
+    DBBooth,
+    Event,
+    InviteToken,
+    Room,
+    TranscriptSegment,
+    TranscriptTranslation,
+    generate_token,
+    utc_now,
+)
 from portal.roles import ALL_ROLES
 
 # ---------------------------------------------------------------------------
@@ -154,6 +165,58 @@ async def test_delete_event(db: AsyncSession):
     ev = await create_event(db, slug="to-delete", display_name="Delete Me")
     assert await delete_event(db, ev.id) is True
     assert await get_event_by_id(db, ev.id) is None
+
+
+@pytest.mark.anyio
+async def test_delete_event_with_a_relay_booth(db: AsyncSession):
+    """rooms.relay_booth_id points at a booth that points back at the room."""
+    # A throwaway event with its own rooms first, so the target event's id cannot
+    # coincide with any of its room ids and hide a filter reading the wrong column.
+    other = await create_event(db, slug="ev-offset", display_name="Offset")
+    for i in range(3):
+        await create_room(db, event_id=other.id, display_name=f"Other {i}")
+    ev = await create_event(db, slug="ev-relay-del", display_name="Ev")
+    rooms = []
+    for code, name in (("en", "English"), ("es", "Spanish"), ("fr", "French")):
+        room = await create_room(db, event_id=ev.id, display_name=f"Room {code}")
+        booth = await create_booth(db, event_id=ev.id, room_id=room.id, language_code=code, language_name=name)
+        room.relay_booth_id = booth.id
+        db.add(InviteToken(booth_id=booth.id, token=generate_token(), role="interpreter"))
+        rooms.append((room, booth))
+    await db.flush()
+    assert all(room.id != ev.id for room, _ in rooms)
+
+    for room, booth in rooms:
+        assert len(await list_booths_for_room(db, room.id)) == 1
+        assert len(await list_tokens_for_booth(db, booth.id)) == 1
+
+    assert await delete_event(db, ev.id) is True
+    assert await get_event_by_id(db, ev.id) is None
+    for room, booth in rooms:
+        assert await get_room_by_id(db, room.id) is None
+        assert await get_booth_by_id(db, booth.id) is None
+        assert await list_booths_for_room(db, room.id) == []
+        assert await list_tokens_for_booth(db, booth.id) == []
+
+
+@pytest.mark.anyio
+async def test_delete_event_with_a_relay_booth_already_loaded(db: AsyncSession):
+    """Clearing only the column would leave the loaded relationship holding the cycle."""
+    from sqlalchemy import select as sa_select
+    from sqlalchemy.orm import joinedload
+
+    ev = await create_event(db, slug="ev-relay-loaded", display_name="Ev")
+    room = await create_room(db, event_id=ev.id, display_name="Room")
+    booth = await create_booth(db, event_id=ev.id, room_id=room.id, language_code="en", language_name="English")
+    room.relay_booth_id = booth.id
+    await db.flush()
+
+    loaded = await db.execute(sa_select(Room).where(Room.id == room.id).options(joinedload(Room.relay_booth)))
+    assert loaded.scalars().first().relay_booth is not None
+
+    assert await delete_event(db, ev.id) is True
+    assert await get_event_by_id(db, ev.id) is None
+    assert await get_room_by_id(db, room.id) is None
 
 
 @pytest.mark.anyio
@@ -628,6 +691,379 @@ async def test_cascade_delete_event_removes_rooms_and_booths(db: AsyncSession):
     await delete_event(db, ev.id)
     assert await get_room_by_id(db, room.id) is None
     assert await get_booth_by_id(db, booth.id) is None
+
+
+async def _seed_event_with_every_scoped_row(db: AsyncSession, slug: str) -> dict:
+    """Seed one row in every table that becomes unreachable when the event is deleted."""
+    from portal.database import create_user
+    from portal.models import (
+        BoothMembership,
+        BoothTranslationLanguage,
+        DeveloperAccount,
+        EventAPIKey,
+        EventMembership,
+        OAuthAuditLog,
+        OAuthAuthorizationCode,
+        OAuthClient,
+        OAuthConsentGrant,
+        OAuthToken,
+        RoomMembership,
+        RoomTranslationLanguage,
+        TranscriptSegment,
+        TranscriptTranslation,
+        UsageMetric,
+    )
+
+    now = utc_now()
+    ev = await create_event(db, slug=slug, display_name=slug)
+    room = await create_room(db, event_id=ev.id, display_name=f"{slug} Hall")
+    booth = await create_booth(db, event_id=ev.id, room_id=room.id, language_code="en", language_name="English")
+    user = await create_user(db, email=f"{slug}@example.com", display_name=slug)
+    await create_invite_token(db, booth_id=booth.id, role="interpreter")
+    db.add_all(
+        [
+            BoothMembership(user_id=user.id, booth_id=booth.id, role="interpreter"),
+            EventMembership(user_id=user.id, event_id=ev.id, role="event_owner"),
+            RoomMembership(user_id=user.id, room_id=room.id, role="room_coordinator"),
+            RoomTranslationLanguage(room_id=room.id, language_code="es", language_name="Spanish"),
+            BoothTranslationLanguage(booth_id=booth.id, language_code="es", language_name="Spanish"),
+            EventAPIKey(event_id=ev.id, name=slug, preview="pfx", key_hash=generate_token()),
+            UsageMetric(event_id=ev.id, metric_name="minutes", value=1),
+        ]
+    )
+    seg = TranscriptSegment(room_id=room.id, booth_id=booth.id, language_code="en", text="hello")
+    db.add(seg)
+    await db.flush()
+    db.add(TranscriptTranslation(segment_id=seg.id, language_code="es", text="hola"))
+
+    dev = DeveloperAccount(user_id=user.id, organization_name=slug)
+    db.add(dev)
+    await db.flush()
+    client = OAuthClient(developer_account_id=dev.id, client_id=f"cid-{slug}", name=slug)
+    db.add(client)
+    await db.flush()
+    tok = OAuthToken(
+        client_id=client.id,
+        user_id=user.id,
+        event_id=ev.id,
+        access_token_hash=generate_token(),
+        expires_at=now + timedelta(hours=1),
+    )
+    db.add(tok)
+    await db.flush()
+    db.add_all(
+        [
+            OAuthAuditLog(
+                token_id=tok.id,
+                client_id=client.id,
+                event_id=ev.id,
+                action="token.issued",
+                request_path="/oauth/token",
+                status_code=200,
+            ),
+            OAuthConsentGrant(client_id=client.id, user_id=user.id, event_id=ev.id),
+            OAuthAuthorizationCode(
+                client_id=client.id,
+                user_id=user.id,
+                event_id=ev.id,
+                code_hash=generate_token(),
+                code_challenge="c" * 43,
+                code_challenge_method="S256",
+                redirect_uri="https://example.com/cb",
+                expires_at=now + timedelta(minutes=5),
+            ),
+        ]
+    )
+    await db.flush()
+    return {
+        "event": ev.id,
+        "room": room.id,
+        "booth": booth.id,
+        "user": user.id,
+        "segment": seg.id,
+        "token": tok.id,
+        "client": client.id,
+    }
+
+
+async def _scoped_row_counts(db: AsyncSession, ids: dict) -> dict[str, int]:
+    """Count rows still tied to this event, room, booth or segment."""
+    from sqlalchemy import text
+
+    queries = {
+        "events": ("events", "id = :event"),
+        "rooms": ("rooms", "event_id = :event"),
+        "booths": ("booths", "event_id = :event"),
+        "invite_tokens": ("invite_tokens", "booth_id = :booth"),
+        "booth_memberships": ("booth_memberships", "booth_id = :booth"),
+        "booth_translation_languages": ("booth_translation_languages", "booth_id = :booth"),
+        "room_translation_languages": ("room_translation_languages", "room_id = :room"),
+        "event_api_keys": ("event_api_keys", "event_id = :event"),
+        "usage_metrics": ("usage_metrics", "event_id = :event"),
+        "transcript_segments": ("transcript_segments", "room_id = :room"),
+        "transcript_translations": ("transcript_translations", "segment_id = :segment"),
+        "event_memberships": ("event_memberships", "event_id = :event"),
+        "room_memberships": ("room_memberships", "room_id = :room"),
+        "oauth_tokens": ("oauth_tokens", "event_id = :event"),
+        "oauth_consent_grants": ("oauth_consent_grants", "event_id = :event"),
+        "oauth_authorization_codes": ("oauth_authorization_codes", "event_id = :event"),
+        "oauth_audit_logs": ("oauth_audit_logs", "event_id = :event OR token_id = :token"),
+    }
+    out = {}
+    for label, (table, where) in queries.items():
+        out[label] = (await db.execute(text(f"SELECT COUNT(*) FROM {table} WHERE {where}"), ids)).scalar()
+    return out
+
+
+@pytest.mark.anyio
+async def test_delete_event_removes_every_scoped_row(db: AsyncSession):
+    """PRAGMA foreign_keys is 0, so ondelete= never fires and only ORM cascades run.
+
+    Everything scoped to the event must still go, or the rows outlive it and a reused
+    id later resolves them against unrelated data.
+    """
+    ids = await _seed_event_with_every_scoped_row(db, "purge")
+    before = await _scoped_row_counts(db, ids)
+    assert all(n == 1 for n in before.values()), before
+
+    assert await delete_event(db, ids["event"]) is True
+    after = await _scoped_row_counts(db, ids)
+    assert after == dict.fromkeys(before, 0), {k: v for k, v in after.items() if v}
+
+
+@pytest.mark.anyio
+async def test_delete_event_keeps_the_oauth_audit_trail(db: AsyncSession):
+    """oauth_audit_logs has SET NULL on every foreign key, so the row outlives the event.
+
+    Deleting the rows instead would destroy an audit trail the schema asks us to keep.
+    """
+    from sqlalchemy import text
+
+    ids = await _seed_event_with_every_scoped_row(db, "audit")
+    assert await delete_event(db, ids["event"]) is True
+
+    rows = (await db.execute(text("SELECT token_id, client_id, event_id, action FROM oauth_audit_logs"))).all()
+    assert len(rows) == 1, rows
+    token_id, client_id, event_id, action = rows[0]
+    assert (token_id, event_id) == (None, None)
+    assert action == "token.issued"
+    # the client is not event scoped, so its reference must survive untouched
+    assert client_id == ids["client"]
+
+
+@pytest.mark.anyio
+async def test_delete_event_with_its_own_relay_booth(db: AsyncSession):
+    """rooms.relay_booth_id -> booths.id and booths.room_id -> rooms.id form a cycle.
+
+    Clearing the pointer first is what lets the unit of work order the deletes at all.
+    """
+    ev = await create_event(db, slug="ev-own-relay", display_name="Ev")
+    room = await create_room(db, event_id=ev.id, display_name="Hall")
+    booth = await create_booth(db, event_id=ev.id, room_id=room.id, language_code="en", language_name="English")
+    room.relay_booth_id = booth.id
+    await db.flush()
+
+    assert await delete_event(db, ev.id) is True
+    assert await get_event_by_id(db, ev.id) is None
+    assert await get_room_by_id(db, room.id) is None
+    assert await get_booth_by_id(db, booth.id) is None
+
+
+@pytest.mark.anyio
+async def test_delete_event_with_its_own_relay_booth_already_loaded(db: AsyncSession):
+    """Same cycle, but with the relay_booth relationship already in the identity map."""
+    from sqlalchemy import select as sa_select
+    from sqlalchemy.orm import joinedload
+
+    ev = await create_event(db, slug="ev-own-relay-loaded", display_name="Ev")
+    room = await create_room(db, event_id=ev.id, display_name="Hall")
+    booth = await create_booth(db, event_id=ev.id, room_id=room.id, language_code="en", language_name="English")
+    room.relay_booth_id = booth.id
+    await db.flush()
+    loaded = await db.execute(sa_select(Room).where(Room.id == room.id).options(joinedload(Room.relay_booth)))
+    assert loaded.scalars().first().relay_booth is not None
+
+    assert await delete_event(db, ev.id) is True
+    assert await get_room_by_id(db, room.id) is None
+
+
+@pytest.mark.anyio
+async def test_delete_event_clears_a_cross_event_relay_pointer(db: AsyncSession):
+    """admin_edit_room stores relay_booth_id unvalidated, so it can cross events.
+
+    Scoping the clear by the room's event instead of by booth would leave the surviving
+    event's room pointing at a booth that no longer exists.
+    """
+    survivor = await create_event(db, slug="ev-survivor", display_name="Survivor")
+    doomed = await create_event(db, slug="ev-doomed", display_name="Doomed")
+    survivor_room = await create_room(db, event_id=survivor.id, display_name="Survivor Hall")
+    doomed_room = await create_room(db, event_id=doomed.id, display_name="Doomed Hall")
+    doomed_booth = await create_booth(
+        db, event_id=doomed.id, room_id=doomed_room.id, language_code="en", language_name="English"
+    )
+    survivor_room.relay_booth_id = doomed_booth.id
+    await db.flush()
+
+    assert await delete_event(db, doomed.id) is True
+    fresh = await get_room_by_id(db, survivor_room.id)
+    assert fresh is not None, "the surviving event's room must not be deleted"
+    assert fresh.relay_booth_id is None
+
+
+@pytest.mark.anyio
+async def test_delete_event_removes_a_segment_reached_only_by_its_booth(db: AsyncSession):
+    """transcript_segments reaches the event by room_id AND booth_id, and they can differ.
+
+    admin_create_booth takes both ids from the URL without checking that the room belongs
+    to the event, so a booth owned here can sit in another event's room. Predicating on
+    room_id alone leaves the segment pointing at a booth id SQLite is free to reuse.
+    """
+    other = await create_event(db, slug="ev-seg-other", display_name="Other")
+    other_room = await create_room(db, event_id=other.id, display_name="Other Hall")
+    ev = await create_event(db, slug="ev-seg-owner", display_name="Owner")
+    # booth owned by ev, sitting in the other event's room
+    booth = await create_booth(db, event_id=ev.id, room_id=other_room.id, language_code="en", language_name="English")
+    seg = TranscriptSegment(room_id=other_room.id, booth_id=booth.id, language_code="en", text="cross")
+    db.add(seg)
+    await db.flush()
+    seg_id = seg.id
+
+    assert await delete_event(db, ev.id) is True
+    assert await get_booth_by_id(db, booth.id) is None
+    assert (
+        await db.execute(sa.select(TranscriptSegment).where(TranscriptSegment.id == seg_id))
+    ).scalars().first() is None
+    # the other event's room is untouched
+    assert await get_room_by_id(db, other_room.id) is not None
+
+
+@pytest.mark.anyio
+async def test_delete_room_removes_its_transcripts_and_memberships(db: AsyncSession):
+    """Anything delete_room strands can never be reached again.
+
+    delete_event only finds these rows through the event's rooms, so a row left behind
+    here outlives the event too, holding a room_id SQLite can hand out again.
+    """
+    from portal.database import create_user
+    from portal.models import RoomMembership
+
+    ev = await create_event(db, slug="ev-room-purge", display_name="Ev")
+    room = await create_room(db, event_id=ev.id, display_name="Hall")
+    booth = await create_booth(db, event_id=ev.id, room_id=room.id, language_code="en", language_name="English")
+    user = await create_user(db, email="rp@example.com", display_name="RP")
+    db.add(RoomMembership(user_id=user.id, room_id=room.id, role="room_coordinator"))
+    seg = TranscriptSegment(room_id=room.id, booth_id=booth.id, language_code="en", text="hi")
+    db.add(seg)
+    await db.flush()
+    db.add(TranscriptTranslation(segment_id=seg.id, language_code="es", text="hola"))
+    await db.flush()
+    room_id, seg_id = room.id, seg.id
+
+    assert await delete_room(db, room_id) is True
+    left_seg = (await db.execute(sa.select(TranscriptSegment).where(TranscriptSegment.id == seg_id))).scalars().all()
+    left_tr = (
+        (await db.execute(sa.select(TranscriptTranslation).where(TranscriptTranslation.segment_id == seg_id)))
+        .scalars()
+        .all()
+    )
+    left_rm = (await db.execute(sa.select(RoomMembership).where(RoomMembership.room_id == room_id))).scalars().all()
+    assert (left_seg, left_tr, left_rm) == ([], [], [])
+
+
+@pytest.mark.anyio
+async def test_delete_room_removes_booth_translation_languages(db: AsyncSession):
+    """The booth delete in delete_room is a Core bulk delete, so no ORM cascade runs."""
+    from portal.models import BoothTranslationLanguage
+
+    ev = await create_event(db, slug="ev-btl", display_name="Ev")
+    room = await create_room(db, event_id=ev.id, display_name="Hall")
+    booth = await create_booth(db, event_id=ev.id, room_id=room.id, language_code="en", language_name="English")
+    db.add(BoothTranslationLanguage(booth_id=booth.id, language_code="es", language_name="Spanish"))
+    await db.flush()
+
+    assert await delete_room(db, room.id) is True
+    left = (
+        (await db.execute(sa.select(BoothTranslationLanguage).where(BoothTranslationLanguage.booth_id == booth.id)))
+        .scalars()
+        .all()
+    )
+    assert left == []
+
+
+@pytest.mark.anyio
+async def test_delete_room_clears_another_rooms_relay_pointer(db: AsyncSession):
+    """A second room can relay from this room's booths; those pointers go too."""
+    ev = await create_event(db, slug="ev-relay-rm", display_name="Ev")
+    doomed = await create_room(db, event_id=ev.id, display_name="Doomed")
+    other = await create_room(db, event_id=ev.id, display_name="Other")
+    booth = await create_booth(db, event_id=ev.id, room_id=doomed.id, language_code="en", language_name="English")
+    other.relay_booth_id = booth.id
+    await db.flush()
+
+    assert await delete_room(db, doomed.id) is True
+    fresh = await get_room_by_id(db, other.id)
+    assert fresh is not None
+    assert fresh.relay_booth_id is None
+
+
+@pytest.mark.anyio
+async def test_delete_event_clears_a_cross_event_parent_token(db: AsyncSession):
+    """oauth_tokens.parent_token_id is SET NULL, which SQLite never enforces.
+
+    No current path builds a chain across events, so this guards the invariant rather
+    than a reachable bug.
+    """
+    from portal.database import create_user
+    from portal.models import DeveloperAccount, OAuthClient, OAuthToken
+
+    doomed = await create_event(db, slug="ev-tok-doomed", display_name="Doomed")
+    keep = await create_event(db, slug="ev-tok-keep", display_name="Keep")
+    user = await create_user(db, email="tok@example.com", display_name="Tok")
+    dev = DeveloperAccount(user_id=user.id, organization_name="Org")
+    db.add(dev)
+    await db.flush()
+    client = OAuthClient(developer_account_id=dev.id, client_id="cid-tok", name="Tok")
+    db.add(client)
+    await db.flush()
+    parent = OAuthToken(
+        client_id=client.id,
+        user_id=user.id,
+        event_id=doomed.id,
+        access_token_hash=generate_token(),
+        expires_at=utc_now() + timedelta(hours=1),
+    )
+    db.add(parent)
+    await db.flush()
+    child = OAuthToken(
+        client_id=client.id,
+        user_id=user.id,
+        event_id=keep.id,
+        access_token_hash=generate_token(),
+        parent_token_id=parent.id,
+        expires_at=utc_now() + timedelta(hours=1),
+    )
+    db.add(child)
+    await db.flush()
+    child_id = child.id
+
+    assert await delete_event(db, doomed.id) is True
+    fresh = (await db.execute(sa.select(OAuthToken).where(OAuthToken.id == child_id))).scalars().first()
+    assert fresh is not None, "the surviving event's token must not be deleted"
+    assert fresh.parent_token_id is None
+
+
+@pytest.mark.anyio
+async def test_delete_event_leaves_another_events_rows_alone(db: AsyncSession):
+    """A subquery reading the wrong column would purge every event, not just this one."""
+    keep = await _seed_event_with_every_scoped_row(db, "keep")
+    drop = await _seed_event_with_every_scoped_row(db, "drop")
+    assert keep["event"] != drop["event"]
+
+    keep_before = await _scoped_row_counts(db, keep)
+    assert await delete_event(db, drop["event"]) is True
+
+    assert await _scoped_row_counts(db, drop) == dict.fromkeys(keep_before, 0)
+    assert await _scoped_row_counts(db, keep) == keep_before
 
 
 @pytest.mark.anyio

@@ -32,14 +32,20 @@ from portal.models import (
     AuthToken,
     Base,
     BoothMembership,
+    BoothTranslationLanguage,
     DBBooth,
     Event,
     EventAPIKey,
     EventMembership,
     InviteToken,
+    OAuthAuditLog,
+    OAuthAuthorizationCode,
+    OAuthConsentGrant,
+    OAuthToken,
     Room,
     RoomMembership,
     TranscriptSegment,
+    TranscriptTranslation,
     UsageMetric,
     User,
     generate_token,
@@ -174,6 +180,50 @@ async def delete_event(session: AsyncSession, event_id: int) -> bool:
     ev = await get_event_by_id(session, event_id)
     if ev is None:
         return False
+    # SQLite FKs are OFF, so the ondelete= declarations never fire and only children
+    # reachable through an ORM cascade go. Clear the rest explicitly, as delete_room does.
+    room_ids = select(Room.id).where(Room.event_id == event_id)
+    booth_ids = select(DBBooth.id).where(DBBooth.event_id == event_id)
+    # transcript_segments reaches the event through room_id AND booth_id, and the two can
+    # disagree: admin_create_booth takes both ids from the URL without checking that the
+    # room belongs to the event. Predicating on room_id alone leaves a segment whose booth
+    # was ours pointing at a freed booth id.
+    segment_scope = or_(TranscriptSegment.room_id.in_(room_ids), TranscriptSegment.booth_id.in_(booth_ids))
+    segment_ids = select(TranscriptSegment.id).where(segment_scope)
+    token_ids = select(OAuthToken.id).where(OAuthToken.event_id == event_id)
+
+    # Break the rooms.relay_booth_id -> booths.id <-> booths.room_id -> rooms.id cycle.
+    # Scope by booth, not by the room's event: admin_edit_room assigns relay_booth_id
+    # straight from the form, so a room in another event can point at one of these booths.
+    # Assign the relationship, not the column. The unit of work builds its delete graph
+    # from mapper state, so a Room still in the identity map keeps the stale edge and
+    # raises CircularDependencyError no matter what the row now says.
+    relaying = await session.execute(select(Room).where(Room.relay_booth_id.in_(booth_ids)))
+    for room in relaying.scalars().all():
+        room.relay_booth = None
+    await session.flush()
+
+    # oauth_audit_logs is the exception: every foreign key on it is SET NULL and nullable,
+    # so the trail is meant to outlive what it refers to. Null the references rather than
+    # delete the rows, and do it while the tokens still exist so the subquery matches.
+    await session.execute(sa.update(OAuthAuditLog).where(OAuthAuditLog.token_id.in_(token_ids)).values(token_id=None))
+    await session.execute(sa.update(OAuthAuditLog).where(OAuthAuditLog.event_id == event_id).values(event_id=None))
+
+    await session.execute(sa.delete(TranscriptTranslation).where(TranscriptTranslation.segment_id.in_(segment_ids)))
+    await session.execute(sa.delete(TranscriptSegment).where(segment_scope))
+    await session.execute(sa.delete(RoomMembership).where(RoomMembership.room_id.in_(room_ids)))
+    await session.execute(sa.delete(EventMembership).where(EventMembership.event_id == event_id))
+    await session.execute(sa.delete(OAuthAuthorizationCode).where(OAuthAuthorizationCode.event_id == event_id))
+    await session.execute(sa.delete(OAuthConsentGrant).where(OAuthConsentGrant.event_id == event_id))
+    # No current path builds a refresh chain across events (oauth.py copies event_id into
+    # the rotated token), but nothing in the schema forbids one, so do not let that
+    # invariant live in another file.
+    await session.execute(
+        sa.update(OAuthToken).where(OAuthToken.parent_token_id.in_(token_ids)).values(parent_token_id=None)
+    )
+    await session.execute(sa.delete(OAuthToken).where(OAuthToken.event_id == event_id))
+    await session.flush()
+
     await session.delete(ev)
     await session.flush()
     return True
@@ -237,8 +287,10 @@ async def delete_room(session: AsyncSession, room_id: int) -> bool:
     if room is None:
         return False
     # Break the circular FK cycle: rooms.relay_booth_id → booths.id ↔ booths.room_id → rooms.id
-    # null out relay_booth_id to remove the back-reference
-    room.relay_booth_id = None
+    # Assign the relationship, not the column, so a Room already in the identity map
+    # drops the edge too. Other rooms can relay from this room's booths, so clear those
+    # as well or they point at booths that are about to go.
+    room.relay_booth = None
     await session.flush()
     # delete all booths belonging to this room explicitly
     from sqlalchemy import delete as sa_delete
@@ -246,8 +298,23 @@ async def delete_room(session: AsyncSession, room_id: int) -> bool:
 
     # First delete booth memberships and tokens to avoid orphans since SQLite FKs are OFF
     booth_ids = sa_select(DBBooth.id).where(DBBooth.room_id == room_id)
+    relaying = await session.execute(select(Room).where(Room.relay_booth_id.in_(booth_ids)))
+    for other in relaying.scalars().all():
+        other.relay_booth = None
+    await session.flush()
     await session.execute(sa_delete(BoothMembership).where(BoothMembership.booth_id.in_(booth_ids)))
     await session.execute(sa_delete(InviteToken).where(InviteToken.booth_id.in_(booth_ids)))
+    # sa_delete(DBBooth) below is a Core bulk delete, so the ORM cascade on
+    # DBBooth.translation_languages never runs and these rows would outlive the booths.
+    await session.execute(sa_delete(BoothTranslationLanguage).where(BoothTranslationLanguage.booth_id.in_(booth_ids)))
+    # Transcripts and room memberships too, or they outlive the room holding a freed
+    # room_id. delete_event only reaches these through the event's rooms, so anything
+    # stranded here can never be cleaned up later.
+    segment_scope = or_(TranscriptSegment.room_id == room_id, TranscriptSegment.booth_id.in_(booth_ids))
+    segment_ids = select(TranscriptSegment.id).where(segment_scope)
+    await session.execute(sa_delete(TranscriptTranslation).where(TranscriptTranslation.segment_id.in_(segment_ids)))
+    await session.execute(sa_delete(TranscriptSegment).where(segment_scope))
+    await session.execute(sa_delete(RoomMembership).where(RoomMembership.room_id == room_id))
     await session.execute(sa_delete(DBBooth).where(DBBooth.room_id == room_id))
     await session.flush()
     # now safe to delete the room
