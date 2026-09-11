@@ -171,6 +171,20 @@ def test_interpreter_booth_jitsi_domain_matches_base_url_host():
     assert f"data-jitsi-domain='{expected_host}'".encode() in res.content
 
 
+def test_interpreter_booth_relay_attr_is_empty_when_unconfigured():
+    """A booth with no relay must ship an empty attribute, not the string "None".
+
+    Jinja's ``default("")`` substitutes for an undefined name only, so an explicit
+    None reaches the page as "None". interpreter-booth.js reads the attribute as
+    ``dataset.relayWhepUrl || ''``, where "None" is truthy, so the relay branch runs
+    on a booth that has no relay.
+    """
+    res = client.get("/interpreter/myevent/1/en", cookies=_interpreter_cookie("myevent", "en"))
+    assert res.status_code == 200, res.text
+    assert b"data-relay-whep-url='None'" not in res.content
+    assert b"data-relay-whep-url=''" in res.content
+
+
 def test_auth_token_no_password():
     """When BOOTH_ACCESS_TOKEN is empty, any (or empty) token grants a JWT."""
     res = client.post("/api/auth/token", json={"token": ""})

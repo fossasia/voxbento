@@ -365,6 +365,14 @@ async def delete_booth(session: AsyncSession, booth_id: int) -> bool:
     booth = await get_booth_by_id(session, booth_id)
     if booth is None:
         return False
+    # rooms.relay_booth_id declares ondelete="SET NULL", but SQLite runs with FKs OFF
+    # so clear it here. Assign the relationship, not the column, so an already-loaded
+    # relay_booth goes too. Left dangling, a reused rowid silently makes the room relay
+    # from whichever booth next takes that id.
+    result = await session.execute(select(Room).where(Room.relay_booth_id == booth_id))
+    for room in result.scalars().all():
+        room.relay_booth = None
+    await session.flush()
     await session.delete(booth)
     await session.flush()
     return True

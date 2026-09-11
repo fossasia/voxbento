@@ -394,6 +394,76 @@ async def test_delete_booth(db: AsyncSession):
 
 
 @pytest.mark.anyio
+async def test_delete_booth_clears_relay_pointer(db: AsyncSession):
+    """A room relaying from a deleted booth must not keep pointing at its id.
+
+    SQLite reuses rowids, so a left-behind pointer is later satisfied by whatever
+    booth next takes that id, in any room and any language.
+    """
+    ev = await create_event(db, slug="ev-relay-booth-del", display_name="Ev")
+    hall_a = await create_room(db, event_id=ev.id, display_name="Hall A")
+    hall_b = await create_room(db, event_id=ev.id, display_name="Hall B")
+    # Throwaway booths first, so the relay booth's id cannot equal a room id and
+    # hide a filter reading the wrong column.
+    for code in ("de", "es", "it"):
+        await create_booth(db, event_id=ev.id, room_id=hall_b.id, language_code=code, language_name=code)
+    relay = await create_booth(db, event_id=ev.id, room_id=hall_a.id, language_code="en", language_name="English")
+    # both rooms relay from the same booth, so a single-row update would not be enough
+    hall_a.relay_booth_id = relay.id
+    hall_b.relay_booth_id = relay.id
+    await db.flush()
+    # ids must not coincide, or a filter reading the wrong column would still pass
+    assert relay.id not in (hall_a.id, hall_b.id)
+
+    assert await delete_booth(db, relay.id) is True
+    assert await get_booth_by_id(db, relay.id) is None
+    assert (await get_room_by_id(db, hall_a.id)).relay_booth_id is None
+    assert (await get_room_by_id(db, hall_b.id)).relay_booth_id is None
+
+
+@pytest.mark.anyio
+async def test_delete_booth_clears_relay_pointer_when_already_loaded(db: AsyncSession):
+    """Clearing only the column would leave a loaded relay_booth in place."""
+    from sqlalchemy import select as sa_select
+    from sqlalchemy.orm import joinedload
+
+    ev = await create_event(db, slug="ev-relay-booth-loaded", display_name="Ev")
+    room = await create_room(db, event_id=ev.id, display_name="Hall")
+    relay = await create_booth(db, event_id=ev.id, room_id=room.id, language_code="en", language_name="English")
+    room.relay_booth_id = relay.id
+    await db.flush()
+
+    loaded = await db.execute(sa_select(Room).where(Room.id == room.id).options(joinedload(Room.relay_booth)))
+    assert loaded.scalars().first().relay_booth is not None
+
+    assert await delete_booth(db, relay.id) is True
+    fresh = await get_room_by_id(db, room.id)
+    assert fresh.relay_booth_id is None
+    assert fresh.relay_booth is None
+
+
+@pytest.mark.anyio
+async def test_delete_booth_leaves_other_rooms_relay_alone(db: AsyncSession):
+    """Only the rooms relaying from the deleted booth may be touched."""
+    ev = await create_event(db, slug="ev-relay-booth-scope", display_name="Ev")
+    keep_room = await create_room(db, event_id=ev.id, display_name="Keep")
+    drop_room = await create_room(db, event_id=ev.id, display_name="Drop")
+    keep_relay = await create_booth(
+        db, event_id=ev.id, room_id=keep_room.id, language_code="en", language_name="English"
+    )
+    drop_relay = await create_booth(
+        db, event_id=ev.id, room_id=drop_room.id, language_code="fr", language_name="French"
+    )
+    keep_room.relay_booth_id = keep_relay.id
+    drop_room.relay_booth_id = drop_relay.id
+    await db.flush()
+
+    assert await delete_booth(db, drop_relay.id) is True
+    assert (await get_room_by_id(db, drop_room.id)).relay_booth_id is None
+    assert (await get_room_by_id(db, keep_room.id)).relay_booth_id == keep_relay.id
+
+
+@pytest.mark.anyio
 async def test_delete_booth_not_found(db: AsyncSession):
     assert await delete_booth(db, 99999) is False
 
