@@ -7,6 +7,7 @@ import os
 os.environ["BOOTH_ACCESS_TOKEN"] = ""
 os.environ["ADMIN_PASSWORD"] = "test-admin-pass"
 
+import bcrypt
 import pytest
 
 from portal.auth import create_admin_token, create_user_token, hash_password, verify_password
@@ -65,6 +66,19 @@ class TestPasswordHashing:
     async def test_wrong_password_fails(self, setup_db):
         hashed = hash_password("correct")
         assert not verify_password("wrong", hashed)
+
+    @pytest.mark.anyio
+    async def test_verify_ignores_surrounding_whitespace(self, setup_db):
+        hashed = hash_password("securepass123")
+        assert verify_password(" securepass123\n", hashed)
+
+    @pytest.mark.anyio
+    async def test_verify_accepts_legacy_hash_built_from_untrimmed_password(self, setup_db):
+        """A hash created before whitespace-trimming was introduced was built from the
+        raw, unstripped string. Submitting that exact same raw string must still verify,
+        so existing users aren't locked out by this change."""
+        legacy_hash = bcrypt.hashpw(b"secretpw ", bcrypt.gensalt()).decode()
+        assert verify_password("secretpw ", legacy_hash)
 
 
 # ---------------------------------------------------------------------------
@@ -160,6 +174,21 @@ class TestUserLogin:
         assert resp.status_code == 303
         assert resp.headers["location"] == "/account"
         assert "user_token" in resp.headers.get("set-cookie", "")
+
+    @pytest.mark.anyio
+    async def test_login_strips_surrounding_whitespace(self, setup_db):
+        await _create_test_user(email="login-ws@example.com", password="securepass123")
+        async with _client() as c:
+            resp = await c.post(
+                "/login",
+                data={
+                    "email": "login-ws@example.com",
+                    "password": " securepass123\n",
+                },
+                follow_redirects=False,
+            )
+        assert resp.status_code == 303
+        assert resp.headers["location"] == "/account"
 
     @pytest.mark.anyio
     async def test_login_with_wrong_password(self, setup_db):

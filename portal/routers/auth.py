@@ -113,13 +113,16 @@ async def register_submit(request: Request):
     form = await request.form()
     email = form.get("email", "").strip().lower()
     display_name = form.get("display_name", "").strip()
-    password = form.get("password", "")
+    password_raw = form.get("password", "")
+    password = password_raw.strip()
 
     errors = []
     if not email or "@" not in email:
         errors.append("Valid email is required.")
     if not display_name:
         errors.append("Display name is required.")
+    if password_raw and not password:
+        errors.append("Password cannot be blank or only whitespace.")
 
     if not errors:
         async with get_session() as session:
@@ -199,6 +202,8 @@ async def user_login_page(request: Request, next: str = ""):
 async def user_login_submit(request: Request):
     form = await request.form()
     email = form.get("email", "").strip().lower()
+    # Not stripped here: verify_password() normalizes it, but also needs the
+    # raw value as a fallback for hashes created before whitespace-trimming.
     password = form.get("password", "")
     next_url = form.get("next_url", "")
 
@@ -343,7 +348,7 @@ async def reset_password_page(request: Request, token: str):
 @router.post("/auth/reset/{token}")
 async def reset_password_submit(request: Request, token: str):
     form = await request.form()
-    password = form.get("password", "")
+    password = form.get("password", "").strip()
 
     if len(password) < 8:
         return templates.TemplateResponse(
@@ -444,7 +449,7 @@ async def account_page(request: Request):
 async def set_password_api(request: Request):
     user_token = await require_user(request)
     data = await request.json()
-    password = data.get("password", "")
+    password = data.get("password", "").strip()
 
     if len(password) < 8:
         raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
@@ -460,6 +465,8 @@ async def set_password_api(request: Request):
 async def remove_password_api(request: Request):
     user_token = await require_user(request)
     data = await request.json()
+    # Not stripped here: verify_password() normalizes it, but also needs the
+    # raw value as a fallback for hashes created before whitespace-trimming.
     password = data.get("password", "")
 
     async with get_session() as session:
