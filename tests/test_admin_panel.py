@@ -300,6 +300,45 @@ class TestEventCRUD:
             resp = await c.get("/admin/events/99999/", cookies=admin_cookie)
         assert resp.status_code == 404
 
+    @pytest.mark.anyio
+    async def test_delete_event_not_found(self, admin_cookie):
+        async with _client() as c:
+            resp = await c.post(
+                "/admin/events/99999/delete",
+                cookies=admin_cookie,
+                follow_redirects=False,
+            )
+        assert resp.status_code == 404
+        assert resp.json()["detail"] == "Event not found."
+
+    @pytest.mark.anyio
+    async def test_delete_event_database_error(self, admin_cookie, seed_event, monkeypatch):
+        from sqlalchemy.exc import SQLAlchemyError
+
+        event, _, _ = seed_event
+
+        async def mock_delete_event(session, event_id):
+            raise SQLAlchemyError("Simulated DB failure")
+
+        monkeypatch.setattr("portal.routers.admin.delete_event", mock_delete_event)
+
+        async with _client() as c:
+            resp = await c.post(
+                f"/admin/events/{event.id}/delete",
+                cookies=admin_cookie,
+                follow_redirects=False,
+            )
+        assert resp.status_code == 303
+        assert resp.headers["location"] == "/admin/events/?error=delete_failed"
+
+        # Verify redirect page renders error message and event was not deleted
+        async with _client() as c:
+            resp = await c.get("/admin/events/?error=delete_failed", cookies=admin_cookie)
+        assert resp.status_code == 200
+        assert b"Failed to delete event" in resp.content
+        assert b"The event was not deleted." in resp.content
+        assert b"testcon" in resp.content
+
 
 # ---------------------------------------------------------------------------
 # Room CRUD
