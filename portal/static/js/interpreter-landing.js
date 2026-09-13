@@ -25,6 +25,8 @@ let micAnalyser = null
 let loopbackRecorder = null
 let loopbackAudio = null
 let loopbackTestToken = 0
+let micTestGen = 1
+let loopbackTestGen = 1
 
 document.addEventListener('DOMContentLoaded', () => {
   boot()
@@ -182,7 +184,7 @@ function setPreflightStatus(element, status, message = '') {
 
 async function startMicTest() {
   if (micTestStream || micTestToken !== 0) return
-  const token = Date.now()
+  const token = micTestGen++
   micTestToken = token
   
   if (elements.micTestBtn) {
@@ -300,7 +302,7 @@ function stopMicMeter() {
 
 async function startLoopbackTest() {
   if (loopbackRecorder || loopbackAudio || loopbackTestToken !== 0) return
-  const token = Date.now()
+  const token = loopbackTestGen++
   loopbackTestToken = token
   
   if (elements.loopbackTestBtn) {
