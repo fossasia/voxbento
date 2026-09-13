@@ -382,8 +382,8 @@ async function startLoopbackTest() {
   } catch (error) {
     if (loopbackTestToken === token) {
       alert(`Cannot access microphone: ${error.message}`)
+      stopLoopbackTest()
     }
-    stopLoopbackTest()
   } finally {
     if (loopbackTestToken === token) {
       loopbackTestToken = 0
