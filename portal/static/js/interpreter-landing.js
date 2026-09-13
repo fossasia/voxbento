@@ -18,13 +18,13 @@ const state = {
 }
 
 let micTestStream = null
-let isStartingMicTest = false
+let micTestToken = 0
 let micAnimFrame = null
 let micAudioCtx = null
 let micAnalyser = null
 let loopbackRecorder = null
 let loopbackAudio = null
-let isStartingLoopbackTest = false
+let loopbackTestToken = 0
 
 document.addEventListener('DOMContentLoaded', () => {
   boot()
@@ -55,7 +55,7 @@ function bindEventHandlers() {
 
   if (elements.micTestBtn) {
     elements.micTestBtn.addEventListener('click', async () => {
-      if (micTestStream || isStartingMicTest) {
+      if (micTestStream || micTestToken !== 0) {
         stopMicTest()
       } else {
         await startMicTest()
@@ -65,7 +65,7 @@ function bindEventHandlers() {
 
   if (elements.loopbackTestBtn) {
     elements.loopbackTestBtn.addEventListener('click', async () => {
-      if (loopbackRecorder || loopbackAudio || isStartingLoopbackTest) {
+      if (loopbackRecorder || loopbackAudio || loopbackTestToken !== 0) {
         stopLoopbackTest()
       } else {
         await startLoopbackTest()
@@ -181,8 +181,9 @@ function setPreflightStatus(element, status, message = '') {
 // ── Mic Testing & Level Meter ────────────────────────────────────────────────
 
 async function startMicTest() {
-  if (micTestStream || isStartingMicTest) return
-  isStartingMicTest = true
+  if (micTestStream || micTestToken !== 0) return
+  const token = Date.now()
+  micTestToken = token
   
   if (elements.micTestBtn) {
     elements.micTestBtn.textContent = '⏳ Starting...'
@@ -200,7 +201,7 @@ async function startMicTest() {
       },
     })
     
-    if (!isStartingMicTest) {
+    if (micTestToken !== token) {
       stream.getTracks().forEach((t) => t.stop())
       return
     }
@@ -211,7 +212,7 @@ async function startMicTest() {
       elements.micTestBtn.textContent = '⏹ Stop'
     }
   } catch (error) {
-    if (isStartingMicTest) {
+    if (micTestToken === token) {
       alert(`Cannot access microphone: ${error.message}`)
       if (elements.micTestBtn) {
         elements.micTestBtn.textContent = '⚙ Test'
@@ -219,12 +220,14 @@ async function startMicTest() {
       }
     }
   } finally {
-    isStartingMicTest = false
+    if (micTestToken === token) {
+      micTestToken = 0
+    }
   }
 }
 
 function stopMicTest() {
-  isStartingMicTest = false
+  micTestToken = 0
   if (elements.micTestBtn) {
     elements.micTestBtn.textContent = '⚙ Test'
     elements.micTestBtn.classList.remove('btn-primary')
@@ -296,8 +299,9 @@ function stopMicMeter() {
 // ── Loopback Test ─────────────────────────────────────────────────────────────
 
 async function startLoopbackTest() {
-  if (loopbackRecorder || loopbackAudio || isStartingLoopbackTest) return
-  isStartingLoopbackTest = true
+  if (loopbackRecorder || loopbackAudio || loopbackTestToken !== 0) return
+  const token = Date.now()
+  loopbackTestToken = token
   
   if (elements.loopbackTestBtn) {
     elements.loopbackTestBtn.textContent = '⏳ Starting...'
@@ -315,7 +319,7 @@ async function startLoopbackTest() {
       },
     })
     
-    if (!isStartingLoopbackTest) {
+    if (loopbackTestToken !== token) {
       stream.getTracks().forEach((t) => t.stop())
       return
     }
