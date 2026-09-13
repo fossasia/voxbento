@@ -380,17 +380,19 @@ async function startLoopbackTest() {
     }, durationMs)
     
   } catch (error) {
-    if (isStartingLoopbackTest) {
+    if (loopbackTestToken === token) {
       alert(`Cannot access microphone: ${error.message}`)
     }
     stopLoopbackTest()
   } finally {
-    isStartingLoopbackTest = false
+    if (loopbackTestToken === token) {
+      loopbackTestToken = 0
+    }
   }
 }
 
 function stopLoopbackTest() {
-  isStartingLoopbackTest = false
+  loopbackTestToken = 0
   if (loopbackRecorder && loopbackRecorder.state !== 'inactive') {
     loopbackRecorder.stop()
   }
