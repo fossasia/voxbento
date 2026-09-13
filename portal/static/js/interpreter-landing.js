@@ -334,50 +334,58 @@ async function startLoopbackTest() {
     if (elements.loopbackProgress) elements.loopbackProgress.value = 0
     
     const chunks = []
-    loopbackRecorder = new MediaRecorder(stream)
-    loopbackRecorder.ondataavailable = (e) => chunks.push(e.data)
+    const recorder = new MediaRecorder(stream)
+    loopbackRecorder = recorder
+    recorder.ondataavailable = (e) => chunks.push(e.data)
     
     const startTime = Date.now()
     const durationMs = 5000
     
     const progressInterval = setInterval(() => {
+      if (loopbackTestToken !== token) {
+        clearInterval(progressInterval)
+        return
+      }
       const elapsed = Date.now() - startTime
       const pct = Math.min(100, (elapsed / durationMs) * 100)
       if (elements.loopbackProgress) elements.loopbackProgress.value = pct
     }, 50)
     
-    loopbackRecorder.onstop = () => {
+    recorder.onstop = () => {
       clearInterval(progressInterval)
       stream.getTracks().forEach(t => t.stop())
-      if (elements.loopbackTestBtn && !elements.loopbackTestBtn.classList.contains('btn-primary')) return // Was stopped manually
+      if (loopbackTestToken !== token) return
       
       const blob = new Blob(chunks, { type: 'audio/webm' })
       const url = URL.createObjectURL(blob)
-      loopbackAudio = new Audio(url)
+      const audio = new Audio(url)
+      loopbackAudio = audio
       
       if (elements.loopbackStatus) elements.loopbackStatus.textContent = 'Playing...'
       if (elements.loopbackProgress) elements.loopbackProgress.value = 0
       
-      loopbackAudio.onended = () => {
-        stopLoopbackTest()
+      audio.onended = () => {
+        if (loopbackTestToken === token) stopLoopbackTest()
       }
       
-      loopbackAudio.ontimeupdate = () => {
-        if (!loopbackAudio) return
-        const pct = (loopbackAudio.currentTime / loopbackAudio.duration) * 100
+      audio.ontimeupdate = () => {
+        if (loopbackTestToken !== token) return
+        const pct = (audio.currentTime / audio.duration) * 100
         if (elements.loopbackProgress) elements.loopbackProgress.value = pct
       }
       
-      loopbackAudio.play().catch(e => {
-        alert(`Failed to play loopback audio: ${e.message}`)
-        stopLoopbackTest()
+      audio.play().catch(e => {
+        if (loopbackTestToken === token) {
+          alert(`Failed to play loopback audio: ${e.message}`)
+          stopLoopbackTest()
+        }
       })
     }
     
-    loopbackRecorder.start()
+    recorder.start()
     setTimeout(() => {
-      if (loopbackRecorder && loopbackRecorder.state === 'recording') {
-        loopbackRecorder.stop()
+      if (recorder.state === 'recording') {
+        recorder.stop()
       }
     }, durationMs)
     
@@ -385,10 +393,6 @@ async function startLoopbackTest() {
     if (loopbackTestToken === token) {
       alert(`Cannot access microphone: ${error.message}`)
       stopLoopbackTest()
-    }
-  } finally {
-    if (loopbackTestToken === token) {
-      loopbackTestToken = 0
     }
   }
 }
