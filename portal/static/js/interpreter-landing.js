@@ -18,11 +18,13 @@ const state = {
 }
 
 let micTestStream = null
+let isStartingMicTest = false
 let micAnimFrame = null
 let micAudioCtx = null
 let micAnalyser = null
 let loopbackRecorder = null
 let loopbackAudio = null
+let isStartingLoopbackTest = false
 
 document.addEventListener('DOMContentLoaded', () => {
   boot()
@@ -53,7 +55,7 @@ function bindEventHandlers() {
 
   if (elements.micTestBtn) {
     elements.micTestBtn.addEventListener('click', async () => {
-      if (micTestStream) {
+      if (micTestStream || isStartingMicTest) {
         stopMicTest()
       } else {
         await startMicTest()
@@ -63,7 +65,7 @@ function bindEventHandlers() {
 
   if (elements.loopbackTestBtn) {
     elements.loopbackTestBtn.addEventListener('click', async () => {
-      if (loopbackRecorder || loopbackAudio) {
+      if (loopbackRecorder || loopbackAudio || isStartingLoopbackTest) {
         stopLoopbackTest()
       } else {
         await startLoopbackTest()
@@ -179,10 +181,17 @@ function setPreflightStatus(element, status, message = '') {
 // ── Mic Testing & Level Meter ────────────────────────────────────────────────
 
 async function startMicTest() {
-  if (micTestStream) return
+  if (micTestStream || isStartingMicTest) return
+  isStartingMicTest = true
+  
+  if (elements.micTestBtn) {
+    elements.micTestBtn.textContent = '⏳ Starting...'
+    elements.micTestBtn.classList.add('btn-primary')
+  }
+
   try {
     const deviceId = state.micDeviceId
-    micTestStream = await navigator.mediaDevices.getUserMedia({
+    const stream = await navigator.mediaDevices.getUserMedia({
       audio: {
         deviceId: deviceId ? { exact: deviceId } : undefined,
         echoCancellation: true,
@@ -190,24 +199,39 @@ async function startMicTest() {
         autoGainControl: true,
       },
     })
+    
+    if (!isStartingMicTest) {
+      stream.getTracks().forEach((t) => t.stop())
+      return
+    }
+    
+    micTestStream = stream
     startMicMeter(micTestStream)
     if (elements.micTestBtn) {
       elements.micTestBtn.textContent = '⏹ Stop'
-      elements.micTestBtn.classList.add('btn-primary')
     }
   } catch (error) {
-    alert(`Cannot access microphone: ${error.message}`)
+    if (isStartingMicTest) {
+      alert(`Cannot access microphone: ${error.message}`)
+      if (elements.micTestBtn) {
+        elements.micTestBtn.textContent = '⚙ Test'
+        elements.micTestBtn.classList.remove('btn-primary')
+      }
+    }
+  } finally {
+    isStartingMicTest = false
   }
 }
 
 function stopMicTest() {
-  if (!micTestStream) return
-  micTestStream.getTracks().forEach((t) => t.stop())
-  micTestStream = null
+  isStartingMicTest = false
   if (elements.micTestBtn) {
     elements.micTestBtn.textContent = '⚙ Test'
     elements.micTestBtn.classList.remove('btn-primary')
   }
+  if (!micTestStream) return
+  micTestStream.getTracks().forEach((t) => t.stop())
+  micTestStream = null
   stopMicMeter()
 }
 
@@ -272,7 +296,14 @@ function stopMicMeter() {
 // ── Loopback Test ─────────────────────────────────────────────────────────────
 
 async function startLoopbackTest() {
-  if (loopbackRecorder || loopbackAudio) stopLoopbackTest()
+  if (loopbackRecorder || loopbackAudio || isStartingLoopbackTest) return
+  isStartingLoopbackTest = true
+  
+  if (elements.loopbackTestBtn) {
+    elements.loopbackTestBtn.textContent = '⏳ Starting...'
+    elements.loopbackTestBtn.classList.add('btn-primary')
+  }
+
   try {
     const deviceId = state.micDeviceId
     const stream = await navigator.mediaDevices.getUserMedia({
@@ -284,9 +315,13 @@ async function startLoopbackTest() {
       },
     })
     
+    if (!isStartingLoopbackTest) {
+      stream.getTracks().forEach((t) => t.stop())
+      return
+    }
+    
     if (elements.loopbackTestBtn) {
       elements.loopbackTestBtn.textContent = '⏹ Stop Test'
-      elements.loopbackTestBtn.classList.add('btn-primary')
     }
     if (elements.loopbackProgressRow) elements.loopbackProgressRow.classList.remove('hidden')
     if (elements.loopbackStatus) elements.loopbackStatus.textContent = 'Recording...'
@@ -341,12 +376,17 @@ async function startLoopbackTest() {
     }, durationMs)
     
   } catch (error) {
-    alert(`Cannot access microphone: ${error.message}`)
+    if (isStartingLoopbackTest) {
+      alert(`Cannot access microphone: ${error.message}`)
+    }
     stopLoopbackTest()
+  } finally {
+    isStartingLoopbackTest = false
   }
 }
 
 function stopLoopbackTest() {
+  isStartingLoopbackTest = false
   if (loopbackRecorder && loopbackRecorder.state !== 'inactive') {
     loopbackRecorder.stop()
   }
