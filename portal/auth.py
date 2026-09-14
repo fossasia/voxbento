@@ -20,11 +20,18 @@ security = HTTPBearer(auto_error=False)
 
 
 def hash_password(password: str) -> str:
-    return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
+    return bcrypt.hashpw(password.strip().encode(), bcrypt.gensalt()).decode()
 
 
 def verify_password(password: str, password_hash: str) -> bool:
-    return bcrypt.checkpw(password.encode(), password_hash.encode())
+    stripped = password.strip()
+    if bcrypt.checkpw(stripped.encode(), password_hash.encode()):
+        return True
+    # Backward compatibility: a hash created before whitespace trimming was
+    # introduced may have been built from the untrimmed string.
+    if stripped != password:
+        return bcrypt.checkpw(password.encode(), password_hash.encode())
+    return False
 
 
 def create_token() -> str:
