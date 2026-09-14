@@ -211,6 +211,47 @@ async def test_process_delivery_circuit_breaker(db):
     audits = audit_result.scalars().all()
     assert len(audits) == 1
     assert audits[0].action == "webhook.circuit_breaker_tripped"
+    assert audits[0].client_id is None  # Zero-client case coverage
+
+@pytest.mark.anyio
+async def test_process_delivery_circuit_breaker_with_multiple_clients(db):
+    from portal.models import OAuthClient
+    client1 = OAuthClient(developer_account_id=1, client_id="client_1", name="C1")
+    client2 = OAuthClient(developer_account_id=1, client_id="client_2", name="C2")
+    db.add_all([client1, client2])
+    await db.flush()
+
+    sub = WebhookSubscription(
+        developer_account_id=1,
+        target_url="https://example.com/webhook",
+        event_types=["session.status_changed"],
+        secret_key="secret",
+        is_active=True,
+        consecutive_failures=4,
+    )
+    db.add(sub)
+    await db.flush()
+
+    delivery = WebhookDelivery(
+        subscription_id=sub.id,
+        event_type="session.status_changed",
+        payload={"is_active": True},
+        status="delivering",
+        attempt_count=3,
+    )
+    db.add(delivery)
+    await db.flush()
+
+    mock_client = AsyncMock(spec=httpx.AsyncClient)
+    mock_client.post.side_effect = httpx.RequestError("Connection timeout")
+
+    await process_delivery(mock_client, db, delivery)
+
+    audit_result = await db.execute(select(OAuthAuditLog))
+    audits = audit_result.scalars().all()
+    assert len(audits) == 1
+    assert audits[0].action == "webhook.circuit_breaker_tripped"
+    assert audits[0].client_id == client1.id  # Verifies order_by(OAuthClient.id) selects the oldest client
 
 
 @pytest.mark.anyio

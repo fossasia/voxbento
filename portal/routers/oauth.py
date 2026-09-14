@@ -49,14 +49,11 @@ VALID_SCOPES = {
     "webhooks:manage": "Manage webhook subscriptions",
 }
 
-
 def generate_token() -> str:
     return secrets.token_urlsafe(32)
 
-
 def hash_token(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
-
 
 def verify_pkce(code_verifier: str, code_challenge: str, method: str) -> bool:
     if method == "S256":
@@ -64,7 +61,6 @@ def verify_pkce(code_verifier: str, code_challenge: str, method: str) -> bool:
         encoded = base64.urlsafe_b64encode(hashed).decode().rstrip("=")
         return encoded == code_challenge
     return False
-
 
 async def get_effective_scopes(db: AsyncSession, user: dict, event_id: int, requested_scopes: list[str], assume_owner: bool = False) -> list[str]:
     # Check if user has EventMembership
@@ -100,7 +96,6 @@ async def get_effective_scopes(db: AsyncSession, user: dict, event_id: int, requ
 
     # Intersection
     return list(set(requested_scopes) & allowed)
-
 
 @router.get("/oauth/authorize", include_in_schema=False)
 async def authorize_get(
@@ -159,7 +154,7 @@ async def authorize_get(
             if not evt:
                 raise HTTPException(status_code=500, detail="Failed to create or fetch event.")
 
-    # Check if the event already has an owner
+    # Give the authorizing user ownership if the event has no owner yet
     owner_result = await db.execute(
         select(EventMembership).where(
             EventMembership.event_id == evt.id,
@@ -167,6 +162,7 @@ async def authorize_get(
         )
     )
     has_owner = owner_result.scalars().first() is not None
+
 
     # 3. Calculate Scopes
     requested_scopes = scope.split(" ") if scope else []
@@ -195,7 +191,6 @@ async def authorize_get(
             "scope_string": " ".join(effective_scopes),
         },
     )
-
 
 @router.post("/oauth/authorize", include_in_schema=False)
 async def authorize_post(
@@ -318,7 +313,6 @@ async def authorize_post(
     redirect_query = urllib.parse.urlencode(existing_query)
     redirect_url = urllib.parse.urlunparse(parsed_redirect._replace(query=redirect_query))
     return RedirectResponse(url=redirect_url, status_code=303)
-
 
 @router.post("/oauth/token", response_class=JSONResponse)
 async def token_exchange(
@@ -484,7 +478,6 @@ async def token_exchange(
         }
 
     return JSONResponse(status_code=400, content={"error": "unsupported_grant_type"})
-
 
 @router.post("/oauth/revoke")
 async def revoke_token(
