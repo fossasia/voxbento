@@ -86,21 +86,14 @@ class CaptionAggregator:
                     has_finalized = True
 
                 state.current_utterance = remainder
+                if state.current_utterance:
+                    state.utterance_start_time = time.time()
+                else:
+                    state.utterance_start_time = 0.0
 
         state.current_word_count = len(state.current_utterance.split()) if state.current_utterance else 0
-        if state.current_utterance:
-            state.utterance_start_time = time.time()
-        else:
-            state.utterance_start_time = 0.0
 
         if state.current_utterance:
-            await self.broadcast_callback(
-                booth_id, {"type": "caption", "status": "partial", "text": state.current_utterance}
-            )
-        elif has_finalized:
-            # Only send clear if we just finalized something and have nothing left,
-            # ensuring the frontend's partial box is cleared out.
-            await self.broadcast_callback(booth_id, {"type": "caption", "status": "clear", "text": ""})
             if state.current_word_count >= 50 or (time.time() - state.utterance_start_time) >= 15.0:
                 logger.info(f"[{booth_id}] Forced chunk finalization triggered (words: {state.current_word_count})")
                 await self.handle_final(booth_id, state.current_utterance)
@@ -109,8 +102,16 @@ class CaptionAggregator:
             await self.broadcast_callback(
                 booth_id, {"type": "caption", "status": "partial", "text": state.current_utterance}
             )
+        elif has_finalized:
+            # Only send clear if we just finalized something and have nothing left,
+            # ensuring the frontend's partial box is cleared out.
+            await self.broadcast_callback(booth_id, {"type": "caption", "status": "clear", "text": ""})
 
     async def handle_final(self, booth_id: str, text: str):
+        """
+        Finalizes an utterance, triggers database save, and initiates translation.
+        Called automatically on punctuation split, timeout, or explicit clear.
+        """
         state = self._get_state(booth_id)
         final_text = text.strip() or state.current_utterance
 
