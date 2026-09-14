@@ -83,6 +83,7 @@ Jitsi Meet Floor Conference
 | `portal/transcription/providers/base.py` | `TranscriptionProvider` ABC, `ProviderConfig`, `BoothTranscriptionState`, `pcm_to_wav`, `get_api_key` |
 | `portal/transcription/providers/local.py` | `LocalProvider` — faster-whisper CPU; model cache + LRU eviction |
 | `portal/transcription/providers/openai.py` | `OpenAIProvider` — whisper-1 (REST) + gpt-4o-realtime (WebSocket) |
+| `portal/transcription/providers/atlascloud.py` | `AtlasCloudProvider` — Seed ASR 2.0 async Audio API |
 | `portal/transcription/providers/deepgram.py` | `DeepgramProvider` — nova-2 WebSocket streaming |
 | `portal/transcription/providers/nvidia.py` | `NVIDIAProvider` — Parakeet-RNNT/CTC via Riva gRPC |
 | `portal/transcription/providers/elevenlabs.py` | `ElevenLabsProvider` — scribe_v2 |
@@ -100,6 +101,7 @@ Jitsi Meet Floor Conference
 |---|---|---|---|---|
 | `local` | `LocalProvider` | `tiny`, `base`, `small`, `medium`, `large-v2`, `large-v3` | None | CPU inference via `faster-whisper` (in thread pool) |
 | `openai` | `OpenAIProvider` | `whisper-1`, `gpt-4o-realtime-preview`, `gpt-4o-mini-realtime-preview` | `openai_api_key` | REST (whisper-1) or WebSocket realtime |
+| `atlascloud` | `AtlasCloudProvider` | `bytedance/seed-asr-2.0` | `atlascloud_api_key` | Async JSON submit + prediction polling |
 | `deepgram` | `DeepgramProvider` | `nova-2` | `deepgram_api_key` | WebSocket streaming (with `numerals=true` for interpretation) |
 | `nvidia` | `NVIDIAProvider` | `parakeet-rnnt`, `parakeet-ctc` | `nvidia_api_key` | Riva gRPC |
 | `elevenlabs` | `ElevenLabsProvider` | `scribe_v2` | `elevenlabs_api_key` | — |

@@ -72,6 +72,9 @@ class Event(Base):
     encrypted_elevenlabs_api_key: Mapped[str | None] = mapped_column(
         "elevenlabs_api_key", Text, nullable=True, default=None
     )
+    encrypted_atlascloud_api_key: Mapped[str | None] = mapped_column(
+        "atlascloud_api_key", Text, nullable=True, default=None
+    )
     encrypted_translation_openai_api_key: Mapped[str | None] = mapped_column(
         "translation_openai_api_key", Text, nullable=True, default=None
     )
