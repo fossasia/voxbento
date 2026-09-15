@@ -18,11 +18,16 @@ const state = {
 }
 
 let micTestStream = null
+let micTestToken = 0
 let micAnimFrame = null
 let micAudioCtx = null
 let micAnalyser = null
 let loopbackRecorder = null
 let loopbackAudio = null
+let loopbackTestToken = 0
+let hardwareMediaLock = Promise.resolve()
+let micTestGen = 1
+let loopbackTestGen = 1
 
 document.addEventListener('DOMContentLoaded', () => {
   boot()
@@ -53,7 +58,7 @@ function bindEventHandlers() {
 
   if (elements.micTestBtn) {
     elements.micTestBtn.addEventListener('click', async () => {
-      if (micTestStream) {
+      if (micTestStream || micTestToken !== 0) {
         stopMicTest()
       } else {
         await startMicTest()
@@ -63,7 +68,7 @@ function bindEventHandlers() {
 
   if (elements.loopbackTestBtn) {
     elements.loopbackTestBtn.addEventListener('click', async () => {
-      if (loopbackRecorder || loopbackAudio) {
+      if (loopbackRecorder || loopbackAudio || loopbackTestToken !== 0) {
         stopLoopbackTest()
       } else {
         await startLoopbackTest()
@@ -179,10 +184,26 @@ function setPreflightStatus(element, status, message = '') {
 // ── Mic Testing & Level Meter ────────────────────────────────────────────────
 
 async function startMicTest() {
-  if (micTestStream) return
+  if (micTestStream || micTestToken !== 0) return
+  const token = micTestGen++
+  micTestToken = token
+  
+  if (elements.micTestBtn) {
+    elements.micTestBtn.textContent = '⏳ Starting...'
+    elements.micTestBtn.classList.add('btn-primary')
+  }
+
+  let releaseLock;
+  const nextLock = new Promise(resolve => releaseLock = resolve);
+  const previousLock = hardwareMediaLock;
+  hardwareMediaLock = nextLock;
+
   try {
+    await previousLock;
+    if (micTestToken !== token) return
+    
     const deviceId = state.micDeviceId
-    micTestStream = await navigator.mediaDevices.getUserMedia({
+    const stream = await navigator.mediaDevices.getUserMedia({
       audio: {
         deviceId: deviceId ? { exact: deviceId } : undefined,
         echoCancellation: true,
@@ -190,24 +211,42 @@ async function startMicTest() {
         autoGainControl: true,
       },
     })
+    
+    if (micTestToken !== token) {
+      stream.getTracks().forEach((t) => t.stop())
+      return
+    }
+    
+    micTestStream = stream
     startMicMeter(micTestStream)
     if (elements.micTestBtn) {
       elements.micTestBtn.textContent = '⏹ Stop'
-      elements.micTestBtn.classList.add('btn-primary')
     }
   } catch (error) {
-    alert(`Cannot access microphone: ${error.message}`)
+    if (micTestToken === token) {
+      alert(`Cannot access microphone: ${error.message}`)
+      if (elements.micTestBtn) {
+        elements.micTestBtn.textContent = '⚙ Test'
+        elements.micTestBtn.classList.remove('btn-primary')
+      }
+    }
+  } finally {
+    if (micTestToken === token) {
+      micTestToken = 0
+    }
+    releaseLock()
   }
 }
 
 function stopMicTest() {
-  if (!micTestStream) return
-  micTestStream.getTracks().forEach((t) => t.stop())
-  micTestStream = null
+  micTestToken = 0
   if (elements.micTestBtn) {
     elements.micTestBtn.textContent = '⚙ Test'
     elements.micTestBtn.classList.remove('btn-primary')
   }
+  if (!micTestStream) return
+  micTestStream.getTracks().forEach((t) => t.stop())
+  micTestStream = null
   stopMicMeter()
 }
 
@@ -272,8 +311,24 @@ function stopMicMeter() {
 // ── Loopback Test ─────────────────────────────────────────────────────────────
 
 async function startLoopbackTest() {
-  if (loopbackRecorder || loopbackAudio) stopLoopbackTest()
+  if (loopbackRecorder || loopbackAudio || loopbackTestToken !== 0) return
+  const token = loopbackTestGen++
+  loopbackTestToken = token
+  
+  if (elements.loopbackTestBtn) {
+    elements.loopbackTestBtn.textContent = '⏳ Starting...'
+    elements.loopbackTestBtn.classList.add('btn-primary')
+  }
+
+  let releaseLock;
+  const nextLock = new Promise(resolve => releaseLock = resolve);
+  const previousLock = hardwareMediaLock;
+  hardwareMediaLock = nextLock;
+
   try {
+    await previousLock;
+    if (loopbackTestToken !== token) return
+    
     const deviceId = state.micDeviceId
     const stream = await navigator.mediaDevices.getUserMedia({
       audio: {
@@ -284,69 +339,86 @@ async function startLoopbackTest() {
       },
     })
     
+    if (loopbackTestToken !== token) {
+      stream.getTracks().forEach((t) => t.stop())
+      return
+    }
+    
     if (elements.loopbackTestBtn) {
       elements.loopbackTestBtn.textContent = '⏹ Stop Test'
-      elements.loopbackTestBtn.classList.add('btn-primary')
     }
     if (elements.loopbackProgressRow) elements.loopbackProgressRow.classList.remove('hidden')
     if (elements.loopbackStatus) elements.loopbackStatus.textContent = 'Recording...'
     if (elements.loopbackProgress) elements.loopbackProgress.value = 0
     
     const chunks = []
-    loopbackRecorder = new MediaRecorder(stream)
-    loopbackRecorder.ondataavailable = (e) => chunks.push(e.data)
+    const recorder = new MediaRecorder(stream)
+    loopbackRecorder = recorder
+    recorder.ondataavailable = (e) => chunks.push(e.data)
     
     const startTime = Date.now()
     const durationMs = 5000
     
     const progressInterval = setInterval(() => {
+      if (loopbackTestToken !== token) {
+        clearInterval(progressInterval)
+        return
+      }
       const elapsed = Date.now() - startTime
       const pct = Math.min(100, (elapsed / durationMs) * 100)
       if (elements.loopbackProgress) elements.loopbackProgress.value = pct
     }, 50)
     
-    loopbackRecorder.onstop = () => {
+    recorder.onstop = () => {
       clearInterval(progressInterval)
       stream.getTracks().forEach(t => t.stop())
-      if (elements.loopbackTestBtn && !elements.loopbackTestBtn.classList.contains('btn-primary')) return // Was stopped manually
+      if (loopbackTestToken !== token) return
       
       const blob = new Blob(chunks, { type: 'audio/webm' })
       const url = URL.createObjectURL(blob)
-      loopbackAudio = new Audio(url)
+      const audio = new Audio(url)
+      loopbackAudio = audio
       
       if (elements.loopbackStatus) elements.loopbackStatus.textContent = 'Playing...'
       if (elements.loopbackProgress) elements.loopbackProgress.value = 0
       
-      loopbackAudio.onended = () => {
-        stopLoopbackTest()
+      audio.onended = () => {
+        if (loopbackTestToken === token) stopLoopbackTest()
       }
       
-      loopbackAudio.ontimeupdate = () => {
-        if (!loopbackAudio) return
-        const pct = (loopbackAudio.currentTime / loopbackAudio.duration) * 100
+      audio.ontimeupdate = () => {
+        if (loopbackTestToken !== token) return
+        const pct = (audio.currentTime / audio.duration) * 100
         if (elements.loopbackProgress) elements.loopbackProgress.value = pct
       }
       
-      loopbackAudio.play().catch(e => {
-        alert(`Failed to play loopback audio: ${e.message}`)
-        stopLoopbackTest()
+      audio.play().catch(e => {
+        if (loopbackTestToken === token) {
+          alert(`Failed to play loopback audio: ${e.message}`)
+          stopLoopbackTest()
+        }
       })
     }
     
-    loopbackRecorder.start()
+    recorder.start()
     setTimeout(() => {
-      if (loopbackRecorder && loopbackRecorder.state === 'recording') {
-        loopbackRecorder.stop()
+      if (recorder.state === 'recording') {
+        recorder.stop()
       }
     }, durationMs)
     
   } catch (error) {
-    alert(`Cannot access microphone: ${error.message}`)
-    stopLoopbackTest()
+    if (loopbackTestToken === token) {
+      alert(`Cannot access microphone: ${error.message}`)
+      stopLoopbackTest()
+    }
+  } finally {
+    releaseLock()
   }
 }
 
 function stopLoopbackTest() {
+  loopbackTestToken = 0
   if (loopbackRecorder && loopbackRecorder.state !== 'inactive') {
     loopbackRecorder.stop()
   }
