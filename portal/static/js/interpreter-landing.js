@@ -25,6 +25,8 @@ let micAnalyser = null
 let loopbackRecorder = null
 let loopbackAudio = null
 let loopbackTestToken = 0
+let micLock = Promise.resolve()
+let loopbackLock = Promise.resolve()
 let micTestGen = 1
 let loopbackTestGen = 1
 
@@ -192,7 +194,15 @@ async function startMicTest() {
     elements.micTestBtn.classList.add('btn-primary')
   }
 
+  let releaseLock;
+  const nextLock = new Promise(resolve => releaseLock = resolve);
+  const previousLock = micLock;
+  micLock = nextLock;
+
   try {
+    await previousLock;
+    if (micTestToken !== token) return
+    
     const deviceId = state.micDeviceId
     const stream = await navigator.mediaDevices.getUserMedia({
       audio: {
@@ -225,6 +235,7 @@ async function startMicTest() {
     if (micTestToken === token) {
       micTestToken = 0
     }
+    releaseLock()
   }
 }
 
@@ -310,7 +321,15 @@ async function startLoopbackTest() {
     elements.loopbackTestBtn.classList.add('btn-primary')
   }
 
+  let releaseLock;
+  const nextLock = new Promise(resolve => releaseLock = resolve);
+  const previousLock = loopbackLock;
+  loopbackLock = nextLock;
+
   try {
+    await previousLock;
+    if (loopbackTestToken !== token) return
+    
     const deviceId = state.micDeviceId
     const stream = await navigator.mediaDevices.getUserMedia({
       audio: {
@@ -394,6 +413,8 @@ async function startLoopbackTest() {
       alert(`Cannot access microphone: ${error.message}`)
       stopLoopbackTest()
     }
+  } finally {
+    releaseLock()
   }
 }
 
