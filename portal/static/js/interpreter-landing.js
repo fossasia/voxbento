@@ -25,8 +25,7 @@ let micAnalyser = null
 let loopbackRecorder = null
 let loopbackAudio = null
 let loopbackTestToken = 0
-let micLock = Promise.resolve()
-let loopbackLock = Promise.resolve()
+let hardwareMediaLock = Promise.resolve()
 let micTestGen = 1
 let loopbackTestGen = 1
 
@@ -196,8 +195,8 @@ async function startMicTest() {
 
   let releaseLock;
   const nextLock = new Promise(resolve => releaseLock = resolve);
-  const previousLock = micLock;
-  micLock = nextLock;
+  const previousLock = hardwareMediaLock;
+  hardwareMediaLock = nextLock;
 
   try {
     await previousLock;
@@ -323,8 +322,8 @@ async function startLoopbackTest() {
 
   let releaseLock;
   const nextLock = new Promise(resolve => releaseLock = resolve);
-  const previousLock = loopbackLock;
-  loopbackLock = nextLock;
+  const previousLock = hardwareMediaLock;
+  hardwareMediaLock = nextLock;
 
   try {
     await previousLock;
