@@ -657,7 +657,7 @@ async def admin_event_api_settings_post(
     return safe_redirect(url=f"/admin/events/{event_id}/api-settings/", status_code=status.HTTP_303_SEE_OTHER)
 
 
-@router.post("/admin/events/{event_id}/delete", dependencies=[Depends(require_admin)])
+@router.post("/admin/events/{event_id}/delete", dependencies=[Depends(require_event_owner)])
 async def admin_delete_event(request: Request, event_id: int):
     async with get_session() as session:
         await delete_event(session, event_id)
