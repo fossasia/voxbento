@@ -8,6 +8,11 @@
 {% endblock %}
 
 {% block content %}
+{% if request.query_params.get('error') == 'delete_failed' %}
+<div class="alert alert-danger" style="margin-bottom: 1rem; color: #d32f2f; background-color: #fde0e0; padding: 10px; border-radius: 4px;">
+  <strong>Error:</strong> Failed to delete event due to a database error. The event was not deleted.
+</div>
+{% endif %}
 <div class="toolbar">
   <div>
     <h1 style="font-size:1.6rem; font-weight:800; letter-spacing:-0.02em;">Events</h1>
