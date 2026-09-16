@@ -55,6 +55,8 @@ function initCustomModal() {
   function closeModal() {
     modalOverlay.classList.remove('active');
     pendingForm = null;
+    btnOk.disabled = false;
+    btnCancel.disabled = false;
   }
 
   function openModal(message, formElement) {
@@ -62,6 +64,8 @@ function initCustomModal() {
     const randomFunny = FUNNY_WARNINGS[Math.floor(Math.random() * FUNNY_WARNINGS.length)];
     funnyEl.textContent = randomFunny;
     pendingForm = formElement;
+    btnOk.disabled = false;
+    btnCancel.disabled = false;
 
     // Force reflow before activating so the CSS transition plays
     void modalOverlay.offsetWidth;
@@ -74,7 +78,9 @@ function initCustomModal() {
   });
 
   btnOk.addEventListener('click', () => {
-    if (pendingForm) {
+    if (pendingForm && !btnOk.disabled) {
+      btnOk.disabled = true;
+      btnCancel.disabled = true;
       pendingForm.submit();
     }
   });
