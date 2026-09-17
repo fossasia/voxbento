@@ -88,7 +88,7 @@ function upgradeSelects() {
       if (select.disabled) return;
       isOpen = !isOpen;
       if (isOpen) {
-        closeAll();
+        closeAll(wrapper);
         optionsDiv.classList.remove(
           "opacity-0",
           "invisible",
@@ -127,10 +127,14 @@ function upgradeSelects() {
   });
 }
 
-function closeAll() {
+function closeAll(except = null) {
   document
     .querySelectorAll(".custom-select-wrapper")
-    .forEach((w) => w.customSelectClose && w.customSelectClose());
+    .forEach((w) => {
+      if (w !== except && w.customSelectClose) {
+        w.customSelectClose();
+      }
+    });
 }
 
 document.addEventListener("click", closeAll);
