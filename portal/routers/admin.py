@@ -594,10 +594,12 @@ async def admin_event_api_settings_post(
     deepgram_api_key: str | None = Form(None),
     nvidia_api_key: str | None = Form(None),
     elevenlabs_api_key: str | None = Form(None),
+    atlascloud_api_key: str | None = Form(None),
     clear_openai_api_key: bool | None = Form(False),
     clear_deepgram_api_key: bool | None = Form(False),
     clear_nvidia_api_key: bool | None = Form(False),
     clear_elevenlabs_api_key: bool | None = Form(False),
+    clear_atlascloud_api_key: bool | None = Form(False),
     translation_openai_api_key: str | None = Form(None),
     openrouter_api_key: str | None = Form(None),
     gemini_api_key: str | None = Form(None),
@@ -631,6 +633,10 @@ async def admin_event_api_settings_post(
                 event.encrypted_elevenlabs_api_key = None
             elif elevenlabs_api_key and elevenlabs_api_key.strip():
                 event.encrypted_elevenlabs_api_key = encrypt_val(elevenlabs_api_key.strip())
+            if clear_atlascloud_api_key:
+                event.encrypted_atlascloud_api_key = None
+            elif atlascloud_api_key and atlascloud_api_key.strip():
+                event.encrypted_atlascloud_api_key = encrypt_val(atlascloud_api_key.strip())
             if clear_translation_openai_api_key:
                 event.encrypted_translation_openai_api_key = None
             elif translation_openai_api_key and translation_openai_api_key.strip():
