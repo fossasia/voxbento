@@ -235,7 +235,7 @@
       </div>
     </div>
 
-    <div class="form-row">
+    <div class="form-row" style="align-items: flex-start;">
       <div class="form-group" style="flex: 1;">
         <label for="floor_tts_provider">TTS Provider</label>
         <select id="floor_tts_provider" name="floor_tts_provider" class="input">
@@ -246,14 +246,27 @@
         <p class="form-help" id="tts_provider_help_supertonic" style="margin-top: 0.5rem; font-size: 0.85rem; color: #666; display: none;">Supertonic runs locally with no API key. 31 languages supported; unknown languages use a language-agnostic fallback. The model (~400MB) downloads on first use.</p>
       </div>
       <div class="form-group" id="tts_voice_group" style="flex: 1;">
-        <label for="floor_tts_voice">Supertonic Voice</label>
-        <select id="floor_tts_voice" name="floor_tts_voice" class="input">
-          {% set current_voice = room.floor_tts_voice or 'M1' %}
-          {% for v in ['M1', 'M2', 'M3', 'M4', 'M5', 'F1', 'F2', 'F3', 'F4', 'F5'] %}
-          <option value="{{ v }}" {% if current_voice == v %}selected{% endif %}>{{ v }}</option>
-          {% endfor %}
+        <label for="floor_tts_voice">TTS Voice</label>
+        <select id="floor_tts_voice" name="floor_tts_voice" class="input" data-current-voice="{{ room.floor_tts_voice or '' }}">
+          <option value="">(Model will pick best voice)</option>
         </select>
-        <p class="form-help" style="margin-top: 0.5rem; font-size: 0.85rem; color: #666;">M1–M5 (male) and F1–F5 (female) preset voices.</p>
+        <p class="form-help" style="margin-top: 0.5rem; font-size: 0.85rem; color: #666;">Model-specific preset voices.</p>
+      </div>
+    </div>
+    
+    <div class="form-row">
+      <div class="form-group" style="flex: 1;">
+        <label>TTS Target Languages</label>
+        <div class="lang-picker" id="lp_floor_tts" aria-label="TTS Target languages picker">
+          <div class="lang-picker-tags" id="lp_floor_tts_tags"></div>
+          <div class="lang-picker-search-wrap">
+            <input type="text" class="lang-picker-input" id="lp_floor_tts_search"
+                   placeholder="Search and add a language…" autocomplete="off">
+            <ul class="lang-picker-dropdown" id="lp_floor_tts_dropdown" hidden></ul>
+          </div>
+        </div>
+        <div id="lp_floor_tts_hidden"></div>
+        <p class="form-help" style="margin-top: 0.5rem; font-size: 0.85rem; color: #666;">Select which translated languages should be synthesized into AI speech. Languages currently served by a human booth in this room are hidden.</p>
       </div>
       <div class="form-group form-group-btn" style="flex: 0; align-self: flex-end;">
         <button type="submit" class="btn btn-primary">Save Settings</button>
@@ -330,21 +343,76 @@
     }
 
     // TTS provider → toggle Supertonic voice picker + provider help text
-    const ttsProviderSelect = document.getElementById('floor_tts_provider');
-    if (ttsProviderSelect) {
-      const ttsVoiceGroup = document.getElementById('tts_voice_group');
-      const helpDeepgram = document.getElementById('tts_provider_help_deepgram');
-      const helpSupertonic = document.getElementById('tts_provider_help_supertonic');
+    const ttsVoices = {
+      'deepgram': [
+        { id: 'aura-asteria-en', name: 'Asteria (English - Female)' },
+        { id: 'aura-luna-en', name: 'Luna (English - Female)' },
+        { id: 'aura-stella-en', name: 'Stella (English - Female)' },
+        { id: 'aura-athena-en', name: 'Athena (English - Female)' },
+        { id: 'aura-hera-en', name: 'Hera (English - Female)' },
+        { id: 'aura-orion-en', name: 'Orion (English - Male)' },
+        { id: 'aura-arcas-en', name: 'Arcas (English - Male)' },
+        { id: 'aura-perseus-en', name: 'Perseus (English - Male)' },
+        { id: 'aura-angus-en', name: 'Angus (English - Male)' },
+        { id: 'aura-orpheus-en', name: 'Orpheus (English - Male)' },
+        { id: 'aura-helios-en', name: 'Helios (English - Male)' },
+        { id: 'aura-zeus-en', name: 'Zeus (English - Male)' },
+        { id: 'aura-2-thalia-en', name: 'Thalia (English v2)' },
+        { id: 'aura-2-celeste-es', name: 'Celeste (Spanish)' },
+        { id: 'aura-2-rhea-nl', name: 'Rhea (Dutch)' },
+        { id: 'aura-2-agathe-fr', name: 'Agathe (French)' },
+        { id: 'aura-2-julius-de', name: 'Julius (German)' },
+        { id: 'aura-2-livia-it', name: 'Livia (Italian)' },
+        { id: 'aura-2-fujin-ja', name: 'Fujin (Japanese)' }
+      ],
+      'supertonic': [
+        { id: 'M1', name: 'M1 (Male 1)' },
+        { id: 'M2', name: 'M2 (Male 2)' },
+        { id: 'M3', name: 'M3 (Male 3)' },
+        { id: 'M4', name: 'M4 (Male 4)' },
+        { id: 'M5', name: 'M5 (Male 5)' },
+        { id: 'F1', name: 'F1 (Female 1)' },
+        { id: 'F2', name: 'F2 (Female 2)' },
+        { id: 'F3', name: 'F3 (Female 3)' },
+        { id: 'F4', name: 'F4 (Female 4)' },
+        { id: 'F5', name: 'F5 (Female 5)' }
+      ]
+    };
 
-      function syncTtsProvider() {
-        const isSupertonic = ttsProviderSelect.value === 'supertonic';
-        if (ttsVoiceGroup) ttsVoiceGroup.style.display = isSupertonic ? '' : 'none';
-        if (helpDeepgram) helpDeepgram.style.display = isSupertonic ? 'none' : '';
-        if (helpSupertonic) helpSupertonic.style.display = isSupertonic ? '' : 'none';
+    const ttsProviderSelect = document.getElementById('floor_tts_provider');
+    const ttsVoiceSelect = document.getElementById('floor_tts_voice');
+    const ttsHelpDeepgram = document.getElementById('tts_provider_help_deepgram');
+    const ttsHelpSupertonic = document.getElementById('tts_provider_help_supertonic');
+
+    function updateTtsVoices() {
+      const provider = ttsProviderSelect.value;
+      const currentVoice = ttsVoiceSelect.getAttribute('data-current-voice') || '';
+      
+      if (provider === 'deepgram') {
+        ttsHelpDeepgram.style.display = 'block';
+        ttsHelpSupertonic.style.display = 'none';
+      } else {
+        ttsHelpDeepgram.style.display = 'none';
+        ttsHelpSupertonic.style.display = 'block';
       }
 
-      ttsProviderSelect.addEventListener('change', syncTtsProvider);
-      syncTtsProvider();
+      ttsVoiceSelect.innerHTML = '<option value="">(Model will pick best voice)</option>';
+      const options = ttsVoices[provider] || [];
+      
+      options.forEach(opt => {
+        const optionEl = document.createElement('option');
+        optionEl.value = opt.id;
+        optionEl.textContent = opt.name;
+        if (opt.id === currentVoice) {
+          optionEl.selected = true;
+        }
+        ttsVoiceSelect.appendChild(optionEl);
+      });
+    }
+
+    if (ttsProviderSelect) {
+      ttsProviderSelect.addEventListener('change', updateTtsVoices);
+      updateTtsVoices();
     }
 
     // Language tag picker
@@ -452,6 +520,16 @@
       searchId: 'lp_floor_translation_search',
       dropdownId: 'lp_floor_translation_dropdown',
       hiddenId: 'lp_floor_translation_hidden',
+    });
+    
+    initLangPicker({
+      allLanguages: {{ tts_available_languages_dataset | tojson }},
+      selectedCodes: {{ enabled_tts_language_codes | tojson }},
+      inputName: 'floor_tts_languages',
+      tagsId: 'lp_floor_tts_tags',
+      searchId: 'lp_floor_tts_search',
+      dropdownId: 'lp_floor_tts_dropdown',
+      hiddenId: 'lp_floor_tts_hidden',
     });
   });
 
