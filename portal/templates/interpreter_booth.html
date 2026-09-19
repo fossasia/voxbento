@@ -21,7 +21,7 @@
   data-whep-url='{{ whep_url | default("") }}'
   data-granted-role='{{ granted_role | default("") }}'
   data-display-name='{{ display_name | default("") }}'
-  data-relay-whep-url='{{ relay_whep_url | default("") }}'
+  data-relay-whep-url='{{ relay_whep_url | default("", true) }}'
 >
 
   <!-- ── Top Bar: brand, booth identity, connection, leave ──────────── -->
