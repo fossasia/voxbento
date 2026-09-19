@@ -36,10 +36,10 @@ class DeepgramTTSProvider(TTSProvider):
         voice: str,
         on_audio: AudioCallback,
     ) -> None:
-        # The room-level voice field is shared across providers; a value that is
-        # not a Deepgram Aura model (e.g. a Supertonic preset like "M1") must be
-        # ignored so Deepgram falls back to a valid language-mapped voice.
-        dg_voice = voice if voice.startswith("aura") else get_deepgram_voice_for_language(language_code)
+        # The room-level voice field is shared across providers and target languages.
+        # A value that is not an Aura model for this language (e.g. a Supertonic preset
+        # like "M1", or a German voice for French text) falls back to a language-mapped voice.
+        dg_voice = get_deepgram_voice_for_language(language_code, voice)
         # Using linear16 at 24000Hz. Can be adjusted based on requirements.
         dg_url = f"wss://api.deepgram.com/v1/speak?model={dg_voice}&encoding=linear16&sample_rate=24000&container=none"
 

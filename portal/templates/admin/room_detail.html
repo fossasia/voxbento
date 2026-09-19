@@ -250,7 +250,7 @@
         <select id="floor_tts_voice" name="floor_tts_voice" class="input" data-current-voice="{{ room.floor_tts_voice or '' }}">
           <option value="">(Model will pick best voice)</option>
         </select>
-        <p class="form-help" style="margin-top: 0.5rem; font-size: 0.85rem; color: #666;">Model-specific preset voices.</p>
+        <p class="form-help" style="margin-top: 0.5rem; font-size: 0.85rem; color: #666;">Leave empty to let the provider pick a voice for each language. A Deepgram voice is only used for the language it speaks.</p>
       </div>
     </div>
     
@@ -266,7 +266,7 @@
           </div>
         </div>
         <div id="lp_floor_tts_hidden"></div>
-        <p class="form-help" style="margin-top: 0.5rem; font-size: 0.85rem; color: #666;">Select which translated languages should be synthesized into AI speech. Languages currently served by a human booth in this room are hidden.</p>
+        <p class="form-help" style="margin-top: 0.5rem; font-size: 0.85rem; color: #666;">Select which translated languages should be synthesized into AI speech. Languages served by a human booth in this room, and the floor language, are hidden.</p>
       </div>
       <div class="form-group form-group-btn" style="flex: 0; align-self: flex-end;">
         <button type="submit" class="btn btn-primary">Save Settings</button>
@@ -342,42 +342,8 @@
       loadTranslationModels();
     }
 
-    // TTS provider → toggle Supertonic voice picker + provider help text
-    const ttsVoices = {
-      'deepgram': [
-        { id: 'aura-asteria-en', name: 'Asteria (English - Female)' },
-        { id: 'aura-luna-en', name: 'Luna (English - Female)' },
-        { id: 'aura-stella-en', name: 'Stella (English - Female)' },
-        { id: 'aura-athena-en', name: 'Athena (English - Female)' },
-        { id: 'aura-hera-en', name: 'Hera (English - Female)' },
-        { id: 'aura-orion-en', name: 'Orion (English - Male)' },
-        { id: 'aura-arcas-en', name: 'Arcas (English - Male)' },
-        { id: 'aura-perseus-en', name: 'Perseus (English - Male)' },
-        { id: 'aura-angus-en', name: 'Angus (English - Male)' },
-        { id: 'aura-orpheus-en', name: 'Orpheus (English - Male)' },
-        { id: 'aura-helios-en', name: 'Helios (English - Male)' },
-        { id: 'aura-zeus-en', name: 'Zeus (English - Male)' },
-        { id: 'aura-2-thalia-en', name: 'Thalia (English v2)' },
-        { id: 'aura-2-celeste-es', name: 'Celeste (Spanish)' },
-        { id: 'aura-2-rhea-nl', name: 'Rhea (Dutch)' },
-        { id: 'aura-2-agathe-fr', name: 'Agathe (French)' },
-        { id: 'aura-2-julius-de', name: 'Julius (German)' },
-        { id: 'aura-2-livia-it', name: 'Livia (Italian)' },
-        { id: 'aura-2-fujin-ja', name: 'Fujin (Japanese)' }
-      ],
-      'supertonic': [
-        { id: 'M1', name: 'M1 (Male 1)' },
-        { id: 'M2', name: 'M2 (Male 2)' },
-        { id: 'M3', name: 'M3 (Male 3)' },
-        { id: 'M4', name: 'M4 (Male 4)' },
-        { id: 'M5', name: 'M5 (Male 5)' },
-        { id: 'F1', name: 'F1 (Female 1)' },
-        { id: 'F2', name: 'F2 (Female 2)' },
-        { id: 'F3', name: 'F3 (Female 3)' },
-        { id: 'F4', name: 'F4 (Female 4)' },
-        { id: 'F5', name: 'F5 (Female 5)' }
-      ]
-    };
+    // TTS provider → reload its voices + provider help text
+    const ttsVoices = {{ tts_voice_options | tojson }};
 
     const ttsProviderSelect = document.getElementById('floor_tts_provider');
     const ttsVoiceSelect = document.getElementById('floor_tts_voice');
