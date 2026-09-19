@@ -118,6 +118,7 @@
 <script id="listener-data" type="application/json">
 {
   "eventSlug": "{{ event.slug }}",
+  "listenerToken": {{ listener_token | tojson }},
   "booths": {{ booths_json | safe }},
   "rooms": {{ rooms_json | safe }}
 }
