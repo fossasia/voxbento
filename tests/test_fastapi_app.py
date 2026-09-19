@@ -98,6 +98,30 @@ def test_token_redactor_handles_split_args():
     assert "[REDACTED]" in output
 
 
+def test_token_redactor_covers_websocket_handshakes():
+    """Uvicorn logs WebSocket handshakes, token included, through uvicorn.error."""
+    import logging
+
+    from fastapi_app import _UvicornTokenRedactor
+
+    with TestClient(app):
+        assert any(isinstance(f, _UvicornTokenRedactor) for f in logging.getLogger("uvicorn.error").filters)
+
+    record = logging.LogRecord(
+        name="uvicorn.error",
+        level=logging.INFO,
+        pathname="",
+        lineno=0,
+        msg='%s - "WebSocket %s" [accepted]',
+        args=("127.0.0.1:1234", "/ws/tts/test-event-1-ai-de?token=secretjwt123"),
+        exc_info=None,
+    )
+    _UvicornTokenRedactor().filter(record)
+    output = record.getMessage()
+    assert "secretjwt123" not in output
+    assert "/ws/tts/test-event-1-ai-de?token=[REDACTED]" in output
+
+
 def test_healthz_ok():
     res = client.get("/healthz")
     assert res.status_code == 200, res.text
