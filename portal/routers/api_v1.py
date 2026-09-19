@@ -3,13 +3,15 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 
+import pycountry
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from portal.ai_booths import excluded_ai_languages
 from portal.auth import require_oauth_scope
-from portal.booth_identity import make_booth_id, make_mediamtx_path
+from portal.booth_identity import make_ai_booth_id, make_booth_id, make_mediamtx_path
 from portal.database import get_db_session
 from portal.globals import booths
 from portal.models import (
@@ -26,6 +28,7 @@ from portal.models import (
 )
 from portal.rate_limit import auth_rate_limiter
 from portal.transcription.worker import start_transcription_worker, stop_transcription_worker
+from portal.utils import public_ws_url
 
 logger = logging.getLogger(__name__)
 
@@ -232,7 +235,16 @@ class RoomUpsert(BaseModel):
     name: str
     description: str = ""
     enabled: bool = True
+    # Languages served by a human interpreter booth.
     target_languages: list[str] = []
+    # Languages served by AI (TTS) audio of the floor translation. A language that is also a
+    # human booth, or that is the floor language, is ignored here: human booths take precedence.
+    ai_languages: list[str] = []
+
+
+def _language_name(code: str) -> str:
+    lang = pycountry.languages.get(alpha_2=code)
+    return lang.name if lang else code
 
 
 @router.put("/events/{event_slug}/rooms/{eventyay_room_id}")
@@ -287,6 +299,8 @@ async def upsert_room(
     existing_booths = {b.language_code: b for b in booth_res.scalars().all()}
 
     requested_langs = set(payload.target_languages)
+    ai_langs = set(payload.ai_languages) - excluded_ai_languages(room, requested_langs)
+    wanted_langs = requested_langs | ai_langs
 
     # Safe Delete Removed Booths & Languages
     for code, b in existing_booths.items():
@@ -316,21 +330,34 @@ async def upsert_room(
             )
 
     for code, rl in existing_langs.items():
-        if code not in requested_langs:
+        if code not in wanted_langs:
             await db.delete(rl)
+        else:
+            rl.tts_enabled = code in ai_langs
+            if rl.tts_enabled:
+                rl.enabled = True  # AI audio needs the translation
+            if rl.language_name == code:  # rows from earlier syncs stored the code as the name
+                rl.language_name = _language_name(code)
 
     # Create Missing Booths & Languages
     from sqlalchemy.exc import IntegrityError
-    for code in requested_langs:
+    for code in wanted_langs:
         if code not in existing_langs:
             try:
                 async with db.begin_nested():
-                    db.add(RoomTranslationLanguage(room_id=room.id, language_code=code, language_name=code))
+                    db.add(
+                        RoomTranslationLanguage(
+                            room_id=room.id,
+                            language_code=code,
+                            language_name=_language_name(code),
+                            tts_enabled=code in ai_langs,
+                        )
+                    )
                     await db.flush()
             except IntegrityError:
                 pass
 
-        if code not in existing_booths:
+        if code in requested_langs and code not in existing_booths:
             try:
                 async with db.begin_nested():
                     new_booth = DBBooth(room_id=room.id, language_code=code, event_id=event.id, language_name=code)
@@ -376,7 +403,19 @@ async def upsert_room(
         logger.exception("Error generating canonical WHEP URLs")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error")
 
-    return {"status": "success", "room_id": room.id, "booths": returned_booths}
+    ai_booths = []
+    for code in sorted(ai_langs):
+        booth_id = make_ai_booth_id(event.slug, room.id, code)
+        ai_booths.append({"language": code, "booth_id": booth_id, "tts_ws_url": public_ws_url(f"/ws/tts/{booth_id}")})
+
+    return {
+        "status": "success",
+        "room_id": room.id,
+        "booths": returned_booths,
+        "ai_booths": ai_booths,
+        # AI booths only play once the room's floor transcription, translation and TTS are set up in VoxBento.
+        "tts_ready": bool(room.floor_transcription_enabled and room.floor_translation_enabled and room.floor_tts_enabled),
+    }
 
 
 @router.delete("/events/{event_slug}/rooms/{eventyay_room_id}", status_code=status.HTTP_204_NO_CONTENT)
