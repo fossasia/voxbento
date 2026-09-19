@@ -865,8 +865,10 @@ async def admin_edit_room(request: Request, event_id: int, room_id: int):
                             tts_enabled=True,
                         )
                     )
-                invalidate_room_config(room_id)
             await session.flush()
+    if not form_section or form_section == "tts":
+        # After the commit, so a TTS worker can't cache the old settings in between.
+        invalidate_room_config(room_id)
     return safe_redirect(url=f"/admin/events/{event_id}/rooms/{room_id}/", status_code=status.HTTP_303_SEE_OTHER)
 
 
