@@ -13,6 +13,7 @@ document
 const eventDataEl = document.getElementById("listener-data");
 const eventData = JSON.parse(eventDataEl.textContent);
 var eventSlug = eventData.eventSlug;
+var listenerToken = eventData.listenerToken || "";
 var boothsData = eventData.booths;
 
 var roomsData = eventData.rooms;
@@ -34,7 +35,7 @@ var nextStartTime = 0;
 var currentAudioDelayMs = 0;
 var currentRoomId = null;
 var currentSourceType = null;
-var currentRoomData = null;   // rooms data keyed for quick lookup
+var currentTtsLanguage = null; // language of the AI booth being played, if any
 /** @type {ReturnType<typeof window.AudioScheduler.create>|null} */
 var audioScheduler = null;
 
@@ -75,7 +76,7 @@ var pendingAudioDelayMs = 0;
 var pendingTtsLang = null; // TTS language to start once live
 var pendingRoomId = null;
 var segmentStore = Object.create(null);
-var expectedSeq = 1;
+var expectedSeq = null; // set from the first TTS frame of a stream
 var isSegmentPlaying = false;
 var fallbackQueueTimer = null;
 var seqWaitTimer = null;
@@ -97,6 +98,7 @@ function stopCurrentStream() {
   pendingRoomId = null;
   currentRoomId = null;
   currentSourceType = null;
+  currentTtsLanguage = null;
 
   // Clear all queued segments and timers
   if (seqWaitTimer) {
@@ -108,7 +110,7 @@ function stopCurrentStream() {
     fallbackQueueTimer = null;
   }
   segmentStore = Object.create(null);
-  expectedSeq = 1;
+  expectedSeq = null;
   isSegmentPlaying = false;
   if (audioScheduler) {
     audioScheduler.reset();
@@ -131,6 +133,18 @@ function stopCurrentStream() {
   setStatus("Waiting for selection...", "waiting");
 }
 
+/**
+ * Absolute WebSocket URL for a portal path, carrying the listener token so the
+ * connection is accepted when the portal requires WebSocket authentication.
+ * @param {string} path  e.g. "/ws/captions/my-event-1-en"
+ */
+function wsUrl(path) {
+  var wsProto = window.location.protocol === "https:" ? "wss:" : "ws:";
+  var url = wsProto + "//" + window.location.host + path;
+  if (listenerToken) url += "?token=" + encodeURIComponent(listenerToken);
+  return url;
+}
+
 function startTtsWs(targetBoothId, audioDelayMs) {
   stopTtsWs();
   if (!audioCtx) {
@@ -150,10 +164,8 @@ function startTtsWs(targetBoothId, audioDelayMs) {
     comfortNoiseLevelDb: -40,
   });
 
-  var wsProto = window.location.protocol === "https:" ? "wss:" : "ws:";
-  // targetBoothId = e.g. "my-event-1-ai-fr" — matches /ws/tts/{target_booth_id} on the server
-  var wsUrl = wsProto + "//" + window.location.host + "/ws/tts/" + targetBoothId;
-  ttsWs = new WebSocket(wsUrl);
+  // targetBoothId = e.g. "my-event-1-ai-fr" — matches /ws/tts/{booth_id} on the server
+  ttsWs = new WebSocket(wsUrl("/ws/tts/" + targetBoothId));
   ttsWs.binaryType = "arraybuffer";
 
   ttsWs.onmessage = function (event) {
@@ -167,6 +179,8 @@ function startTtsWs(targetBoothId, audioDelayMs) {
         if (expectedSeq === null || expectedSeq === undefined) {
           expectedSeq = seq;
         }
+        // A late frame for a segment we already moved past would never be played.
+        if (seq < expectedSeq) return;
 
         segmentStore[seq] = {
           seq: seq,
@@ -278,10 +292,7 @@ function startWhepAndCaptions(whepUrl, boothId, audioDelayMs) {
 
 function openCaptionsWs(boothId) {
   if (!boothId) return;
-  var wsProto = window.location.protocol === "https:" ? "wss:" : "ws:";
-  captionsWs = new WebSocket(
-    wsProto + "//" + window.location.host + "/ws/captions/" + boothId,
-  );
+  captionsWs = new WebSocket(wsUrl("/ws/captions/" + boothId));
   captionsWs.onmessage = handleCaptionsMessage;
 }
 
@@ -297,12 +308,9 @@ function openTranslationCaptionsWs(eventSlug, roomId, langCode) {
     translationCaptionsWs.close();
     translationCaptionsWs = null;
   }
-  if (!langCode) return;
+  if (!langCode || !roomId) return;
   var targetBoothId = eventSlug + "-" + roomId + "-" + langCode;
-  var wsProto = window.location.protocol === "https:" ? "wss:" : "ws:";
-  translationCaptionsWs = new WebSocket(
-    wsProto + "//" + window.location.host + "/ws/captions/" + targetBoothId,
-  );
+  translationCaptionsWs = new WebSocket(wsUrl("/ws/captions/" + targetBoothId));
   translationCaptionsWs.onmessage = handleTranslationMessage;
 }
 
@@ -319,7 +327,11 @@ function renderItem(data) {
           ? document.getElementById("segment-" + data.segment_id)
           : null;
         var srcLangOpt = languageSelect.options[languageSelect.selectedIndex];
-        var srcLangName = srcLangOpt ? srcLangOpt.text : "Source";
+        var srcLangName = currentTtsLanguage
+          ? "Original"
+          : srcLangOpt
+            ? srcLangOpt.text
+            : "Source";
 
         if (!existingBlock) {
           var block = document.createElement("div");
@@ -340,6 +352,8 @@ function renderItem(data) {
 
           if (mode === "translated") {
             srcDiv.style.display = "none";
+            // Nothing to show until a translation lands in this block; avoids empty rows.
+            block.style.display = "none";
           }
 
           block.appendChild(srcDiv);
@@ -395,6 +409,7 @@ function renderItem(data) {
         } else {
           block.appendChild(tDiv);
         }
+        if (mode !== "original") block.style.display = "flex";
       } else {
         // Fallback if we missed the original caption
         block = document.createElement("div");
@@ -436,6 +451,8 @@ function pumpSegmentQueue() {
     clearTimeout(seqWaitTimer);
     seqWaitTimer = null;
   }
+  var waitingText = document.getElementById("waiting-text");
+  if (waitingText) waitingText.style.display = "none";
 
   isSegmentPlaying = true;
 
@@ -449,10 +466,13 @@ function pumpSegmentQueue() {
     });
   }
 
-  // 2. Render Translation
+  // 2. Render Translation. The bundle carries the AI booth's own language; captions in
+  // any other language arrive on translationCaptionsWs instead.
   var mode = captionModeSelect ? captionModeSelect.value : "original";
   var isTranslationActive =
-    Boolean(translationLangSelect.value) && mode !== "original";
+    Boolean(translationLangSelect.value) &&
+    translationLangSelect.value === currentTtsLanguage &&
+    mode !== "original";
   if (isTranslationActive) {
     var tText = nextSeg.translation;
     if (!tText && nextSeg.error === "pipeline_failed") {
@@ -768,7 +788,7 @@ roomSelect.addEventListener("change", function () {
       opt.dataset.boothId = eventSlug + "-" + roomId + "-floor";
       opt.dataset.languageCode = "floor";
     } else {
-      opt.dataset.boothId = b.id;
+      opt.dataset.boothId = eventSlug + "-" + roomId + "-" + b.language_code;
       opt.dataset.languageCode = b.language_code;
     }
     opt.dataset.boothObjId = b.id;
@@ -796,41 +816,12 @@ translationLangSelect.addEventListener("change", function () {
   }
   applyCaptionMode();
 
-  if (fallbackQueueTimer) {
-    clearTimeout(fallbackQueueTimer);
-    fallbackQueueTimer = null;
-  }
-  if (isSegmentPlaying) {
-    isSegmentPlaying = false;
-  }
-
-  // Completely clear segment store and reset expected sequence
-  segmentStore = {};
-  expectedSeq = null;
-
-  console.log(
-    "Language switched to:",
-    this.value,
-    "Selected index:",
-    this.selectedIndex,
-  );
-
-  var selectedOpt = languageSelect.options[languageSelect.selectedIndex];
-  var boothId = selectedOpt ? selectedOpt.dataset.boothId : null;
+  // Captions in the AI booth's own language arrive with its audio. Any other language comes
+  // from that language's text channel, which also tells the worker someone wants it translated.
+  // The audio stream is left alone, so a listener can hear one language and read another.
   var roomId = parseInt(roomSelect.value, 10);
-  var newLangCode = this.value;
-
-  // Open a translation captions WS so the worker knows someone is listening
-  // and so we receive translated_caption messages for the chosen language.
-  if (translationCaptionsWs) {
-    translationCaptionsWs.close();
-    translationCaptionsWs = null;
-  }
-  if (newLangCode && roomId) {
-    openTranslationCaptionsWs(eventSlug, roomId, newLangCode);
-  }
-
-  stopTtsWs(); // stop previous TTS WebSocket stream
+  var newLangCode = this.value !== currentTtsLanguage ? this.value : "";
+  openTranslationCaptionsWs(eventSlug, roomId, newLangCode);
 });
 
 languageSelect.addEventListener("change", function () {
@@ -847,40 +838,27 @@ languageSelect.addEventListener("change", function () {
   var transGroup = document.getElementById("translation-lang-group");
 
   if (isAi) {
-    // AI booths: the audio is in the AI language, but the user can still choose
-    // a separate text translation to read. Populate the dropdown from the room's
-    // translation languages (same list as floor would show).
-    var aiRoomData = roomsData.find(function (r) { return r.id === roomId; });
-    var aiLangs = (aiRoomData && aiRoomData.translation_languages) || [];
-    if (aiLangs.length > 0) {
-      if (transGroup) transGroup.style.display = "flex";
-      captionModeSelect.disabled = false;
+    // AI booths: captions default to the booth's own language, whose text arrives with
+    // the audio. The listener can read the original or any other room language instead.
+    var aiLangs = (rData && rData.translation_languages) || [];
+    if (transGroup) transGroup.style.display = "flex";
+    captionModeSelect.disabled = false;
+    translationLangSelect.innerHTML = "";
 
-      var currentSelection = translationLangSelect.value;
-      translationLangSelect.innerHTML = "";
+    var origOpt = document.createElement("option");
+    origOpt.value = "";
+    origOpt.textContent = "Original";
+    translationLangSelect.appendChild(origOpt);
 
-      var origOpt = document.createElement("option");
-      origOpt.value = "";
-      origOpt.textContent = "Original (AI Language)";
-      translationLangSelect.appendChild(origOpt);
+    aiLangs.forEach(function (lang) {
+      var opt = document.createElement("option");
+      opt.value = lang.code;
+      opt.textContent = lang.name;
+      translationLangSelect.appendChild(opt);
+    });
 
-      aiLangs.forEach(function (lang) {
-        var opt = document.createElement("option");
-        opt.value = lang.code;
-        opt.textContent = lang.name;
-        translationLangSelect.appendChild(opt);
-      });
-
-      // Default: show AI-translated text only (no separate text translation)
-      translationLangSelect.value = "";
-      captionModeSelect.value = "translated";
-    } else {
-      if (transGroup) transGroup.style.display = "none";
-      captionModeSelect.disabled = true;
-      captionModeSelect.value = "translated";
-      translationLangSelect.innerHTML = "";
-    }
-    applyCaptionMode();
+    translationLangSelect.value = languageCode;
+    captionModeSelect.value = "translated";
   } else {
     // Setup translation options based on the selected audio source
     if (sourceData) {
@@ -950,18 +928,12 @@ languageSelect.addEventListener("change", function () {
 
   if (this.value) {
     if (isAi) {
-      // AI booth: audio comes from TTS WebSocket, original captions from /ws/captions/{ai-booth-id}
+      // AI booth: audio and its captions (original + AI language) come as TTS bundles.
       currentSourceType = "tts";
+      currentTtsLanguage = languageCode;
       audioEl.muted = false;
-      // Open the AI booth's captions channel to receive original (AI-translated) captions text
-      openCaptionsWs(boothId);
       startTtsWs(boothId, selectedAudioDelayMs);
       setStatus("Live (AI Audio)", "live");
-      // If user has a text translation language already chosen, open that WS too
-      var existingTextLang = translationLangSelect.value;
-      if (existingTextLang) {
-        openTranslationCaptionsWs(eventSlug, roomId, existingTextLang);
-      }
     } else {
       // Human / Floor booth: audio from WHEP, captions from /ws/captions/
       currentSourceType = "whep";
