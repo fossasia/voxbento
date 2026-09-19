@@ -68,6 +68,8 @@ async def lifespan(app: FastAPI):
     dg.track_task(asyncio.create_task(_gen()))
 
     logging.getLogger("uvicorn.access").addFilter(_UvicornTokenRedactor())
+    # WebSocket handshakes ("WebSocket /ws/...?token=... [accepted]") are logged by uvicorn.error.
+    logging.getLogger("uvicorn.error").addFilter(_UvicornTokenRedactor())
     logging.getLogger("uvicorn.access").addFilter(_HealthCheckFilter())
     yield
     import contextlib
