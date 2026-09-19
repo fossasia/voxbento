@@ -120,18 +120,22 @@ async def ws_captions(websocket: WebSocket, booth_id: str) -> None:
         listener_manager.remove(websocket, booth_id)
 
 
-@router.websocket("/ws/tts/{target_booth_id}")
-async def ws_tts(websocket: WebSocket, target_booth_id: str) -> None:
+@router.websocket("/ws/tts/{booth_id}")
+async def ws_tts(websocket: WebSocket, booth_id: str) -> None:
+    """WebSocket endpoint for an AI booth's synthesized audio (``{event_slug}-{room_id}-ai-{language_code}``).
+
+    Uses the same authentication as ``/ws/captions/{booth_id}``.
+    """
     try:
-        await resolve_ws_auth(websocket, target_booth_id)
+        await resolve_ws_auth(websocket, booth_id)
     except WSAuthError:
         return
     await websocket.accept()
-    tts_manager.add(websocket, target_booth_id)
+    tts_manager.add(websocket, booth_id)
     try:
         while True:
             await websocket.receive_text()
     except WebSocketDisconnect:
         pass
     finally:
-        tts_manager.remove(websocket, target_booth_id)
+        tts_manager.remove(websocket, booth_id)

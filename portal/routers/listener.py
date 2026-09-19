@@ -11,7 +11,8 @@ import jwt
 from fastapi import APIRouter, HTTPException, Query, Request, status
 from fastapi.templating import Jinja2Templates
 
-from portal.auth import decode_token, get_booth_session
+from portal.ai_booths import ai_booth_entry, ai_booth_languages
+from portal.auth import create_listener_token, decode_token, get_booth_session
 from portal.config import settings
 from portal.database import (
     get_event_by_slug,
@@ -163,37 +164,12 @@ async def listen_event_page(request: Request, event_slug: str, code: str | None 
             )
             ensure_tasks.append(_ensure_mediamtx_path(channel_id))
 
-        # Add AI Booths
-        ai_targets = {}
-        if r.floor_tts_enabled and r.floor_translation_enabled:
-            for tl in r.translation_languages:
-                if tl.enabled and tl.tts_enabled:
-                    ai_targets[tl.language_code] = tl.language_name
-        
-        for b in [booth for booth in db_booths if booth.room_id == r.id]:
-            if b.translation_enabled:
-                for tl in b.translation_languages:
-                    if tl.enabled and tl.tts_enabled:
-                        ai_targets[tl.language_code] = tl.language_name
-        
         human_langs = {b.language_code for b in db_booths if b.room_id == r.id}
-        for lang_code, lang_name in ai_targets.items():
-            if lang_code in human_langs:
-                continue
-            
-            target_booth_id = f"{ev.slug}-{r.id}-ai-{lang_code}"
+        for lang in ai_booth_languages(r, human_langs):
             booths_data.append(
                 {
-                    "id": target_booth_id,
-                    "room_id": r.id,
-                    "language_code": lang_code,
-                    "language_name": lang_name,
-                    "type": "ai",
-                    "label": f"{lang_name} (AI)",
-                    "is_ai": True,
+                    **ai_booth_entry(ev.slug, r, lang),
                     "channel_id": None,
-                    "whep_url": None,
-                    "audio_delay_ms": r.audio_delay_ms,
                     "translation_enabled": False,
                     "translation_languages": [],
                 }
@@ -210,6 +186,8 @@ async def listen_event_page(request: Request, event_slug: str, code: str | None 
             "rooms": rooms,
             "rooms_json": json.dumps(rooms_data),
             "booths_json": json.dumps(booths_data),
+            # Lets the page authenticate its caption and TTS WebSockets when booth_access_token is set.
+            "listener_token": create_listener_token(event_slug=ev.slug),
             "js_version": _JS_CACHE_BUST,
         },
     )

@@ -5,6 +5,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
+from portal.ai_booths import ai_booth_entry, ai_booth_languages
 from portal.auth import create_embed_token, create_listener_token, security
 from portal.booth_identity import make_booth_id, make_mediamtx_path
 from portal.config import settings
@@ -23,7 +24,7 @@ from portal.rate_limit import check_rate_limit
 from portal.schemas.booth import CreateBoothRequest
 from portal.transcription import ProviderConfig, ProviderEnum, get_api_key
 from portal.transcription.worker import start_transcription_worker, stop_transcription_worker
-from portal.utils import _check_mediamtx, _ensure_mediamtx_path, _require_access, _resolve_whip_url
+from portal.utils import _check_mediamtx, _ensure_mediamtx_path, _require_access, _resolve_whip_url, public_ws_url
 from portal.websockets.manager import broadcast_transcription
 
 router = APIRouter(prefix="/api")
@@ -204,9 +205,7 @@ async def create_event_booth(
 
         state["interpreter_invite_url"] = f"{settings.public_base_url}/join/{invite.token}"
 
-    state["caption_url"] = (
-        f"wss://{settings.public_base_url.replace('https://', '').replace('http://', '')}/ws/captions/{state['booth_id']}"
-    )
+    state["caption_url"] = public_ws_url(f"/ws/captions/{state['booth_id']}")
     return state
 
 
@@ -278,50 +277,23 @@ async def list_event_booths(
             b["whep_url"] = f"{settings.mediamtx_whip_base}/{mtx}/whep"
         b["type"] = "human"
         b["label"] = f"{b.get('language_name', b.get('language_code', ''))} (Human)"
+        b["is_ai"] = False
 
     async with get_session() as session:
-        stmt = select(Event).where(Event.slug == event_slug).options(
-            selectinload(Event.rooms).selectinload(Room.translation_languages),
-            selectinload(Event.rooms).selectinload(Room.booths).selectinload(DBBooth.translation_languages)
+        stmt = (
+            select(Event)
+            .where(Event.slug == event_slug)
+            .options(
+                selectinload(Event.rooms).selectinload(Room.translation_languages),
+                selectinload(Event.rooms).selectinload(Room.booths),
+            )
         )
         event = await session.scalar(stmt)
         if event:
             for room in event.rooms:
                 human_languages = {b.language_code for b in room.booths}
-                
-                # Gather all requested AI target languages (from floor and human booths)
-                ai_targets = {}  # lang_code -> lang_name
-                if room.floor_tts_enabled and room.floor_translation_enabled:
-                    for tl in room.translation_languages:
-                        if tl.enabled and tl.tts_enabled:
-                            ai_targets[tl.language_code] = tl.language_name
-                            
-                for b in room.booths:
-                    if b.translation_enabled:
-                        for tl in b.translation_languages:
-                            if tl.enabled and tl.tts_enabled:
-                                ai_targets[tl.language_code] = tl.language_name
-
-                for lang_code, lang_name in ai_targets.items():
-                    if lang_code in human_languages:
-                        continue  # Human precedence: skip AI booth if human booth exists for this language
-                        
-                    target_booth_id = f"{event.slug}-{room.id}-ai-{lang_code}"
-                    
-                    ai_stream = {
-                        "id": target_booth_id,
-                        "room_id": room.id,
-                        "eventyay_room_id": room.eventyay_room_id,
-                        "language_code": lang_code,
-                        "language_name": lang_name,
-                        "type": "ai",
-                        "label": f"{lang_name} (AI)",
-                        "is_ai": True,
-                        "whip_url": None,
-                        "whep_url": None,
-                        "tts_ws_url": f"wss://{settings.public_base_url.replace('https://', '').replace('http://', '')}/ws/tts/{target_booth_id}",
-                    }
-                    booth_list.append(ai_stream)
+                for lang in ai_booth_languages(room, human_languages):
+                    booth_list.append(ai_booth_entry(event.slug, room, lang))
 
     return {"event_slug": event_slug, "booths": booth_list}
 
