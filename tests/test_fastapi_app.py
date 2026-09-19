@@ -102,10 +102,16 @@ def test_token_redactor_covers_websocket_handshakes():
     """Uvicorn logs WebSocket handshakes, token included, through uvicorn.error."""
     import logging
 
-    from fastapi_app import _UvicornTokenRedactor
+    from fastapi_app import _install_log_filters, _UvicornTokenRedactor
 
-    with TestClient(app):
-        assert any(isinstance(f, _UvicornTokenRedactor) for f in logging.getLogger("uvicorn.error").filters)
+    loggers = [logging.getLogger("uvicorn.error"), logging.getLogger("uvicorn.access")]
+    saved = [list(lg.filters) for lg in loggers]
+    try:
+        _install_log_filters()
+        assert any(isinstance(f, _UvicornTokenRedactor) for f in loggers[0].filters)
+    finally:
+        for lg, filters in zip(loggers, saved):
+            lg.filters = filters
 
     record = logging.LogRecord(
         name="uvicorn.error",
