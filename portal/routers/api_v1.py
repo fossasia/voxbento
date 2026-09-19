@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 
 import pycountry
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -241,6 +241,19 @@ class RoomUpsert(BaseModel):
     # human booth, or that is the floor language, is ignored here: human booths take precedence.
     ai_languages: list[str] = []
 
+    @field_validator("target_languages", "ai_languages")
+    @classmethod
+    def _iso_639_1_codes(cls, codes: list[str]) -> list[str]:
+        """Normalize to lowercase ISO 639-1 codes, so "DE" can't slip past a human "de" booth."""
+        normalized = []
+        for code in codes:
+            code = code.strip().lower()
+            if len(code) != 2 or pycountry.languages.get(alpha_2=code) is None:
+                raise ValueError(f"'{code}' is not an ISO 639-1 language code")
+            if code not in normalized:
+                normalized.append(code)
+        return normalized
+
 
 def _language_name(code: str) -> str:
     lang = pycountry.languages.get(alpha_2=code)
@@ -414,7 +427,14 @@ async def upsert_room(
         "booths": returned_booths,
         "ai_booths": ai_booths,
         # AI booths only play once the room's floor transcription, translation and TTS are set up in VoxBento.
-        "tts_ready": bool(room.floor_transcription_enabled and room.floor_translation_enabled and room.floor_tts_enabled),
+        "tts_ready": bool(
+            ai_langs
+            and room.floor_transcription_enabled
+            and room.floor_translation_enabled
+            and room.floor_translation_provider
+            and room.floor_translation_model
+            and room.floor_tts_enabled
+        ),
     }
 
 

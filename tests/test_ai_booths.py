@@ -306,3 +306,39 @@ async def test_room_sync_repairs_code_only_language_names(ai_room):
 
     await _upsert(["es"], ["de"])
     assert (await _room_languages(room_id))["de"].language_name == "German"
+
+
+async def test_room_sync_normalizes_and_validates_language_codes(ai_room):
+    from pydantic import ValidationError
+
+    from portal.routers.api_v1 import RoomUpsert
+
+    payload = RoomUpsert(name="Stage", target_languages=[" ES "], ai_languages=["DE", "de", "Es"])
+    assert payload.target_languages == ["es"]
+    assert payload.ai_languages == ["de", "es"]
+
+    # Upper case can't sneak an AI booth past the human "es" booth.
+    result = await _upsert([" ES "], ["DE", "Es"])
+    assert [b["language"] for b in result["ai_booths"]] == ["de"]
+
+    for bad in (["floor"], ["de/x"], ["xx"], ["deu"]):
+        with pytest.raises(ValidationError):
+            RoomUpsert(name="Stage", ai_languages=bad)
+
+
+async def test_tts_ready_needs_a_translation_setup_and_ai_languages(ai_room):
+    from portal.database import get_session
+
+    event, room = ai_room
+    async with get_session() as s:
+        r = await s.get(Room, room.id)
+        r.eventyay_room_id = "eventyay-7"
+        r.floor_translation_provider = "local"
+        r.floor_translation_model = "nllb-200-distilled-600M"
+
+    assert (await _upsert(["es"], ["de"]))["tts_ready"] is True
+    assert (await _upsert(["es"], []))["tts_ready"] is False  # no AI language to speak
+
+    async with get_session() as s:
+        (await s.get(Room, room.id)).floor_translation_model = None
+    assert (await _upsert(["es"], ["de"]))["tts_ready"] is False
