@@ -17,6 +17,7 @@ from pydantic import BaseModel
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from portal.ai_booths import excluded_ai_languages
 from portal.auth import (
     create_admin_token,
     get_accessible_event_ids,
@@ -88,6 +89,8 @@ from portal.models import (
 from portal.transcription import ALLOWED_MODELS, ProviderConfig, ProviderEnum, get_api_key
 from portal.transcription.worker import start_transcription_worker, stop_transcription_worker
 from portal.translations.constants import TRANSLATION_MODELS, TranslationProviderEnum
+from portal.tts.constants import TTS_VOICE_OPTIONS, normalize_tts_voice
+from portal.tts.worker import invalidate_room_config
 from portal.utils import _check_mediamtx, _make_jitsi_url, safe_redirect
 from portal.websockets.manager import broadcast_transcription
 
@@ -722,13 +725,15 @@ async def admin_room_detail(request: Request, event_id: int, room_id: int):
     ]
     translation_languages_dataset.sort(key=lambda x: x["name"])
     enabled_translation_language_codes = [lang.language_code for lang in room.translation_languages if lang.enabled]
-    
-    human_langs = {b.language_code for b in db_booths}
+    excluded_tts_codes = excluded_ai_languages(room, {b.language_code for b in db_booths})
     tts_available_languages_dataset = [
-        lang for lang in translation_languages_dataset
-        if lang["code"] not in human_langs
+        lang for lang in translation_languages_dataset if lang["code"] not in excluded_tts_codes
     ]
-    enabled_tts_language_codes = [lang.language_code for lang in room.translation_languages if lang.tts_enabled]
+    enabled_tts_language_codes = [
+        lang.language_code
+        for lang in room.translation_languages
+        if lang.enabled and lang.tts_enabled and lang.language_code not in excluded_tts_codes
+    ]
     async with get_session() as session:
         memberships = await list_memberships_for_room(session, room_id)
     return templates.TemplateResponse(
@@ -743,6 +748,7 @@ async def admin_room_detail(request: Request, event_id: int, room_id: int):
             "enabled_translation_language_codes": enabled_translation_language_codes,
             "tts_available_languages_dataset": tts_available_languages_dataset,
             "enabled_tts_language_codes": enabled_tts_language_codes,
+            "tts_voice_options": TTS_VOICE_OPTIONS,
             "memberships": memberships,
             **admin_flags,
         },
@@ -789,7 +795,8 @@ async def admin_edit_room(request: Request, event_id: int, room_id: int):
     floor_tts_provider = (form.get("floor_tts_provider", "deepgram") or "deepgram").strip().lower() or "deepgram"
     if floor_tts_provider not in {"deepgram", "supertonic"}:
         floor_tts_provider = "deepgram"
-    floor_tts_voice = form.get("floor_tts_voice", "").strip() or "M1"
+    # An empty voice lets the provider choose a voice for each target language.
+    floor_tts_voice = normalize_tts_voice(floor_tts_provider, form.get("floor_tts_voice", ""))
     async with get_session() as session:
         room = await get_room_by_id(session, room_id)
         if room and room.event_id == event_id:
@@ -818,6 +825,7 @@ async def admin_edit_room(request: Request, event_id: int, room_id: int):
                 for code, lang in existing_langs.items():
                     if code not in requested_codes:
                         lang.enabled = False
+                        lang.tts_enabled = False  # AI audio needs the translation
                 for code in requested_codes:
                     if code in existing_langs:
                         existing_langs[code].enabled = True
@@ -834,24 +842,30 @@ async def admin_edit_room(request: Request, event_id: int, room_id: int):
                 room.floor_tts_provider = floor_tts_provider
                 room.floor_tts_voice = floor_tts_voice
 
-                requested_tts_codes = set(floor_tts_languages)
+                # Human booths and the floor language can't be AI languages, whatever the form sent.
+                human_langs = {b.language_code for b in await list_booths_for_room(session, room_id)}
+                excluded = excluded_ai_languages(room, human_langs)
+                requested_tts_codes = {
+                    code
+                    for code in floor_tts_languages
+                    if code not in excluded and pycountry.languages.get(alpha_2=code) is not None
+                }
                 existing_langs = {lang.language_code: lang for lang in room.translation_languages}
                 for code, lang in existing_langs.items():
-                    lang.tts_enabled = (code in requested_tts_codes)
-                
-                # If they chose a TTS language that isn't even in translation_languages yet, create it.
-                for code in requested_tts_codes:
-                    if code not in existing_langs:
-                        lang_obj = pycountry.languages.get(alpha_2=code)
-                        lang_name = lang_obj.name if lang_obj else code
-                        new_lang = RoomTranslationLanguage(
-                            room_id=room_id, 
-                            language_code=code, 
-                            language_name=lang_name, 
-                            enabled=True,  # Must be translated to have TTS
-                            tts_enabled=True
+                    lang.tts_enabled = code in requested_tts_codes
+                    if lang.tts_enabled:
+                        lang.enabled = True  # AI audio needs the translation
+                for code in requested_tts_codes - existing_langs.keys():
+                    session.add(
+                        RoomTranslationLanguage(
+                            room_id=room_id,
+                            language_code=code,
+                            language_name=pycountry.languages.get(alpha_2=code).name,
+                            enabled=True,
+                            tts_enabled=True,
                         )
-                        session.add(new_lang)
+                    )
+                invalidate_room_config(room_id)
             await session.flush()
     return safe_redirect(url=f"/admin/events/{event_id}/rooms/{room_id}/", status_code=status.HTTP_303_SEE_OTHER)
 
