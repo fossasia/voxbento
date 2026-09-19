@@ -5,6 +5,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
+from portal.ai_booths import ai_booth_entry, ai_booth_languages
 from portal.auth import create_embed_token, create_listener_token, security
 from portal.booth_identity import make_booth_id, make_mediamtx_path
 from portal.config import settings
@@ -23,7 +24,7 @@ from portal.rate_limit import check_rate_limit
 from portal.schemas.booth import CreateBoothRequest
 from portal.transcription import ProviderConfig, ProviderEnum, get_api_key
 from portal.transcription.worker import start_transcription_worker, stop_transcription_worker
-from portal.utils import _check_mediamtx, _ensure_mediamtx_path, _require_access, _resolve_whip_url
+from portal.utils import _check_mediamtx, _ensure_mediamtx_path, _require_access, _resolve_whip_url, public_ws_url
 from portal.websockets.manager import broadcast_transcription
 
 router = APIRouter(prefix="/api")
@@ -204,9 +205,7 @@ async def create_event_booth(
 
         state["interpreter_invite_url"] = f"{settings.public_base_url}/join/{invite.token}"
 
-    state["caption_url"] = (
-        f"wss://{settings.public_base_url.replace('https://', '').replace('http://', '')}/ws/captions/{state['booth_id']}"
-    )
+    state["caption_url"] = public_ws_url(f"/ws/captions/{state['booth_id']}")
     return state
 
 
@@ -278,31 +277,23 @@ async def list_event_booths(
             b["whep_url"] = f"{settings.mediamtx_whip_base}/{mtx}/whep"
         b["type"] = "human"
         b["label"] = f"{b.get('language_name', b.get('language_code', ''))} (Human)"
+        b["is_ai"] = False
 
     async with get_session() as session:
-
-        stmt = select(Event).where(Event.slug == event_slug).options(
-            selectinload(Event.rooms).selectinload(Room.translation_languages)
+        stmt = (
+            select(Event)
+            .where(Event.slug == event_slug)
+            .options(
+                selectinload(Event.rooms).selectinload(Room.translation_languages),
+                selectinload(Event.rooms).selectinload(Room.booths),
+            )
         )
         event = await session.scalar(stmt)
         if event:
             for room in event.rooms:
-                if room.floor_translation_enabled:
-                    for tl in room.translation_languages:
-                        if not tl.enabled:
-                            continue
-                        ai_stream = {
-                            "id": f"ai_{room.id}_{tl.language_code}",
-                            "room_id": room.id,
-                            "eventyay_room_id": room.eventyay_room_id,
-                            "language_code": tl.language_code,
-                            "language_name": tl.language_name,
-                            "type": "ai",
-                            "label": f"{tl.language_name} (AI)",
-                            "is_ai": True,
-                            "floor_tts_enabled": room.floor_tts_enabled,
-                        }
-                        booth_list.append(ai_stream)
+                human_languages = {b.language_code for b in room.booths}
+                for lang in ai_booth_languages(room, human_languages):
+                    booth_list.append(ai_booth_entry(event.slug, room, lang))
 
     return {"event_slug": event_slug, "booths": booth_list}
 

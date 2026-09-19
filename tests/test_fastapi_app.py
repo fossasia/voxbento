@@ -98,6 +98,36 @@ def test_token_redactor_handles_split_args():
     assert "[REDACTED]" in output
 
 
+def test_token_redactor_covers_websocket_handshakes():
+    """Uvicorn logs WebSocket handshakes, token included, through uvicorn.error."""
+    import logging
+
+    from fastapi_app import _install_log_filters, _UvicornTokenRedactor
+
+    loggers = [logging.getLogger("uvicorn.error"), logging.getLogger("uvicorn.access")]
+    saved = [list(lg.filters) for lg in loggers]
+    try:
+        _install_log_filters()
+        assert any(isinstance(f, _UvicornTokenRedactor) for f in loggers[0].filters)
+    finally:
+        for lg, filters in zip(loggers, saved):
+            lg.filters = filters
+
+    record = logging.LogRecord(
+        name="uvicorn.error",
+        level=logging.INFO,
+        pathname="",
+        lineno=0,
+        msg='%s - "WebSocket %s" [accepted]',
+        args=("127.0.0.1:1234", "/ws/tts/test-event-1-ai-de?token=secretjwt123"),
+        exc_info=None,
+    )
+    _UvicornTokenRedactor().filter(record)
+    output = record.getMessage()
+    assert "secretjwt123" not in output
+    assert "/ws/tts/test-event-1-ai-de?token=[REDACTED]" in output
+
+
 def test_healthz_ok():
     res = client.get("/healthz")
     assert res.status_code == 200, res.text
@@ -1868,3 +1898,37 @@ def test_embed_captions_opt_in_websocket_auth():
     # Verify the booth_id produced by make_booth_id satisfies the startswith check.
     booth_id = "test-event-1-en"  # make_booth_id("test-event", 1, 1,  "en")
     assert booth_id.startswith(f"{payload['event_slug']}-")
+
+
+def test_ws_tts_authentication(monkeypatch):
+    """/ws/tts uses the same authentication as /ws/captions."""
+    from fastapi.websockets import WebSocketDisconnect
+
+    from portal.auth import create_listener_token
+    from portal.config import settings
+
+    monkeypatch.setattr(settings, "booth_access_token", "secret-test-token")
+
+    # 1. No token -> fails
+    with pytest.raises(WebSocketDisconnect) as exc_info:
+        with client.websocket_connect("/ws/tts/test-event-1-ai-fr") as ws:
+            ws.receive_text()
+    assert exc_info.value.code == 4001
+
+    # 2. Invalid token -> fails
+    with pytest.raises(WebSocketDisconnect) as exc_info:
+        with client.websocket_connect("/ws/tts/test-event-1-ai-fr?token=invalid") as ws:
+            ws.receive_text()
+    assert exc_info.value.code == 4001
+
+    # 3. Listener token for another event -> fails
+    other = create_listener_token(event_slug="other-event")
+    with pytest.raises(WebSocketDisconnect) as exc_info:
+        with client.websocket_connect(f"/ws/tts/test-event-1-ai-fr?token={other}") as ws:
+            ws.receive_text()
+    assert exc_info.value.code == 4003
+
+    # 4. Valid listener token -> accepted (the server waits for the client, so just close)
+    token = create_listener_token(event_slug="test-event")
+    with client.websocket_connect(f"/ws/tts/test-event-1-ai-fr?token={token}"):
+        pass
