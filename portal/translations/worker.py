@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 
+from portal.booth_identity import make_ai_booth_id
 from portal.database import get_session
 from portal.models import DBBooth, Event, Room, TranscriptTranslation
 from portal.translations.constants import OPENAI_COMPATIBLE_ENDPOINTS, TranslationProviderEnum
@@ -110,54 +111,55 @@ class TranslationWorker:
             source_lang_obj = pycountry.languages.get(alpha_2=source_lang_code) if source_lang_code else None
             source_lang_name = source_lang_obj.name if source_lang_obj else (source_lang_code or "English")
 
+            from portal.websockets.manager import listener_manager
+
+            # Only floor audio feeds AI booths. Translations of a booth's audio are text only,
+            # so two sources never share one AI booth's sequence.
+            feeds_ai_booths = segment.booth_id is None and room.floor_tts_enabled
+
             tasks = []
             for lang in enabled_langs:
+                target_booth_id = f"{event.slug}-{room.id}-{lang.language_code}"
+
                 if lang.language_code == source_lang_code:
-                    # Target == Source: bypass translation/TTS entirely. It was already broadcast instantly
-                    # on the base room. We just need to mark it done for anyone who might have connected
-                    # specifically to the source-language target websocket.
-                    async def _broadcast_source(u_seg_id, sq, txt, t_booth_id, tts_t_booth_id):
-                        from portal.websockets.manager import listener_manager
-                        await tts_manager.broadcast_bundle(
-                            tts_t_booth_id, b"", u_seg_id, sq, txt, txt, None
-                        )
-                        await listener_manager.broadcast(t_booth_id, {"type": "translated_caption", "status": "final", "text": txt})
-
-                    target_booth_id = f"{event.slug}-{room.id}-{lang.language_code}"
-                    tts_target_booth_id = f"{event.slug}-{room.id}-ai-{lang.language_code}"
+                    # Target == Source: nothing to translate or synthesize. The text was already broadcast
+                    # on the source booth; repeat it for anyone subscribed to this language's text channel.
                     tasks.append(
-                        _broadcast_source(uuid_segment_id, seq, text, target_booth_id, tts_target_booth_id)
-                    )
-                else:
-                    # Lazy translation: only translate if someone is actually listening!
-                    target_booth_id = f"{event.slug}-{room.id}-{lang.language_code}"
-                    tts_target_booth_id = f"{event.slug}-{room.id}-ai-{lang.language_code}"
-                    from portal.websockets.manager import listener_manager
-                    has_tts = tts_manager.has_listeners(tts_target_booth_id) if lang.tts_enabled else False
-                    has_text = listener_manager.has_listeners(target_booth_id)
-                    if not has_tts and not has_text:
-                        continue
-
-                    tasks.append(
-                        self._translate_and_broadcast(
-                            event,
-                            room,
-                            provider,
-                            model,
-                            api_key,
-                            lang.language_code,
-                            lang.language_name,
-                            source_lang_name,
-                            segment_id,
-                            text,
-                            booth_id_str,
-                            uuid_segment_id,
-                            seq,
-                            target_booth_id,
-                            tts_target_booth_id,
-                            lang.tts_enabled,
+                        listener_manager.broadcast(
+                            target_booth_id, {"type": "translated_caption", "status": "final", "text": text}
                         )
                     )
+                    continue
+
+                tts_booth_id = None
+                if feeds_ai_booths and lang.tts_enabled:
+                    ai_booth_id = make_ai_booth_id(event.slug, room.id, lang.language_code)
+                    if tts_manager.has_listeners(ai_booth_id):
+                        tts_booth_id = ai_booth_id
+
+                # Lazy translation: only translate if someone is actually listening!
+                if tts_booth_id is None and not listener_manager.has_listeners(target_booth_id):
+                    continue
+
+                tasks.append(
+                    self._translate_and_broadcast(
+                        event,
+                        room,
+                        provider,
+                        model,
+                        api_key,
+                        lang.language_code,
+                        lang.language_name,
+                        source_lang_name,
+                        segment_id,
+                        text,
+                        booth_id_str,
+                        uuid_segment_id,
+                        seq,
+                        target_booth_id,
+                        tts_booth_id,
+                    )
+                )
 
             if tasks:
                 logger.error(f"[{booth_id_str}] Spawning {len(tasks)} translation tasks for active listeners")
@@ -165,6 +167,15 @@ class TranslationWorker:
 
     def _get_translation_api_key(self, event: Event, provider: str) -> str | None:
         return get_translation_api_key(event, provider)
+
+    @staticmethod
+    async def _send_bundle(tts_booth_id: str | None, *bundle) -> None:
+        """Send a TTS bundle to an AI booth. Does nothing for a language nobody hears as AI audio."""
+        if tts_booth_id is None:
+            return
+        from portal.websockets.manager import tts_manager
+
+        await tts_manager.broadcast_bundle(tts_booth_id, *bundle)
 
     async def _translate_and_broadcast(
         self,
@@ -181,20 +192,20 @@ class TranslationWorker:
         booth_id_str: str,
         uuid_segment_id: str,
         seq: int,
-        target_booth_id: str = None,
-        tts_target_booth_id: str = None,
-        tts_enabled: bool = False,
+        target_booth_id: str | None = None,
+        tts_booth_id: str | None = None,
     ):
-        from portal.websockets.manager import tts_manager
+        """Translate one segment and deliver it.
 
+        The text goes to the language's caption channel (*target_booth_id*). When *tts_booth_id* is set,
+        the text and then the synthesized audio also go to that AI booth as TTS bundles.
+        """
         sem = LANGUAGE_SEMAPHORES.setdefault(lang_code, asyncio.Semaphore(2))
         q_depth = LANGUAGE_QUEUES.setdefault(lang_code, 0)
 
         if q_depth >= 15:
             logger.warning(f"[{booth_id_str}] Queue full for {lang_code}. Dropping segment {seq}.")
-            await tts_manager.broadcast_bundle(
-                tts_target_booth_id, b"", uuid_segment_id, seq, text, "", "pipeline_failed"
-            )
+            await self._send_bundle(tts_booth_id, b"", uuid_segment_id, seq, text, "", "pipeline_failed")
             return
 
         LANGUAGE_QUEUES[lang_code] += 1
@@ -225,8 +236,8 @@ class TranslationWorker:
                         logger.info(
                             f"[{booth_id_str}] Local model {model} is downloading. Dropping segment for {lang_code}."
                         )
-                        await tts_manager.broadcast_bundle(
-                            tts_target_booth_id, b"", uuid_segment_id, seq, text, "", "model_downloading"
+                        await self._send_bundle(
+                            tts_booth_id, b"", uuid_segment_id, seq, text, "", "model_downloading"
                         )
                         return
 
@@ -234,9 +245,7 @@ class TranslationWorker:
                     translated_text = None
 
                 if not translated_text:
-                    await tts_manager.broadcast_bundle(
-                        tts_target_booth_id, b"", uuid_segment_id, seq, text, "", "pipeline_failed"
-                    )
+                    await self._send_bundle(tts_booth_id, b"", uuid_segment_id, seq, text, "", "pipeline_failed")
                     return
 
                 # Save to DB using an independent session to avoid concurrent transaction crashes
@@ -248,16 +257,20 @@ class TranslationWorker:
                     await local_session.flush()
 
                 # Broadcast Stage 1 (Text Ready) immediately with empty audio
-                await tts_manager.broadcast_bundle(
-                    tts_target_booth_id, b"", uuid_segment_id, seq, text, translated_text, None
-                )
+                await self._send_bundle(tts_booth_id, b"", uuid_segment_id, seq, text, translated_text, None)
                 if target_booth_id:
                     from portal.websockets.manager import listener_manager
-                    await listener_manager.broadcast(target_booth_id, {"type": "translated_caption", "status": "final", "text": translated_text})
+
+                    await listener_manager.broadcast(
+                        target_booth_id, {"type": "translated_caption", "status": "final", "text": translated_text}
+                    )
 
             # Decrement queue early so slow TTS doesn't cause new incoming segments to be dropped
             LANGUAGE_QUEUES[lang_code] -= 1
             queue_decremented = True
+
+            if tts_booth_id is None:
+                return
 
             from portal.tts.worker import synthesize
 
@@ -265,28 +278,23 @@ class TranslationWorker:
             error = None
             audio_bytes = b""
 
-            if tts_enabled:
-                try:
-                    synth_bytes = await asyncio.wait_for(synthesize(room.id, translated_text, lang_code), timeout=timeout_s)
-                    if synth_bytes:
-                        audio_bytes = synth_bytes
-                except asyncio.TimeoutError:
-                    logger.warning(f"[{booth_id_str}] TTS timeout for {lang_code} after {timeout_s}s.")
-                    error = "tts_timeout"
-                except Exception as e:
-                    logger.error(f"[{booth_id_str}] TTS error for {lang_code}: {e}")
-                    error = "tts_error"
+            try:
+                synth_bytes = await asyncio.wait_for(synthesize(room.id, translated_text, lang_code), timeout=timeout_s)
+                if synth_bytes:
+                    audio_bytes = synth_bytes
+            except asyncio.TimeoutError:
+                logger.warning(f"[{booth_id_str}] TTS timeout for {lang_code} after {timeout_s}s.")
+                error = "tts_timeout"
+            except Exception as e:
+                logger.error(f"[{booth_id_str}] TTS error for {lang_code}: {e}")
+                error = "tts_error"
 
             # Broadcast Stage 2 (Audio Ready)
-            await tts_manager.broadcast_bundle(
-                tts_target_booth_id, audio_bytes, uuid_segment_id, seq, text, translated_text, error
-            )
+            await self._send_bundle(tts_booth_id, audio_bytes, uuid_segment_id, seq, text, translated_text, error)
 
         except Exception as e:
             logger.error(f"[{booth_id_str}] Translation failed for {lang_code}: {e} (api_key is None? {api_key is None})")
-            await tts_manager.broadcast_bundle(
-                tts_target_booth_id, b"", uuid_segment_id, seq, text, "", "pipeline_failed"
-            )
+            await self._send_bundle(tts_booth_id, b"", uuid_segment_id, seq, text, "", "pipeline_failed")
         finally:
             if not queue_decremented:
                 LANGUAGE_QUEUES[lang_code] -= 1

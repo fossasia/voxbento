@@ -293,6 +293,17 @@ def make_booth_id(event_slug: str, room_id: int, language_code: str) -> str:
     return f"{slug}-{room_id}-{code}"
 
 
+def make_ai_booth_id(event_slug: str, room_id: int, language_code: str) -> str:
+    """Build the ID of a room's AI (TTS) booth for one target language.
+
+    Format: ``{event_slug}-{room_id}-ai-{language_code}`` (e.g. ``pycon2026-14-ai-de``).
+    AI booths have no MediaMTX path: listeners receive their audio over
+    ``/ws/tts/{booth_id}``. The language code is not checked against the ISO
+    subset because it comes from a room's stored translation languages.
+    """
+    return f"{event_slug}-{room_id}-ai-{language_code}"
+
+
 def make_mediamtx_path(event_slug: str, room_id: int, language_code: str) -> str:
     """Build a MediaMTX stream path from validated coordinates.
 
