@@ -722,6 +722,13 @@ async def admin_room_detail(request: Request, event_id: int, room_id: int):
     ]
     translation_languages_dataset.sort(key=lambda x: x["name"])
     enabled_translation_language_codes = [lang.language_code for lang in room.translation_languages if lang.enabled]
+    
+    human_langs = {b.language_code for b in db_booths}
+    tts_available_languages_dataset = [
+        lang for lang in translation_languages_dataset
+        if lang["code"] not in human_langs
+    ]
+    enabled_tts_language_codes = [lang.language_code for lang in room.translation_languages if lang.tts_enabled]
     async with get_session() as session:
         memberships = await list_memberships_for_room(session, room_id)
     return templates.TemplateResponse(
@@ -734,6 +741,8 @@ async def admin_room_detail(request: Request, event_id: int, room_id: int):
             "fallback_jitsi_url": fallback_jitsi_url,
             "translation_languages_dataset": translation_languages_dataset,
             "enabled_translation_language_codes": enabled_translation_language_codes,
+            "tts_available_languages_dataset": tts_available_languages_dataset,
+            "enabled_tts_language_codes": enabled_tts_language_codes,
             "memberships": memberships,
             **admin_flags,
         },
@@ -776,12 +785,11 @@ async def admin_edit_room(request: Request, event_id: int, room_id: int):
     floor_translation_model = form.get("floor_translation_model", "").strip() or None
     floor_translation_languages = form.getlist("floor_translation_languages")
     floor_tts_enabled = form.get("floor_tts_enabled") == "on"
+    floor_tts_languages = form.getlist("floor_tts_languages")
     floor_tts_provider = (form.get("floor_tts_provider", "deepgram") or "deepgram").strip().lower() or "deepgram"
     if floor_tts_provider not in {"deepgram", "supertonic"}:
         floor_tts_provider = "deepgram"
-    floor_tts_voice = (form.get("floor_tts_voice", "M1") or "M1").strip().upper() or "M1"
-    if floor_tts_voice not in {"M1", "M2", "M3", "M4", "M5", "F1", "F2", "F3", "F4", "F5"}:
-        floor_tts_voice = "M1"
+    floor_tts_voice = form.get("floor_tts_voice", "").strip() or "M1"
     async with get_session() as session:
         room = await get_room_by_id(session, room_id)
         if room and room.event_id == event_id:
@@ -825,6 +833,25 @@ async def admin_edit_room(request: Request, event_id: int, room_id: int):
                 room.floor_tts_enabled = floor_tts_enabled
                 room.floor_tts_provider = floor_tts_provider
                 room.floor_tts_voice = floor_tts_voice
+
+                requested_tts_codes = set(floor_tts_languages)
+                existing_langs = {lang.language_code: lang for lang in room.translation_languages}
+                for code, lang in existing_langs.items():
+                    lang.tts_enabled = (code in requested_tts_codes)
+                
+                # If they chose a TTS language that isn't even in translation_languages yet, create it.
+                for code in requested_tts_codes:
+                    if code not in existing_langs:
+                        lang_obj = pycountry.languages.get(alpha_2=code)
+                        lang_name = lang_obj.name if lang_obj else code
+                        new_lang = RoomTranslationLanguage(
+                            room_id=room_id, 
+                            language_code=code, 
+                            language_name=lang_name, 
+                            enabled=True,  # Must be translated to have TTS
+                            tts_enabled=True
+                        )
+                        session.add(new_lang)
             await session.flush()
     return safe_redirect(url=f"/admin/events/{event_id}/rooms/{room_id}/", status_code=status.HTTP_303_SEE_OTHER)
 
