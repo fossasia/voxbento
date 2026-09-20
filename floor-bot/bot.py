@@ -75,7 +75,7 @@ async def run_capture():
 
     try:
         import tempfile
-        pulse_dir = tempfile.mkdtemp(prefix=f"pulse-dir-{event_slug}-{room_id}-", dir="/tmp")
+        pulse_dir = tempfile.mkdtemp(prefix="pulse-dir-", dir="/tmp")
 
         subprocess.run(["pkill", "-f", f"ffmpeg.*{event_slug}.*{room_id}"], stderr=subprocess.DEVNULL)
         subprocess.run(["pkill", "-f", f"pulseaudio.*{event_slug}.*{room_id}"], stderr=subprocess.DEVNULL)
@@ -103,8 +103,7 @@ async def run_capture():
 
         pw = await async_playwright().start()
 
-        user_data_dir = f"/tmp/chromium-data-{event_slug}-{room_id}"
-        os.makedirs(user_data_dir, exist_ok=True)
+        user_data_dir = tempfile.mkdtemp(prefix="chromium-data-", dir="/tmp")
 
         context = await pw.chromium.launch_persistent_context(
             user_data_dir=user_data_dir,
