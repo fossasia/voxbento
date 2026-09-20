@@ -64,36 +64,38 @@ async def run_capture():
     print("BOT_STAGE:launching", flush=True)
 
     pulse_socket = f"/tmp/pulse-{event_slug}-{room_id}.sock"
-    pulse_dir = f"/tmp/pulse-dir-{event_slug}-{room_id}"
-
-    os.makedirs(pulse_dir, exist_ok=True)
     sink_name = f"sink_{event_slug}_{room_id}"
 
-    subprocess.run(["pkill", "-f", f"ffmpeg.*{event_slug}.*{room_id}"], stderr=subprocess.DEVNULL)
-    subprocess.run(["pkill", "-f", f"pulseaudio.*{event_slug}.*{room_id}"], stderr=subprocess.DEVNULL)
-    if os.path.exists(pulse_socket):
-        try:
-            os.remove(pulse_socket)
-        except OSError:
-            pass
-
-    pulse_proc = subprocess.Popen([
-        "pulseaudio",
-        "--daemonize=no",
-        "--exit-idle-time=-1",
-        "--disallow-exit",
-        "-n",
-        "-L", f"module-native-protocol-unix auth-anonymous=1 socket={pulse_socket}",
-        "-L", f"module-null-sink sink_name={sink_name}",
-        "-L", "module-always-sink"
-    ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env={**os.environ.copy(), "PULSE_RUNTIME_PATH": pulse_dir, "PULSE_STATE_PATH": pulse_dir})
-
+    pulse_dir = None
+    pulse_proc = None
     pw = None
     browser = None
     ffmpeg_proc = None
     user_data_dir = None
 
     try:
+        import tempfile
+        pulse_dir = tempfile.mkdtemp(prefix=f"pulse-dir-{event_slug}-{room_id}-", dir="/tmp")
+
+        subprocess.run(["pkill", "-f", f"ffmpeg.*{event_slug}.*{room_id}"], stderr=subprocess.DEVNULL)
+        subprocess.run(["pkill", "-f", f"pulseaudio.*{event_slug}.*{room_id}"], stderr=subprocess.DEVNULL)
+        if os.path.exists(pulse_socket):
+            try:
+                os.remove(pulse_socket)
+            except OSError:
+                pass
+
+        pulse_proc = subprocess.Popen([
+            "pulseaudio",
+            "--daemonize=no",
+            "--exit-idle-time=-1",
+            "--disallow-exit",
+            "-n",
+            "-L", f"module-native-protocol-unix auth-anonymous=1 socket={pulse_socket}",
+            "-L", f"module-null-sink sink_name={sink_name}",
+            "-L", "module-always-sink"
+        ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env={**os.environ.copy(), "PULSE_RUNTIME_PATH": pulse_dir, "PULSE_STATE_PATH": pulse_dir})
+
         await asyncio.sleep(2)
 
         env = os.environ.copy()
@@ -237,7 +239,7 @@ async def run_capture():
                 pass
         if pw is not None:
             await pw.stop()
-        if pulse_proc.poll() is None:
+        if pulse_proc is not None and pulse_proc.poll() is None:
             pulse_proc.terminate()
         if os.path.exists(pulse_socket):
             try:
