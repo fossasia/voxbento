@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import struct
@@ -297,6 +298,15 @@ async def _handle_update_state(ws: WebSocket, session: Session, data: dict) -> N
         await ws.send_text(json.dumps({"type": "booth:error", "message": str(exc)}))
         return
     await manager.broadcast(session.booth_id, {"type": "booth:state", "state": state})
+    ingest_connected = data.get("ingest_connected")
+    if ingest_connected is True:
+        from portal.transcription.worker import ensure_booth_transcription
+
+        asyncio.create_task(ensure_booth_transcription(session.booth_id))
+    elif ingest_connected is False:
+        from portal.transcription.worker import stop_transcription_worker
+
+        asyncio.create_task(stop_transcription_worker(session.booth_id))
 
 
 async def _handle_set_broadcast_unlocked(ws: WebSocket, session: Session, data: dict) -> None:

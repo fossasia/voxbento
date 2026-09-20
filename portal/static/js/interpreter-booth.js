@@ -235,6 +235,30 @@ function authHeaders() {
   return { Authorization: `Bearer ${state.jwt}` }
 }
 
+async function startBoothTranscription() {
+  const eventSlug = portal.dataset.eventSlug
+  const roomId = portal.dataset.roomId
+  const languageCode = portal.dataset.languageCode
+  if (!eventSlug || !roomId || !languageCode) return
+  const headers = { ...authHeaders(), 'Content-Type': 'application/json' }
+  try {
+    const response = await fetch(
+      `/api/events/${eventSlug}/rooms/${roomId}/booths/${languageCode}/transcription/start`,
+      {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers,
+        body: JSON.stringify({ event_slug: eventSlug, language_code: languageCode }),
+      }
+    )
+    if (!response.ok) {
+      console.warn('Failed to start transcription worker:', response.status, await response.text())
+    }
+  } catch (err) {
+    console.warn('Failed to start transcription worker:', err)
+  }
+}
+
 // ── Event binding ─────────────────────────────────────────────────────────────
 
 function bindEventHandlers() {
@@ -1115,18 +1139,7 @@ async function startLiveIngest() {
     }
 
     state.ingestConnected = true
-    
-    // Start backend transcription
-    try {
-      const payload = { event_slug: portal.dataset.eventSlug, language_code: portal.dataset.languageCode }
-      await fetch(`/api/events/${portal.dataset.eventSlug}/rooms/${portal.dataset.roomId}/booths/${portal.dataset.languageCode}/transcription/start`, {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${portal.dataset.boothToken}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      })
-    } catch (err) {
-      console.warn('Failed to start transcription worker:', err)
-    }
+    await startBoothTranscription()
     wsSend({
       type: 'booth:update-state',
       mic_active: !state.micMuted,
@@ -1218,21 +1231,7 @@ function attemptRelayStart(attempt) {
       await doWhipIngest(pc)
       state.ingestConnected = true
       state.ingestStarting = false
-      // Start backend transcription worker now that WHIP ingest is live
-      if (portal.dataset.eventSlug && portal.dataset.languageCode) {
-        try {
-          await fetch(`/api/events/${portal.dataset.eventSlug}/rooms/${portal.dataset.roomId}/booths/${portal.dataset.languageCode}/transcription/start`, {
-            method: 'POST',
-            headers: { 'Authorization': `Bearer ${portal.dataset.boothToken}`, 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              event_slug: portal.dataset.eventSlug,
-              language_code: portal.dataset.languageCode,
-            }),
-          })
-        } catch (err) {
-          console.warn('Failed to start transcription worker:', err)
-        }
-      }
+      await startBoothTranscription()
 
       wsSend({ type: 'booth:update-state', mic_active: !state.micMuted, ingest_connected: true })
       showError('')

@@ -255,3 +255,70 @@ async def stop_transcription_worker(booth_id: str):
         async with active_workers_lock:
             if active_workers.get(booth_id) is session:
                 active_workers.pop(booth_id)
+
+
+async def ensure_booth_transcription(booth_id: str) -> None:
+    """Start the caption worker for a live booth if transcription is enabled.
+
+    Browser ``/transcription/start`` often 403s in production (wrong Bearer).
+    Call this from ingest-connected so captions still go out on ``/ws/captions``.
+    """
+    from sqlalchemy import select
+    from sqlalchemy.orm import selectinload
+
+    from portal.booth_identity import parse_booth_id
+    from portal.database import get_session
+    from portal.models import DBBooth, Event
+    from portal.transcription.constants import ProviderEnum
+    from portal.transcription.providers.base import get_api_key
+    from portal.websockets.manager import broadcast_transcription
+
+    try:
+        event_slug, room_id, language_code = parse_booth_id(booth_id)
+    except ValueError:
+        logger.warning("Cannot start transcription for invalid booth_id %s", booth_id)
+        return
+
+    async with get_session() as session:
+        stmt = (
+            select(DBBooth)
+            .join(Event)
+            .options(selectinload(DBBooth.event))
+            .where(Event.slug == event_slug, DBBooth.room_id == room_id, DBBooth.language_code == language_code)
+        )
+        db_booth = await session.scalar(stmt)
+        if not db_booth or not db_booth.transcription_enabled:
+            logger.info("Transcription not enabled for booth %s", booth_id)
+            return
+        provider = db_booth.transcription_provider
+        model_size = db_booth.transcription_model
+        try:
+            provider_enum = ProviderEnum(provider)
+        except ValueError:
+            logger.warning("Invalid transcription provider %s for booth %s", provider, booth_id)
+            return
+        try:
+            api_key = get_api_key(db_booth.event, provider_enum)
+        except ValueError:
+            logger.warning("API key decrypt failed for booth %s", booth_id)
+            if provider_enum != ProviderEnum.LOCAL:
+                return
+            api_key = None
+        if provider_enum != ProviderEnum.LOCAL and not api_key:
+            logger.warning("Missing %s API key for booth %s", provider, booth_id)
+            return
+        config = ProviderConfig(api_key=api_key)
+
+    try:
+        await start_transcription_worker(
+            event_slug,
+            language_code,
+            booth_id,
+            broadcast_transcription,
+            provider,
+            model_size,
+            config,
+            room_id=room_id,
+        )
+    except ValueError:
+        logger.warning("Could not start transcription worker for booth %s", booth_id)
