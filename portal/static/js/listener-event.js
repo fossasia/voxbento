@@ -250,7 +250,7 @@ function fetchRoomAudioDelay(roomId) {
     })
     .then(function (data) {
       var delayMs = normalizeAudioDelayMs(data.audio_delay_ms);
-      updateRoomDelayData(roomId, delayMs);
+      
       return delayMs;
     });
 }

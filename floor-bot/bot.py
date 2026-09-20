@@ -86,7 +86,7 @@ async def run_capture():
         "-L", f"module-native-protocol-unix auth-anonymous=1 socket={pulse_socket}",
         "-L", f"module-null-sink sink_name={sink_name}",
         "-L", "module-always-sink"
-    ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    ], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env={**os.environ.copy(), "PULSE_RUNTIME_PATH": pulse_dir, "PULSE_STATE_PATH": pulse_dir})
 
     pw = None
     browser = None
@@ -249,6 +249,11 @@ async def run_capture():
         if user_data_dir and os.path.exists(user_data_dir):
             try:
                 shutil.rmtree(user_data_dir)
+            except OSError:
+                pass
+        if pulse_dir and os.path.exists(pulse_dir):
+            try:
+                shutil.rmtree(pulse_dir)
             except OSError:
                 pass
 
