@@ -235,11 +235,7 @@ def validate_event_slug(slug: str) -> str:
     if not normalised:
         raise ValueError("Event slug must not be empty.")
     if len(normalised) > _EVENT_SLUG_MAX_LENGTH:
-        raise ValueError(
-            "Event slug must not exceed %d characters (got %d).",
-            _EVENT_SLUG_MAX_LENGTH,
-            len(normalised),
-        )
+        raise ValueError(f"Event slug must not exceed {_EVENT_SLUG_MAX_LENGTH} characters (got {len(normalised)}).")
     if not _EVENT_SLUG_RE.match(normalised):
         raise ValueError(
             "Event slug must contain only lowercase alphanumeric characters and hyphens, "
