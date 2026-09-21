@@ -207,6 +207,11 @@ class TestMakeMediamtxPath:
         with pytest.raises(ValueError, match="non-negative integer"):
             make_mediamtx_path("pycon2026", room_id, "en")
 
+    def test_none_room_id_is_still_accepted(self):
+        # start_transcription_worker defaults room_id to None and builds its
+        # channel path with this function, so None must keep working here.
+        make_mediamtx_path("pycon2026", None, "en")
+
 
 # ── parse_booth_id ────────────────────────────────────────────────────────────
 
