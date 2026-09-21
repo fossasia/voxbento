@@ -275,6 +275,20 @@ def validate_instance(instance: str) -> BoothInstance:
     return normalised  # type: ignore[return-value]
 
 
+def validate_room_id(room_id: int) -> int:
+    """Validate a room ID.
+
+    Returns the room ID on success. It must be a non-negative integer -- the
+    same set ``parse_booth_id`` accepts -- so every ID built from it can be
+    parsed back. ``bool`` is rejected explicitly: it is a subclass of ``int``
+    and would otherwise be rendered as ``True`` or ``False``.
+    Raises ``ValueError`` on invalid input.
+    """
+    if isinstance(room_id, bool) or not isinstance(room_id, int) or room_id < 0:
+        raise ValueError(f"Room ID must be a non-negative integer. Got: {room_id!r}.")
+    return room_id
+
+
 # ── Identity construction / conversion ────────────────────────────────────────
 
 
@@ -285,8 +299,9 @@ def make_booth_id(event_slug: str, room_id: int, language_code: str) -> str:
     Inputs are validated before construction.
     """
     slug = validate_event_slug(event_slug)
+    room = validate_room_id(room_id)
     code = validate_language_code(language_code)
-    return f"{slug}-{room_id}-{code}"
+    return f"{slug}-{room}-{code}"
 
 
 def make_mediamtx_path(event_slug: str, room_id: int, language_code: str) -> str:
@@ -295,8 +310,9 @@ def make_mediamtx_path(event_slug: str, room_id: int, language_code: str) -> str
     Format: ``{event_slug}/{room_id}/{language_code}`` (e.g. ``pycon2026/14/en``).
     """
     slug = validate_event_slug(event_slug)
+    room = validate_room_id(room_id)
     code = validate_language_code(language_code)
-    return f"{slug}/{room_id}/{code}"
+    return f"{slug}/{room}/{code}"
 
 
 def booth_id_to_mediamtx_path(booth_id: str) -> str:
@@ -324,7 +340,11 @@ def mediamtx_path_to_booth_id(path: str) -> str:
             f"MediaMTX path must have exactly three segments (event_slug/room_id/language_code). Got: '{path}'."
         )
     event_slug = validate_event_slug(parts[0])
-    room_id = int(parts[1])
+    # int() alone is too lenient for a path segment: it accepts "-3", "+3",
+    # " 3" and "1_000", none of which parse_booth_id would take back.
+    if not (parts[1].isascii() and parts[1].isdigit()):
+        raise ValueError(f"MediaMTX path room segment must be a non-negative integer. Got: '{parts[1]}'.")
+    room_id = validate_room_id(int(parts[1]))
     language_code = validate_language_code(parts[2])
     return f"{event_slug}-{room_id}-{language_code}"
 
