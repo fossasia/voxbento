@@ -25,7 +25,7 @@ from portal.models import (
     RoomTranslationLanguage,
 )
 from portal.rate_limit import auth_rate_limiter
-from portal.transcription.worker import start_transcription_worker, stop_transcription_worker
+from portal.transcription.worker import active_workers, start_transcription_worker, stop_transcription_worker
 
 logger = logging.getLogger(__name__)
 
@@ -619,11 +619,12 @@ async def get_transcription_status(
 
     statuses = {}
     for b in booths_list:
-        bid = make_booth_id(event_slug, b.language_code)
-        booth = booths.get(bid)
+        bid = make_booth_id(event_slug, room_id, b.language_code)
         statuses[b.language_code] = {
-            "is_active": bool(booth),
-            "transcription_running": bool(booth and getattr(booth, "transcription_task", None)),
+            "is_active": booths.get_booth_sync(bid) is not None,
+            # Running transcription is tracked by the worker registry, not on the
+            # in-memory Booth, which has no transcription_task attribute.
+            "transcription_running": bid in active_workers,
         }
 
     return {"room_id": room_id, "statuses": statuses}
