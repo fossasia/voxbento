@@ -180,6 +180,12 @@ class TestMakeBoothId:
         with pytest.raises(ValueError, match="non-negative integer"):
             make_booth_id("pycon2026", room_id, "en")
 
+    def test_none_room_id_raises(self):
+        # Unlike make_mediamtx_path, a booth ID has to parse back, and
+        # "pycon2026-None-en" does not.
+        with pytest.raises(ValueError, match="non-negative integer"):
+            make_booth_id("pycon2026", None, "en")
+
 
 # ── make_mediamtx_path ────────────────────────────────────────────────────────
 

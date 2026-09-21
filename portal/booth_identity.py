@@ -292,9 +292,10 @@ def validate_room_id(room_id: int) -> int:
 def _room_id_or_none(room_id: int | None) -> int | None:
     """Validate ``room_id`` unless it is ``None``.
 
-    ``start_transcription_worker`` deliberately defaults ``room_id`` to
-    ``None``, so the builders must keep accepting it; changing that contract is
-    a separate decision. Every other value must be a valid room ID.
+    Only ``make_mediamtx_path`` uses this: ``start_transcription_worker``
+    deliberately defaults ``room_id`` to ``None`` and builds its channel path
+    with it, and changing that contract is a separate decision. ``make_booth_id``
+    stays strict, because a booth ID has to parse back.
     """
     return None if room_id is None else validate_room_id(room_id)
 
@@ -309,7 +310,7 @@ def make_booth_id(event_slug: str, room_id: int, language_code: str) -> str:
     Inputs are validated before construction.
     """
     slug = validate_event_slug(event_slug)
-    room = _room_id_or_none(room_id)
+    room = validate_room_id(room_id)
     code = validate_language_code(language_code)
     return f"{slug}-{room}-{code}"
 
