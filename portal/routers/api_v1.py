@@ -594,7 +594,7 @@ async def stop_transcription(
 
     await _verify_token_rbac(db, token, event, room_id)
 
-    booth_id = make_booth_id(event_slug, language_code)
+    booth_id = make_booth_id(event_slug, room_id, language_code)
     await stop_transcription_worker(booth_id)
     return {"status": "stopped", "booth_id": booth_id}
 
