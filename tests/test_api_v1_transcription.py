@@ -11,8 +11,11 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 import portal.routers.api_v1 as api_v1
+from portal.database import create_booth, create_event, create_room
+from portal.models import Base
 from portal.transcription.worker import active_workers
 
 EVENT_SLUG = "pycon2026"
@@ -140,3 +143,41 @@ async def test_status_for_a_room_with_no_booths_is_empty(event):
     response = await api_v1.get_transcription_status(EVENT_SLUG, ROOM_ID, db=db, token=object())
 
     assert response == {"room_id": ROOM_ID, "statuses": {}}
+
+
+# ── status against a real database ────────────────────────────────────────
+
+
+@pytest.fixture
+async def real_db():
+    """An in-memory SQLite session, as in test_database.py."""
+    engine = create_async_engine("sqlite+aiosqlite://", echo=False)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    session_factory = async_sessionmaker(engine, expire_on_commit=False)
+    async with session_factory() as session:
+        async with session.begin():
+            yield session
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.drop_all)
+
+
+@pytest.mark.anyio
+async def test_status_reports_only_the_requested_rooms_booths(real_db, running_worker):
+    """The mocked tests above hand the route preselected rows, so they cannot
+    catch a missing or wrong room filter. Two rooms with overlapping languages
+    do: only the requested room's booths may appear, and only its worker may
+    count as running."""
+    event = await create_event(real_db, slug=EVENT_SLUG, display_name="PyCon 2026")
+    room_a = await create_room(real_db, event_id=event.id, display_name="Hall A")
+    room_b = await create_room(real_db, event_id=event.id, display_name="Hall B")
+    await create_booth(real_db, event_id=event.id, room_id=room_a.id, language_code="en", language_name="English")
+    await create_booth(real_db, event_id=event.id, room_id=room_b.id, language_code="en", language_name="English")
+    await create_booth(real_db, event_id=event.id, room_id=room_b.id, language_code="de", language_name="German")
+    running_worker(f"{EVENT_SLUG}-{room_b.id}-en")
+
+    response = await api_v1.get_transcription_status(EVENT_SLUG, room_a.id, db=real_db, token=object())
+
+    assert response["room_id"] == room_a.id
+    assert set(response["statuses"]) == {"en"}
+    assert response["statuses"]["en"]["transcription_running"] is False
