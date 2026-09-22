@@ -37,7 +37,9 @@ def _make_jitsi_url(base_url: str, room: str) -> str:
 def public_ws_url(path: str) -> str:
     """Absolute WebSocket URL for *path* on the public base URL.
 
-    Uses ``ws://`` when the portal is served over plain HTTP and ``wss://`` otherwise.
+    The scheme follows ``PUBLIC_BASE_URL``: the secure WebSocket scheme for an
+    HTTPS portal, and the plaintext one only when the portal itself is served
+    over plain HTTP, as it is in local development.
     """
     parsed = urlparse(settings.public_base_url)
     scheme = "ws" if parsed.scheme == "http" else "wss"
