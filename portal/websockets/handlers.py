@@ -5,7 +5,7 @@ import logging
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
-from portal.auth import WSAuthError, resolve_booth_role, resolve_ws_auth
+from portal.auth import WSAuthError, resolve_booth_role, resolve_ws_auth, ws_bearer_subprotocol
 from portal.globals import booths
 from portal.websockets.manager import (
     Session,
@@ -41,7 +41,7 @@ async def ws_booth(websocket: WebSocket, booth_id: str) -> None:
         return
 
     ws_granted_role = await resolve_booth_role(payload, booth_id)
-    await websocket.accept()
+    await websocket.accept(subprotocol=ws_bearer_subprotocol(websocket))
 
     from portal.database import get_booth_language_name
 
@@ -109,7 +109,7 @@ async def ws_captions(websocket: WebSocket, booth_id: str) -> None:
         await resolve_ws_auth(websocket, booth_id)
     except WSAuthError:
         return
-    await websocket.accept()
+    await websocket.accept(subprotocol=ws_bearer_subprotocol(websocket))
     listener_manager.add(websocket, booth_id)
     try:
         while True:
@@ -130,7 +130,7 @@ async def ws_tts(websocket: WebSocket, booth_id: str) -> None:
         await resolve_ws_auth(websocket, booth_id)
     except WSAuthError:
         return
-    await websocket.accept()
+    await websocket.accept(subprotocol=ws_bearer_subprotocol(websocket))
     tts_manager.add(websocket, booth_id)
     try:
         while True:

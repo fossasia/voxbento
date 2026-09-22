@@ -422,10 +422,41 @@ def get_booth_session(request: Request | WebSocket) -> dict | None:
     return None
 
 
+_WS_BEARER_PREFIX = "bearer."
+
+
+def ws_bearer_subprotocol(websocket: WebSocket) -> str | None:
+    """Return the ``bearer.<token>`` subprotocol *websocket* offered, if any.
+
+    Handlers echo this back in ``websocket.accept(subprotocol=...)``: a browser
+    closes the connection unless the server selects one of the subprotocols it
+    offered.
+    """
+    for proto in websocket.scope.get("subprotocols") or []:
+        if proto.startswith(_WS_BEARER_PREFIX) and len(proto) > len(_WS_BEARER_PREFIX):
+            return proto
+    return None
+
+
+def ws_credential(websocket: WebSocket) -> str:
+    """Return the bearer token *websocket* presented, or an empty string.
+
+    Browsers cannot set an ``Authorization`` header on a WebSocket, so the
+    listener page offers the token as a ``bearer.<token>`` subprotocol, which
+    keeps it out of the request line that proxy and load-balancer access logs
+    record. The ``?token=`` query parameter is still accepted for the embed
+    player and for API clients that cannot negotiate a subprotocol.
+    """
+    proto = ws_bearer_subprotocol(websocket)
+    if proto:
+        return proto[len(_WS_BEARER_PREFIX) :]
+    return websocket.query_params.get("token", "")
+
+
 async def resolve_ws_auth(websocket: WebSocket, booth_id: str) -> dict:
     """Resolves authentication for a WebSocket connection"""
 
-    token = websocket.query_params.get("token", "")
+    token = ws_credential(websocket)
     if token:
         try:
             payload = decode_token(token)

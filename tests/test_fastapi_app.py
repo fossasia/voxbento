@@ -1932,3 +1932,34 @@ def test_ws_tts_authentication(monkeypatch):
     token = create_listener_token(event_slug="test-event")
     with client.websocket_connect(f"/ws/tts/test-event-1-ai-fr?token={token}"):
         pass
+
+
+def test_ws_accepts_a_bearer_subprotocol_instead_of_a_query_token(monkeypatch):
+    """The listener page sends its token as a subprotocol so it stays out of request lines."""
+    from fastapi.websockets import WebSocketDisconnect
+
+    from portal.auth import create_listener_token
+    from portal.config import settings
+
+    monkeypatch.setattr(settings, "booth_access_token", "secret-test-token")
+
+    token = create_listener_token(event_slug="test-event")
+
+    # A valid token offered as "bearer.<token>" is accepted, and the server echoes
+    # the subprotocol back — a browser drops the connection if it does not.
+    for path in ("/ws/tts/test-event-1-ai-fr", "/ws/captions/test-event-1-fr"):
+        with client.websocket_connect(path, subprotocols=[f"bearer.{token}"]) as ws:
+            assert ws.accepted_subprotocol == f"bearer.{token}"
+
+    # The scope check still applies to a subprotocol credential.
+    other = create_listener_token(event_slug="other-event")
+    with pytest.raises(WebSocketDisconnect) as exc_info:
+        with client.websocket_connect("/ws/tts/test-event-1-ai-fr", subprotocols=[f"bearer.{other}"]) as ws:
+            ws.receive_text()
+    assert exc_info.value.code == 4003
+
+    # An unrelated subprotocol carries no credential and is not echoed back.
+    with pytest.raises(WebSocketDisconnect) as exc_info:
+        with client.websocket_connect("/ws/tts/test-event-1-ai-fr", subprotocols=["graphql-ws"]) as ws:
+            ws.receive_text()
+    assert exc_info.value.code == 4001

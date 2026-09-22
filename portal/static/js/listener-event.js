@@ -134,15 +134,20 @@ function stopCurrentStream() {
 }
 
 /**
- * Absolute WebSocket URL for a portal path, carrying the listener token so the
+ * Open a WebSocket to a portal path, carrying the listener token so the
  * connection is accepted when the portal requires WebSocket authentication.
+ *
+ * A browser cannot set an Authorization header on a WebSocket, so the token
+ * travels as a "bearer.<token>" subprotocol instead of a query parameter:
+ * proxy and load-balancer access logs record the request line, not the
+ * subprotocol the two sides negotiated.
  * @param {string} path  e.g. "/ws/captions/my-event-1-en"
  */
-function wsUrl(path) {
+function openWs(path) {
   var wsProto = window.location.protocol === "https:" ? "wss:" : "ws:";
   var url = wsProto + "//" + window.location.host + path;
-  if (listenerToken) url += "?token=" + encodeURIComponent(listenerToken);
-  return url;
+  if (!listenerToken) return new WebSocket(url);
+  return new WebSocket(url, ["bearer." + listenerToken]);
 }
 
 function startTtsWs(targetBoothId, audioDelayMs) {
@@ -165,7 +170,7 @@ function startTtsWs(targetBoothId, audioDelayMs) {
   });
 
   // targetBoothId = e.g. "my-event-1-ai-fr" — matches /ws/tts/{booth_id} on the server
-  ttsWs = new WebSocket(wsUrl("/ws/tts/" + targetBoothId));
+  ttsWs = openWs("/ws/tts/" + targetBoothId);
   ttsWs.binaryType = "arraybuffer";
 
   ttsWs.onmessage = function (event) {
@@ -289,7 +294,7 @@ function startWhepAndCaptions(whepUrl, boothId, audioDelayMs) {
 
 function openCaptionsWs(boothId) {
   if (!boothId) return;
-  captionsWs = new WebSocket(wsUrl("/ws/captions/" + boothId));
+  captionsWs = openWs("/ws/captions/" + boothId);
   captionsWs.onmessage = handleCaptionsMessage;
 }
 
@@ -307,7 +312,7 @@ function openTranslationCaptionsWs(eventSlug, roomId, langCode) {
   }
   if (!langCode || !roomId) return;
   var targetBoothId = eventSlug + "-" + roomId + "-" + langCode;
-  translationCaptionsWs = new WebSocket(wsUrl("/ws/captions/" + targetBoothId));
+  translationCaptionsWs = openWs("/ws/captions/" + targetBoothId);
   translationCaptionsWs.onmessage = handleTranslationMessage;
 }
 
