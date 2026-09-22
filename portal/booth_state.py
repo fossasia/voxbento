@@ -396,6 +396,8 @@ class BoothRegistry:
                 # Active offered → passive accepts → passive becomes active
                 if booth.active_interpreter_id == acceptor_id:
                     raise ValueError("Active interpreter cannot accept an offer they did not initiate.")
+                if acceptor.role not in ("interpreter", "room_coordinator", "event_owner", "super_admin"):
+                    raise PermissionError("Only interpreters and coordinators can take over the mic.")
                 new_active = acceptor_id
             elif booth.handoff_state == "requested":
                 # Passive requested → active accepts (yields) → requester becomes active
