@@ -315,7 +315,7 @@ def make_booth_id(event_slug: str, room_id: int, language_code: str) -> str:
     return f"{slug}-{room}-{code}"
 
 
-def make_mediamtx_path(event_slug: str, room_id: int, language_code: str) -> str:
+def make_mediamtx_path(event_slug: str, room_id: int | None, language_code: str) -> str:
     """Build a MediaMTX stream path from validated coordinates.
 
     Format: ``{event_slug}/{room_id}/{language_code}`` (e.g. ``pycon2026/14/en``).
