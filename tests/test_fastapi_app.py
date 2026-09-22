@@ -1934,6 +1934,62 @@ def test_ws_tts_authentication(monkeypatch):
         pass
 
 
+def _ws_close_code(url: str) -> int | None:
+    """Connect to *url* and return the server's close code, or None if it accepted.
+
+    Never reads from the socket: an accepted connection would block forever,
+    because these endpoints wait for the client to speak first.
+    """
+    from fastapi.websockets import WebSocketDisconnect
+
+    try:
+        with client.websocket_connect(url):
+            return None
+    except WebSocketDisconnect as exc:
+        return exc.code
+
+
+def test_listener_token_cannot_reach_an_event_whose_slug_extends_its_own(monkeypatch):
+    """A token for "test-event" must not open booths owned by "test-event-other"."""
+    from portal.auth import create_listener_token
+    from portal.config import settings
+
+    monkeypatch.setattr(settings, "booth_access_token", "secret-test-token")
+
+    token = create_listener_token(event_slug="test-event")
+
+    for booth_id in ("test-event-other-1-ai-fr", "test-event-other-1-fr", "test-event-other-1-floor"):
+        for route in ("/ws/tts", "/ws/captions"):
+            assert _ws_close_code(f"{route}/{booth_id}?token={token}") == 4003, f"{route}/{booth_id} was accepted"
+
+    # The event's own booths still work, AI and human alike.
+    for booth_id in ("test-event-1-ai-fr", "test-event-1-fr", "test-event-1-floor"):
+        assert _ws_close_code(f"/ws/captions/{booth_id}?token={token}") is None
+
+    # An event slug that itself ends in "-ai" is not confused for an AI booth.
+    ai_slug_token = create_listener_token(event_slug="test-ai")
+    assert _ws_close_code(f"/ws/captions/test-ai-1-fr?token={ai_slug_token}") is None
+    assert _ws_close_code(f"/ws/tts/test-ai-1-ai-fr?token={ai_slug_token}") is None
+
+
+def test_listener_scope_matches_compares_the_whole_event_slug():
+    from portal.auth import listener_scope_matches
+
+    assert listener_scope_matches("demo", "demo-1-fr")
+    assert listener_scope_matches("demo", "demo-1-ai-fr")
+    assert listener_scope_matches("demo", "demo-1-floor")
+    assert listener_scope_matches("demo-ai", "demo-ai-2-ai-de")
+    # A slug that merely prefixes the booth's owner is rejected.
+    assert not listener_scope_matches("demo", "demo-other-1-fr")
+    assert not listener_scope_matches("demo", "demo-other-1-ai-fr")
+    # Empty and unparseable scopes fail closed.
+    assert not listener_scope_matches("", "demo-1-fr")
+    assert not listener_scope_matches("demo", "not-a-booth")
+    # MediaMTX-style paths compare their first segment exactly.
+    assert listener_scope_matches("demo", "demo/1/fr")
+    assert not listener_scope_matches("demo", "demo-other/1/fr")
+
+
 def test_ws_accepts_a_bearer_subprotocol_instead_of_a_query_token(monkeypatch):
     """The listener page sends its token as a subprotocol so it stays out of request lines."""
     from fastapi.websockets import WebSocketDisconnect

@@ -68,7 +68,7 @@ def create_embed_token(*, event_slug: str) -> str:
 
     Identical claim shape to create_listener_token (role='listener', event_slug)
     so it passes both the embed route's claim checks and the /ws/captions
-    WebSocket auth's booth_id.startswith(event_slug + '-') check.
+    WebSocket auth's event-slug check (see listener_scope_matches).
     Uses a shorter expiry (embed_token_expiry_seconds, default 30 min) because
     the token is visible in the iframe src= attribute in the third party's HTML.
     """
@@ -453,6 +453,27 @@ def ws_credential(websocket: WebSocket) -> str:
     return websocket.query_params.get("token", "")
 
 
+def listener_scope_matches(token_event: str, booth_id: str) -> bool:
+    """Whether a listener scoped to *token_event* may open *booth_id*.
+
+    The event slug is compared in full. A prefix test would let a token for
+    ``demo`` open booths owned by ``demo-other``, because one event slug can
+    extend another.
+    """
+    from portal.booth_identity import booth_id_event_slug
+
+    wanted = token_event.strip().lower()
+    if not wanted:
+        return False
+    try:
+        return booth_id_event_slug(booth_id) == wanted
+    except ValueError:
+        # MediaMTX-style "{event_slug}/{room_id}/{language_code}" paths are not
+        # booth IDs; compare their first segment exactly rather than by prefix.
+        head, sep, _ = booth_id.strip().lower().partition("/")
+        return bool(sep) and head == wanted
+
+
 async def resolve_ws_auth(websocket: WebSocket, booth_id: str) -> dict:
     """Resolves authentication for a WebSocket connection"""
 
@@ -470,9 +491,7 @@ async def resolve_ws_auth(websocket: WebSocket, booth_id: str) -> dict:
 
         token_event = payload.get("event_slug", "")
         if payload.get("role") == "listener":
-            if not token_event or not (
-                booth_id.startswith(f"{token_event}-") or booth_id.startswith(f"{token_event}/")
-            ):
+            if not listener_scope_matches(token_event, booth_id):
                 await websocket.close(code=4003)
                 raise WSAuthError("Listener token event_slug does not match booth_id.")
             return payload
@@ -528,7 +547,7 @@ async def resolve_ws_auth(websocket: WebSocket, booth_id: str) -> dict:
 
     token_event = payload.get("event_slug", "")
     if payload.get("role") == "listener":
-        if not token_event or not booth_id.startswith(f"{token_event}-"):
+        if not listener_scope_matches(token_event, booth_id):
             await websocket.close(code=4003)
             raise WSAuthError("Listener cookie event_slug does not match booth_id.")
         return payload
