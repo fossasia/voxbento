@@ -22,7 +22,7 @@
   <h3>Add a room</h3>
   <p class="form-card-hint">Rooms are the spaces at your event (e.g. “Main Hall”). Each room can host multiple language booths.</p>
   <form method="post" action="/admin/events/{{ event.id }}/rooms/" class="inline-form">
-    <input type="text" name="display_name" placeholder="Room name (e.g. Main Hall)" required style="flex:1;" />
+    <input type="text" name="display_name" placeholder="Room name (e.g. Main Hall)" required class="input-grow" />
     <button type="submit" class="btn btn-primary">Add room</button>
   </form>
 </div>
@@ -57,7 +57,7 @@
 </table>
 {% else %}
 <div class="empty-state">
-  <div style="font-size:2rem; margin-bottom:8px;">🏛️</div>
+  <div class="empty-state-icon empty-state-icon--sm">🏛️</div>
   <p>No rooms yet. Add one above to get started.</p>
 </div>
 {% endif %}

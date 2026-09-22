@@ -25,8 +25,8 @@
   <p class="form-card-hint">Each booth is one language channel. Use a two-letter code (ISO 639-1), e.g. <code>en</code>, <code>fr</code>, <code>zh</code>.</p>
   <form method="post" action="/admin/events/{{ event.id }}/rooms/{{ room.id }}/booths/" class="inline-form">
     <input type="text" name="language_code" placeholder="Code (e.g. en)" required
-           pattern="^[a-z]{2}$" maxlength="2" title="Two-letter ISO 639-1 code" style="min-width:140px;" />
-    <input type="text" name="language_name" placeholder="Language name (e.g. English)" required style="flex:1;" />
+           pattern="^[a-z]{2}$" maxlength="2" title="Two-letter ISO 639-1 code" class="input-code" />
+    <input type="text" name="language_name" placeholder="Language name (e.g. English)" required class="input-grow" />
     <button type="submit" class="btn btn-primary">Add booth</button>
   </form>
 </div>
@@ -79,7 +79,7 @@
 </table>
 {% else %}
 <div class="empty-state">
-  <div style="font-size:2rem; margin-bottom:8px;">🎧</div>
+  <div class="empty-state-icon empty-state-icon--sm">🎧</div>
   <p>No booths in this room. Add one above to get started.</p>
 </div>
 {% endif %}
