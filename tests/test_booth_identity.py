@@ -296,7 +296,7 @@ class TestMediamtxPathToBoothId:
         with pytest.raises(ValueError):
             mediamtx_path_to_booth_id("pycon2026/1/xyz")
 
-    @pytest.mark.parametrize("room_segment", ["-3", "+3", " 3", "1_000", "abc", "3.7"])
+    @pytest.mark.parametrize("room_segment", ["-3", "+3", " 3", "1_000", "abc", "3.7", "٣"])
     def test_non_integer_room_segment_raises(self, room_segment):
         # int() accepts several of these; parse_booth_id would not take the
         # resulting ID back, so they must be rejected here too.
