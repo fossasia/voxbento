@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from portal.config import settings
 from portal.database import get_db_session
+from portal.roles import _ROLE_RANK
 
 logger = logging.getLogger(__name__)
 
@@ -400,9 +401,6 @@ async def require_user(request: Request) -> dict:
     return user
 
 
-_ROLE_RANK: dict[str, int] = {"interpreter": 1, "room_coordinator": 2, "event_owner": 3, "super_admin": 4}
-
-
 def get_booth_session(request: Request | WebSocket) -> dict | None:
     """Return decoded JWT payload from either user_token (registered user) or session_token (invite link).
 
@@ -536,7 +534,6 @@ async def resolve_booth_role(payload: dict | None, booth_id: str | None = None) 
     """
     if payload is None:
         return None
-    from portal.roles import _ROLE_RANK
 
     roles = []
     if "role" in payload:

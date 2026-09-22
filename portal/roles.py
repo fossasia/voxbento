@@ -7,7 +7,10 @@ Mirrors the Eventyay backend ``core/permissions.py`` pattern:
 
 The interpretation portal defines five roles ordered by privilege:
 
-    super_admin > event_owner > room_coordinator > interpreter
+    super_admin > event_owner > room_coordinator > interpreter > support
+
+``support`` holds only ``BOOTH_VIEW``, which every other role also holds, so it
+is the least privileged role and ranks lowest.
 
 Booth-level roles (interpreter) govern in-booth
 actions. Admin roles (event_owner, super_admin) govern administrative
@@ -86,12 +89,16 @@ ADMIN_ROLES: frozenset[ParticipantRole] = frozenset({"super_admin", "event_owner
 # All valid role values as a frozenset for quick membership testing.
 ALL_ROLES: frozenset[ParticipantRole] = frozenset(ROLE_PERMISSIONS.keys())
 
+# Ordered by permission set, so picking the highest-ranked of a user's roles
+# never picks one that can do less. ``support`` must stay lowest: its only
+# permission, BOOTH_VIEW, is a subset of every other role's, so ranking it above
+# a booth role would demote a user who holds both.
 _ROLE_RANK = {
     "super_admin": 50,
     "event_owner": 40,
-    "support": 35,
     "room_coordinator": 30,
     "interpreter": 20,
+    "support": 10,
 }
 
 
