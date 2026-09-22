@@ -672,3 +672,31 @@ async def test_cross_event_participants_isolated():
     b_state = await registry.get_booth("eventb-1-en")
     assert len(a_state["participants"]) == 1
     assert len(b_state["participants"]) == 0
+
+
+@pytest.mark.anyio
+async def test_support_cannot_take_over_an_offered_mic():
+    registry = BoothRegistry()
+    active = await join(registry, "Interpreter A")
+    await join(registry, "Interpreter B")
+    support = await join(registry, "Support", role="support")
+    await registry.initiate_handoff("hall-1-fr", active.participant_id, "French", "hall-1-fr-audio")
+
+    with pytest.raises(PermissionError, match="take over the mic"):
+        await registry.accept_handoff("hall-1-fr", support.participant_id, "French", "hall-1-fr-audio")
+
+    state = await registry.snapshot("hall-1-fr", "French", "hall-1-fr-audio")
+    assert state["active_interpreter_id"] == active.participant_id
+    assert state["handoff_state"] == "offered"
+
+
+@pytest.mark.anyio
+async def test_an_interpreter_can_still_take_over_an_offered_mic():
+    registry = BoothRegistry()
+    active = await join(registry, "Interpreter A")
+    passive = await join(registry, "Interpreter B")
+    await registry.initiate_handoff("hall-1-fr", active.participant_id, "French", "hall-1-fr-audio")
+
+    state = await registry.accept_handoff("hall-1-fr", passive.participant_id, "French", "hall-1-fr-audio")
+
+    assert state["active_interpreter_id"] == passive.participant_id
