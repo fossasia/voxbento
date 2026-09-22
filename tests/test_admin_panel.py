@@ -952,3 +952,23 @@ class TestListenerTokenAPI:
         finally:
             os.environ["BOOTH_ACCESS_TOKEN"] = ""
             settings.booth_access_token = ""
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/admin/setup",
+        "/admin/events/{event}/setup/rooms",
+        "/admin/events/{event}/setup/booths",
+        "/admin/events/{event}/setup/invite",
+    ],
+)
+async def test_setup_wizard_pages_have_no_inline_styles(path, admin_cookie, seed_event):
+    event, _, _ = seed_event
+
+    async with _client() as c:
+        resp = await c.get(path.format(event=event.id), cookies=admin_cookie)
+
+    assert resp.status_code == 200
+    assert b'style="' not in resp.content
