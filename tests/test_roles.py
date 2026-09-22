@@ -7,10 +7,17 @@ statements, ``pytest.mark.parametrize`` for combinatorial coverage.
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
+
 import pytest
 
+import portal.auth as auth_module
+from portal.auth import can_perform_role, resolve_booth_role
 from portal.booth_state import ParticipantRole
 from portal.roles import (
+    _ROLE_RANK,
     ADMIN_ROLES,
     ALL_ROLES,
     ROLE_PERMISSIONS,
@@ -216,3 +223,124 @@ def test_new_admin_roles_are_valid():
     assert "event_owner" in ALL_ROLES
     assert "super_admin" in ALL_ROLES
     assert "room_coordinator" in ALL_ROLES
+
+
+# ── Role ranking ─────────────────────────────────────────────────────────
+
+
+def _rank_pairs():
+    """Every (weaker, stronger) pair where one role's permissions strictly contain the other's."""
+    return [
+        (weaker, stronger)
+        for weaker in ALL_ROLES
+        for stronger in ALL_ROLES
+        if ROLE_PERMISSIONS[weaker] < ROLE_PERMISSIONS[stronger]
+    ]
+
+
+@pytest.mark.parametrize("weaker,stronger", _rank_pairs())
+def test_rank_follows_permission_sets(weaker, stronger):
+    """A role that can do strictly less must rank strictly lower.
+
+    resolve_booth_role picks a user's highest-ranked role, so a rank that
+    disagrees with the permission sets demotes anyone holding both roles.
+    """
+    assert _ROLE_RANK[weaker] < _ROLE_RANK[stronger]
+
+
+def test_support_is_the_lowest_ranked_role():
+    assert _ROLE_RANK["support"] == min(_ROLE_RANK.values())
+
+
+def test_every_role_has_a_rank():
+    assert set(_ROLE_RANK) == set(ALL_ROLES)
+
+
+def test_auth_uses_the_same_rank_table():
+    """auth.py used to keep its own copy, which drifted and omitted support."""
+    assert auth_module._ROLE_RANK is _ROLE_RANK
+
+
+# ── can_perform_role ─────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("requested", ["interpreter", "room_coordinator", "event_owner", "super_admin"])
+def test_support_cannot_perform_a_booth_or_admin_role(requested):
+    assert can_perform_role("support", requested) is False
+
+
+def test_support_can_act_as_itself():
+    assert can_perform_role("support", "support") is True
+
+
+def test_coordinator_can_join_as_interpreter():
+    assert can_perform_role("room_coordinator", "interpreter") is True
+
+
+def test_interpreter_cannot_join_as_coordinator():
+    assert can_perform_role("interpreter", "room_coordinator") is False
+
+
+def test_no_role_can_perform_nothing():
+    assert can_perform_role(None, "interpreter") is False
+
+
+# ── resolve_booth_role ───────────────────────────────────────────────────
+
+BOOTH_ID = "pycon2026-3-en"
+_BOOTH = SimpleNamespace(id=5, room_id=3, event_id=9)
+
+
+@asynccontextmanager
+async def _fake_session():
+    session = MagicMock()
+    result = MagicMock()
+    result.first.return_value = _BOOTH
+    session.scalars = AsyncMock(return_value=result)
+    yield session
+
+
+def _memberships(booth_role=None, room_role=None, event_role=None):
+    """Patch the membership lookups resolve_booth_role reads from."""
+    booth = [SimpleNamespace(booth_id=_BOOTH.id, role=booth_role)] if booth_role else []
+    room = [SimpleNamespace(room_id=_BOOTH.room_id, role=room_role)] if room_role else []
+    event = [SimpleNamespace(event_id=_BOOTH.event_id, role=event_role)] if event_role else []
+    return (
+        patch("portal.database.get_session", _fake_session),
+        patch("portal.database.list_booth_memberships_for_user", AsyncMock(return_value=booth)),
+        patch("portal.database.list_room_memberships_for_user", AsyncMock(return_value=room)),
+        patch("portal.database.list_memberships_for_user", AsyncMock(return_value=event)),
+    )
+
+
+async def _resolve(**memberships):
+    patches = _memberships(**memberships)
+    for p in patches:
+        p.start()
+    try:
+        return await resolve_booth_role({"sub": "7"}, BOOTH_ID)
+    finally:
+        for p in patches:
+            p.stop()
+
+
+@pytest.mark.anyio
+async def test_a_support_membership_does_not_demote_a_room_coordinator():
+    # support is given to an OAuth app's developer account at event level; a
+    # developer who also coordinates a room must keep coordinator abilities.
+    assert await _resolve(room_role="room_coordinator", event_role="support") == "room_coordinator"
+
+
+@pytest.mark.anyio
+async def test_a_support_membership_does_not_demote_an_interpreter():
+    assert await _resolve(booth_role="interpreter", event_role="support") == "interpreter"
+
+
+@pytest.mark.anyio
+async def test_an_event_owner_outranks_support():
+    assert await _resolve(event_role="event_owner") == "event_owner"
+
+
+@pytest.mark.anyio
+async def test_support_alone_resolves_to_support():
+    assert await _resolve(event_role="support") == "support"
