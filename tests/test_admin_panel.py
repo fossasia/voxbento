@@ -882,7 +882,8 @@ class TestListenerTokenAPI:
             tc = TestClient(app=fastapi_app)
             from starlette.websockets import WebSocketDisconnect
 
-            booth_id_event_b = "event-b-english"
+            # A real booth ID: "{event_slug}-{room_id}-{language_code}".
+            booth_id_event_b = "event-b-1-en"
             with pytest.raises(WebSocketDisconnect) as exc_info:
                 with tc.websocket_connect(
                     f"/ws/captions/{booth_id_event_b}?token={token_event_a}",
@@ -912,7 +913,7 @@ class TestListenerTokenAPI:
             from fastapi_app import app as fastapi_app
 
             tc = TestClient(app=fastapi_app)
-            booth_id_event_a = "event-a-english"
+            booth_id_event_a = "event-a-1-en"
             with tc.websocket_connect(
                 f"/ws/captions/{booth_id_event_a}?token={token_event_a}",
             ) as ws:
