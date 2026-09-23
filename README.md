@@ -27,7 +27,7 @@ Interpreter / Coordinator browser
   ▼
 FastAPI portal :8000 (coordination, state, JWT, REST)
   │
-  ├──► Background Transcription (ffmpeg → Deepgram/OpenAI/Local)
+  ├──► Background Transcription (ffmpeg → Deepgram/OpenAI/Atlas Cloud/Local)
   └──► Background Translation (Groq/Anthropic/Gemini)
 
 Floor Audio Bot (floor-bot)
@@ -92,3 +92,7 @@ NVIDIA Riva support is now an optional dependency to reduce the default installa
 ```bash
 uv pip install -e .[nvidia]
 ```
+
+### Optional Atlas Cloud Transcription
+
+Event administrators can configure an Atlas Cloud API key in **API Settings**, then select **Atlas Cloud** with `bytedance/seed-asr-2.0` for booth or floor transcription. VoxBento sends each WAV chunk once to the asynchronous Atlas Cloud Audio API and polls the resulting prediction without retrying the generation request.

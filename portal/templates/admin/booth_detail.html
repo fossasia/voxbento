@@ -144,6 +144,7 @@
           <option value="deepgram" {% if booth.transcription_provider == 'deepgram' %}selected{% endif %}>Deepgram</option>
           <option value="nvidia" {% if booth.transcription_provider == 'nvidia' %}selected{% endif %}>NVIDIA Parakeet</option>
           <option value="elevenlabs" {% if booth.transcription_provider == 'elevenlabs' %}selected{% endif %}>ElevenLabs</option>
+          <option value="atlascloud" {% if booth.transcription_provider == 'atlascloud' %}selected{% endif %}>Atlas Cloud</option>
           {% else %}
           <option disabled>External APIs disabled in Event settings</option>
           {% endif %}
@@ -168,6 +169,7 @@
           <option value="parakeet-rnnt" data-provider="nvidia" {% if booth.transcription_model == 'parakeet-rnnt' %}selected{% endif %}>NVIDIA: parakeet-rnnt</option>
           <option value="parakeet-ctc" data-provider="nvidia" {% if booth.transcription_model == 'parakeet-ctc' %}selected{% endif %}>NVIDIA: parakeet-ctc</option>
           <option value="scribe_v2_realtime" data-provider="elevenlabs" {% if booth.transcription_model == 'scribe_v2_realtime' or booth.transcription_model == 'scribe_v2' %}selected{% endif %}>ElevenLabs: scribe_v2_realtime (Streaming)</option>
+          <option value="bytedance/seed-asr-2.0" data-provider="atlascloud" {% if booth.transcription_model == 'bytedance/seed-asr-2.0' %}selected{% endif %}>Atlas Cloud: Seed ASR 2.0</option>
         </select>
       </div>
       <div class="form-group form-group-btn">
