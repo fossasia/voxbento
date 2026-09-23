@@ -18,27 +18,27 @@
   {% endif %}
 </div>
 
-<div class="card" style="margin-bottom: 2rem;">
+<div class="card card--spaced">
   <div class="card-header">
     <h3>User Information</h3>
   </div>
   <div class="card-body">
-    <table class="data-table compact" style="width: 100%; border-radius: 8px;">
+    <table class="data-table compact user-facts">
       <tbody>
         <tr>
-          <td style="width: 200px; font-weight: 500;">Email</td>
+          <td class="user-facts-label user-facts-label--wide">Email</td>
           <td>{{ user_detail.email }}</td>
         </tr>
         <tr>
-          <td style="font-weight: 500;">Display Name</td>
+          <td class="user-facts-label">Display Name</td>
           <td>{{ user_detail.display_name }}</td>
         </tr>
         <tr>
-          <td style="font-weight: 500;">Joined</td>
+          <td class="user-facts-label">Joined</td>
           <td>{{ user_detail.created_at.strftime('%Y-%m-%d %H:%M UTC') if user_detail.created_at else '—' }}</td>
         </tr>
         <tr>
-          <td style="font-weight: 500;">Global Status</td>
+          <td class="user-facts-label">Global Status</td>
           <td>
             <form method="post" action="/admin/users/{{ user_detail.id }}/toggle-active" class="inline-form">
               <button type="submit" class="btn btn-sm {{ 'btn-warning' if user_detail.is_active else 'btn-success' }}">
@@ -48,7 +48,7 @@
           </td>
         </tr>
         <tr>
-          <td style="font-weight: 500;">Global Admin</td>
+          <td class="user-facts-label">Global Admin</td>
           <td>
             <form method="post" action="/admin/users/{{ user_detail.id }}/toggle-admin" class="inline-form">
               <button type="submit" class="btn btn-sm {{ 'btn-danger' if user_detail.is_admin else 'btn-primary' }}">
@@ -63,7 +63,7 @@
 </div>
 
 <h2>Event Admin Roles</h2>
-<p class="muted" style="margin-bottom: 1rem;">Toggle event admin status for specific events below. Interpreter and listener roles are assigned per-booth.</p>
+<p class="muted hint--spaced-lg">Toggle event admin status for specific events below. Interpreter and listener roles are assigned per-booth.</p>
 
 {% if events %}
 <table class="data-table">
@@ -103,7 +103,7 @@
 </div>
 {% endif %}
 
-<div style="margin-top: 3rem;">
+<div class="section-spaced-lg">
   <form method="post" action="/admin/users/{{ user_detail.id }}/delete"
         data-confirm="Delete user {{ user_detail.email }}? This cannot be undone.">
     <button type="submit" class="btn btn-danger">Delete User Account</button>
