@@ -79,6 +79,8 @@ class TestListenerRoutes:
         assert resp.status_code == 200
         assert b"Join Event" in resp.content
         assert b"Enter the join code" in resp.content
+        assert b"cdn.tailwindcss.com" not in resp.content
+        assert b"css/listener-join.css" in resp.content
 
     @pytest.mark.anyio
     async def test_invalid_join_code_shows_error(self, seed_event):
