@@ -8,9 +8,9 @@
 
 {% block content %}
 <header class="portal-home-header">
-  <a class="brand" href="/" style="display: flex; align-items: center; gap: 10px; text-decoration: none;">
-    <img src="{{ url_for('static', path='img/app_icon.png') }}" alt="VoxBento Icon" style="width: 28px; height: 28px; border: 2px solid #0d0f10; border-radius: 4px;" />
-    <span style="font-size: 1.35rem; font-weight: 900; letter-spacing: -0.025em; color: #0d0f10; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;">VoxBento</span>
+  <a class="brand account-brand" href="/">
+    <img src="{{ url_for('static', path='img/app_icon.png') }}" alt="VoxBento Icon" class="account-brand-icon" />
+    <span class="account-brand-name">VoxBento</span>
   </a>
   <nav class="header-nav">
     <a href="/account">My Account</a>
@@ -20,38 +20,38 @@
   </nav>
 </header>
 
-<main class="admin-main" style="max-width: 800px; padding: 40px 24px;">
-  <div style="margin-bottom: 3rem; border-bottom: 1px solid var(--color-border); padding-bottom: 2rem;">
-    <h1 style="font-size: 2.25rem; font-weight: 800; letter-spacing: -0.025em; color: var(--color-text); margin-bottom: 0.5rem;">My Account</h1>
-    <p style="font-size: 1.1rem; color: var(--color-text-secondary);">Manage your profile, roles, and security settings.</p>
+<main class="admin-main account-main">
+  <div class="account-page-header">
+    <h1 class="account-page-title">My Account</h1>
+    <p class="account-page-subtitle">Manage your profile, roles, and security settings.</p>
   </div>
 
-  <div style="background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 12px; overflow: hidden; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05); margin-bottom: 3rem;">
-    <table class="data-table" style="border: none; margin: 0;">
+  <div class="account-panel account-panel--spaced">
+    <table class="data-table account-table">
       <tbody>
-        <tr style="border-bottom: 1px solid var(--color-border);">
-          <th style="padding: 20px 24px; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; color: #64748b; background: #f8fafc; width: 35%; border: none; border-right: 1px solid var(--color-border);">Email</th>
-          <td style="padding: 20px 24px; font-weight: 500; border: none; color: var(--color-text);">{{ user.email }}</td>
+        <tr class="account-row">
+          <th class="account-th--first">Email</th>
+          <td class="account-td--strong">{{ user.email }}</td>
         </tr>
-        <tr style="border-bottom: 1px solid var(--color-border);">
-          <th style="padding: 20px 24px; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; color: #64748b; background: #f8fafc; border: none; border-right: 1px solid var(--color-border);">Display Name</th>
-          <td style="padding: 20px 24px; border: none; color: var(--color-text);">{{ user.display_name }}</td>
+        <tr class="account-row">
+          <th>Display Name</th>
+          <td>{{ user.display_name }}</td>
         </tr>
-        <tr style="border-bottom: 1px solid var(--color-border);">
-          <th style="padding: 20px 24px; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; color: #64748b; background: #f8fafc; border: none; border-right: 1px solid var(--color-border);">Joined</th>
-          <td style="padding: 20px 24px; border: none; font-variant-numeric: tabular-nums; color: var(--color-text-secondary);">{{ user.created_at.strftime('%Y-%m-%d %H:%M UTC') if user.created_at else '—' }}</td>
+        <tr class="account-row">
+          <th>Joined</th>
+          <td class="account-td--date">{{ user.created_at.strftime('%Y-%m-%d %H:%M UTC') if user.created_at else '—' }}</td>
         </tr>
-        <tr style="border-bottom: 1px solid var(--color-border);">
-          <th style="padding: 20px 24px; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; color: #64748b; background: #f8fafc; border: none; border-right: 1px solid var(--color-border);">Status</th>
-          <td style="padding: 20px 24px; border: none;">
+        <tr class="account-row">
+          <th>Status</th>
+          <td>
             {% if user.is_active %}
-            <span style="display: inline-flex; align-items: center; gap: 6px; background: #ecfdf5; color: #059669; border: 1px solid #a7f3d0; padding: 4px 10px; border-radius: 9999px; font-size: 0.75rem; font-weight: 600;">
-              <span style="display: block; width: 6px; height: 6px; border-radius: 50%; background: #059669;"></span>
+            <span class="account-pill account-pill--active">
+              <span class="account-dot account-dot--active"></span>
               Active
             </span>
             {% else %}
-            <span style="display: inline-flex; align-items: center; gap: 6px; background: #f1f5f9; color: #64748b; border: 1px solid #cbd5e1; padding: 4px 10px; border-radius: 9999px; font-size: 0.75rem; font-weight: 600;">
-              <span style="display: block; width: 6px; height: 6px; border-radius: 50%; background: #94a3b8;"></span>
+            <span class="account-pill account-pill--inactive">
+              <span class="account-dot account-dot--inactive"></span>
               Deactivated
             </span>
             {% endif %}
@@ -59,10 +59,10 @@
         </tr>
         {% if user.is_admin %}
         <tr>
-          <th style="padding: 20px 24px; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; color: #64748b; background: #f8fafc; border: none; border-right: 1px solid var(--color-border);">System Role</th>
-          <td style="padding: 20px 24px; border: none;">
-            <span style="background: #fef2f2; color: #dc2626; border: 1px solid #fecaca; padding: 4px 10px; border-radius: 9999px; font-size: 0.75rem; font-weight: 600;">Super Admin</span>
-            <p style="margin: 0.5rem 0 0 0; font-size: 0.85rem; color: var(--color-text-secondary);">You have global admin panel and event access.</p>
+          <th>System Role</th>
+          <td>
+            <span class="account-badge account-badge--admin">Super Admin</span>
+            <p class="account-admin-note">You have global admin panel and event access.</p>
           </td>
         </tr>
         {% endif %}
@@ -70,38 +70,38 @@
     </table>
   </div>
 
-  <div style="margin-bottom: 3rem;">
-    <div style="margin-bottom: 1.5rem;">
-      <h2 style="font-size: 1.5rem; font-weight: 700; color: var(--color-text);">Your Roles</h2>
-      <p style="color: var(--color-text-secondary); font-size: 0.95rem; margin-top: 0.25rem;">Roles assigned to you across all events and rooms.</p>
+  <div class="account-section">
+    <div class="account-section-head">
+      <h2 class="account-section-title">Your Roles</h2>
+      <p class="account-section-text">Roles assigned to you across all events and rooms.</p>
     </div>
     
     {% if memberships %}
-    <div style="background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 12px; overflow: hidden; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);">
-      <table class="data-table" style="border: none; margin: 0;">
-        <thead style="background: #f8fafc;">
+    <div class="account-panel">
+      <table class="data-table account-table account-roles">
+        <thead class="account-roles-head">
           <tr>
-            <th style="padding: 16px 24px; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; color: #64748b; border-bottom: 1px solid var(--color-border);">Scope</th>
-            <th style="padding: 16px 24px; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; color: #64748b; border-bottom: 1px solid var(--color-border);">Context</th>
-            <th style="padding: 16px 24px; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; color: #64748b; border-bottom: 1px solid var(--color-border);">Role</th>
-            <th style="padding: 16px 24px; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; color: #64748b; border-bottom: 1px solid var(--color-border);">Since</th>
+            <th>Scope</th>
+            <th>Context</th>
+            <th>Role</th>
+            <th>Since</th>
           </tr>
         </thead>
         <tbody>
           {% for m in memberships %}
-          <tr style="border-bottom: 1px solid var(--color-border);">
-            <td style="padding: 16px 24px; border: none; color: var(--color-text-secondary); text-transform: capitalize; font-size: 0.95rem;">{{ m.type }}</td>
-            <td style="padding: 16px 24px; border: none; font-weight: 500;">
+          <tr class="account-row">
+            <td class="account-td--scope">{{ m.type }}</td>
+            <td class="account-td--context">
               {% if m.link != '#' %}
-              <a href="{{ m.link }}" style="color: #3b82f6; text-decoration: none; transition: color 0.2s;" onmouseover="this.style.color='#2563eb'" onmouseout="this.style.color='#3b82f6'">{{ m.context }} &rarr;</a>
+              <a href="{{ m.link }}" class="account-link">{{ m.context }} &rarr;</a>
               {% else %}
               {{ m.context }}
               {% endif %}
             </td>
-            <td style="padding: 16px 24px; border: none;">
-              <span class="badge badge-role badge-{{ m.role }}" style="padding: 4px 10px; border-radius: 9999px; font-size: 0.75rem; font-weight: 600;">{{ m.role }}</span>
+            <td>
+              <span class="badge badge-role badge-{{ m.role }} account-badge">{{ m.role }}</span>
             </td>
-            <td style="padding: 16px 24px; border: none; font-variant-numeric: tabular-nums; color: var(--color-text-secondary); font-size: 0.95rem;">
+            <td class="account-td--since">
               {{ m.created_at.strftime('%Y-%m-%d') if m.created_at else '—' }}
             </td>
           </tr>
@@ -110,55 +110,55 @@
       </table>
     </div>
     {% else %}
-    <div style="text-align: center; padding: 3rem 2rem; background: var(--color-surface); border: 1px dashed var(--color-border-strong); border-radius: 12px;">
-      <p style="color: var(--color-text-secondary); font-size: 0.95rem; margin: 0;">You have not been assigned a role for any event, room, or booth yet.</p>
+    <div class="account-empty">
+      <p>You have not been assigned a role for any event, room, or booth yet.</p>
     </div>
     {% endif %}
   </div>
 
   <div>
-    <div style="margin-bottom: 1.5rem;">
-      <h2 style="font-size: 1.5rem; font-weight: 700; color: var(--color-text);">Security Settings</h2>
-      <p style="color: var(--color-text-secondary); font-size: 0.95rem; margin-top: 0.25rem;">Manage your login methods and credentials.</p>
+    <div class="account-section-head">
+      <h2 class="account-section-title">Security Settings</h2>
+      <p class="account-section-text">Manage your login methods and credentials.</p>
     </div>
     
-    <div style="background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 12px; padding: 32px; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);">
+    <div class="security-card">
       {% if user.password_hash %}
       <div id="has-password-section">
-        <div style="display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 1rem;">
+        <div class="security-row">
           <div>
-            <h3 style="font-size: 1.1rem; font-weight: 600; margin-bottom: 0.5rem; color: var(--color-text);">Password Login</h3>
-            <p style="color: var(--color-text-secondary); font-size: 0.95rem; margin: 0; max-width: 400px;">You currently sign in using a password or magic link.</p>
+            <h3 class="security-title">Password Login</h3>
+            <p class="security-text">You currently sign in using a password or magic link.</p>
           </div>
-          <button type="button" class="btn btn-outline" id="btn-remove-pwd" style="padding: 8px 16px; border-radius: 8px; font-weight: 600; color: #dc2626; border-color: #fca5a5; transition: all 0.2s;" onmouseover="this.style.background='#fef2f2'" onmouseout="this.style.background='transparent'">Disable Password</button>
+          <button type="button" class="btn btn-outline security-toggle security-toggle--danger" id="btn-remove-pwd">Disable Password</button>
         </div>
         
-        <form id="remove-pwd-form" class="hidden security-form" style="margin-top: 1.5rem; padding-top: 1.5rem; border-top: 1px solid var(--color-border);">
-          <p style="font-weight: 500; margin-bottom: 1rem; color: var(--color-text);">Confirm your current password to switch to passwordless sign-in.</p>
-          <div style="display: flex; gap: 1rem; flex-wrap: wrap;">
-            <input type="password" id="current_password" placeholder="Current Password" required style="flex: 1; min-width: 200px; padding: 10px 14px; border-radius: 8px; border: 1px solid var(--color-border);" />
-            <button type="submit" class="btn btn-primary" style="padding: 10px 20px; border-radius: 8px; font-weight: 600;">Confirm Disable</button>
+        <form id="remove-pwd-form" class="hidden security-form security-form--account">
+          <p class="security-lead">Confirm your current password to switch to passwordless sign-in.</p>
+          <div class="security-fields">
+            <input type="password" id="current_password" placeholder="Current Password" required class="security-input" />
+            <button type="submit" class="btn btn-primary security-submit">Confirm Disable</button>
           </div>
-          <div id="remove-pwd-error" class="alert alert-error hidden" style="margin-top: 1rem; border-radius: 8px;"></div>
+          <div id="remove-pwd-error" class="alert alert-error hidden security-error"></div>
         </form>
       </div>
       {% else %}
       <div id="no-password-section">
-        <div style="display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 1rem;">
+        <div class="security-row">
           <div>
-            <h3 style="font-size: 1.1rem; font-weight: 600; margin-bottom: 0.5rem; color: var(--color-text);">Passwordless Login</h3>
-            <p style="color: var(--color-text-secondary); font-size: 0.95rem; margin: 0; max-width: 400px;">You currently use passwordless login. Want a faster way to sign in on shared devices?</p>
+            <h3 class="security-title">Passwordless Login</h3>
+            <p class="security-text">You currently use passwordless login. Want a faster way to sign in on shared devices?</p>
           </div>
-          <button type="button" class="btn btn-outline" id="btn-add-pwd" style="padding: 8px 16px; border-radius: 8px; font-weight: 600; transition: all 0.2s;">Create Password</button>
+          <button type="button" class="btn btn-outline security-toggle" id="btn-add-pwd">Create Password</button>
         </div>
         
-        <form id="add-pwd-form" class="hidden security-form" style="margin-top: 1.5rem; padding-top: 1.5rem; border-top: 1px solid var(--color-border);">
-          <p style="font-weight: 500; margin-bottom: 1rem; color: var(--color-text);">Set a new password for your account.</p>
-          <div style="display: flex; gap: 1rem; flex-wrap: wrap;">
-            <input type="password" id="new_password" placeholder="Min 8 characters" minlength="8" required style="flex: 1; min-width: 200px; padding: 10px 14px; border-radius: 8px; border: 1px solid var(--color-border);" />
-            <button type="submit" class="btn btn-primary" style="padding: 10px 20px; border-radius: 8px; font-weight: 600;">Save Password</button>
+        <form id="add-pwd-form" class="hidden security-form security-form--account">
+          <p class="security-lead">Set a new password for your account.</p>
+          <div class="security-fields">
+            <input type="password" id="new_password" placeholder="Min 8 characters" minlength="8" required class="security-input" />
+            <button type="submit" class="btn btn-primary security-submit">Save Password</button>
           </div>
-          <div id="add-pwd-error" class="alert alert-error hidden" style="margin-top: 1rem; border-radius: 8px;"></div>
+          <div id="add-pwd-error" class="alert alert-error hidden security-error"></div>
         </form>
       </div>
       {% endif %}
