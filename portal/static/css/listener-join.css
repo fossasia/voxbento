@@ -1,0 +1,107 @@
+/* ── Listener join page ─────────────────────────────────────────────────────
+   Replaces the Tailwind CDN utilities previously used by listener_join.html
+   with the same values. */
+
+.join-page {
+  min-height: 100vh;
+  background: #111827;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+}
+
+.join-card {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 28rem;
+  background: #1f2937;
+  border: 1px solid #374151;
+  border-radius: 0.75rem;
+  box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.25);
+  padding: 2rem;
+  line-height: 1.5;
+}
+
+.join-header {
+  text-align: center;
+  margin-bottom: 2rem;
+}
+
+.join-title {
+  margin: 0 0 0.5rem;
+  font-size: 1.875rem;
+  line-height: 2.25rem;
+  font-weight: 700;
+  color: #ffffff;
+}
+
+.join-subtitle {
+  margin: 0;
+  color: #9ca3af;
+}
+
+.join-error {
+  margin-bottom: 1.5rem;
+  background: rgba(239, 68, 68, 0.1);
+  border: 1px solid rgba(239, 68, 68, 0.5);
+  border-radius: 0.5rem;
+  padding: 1rem;
+  color: #f87171;
+  font-size: 0.875rem;
+  line-height: 1.25rem;
+  text-align: center;
+}
+
+.join-label {
+  display: block;
+  margin-bottom: 0.5rem;
+  font-size: 0.875rem;
+  line-height: 1.25rem;
+  font-weight: 500;
+  color: #d1d5db;
+}
+
+.join-input {
+  box-sizing: border-box;
+  width: 100%;
+  margin: 0;
+  background: #111827;
+  border: 1px solid #4b5563;
+  border-radius: 0.5rem;
+  padding: 0.75rem 1rem;
+  color: #ffffff;
+  font: inherit;
+  line-height: inherit;
+  transition: border-color 150ms, box-shadow 150ms;
+}
+
+.join-input::placeholder {
+  color: #9ca3af;
+}
+
+.join-input:focus {
+  outline: none;
+  border-color: #3b82f6;
+  box-shadow: 0 0 0 1px #3b82f6;
+}
+
+.join-button {
+  display: block;
+  width: 100%;
+  margin-top: 1.5rem;
+  background: #2563eb;
+  border: none;
+  border-radius: 0.5rem;
+  padding: 0.75rem 1rem;
+  color: #ffffff;
+  font: inherit;
+  font-weight: 500;
+  line-height: inherit;
+  cursor: pointer;
+  transition: background-color 200ms;
+}
+
+.join-button:hover {
+  background: #1d4ed8;
+}
