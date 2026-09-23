@@ -222,11 +222,11 @@ body:has(.login-page) .portal-footer {
 .account-page-title { font-size: 2.25rem; font-weight: 800; letter-spacing: -0.025em; color: var(--color-text); margin-bottom: 0.5rem; }
 .account-page-subtitle { font-size: 1.1rem; color: var(--color-text-secondary); }
 
-.account-card {
+.account-panel {
   background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 12px;
   overflow: hidden; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);
 }
-.account-card--spaced { margin-bottom: 3rem; }
+.account-panel--spaced { margin-bottom: 3rem; }
 .account-section { margin-bottom: 3rem; }
 .account-section-head { margin-bottom: 1.5rem; }
 .account-section-title { font-size: 1.5rem; font-weight: 700; color: var(--color-text); }
@@ -234,7 +234,7 @@ body:has(.login-page) .portal-footer {
 
 .account-table { border: none; margin: 0; }
 .account-table .account-row { border-bottom: 1px solid var(--color-border); }
-.account-table th {
+.account-table tbody th {
   padding: 20px 24px; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em;
   color: #64748b; background: #f8fafc; border: none; border-right: 1px solid var(--color-border);
 }
@@ -254,7 +254,7 @@ body:has(.login-page) .portal-footer {
 .account-admin-note { margin: 0.5rem 0 0 0; font-size: 0.85rem; color: var(--color-text-secondary); }
 
 .account-roles-head { background: #f8fafc; }
-.account-roles th {
+.account-roles thead th {
   padding: 16px 24px; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em;
   color: #64748b; border-bottom: 1px solid var(--color-border);
 }
