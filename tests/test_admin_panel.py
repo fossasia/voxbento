@@ -958,6 +958,29 @@ class TestListenerTokenAPI:
 @pytest.mark.parametrize(
     "path",
     [
+        "/admin/",
+        "/admin/events/",
+        "/admin/users/",
+        "/admin/events/{event}/rooms/",
+        "/admin/events/{event}/rooms/{room}/booths/",
+    ],
+)
+async def test_admin_list_pages_have_no_inline_styles(path, admin_cookie, seed_event):
+    import re
+
+    event, room, _ = seed_event
+
+    async with _client() as c:
+        resp = await c.get(path.format(event=event.id, room=room.id), cookies=admin_cookie)
+
+    assert resp.status_code == 200
+    assert not re.search(rb"\sstyle\s*=", resp.content, re.IGNORECASE)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "path",
+    [
         "/admin/setup",
         "/admin/events/{event}/setup/rooms",
         "/admin/events/{event}/setup/booths",
