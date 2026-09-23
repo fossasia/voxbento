@@ -559,6 +559,7 @@ class TestAccountMemberships:
         assert resp.status_code == 200
         assert not re.search(rb"\sstyle\s*=", resp.content, re.IGNORECASE)
         assert b"onmouseover" not in resp.content
+        assert b"onmouseout" not in resp.content
 
 
 # ---------------------------------------------------------------------------
