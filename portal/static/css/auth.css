@@ -274,7 +274,7 @@ body:has(.login-page) .portal-footer {
 .security-text { color: var(--color-text-secondary); font-size: 0.95rem; margin: 0; max-width: 400px; }
 .security-toggle { padding: 8px 16px; border-radius: 8px; font-weight: 600; transition: all 0.2s; }
 .security-toggle--danger { color: #dc2626; border-color: #fca5a5; }
-.security-toggle--danger:hover { background: #fef2f2; }
+.security-toggle--danger:hover { background: #fef2f2; color: #dc2626; border-color: #fca5a5; }
 .security-form--account { margin-top: 1.5rem; padding-top: 1.5rem; border-top: 1px solid var(--color-border); }
 .security-form .security-lead { font-weight: 500; margin-bottom: 1rem; color: var(--color-text); }
 .security-fields { display: flex; gap: 1rem; flex-wrap: wrap; }
