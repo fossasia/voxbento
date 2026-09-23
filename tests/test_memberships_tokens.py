@@ -541,6 +541,25 @@ class TestAccountMemberships:
         assert resp.status_code == 200
         assert b"not been assigned" in resp.content
 
+    @pytest.mark.anyio
+    async def test_account_page_has_no_inline_styles(self, setup_db):
+        import re
+
+        from portal.database import get_session, set_event_membership
+
+        user = await _create_test_user(email="styled@test.com", display_name="Styled")
+        event, _, _ = await _seed_event_room_booth()
+        async with get_session() as s:
+            await set_event_membership(s, user_id=user.id, event_id=event.id, role="interpreter")
+        token = create_user_token(user_id=user.id, email=user.email, is_admin=user.is_admin)
+
+        async with _client() as c:
+            resp = await c.get("/account", cookies={"user_token": token})
+
+        assert resp.status_code == 200
+        assert not re.search(rb"\sstyle\s*=", resp.content, re.IGNORECASE)
+        assert b"onmouseover" not in resp.content
+
 
 # ---------------------------------------------------------------------------
 # Event detail page shows Members link
