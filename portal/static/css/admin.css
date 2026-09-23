@@ -790,6 +790,54 @@ code { font-family: var(--font-mono); font-size: 0.85em; background: var(--color
 .alert-info { background: var(--color-primary-subtle); color: var(--color-primary-active); border-color: var(--color-primary-border); }
 .alert-warning { background: #fffbeb; color: #92400e; border-color: #fde68a; }
 
+/* ── Admin detail pages ─────────────────────────────────────────────────────
+   Classes for the styles that used to sit in style attributes on the event,
+   members, booth and user detail templates. Declared after .alert-danger so
+   .alert-flash wins, exactly as the inline styles did. */
+
+.alert-flash { margin-bottom: 1rem; color: #d32f2f; background-color: #fde0e0; padding: 10px; border-radius: 4px; }
+.alert--spaced { margin: 12px 0; }
+
+.section-card--spaced { margin-bottom: 20px; }
+.section-card--spaced-lg { margin-bottom: 2rem; }
+.token-form-card--spaced { margin-bottom: 2rem; }
+.token-form-card--spaced-sm { margin-bottom: 1.5rem; }
+.card--spaced { margin-bottom: 2rem; }
+.tile-grid--spaced { margin-bottom: 28px; }
+.header-meta--spaced { margin-top: 6px; }
+.section-spaced-lg { margin-top: 3rem; }
+.hint--spaced { margin-bottom: 12px; }
+
+.form-group--grow { flex: 1; }
+.form-group--wide { flex: 2; }
+.form-group--action { flex: 0; align-self: flex-end; }
+.form-help--spaced { margin-top: 0.5rem; font-size: 0.85rem; color: #666; }
+.form-help--tight { margin-top: 0.25rem; font-size: 0.85rem; color: #666; }
+.checkbox-label { display: flex; align-items: center; gap: 0.5rem; cursor: pointer; }
+.checkbox-inline { margin-right: 8px; }
+.input-readonly { background-color: #f5f5f5; }
+.btn-invite { border: 2px solid #000; background: #fff; color: #000; border-radius: 4px; box-shadow: 2px 2px 0px #000; padding: 4px 12px; font-weight: bold; }
+
+.event-share-row { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; }
+.event-share-field { flex: 1; min-width: 260px; }
+.transcripts-head { display: flex; justify-content: space-between; align-items: center; }
+.transcripts-head h3 { margin: 0; }
+
+.custom-modal--sm { max-width: 400px; }
+.custom-modal--md { max-width: 500px; }
+.custom-modal-title { margin: 0; font-size: 1.25rem; }
+.custom-modal-title--danger { color: #cf222e; }
+.custom-modal-footer--spaced { margin-top: 16px; }
+.custom-modal-key-row { display: flex; gap: 8px; margin-bottom: 16px; }
+.custom-modal-key-row .field--grow { flex: 1; margin-bottom: 0; }
+.custom-modal-key-input { width: 100%; box-sizing: border-box; }
+.custom-modal-copy-btn { height: fit-content; align-self: flex-end; }
+.custom-modal-note { font-style: italic; color: #6b7280; font-size: 0.9rem; margin-top: 12px; margin-bottom: 0; }
+
+.user-facts { width: 100%; border-radius: 8px; }
+.user-facts td.user-facts-label { font-weight: 500; }
+.user-facts td.user-facts-label--wide { width: 200px; }
+
 /* ── Badges (extra) ──────────────────────────────────────────────────────── */
 .badge-event_owner { background: #ede9fe; color: #5b21b6; }
 
