@@ -975,3 +975,26 @@ async def test_admin_list_pages_have_no_inline_styles(path, admin_cookie, seed_e
 
     assert resp.status_code == 200
     assert not re.search(rb"\sstyle\s*=", resp.content, re.IGNORECASE)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/admin/events/{event}/",
+        "/admin/events/{event}/members/",
+        "/admin/events/{event}/rooms/{room}/booths/{booth}/",
+    ],
+)
+async def test_admin_detail_pages_have_no_inline_styles(path, admin_cookie, seed_event):
+    import re
+
+    event, room, booth = seed_event
+
+    async with _client() as c:
+        resp = await c.get(path.format(event=event.id, room=room.id, booth=booth.id), cookies=admin_cookie)
+
+    assert resp.status_code == 200
+    # The API key modals keep style="display: none", which admin.js toggles.
+    body = resp.content.replace(b'style="display: none;"', b"")
+    assert not re.search(rb"\sstyle\s*=", body, re.IGNORECASE)
