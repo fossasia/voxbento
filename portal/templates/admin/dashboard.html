@@ -18,9 +18,9 @@
 
 {% if not event_data %}
 <div class="empty-state">
-  <div style="font-size:2.5rem; margin-bottom:8px;">🎧</div>
-  <h2 style="font-size:1.25rem; margin-bottom:6px;">Let's set up your first event</h2>
-  <p style="max-width:440px; margin:0 auto 20px;">Create an event, add rooms and language booths, and invite your team — all in a few guided steps.</p>
+  <div class="empty-state-icon">🎧</div>
+  <h2 class="empty-state-title empty-state-title--lg">Let's set up your first event</h2>
+  <p class="empty-state-text--narrow">Create an event, add rooms and language booths, and invite your team — all in a few guided steps.</p>
   <a href="/admin/setup" class="btn btn-primary btn-lg">Create your first event &rarr;</a>
 </div>
 {% else %}
@@ -72,7 +72,7 @@
       </div>
       {% endif %}
     </div>
-    <div class="card-actions" style="display:flex; gap:8px;">
+    <div class="card-actions card-actions--row">
       <a href="/admin/events/{{ ed.event.id }}/" class="btn btn-sm">Manage</a>
       <a href="/mission-control/{{ ed.event.slug }}/" class="btn btn-sm btn-primary">Mission Control</a>
     </div>
