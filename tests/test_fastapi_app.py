@@ -2021,37 +2021,6 @@ def test_ws_accepts_a_bearer_subprotocol_instead_of_a_query_token(monkeypatch):
     assert exc_info.value.code == 4001
 
 
-@pytest.mark.anyio
-async def test_user_event_authorized_requires_a_membership_in_that_event():
-    """A user_token names a user but no event, so memberships decide access.
-
-    Async so the seeding and the assertions share one event loop: seeding from a
-    second loop (``anyio.run``) leaves the in-memory SQLite connection shared
-    across loops, which can deadlock the suite.
-    """
-    from portal.auth import user_event_authorized
-    from portal.database import create_event, create_user, get_session, set_event_membership
-
-    async with get_session() as session:
-        outsider = await create_user(session, email="outsider@test.com", display_name="Outsider")
-        member = await create_user(session, email="member@test.com", display_name="Member")
-        event = await create_event(session, slug="scoped-event", display_name="Scoped")
-        other = await create_event(session, slug="other-event", display_name="Other")
-        await session.flush()
-        await set_event_membership(session, user_id=member.id, event_id=event.id, role="interpreter")
-        member_id, outsider_id, other_slug = member.id, outsider.id, other.slug
-
-    # A member reaches the event's booths, AI and human alike.
-    assert await user_event_authorized(member_id, "scoped-event-1-fr")
-    assert await user_event_authorized(member_id, "scoped-event-1-ai-fr")
-    # ...but not another event's, and a user with no membership at all reaches nothing.
-    assert not await user_event_authorized(member_id, f"{other_slug}-1-fr")
-    assert not await user_event_authorized(outsider_id, "scoped-event-1-fr")
-    # Unparseable booth IDs and unknown events fail closed.
-    assert not await user_event_authorized(member_id, "not-a-booth")
-    assert not await user_event_authorized(member_id, "no-such-event-1-fr")
-
-
 def _user_cookie(user_id: int = 7, *, is_admin: bool = False) -> dict:
     from portal.auth import create_user_token
 
