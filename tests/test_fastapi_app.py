@@ -1934,7 +1934,7 @@ def test_ws_tts_authentication(monkeypatch):
         pass
 
 
-def _ws_close_code(url: str) -> int | None:
+def _ws_close_code(url: str, cookies: dict | None = None) -> int | None:
     """Connect to *url* and return the server's close code, or None if it accepted.
 
     Never reads from the socket: an accepted connection would block forever,
@@ -1943,7 +1943,7 @@ def _ws_close_code(url: str) -> int | None:
     from fastapi.websockets import WebSocketDisconnect
 
     try:
-        with client.websocket_connect(url):
+        with client.websocket_connect(url, cookies=cookies or {}):
             return None
     except WebSocketDisconnect as exc:
         return exc.code
@@ -2019,3 +2019,57 @@ def test_ws_accepts_a_bearer_subprotocol_instead_of_a_query_token(monkeypatch):
         with client.websocket_connect("/ws/tts/test-event-1-ai-fr", subprotocols=["graphql-ws"]) as ws:
             ws.receive_text()
     assert exc_info.value.code == 4001
+
+
+def _seed_user_with_event(email: str, *, event_slug: str, member: bool) -> int:
+    """Create *email* and an event named *event_slug*, optionally linking the two."""
+    import anyio
+
+    from portal.database import create_event, create_user, get_event_by_slug, get_session, set_event_membership
+
+    async def _seed() -> int:
+        async with get_session() as session:
+            user = await create_user(session, email=email, display_name=email)
+            event = await get_event_by_slug(session, event_slug)
+            if event is None:
+                event = await create_event(session, slug=event_slug, display_name=event_slug)
+            await session.flush()
+            if member:
+                await set_event_membership(session, user_id=user.id, event_id=event.id, role="interpreter")
+            return user.id
+
+    return anyio.run(_seed)
+
+
+def test_user_cookie_needs_membership_in_the_booths_event(monkeypatch):
+    """A registered-user cookie carries no event scope, so membership decides access."""
+    from portal.auth import create_user_token
+    from portal.config import settings
+
+    monkeypatch.setattr(settings, "booth_access_token", "secret-test-token")
+
+    outsider = _seed_user_with_event("outsider@test.com", event_slug="test-event", member=False)
+    member = _seed_user_with_event("member@test.com", event_slug="test-event", member=True)
+
+    outsider_cookie = {"user_token": create_user_token(user_id=outsider, email="outsider@test.com")}
+    member_cookie = {"user_token": create_user_token(user_id=member, email="member@test.com")}
+
+    for route in ("/ws/tts/test-event-1-ai-fr", "/ws/captions/test-event-1-fr", "/ws/booth/test-event-1-fr"):
+        assert _ws_close_code(route, cookies=outsider_cookie) == 4003, f"{route} accepted a non-member"
+        assert _ws_close_code(route, cookies=member_cookie) is None, f"{route} rejected a member"
+
+    # An admin user still reaches every booth without a membership row.
+    assert _ws_close_code("/ws/tts/test-event-1-ai-fr", cookies=_admin_user_cookie()) is None
+
+
+def test_user_cookie_without_a_booth_access_token_still_needs_membership(monkeypatch):
+    """The cookie shortcut taken when no booth_access_token is set is authorized too."""
+    from portal.auth import create_user_token
+    from portal.config import settings
+
+    monkeypatch.setattr(settings, "booth_access_token", "")
+
+    outsider = _seed_user_with_event("stranger@test.com", event_slug="test-event", member=False)
+    cookie = {"user_token": create_user_token(user_id=outsider, email="stranger@test.com")}
+
+    assert _ws_close_code("/ws/tts/test-event-1-ai-fr", cookies=cookie) == 4003
