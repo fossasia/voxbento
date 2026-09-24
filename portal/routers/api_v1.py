@@ -4,12 +4,12 @@ import logging
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from portal.auth import require_oauth_scope
-from portal.booth_identity import make_booth_id, make_mediamtx_path
+from portal.booth_identity import make_booth_id, make_mediamtx_path, validate_language_code
 from portal.database import get_db_session
 from portal.globals import booths
 from portal.models import (
@@ -229,10 +229,25 @@ async def delete_event(
 
 
 class RoomUpsert(BaseModel):
-    name: str
-    description: str = ""
-    enabled: bool = True
-    target_languages: list[str] = []
+    """Room sync payload. Omitted fields are left untouched."""
+
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    description: str | None = Field(default=None, max_length=1000)
+    enabled: bool | None = None
+    target_languages: list[str] | None = None
+
+    @field_validator("target_languages")
+    @classmethod
+    def _check_language_codes(cls, codes: list[str] | None) -> list[str] | None:
+        if codes is None:
+            return None
+        validated = []
+        for code in codes:
+            try:
+                validated.append(validate_language_code(code))
+            except ValueError as exc:
+                raise ValueError(str(exc)) from exc
+        return validated
 
 
 @router.put("/events/{event_slug}/rooms/{eventyay_room_id}")
@@ -258,10 +273,16 @@ async def upsert_room(
     )
     room = room_res.scalars().first()
     if room:
-        room.display_name = payload.name
+        if payload.name is not None:
+            room.display_name = payload.name
         action = "room.updated"
         status_code_ret = status.HTTP_200_OK
     else:
+        if payload.name is None:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="'name' is required when creating a room.",
+            )
         from sqlalchemy.exc import IntegrityError
         try:
             async with db.begin_nested():
@@ -280,13 +301,19 @@ async def upsert_room(
             action = "room.created"
             status_code_ret = status.HTTP_201_CREATED
 
-    lang_res = await db.execute(select(RoomTranslationLanguage).where(RoomTranslationLanguage.room_id == room.id))
-    existing_langs = {rl.language_code: rl for rl in lang_res.scalars().all()}
+    if payload.target_languages is None:
+        # Partial update: leave the room's languages and booths untouched.
+        existing_langs = {}
+        existing_booths = {}
+        requested_langs = set()
+    else:
+        lang_res = await db.execute(select(RoomTranslationLanguage).where(RoomTranslationLanguage.room_id == room.id))
+        existing_langs = {rl.language_code: rl for rl in lang_res.scalars().all()}
 
-    booth_res = await db.execute(select(DBBooth).where(DBBooth.room_id == room.id))
-    existing_booths = {b.language_code: b for b in booth_res.scalars().all()}
+        booth_res = await db.execute(select(DBBooth).where(DBBooth.room_id == room.id))
+        existing_booths = {b.language_code: b for b in booth_res.scalars().all()}
 
-    requested_langs = set(payload.target_languages)
+        requested_langs = set(payload.target_languages)
 
     # Safe Delete Removed Booths & Languages
     for code, b in existing_booths.items():
