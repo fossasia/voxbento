@@ -62,7 +62,7 @@ jobs:
       - name: Run unit tests
         # Bounded so a deadlocked test fails the job in minutes instead of
         # stalling it until the six-hour runner limit. The suite takes ~4 min.
-        run: timeout -k 30s 900s uv run pytest tests/ -v
+        run: timeout -s INT -k 30s 900s uv run pytest tests/ -v
 
   # ── 2. Docker build + full-stack smoke test ──────────────────
   docker-smoke:

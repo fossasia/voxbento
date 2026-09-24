@@ -2034,13 +2034,19 @@ def test_user_cookie_reaches_a_booth_only_when_its_event_authorizes_it(monkeypat
     Both cookie paths are covered: the one guarded by booth_access_token and the
     shortcut taken when it is unset. The membership lookup itself is stubbed —
     it has its own test — so no database work happens inside the handshake.
+
+    Only the caption and TTS feeds are driven here. Accepting a ``/ws/booth``
+    connection and closing it without joining deadlocked CI: that handler also
+    resolves a role and a language name, so a parseable booth ID opens two more
+    database sessions inside the handshake. ``resolve_ws_auth`` is shared, and
+    ``/ws/booth`` keeps its own rejection tests.
     """
     import portal.auth as auth
     from portal.config import settings
 
     monkeypatch.setattr(settings, "booth_access_token", access_token)
 
-    routes = ("/ws/tts/test-event-1-ai-fr", "/ws/captions/test-event-1-fr", "/ws/booth/test-event-1-fr")
+    routes = ("/ws/tts/test-event-1-ai-fr", "/ws/captions/test-event-1-fr")
 
     async def _deny(user_id, booth_id):
         return False
