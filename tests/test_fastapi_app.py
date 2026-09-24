@@ -2021,55 +2021,72 @@ def test_ws_accepts_a_bearer_subprotocol_instead_of_a_query_token(monkeypatch):
     assert exc_info.value.code == 4001
 
 
-def _seed_user_with_event(email: str, *, event_slug: str, member: bool) -> int:
-    """Create *email* and an event named *event_slug*, optionally linking the two."""
-    import anyio
+@pytest.mark.anyio
+async def test_user_event_authorized_requires_a_membership_in_that_event():
+    """A user_token names a user but no event, so memberships decide access.
 
-    from portal.database import create_event, create_user, get_event_by_slug, get_session, set_event_membership
+    Async so the seeding and the assertions share one event loop: seeding from a
+    second loop (``anyio.run``) leaves the in-memory SQLite connection shared
+    across loops, which can deadlock the suite.
+    """
+    from portal.auth import user_event_authorized
+    from portal.database import create_event, create_user, get_session, set_event_membership
 
-    async def _seed() -> int:
-        async with get_session() as session:
-            user = await create_user(session, email=email, display_name=email)
-            event = await get_event_by_slug(session, event_slug)
-            if event is None:
-                event = await create_event(session, slug=event_slug, display_name=event_slug)
-            await session.flush()
-            if member:
-                await set_event_membership(session, user_id=user.id, event_id=event.id, role="interpreter")
-            return user.id
+    async with get_session() as session:
+        outsider = await create_user(session, email="outsider@test.com", display_name="Outsider")
+        member = await create_user(session, email="member@test.com", display_name="Member")
+        event = await create_event(session, slug="scoped-event", display_name="Scoped")
+        other = await create_event(session, slug="other-event", display_name="Other")
+        await session.flush()
+        await set_event_membership(session, user_id=member.id, event_id=event.id, role="interpreter")
+        member_id, outsider_id, other_slug = member.id, outsider.id, other.slug
 
-    return anyio.run(_seed)
+    # A member reaches the event's booths, AI and human alike.
+    assert await user_event_authorized(member_id, "scoped-event-1-fr")
+    assert await user_event_authorized(member_id, "scoped-event-1-ai-fr")
+    # ...but not another event's, and a user with no membership at all reaches nothing.
+    assert not await user_event_authorized(member_id, f"{other_slug}-1-fr")
+    assert not await user_event_authorized(outsider_id, "scoped-event-1-fr")
+    # Unparseable booth IDs and unknown events fail closed.
+    assert not await user_event_authorized(member_id, "not-a-booth")
+    assert not await user_event_authorized(member_id, "no-such-event-1-fr")
 
 
-def test_user_cookie_needs_membership_in_the_booths_event(monkeypatch):
-    """A registered-user cookie carries no event scope, so membership decides access."""
+def _user_cookie(user_id: int = 7, *, is_admin: bool = False) -> dict:
     from portal.auth import create_user_token
+
+    return {"user_token": create_user_token(user_id=user_id, email="user@test.com", is_admin=is_admin)}
+
+
+@pytest.mark.parametrize("access_token", ["secret-test-token", ""])
+def test_user_cookie_reaches_a_booth_only_when_its_event_authorizes_it(monkeypatch, access_token):
+    """The WebSocket handshake rejects an unscoped user cookie the event does not authorize.
+
+    Both cookie paths are covered: the one guarded by booth_access_token and the
+    shortcut taken when it is unset. The membership lookup itself is stubbed —
+    it has its own test — so no database work happens inside the handshake.
+    """
+    import portal.auth as auth
     from portal.config import settings
 
-    monkeypatch.setattr(settings, "booth_access_token", "secret-test-token")
+    monkeypatch.setattr(settings, "booth_access_token", access_token)
 
-    outsider = _seed_user_with_event("outsider@test.com", event_slug="test-event", member=False)
-    member = _seed_user_with_event("member@test.com", event_slug="test-event", member=True)
+    routes = ("/ws/tts/test-event-1-ai-fr", "/ws/captions/test-event-1-fr", "/ws/booth/test-event-1-fr")
 
-    outsider_cookie = {"user_token": create_user_token(user_id=outsider, email="outsider@test.com")}
-    member_cookie = {"user_token": create_user_token(user_id=member, email="member@test.com")}
+    async def _deny(user_id, booth_id):
+        return False
 
-    for route in ("/ws/tts/test-event-1-ai-fr", "/ws/captions/test-event-1-fr", "/ws/booth/test-event-1-fr"):
-        assert _ws_close_code(route, cookies=outsider_cookie) == 4003, f"{route} accepted a non-member"
-        assert _ws_close_code(route, cookies=member_cookie) is None, f"{route} rejected a member"
+    monkeypatch.setattr(auth, "user_event_authorized", _deny)
+    for route in routes:
+        assert _ws_close_code(route, cookies=_user_cookie()) == 4003, f"{route} accepted a non-member"
+
+    async def _allow(user_id, booth_id):
+        return True
+
+    monkeypatch.setattr(auth, "user_event_authorized", _allow)
+    for route in routes:
+        assert _ws_close_code(route, cookies=_user_cookie()) is None, f"{route} rejected a member"
 
     # An admin user still reaches every booth without a membership row.
+    monkeypatch.setattr(auth, "user_event_authorized", _deny)
     assert _ws_close_code("/ws/tts/test-event-1-ai-fr", cookies=_admin_user_cookie()) is None
-
-
-def test_user_cookie_without_a_booth_access_token_still_needs_membership(monkeypatch):
-    """The cookie shortcut taken when no booth_access_token is set is authorized too."""
-    from portal.auth import create_user_token
-    from portal.config import settings
-
-    monkeypatch.setattr(settings, "booth_access_token", "")
-
-    outsider = _seed_user_with_event("stranger@test.com", event_slug="test-event", member=False)
-    cookie = {"user_token": create_user_token(user_id=outsider, email="stranger@test.com")}
-
-    assert _ws_close_code("/ws/tts/test-event-1-ai-fr", cookies=cookie) == 4003
