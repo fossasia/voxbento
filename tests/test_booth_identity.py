@@ -13,6 +13,7 @@ from portal.booth_identity import (
     validate_event_slug,
     validate_instance,
     validate_language_code,
+    validate_room_id,
 )
 
 # ── validate_event_slug ──────────────────────────────────────────────────────
@@ -66,6 +67,13 @@ class TestValidateEventSlug:
     def test_max_length_slug_accepted(self):
         slug = "a" * 64
         assert validate_event_slug(slug) == slug
+
+    def test_too_long_slug_message_is_formatted(self):
+        # The substring check above also matched the old, unformatted tuple
+        # message, so pin the exact text the API returns to clients.
+        with pytest.raises(ValueError) as exc_info:
+            validate_event_slug("a" * 70)
+        assert str(exc_info.value) == "Event slug must not exceed 64 characters (got 70)."
 
 
 # ── validate_language_code ────────────────────────────────────────────────────
@@ -132,6 +140,20 @@ class TestValidateInstance:
             validate_instance("")
 
 
+# ── validate_room_id ──────────────────────────────────────────────────────────
+
+
+class TestValidateRoomId:
+    @pytest.mark.parametrize("room_id", [0, 1, 14, 10**9])
+    def test_non_negative_integers_accepted(self, room_id):
+        assert validate_room_id(room_id) == room_id
+
+    @pytest.mark.parametrize("room_id", [-1, -3, True, False, 3.7, "14", "abc", None])
+    def test_everything_else_rejected(self, room_id):
+        with pytest.raises(ValueError, match="non-negative integer"):
+            validate_room_id(room_id)
+
+
 # ── make_booth_id ─────────────────────────────────────────────────────────────
 
 
@@ -152,6 +174,17 @@ class TestMakeBoothId:
     def test_invalid_code_raises(self):
         with pytest.raises(ValueError):
             make_booth_id("pycon2026", 1, "xyz")
+
+    @pytest.mark.parametrize("room_id", [-3, "abc", True, 3.7])
+    def test_invalid_room_id_raises(self, room_id):
+        with pytest.raises(ValueError, match="non-negative integer"):
+            make_booth_id("pycon2026", room_id, "en")
+
+    def test_none_room_id_raises(self):
+        # Unlike make_mediamtx_path, a booth ID has to parse back, and
+        # "pycon2026-None-en" does not.
+        with pytest.raises(ValueError, match="non-negative integer"):
+            make_booth_id("pycon2026", None, "en")
 
 
 # ── make_mediamtx_path ────────────────────────────────────────────────────────
@@ -174,6 +207,16 @@ class TestMakeMediamtxPath:
     def test_invalid_code_raises(self):
         with pytest.raises(ValueError):
             make_mediamtx_path("pycon2026", 1, "xyz")
+
+    @pytest.mark.parametrize("room_id", [-3, "abc", True, 3.7])
+    def test_invalid_room_id_raises(self, room_id):
+        with pytest.raises(ValueError, match="non-negative integer"):
+            make_mediamtx_path("pycon2026", room_id, "en")
+
+    def test_none_room_id_is_still_accepted(self):
+        # start_transcription_worker defaults room_id to None and builds its
+        # channel path with this function, so None must keep working here.
+        make_mediamtx_path("pycon2026", None, "en")
 
 
 # ── parse_booth_id ────────────────────────────────────────────────────────────
@@ -253,6 +296,13 @@ class TestMediamtxPathToBoothId:
         with pytest.raises(ValueError):
             mediamtx_path_to_booth_id("pycon2026/1/xyz")
 
+    @pytest.mark.parametrize("room_segment", ["-3", "+3", " 3", "1_000", "abc", "3.7", "٣"])
+    def test_non_integer_room_segment_raises(self, room_segment):
+        # int() accepts several of these; parse_booth_id would not take the
+        # resulting ID back, so they must be rejected here too.
+        with pytest.raises(ValueError, match="non-negative integer"):
+            mediamtx_path_to_booth_id(f"pycon2026/{room_segment}/en")
+
 
 # ── Bidirectional round-trip ──────────────────────────────────────────────────
 
@@ -285,3 +335,10 @@ class TestRoundTrip:
         booth_id = mediamtx_path_to_booth_id(path)
         recovered_path = booth_id_to_mediamtx_path(booth_id)
         assert recovered_path == path
+
+    @pytest.mark.parametrize("room_id", [0, 1, 14, 10**9])
+    def test_every_built_booth_id_parses_back(self, room_id):
+        # The invariant the room_id validation exists to guarantee: whatever
+        # make_booth_id accepts, parse_booth_id recovers exactly.
+        booth_id = make_booth_id("pycon2026", room_id, "en")
+        assert parse_booth_id(booth_id) == ("pycon2026", room_id, "en")
