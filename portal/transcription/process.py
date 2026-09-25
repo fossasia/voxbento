@@ -2,6 +2,7 @@ import asyncio
 import logging
 import os
 import signal
+import sys
 from typing import Optional
 
 from portal.config import settings
@@ -86,19 +87,25 @@ class FfmpegProcess:
             logger.info(f"[{self.booth_id}] Attempting termination of ffmpeg process group (pid={self.process.pid})")
 
             try:
-                # Send SIGTERM to the entire process group
-                os.killpg(self.process.pid, signal.SIGTERM)
+                # Send SIGTERM to the process group on POSIX, or terminate on Windows
+                if sys.platform == "win32":
+                    self.process.terminate()
+                else:
+                    os.killpg(self.process.pid, signal.SIGTERM)
 
                 try:
                     await asyncio.wait_for(self.process.wait(), timeout=self.termination_timeout)
-                    logger.info(f"[{self.booth_id}] ffmpeg process group terminated cleanly.")
+                    logger.info(f"[{self.booth_id}] ffmpeg process terminated cleanly.")
                 except TimeoutError:
                     logger.warning(
                         f"[{self.booth_id}] ffmpeg did not exit within {self.termination_timeout}s. Escalating to SIGKILL."
                     )
-                    os.killpg(self.process.pid, signal.SIGKILL)
+                    if sys.platform == "win32":
+                        self.process.kill()
+                    else:
+                        os.killpg(self.process.pid, signal.SIGKILL)
                     await self.process.wait()
-                    logger.info(f"[{self.booth_id}] ffmpeg process group killed.")
+                    logger.info(f"[{self.booth_id}] ffmpeg process killed.")
             except ProcessLookupError:
                 # The process group already exited.
                 logger.debug(f"[{self.booth_id}] Process group {self.process.pid} already exited.")
