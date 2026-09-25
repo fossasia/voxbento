@@ -244,9 +244,13 @@ class BoothRegistry:
             participant = booth.participants.pop(participant_id, None)
             if participant is None:
                 return booth.as_public_dict()
-            if booth.active_interpreter_id == participant_id:
+            was_active = booth.active_interpreter_id == participant_id
+            if was_active:
                 booth.active_interpreter_id = _pick_next_interpreter(booth)
-                booth.handoff_state = "pending" if booth.active_interpreter_id else "idle"
+            # A handoff cannot complete once its initiator or the active interpreter has left.
+            if was_active or participant_id == booth.handoff_initiator_id:
+                booth.handoff_state = "idle"
+                booth.handoff_initiator_id = None
             if not booth.participants:
                 booth.ingest_status = "disconnected"
                 booth.handoff_state = "idle"
@@ -309,7 +313,9 @@ class BoothRegistry:
                     "Only coordinators/admins or the active interpreter can reassign another interpreter."
                 )
             booth.active_interpreter_id = target_id
-            booth.handoff_state = "completed"
+            # A direct reassignment supersedes any handoff in progress.
+            booth.handoff_state = "idle"
+            booth.handoff_initiator_id = None
             for p in booth.participants.values():
                 p.ingest_connected = p.participant_id == target_id and p.ingest_connected
                 p.mic_active = p.participant_id == target_id and p.mic_active
@@ -390,6 +396,8 @@ class BoothRegistry:
                 # Active offered → passive accepts → passive becomes active
                 if booth.active_interpreter_id == acceptor_id:
                     raise ValueError("Active interpreter cannot accept an offer they did not initiate.")
+                if acceptor.role not in ("interpreter", "room_coordinator", "event_owner", "super_admin"):
+                    raise PermissionError("Only interpreters and coordinators can take over the mic.")
                 new_active = acceptor_id
             elif booth.handoff_state == "requested":
                 # Passive requested → active accepts (yields) → requester becomes active
