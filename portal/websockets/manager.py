@@ -166,7 +166,7 @@ async def _handle_join(ws: WebSocket, session: Session, data: dict) -> None:
     role = data.get("role", "interpreter")
     language = data.get("language", session.language)
     channel_id = data.get("channel_id", f"{session.booth_id}-audio")
-    participant_id = data.get("participant_id")
+    participant_id = session.participant_id
     if session.granted_role is None:
         await ws.send_text(json.dumps({"type": "booth:error", "message": "No role assigned for this session."}))
         return

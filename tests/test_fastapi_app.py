@@ -468,6 +468,44 @@ def test_ws_standby_cannot_set_mic_active():
     assert err_msg["type"] == "booth:error"
 
 
+def _join_booth(ws, name, **extra):
+    ws.send_text(
+        json.dumps(
+            {
+                "type": "booth:join",
+                "display_name": name,
+                "role": "interpreter",
+                "language": "French",
+                "channel_id": "pid-reuse-audio",
+                **extra,
+            }
+        )
+    )
+    msgs = [json.loads(ws.receive_text()), json.loads(ws.receive_text())]
+    return next(m for m in msgs if m["type"] == "booth:joined")
+
+
+def test_ws_join_ignores_client_supplied_participant_id():
+    """Joining with someone else's participant_id must not take over their slot."""
+    with client.websocket_connect("/ws/booth/pid-reuse-booth", cookies=_ws_auth()) as ws_a:
+        pid_a = _join_booth(ws_a, "Alice")["participant_id"]
+
+        with client.websocket_connect("/ws/booth/pid-reuse-booth", cookies=_ws_auth()) as ws_b:
+            joined_b = _join_booth(ws_b, "Bob", participant_id=pid_a)
+            ws_a.receive_text()  # Bob's join broadcast
+
+            state = joined_b["state"]
+            names = {p["participant_id"]: p["display_name"] for p in state["participants"]}
+            assert joined_b["participant_id"] != pid_a
+            assert names[pid_a] == "Alice"
+            assert state["active_interpreter_id"] == pid_a
+
+        # Bob disconnecting must leave Alice in the booth as the active interpreter.
+        state = json.loads(ws_a.receive_text())["state"]
+        assert pid_a in {p["participant_id"] for p in state["participants"]}
+        assert state["active_interpreter_id"] == pid_a
+
+
 def test_ws_three_way_coordinator_flow():
     """Full 3-connection scenario: two interpreters + coordinator.
 
