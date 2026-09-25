@@ -116,6 +116,31 @@ class TestAdminLogin:
         assert b"Invalid password" in resp.content
 
     @pytest.mark.anyio
+    async def test_login_strips_surrounding_whitespace(self):
+        async with _client() as c:
+            resp = await c.post(
+                "/admin/login",
+                data={"password": " test-admin-pass\n"},
+                follow_redirects=False,
+            )
+        assert resp.status_code == 303
+        assert resp.headers["location"] == "/admin/"
+
+    @pytest.mark.anyio
+    async def test_login_rejects_empty_password_when_admin_password_is_whitespace_only(self):
+        settings.admin_password = "   "
+        try:
+            async with _client() as c:
+                resp = await c.post(
+                    "/admin/login",
+                    data={"password": ""},
+                    follow_redirects=False,
+                )
+            assert resp.status_code == 403
+        finally:
+            settings.admin_password = "test-admin-pass"
+
+    @pytest.mark.anyio
     async def test_logout_clears_cookie(self):
         async with _client() as c:
             resp = await c.get("/admin/logout", follow_redirects=False)
