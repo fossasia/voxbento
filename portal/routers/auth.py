@@ -113,13 +113,16 @@ async def register_submit(request: Request):
     form = await request.form()
     email = form.get("email", "").strip().lower()
     display_name = form.get("display_name", "").strip()
-    password = form.get("password", "")
+    password_raw = form.get("password", "")
+    password = password_raw.strip()
 
     errors = []
     if not email or "@" not in email:
         errors.append("Valid email is required.")
     if not display_name:
         errors.append("Display name is required.")
+    if password_raw and not password:
+        errors.append("Password cannot be blank or only whitespace.")
 
     if not errors:
         async with get_session() as session:
@@ -127,7 +130,7 @@ async def register_submit(request: Request):
             if existing:
                 errors.append("An account with this email already exists.")
             else:
-                pw_hash = hash_password(password) if password else None
+                pw_hash = hash_password(password_raw) if password else None
                 user = await create_user(
                     session,
                     email=email,
