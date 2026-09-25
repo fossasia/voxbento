@@ -93,18 +93,18 @@
 
 <!-- Booth Settings Form -->
 <form method="post" action="{{ url_for('admin_edit_booth', event_id=event.id, room_id=room.id, booth_id=booth.id) }}" class="token-form">
-  <div class="token-form-card" style="margin-bottom: 2rem;">
+  <div class="token-form-card token-form-card--spaced">
     <h3>Booth Settings</h3>
     <div class="form-row">
-      <div class="form-group" style="flex: 1;">
+      <div class="form-group form-group--grow">
         <label for="language_name">Language Name</label>
         <input type="text" id="language_name" name="language_name" class="input" value="{{ booth.language_name }}">
       </div>
-      <div class="form-group" style="flex: 1;">
+      <div class="form-group form-group--grow">
         <label for="language_code">Language Code</label>
         <input type="text" id="language_code" name="language_code" class="input" value="{{ booth.language_code }}">
       </div>
-      <div class="form-group form-group-btn" style="flex: 0; align-self: flex-end;">
+      <div class="form-group form-group-btn form-group--action">
         <button type="submit" class="btn btn-primary">Save Settings</button>
       </div>
     </div>
@@ -113,29 +113,29 @@
 
 <!-- Transcription Settings Form -->
 <form method="post" action="/admin/events/{{ event.id }}/rooms/{{ room.id }}/booths/{{ booth.id }}/transcription-settings" class="token-form">
-  <div class="token-form-card" style="margin-bottom: 2rem;">
-    <div style="display: flex; justify-content: space-between; align-items: center;">
+  <div class="token-form-card token-form-card--spaced">
+    <div class="transcripts-head">
       <div>
-        <h3 style="margin: 0;">Stored Transcripts</h3>
-        <p class="form-help" style="margin-top: 0.25rem; font-size: 0.85rem; color: #666;">View and download past transcripts and translations generated for this booth.</p>
+        <h3>Stored Transcripts</h3>
+        <p class="form-help form-help--tight">View and download past transcripts and translations generated for this booth.</p>
       </div>
       <a href="/admin/events/{{ event.id }}/rooms/{{ room.id }}/transcripts/" class="btn btn-primary">View Transcripts</a>
     </div>
   </div>
 
-  <div class="token-form-card" style="margin-bottom: 2rem;">
+  <div class="token-form-card token-form-card--spaced">
     <h3>Transcription Settings</h3>
     <div class="form-row">
-      <div class="form-group" style="flex: 1;">
-        <label for="transcription_enabled" style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer;">
+      <div class="form-group form-group--grow">
+        <label for="transcription_enabled" class="checkbox-label">
           <input type="checkbox" id="transcription_enabled" name="transcription_enabled" value="true" {% if booth.transcription_enabled %}checked{% endif %}>
           <strong>Enable Live Transcription</strong>
         </label>
-        <p class="form-help" style="margin-top: 0.5rem; font-size: 0.85rem; color: #666;">
+        <p class="form-help form-help--spaced">
           When enabled, a background worker will consume the RTSP feed and generate live captions. Turn off to save CPU/RAM.
         </p>
       </div>
-      <div class="form-group" style="flex: 1;">
+      <div class="form-group form-group--grow">
         <label for="transcription_provider">Transcription Provider</label>
         <select id="transcription_provider" name="transcription_provider" class="input">
           <option value="local" {% if booth.transcription_provider == 'local' %}selected{% endif %}>Local CPU (Faster-Whisper)</option>
@@ -149,7 +149,7 @@
           {% endif %}
         </select>
       </div>
-      <div class="form-group" style="flex: 1;">
+      <div class="form-group form-group--grow">
         <label for="transcription_model">Model Variant</label>
         <select id="transcription_model" name="transcription_model" class="input">
           <option value="tiny" data-provider="local" {% if booth.transcription_model == 'tiny' %}selected{% endif %}>Local: tiny (Fastest)</option>
@@ -179,19 +179,19 @@
 
 <!-- Translation Settings Form -->
 <form method="post" action="/admin/events/{{ event.id }}/rooms/{{ room.id }}/booths/{{ booth.id }}/translation-settings" class="token-form">
-  <div class="token-form-card" style="margin-bottom: 2rem;">
+  <div class="token-form-card token-form-card--spaced">
     <h3>Translation Settings</h3>
     <div class="form-row">
-      <div class="form-group" style="flex: 1;">
-        <label for="translation_enabled" style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer;">
+      <div class="form-group form-group--grow">
+        <label for="translation_enabled" class="checkbox-label">
           <input type="checkbox" id="translation_enabled" name="translation_enabled" value="true" {% if booth.translation_enabled %}checked{% endif %}>
           <strong>Enable Live Translation</strong>
         </label>
-        <p class="form-help" style="margin-top: 0.5rem; font-size: 0.85rem; color: #666;">
+        <p class="form-help form-help--spaced">
           When enabled, the transcripts generated by this booth will be automatically translated into the target languages selected below.
         </p>
       </div>
-      <div class="form-group" style="flex: 1;">
+      <div class="form-group form-group--grow">
         <label for="translation_provider">Translation Provider</label>
         <select id="translation_provider" name="translation_provider" class="input">
           <option value="openai" {% if booth.translation_provider == 'openai' %}selected{% endif %}>OpenAI</option>
@@ -202,7 +202,7 @@
           <option value="local" {% if booth.translation_provider == 'local' %}selected{% endif %}>Local LLM</option>
         </select>
       </div>
-      <div class="form-group" style="flex: 1;">
+      <div class="form-group form-group--grow">
         <label for="translation_model">Model Variant</label>
         <select id="translation_model" name="translation_model" class="input">
           <option value="gpt-4o-mini" data-trans-provider="openai" {% if booth.translation_model == 'gpt-4o-mini' %}selected{% endif %}>OpenAI: gpt-4o-mini</option>
@@ -221,7 +221,7 @@
       </div>
     </div>
     <div class="form-row">
-      <div class="form-group" style="flex: 1;">
+      <div class="form-group form-group--grow">
         <label>Target Languages</label>
         <div class="lang-picker" id="lp_translation" aria-label="Target languages picker">
           <div class="lang-picker-tags" id="lp_translation_tags"></div>
@@ -232,9 +232,9 @@
           </div>
         </div>
         <div id="lp_translation_hidden"></div>
-        <p class="form-help" style="margin-top: 0.5rem; font-size: 0.85rem; color: #666;">Only selected languages will be available to listeners.</p>
+        <p class="form-help form-help--spaced">Only selected languages will be available to listeners.</p>
       </div>
-      <div class="form-group form-group-btn" style="flex: 0; align-self: flex-end;">
+      <div class="form-group form-group-btn form-group--action">
         <button type="submit" class="btn btn-primary">Save Settings</button>
       </div>
     </div>
@@ -459,17 +459,17 @@
   </div>
   
   {% if request.query_params.get('error') == 'user_not_found' %}
-  <div class="alert alert-danger" style="margin-bottom: 1rem; color: #d32f2f; background-color: #fde0e0; padding: 10px; border-radius: 4px;">
+  <div class="alert alert-danger alert-flash">
     <strong>Error:</strong> User with that email address was not found. They must register first.
   </div>
   {% endif %}
   {% if request.query_params.get('error') == 'invalid_role' %}
-  <div class="alert alert-danger" style="margin-bottom: 1rem; color: #d32f2f; background-color: #fde0e0; padding: 10px; border-radius: 4px;">
+  <div class="alert alert-danger alert-flash">
     <strong>Error:</strong> Invalid role selected for a booth. Only interpreters are allowed.
   </div>
   {% endif %}
   <!-- Assign Member Form -->
-  <div class="token-form-card" style="margin-bottom: 1.5rem;">
+  <div class="token-form-card token-form-card--spaced-sm">
     <h3>Assign Member</h3>
     <form method="post" action="/admin/events/{{ event.id }}/rooms/{{ room.id }}/booths/{{ booth.id }}/members/" class="token-form">
       <div class="form-row">
@@ -525,9 +525,8 @@
         <td class="actions-cell">
           <form method="post"
                 action="/admin/events/{{ event.id }}/rooms/{{ room.id }}/booths/{{ booth.id }}/members/{{ m.id }}/invite"
-                class="inline-form"
-                style="margin-right: 8px;">
-            <button type="submit" class="btn btn-sm btn-outline" style="border: 2px solid #000; background: #fff; color: #000; border-radius: 4px; box-shadow: 2px 2px 0px #000; padding: 4px 12px; font-weight: bold;">✉️ Invite</button>
+                class="inline-form form-inline-spaced">
+            <button type="submit" class="btn btn-sm btn-outline btn-invite">✉️ Invite</button>
           </form>
           <form method="post"
                 action="/admin/events/{{ event.id }}/rooms/{{ room.id }}/booths/{{ booth.id }}/members/{{ m.id }}/delete"
