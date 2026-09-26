@@ -1000,3 +1000,25 @@ async def test_admin_list_pages_have_no_inline_styles(path, admin_cookie, seed_e
 
     assert resp.status_code == 200
     assert not re.search(rb"\sstyle\s*=", resp.content, re.IGNORECASE)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/admin/setup",
+        "/admin/events/{event}/setup/rooms",
+        "/admin/events/{event}/setup/booths",
+        "/admin/events/{event}/setup/invite",
+    ],
+)
+async def test_setup_wizard_pages_have_no_inline_styles(path, admin_cookie, seed_event):
+    import re
+
+    event, _, _ = seed_event
+
+    async with _client() as c:
+        resp = await c.get(path.format(event=event.id), cookies=admin_cookie)
+
+    assert resp.status_code == 200
+    assert not re.search(rb"\sstyle\s*=", resp.content, re.IGNORECASE)
