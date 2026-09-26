@@ -243,6 +243,34 @@ class TestEventCRUD:
         assert b"testcon" in resp.content
 
     @pytest.mark.anyio
+    @pytest.mark.parametrize("search_term", ("summit", "fossasia"))
+    async def test_event_list_searches_by_slug_or_display_name(self, admin_cookie, seed_event, search_term):
+        from portal.database import create_event, get_session
+
+        async with get_session() as session:
+            await create_event(session, slug="community-summit-2026", display_name="FOSSASIA Community")
+
+        async with _client() as c:
+            resp = await c.get("/admin/events/", params={"search": search_term}, cookies=admin_cookie)
+
+        assert resp.status_code == 200
+        assert "FOSSASIA Community" in resp.text
+        assert "community-summit-2026" in resp.text
+        assert "testcon" not in resp.text
+        assert f'value="{search_term}"' in resp.text
+
+    @pytest.mark.anyio
+    async def test_event_list_search_with_no_matches_shows_clearable_empty_state(self, admin_cookie, seed_event):
+        async with _client() as c:
+            resp = await c.get("/admin/events/", params={"search": "no-such-event"}, cookies=admin_cookie)
+
+        assert resp.status_code == 200
+        assert "No events found" in resp.text
+        assert 'name="search"' in resp.text
+        assert 'href="/admin/events/" class="btn">Clear</a>' in resp.text
+        assert "testcon" not in resp.text
+
+    @pytest.mark.anyio
     async def test_create_event(self, admin_cookie):
         async with _client() as c:
             resp = await c.post(

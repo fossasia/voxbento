@@ -315,7 +315,8 @@ async def admin_dashboard(request: Request, page: int = 1):
 
 
 @router.get("/admin/events/", dependencies=[Depends(require_admin)])
-async def admin_event_list(request: Request, page: int = 1):
+async def admin_event_list(request: Request, page: int = 1, search: str | None = None):
+    search = (search or "").strip() or None
     admin_flags = await get_admin_flags(request)
     user = await get_current_user(request)
     user_id = int(user["sub"]) if user and user.get("sub") else None
@@ -323,13 +324,15 @@ async def admin_event_list(request: Request, page: int = 1):
     limit = 20
     offset = (page - 1) * limit
     async with get_session() as session:
-        total_events = await count_events(session, allowed_event_ids=allowed_event_ids)
-        events = await list_events(session, limit=limit, offset=offset, allowed_event_ids=allowed_event_ids)
+        total_events = await count_events(session, allowed_event_ids=allowed_event_ids, search=search)
+        events = await list_events(
+            session, limit=limit, offset=offset, allowed_event_ids=allowed_event_ids, search=search
+        )
     total_pages = max(1, math.ceil(total_events / limit))
     return templates.TemplateResponse(
         request=request,
         name="admin/event_list.html",
-        context={"events": events, "page": page, "total_pages": total_pages, **admin_flags},
+        context={"events": events, "page": page, "total_pages": total_pages, "search": search, **admin_flags},
     )
 
 
