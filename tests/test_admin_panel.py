@@ -1026,7 +1026,7 @@ async def test_user_list_defaults_to_newest_first(admin_cookie):
     body = resp.text
     assert body.index("newest@example.com") < body.index("middle@example.com") < body.index("oldest@example.com")
     # Joined header shows the descending indicator and toggles to ascending on click.
-    assert '<a href="?sort_by=created_at&sort_order=asc" class="sort-link">' in body
+    assert re.search(r'<a href="\?sort_by=created_at&sort_order=asc[^"]*" class="sort-link">', body)
     assert re.search(r'Joined\s*<span class="sort-indicator">▼</span>', body)
 
 
