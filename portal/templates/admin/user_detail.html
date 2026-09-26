@@ -38,6 +38,16 @@
           <td>{{ user_detail.created_at.strftime('%b %d, %Y, %H:%M UTC') if user_detail.created_at else '—' }}</td>
         </tr>
         <tr>
+          <td class="user-facts-label">Email Status</td>
+          <td>
+            {% if user_detail.email_verified %}
+            <span class="badge badge-valid">Verified</span>
+            {% else %}
+            <span class="badge badge-used">Pending</span>
+            {% endif %}
+          </td>
+        </tr>
+        <tr>
           <td class="user-facts-label">Global Status</td>
           <td>
             <form method="post" action="/admin/users/{{ user_detail.id }}/toggle-active" class="inline-form">
