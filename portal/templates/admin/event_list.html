@@ -3,7 +3,7 @@
 
 {% block breadcrumb %}
 <nav class="breadcrumb">
-  <a href="/admin/">Dashboard</a> <span>/</span> <span>Events</span>
+  <a href="/admin/">Dashboard</a> <span>/</span> <span class="breadcrumb-current" aria-current="page">Events</span>
 </nav>
 {% endblock %}
 
@@ -24,6 +24,7 @@
       <input type="text" name="slug" placeholder="event-slug" required pattern="^[a-z0-9]+(-[a-z0-9]+)*$" title="Lowercase letters, numbers, hyphens only" />
       <input type="text" name="display_name" placeholder="Display Name" required />
       <button type="submit" class="btn btn-primary">Create</button>
+      <button type="button" class="btn btn-outline" onclick="this.closest('details').removeAttribute('open'); return false;">Cancel</button>
     </form>
   </div>
 </details>

@@ -32,10 +32,13 @@
       <input type="text" id="display_name" name="display_name" placeholder="Your name" value="{{ display_name|default('', true) }}" required />
 
       <label for="password">Password <span class="field-hint-optional">(Optional)</span></label>
-      <input type="password" id="password" name="password" placeholder="Leave blank for passwordless sign-in" minlength="8" />
+      <input type="password" id="password" name="password" placeholder="Leave blank for passwordless sign-in" minlength="8" autocomplete="new-password" />
       <p class="field-hint">
         If you leave this blank, you'll sign in using secure email links.
       </p>
+
+      <label for="password_confirm">Confirm Password</label>
+      <input type="password" id="password_confirm" name="password_confirm" placeholder="Re-enter your password" autocomplete="new-password" />
 
       <button type="submit" class="btn btn-primary">Create Account</button>
     </form>
@@ -46,4 +49,6 @@
     </div>
   </div>
 </div>
+
+<script type="module" src="{{ url_for('static', path='js/register.js') }}?v={{ js_version }}"></script>
 {% endblock %}

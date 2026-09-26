@@ -4,9 +4,9 @@
 
 {% block breadcrumb %}
 <nav class="breadcrumb">
-  <a href="/admin/">Dashboard</a> ›
-  <a href="/admin/users/">Users</a> ›
-  <span>{{ user_detail.display_name }}</span>
+  <a href="/admin/">Dashboard</a> <span>/</span>
+  <a href="/admin/users/">Users</a> <span>/</span>
+  <span class="breadcrumb-current" aria-current="page">{{ user_detail.display_name }}</span>
 </nav>
 {% endblock %}
 

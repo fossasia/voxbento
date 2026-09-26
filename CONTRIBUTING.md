@@ -85,6 +85,7 @@ If your feature requires changes to the database schema:
 # 1. Edit your SQLAlchemy models in portal/models.py
 # 2. Generate a new migration file locally
 uv run alembic revision --autogenerate -m "describe your change"
+# Note: Please rename the generated revision ID to be sequential (e.g., 009, 010) to match our existing migrations. Do not use Alembic's default random hex IDs.
 # 3. Apply it to the running Docker container
 docker compose exec portal uv run alembic upgrade head
 ```
