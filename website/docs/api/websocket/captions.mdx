@@ -35,7 +35,7 @@ After connecting, you will receive two types of server-pushed messages. No clien
 | `type` | Description |
 | --- | --- |
 | `booth:state` | Full booth state object (identical to the one sent on `/ws/booth/{booth_id}`). Delivered once immediately on connect and again whenever booth state changes. |
-| `caption` | A caption event containing a `status` field (`partial`, `final`, or `clear`) and, for non-clear events, a `text` field with the transcribed content. |
+| `caption` | A caption event containing a `status` field (`partial`, `final`, or `clear`) and a `text` field with the transcribed content (which is an empty string for `clear` events). |
 
 ## Caption Message Format
 
@@ -66,7 +66,7 @@ A complete sentence has been detected. The `text` field contains the finished, s
 </TabItem>
   <TabItem value="clear" label="clear">
 
-Silence or end of utterance detected. No `text` field is present. Clear the caption display area. This event is also sent when the active interpreter stops streaming.
+Silence or end of utterance detected. The `text` field will be an empty string `""`. Clear the caption display area. This event is also sent when the active interpreter stops streaming.
 
 </TabItem>
 </Tabs>
