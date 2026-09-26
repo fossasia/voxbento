@@ -28,6 +28,16 @@
   </div>
 </details>
 
+<div class="search-bar">
+  <form method="get" action="/admin/events/" class="search-form">
+    <input type="text" name="search" value="{{ search or '' }}" placeholder="Search by event name or slug..." class="search-input">
+    <button type="submit" class="btn btn-primary">Search</button>
+    {% if search %}
+      <a href="/admin/events/" class="btn">Clear</a>
+    {% endif %}
+  </form>
+</div>
+
 {% if events %}
 <table class="data-table">
   <thead>
@@ -58,10 +68,15 @@
   {% include 'admin/pagination.html' %}
 {% else %}
 <div class="empty-state">
+  {% if search %}
+  <h2>No events found</h2>
+  <p>Try a different event name or slug.</p>
+  {% else %}
   <div class="empty-state-icon">🎧</div>
   <h2 class="empty-state-title">No events yet</h2>
   <p class="empty-state-text">Create your first event in a few guided steps.</p>
   <a href="/admin/setup" class="btn btn-primary btn-lg">Create your first event &rarr;</a>
+  {% endif %}
 </div>
 {% endif %}
 {% endblock %}
