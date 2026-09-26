@@ -170,12 +170,11 @@ class BoothRegistry:
         from the coordinates.  When no explicit ``channel_id`` is given it
         defaults to the MediaMTX path (``{event_slug}/{language_code}``).
 
-        ``room_id`` is an optional foreign key to an Eventyay Room.  It is
-        nullable and has no effect on booth identity — it exists to support
-        future Eventyay integration.
+        ``room_id`` is the Eventyay Room and is part of the booth ID, so it
+        is required.
 
-        Raises ``ValueError`` if the slug or language code is invalid, or if
-        a booth with the same ID already exists.
+        Raises ``ValueError`` if the slug, room ID or language code is
+        invalid, or if a booth with the same ID already exists.
         """
         slug = validate_event_slug(event_slug)
         code = validate_language_code(language_code)
