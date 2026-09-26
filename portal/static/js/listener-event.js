@@ -12,14 +12,18 @@ document
 
 const shareEventBtn = document.getElementById("share-event-btn");
 var shareResetTimer = null;
+var shareClickId = 0;
 shareEventBtn.addEventListener("click", async function () {
+  var clickId = ++shareClickId;
   // Leave out the query string so a ?code= join code is not passed on with the link.
   var url = window.location.origin + window.location.pathname;
   try {
     await navigator.clipboard.writeText(url);
+    if (clickId !== shareClickId) return;
     shareEventBtn.textContent = "Copied!";
   } catch (error) {
     console.error("Failed to copy the event link", error);
+    if (clickId !== shareClickId) return;
     shareEventBtn.textContent = "Copy failed";
   }
   clearTimeout(shareResetTimer);
