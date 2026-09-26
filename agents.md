@@ -173,7 +173,7 @@ MediaMTX RTSP (8554) → ffmpeg PCM → TranscriptionProvider → CaptionAggrega
 
 Providers: `local` (faster-whisper, CPU), `openai` (whisper-1/realtime), `deepgram` (nova-2), `nvidia` (Parakeet), `elevenlabs` (scribe_v2).
 Worker lifecycle: `start_transcription_worker` / `stop_transcription_worker` in `portal/transcription/worker.py`.
-Max concurrent workers: 10 (`MAX_TOTAL_WORKERS`).
+Max concurrent workers: 10 by default (`MAX_TRANSCRIPTION_WORKERS`).
 
 ---
 

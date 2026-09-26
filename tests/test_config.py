@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import pytest
+from pydantic import ValidationError
+
 from portal.config import Settings
 
 
@@ -33,3 +36,13 @@ def test_transcription_worker_limit_can_be_set_from_environment(monkeypatch):
     monkeypatch.setenv("MAX_TRANSCRIPTION_WORKERS", "24")
 
     assert Settings(_env_file=None).max_transcription_workers == 24
+
+
+def test_transcription_worker_limit_defaults_to_ten():
+    assert Settings(_env_file=None).max_transcription_workers == 10
+
+
+@pytest.mark.parametrize("limit", [0, -1])
+def test_transcription_worker_limit_rejects_values_below_one(limit):
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, max_transcription_workers=limit)
