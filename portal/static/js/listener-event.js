@@ -15,6 +15,7 @@ var shareResetTimer = null;
 var shareClickId = 0;
 shareEventBtn.addEventListener("click", async function () {
   var clickId = ++shareClickId;
+  clearTimeout(shareResetTimer);
   // Leave out the query string so a ?code= join code is not passed on with the link.
   var url = window.location.origin + window.location.pathname;
   try {
@@ -26,7 +27,6 @@ shareEventBtn.addEventListener("click", async function () {
     if (clickId !== shareClickId) return;
     shareEventBtn.textContent = "Copy failed";
   }
-  clearTimeout(shareResetTimer);
   shareResetTimer = setTimeout(function () {
     shareEventBtn.textContent = "Share Event";
   }, 2000);
