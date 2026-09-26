@@ -1452,6 +1452,7 @@ async def admin_users(
         context={
             "users": users,
             "page": page,
+            "limit": limit,
             "total_pages": total_pages,
             "search": search,
             "sort_by": sort_by,

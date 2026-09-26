@@ -252,14 +252,30 @@ class TestAccountPage:
 class TestAdminUserManagement:
     @pytest.mark.anyio
     async def test_user_list_shows_users(self, setup_db, admin_cookie):
-        await _create_test_user(email="user1@example.com", display_name="User One")
+        _u1 = await _create_test_user(email="user1@example.com", display_name="User One")
+        _u2 = await _create_test_user(email="user2@example.com", display_name="User Two")
+        u3 = await _create_test_user(email="user3@example.com", display_name="User Three")
+        assert u3.id == 3
+
+        # When sorted desc, first row is user3 (database ID=3, but row index=1)
         async with _client() as c:
-            resp = await c.get("/admin/users/", cookies=admin_cookie)
+            resp = await c.get("/admin/users/?sort_by=created_at&sort_order=desc&limit=1&page=1", cookies=admin_cookie)
         assert resp.status_code == 200
-        assert b"user1@example.com" in resp.content
-        assert b"User One" in resp.content
+        assert b"user3@example.com" in resp.content
+        assert b"User Three" in resp.content
+        assert b"user1@example.com" not in resp.content
         assert b"<th>#</th>" in resp.content
+        # Row number must be 1, NOT the database primary key (3)
         assert b"<td>1</td>" in resp.content
+        assert b"<td>3</td>" not in resp.content
+
+        # On page 2 with limit=1 (descending), user2 (ID=2) is displayed with row index 2
+        async with _client() as c:
+            resp2 = await c.get("/admin/users/?sort_by=created_at&sort_order=desc&limit=1&page=2", cookies=admin_cookie)
+        assert resp2.status_code == 200
+        assert b"user2@example.com" in resp2.content
+        assert b"<td>2</td>" in resp2.content
+        assert b"limit=1" in resp2.content
 
     @pytest.mark.anyio
     async def test_user_list_requires_admin(self, setup_db):

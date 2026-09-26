@@ -17,7 +17,7 @@
 {% macro sortable_header(column, label) %}
   {% set new_sort_order = 'desc' if sort_by == column and sort_order == 'asc' else 'asc' %}
   <th>
-    <a href="?sort_by={{ column }}&sort_order={{ new_sort_order }}{% if search %}&search={{ search }}{% endif %}" class="sort-link">
+    <a href="?sort_by={{ column }}&sort_order={{ new_sort_order }}{% if search %}&search={{ search }}{% endif %}{% if limit %}&limit={{ limit }}{% endif %}" class="sort-link">
       {{ label }}
       {% if sort_by == column %}
         <span class="sort-indicator">{% if sort_order == 'asc' %}▲{% else %}▼{% endif %}</span>
@@ -32,6 +32,7 @@
   <form method="get" action="/admin/users/" class="search-form">
     {% if sort_by %}<input type="hidden" name="sort_by" value="{{ sort_by }}">{% endif %}
     {% if sort_order %}<input type="hidden" name="sort_order" value="{{ sort_order }}">{% endif %}
+    {% if limit %}<input type="hidden" name="limit" value="{{ limit }}">{% endif %}
     <input type="text" name="search" value="{{ search or '' }}" placeholder="Search by email or name..." class="search-input">
     <button type="submit" class="btn btn-primary">Search</button>
     {% if search %}
@@ -57,7 +58,7 @@
   <tbody>
     {% for user in users %}
     <tr>
-      <td>{{ (page - 1) * 50 + loop.index if page and page > 1 else loop.index }}</td>
+      <td>{{ (page - 1) * (limit or 50) + loop.index if page and page > 1 else loop.index }}</td>
       <td><a href="/admin/users/{{ user.id }}/">{{ user.email }}</a></td>
       <td><a href="/admin/users/{{ user.id }}/">{{ user.display_name }}</a></td>
       <td>
