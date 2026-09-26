@@ -72,6 +72,11 @@ class Settings(BaseSettings):
     # Database — SQLite for dev, PostgreSQL for prod
     database_url: str = "sqlite+aiosqlite:///./interpretation.db"
 
+    # Maximum number of concurrent transcription workers (booths) the portal
+    # will run. Each worker consumes CPU and, for hosted providers, paid API
+    # quota, so the cap is configurable per deployment rather than hardcoded.
+    max_transcription_workers: int = 10
+
     # Admin panel — simple password guard (Phase 3 Step 7 will add proper auth)
     admin_password: str = ""
 
