@@ -15,6 +15,7 @@ from httpx import ASGITransport, AsyncClient
 
 from fastapi_app import app
 from portal.auth import create_user_token
+from portal.config import settings
 from portal.crypto import encrypt_val
 from portal.database import configure, dispose, get_session, init_db
 from portal.models import DBBooth, Event, Room
@@ -185,11 +186,12 @@ async def seed_data():
 
 
 @pytest.mark.anyio
-async def test_high_concurrency_isolation_and_capacity_limits():
+async def test_high_concurrency_isolation_and_capacity_limits(monkeypatch):
     """
     Spawns 16 concurrent POST requests to start transcription booths across 3 events.
     """
     booths = await seed_data()
+    monkeypatch.setattr(settings, "max_transcription_workers", 10)
 
     # Ensure fresh state
     for p in mock_providers.values():
