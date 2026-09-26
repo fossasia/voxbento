@@ -10,6 +10,7 @@ services:
     environment:
       HOST: "0.0.0.0"
       PORT: "8000"
+      RAY_SERVE_BASE: "http://ray-head:8001"
       SECRET_KEY: "${SECRET_KEY:-change-me}"
       API_KEY_ENCRYPTION_KEY: "${API_KEY_ENCRYPTION_KEY}"
       SMTP_HOST: "${SMTP_HOST}"
@@ -58,6 +59,22 @@ services:
       timeout: 5s
       retries: 3
       start_period: 10s
+
+  # ── Ray Serve ML Models ───────────────────────────────────────
+  ray-head:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    # Internal only: portal reaches Serve at http://ray-head:8001.
+    # For local dashboard access, bind to loopback only.
+    ports:
+      - "127.0.0.1:8265:8265"  # Ray Dashboard
+    volumes:
+      - .:/app
+      - /app/.venv
+      - supertonic-cache:/root/.cache
+    restart: unless-stopped
+    command: ["sh", "-c", "uv run ray start --head --port=6379 --dashboard-host=0.0.0.0 && uv run serve run serve_config.yaml"]
 
   # ── Floor Bot Service ─────────────────────────────────────────
   floor-bot:

@@ -1,0 +1,32 @@
+proxy_location: EveryNode
+
+http_options:
+  host: 0.0.0.0
+  port: 8001
+
+applications:
+  - name: translator
+    route_prefix: /translator
+    import_path: portal.ray_serve.translator:translator_app
+    deployments:
+      - name: NLLBTranslator
+        autoscaling_config:
+          min_replicas: 0
+          initial_replicas: 0
+          max_replicas: 2
+        ray_actor_options:
+          num_cpus: 2
+          num_gpus: 0
+
+  - name: transcriber
+    route_prefix: /transcriber
+    import_path: portal.ray_serve.transcriber:transcriber_app
+    deployments:
+      - name: FasterWhisperTranscriber
+        autoscaling_config:
+          min_replicas: 0
+          initial_replicas: 0
+          max_replicas: 2
+        ray_actor_options:
+          num_cpus: 2
+          num_gpus: 0

@@ -104,7 +104,8 @@ class TranscriptionWorkerSession:
 
                 self.state = State.RUNNING
                 await _wh_worker.enqueue_webhook(
-                    "booth.transcription.started", {"booth_id": self.booth_id, "session_id": self.session_id, "event_slug": self.event_slug}
+                    "booth.transcription.started",
+                    {"booth_id": self.booth_id, "session_id": self.session_id, "event_slug": self.event_slug},
                 )
 
                 # The context manager entirely encapsulates ffmpeg process lifecycle and cleanup.
@@ -169,12 +170,10 @@ class TranscriptionWorkerSession:
         finally:
             self.state = State.STOPPED
             await _wh_worker.enqueue_webhook(
-                "booth.transcription.stopped", {"booth_id": self.booth_id, "session_id": self.session_id, "event_slug": self.event_slug}
+                "booth.transcription.stopped",
+                {"booth_id": self.booth_id, "session_id": self.session_id, "event_slug": self.event_slug},
             )
-            if self.provider_name == "local":
-                from portal.transcription.providers.local import decrement_model_ref
-
-                decrement_model_ref(self.model_size)
+            # Ray Serve automatically manages model eviction and autoscaling
             logger.info(f"[{self.booth_id}][{self.session_id}] Transcription worker exited and cleaned up cleanly.")
 
 
@@ -201,11 +200,7 @@ async def start_transcription_worker(
                         f"System at maximum capacity ({MAX_TOTAL_WORKERS} concurrent transcription booths)."
                     )
 
-                if provider == "local":
-                    from portal.transcription.providers.local import increment_model_ref, start_eviction_loop
-
-                    increment_model_ref(model_size)
-                    start_eviction_loop()
+                # Ray Serve automatically manages models, no manual eviction needed
 
                 new_session = TranscriptionWorkerSession(
                     event_slug,

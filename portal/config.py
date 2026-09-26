@@ -35,6 +35,8 @@ class Settings(BaseSettings):
     # mediamtx_api_base. docker-compose sets this to http://mediamtx:8888.
     mediamtx_internal_base: str = ""
     floor_bot_base: str = "http://floor-bot:8080"
+    # Ray Serve port since by default it uses 8000 port which is used by FastAPI
+    ray_serve_base: str = "http://localhost:8001"
 
     @property
     def effective_mediamtx_internal_base(self) -> str:
