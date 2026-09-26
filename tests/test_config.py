@@ -38,7 +38,9 @@ def test_transcription_worker_limit_can_be_set_from_environment(monkeypatch):
     assert Settings(_env_file=None).max_transcription_workers == 24
 
 
-def test_transcription_worker_limit_defaults_to_ten():
+def test_transcription_worker_limit_defaults_to_ten(monkeypatch):
+    monkeypatch.delenv("MAX_TRANSCRIPTION_WORKERS", raising=False)
+
     assert Settings(_env_file=None).max_transcription_workers == 10
 
 

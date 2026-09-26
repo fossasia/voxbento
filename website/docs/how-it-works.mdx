@@ -85,6 +85,13 @@ To transcribe or translate the original speakers without requiring external inte
 Transcription, Translation, and TTS workers are isolated from the main audio path. If an API provider lags, fails, or drops chunks, the core interpretation audio remains perfectly stable and unaffected.
 :::
 
+### Transcription worker capacity
+
+Voxbento runs up to 10 transcription workers at once by default. Deployments that
+need a different limit can set `MAX_TRANSCRIPTION_WORKERS` to any positive integer
+in their environment. Requests above the configured limit receive HTTP 429 until a
+worker slot becomes available.
+
 ## Booth Identity
 
 Every booth in Voxbento is uniquely identified by two coordinates:
