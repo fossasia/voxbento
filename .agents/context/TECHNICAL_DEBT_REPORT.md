@@ -43,11 +43,9 @@
 
 ---
 
-### TD-06: Transcription worker MAX_TOTAL_WORKERS is hardcoded
-**File:** `portal/transcription/worker.py` — `MAX_TOTAL_WORKERS = 10`
-**Problem:** Not configurable via settings. Large events with many language channels may hit the limit.
-**Impact:** Low for typical deployments (≤10 booths).
-**Fix:** Add `max_transcription_workers: int` to `Settings` in `portal/config.py`.
+### TD-06: Transcription worker limit was hardcoded (resolved)
+**Files:** `portal/config.py`, `portal/transcription/worker.py`
+**Resolution:** `MAX_TRANSCRIPTION_WORKERS` configures the limit through validated settings. It defaults to 10 and rejects values below 1.
 
 ---
 
