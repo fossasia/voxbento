@@ -10,6 +10,22 @@ document
     }
   });
 
+const shareEventBtn = document.getElementById("share-event-btn");
+shareEventBtn.addEventListener("click", async function () {
+  // Leave out the query string so a ?code= join code is not passed on with the link.
+  var url = window.location.origin + window.location.pathname;
+  try {
+    await navigator.clipboard.writeText(url);
+    shareEventBtn.textContent = "Copied!";
+  } catch (error) {
+    console.error("Failed to copy the event link", error);
+    shareEventBtn.textContent = "Copy failed";
+  }
+  setTimeout(function () {
+    shareEventBtn.textContent = "Share Event";
+  }, 2000);
+});
+
 const eventDataEl = document.getElementById("listener-data");
 const eventData = JSON.parse(eventDataEl.textContent);
 var eventSlug = eventData.eventSlug;
