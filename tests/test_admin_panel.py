@@ -331,6 +331,20 @@ class TestEventCRUD:
 # ---------------------------------------------------------------------------
 
 
+class TestBreadcrumbs:
+    @pytest.mark.anyio
+    @pytest.mark.parametrize("path", ["/admin/events/", "/admin/users/"])
+    async def test_breadcrumb_marks_current_page_and_uses_slash_separator(self, admin_cookie, path):
+        async with _client() as c:
+            resp = await c.get(path, cookies=admin_cookie)
+        assert resp.status_code == 200
+        start = resp.text.index('<nav class="breadcrumb">')
+        nav = resp.text[start : resp.text.index("</nav>", start)]
+        assert 'class="breadcrumb-current" aria-current="page"' in nav
+        assert "›" not in nav
+        assert "<span>/</span>" in nav
+
+
 class TestRoomCRUD:
     @pytest.mark.anyio
     async def test_room_list(self, admin_cookie, seed_event):

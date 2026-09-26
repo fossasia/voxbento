@@ -7,7 +7,7 @@
   <a href="/admin/events/">Events</a> <span>/</span>
   <a href="/admin/events/{{ event.id }}/">{{ event.display_name }}</a> <span>/</span>
   <a href="/admin/events/{{ event.id }}/rooms/">Rooms</a> <span>/</span>
-  <span>{{ room.display_name }}</span>
+  <span class="breadcrumb-current" aria-current="page">{{ room.display_name }}</span>
 </nav>
 {% endblock %}
 

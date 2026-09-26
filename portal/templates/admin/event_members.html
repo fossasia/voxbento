@@ -4,10 +4,10 @@
 
 {% block breadcrumb %}
 <nav class="breadcrumb">
-  <a href="/admin/">Dashboard</a> ›
-  <a href="/admin/events/">Events</a> ›
-  <a href="/admin/events/{{ event.id }}/">{{ event.display_name }}</a> ›
-  <span>Members</span>
+  <a href="/admin/">Dashboard</a> <span>/</span>
+  <a href="/admin/events/">Events</a> <span>/</span>
+  <a href="/admin/events/{{ event.id }}/">{{ event.display_name }}</a> <span>/</span>
+  <span class="breadcrumb-current" aria-current="page">Members</span>
 </nav>
 {% endblock %}
 
