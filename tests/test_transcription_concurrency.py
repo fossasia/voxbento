@@ -191,7 +191,7 @@ async def test_high_concurrency_isolation_and_capacity_limits(monkeypatch):
     Spawns 16 concurrent POST requests to start transcription booths across 3 events.
     """
     booths = await seed_data()
-    monkeypatch.setattr(settings, "max_transcription_workers", 10)
+    monkeypatch.setattr(settings, "max_transcription_workers", 3)
 
     # Ensure fresh state
     for p in mock_providers.values():
@@ -217,15 +217,15 @@ async def test_high_concurrency_isolation_and_capacity_limits(monkeypatch):
     status_codes = [r.status_code for r in responses]
 
     # 16 total booths were fired (6 OpenAI, 6 NVIDIA, 4 Local).
-    # The default worker limit is 10, so exactly 6 requests must hit 429 Too Many Requests.
-    assert status_codes.count(429) == 6, "Exactly 6 booths should be rate-limited."
-    assert status_codes.count(200) == 10, "Exactly 10 booths should succeed."
+    # The configured worker limit is 3, so exactly 13 requests must hit 429 Too Many Requests.
+    assert status_codes.count(429) == 13, "Exactly 13 booths should be rate-limited."
+    assert status_codes.count(200) == 3, "Exactly 3 booths should succeed."
 
     # Give the background tasks a tiny fraction of a second to spin up and populate the provider logs
     await asyncio.sleep(0.1)
 
     # 1. Verify Global Locking limits worked
-    assert len(active_workers) == 10
+    assert len(active_workers) == 3
 
     # 2. Verify API Key Cross-Contamination did not occur
     openai_provider = mock_providers["openai"]
