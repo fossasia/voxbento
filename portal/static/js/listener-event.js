@@ -11,6 +11,7 @@ document
   });
 
 const shareEventBtn = document.getElementById("share-event-btn");
+var shareResetTimer = null;
 shareEventBtn.addEventListener("click", async function () {
   // Leave out the query string so a ?code= join code is not passed on with the link.
   var url = window.location.origin + window.location.pathname;
@@ -21,7 +22,8 @@ shareEventBtn.addEventListener("click", async function () {
     console.error("Failed to copy the event link", error);
     shareEventBtn.textContent = "Copy failed";
   }
-  setTimeout(function () {
+  clearTimeout(shareResetTimer);
+  shareResetTimer = setTimeout(function () {
     shareEventBtn.textContent = "Share Event";
   }, 2000);
 });
