@@ -204,6 +204,83 @@ body:has(.login-page) .portal-footer {
   margin-bottom: 10px;
 }
 .security-form .alert-error { margin-top: 10px; }
+
+/* ── Account page ───────────────────────────────────────────────────────────
+   Classes for the styles that used to live in account.html's style
+   attributes. Declared after .security-form above so the account variants
+   win, exactly as the inline styles did. */
+
+.account-brand { display: flex; align-items: center; gap: 10px; text-decoration: none; }
+.account-brand-icon { width: 28px; height: 28px; border: 2px solid #0d0f10; border-radius: 4px; }
+.account-brand-name {
+  font-size: 1.35rem; font-weight: 900; letter-spacing: -0.025em; color: #0d0f10;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+}
+
+.admin-main.account-main { max-width: 800px; padding: 40px 24px; }
+.account-page-header { margin-bottom: 3rem; border-bottom: 1px solid var(--color-border); padding-bottom: 2rem; }
+.account-page-title { font-size: 2.25rem; font-weight: 800; letter-spacing: -0.025em; color: var(--color-text); margin-bottom: 0.5rem; }
+.account-page-subtitle { font-size: 1.1rem; color: var(--color-text-secondary); }
+
+.account-panel {
+  background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 12px;
+  overflow: hidden; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);
+}
+.account-panel--spaced { margin-bottom: 3rem; }
+.account-section { margin-bottom: 3rem; }
+.account-section-head { margin-bottom: 1.5rem; }
+.account-section-title { font-size: 1.5rem; font-weight: 700; color: var(--color-text); }
+.account-section-text { color: var(--color-text-secondary); font-size: 0.95rem; margin-top: 0.25rem; }
+
+.account-table { border: none; margin: 0; }
+.account-table .account-row { border-bottom: 1px solid var(--color-border); }
+.account-table tbody th {
+  padding: 20px 24px; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em;
+  color: #64748b; background: #f8fafc; border: none; border-right: 1px solid var(--color-border);
+}
+.account-table td { padding: 20px 24px; border: none; color: var(--color-text); }
+.account-table .account-th--first { width: 35%; }
+.account-table .account-td--strong { font-weight: 500; }
+.account-table .account-td--date { font-variant-numeric: tabular-nums; color: var(--color-text-secondary); }
+
+.account-pill { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 9999px; font-size: 0.75rem; font-weight: 600; }
+.account-pill--active { background: #ecfdf5; color: #059669; border: 1px solid #a7f3d0; }
+.account-pill--inactive { background: #f1f5f9; color: #64748b; border: 1px solid #cbd5e1; }
+.account-dot { display: block; width: 6px; height: 6px; border-radius: 50%; }
+.account-dot--active { background: #059669; }
+.account-dot--inactive { background: #94a3b8; }
+.account-badge { padding: 4px 10px; border-radius: 9999px; font-size: 0.75rem; font-weight: 600; }
+.account-badge--admin { background: #fef2f2; color: #dc2626; border: 1px solid #fecaca; }
+.account-admin-note { margin: 0.5rem 0 0 0; font-size: 0.85rem; color: var(--color-text-secondary); }
+
+.account-roles-head { background: #f8fafc; }
+.account-roles thead th {
+  padding: 16px 24px; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em;
+  color: #64748b; border-bottom: 1px solid var(--color-border);
+}
+.account-roles td { padding: 16px 24px; border: none; }
+.account-roles .account-td--scope { color: var(--color-text-secondary); text-transform: capitalize; font-size: 0.95rem; }
+.account-roles .account-td--context { font-weight: 500; }
+.account-roles .account-td--since { font-variant-numeric: tabular-nums; color: var(--color-text-secondary); font-size: 0.95rem; }
+.account-link { color: #3b82f6; text-decoration: none; transition: color 0.2s; }
+.account-link:hover { color: #2563eb; }
+
+.account-empty { text-align: center; padding: 3rem 2rem; background: var(--color-surface); border: 1px dashed var(--color-border-strong); border-radius: 12px; }
+.account-empty p { color: var(--color-text-secondary); font-size: 0.95rem; margin: 0; }
+
+.security-card { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 12px; padding: 32px; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05); }
+.security-row { display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 1rem; }
+.security-title { font-size: 1.1rem; font-weight: 600; margin-bottom: 0.5rem; color: var(--color-text); }
+.security-text { color: var(--color-text-secondary); font-size: 0.95rem; margin: 0; max-width: 400px; }
+.security-toggle { padding: 8px 16px; border-radius: 8px; font-weight: 600; transition: all 0.2s; }
+.security-toggle--danger { color: #dc2626; border-color: #fca5a5; }
+.security-toggle--danger:hover { background: #fef2f2; color: #dc2626; border-color: #fca5a5; }
+.security-form--account { margin-top: 1.5rem; padding-top: 1.5rem; border-top: 1px solid var(--color-border); }
+.security-form .security-lead { font-weight: 500; margin-bottom: 1rem; color: var(--color-text); }
+.security-fields { display: flex; gap: 1rem; flex-wrap: wrap; }
+.security-form .security-input { flex: 1; min-width: 200px; padding: 10px 14px; border-radius: 8px; border: 1px solid var(--color-border); }
+.security-submit { padding: 10px 20px; border-radius: 8px; font-weight: 600; }
+.security-form .security-error { margin-top: 1rem; border-radius: 8px; }
 .login-divider {
   text-align: center;
   margin: 20px 0;
