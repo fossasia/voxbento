@@ -143,6 +143,22 @@ class TestRegistration:
         assert b"Check your email" in resp.content
 
     @pytest.mark.anyio
+    async def test_register_passwordless_ignores_leftover_confirm(self, setup_db):
+        async with _client() as c:
+            resp = await c.post(
+                "/register",
+                data={
+                    "email": "leftover@example.com",
+                    "display_name": "Leftover",
+                    "password": "",
+                    "password_confirm": "stale-value",
+                },
+                follow_redirects=False,
+            )
+        assert resp.status_code == 200
+        assert b"Check your email" in resp.content
+
+    @pytest.mark.anyio
     async def test_register_creates_active_non_admin(self, setup_db):
         from portal.database import get_session, get_user_by_email
 

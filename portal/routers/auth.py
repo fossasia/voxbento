@@ -125,7 +125,7 @@ async def register_submit(request: Request):
         errors.append("Display name is required.")
     if password_raw and not password:
         errors.append("Password cannot be blank or only whitespace.")
-    elif password_raw != password_confirm:
+    elif password_raw and password_raw != password_confirm:
         errors.append("Passwords do not match.")
 
     if not errors:
