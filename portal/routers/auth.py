@@ -33,7 +33,7 @@ from portal.database import (
 )
 from portal.email import send_magic_login_email, send_password_reset_email, send_verification_email
 from portal.email_sender import send_delayed_onboarding_email
-from portal.rate_limit import check_rate_limit
+from portal.rate_limit import check_rate_limit, request_client_ip
 from portal.schemas.auth import TokenRequest, TokenResponse
 from portal.utils import safe_redirect
 
@@ -110,6 +110,16 @@ async def register_page(request: Request):
 
 @router.post("/register")
 async def register_submit(request: Request):
+    client_ip = request_client_ip(request)
+    if not check_rate_limit("register_ip", client_ip, max_requests=5, window_seconds=3600):
+        return templates.TemplateResponse(
+            request=request,
+            name="register.html",
+            context={"errors": ["Too many registration attempts. Try again later."]},
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            headers={"Retry-After": "3600"},
+        )
+
     form = await request.form()
     email = form.get("email", "").strip().lower()
     display_name = form.get("display_name", "").strip()
@@ -205,12 +215,16 @@ async def user_login_submit(request: Request):
     password = form.get("password", "")
     next_url = form.get("next_url", "")
 
-    if not check_rate_limit("login", email, max_requests=10, window_seconds=3600):
+    client_ip = request_client_ip(request)
+    ip_allowed = check_rate_limit("login_ip", client_ip, max_requests=20, window_seconds=300)
+    account_allowed = check_rate_limit("login_account", email, max_requests=10, window_seconds=3600)
+    if not ip_allowed or not account_allowed:
         return templates.TemplateResponse(
             request=request,
             name="login.html",
             context={"error": "Too many attempts. Try again later.", "email": email, "next_url": next_url},
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            headers={"Retry-After": "300" if not ip_allowed else "3600"},
         )
 
     async with get_session() as session:

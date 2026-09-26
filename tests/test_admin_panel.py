@@ -147,6 +147,25 @@ class TestAdminLogin:
         assert resp.status_code == 303
         assert resp.headers["location"] == "/admin/login"
 
+    @pytest.mark.anyio
+    async def test_login_is_rate_limited_by_client_ip(self):
+        from httpx import ASGITransport, AsyncClient
+
+        from fastapi_app import app
+        from portal.rate_limit import _rates
+
+        _rates.clear()
+        transport = ASGITransport(app=app, client=("203.0.113.30", 123))
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            for _ in range(10):
+                response = await c.post("/admin/login", data={"password": "wrong"})
+                assert response.status_code == 403
+            response = await c.post("/admin/login", data={"password": "wrong"})
+
+        assert response.status_code == 429
+        assert response.headers["retry-after"] == "900"
+        _rates.clear()
+
 
 # ---------------------------------------------------------------------------
 # Guard tests
