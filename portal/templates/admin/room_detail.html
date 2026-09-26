@@ -115,6 +115,7 @@
       <div class="form-group" style="flex: 1;">
         <label for="floor_transcription_provider">Provider</label>
         <select id="floor_transcription_provider" name="floor_transcription_provider" class="input">
+          <option value="none" {% if room.floor_transcription_provider == 'none' %}selected{% endif %}>-- None --</option>
           <option value="local" {% if room.floor_transcription_provider == 'local' %}selected{% endif %}>Local (Faster-Whisper)</option>
           <option value="openai" {% if room.floor_transcription_provider == 'openai' %}selected{% endif %}>OpenAI</option>
           <option value="deepgram" {% if room.floor_transcription_provider == 'deepgram' %}selected{% endif %}>Deepgram</option>
@@ -125,6 +126,7 @@
       <div class="form-group" style="flex: 1;">
         <label for="floor_transcription_model">Model</label>
         <select id="floor_transcription_model" name="floor_transcription_model" class="input">
+          <option value="none" data-provider="none" {% if room.floor_transcription_model == 'none' %}selected{% endif %}>-- None --</option>
           <option value="tiny" data-provider="local" {% if room.floor_transcription_model == 'tiny' %}selected{% endif %}>Local: tiny (Fastest)</option>
           <option value="base" data-provider="local" {% if room.floor_transcription_model == 'base' %}selected{% endif %}>Local: base</option>
           <option value="gpt-realtime-whisper" data-provider="openai" {% if room.floor_transcription_model == 'gpt-realtime-whisper' %}selected{% endif %}>OpenAI: gpt-realtime-whisper</option>
@@ -173,6 +175,7 @@
       <div class="form-group" style="flex: 1;">
         <label for="floor_translation_provider">Translation Provider</label>
         <select id="floor_translation_provider" name="floor_translation_provider" class="input">
+          <option value="none" {% if room.floor_translation_provider == 'none' or not room.floor_translation_provider %}selected{% endif %}>-- None --</option>
           <option value="">Select a Provider...</option>
           <option value="openai" {% if room.floor_translation_provider == 'openai' %}selected{% endif %}>OpenAI</option>
           <option value="openrouter" {% if room.floor_translation_provider == 'openrouter' %}selected{% endif %}>OpenRouter</option>
@@ -185,6 +188,7 @@
       <div class="form-group" style="flex: 1;">
         <label for="floor_translation_model">Translation Model</label>
         <select id="floor_translation_model" name="floor_translation_model" class="input">
+          <option value="none" data-provider="none" {% if room.floor_translation_model == 'none' or not room.floor_translation_model %}selected{% endif %}>-- None --</option>
           <option value="">Select a Provider first...</option>
         </select>
       </div>
@@ -314,7 +318,11 @@
 
     async function loadTranslationModels() {
       const provider = transProviderSelect.value;
-      transModelSelect.innerHTML = '<option value="">Select a Model...</option>';
+      if (provider === 'none') {
+        transModelSelect.innerHTML = '<option value="none" data-provider="none">-- None --</option>';
+      } else {
+        transModelSelect.innerHTML = '<option value="">Select a Model...</option>';
+      }
       if (!provider) return;
 
       try {

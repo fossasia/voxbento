@@ -291,6 +291,44 @@ async def test_room_sync_without_ai_languages_keeps_old_behaviour(ai_room):
     assert not any(lang.tts_enabled for lang in langs.values())
 
 
+async def test_room_sync_partial_updates_keep_the_list_they_omit(ai_room):
+    """Room sync is a partial update: a language list left out of the payload is kept."""
+    from portal.database import get_session
+    from portal.routers.api_v1 import RoomUpsert, upsert_room
+
+    async def _partial(**fields):
+        with patch("portal.routers.api_v1._verify_token_rbac", new=AsyncMock()):
+            async with get_session() as db:
+                return await upsert_room(
+                    "aicon", "eventyay-7", RoomUpsert(**fields), db=db, token=SimpleNamespace(id=None, client_id=None)
+                )
+
+    async def _booth_codes(room_id):
+        async with get_session() as s:
+            return set(await s.scalars(select(DBBooth.language_code).where(DBBooth.room_id == room_id)))
+
+    room_id = (await _upsert(["es"], ["de", "fr"]))["room_id"]
+
+    # Omitting ai_languages keeps the AI languages while the human booths change.
+    result = await _partial(target_languages=["es", "it"])
+    assert [b["language"] for b in result["ai_booths"]] == ["de", "fr"]
+    assert await _booth_codes(room_id) == {"es", "it"}
+
+    # Sending only ai_languages leaves the human booths alone; a dropped AI
+    # language keeps its translation row but loses its TTS flag.
+    result = await _partial(ai_languages=["de"])
+    assert [b["language"] for b in result["ai_booths"]] == ["de"]
+    assert await _booth_codes(room_id) == {"es", "it"}
+    langs = await _room_languages(room_id)
+    assert langs["de"].tts_enabled
+    assert not langs["fr"].tts_enabled
+
+    # A payload with neither list touches no languages at all.
+    result = await _partial(name="Main Stage")
+    assert [b["language"] for b in result["ai_booths"]] == ["de"]
+    assert await _booth_codes(room_id) == {"es", "it"}
+
+
 async def test_room_sync_repairs_code_only_language_names(ai_room):
     """Earlier syncs stored "de" as the name, which made the AI booth label "de (AI)"."""
     from portal.database import get_session

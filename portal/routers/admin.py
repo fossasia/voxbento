@@ -243,8 +243,9 @@ async def admin_login_page(request: Request):
 @router.post("/admin/login")
 async def admin_login_submit(request: Request):
     form = await request.form()
-    password = form.get("password", "")
-    if not settings.admin_password or password != settings.admin_password:
+    password = form.get("password", "").strip()
+    admin_password = (settings.admin_password or "").strip()
+    if not admin_password or password != admin_password:
         return templates.TemplateResponse(
             request=request,
             name="admin/login.html",
@@ -956,6 +957,8 @@ async def api_start_floor_transcription(room_id: int):
         room = await get_room_by_id(session, room_id)
         if not room or not room.floor_transcription_enabled:
             raise HTTPException(status_code=400, detail="Floor transcription not enabled or invalid room")
+        if room.floor_transcription_provider == "none":
+            raise HTTPException(status_code=400, detail="Cannot start transcription with 'none' provider")
         event = await get_event_by_id(session, room.event_id)
         if not event:
             raise HTTPException(status_code=400, detail="Event not found")
@@ -1491,7 +1494,9 @@ async def admin_users(
         name="admin/user_list.html",
         context={
             "users": users,
+            "total_users": total_users,
             "page": page,
+            "limit": limit,
             "total_pages": total_pages,
             "search": search,
             "sort_by": sort_by,

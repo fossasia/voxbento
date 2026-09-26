@@ -12,7 +12,7 @@
 | GET | `/` | open | `home.html` | Lists events + booth statuses; personalised if logged in |
 | GET | `/healthz` | open | — | JSON: `{ok, server, mediamtx_ok}` |
 | GET | `/register` | open | `register.html` | Redirects to `/account` if already logged in |
-| POST | `/register` | open | `register.html` | Creates user, sets `user_token` cookie → `/account` |
+| POST | `/register` | open | `register.html` | Creates user, sets `user_token` cookie → `/account`; if `password` is set, `password_confirm` must match (422 otherwise) |
 | GET | `/login` | open | `login.html` | Redirects to `/account` or `?next=` if logged in |
 | POST | `/login` | open | `login.html` | Verifies bcrypt, sets `user_token` cookie |
 | GET | `/logout` | open | — | Deletes `user_token` cookie → `/` |

@@ -876,11 +876,26 @@ code { font-family: var(--font-mono); font-size: 0.85em; background: var(--color
 .step.is-active .step-label { color: var(--color-primary-active); }
 .step.is-done .step-bubble { background: var(--color-success); border-color: var(--color-success); color: #fff; }
 .step.is-done .step-label { color: var(--color-text); }
+.stepper a.step-bubble, .stepper a.step-bubble:hover { text-decoration: none; }
 
 .wizard-card { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-lg); box-shadow: var(--shadow-md); padding: 32px; }
 .wizard-card h2 { font-size: 1.35rem; font-weight: 800; letter-spacing: -0.02em; }
 .wizard-card .wizard-sub { color: var(--color-text-secondary); margin: 6px 0 24px; }
 .wizard-actions { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-top: 28px; flex-wrap: wrap; }
+.wizard-card .create-panel { box-shadow: none; }
+.wizard-card .field--flush { margin-bottom: 0; }
+.wizard-card .field-row--end { align-items: end; }
+.wizard-card .btn-field { min-height: 42px; }
+.wizard-card .wizard-grow { flex: 1; }
+.wizard-card .btn.is-disabled { opacity: 0.5; pointer-events: none; }
+.wizard-card .wizard-empty-hint { margin-top: 14px; }
+.wizard-card .wizard-section-title { font-size: 1rem; margin-bottom: 10px; }
+.wizard-card .wizard-section-title--spaced { margin: 26px 0 6px; }
+.wizard-card .wizard-section-hint { margin-bottom: 12px; }
+.wizard-card .wizard-share-row { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; }
+.wizard-card .wizard-share-field { flex: 1; min-width: 260px; }
+.wizard-card .wizard-room-group { margin-top: 18px; }
+.wizard-card .wizard-room-label { font-weight: 600; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 6px; }
 
 /* ── Mini list (added items in wizard) ───────────────────────────────────── */
 .mini-list { list-style: none; display: flex; flex-direction: column; gap: 8px; margin: 8px 0 0; padding: 0; }

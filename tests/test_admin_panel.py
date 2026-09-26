@@ -116,6 +116,31 @@ class TestAdminLogin:
         assert b"Invalid password" in resp.content
 
     @pytest.mark.anyio
+    async def test_login_strips_surrounding_whitespace(self):
+        async with _client() as c:
+            resp = await c.post(
+                "/admin/login",
+                data={"password": " test-admin-pass\n"},
+                follow_redirects=False,
+            )
+        assert resp.status_code == 303
+        assert resp.headers["location"] == "/admin/"
+
+    @pytest.mark.anyio
+    async def test_login_rejects_empty_password_when_admin_password_is_whitespace_only(self):
+        settings.admin_password = "   "
+        try:
+            async with _client() as c:
+                resp = await c.post(
+                    "/admin/login",
+                    data={"password": ""},
+                    follow_redirects=False,
+                )
+            assert resp.status_code == 403
+        finally:
+            settings.admin_password = "test-admin-pass"
+
+    @pytest.mark.anyio
     async def test_logout_clears_cookie(self):
         async with _client() as c:
             resp = await c.get("/admin/logout", follow_redirects=False)
@@ -973,6 +998,58 @@ async def test_admin_list_pages_have_no_inline_styles(path, admin_cookie, seed_e
 
     async with _client() as c:
         resp = await c.get(path.format(event=event.id, room=room.id), cookies=admin_cookie)
+
+    assert resp.status_code == 200
+    assert not re.search(rb"\sstyle\s*=", resp.content, re.IGNORECASE)
+
+
+@pytest.mark.anyio
+async def test_user_list_badge_shows_total_across_pages(admin_cookie):
+    from portal.database import create_user, get_session
+
+    async with get_session() as s:
+        for i in range(3):
+            await create_user(s, email=f"user{i}@example.com", display_name=f"User {i}")
+
+    async with _client() as c:
+        resp = await c.get("/admin/users/?limit=2", cookies=admin_cookie)
+
+    assert resp.status_code == 200
+    assert '<span class="badge">Total: 3 users</span>' in resp.text
+    assert "displayed" not in resp.text
+
+
+@pytest.mark.anyio
+async def test_user_list_badge_uses_singular_for_one_user(admin_cookie):
+    from portal.database import create_user, get_session
+
+    async with get_session() as s:
+        await create_user(s, email="solo@example.com", display_name="Solo")
+
+    async with _client() as c:
+        resp = await c.get("/admin/users/", cookies=admin_cookie)
+
+    assert resp.status_code == 200
+    assert '<span class="badge">Total: 1 user</span>' in resp.text
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/admin/setup",
+        "/admin/events/{event}/setup/rooms",
+        "/admin/events/{event}/setup/booths",
+        "/admin/events/{event}/setup/invite",
+    ],
+)
+async def test_setup_wizard_pages_have_no_inline_styles(path, admin_cookie, seed_event):
+    import re
+
+    event, _, _ = seed_event
+
+    async with _client() as c:
+        resp = await c.get(path.format(event=event.id), cookies=admin_cookie)
 
     assert resp.status_code == 200
     assert not re.search(rb"\sstyle\s*=", resp.content, re.IGNORECASE)
