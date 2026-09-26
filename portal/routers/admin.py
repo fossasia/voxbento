@@ -85,6 +85,7 @@ from portal.models import (
     User,
     utc_now,
 )
+from portal.rate_limit import check_rate_limit, request_client_ip
 from portal.transcription import ALLOWED_MODELS, ProviderConfig, ProviderEnum, get_api_key
 from portal.transcription.worker import start_transcription_worker, stop_transcription_worker
 from portal.translations.constants import TRANSLATION_MODELS, TranslationProviderEnum
@@ -239,6 +240,16 @@ async def admin_login_page(request: Request):
 
 @router.post("/admin/login")
 async def admin_login_submit(request: Request):
+    client_ip = request_client_ip(request)
+    if not check_rate_limit("admin_login_ip", client_ip, max_requests=10, window_seconds=900):
+        return templates.TemplateResponse(
+            request=request,
+            name="admin/login.html",
+            context={"error": "Too many attempts. Try again later."},
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            headers={"Retry-After": "900"},
+        )
+
     form = await request.form()
     password = form.get("password", "").strip()
     admin_password = (settings.admin_password or "").strip()

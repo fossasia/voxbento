@@ -5,10 +5,23 @@ import time
 from threading import Lock
 from typing import Dict, Tuple
 
+from fastapi import Request
+
 # Simple in-memory rate limiter for auth endpoints.
 # Format: { "action:identifier": [timestamp1, timestamp2, ...] }
 _rates: dict[str, list[float]] = {}
 _lock = Lock()
+
+
+def request_client_ip(request: Request) -> str:
+    """Return the peer IP used for security-sensitive request throttles.
+
+    Proxy headers are intentionally not parsed here: deployments that trust a
+    reverse proxy should configure Uvicorn's proxy-header support so
+    ``request.client`` is already normalized without accepting spoofed headers
+    from arbitrary clients.
+    """
+    return request.client.host if request.client else "unknown"
 
 
 def check_rate_limit(action: str, identifier: str, max_requests: int, window_seconds: int = 3600) -> bool:

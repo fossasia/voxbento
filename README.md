@@ -87,6 +87,11 @@ A mandatory environment variable `API_KEY_ENCRYPTION_KEY` securely encrypts thir
 - You must generate a secure key (e.g., using `openssl rand -hex 32`) and add it to your `.env` file before starting the application. 
 - **Rotation**: To rotate keys without breaking existing database entries, provide a comma-separated list of keys. Voxbento will encrypt new tokens using the *first* key, but will use *all* keys to attempt decryption.
 
+Authentication form submissions are throttled by the direct client IP in
+addition to per-account login limits. When deploying behind a trusted reverse
+proxy, configure Uvicorn's proxy-header allowlist so the normalized peer IP is
+available to the application; raw forwarded headers are not trusted directly.
+
 ### Optional NVIDIA Transcription
 NVIDIA Riva support is now an optional dependency to reduce the default installation footprint. If you intend to run NVIDIA transcription models, you must explicitly install the optional package:
 ```bash

@@ -131,6 +131,31 @@ class TestRegistration:
         assert user.is_admin is False
         assert user.is_active is True
 
+    @pytest.mark.anyio
+    async def test_register_is_rate_limited_by_client_ip(self, setup_db):
+        from httpx import ASGITransport, AsyncClient
+
+        from fastapi_app import app
+        from portal.rate_limit import _rates
+
+        _rates.clear()
+        transport = ASGITransport(app=app, client=("203.0.113.10", 123))
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            for index in range(5):
+                response = await c.post(
+                    "/register",
+                    data={"email": f"rate-{index}@example.com", "display_name": "Rate", "password": ""},
+                )
+                assert response.status_code == 200
+            response = await c.post(
+                "/register",
+                data={"email": "blocked@example.com", "display_name": "Blocked", "password": ""},
+            )
+
+        assert response.status_code == 429
+        assert response.headers["retry-after"] == "3600"
+        _rates.clear()
+
 
 # ---------------------------------------------------------------------------
 # Login
@@ -204,6 +229,25 @@ class TestUserLogin:
             )
         assert resp.status_code == 403
         assert b"deactivated" in resp.content
+
+    @pytest.mark.anyio
+    async def test_login_is_rate_limited_by_client_ip_across_accounts(self, setup_db):
+        from httpx import ASGITransport, AsyncClient
+
+        from fastapi_app import app
+        from portal.rate_limit import _rates
+
+        _rates.clear()
+        transport = ASGITransport(app=app, client=("203.0.113.20", 123))
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            for index in range(20):
+                response = await c.post("/login", data={"email": f"unknown-{index}@example.com", "password": "wrong"})
+                assert response.status_code == 403
+            response = await c.post("/login", data={"email": "final@example.com", "password": "wrong"})
+
+        assert response.status_code == 429
+        assert response.headers["retry-after"] == "300"
+        _rates.clear()
 
 
 # ---------------------------------------------------------------------------
