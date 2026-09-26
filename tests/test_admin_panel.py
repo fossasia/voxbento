@@ -1002,6 +1002,46 @@ async def test_admin_list_pages_have_no_inline_styles(path, admin_cookie, seed_e
     assert not re.search(rb"\sstyle\s*=", resp.content, re.IGNORECASE)
 
 
+async def _seed_users_with_join_dates():
+    from portal.database import create_user, get_session
+
+    base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    async with get_session() as s:
+        for i, email in enumerate(["oldest@example.com", "middle@example.com", "newest@example.com"]):
+            user = await create_user(s, email=email, display_name=email.split("@")[0])
+            user.created_at = base + timedelta(days=i)
+        await s.flush()
+
+
+@pytest.mark.anyio
+async def test_user_list_defaults_to_newest_first(admin_cookie):
+    import re
+
+    await _seed_users_with_join_dates()
+
+    async with _client() as c:
+        resp = await c.get("/admin/users/", cookies=admin_cookie)
+
+    assert resp.status_code == 200
+    body = resp.text
+    assert body.index("newest@example.com") < body.index("middle@example.com") < body.index("oldest@example.com")
+    # Joined header shows the descending indicator and toggles to ascending on click.
+    assert '<a href="?sort_by=created_at&sort_order=asc" class="sort-link">' in body
+    assert re.search(r'Joined\s*<span class="sort-indicator">▼</span>', body)
+
+
+@pytest.mark.anyio
+async def test_user_list_explicit_ascending_sort_still_works(admin_cookie):
+    await _seed_users_with_join_dates()
+
+    async with _client() as c:
+        resp = await c.get("/admin/users/?sort_by=created_at&sort_order=asc", cookies=admin_cookie)
+
+    assert resp.status_code == 200
+    body = resp.text
+    assert body.index("oldest@example.com") < body.index("middle@example.com") < body.index("newest@example.com")
+
+
 @pytest.mark.anyio
 @pytest.mark.parametrize(
     "path",
