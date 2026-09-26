@@ -1003,6 +1003,36 @@ async def test_admin_list_pages_have_no_inline_styles(path, admin_cookie, seed_e
 
 
 @pytest.mark.anyio
+async def test_user_list_badge_shows_total_across_pages(admin_cookie):
+    from portal.database import create_user, get_session
+
+    async with get_session() as s:
+        for i in range(3):
+            await create_user(s, email=f"user{i}@example.com", display_name=f"User {i}")
+
+    async with _client() as c:
+        resp = await c.get("/admin/users/?limit=2", cookies=admin_cookie)
+
+    assert resp.status_code == 200
+    assert '<span class="badge">Total: 3 users</span>' in resp.text
+    assert "displayed" not in resp.text
+
+
+@pytest.mark.anyio
+async def test_user_list_badge_uses_singular_for_one_user(admin_cookie):
+    from portal.database import create_user, get_session
+
+    async with get_session() as s:
+        await create_user(s, email="solo@example.com", display_name="Solo")
+
+    async with _client() as c:
+        resp = await c.get("/admin/users/", cookies=admin_cookie)
+
+    assert resp.status_code == 200
+    assert '<span class="badge">Total: 1 user</span>' in resp.text
+
+
+@pytest.mark.anyio
 @pytest.mark.parametrize(
     "path",
     [

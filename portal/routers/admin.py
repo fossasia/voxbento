@@ -1451,7 +1451,9 @@ async def admin_users(
         name="admin/user_list.html",
         context={
             "users": users,
+            "total_users": total_users,
             "page": page,
+            "limit": limit,
             "total_pages": total_pages,
             "search": search,
             "sort_by": sort_by,
