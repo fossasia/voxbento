@@ -11,7 +11,7 @@
 {% block content %}
 <div class="page-header">
   <h1>Registered Users</h1>
-  <span class="badge">{{ users|length }} displayed</span>
+  <span class="badge">Total: {{ total_users }} user{{ 's' if total_users != 1 }}</span>
 </div>
 
 {% macro sortable_header(column, label) %}
