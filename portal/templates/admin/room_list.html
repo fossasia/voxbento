@@ -22,6 +22,7 @@
   <h3>Add a room</h3>
   <p class="form-card-hint">Rooms are the spaces at your event (e.g. “Main Hall”). Each room can host multiple language booths.</p>
   <form method="post" action="/admin/events/{{ event.id }}/rooms/" class="inline-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <input type="text" name="display_name" placeholder="Room name (e.g. Main Hall)" required class="input-grow" />
     <button type="submit" class="btn btn-primary">Add room</button>
   </form>
@@ -48,6 +49,7 @@
         <a href="/admin/events/{{ event.id }}/rooms/{{ rd.room.id }}/booths/" class="btn btn-sm">Booths</a>
         <form method="post" action="/admin/events/{{ event.id }}/rooms/{{ rd.room.id }}/delete" class="inline-delete"
               data-confirm="Delete room '{{ rd.room.display_name }}'? This will remove all booths in this room.">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
           <button type="submit" class="btn btn-sm btn-danger">Delete</button>
         </form>
       </td>

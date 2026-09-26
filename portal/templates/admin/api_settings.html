@@ -27,6 +27,7 @@
   </p>
 
   <form method="post" action="/admin/events/{{ event.id }}/api-settings" class="card-form" style="max-width: 600px;">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     
     <div class="form-group checkbox-group" style="padding: 15px; background: #f8f9fa; border: 1px solid #e2e8f0; border-radius: 6px; margin-bottom: 20px;">
       <label style="font-weight: 600; display: flex; align-items: center; gap: 8px; margin: 0; cursor: pointer;">

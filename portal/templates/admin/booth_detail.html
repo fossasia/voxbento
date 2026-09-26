@@ -93,6 +93,7 @@
 
 <!-- Booth Settings Form -->
 <form method="post" action="{{ url_for('admin_edit_booth', event_id=event.id, room_id=room.id, booth_id=booth.id) }}" class="token-form">
+   <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
   <div class="token-form-card" style="margin-bottom: 2rem;">
     <h3>Booth Settings</h3>
     <div class="form-row">
@@ -113,6 +114,7 @@
 
 <!-- Transcription Settings Form -->
 <form method="post" action="/admin/events/{{ event.id }}/rooms/{{ room.id }}/booths/{{ booth.id }}/transcription-settings" class="token-form">
+   <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
   <div class="token-form-card" style="margin-bottom: 2rem;">
     <div style="display: flex; justify-content: space-between; align-items: center;">
       <div>
@@ -179,6 +181,7 @@
 
 <!-- Translation Settings Form -->
 <form method="post" action="/admin/events/{{ event.id }}/rooms/{{ room.id }}/booths/{{ booth.id }}/translation-settings" class="token-form">
+   <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
   <div class="token-form-card" style="margin-bottom: 2rem;">
     <h3>Translation Settings</h3>
     <div class="form-row">
@@ -472,6 +475,7 @@
   <div class="token-form-card" style="margin-bottom: 1.5rem;">
     <h3>Assign Member</h3>
     <form method="post" action="/admin/events/{{ event.id }}/rooms/{{ room.id }}/booths/{{ booth.id }}/members/" class="token-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <div class="form-row">
         <div class="form-group">
           <label for="member_email">User Email</label>
@@ -527,12 +531,14 @@
                 action="/admin/events/{{ event.id }}/rooms/{{ room.id }}/booths/{{ booth.id }}/members/{{ m.id }}/invite"
                 class="inline-form"
                 style="margin-right: 8px;">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <button type="submit" class="btn btn-sm btn-outline" style="border: 2px solid #000; background: #fff; color: #000; border-radius: 4px; box-shadow: 2px 2px 0px #000; padding: 4px 12px; font-weight: bold;">✉️ Invite</button>
           </form>
           <form method="post"
                 action="/admin/events/{{ event.id }}/rooms/{{ room.id }}/booths/{{ booth.id }}/members/{{ m.id }}/delete"
                 class="inline-form"
                 data-confirm="Remove {{ u.display_name }} from this booth?">
+                 <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <button type="submit" class="btn btn-sm btn-danger">Remove</button>
           </form>
         </td>
@@ -557,6 +563,7 @@
   <div class="token-form-card">
     <h3>Generate New Token</h3>
     <form method="post" action="/admin/events/{{ event.id }}/rooms/{{ room.id }}/booths/{{ booth.id }}/tokens/" class="token-form">
+       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <div class="form-row">
         <div class="form-group">
           <label for="role">Role</label>
@@ -624,6 +631,7 @@
                 action="/admin/events/{{ event.id }}/rooms/{{ room.id }}/booths/{{ booth.id }}/tokens/{{ tok.token }}/revoke"
                 class="inline-form"
                 data-confirm="Revoke this token? It cannot be used to join after revocation.">
+                 <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <button type="submit" class="btn btn-sm btn-danger">Revoke</button>
           </form>
           {% else %}
@@ -646,6 +654,7 @@
   <form method="post" action="/admin/events/{{ event.id }}/rooms/{{ room.id }}/booths/{{ booth.id }}/delete"
         class="inline-delete"
         data-confirm="Delete the {{ booth.language_name }} booth? All invite tokens will be removed.">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <button type="submit" class="btn btn-danger">Delete Booth</button>
     <span class="danger-text">This removes all invite tokens for this booth.</span>
   </form>

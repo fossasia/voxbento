@@ -24,6 +24,7 @@
 {% if is_event_owner %}
 
   <form method="post" action="/admin/events/{{ event.id }}/rooms/{{ room.id }}/edit" class="token-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
   <input type="hidden" name="form_section" value="general">
   <div class="token-form-card" style="margin-bottom: 1.5rem;">
     <h3>Room Settings</h3>
@@ -50,6 +51,7 @@
 </form>
 
 <form method="post" action="/admin/events/{{ event.id }}/rooms/{{ room.id }}/edit" class="token-form">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
   <input type="hidden" name="form_section" value="relay">
   <div class="token-form-card" style="margin-bottom: 2rem;">
     <h3>Relay Settings</h3>
@@ -82,6 +84,7 @@
   </div>
 
 <form method="post" action="/admin/events/{{ event.id }}/rooms/{{ room.id }}/edit" class="token-form">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
   <input type="hidden" name="form_section" value="transcription">
   <div class="token-form-card" style="margin-bottom: 2rem;">
     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
@@ -148,6 +151,7 @@
 </form>
 
 <form id="floor_translation_form" method="post" action="/admin/events/{{ event.id }}/rooms/{{ room.id }}/edit" class="token-form">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}" />
   <input type="hidden" name="form_section" value="translation">
   <div class="token-form-card" style="margin-bottom: 2rem;">
     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
@@ -216,6 +220,7 @@
 </form>
 
 <form method="post" action="/admin/events/{{ event.id }}/rooms/{{ room.id }}/edit" class="token-form" id="floor_tts_form">
+  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
   <input type="hidden" name="form_section" value="tts">
   <div class="token-form-card" style="margin-bottom: 2rem;">
     <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
@@ -468,7 +473,12 @@ async function startFloorTranscription(roomId) {
   btn.textContent = 'Starting...';
   btn.disabled = true;
   try {
-    const res = await fetch(`/api/rooms/${roomId}/floor-transcription/start`, { method: 'POST' });
+    const res = await fetch(`/api/rooms/${roomId}/floor-transcription/start`, {
+      method: 'POST',
+      headers: {
+        'X-CSRF-Token': document.querySelector('meta[name="csrf-token"]').content
+      }
+    });
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));
       setBotError("Error: " + (data.detail || "Failed to start"));
@@ -486,7 +496,12 @@ async function stopFloorTranscription(roomId) {
   btn.textContent = 'Stopping...';
   btn.disabled = true;
   try {
-    const res = await fetch(`/api/rooms/${roomId}/floor-transcription/stop`, { method: 'POST' });
+    const res = await fetch(`/api/rooms/${roomId}/floor-transcription/stop`, {
+      method: 'POST',
+      headers: {
+        'X-CSRF-Token': document.querySelector('meta[name="csrf-token"]').content
+      }
+    });
     if (!res.ok) {
       const data = await res.json().catch(() => ({}));
       setBotError("Error: " + (data.detail || "Failed to stop"));
@@ -655,6 +670,7 @@ document.addEventListener('DOMContentLoaded', function() {
   <div class="token-form-card" style="margin-bottom: 1.5rem;">
     <h3>Assign Coordinator</h3>
     <form method="post" action="/admin/events/{{ event.id }}/rooms/{{ room.id }}/members/" class="token-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <div class="form-row">
         <div class="form-group">
           <label for="member_email">User Email</label>
@@ -705,6 +721,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 action="/admin/events/{{ event.id }}/rooms/{{ room.id }}/members/{{ m.id }}/invite"
                 class="inline-form"
                 style="margin-right: 8px;">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <button type="submit" class="btn btn-sm btn-outline" style="border: 2px solid #000; background: #fff; color: #000; border-radius: 4px; box-shadow: 2px 2px 0px #000; padding: 4px 12px; font-weight: bold;">✉️ Invite</button>
           </form>
           <form method="post"
@@ -730,6 +747,7 @@ document.addEventListener('DOMContentLoaded', function() {
   <h3>Danger Zone</h3>
   <form method="post" action="/admin/events/{{ event.id }}/rooms/{{ room.id }}/delete" class="inline-delete"
         data-confirm="Delete room '{{ room.display_name }}'? All booths in this room will be removed.">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <button type="submit" class="btn btn-danger">Delete Room</button>
     <span class="danger-text">This removes all booths and their invite tokens.</span>
   </form>

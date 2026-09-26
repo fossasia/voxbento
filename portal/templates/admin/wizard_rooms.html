@@ -11,6 +11,7 @@
     <p class="wizard-sub">Rooms are the spaces at <strong>{{ event.display_name }}</strong> — like “Main Hall” or “Track A”. Each room can host multiple language booths.</p>
 
     <form method="post" action="/admin/events/{{ event.id }}/setup/rooms" class="inline-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <input type="text" name="display_name" placeholder="Room name (e.g. Main Hall)" required class="wizard-grow" autofocus />
       <button type="submit" class="btn btn-primary">Add room</button>
     </form>

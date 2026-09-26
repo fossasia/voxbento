@@ -212,7 +212,10 @@ window.adminAPIKeys = {
       btn.disabled = true;
       const res = await fetch(`/admin/api/events/${this.eventId}/api-keys`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'X-CSRF-Token': document.querySelector('meta[name="csrf-token"]').content
+       },
         body: JSON.stringify({ name: nameInput })
       });
       

@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
-
 import bcrypt
 import jwt
 from fastapi import Depends, HTTPException, Request, WebSocket, status
@@ -637,3 +637,34 @@ def require_oauth_scope(required_scope: str):
         return oauth_token
 
     return dependency
+
+def get_admin_csrf_token(request: Request) -> str:
+    csrf_token = getattr(request.state, "admin_csrf", None)
+
+    if not csrf_token:
+        csrf_token = request.cookies.get("admin_csrf")
+
+    if not csrf_token:
+        csrf_token = secrets.token_hex(32)
+
+    request.state.admin_csrf = csrf_token
+    return csrf_token
+
+async def require_admin_csrf(request: Request) -> None:
+    csrf_token = request.headers.get("X-CSRF-Token")
+
+    if not csrf_token:
+        form = await request.form()
+        csrf_token = form.get("csrf_token")
+
+    cookie_token = request.cookies.get("admin_csrf")
+
+    if (
+        not cookie_token
+        or not csrf_token
+        or not secrets.compare_digest(str(csrf_token), cookie_token)
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Invalid CSRF token",
+        )
