@@ -315,6 +315,17 @@ def make_booth_id(event_slug: str, room_id: int, language_code: str) -> str:
     return f"{slug}-{room}-{code}"
 
 
+def make_ai_booth_id(event_slug: str, room_id: int, language_code: str) -> str:
+    """Build the ID of a room's AI (TTS) booth for one target language.
+
+    Format: ``{event_slug}-{room_id}-ai-{language_code}`` (e.g. ``pycon2026-14-ai-de``).
+    AI booths have no MediaMTX path: listeners receive their audio over
+    ``/ws/tts/{booth_id}``. The language code is not checked against the ISO
+    subset because it comes from a room's stored translation languages.
+    """
+    return f"{event_slug}-{room_id}-ai-{language_code}"
+
+
 def make_mediamtx_path(event_slug: str, room_id: int | None, language_code: str) -> str:
     """Build a MediaMTX stream path from validated coordinates.
 
@@ -358,6 +369,28 @@ def mediamtx_path_to_booth_id(path: str) -> str:
     room_id = validate_room_id(int(parts[1]))
     language_code = validate_language_code(parts[2])
     return f"{event_slug}-{room_id}-{language_code}"
+
+
+# Matches a human booth ("{event_slug}-{room_id}-{language_code}") and an AI booth
+# ("{event_slug}-{room_id}-ai-{language_code}") alike. The language code is matched
+# by shape only, not against ISO_639_1_CODES, so that authorization never depends on
+# a booth's language being in that subset.
+_BOOTH_SCOPE_RE = re.compile(r"^(?P<slug>[a-z0-9]+(?:-[a-z0-9]+)*)-[0-9]+-(?:ai-)?(?:[a-z]{2}|floor)$")
+
+
+def booth_id_event_slug(booth_id: str) -> str:
+    """Return the event slug that owns *booth_id*, human or AI booth alike.
+
+    Authorization compares this against a token's ``event_slug``. A prefix test
+    cannot: one slug may extend another, so ``demo`` would match a booth owned
+    by ``demo-other``.
+
+    Raises ``ValueError`` if *booth_id* is not in either booth format.
+    """
+    match = _BOOTH_SCOPE_RE.match(booth_id.strip().lower())
+    if not match:
+        raise ValueError(f"Booth ID does not name an event: '{booth_id}'.")
+    return match.group("slug")
 
 
 def parse_booth_id(booth_id: str) -> tuple[str, int, str]:

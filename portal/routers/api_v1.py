@@ -3,13 +3,15 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 
+import pycountry
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from portal.ai_booths import excluded_ai_languages
 from portal.auth import require_oauth_scope
-from portal.booth_identity import make_booth_id, make_mediamtx_path
+from portal.booth_identity import make_ai_booth_id, make_booth_id, make_mediamtx_path
 from portal.database import get_db_session
 from portal.globals import booths
 from portal.models import (
@@ -27,6 +29,7 @@ from portal.models import (
 from portal.rate_limit import auth_rate_limiter
 from portal.transcription.constants import ProviderEnum
 from portal.transcription.worker import start_transcription_worker, stop_transcription_worker
+from portal.utils import public_ws_url
 
 logger = logging.getLogger(__name__)
 
@@ -229,13 +232,15 @@ async def delete_event(
     return None
 
 
-
-
 class RoomUpsert(BaseModel):
     name: str | None = None
     description: str | None = None
     enabled: bool | None = None
+    # Languages served by a human interpreter booth.
     target_languages: list[str] | None = None
+    # Languages served by AI (TTS) audio of the floor translation. A language that is also a
+    # human booth, or that is the floor language, is ignored here: human booths take precedence.
+    ai_languages: list[str] | None = None
     enable_transcription: bool | None = None
     transcription_provider: ProviderEnum | None = Field(None)
     transcription_model: str | None = Field(None, max_length=40)
@@ -250,6 +255,26 @@ class RoomUpsert(BaseModel):
         if v == "":
             return None
         return v
+
+    @field_validator("target_languages", "ai_languages")
+    @classmethod
+    def _iso_639_1_codes(cls, codes: list[str] | None) -> list[str] | None:
+        """Normalize to lowercase ISO 639-1 codes, so "DE" can't slip past a human "de" booth."""
+        if codes is None:
+            return None
+        normalized = []
+        for code in codes:
+            code = code.strip().lower()
+            if len(code) != 2 or pycountry.languages.get(alpha_2=code) is None:
+                raise ValueError(f"'{code}' is not an ISO 639-1 language code")
+            if code not in normalized:
+                normalized.append(code)
+        return normalized
+
+
+def _language_name(code: str) -> str:
+    lang = pycountry.languages.get(alpha_2=code)
+    return lang.name if lang else code
 
 
 def _apply_floor_settings(room, payload_dict: dict):
@@ -334,9 +359,16 @@ async def upsert_room(
     booth_res = await db.execute(select(DBBooth).where(DBBooth.room_id == room.id))
     existing_booths = {b.language_code: b for b in booth_res.scalars().all()}
 
-    if "target_languages" in payload_dict and payload_dict["target_languages"] is not None:
-        requested_langs = set(payload_dict["target_languages"])
+    # A partial update only syncs the language lists it sends. An omitted list keeps
+    # its current state: human booths from the DB, AI languages from their TTS flag.
+    sent_targets = payload_dict.get("target_languages")
+    sent_ai = payload_dict.get("ai_languages")
+    requested_langs = set(existing_booths) if sent_targets is None else set(sent_targets)
+    current_ai = {code for code, rl in existing_langs.items() if rl.tts_enabled}
+    ai_langs = (current_ai if sent_ai is None else set(sent_ai)) - excluded_ai_languages(room, requested_langs)
+    wanted_langs = requested_langs | ai_langs
 
+    if sent_targets is not None or sent_ai is not None:
         # Safe Delete Removed Booths & Languages
         for code, b in existing_booths.items():
             if code not in requested_langs:
@@ -365,21 +397,36 @@ async def upsert_room(
                 )
 
         for code, rl in existing_langs.items():
-            if code not in requested_langs:
+            # Only a sent target_languages list defines the room's full language set;
+            # an ai_languages-only update clears the TTS flag and keeps the row.
+            if code not in wanted_langs and sent_targets is not None:
                 await db.delete(rl)
+                continue
+            rl.tts_enabled = code in ai_langs
+            if rl.tts_enabled:
+                rl.enabled = True  # AI audio needs the translation
+            if rl.language_name == code:  # rows from earlier syncs stored the code as the name
+                rl.language_name = _language_name(code)
 
         # Create Missing Booths & Languages
         from sqlalchemy.exc import IntegrityError
-        for code in requested_langs:
+        for code in wanted_langs:
             if code not in existing_langs:
                 try:
                     async with db.begin_nested():
-                        db.add(RoomTranslationLanguage(room_id=room.id, language_code=code, language_name=code))
+                        db.add(
+                            RoomTranslationLanguage(
+                                room_id=room.id,
+                                language_code=code,
+                                language_name=_language_name(code),
+                                tts_enabled=code in ai_langs,
+                            )
+                        )
                         await db.flush()
                 except IntegrityError:
                     pass
 
-            if code not in existing_booths:
+            if code in requested_langs and code not in existing_booths:
                 try:
                     async with db.begin_nested():
                         new_booth = DBBooth(room_id=room.id, language_code=code, event_id=event.id, language_name=code)
@@ -425,7 +472,26 @@ async def upsert_room(
         logger.exception("Error generating canonical WHEP URLs")
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error")
 
-    return {"status": "success", "room_id": room.id, "booths": returned_booths}
+    ai_booths = []
+    for code in sorted(ai_langs):
+        booth_id = make_ai_booth_id(event.slug, room.id, code)
+        ai_booths.append({"language": code, "booth_id": booth_id, "tts_ws_url": public_ws_url(f"/ws/tts/{booth_id}")})
+
+    return {
+        "status": "success",
+        "room_id": room.id,
+        "booths": returned_booths,
+        "ai_booths": ai_booths,
+        # AI booths only play once the room's floor transcription, translation and TTS are set up in VoxBento.
+        "tts_ready": bool(
+            ai_langs
+            and room.floor_transcription_enabled
+            and room.floor_translation_enabled
+            and room.floor_translation_provider
+            and room.floor_translation_model
+            and room.floor_tts_enabled
+        ),
+    }
 
 
 @router.delete("/events/{event_slug}/rooms/{eventyay_room_id}", status_code=status.HTTP_204_NO_CONTENT)

@@ -42,6 +42,10 @@ dev = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Dump every thread's stack and abort if a single test stalls this long. A
+# deadlocked WebSocket test once stalled CI for hours with no way to tell which
+# test or which thread was stuck.
+faulthandler_timeout = 90
 
 [tool.uv]
 package = false
