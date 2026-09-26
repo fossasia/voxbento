@@ -46,11 +46,13 @@ class FfmpegProcess:
             "-",
         ]
 
-        # start_new_session=True places ffmpeg and all descendants into their own process group.
-        # This is strictly required so that SIGTERM/SIGKILL can clean up the entire tree.
-        self.process = await asyncio.create_subprocess_exec(
-            *ffmpeg_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, start_new_session=True
-        )
+        # start_new_session=True places ffmpeg and all descendants into their own process group on POSIX.
+        # On Windows, start_new_session raises ValueError, so it is omitted.
+        kwargs = {"stdout": asyncio.subprocess.PIPE, "stderr": asyncio.subprocess.PIPE}
+        if sys.platform != "win32":
+            kwargs["start_new_session"] = True
+
+        self.process = await asyncio.create_subprocess_exec(*ffmpeg_cmd, **kwargs)
 
         self.stderr_task = asyncio.create_task(self._log_stderr())
         logger.info(f"[{self.booth_id}] ffmpeg started (pid={self.process.pid})")
