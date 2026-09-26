@@ -60,6 +60,9 @@ cd voxbento
 # Configure environment
 cp .env.example .env
 
+# Optional: maximum concurrent transcription workers (default 10, minimum 1)
+# MAX_TRANSCRIPTION_WORKERS=10
+
 # Required: set your admin password (or generate a secure random password)
 echo "ADMIN_PASSWORD=$(openssl rand -hex 16)" >> .env
 

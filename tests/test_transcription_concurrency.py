@@ -220,6 +220,12 @@ async def test_high_concurrency_isolation_and_capacity_limits(monkeypatch):
     # The configured worker limit is 12, so exactly 4 requests must hit 429 Too Many Requests.
     assert status_codes.count(429) == 4, "Exactly 4 booths should be rate-limited."
     assert status_codes.count(200) == 12, "Exactly 12 booths should succeed."
+    rate_limited = [response for response in responses if response.status_code == 429]
+    assert all(
+        response.json()["detail"]
+        == "System at maximum capacity (12 concurrent transcription booths)."
+        for response in rate_limited
+    )
 
     # Give the background tasks a tiny fraction of a second to spin up and populate the provider logs
     await asyncio.sleep(0.1)
