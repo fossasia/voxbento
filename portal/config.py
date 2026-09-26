@@ -97,6 +97,7 @@ class Settings(BaseSettings):
 
     # Transcription Settings
     nvidia_function_id: str = ""
+    max_transcription_workers: int = Field(default=10, ge=1)
 
     # Supertonic TTS — optional sidecar URL for the Voice Builder import API.
     # Leave empty to use in-process TTS (no sidecar needed).

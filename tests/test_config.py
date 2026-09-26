@@ -27,3 +27,9 @@ def test_effective_jitsi_internal_base_fallback():
 def test_effective_jitsi_internal_base_override():
     s = Settings(jitsi_internal_base="http://internal.jitsi", jitsi_base_url="http://jitsi.local")
     assert s.effective_jitsi_internal_base == "http://internal.jitsi"
+
+
+def test_transcription_worker_limit_can_be_set_from_environment(monkeypatch):
+    monkeypatch.setenv("MAX_TRANSCRIPTION_WORKERS", "24")
+
+    assert Settings(_env_file=None).max_transcription_workers == 24
