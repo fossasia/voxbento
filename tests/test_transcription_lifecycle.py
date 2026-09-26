@@ -54,14 +54,22 @@ def mock_ffmpeg_subprocess():
     old_cmd = getattr(FfmpegProcess, "__aenter__")
 
     async def dummy_aenter(self):
-        self.process = await asyncio.create_subprocess_exec(
-            "bash",
-            "-c",
-            "sleep 1000",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            start_new_session=True,
-        )
+        if sys.platform == "win32":
+            cmd = [sys.executable, "-c", "import time; time.sleep(1000)"]
+            self.process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+        else:
+            self.process = await asyncio.create_subprocess_exec(
+                "bash",
+                "-c",
+                "sleep 1000",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                start_new_session=True,
+            )
         self.stderr_task = asyncio.create_task(self._log_stderr())
         return self.process
 
@@ -223,6 +231,9 @@ async def test_serialized_replacement(mock_providers):
 
 
 @pytest.mark.anyio
+@pytest.mark.skipif(
+    sys.platform == "win32", reason="Process group and grandchild signal propagation tests require POSIX"
+)
 async def test_real_subprocess_integration():
     """
     Integration test using a real lightweight subprocess to verify
@@ -289,6 +300,7 @@ async def test_real_subprocess_integration():
 
 
 @pytest.mark.anyio
+@pytest.mark.skipif(sys.platform == "win32", reason="Bash signal trapping is POSIX-only")
 async def test_escalation_zombie():
     """
     Mock the subprocess to ignore SIGTERM, forcing SIGKILL escalation.
@@ -327,3 +339,22 @@ async def test_escalation_zombie():
 
     finally:
         FfmpegProcess.__aenter__ = old_cmd
+
+
+@pytest.mark.anyio
+async def test_ffmpeg_process_cleanup_cross_platform():
+    """
+    Verify that FfmpegProcess cleans up subprocesses across all platforms
+    (including Windows) without AttributeError: killpg.
+    """
+    booth_id = "test_cleanup_cross_platform"
+    proc_manager = FfmpegProcess("dummy", "16000", booth_id)
+    process = await proc_manager.__aenter__()
+
+    assert process is not None
+    assert process.returncode is None
+
+    # Exiting context manager must terminate the process
+    await proc_manager.__aexit__(None, None, None)
+
+    assert process.returncode is not None
