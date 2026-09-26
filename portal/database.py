@@ -65,6 +65,7 @@ def _get_engine():
 
         if settings.database_url.startswith("sqlite"):
             from sqlalchemy import event
+
             @event.listens_for(_engine.sync_engine, "connect")
             def set_sqlite_pragma(dbapi_connection, connection_record):
                 cursor = dbapi_connection.cursor()
@@ -93,6 +94,7 @@ def configure(url: str, *, echo: bool = False) -> None:
 
     if url.startswith("sqlite"):
         from sqlalchemy import event
+
         @event.listens_for(_engine.sync_engine, "connect")
         def set_sqlite_pragma(dbapi_connection, connection_record):
             cursor = dbapi_connection.cursor()
@@ -166,10 +168,17 @@ async def get_event_by_id(session: AsyncSession, event_id: int) -> Event | None:
     return result.scalar_one_or_none()
 
 
-async def count_events(session: AsyncSession, *, allowed_event_ids: set[int] | None = None) -> int:
+async def count_events(
+    session: AsyncSession,
+    *,
+    allowed_event_ids: set[int] | None = None,
+    search: str | None = None,
+) -> int:
     stmt = select(func.count(Event.id)).where(Event.deleted_at.is_(None))
     if allowed_event_ids is not None:
         stmt = stmt.where(Event.id.in_(allowed_event_ids))
+    if search:
+        stmt = stmt.where(or_(Event.slug.ilike(f"%{search}%"), Event.display_name.ilike(f"%{search}%")))
     result = await session.execute(stmt)
     return result.scalar_one()
 
@@ -180,10 +189,13 @@ async def list_events(
     limit: int = 100,
     offset: int = 0,
     allowed_event_ids: set[int] | None = None,
+    search: str | None = None,
 ) -> list[Event]:
     stmt = select(Event).where(Event.deleted_at.is_(None)).order_by(Event.created_at)
     if allowed_event_ids is not None:
         stmt = stmt.where(Event.id.in_(allowed_event_ids))
+    if search:
+        stmt = stmt.where(or_(Event.slug.ilike(f"%{search}%"), Event.display_name.ilike(f"%{search}%")))
     result = await session.execute(stmt.limit(limit).offset(offset))
     return list(result.scalars().all())
 

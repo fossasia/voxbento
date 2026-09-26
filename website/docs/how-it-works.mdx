@@ -96,6 +96,8 @@ Every booth in Voxbento is uniquely identified by two coordinates:
 
 These two values combine to form the **MediaMTX path** (`pycon2026/en`) and the **booth ID** (`pycon2026-en`). Both are derived at runtime — there is no separate stored URL. If you change the event slug or language code, the derived URLs update automatically.
 
+Administrators can search the event list by either slug or display name. Filtering is applied before pagination so page counts and results stay in sync.
+
 ## Interpreter Handoff
 
 In a professional interpretation setting, interpreters rotate every 20–30 minutes to prevent fatigue. Voxbento handles this transition without interrupting listeners.
