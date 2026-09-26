@@ -35,7 +35,7 @@
         </tr>
         <tr>
           <td style="font-weight: 500;">Joined</td>
-          <td>{{ user_detail.created_at.strftime('%Y-%m-%d %H:%M UTC') if user_detail.created_at else '—' }}</td>
+          <td>{{ user_detail.created_at.strftime('%b %d, %Y, %H:%M UTC') if user_detail.created_at else '—' }}</td>
         </tr>
         <tr>
           <td style="font-weight: 500;">Global Status</td>
