@@ -335,6 +335,15 @@ class TestAdminUserManagement:
         assert user.created_at.strftime("%Y-%m-%d").encode() not in resp.content
 
     @pytest.mark.anyio
+    async def test_user_detail_shows_readable_join_date(self, setup_db, admin_cookie):
+        user = await _create_test_user(email="detail@example.com")
+        async with _client() as c:
+            resp = await c.get(f"/admin/users/{user.id}/", cookies=admin_cookie)
+        assert resp.status_code == 200
+        assert user.created_at.strftime("%b %d, %Y, %H:%M UTC").encode() in resp.content
+        assert user.created_at.strftime("%Y-%m-%d").encode() not in resp.content
+
+    @pytest.mark.anyio
     async def test_user_list_requires_admin(self, setup_db):
         async with _client() as c:
             resp = await c.get("/admin/users/")
