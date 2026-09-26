@@ -1436,9 +1436,9 @@ async def admin_users(
     limit: int = 50,
     search: str | None = None,
     sort_by: str = "created_at",
-    sort_order: str = "asc",
+    sort_order: str = "desc",
 ):
-    """List all registered users (super admin only)."""
+    """List all registered users (super admin only), newest first by default."""
     offset = (page - 1) * limit
     async with get_session() as session:
         total_users = await count_users(session, search=search)

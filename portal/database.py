@@ -530,12 +530,13 @@ async def list_users(
         stmt = stmt.where(or_(User.email.ilike(f"%{search}%"), User.display_name.ilike(f"%{search}%")))
 
     sort_column = getattr(User, sort_by, User.created_at)
+    # Tie-break on id so rows sharing a sort value keep a stable order across pages.
     if sort_order == "desc":
-        sort_column = sort_column.desc()
+        order_by = (sort_column.desc(), User.id.desc())
     else:
-        sort_column = sort_column.asc()
+        order_by = (sort_column.asc(), User.id.asc())
 
-    stmt = stmt.order_by(sort_column).limit(limit).offset(offset)
+    stmt = stmt.order_by(*order_by).limit(limit).offset(offset)
 
     result = await session.execute(stmt)
     return list(result.scalars().all())
