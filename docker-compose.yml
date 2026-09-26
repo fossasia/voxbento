@@ -29,8 +29,6 @@ services:
       MEDIAMTX_WHIP_BASE: "${MEDIAMTX_WHIP_BASE:-http://localhost:8889}"
       FLOOR_BOT_BASE: "http://floor-bot:8080"
 
-      # Internal URL for Python health checks (Docker service name)
-      MEDIAMTX_INTERNAL_BASE: "http://mediamtx:8888"
       # MediaMTX Control API (Docker internal) — creates alwaysAvailable paths
       MEDIAMTX_API_BASE: "http://mediamtx:9997"
       # Database — SQLite stored on a Docker volume for persistence.

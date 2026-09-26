@@ -96,7 +96,6 @@ Key settings in `mediamtx.yml`:
 - Services communicate by Docker service name: `mediamtx`, `jitsi-prosody`, etc.
 - **`MEDIAMTX_WHIP_BASE`** must be the browser-reachable URL (e.g. `https://voxbento.example.com:8889`), not the Docker internal URL. Browsers make WebRTC connections directly to MediaMTX.
 - **`MEDIAMTX_API_BASE`** uses Docker internal: `http://mediamtx:9997`.
-- **`MEDIAMTX_INTERNAL_BASE`**: `http://mediamtx:8888` — for portal health checks.
 
 ---
 
