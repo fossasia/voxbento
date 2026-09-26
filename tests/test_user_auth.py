@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 
 os.environ["BOOTH_ACCESS_TOKEN"] = ""
 os.environ["ADMIN_PASSWORD"] = "test-admin-pass"
@@ -39,12 +40,23 @@ def _client():
     return AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
 
 
-async def _create_test_user(email="test@example.com", display_name="Test User", password="securepass123"):
+async def _create_test_user(
+    email="test@example.com",
+    display_name="Test User",
+    password="securepass123",
+    email_verified=True,
+):
     from portal.database import create_user, get_session
 
     pw_hash = hash_password(password) if password else None
     async with get_session() as s:
-        user = await create_user(s, email=email, display_name=display_name, password_hash=pw_hash, email_verified=True)
+        user = await create_user(
+            s,
+            email=email,
+            display_name=display_name,
+            password_hash=pw_hash,
+            email_verified=email_verified,
+        )
     return user
 
 
@@ -252,9 +264,9 @@ class TestAccountPage:
 class TestAdminUserManagement:
     @pytest.mark.anyio
     async def test_user_list_shows_users(self, setup_db, admin_cookie):
-        _u1 = await _create_test_user(email="user1@example.com", display_name="User One")
-        _u2 = await _create_test_user(email="user2@example.com", display_name="User Two")
-        u3 = await _create_test_user(email="user3@example.com", display_name="User Three")
+        _u1 = await _create_test_user(email="user1@example.com", display_name="User One", email_verified=True)
+        _u2 = await _create_test_user(email="user2@example.com", display_name="User Two", email_verified=False)
+        u3 = await _create_test_user(email="user3@example.com", display_name="User Three", email_verified=True)
         assert u3.id == 3
 
         # When sorted desc, first row is user3 (database ID=3, but row index=1)
@@ -268,6 +280,8 @@ class TestAdminUserManagement:
         # Row number must be 1, NOT the database primary key (3)
         assert b"<td>1</td>" in resp.content
         assert b"<td>3</td>" not in resp.content
+        assert b"Email Status" in resp.content
+        assert b"2FA Status" not in resp.content
 
         # On page 2 with limit=1 (descending), user2 (ID=2) is displayed with row index 2
         async with _client() as c:
@@ -276,6 +290,26 @@ class TestAdminUserManagement:
         assert b"user2@example.com" in resp2.content
         assert b"<td>2</td>" in resp2.content
         assert b"limit=1" in resp2.content
+
+        # Verify that each user's row contains their specific verification badge
+        async with _client() as c:
+            resp_all = await c.get("/admin/users/", cookies=admin_cookie)
+        assert resp_all.status_code == 200
+        html = resp_all.text
+        assert "Email Status" in html
+        assert "2FA Status" not in html
+
+        rows = re.findall(r"<tr>(.*?)</tr>", html, flags=re.DOTALL)
+        u1_row = next((r for r in rows if "user1@example.com" in r), None)
+        u2_row = next((r for r in rows if "user2@example.com" in r), None)
+
+        assert u1_row is not None
+        assert "Verified" in u1_row
+        assert "Pending" not in u1_row
+
+        assert u2_row is not None
+        assert "Pending" in u2_row
+        assert "Verified" not in u2_row
 
     @pytest.mark.anyio
     async def test_user_list_requires_admin(self, setup_db):

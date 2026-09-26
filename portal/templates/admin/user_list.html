@@ -49,7 +49,7 @@
       {{ sortable_header('email', 'Email') }}
       {{ sortable_header('display_name', 'Display Name') }}
       {{ sortable_header('is_admin', 'Admin') }}
-      {{ sortable_header('email_verified', '2FA Status') }}
+      {{ sortable_header('email_verified', 'Email Status') }}
       {{ sortable_header('is_active', 'Status') }}
       {{ sortable_header('created_at', 'Joined') }}
       <th>Actions</th>
@@ -70,7 +70,7 @@
       </td>
       <td>
         {% if user.email_verified %}
-        <span class="badge badge-valid">Completed</span>
+        <span class="badge badge-valid">Verified</span>
         {% else %}
         <span class="badge badge-used">Pending</span>
         {% endif %}
