@@ -258,6 +258,8 @@ class TestAdminUserManagement:
         assert resp.status_code == 200
         assert b"user1@example.com" in resp.content
         assert b"User One" in resp.content
+        assert b"<th>#</th>" in resp.content
+        assert b"<td>1</td>" in resp.content
 
     @pytest.mark.anyio
     async def test_user_list_requires_admin(self, setup_db):

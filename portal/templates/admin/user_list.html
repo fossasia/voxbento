@@ -44,7 +44,7 @@
 <table class="data-table">
   <thead>
     <tr>
-      {{ sortable_header('id', 'ID') }}
+      <th>#</th>
       {{ sortable_header('email', 'Email') }}
       {{ sortable_header('display_name', 'Display Name') }}
       {{ sortable_header('is_admin', 'Admin') }}
@@ -57,7 +57,7 @@
   <tbody>
     {% for user in users %}
     <tr>
-      <td>{{ user.id }}</td>
+      <td>{{ (page - 1) * 50 + loop.index if page and page > 1 else loop.index }}</td>
       <td><a href="/admin/users/{{ user.id }}/">{{ user.email }}</a></td>
       <td><a href="/admin/users/{{ user.id }}/">{{ user.display_name }}</a></td>
       <td>
