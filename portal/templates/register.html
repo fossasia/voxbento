@@ -37,6 +37,9 @@
         If you leave this blank, you'll sign in using secure email links.
       </p>
 
+      <label for="password_confirm">Confirm Password</label>
+      <input type="password" id="password_confirm" name="password_confirm" placeholder="Re-enter your password" minlength="8" />
+
       <button type="submit" class="btn btn-primary">Create Account</button>
     </form>
     
@@ -46,4 +49,6 @@
     </div>
   </div>
 </div>
+
+<script type="module" src="{{ url_for('static', path='js/register.js') }}?v={{ js_version }}"></script>
 {% endblock %}

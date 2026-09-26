@@ -655,6 +655,7 @@ class TestEndToEndAdminWorkflow:
                     "email": "alice@e2e.com",
                     "display_name": "Alice",
                     "password": "securepass123",
+                    "password_confirm": "securepass123",
                 },
                 follow_redirects=False,
             )
