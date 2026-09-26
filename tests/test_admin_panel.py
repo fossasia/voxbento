@@ -1003,6 +1003,25 @@ async def test_admin_list_pages_have_no_inline_styles(path, admin_cookie, seed_e
 
 
 @pytest.mark.anyio
+async def test_user_list_labels_email_verification_status(admin_cookie):
+    from portal.database import create_user, get_session
+
+    async with get_session() as s:
+        await create_user(s, email="verified@example.com", display_name="Verified", email_verified=True)
+        await create_user(s, email="pending@example.com", display_name="Pending")
+
+    async with _client() as c:
+        resp = await c.get("/admin/users/", cookies=admin_cookie)
+
+    assert resp.status_code == 200
+    assert "Email Status" in resp.text
+    assert "2FA" not in resp.text
+    assert '<span class="badge badge-valid">Verified</span>' in resp.text
+    assert '<span class="badge badge-used">Pending</span>' in resp.text
+    assert "Completed" not in resp.text
+
+
+@pytest.mark.anyio
 async def test_user_list_badge_shows_total_across_pages(admin_cookie):
     from portal.database import create_user, get_session
 
