@@ -57,3 +57,38 @@ def test_multi_key_rotation():
         # It should fail to decrypt the old token since key1 is gone
         with pytest.raises(ValueError, match="Failed to decrypt API key"):
             decrypt_val(encrypted_old)
+
+
+def test_empty_keys_str_raises():
+    with patch("portal.config.settings.api_key_encryption_key", ""):
+        with pytest.raises(RuntimeError, match="API_KEY_ENCRYPTION_KEY must be set securely"):
+            portal.crypto.get_fernet()
+
+
+def test_default_keys_str_raises():
+    with patch("portal.config.settings.api_key_encryption_key", "change-this-encryption-key-in-production"):
+        with pytest.raises(RuntimeError, match="API_KEY_ENCRYPTION_KEY must be set securely"):
+            portal.crypto.get_fernet()
+
+
+def test_short_key_raises():
+    with patch("portal.config.settings.api_key_encryption_key", "short-key"):
+        with pytest.raises(RuntimeError, match="must be at least 32 characters long"):
+            portal.crypto.get_fernet()
+
+
+def test_empty_parts_are_skipped():
+    # Empty parts like "key1,,key2" should be skipped. If no valid keys are found, it raises RuntimeError.
+    with patch("portal.config.settings.api_key_encryption_key", " , ,,  "):
+        with pytest.raises(RuntimeError, match="No valid encryption keys found"):
+            portal.crypto.get_fernet()
+
+
+def test_encrypt_val_none_or_empty():
+    assert encrypt_val(None) is None
+    assert encrypt_val("") is None
+
+
+def test_decrypt_val_none_or_empty():
+    assert decrypt_val(None) is None
+    assert decrypt_val("") is None
