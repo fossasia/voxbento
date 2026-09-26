@@ -506,6 +506,62 @@ def test_ws_join_ignores_client_supplied_participant_id():
         assert state["active_interpreter_id"] == pid_a
 
 
+def test_ws_join_records_the_session_role_not_the_claimed_one():
+    """An interpreter claiming a higher role is still recorded as an interpreter."""
+    booth = "role-claim-en"
+    channel = "role-claim/en"
+
+    with client.websocket_connect(
+        f"/ws/booth/{booth}",
+        cookies=_interpreter_cookie("role-claim", "en"),
+    ) as ws:
+        pid, state = _ws_join(ws, "Mallory", "super_admin", "English", channel)
+
+    roles = {p["participant_id"]: p["role"] for p in state["participants"]}
+    assert roles[pid] == "interpreter"
+
+
+def test_ws_join_keeps_session_role_when_client_claims_a_lower_one():
+    """A coordinator claiming "interpreter" keeps the rights their session grants.
+
+    ``set_active_interpreter`` reads the role stored on the participant, so a
+    coordinator recorded as a plain interpreter could no longer reassign anyone.
+    """
+    booth = "role-keep-en"
+    channel = "role-keep/en"
+    coord_cookie = {
+        "session_token": create_participant_token(
+            booth_id=1,
+            role="room_coordinator",
+            event_slug="role-keep",
+            room_id=1,
+            language_code="en",
+        )
+    }
+
+    with (
+        client.websocket_connect(f"/ws/booth/{booth}", cookies=_interpreter_cookie("role-keep", "en")) as ws_int,
+        client.websocket_connect(f"/ws/booth/{booth}", cookies=coord_cookie) as ws_coord,
+    ):
+        pid_int, _ = _ws_join(ws_int, "Interp", "interpreter", "English", channel)
+        ws_coord.receive_text()  # booth:state broadcast from the interpreter's join
+
+        pid_coord, state = _ws_join(ws_coord, "Coord", "interpreter", "English", channel)
+        ws_int.receive_text()  # booth:state broadcast from the coordinator's join
+
+        roles = {p["participant_id"]: p["role"] for p in state["participants"]}
+        assert roles[pid_coord] == "room_coordinator"
+
+        # The coordinator is neither the active interpreter nor the target, so
+        # this only succeeds if their stored role still says room_coordinator.
+        ws_coord.send_text(json.dumps({"type": "booth:set-active", "target_id": pid_int}))
+        msg = json.loads(ws_coord.receive_text())
+        ws_int.receive_text()  # same broadcast on the interpreter's socket
+
+    assert msg["type"] == "booth:state", msg
+    assert msg["state"]["active_interpreter_id"] == pid_int
+
+
 def test_ws_three_way_coordinator_flow():
     """Full 3-connection scenario: two interpreters + coordinator.
 
