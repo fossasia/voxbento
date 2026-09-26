@@ -24,6 +24,7 @@
   <h3>Add an interpretation booth</h3>
   <p class="form-card-hint">Each booth is one language channel. Use a two-letter code (ISO 639-1), e.g. <code>en</code>, <code>fr</code>, <code>zh</code>.</p>
   <form method="post" action="/admin/events/{{ event.id }}/rooms/{{ room.id }}/booths/" class="inline-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <input type="text" name="language_code" placeholder="Code (e.g. en)" required
            pattern="^[a-z]{2}$" maxlength="2" title="Two-letter ISO 639-1 code" class="input-code" />
     <input type="text" name="language_name" placeholder="Language name (e.g. English)" required class="input-grow" />
@@ -70,6 +71,7 @@
         <form method="post" action="/admin/events/{{ event.id }}/rooms/{{ room.id }}/booths/{{ bs.db.id }}/delete"
               class="inline-delete"
               data-confirm="Delete {{ bs.db.language_name }} booth?">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
           <button type="submit" class="btn btn-sm btn-danger">Delete</button>
         </form>
       </td>

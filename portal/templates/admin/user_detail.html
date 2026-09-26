@@ -41,6 +41,7 @@
           <td style="font-weight: 500;">Global Status</td>
           <td>
             <form method="post" action="/admin/users/{{ user_detail.id }}/toggle-active" class="inline-form">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
               <button type="submit" class="btn btn-sm {{ 'btn-warning' if user_detail.is_active else 'btn-success' }}">
                 {{ 'Deactivate Account' if user_detail.is_active else 'Activate Account' }}
               </button>
@@ -51,6 +52,7 @@
           <td style="font-weight: 500;">Global Admin</td>
           <td>
             <form method="post" action="/admin/users/{{ user_detail.id }}/toggle-admin" class="inline-form">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
               <button type="submit" class="btn btn-sm {{ 'btn-danger' if user_detail.is_admin else 'btn-primary' }}">
                 {{ 'Revoke Super Admin' if user_detail.is_admin else 'Promote to Super Admin' }}
               </button>
@@ -88,6 +90,7 @@
       </td>
       <td>
         <form method="post" action="/admin/users/{{ user_detail.id }}/events/{{ event.id }}/toggle-owner" class="inline-form">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
           <button type="submit" class="btn btn-sm {{ 'btn-danger' if is_event_admin else 'btn-primary' }}">
             {{ 'Remove Admin' if is_event_admin else 'Make Admin' }}
           </button>
@@ -106,6 +109,7 @@
 <div style="margin-top: 3rem;">
   <form method="post" action="/admin/users/{{ user_detail.id }}/delete"
         data-confirm="Delete user {{ user_detail.email }}? This cannot be undone.">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <button type="submit" class="btn btn-danger">Delete User Account</button>
   </form>
 </div>

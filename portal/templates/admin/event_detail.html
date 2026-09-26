@@ -59,6 +59,7 @@
     <h2>Listener access</h2>
     {% if event.listener_join_code %}
     <form method="post" action="/admin/events/{{ event.id }}/regenerate_join_code/" data-confirm="Regenerate join code? This will invalidate the previous code.">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <button type="submit" class="btn btn-sm btn-outline">Regenerate</button>
     </form>
     {% endif %}
@@ -75,6 +76,7 @@
   {% else %}
   <p class="muted" style="margin-bottom:12px;">No join code yet. Generate one to let listeners in.</p>
   <form method="post" action="/admin/events/{{ event.id }}/regenerate_join_code/">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <button type="submit" class="btn btn-sm btn-primary">Generate join code</button>
   </form>
   {% endif %}
@@ -229,6 +231,7 @@
   <h3>Danger Zone</h3>
   <form method="post" action="/admin/events/{{ event.id }}/delete" class="inline-delete"
         data-confirm="Delete '{{ event.display_name }}'? This permanently removes all rooms, booths, and invite tokens.">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <button type="submit" class="btn btn-danger">Delete Event</button>
     <span class="danger-text">This action cannot be undone.</span>
   </form>

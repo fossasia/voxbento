@@ -21,6 +21,7 @@
   <div class="create-body">
     <p class="text-secondary create-hint">Prefer a guided walkthrough? Use <a href="/admin/setup">New event</a> instead.</p>
     <form method="post" action="/admin/events/" class="inline-form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <input type="text" name="slug" placeholder="event-slug" required pattern="^[a-z0-9]+(-[a-z0-9]+)*$" title="Lowercase letters, numbers, hyphens only" />
       <input type="text" name="display_name" placeholder="Display Name" required />
       <button type="submit" class="btn btn-primary">Create</button>
@@ -48,6 +49,7 @@
         <a href="/admin/events/{{ ev.id }}/" class="btn btn-sm">View</a>
         <form method="post" action="/admin/events/{{ ev.id }}/delete" class="inline-delete"
               data-confirm="Delete event '{{ ev.display_name }}'? This will remove all rooms, booths, and tokens.">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
           <button type="submit" class="btn btn-sm btn-danger">Delete</button>
         </form>
       </td>

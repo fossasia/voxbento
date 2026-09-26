@@ -15,6 +15,7 @@
 
     <h3 class="wizard-section-title">Event owners</h3>
     <form method="post" action="/admin/events/{{ event.id }}/setup/invite">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <div class="field-row field-row--end">
         <div class="field field--flush">
           <label for="email">Email address</label>

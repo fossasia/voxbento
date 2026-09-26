@@ -85,12 +85,14 @@
       <td>{{ user.created_at.strftime('%Y-%m-%d') if user.created_at else '—' }}</td>
       <td class="actions-cell">
         <form method="post" action="/admin/users/{{ user.id }}/toggle-active" class="inline-form">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
           <button type="submit" class="btn btn-sm {{ 'btn-warning' if user.is_active else 'btn-success' }}">
             {{ 'Deactivate' if user.is_active else 'Activate' }}
           </button>
         </form>
         <form method="post" action="/admin/users/{{ user.id }}/delete" class="inline-form"
               data-confirm="Delete user {{ user.email }}? This cannot be undone.">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
           <button type="submit" class="btn btn-sm btn-danger">Delete</button>
         </form>
       </td>
