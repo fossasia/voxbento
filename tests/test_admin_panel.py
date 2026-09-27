@@ -243,6 +243,15 @@ class TestEventCRUD:
         assert b"testcon" in resp.content
 
     @pytest.mark.anyio
+    async def test_event_list_shows_readable_created_date(self, admin_cookie, seed_event):
+        event, _, _ = seed_event
+        async with _client() as c:
+            resp = await c.get("/admin/events/", cookies=admin_cookie)
+        assert resp.status_code == 200
+        assert event.created_at.strftime("%b %d, %Y, %H:%M").encode() in resp.content
+        assert event.created_at.strftime("%Y-%m-%d").encode() not in resp.content
+
+    @pytest.mark.anyio
     async def test_create_event(self, admin_cookie):
         async with _client() as c:
             resp = await c.post(
