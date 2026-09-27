@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import os
 import signal
 import sys
@@ -445,3 +446,37 @@ async def test_kill_windows_tree_invokes_taskkill():
             stderr=asyncio.subprocess.DEVNULL,
         )
         mock_proc.kill.assert_called_once()
+
+
+@pytest.mark.anyio
+async def test_kill_windows_tree_reports_nonzero_exit(caplog):
+    """
+    Verify _kill_windows_tree reports a failed process-tree teardown when the
+    taskkill subprocess exits with a nonzero return code, while still falling
+    back to direct process termination.
+    """
+    proc_manager = FfmpegProcess("dummy", "16000", "test_taskkill_failure")
+    mock_proc = MagicMock()
+    mock_proc.pid = 7777
+    mock_proc.terminate = MagicMock()
+    mock_proc.kill = MagicMock()
+    proc_manager.process = mock_proc
+
+    mock_exec_proc = MagicMock()
+    mock_exec_proc.wait = AsyncMock(return_value=1)
+
+    with (
+        caplog.at_level(logging.WARNING, logger="portal.transcription.process"),
+        patch(
+            "portal.transcription.process.asyncio.create_subprocess_exec",
+            new=AsyncMock(return_value=mock_exec_proc),
+        ),
+    ):
+        await proc_manager._kill_windows_tree(force=False)
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("taskkill" in msg and "exit code 1" in msg for msg in messages), (
+        f"expected nonzero taskkill failure report, got: {messages}"
+    )
+    # The fallback to direct process termination must still happen.
+    mock_proc.terminate.assert_called_once()

@@ -103,7 +103,10 @@ class FfmpegProcess:
             try:
                 exit_code = await asyncio.wait_for(kill_proc.wait(), timeout=2.0)
                 if exit_code != 0:
-                    logger.debug(f"[{self.booth_id}] taskkill exited with code {exit_code}")
+                    logger.warning(
+                        f"[{self.booth_id}] taskkill failed to tear down process tree "
+                        f"(exit code {exit_code}); falling back to direct process termination"
+                    )
             except TimeoutError:
                 logger.debug(f"[{self.booth_id}] taskkill timed out, killing taskkill process")
                 kill_proc.kill()
