@@ -16,6 +16,8 @@ from portal.transcription.worker import (
     stop_transcription_worker,
 )
 
+_ORIGINAL_FFMPEG_AENTER = FfmpegProcess.__aenter__
+
 
 @pytest.fixture(autouse=True)
 async def clean_registry():
@@ -358,3 +360,88 @@ async def test_ffmpeg_process_cleanup_cross_platform():
     await proc_manager.__aexit__(None, None, None)
 
     assert process.returncode is not None
+
+
+@pytest.mark.anyio
+async def test_ffmpeg_process_aenter_start_new_session_platform():
+    """
+    Verify production FfmpegProcess.__aenter__ conditionally sets start_new_session=True
+    on POSIX and omits start_new_session on Windows.
+    """
+    mock_proc = MagicMock()
+    mock_proc.pid = 9999
+    mock_proc.stderr.readline = AsyncMock(return_value=b"")
+
+    with patch(
+        "portal.transcription.process.asyncio.create_subprocess_exec",
+        new=AsyncMock(return_value=mock_proc),
+    ) as mock_exec:
+        proc_manager = FfmpegProcess("rtsp://dummy/stream", "16000", "test_booth")
+
+        # 1. POSIX platforms: start_new_session must be True
+        with (
+            patch.object(FfmpegProcess, "_log_stderr", new=AsyncMock()),
+            patch("portal.transcription.process.sys.platform", "linux"),
+        ):
+            await _ORIGINAL_FFMPEG_AENTER(proc_manager)
+            assert mock_exec.call_args.kwargs.get("start_new_session") is True
+            if proc_manager.stderr_task:
+                proc_manager.stderr_task.cancel()
+
+        # 2. Windows: start_new_session must be omitted
+        mock_exec.reset_mock()
+        with (
+            patch.object(FfmpegProcess, "_log_stderr", new=AsyncMock()),
+            patch("portal.transcription.process.sys.platform", "win32"),
+        ):
+            await _ORIGINAL_FFMPEG_AENTER(proc_manager)
+            assert "start_new_session" not in mock_exec.call_args.kwargs
+            if proc_manager.stderr_task:
+                proc_manager.stderr_task.cancel()
+
+
+@pytest.mark.anyio
+async def test_kill_windows_tree_invokes_taskkill():
+    """
+    Verify _kill_windows_tree constructs proper taskkill commands for graceful (/T)
+    and forced (/F /T) termination, falling back to direct terminate/kill.
+    """
+    proc_manager = FfmpegProcess("dummy", "16000", "test_taskkill")
+    mock_proc = MagicMock()
+    mock_proc.pid = 5432
+    mock_proc.terminate = MagicMock()
+    mock_proc.kill = MagicMock()
+    proc_manager.process = mock_proc
+
+    mock_exec_proc = MagicMock()
+    mock_exec_proc.wait = AsyncMock(return_value=0)
+
+    with patch(
+        "portal.transcription.process.asyncio.create_subprocess_exec",
+        new=AsyncMock(return_value=mock_exec_proc),
+    ) as mock_exec:
+        # Graceful tree termination
+        await proc_manager._kill_windows_tree(force=False)
+        mock_exec.assert_called_once_with(
+            "taskkill",
+            "/PID",
+            "5432",
+            "/T",
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        mock_proc.terminate.assert_called_once()
+
+        # Forceful tree termination
+        mock_exec.reset_mock()
+        await proc_manager._kill_windows_tree(force=True)
+        mock_exec.assert_called_once_with(
+            "taskkill",
+            "/F",
+            "/PID",
+            "5432",
+            "/T",
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        mock_proc.kill.assert_called_once()

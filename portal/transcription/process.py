@@ -13,7 +13,9 @@ logger = logging.getLogger(__name__)
 class FfmpegProcess:
     """
     Robust async context manager for ffmpeg subprocess lifecycle.
-    Guarantees process group termination even during severe cascading cancellations.
+    Guarantees process group / tree termination across platforms even during severe cascading cancellations:
+    - On POSIX: Uses process groups with start_new_session=True and os.killpg().
+    - On Windows: Uses taskkill /T for process-tree termination with process.terminate()/kill() fallbacks.
     """
 
     def __init__(self, rtsp_url: str, sample_rate: str, booth_id: str):
@@ -84,14 +86,37 @@ class FfmpegProcess:
             await cleanup_task
             raise
 
+    async def _kill_windows_tree(self, force: bool = False):
+        """
+        Terminate the process and all descendants on Windows using taskkill /T.
+        Falls back to direct process termination if taskkill fails.
+        """
+        try:
+            cmd = ["taskkill", "/PID", str(self.process.pid), "/T"]
+            if force:
+                cmd.insert(1, "/F")
+            kill_proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            await kill_proc.wait()
+        except Exception as e:
+            logger.debug(f"[{self.booth_id}] taskkill process tree termination failed: {e}")
+        finally:
+            if force:
+                self.process.kill()
+            else:
+                self.process.terminate()
+
     async def _perform_cleanup(self):
         if self.process.returncode is None:
             logger.info(f"[{self.booth_id}] Attempting termination of ffmpeg process group (pid={self.process.pid})")
 
             try:
-                # Send SIGTERM to the process group on POSIX, or terminate on Windows
+                # Send SIGTERM to the process group on POSIX, or terminate process tree on Windows
                 if sys.platform == "win32":
-                    self.process.terminate()
+                    await self._kill_windows_tree(force=False)
                 else:
                     os.killpg(self.process.pid, signal.SIGTERM)
 
@@ -103,7 +128,7 @@ class FfmpegProcess:
                         f"[{self.booth_id}] ffmpeg did not exit within {self.termination_timeout}s. Escalating to SIGKILL."
                     )
                     if sys.platform == "win32":
-                        self.process.kill()
+                        await self._kill_windows_tree(force=True)
                     else:
                         os.killpg(self.process.pid, signal.SIGKILL)
                     await self.process.wait()
