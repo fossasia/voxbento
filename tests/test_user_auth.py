@@ -89,6 +89,7 @@ class TestRegistration:
                     "email": "new@example.com",
                     "display_name": "New User",
                     "password": "securepass123",
+                    "password_confirm": "securepass123",
                 },
                 follow_redirects=False,
             )
@@ -105,10 +106,57 @@ class TestRegistration:
                     "email": "dupe@example.com",
                     "display_name": "Another User",
                     "password": "securepass123",
+                    "password_confirm": "securepass123",
                 },
             )
         assert resp.status_code == 422
         assert b"already exists" in resp.content
+
+    @pytest.mark.anyio
+    async def test_register_rejects_mismatched_password_confirm(self, setup_db):
+        from portal.database import get_session, get_user_by_email
+
+        async with _client() as c:
+            resp = await c.post(
+                "/register",
+                data={
+                    "email": "typo@example.com",
+                    "display_name": "Typo User",
+                    "password": "securepass123",
+                    "password_confirm": "securepass124",
+                },
+            )
+        assert resp.status_code == 422
+        assert b"Passwords do not match." in resp.content
+        async with get_session() as s:
+            assert await get_user_by_email(s, "typo@example.com") is None
+
+    @pytest.mark.anyio
+    async def test_register_passwordless_needs_no_confirm(self, setup_db):
+        async with _client() as c:
+            resp = await c.post(
+                "/register",
+                data={"email": "nopass@example.com", "display_name": "No Pass"},
+                follow_redirects=False,
+            )
+        assert resp.status_code == 200
+        assert b"Check your email" in resp.content
+
+    @pytest.mark.anyio
+    async def test_register_passwordless_ignores_leftover_confirm(self, setup_db):
+        async with _client() as c:
+            resp = await c.post(
+                "/register",
+                data={
+                    "email": "leftover@example.com",
+                    "display_name": "Leftover",
+                    "password": "",
+                    "password_confirm": "stale-value",
+                },
+                follow_redirects=False,
+            )
+        assert resp.status_code == 200
+        assert b"Check your email" in resp.content
 
     @pytest.mark.anyio
     async def test_register_creates_active_non_admin(self, setup_db):
@@ -276,6 +324,24 @@ class TestAdminUserManagement:
         assert b"user2@example.com" in resp2.content
         assert b"<td>2</td>" in resp2.content
         assert b"limit=1" in resp2.content
+
+    @pytest.mark.anyio
+    async def test_user_list_shows_readable_join_date(self, setup_db, admin_cookie):
+        user = await _create_test_user(email="dated@example.com")
+        async with _client() as c:
+            resp = await c.get("/admin/users/", cookies=admin_cookie)
+        assert resp.status_code == 200
+        assert user.created_at.strftime("%b %d, %Y").encode() in resp.content
+        assert user.created_at.strftime("%Y-%m-%d").encode() not in resp.content
+
+    @pytest.mark.anyio
+    async def test_user_detail_shows_readable_join_date(self, setup_db, admin_cookie):
+        user = await _create_test_user(email="detail@example.com")
+        async with _client() as c:
+            resp = await c.get(f"/admin/users/{user.id}/", cookies=admin_cookie)
+        assert resp.status_code == 200
+        assert user.created_at.strftime("%b %d, %Y, %H:%M UTC").encode() in resp.content
+        assert user.created_at.strftime("%Y-%m-%d").encode() not in resp.content
 
     @pytest.mark.anyio
     async def test_user_list_requires_admin(self, setup_db):
