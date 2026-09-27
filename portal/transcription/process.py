@@ -89,7 +89,7 @@ class FfmpegProcess:
     async def _kill_windows_tree(self, force: bool = False):
         """
         Terminate the process and all descendants on Windows using taskkill /T.
-        Falls back to direct process termination if taskkill fails.
+        Falls back to direct process termination if taskkill fails or times out.
         """
         try:
             cmd = ["taskkill", "/PID", str(self.process.pid), "/T"]
@@ -100,7 +100,14 @@ class FfmpegProcess:
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.DEVNULL,
             )
-            await kill_proc.wait()
+            try:
+                exit_code = await asyncio.wait_for(kill_proc.wait(), timeout=2.0)
+                if exit_code != 0:
+                    logger.debug(f"[{self.booth_id}] taskkill exited with code {exit_code}")
+            except TimeoutError:
+                logger.debug(f"[{self.booth_id}] taskkill timed out, killing taskkill process")
+                kill_proc.kill()
+                await kill_proc.wait()
         except Exception as e:
             logger.debug(f"[{self.booth_id}] taskkill process tree termination failed: {e}")
         finally:
