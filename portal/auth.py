@@ -166,7 +166,11 @@ async def _check_user_token(request: Request, event_id: int | None, room_id: int
         return True
     if not payload.get("sub"):
         return False
-    return await _check_scoped_admin_role(int(payload["sub"]), event_id, room_id)
+    try:
+        user_id = int(payload["sub"])
+    except (ValueError, TypeError):
+        return False
+    return await _check_scoped_admin_role(user_id, event_id, room_id)
 
 
 def _check_admin_token(request: Request) -> None:

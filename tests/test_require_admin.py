@@ -265,6 +265,32 @@ async def test_require_admin_malformed_user_token_falls_back_to_admin_cookie(set
 
 
 @pytest.mark.anyio
+async def test_require_admin_non_numeric_sub_falls_back_cleanly(setup_db):
+    """A validly-signed token with a non-numeric `sub` claim must fall back to
+    the admin_token check (and 403) rather than raising an unhandled 500."""
+    from datetime import datetime, timedelta, timezone
+
+    import jwt as pyjwt
+
+    from portal.config import settings
+
+    now = datetime.now(timezone.utc)
+    payload = {
+        "sub": "not-a-number",
+        "user": True,
+        "is_admin": False,
+        "iat": now,
+        "exp": now + timedelta(seconds=60),
+    }
+    bad_token = pyjwt.encode(payload, settings.effective_jwt_secret, algorithm="HS256")
+
+    req = _make_request({"user_token": bad_token})
+    with pytest.raises(HTTPException) as exc:
+        await require_admin(req)
+    assert exc.value.status_code == 403
+
+
+@pytest.mark.anyio
 async def test_require_admin_no_matching_role_raises_403(setup_db):
     user = await _create_user()
     token = create_user_token(user_id=user.id, email=user.email)
