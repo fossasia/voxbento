@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import dataclass
 
 from portal.database import get_session
 from portal.models import DBBooth, Event, Room, TranscriptTranslation
@@ -28,6 +29,49 @@ for p in OPENAI_COMPATIBLE_ENDPOINTS.keys():
     PROVIDERS[p] = openai_provider
 
 
+@dataclass
+class _ResolvedTranslation:
+    """Resolved provider/model/room/language state for a single translation segment."""
+
+    event: Event
+    room: Room
+    provider: str
+    model: str
+    api_key: str | None
+    enabled_langs: list
+    source_lang_code: str | None
+    source_lang_name: str
+
+
+def _resolve_source_lang_name(source_lang_code: str | None) -> str:
+    """Human-readable source language name, falling back to the code (or English)."""
+    import pycountry
+
+    source_lang_obj = pycountry.languages.get(alpha_2=source_lang_code) if source_lang_code else None
+    return source_lang_obj.name if source_lang_obj else (source_lang_code or "English")
+
+
+async def _broadcast_source_language(
+    room_id: int,
+    language_code: str,
+    booth_id_str: str,
+    uuid_segment_id: str,
+    seq: int,
+    text: str,
+    target_booth_id: str,
+) -> None:
+    """Broadcast the source-language bundle instantly (translation == original text)."""
+    from portal.websockets.manager import listener_manager, tts_manager
+
+    await tts_manager.broadcast_bundle(
+        room_id, language_code, booth_id_str, b"", uuid_segment_id, seq, text, text, None
+    )
+    if target_booth_id:
+        await listener_manager.broadcast(
+            target_booth_id, {"type": "translated_caption", "status": "final", "text": text}
+        )
+
+
 class TranslationWorker:
     """
     Handles fetching translations asynchronously for a given canonical segment.
@@ -41,10 +85,8 @@ class TranslationWorker:
     ):
         """Called when a finalized STT segment is saved. Fires off LLM requests for enabled target languages."""
         from sqlalchemy import select
-        from sqlalchemy.orm import selectinload
 
         from portal.models import TranscriptSegment
-        from portal.websockets.manager import tts_manager
 
         async with get_session() as session:
             segment = await session.scalar(select(TranscriptSegment).where(TranscriptSegment.id == segment_id))
@@ -56,109 +98,147 @@ class TranslationWorker:
                 "[%s] handle_translation triggered for segment %s (len=%s)", booth_id_str, segment_id, len(text)
             )
 
-            provider = None
-            model = None
-            enabled_langs = []
-            room = None
-
-            if segment.booth_id is None:
-                # Floor translation
-                room = await session.scalar(
-                    select(Room).options(selectinload(Room.translation_languages)).where(Room.id == room_id)
-                )
-                if not room or not room.floor_translation_enabled:
-                    logger.error(
-                        f"[{booth_id_str}] handle_translation abort: floor_translation_enabled is false for room {room_id}"
-                    )
-                    return
-                provider = room.floor_translation_provider
-                model = room.floor_translation_model
-                enabled_langs = [lang for lang in room.translation_languages if lang.enabled]
-                source_lang_code = room.floor_language_code
-            else:
-                # Booth translation
-                booth = await session.scalar(
-                    select(DBBooth)
-                    .options(selectinload(DBBooth.translation_languages))
-                    .where(DBBooth.id == segment.booth_id)
-                )
-                if not booth or not booth.translation_enabled:
-                    return
-                provider = booth.translation_provider
-                model = booth.translation_model
-                enabled_langs = [lang for lang in booth.translation_languages if lang.enabled]
-                room = await session.scalar(select(Room).where(Room.id == room_id))
-                source_lang_code = booth.language_code
-
-            if not provider or not model or not enabled_langs or not room:
-                logger.error(
-                    f"[{booth_id_str}] handle_translation abort: missing config. provider={provider}, model={model}, langs={enabled_langs}"
-                )
+            job = await self._resolve_translation_job(session, room_id, segment, booth_id_str)
+            if job is None:
                 return
 
-            event = await session.scalar(select(Event).where(Event.id == room.event_id))
-            if not event:
-                return
-
-            api_key = self._get_translation_api_key(event, provider)
-            if not api_key and provider != TranslationProviderEnum.LOCAL.value:
-                logger.error(f"[{booth_id_str}] Translation API key not found for provider {provider}")
-                return
-
-            import pycountry
-
-            source_lang_obj = pycountry.languages.get(alpha_2=source_lang_code) if source_lang_code else None
-            source_lang_name = source_lang_obj.name if source_lang_obj else (source_lang_code or "English")
-
-            tasks = []
-            for lang in enabled_langs:
-                if lang.language_code == source_lang_code:
-                    # Target == Source: bypass translation/TTS entirely. It was already broadcast instantly
-                    # on the base room. We just need to mark it done for anyone who might have connected
-                    # specifically to the source-language target websocket.
-                    async def _broadcast_source(r_id, l_code, b_id_str, u_seg_id, sq, txt, t_booth_id):
-                        from portal.websockets.manager import listener_manager
-                        await tts_manager.broadcast_bundle(
-                            r_id, l_code, b_id_str, b"", u_seg_id, sq, txt, txt, None
-                        )
-                        if t_booth_id:
-                            await listener_manager.broadcast(t_booth_id, {"type": "translated_caption", "status": "final", "text": txt})
-
-                    target_booth_id = f"{event.slug}-{room.id}-{lang.language_code}"
-                    tasks.append(
-                        _broadcast_source(room.id, lang.language_code, booth_id_str, uuid_segment_id, seq, text, target_booth_id)
-                    )
-                else:
-                    # Lazy translation: only translate if someone is actually listening!
-                    target_booth_id = f"{event.slug}-{room.id}-{lang.language_code}"
-                    from portal.websockets.manager import listener_manager
-                    has_tts = tts_manager.has_listeners(room.id, lang.language_code, booth_id_str)
-                    has_text = listener_manager.has_listeners(target_booth_id)
-                    if not has_tts and not has_text:
-                        continue
-
-                    tasks.append(
-                        self._translate_and_broadcast(
-                            event,
-                            room,
-                            provider,
-                            model,
-                            api_key,
-                            lang.language_code,
-                            lang.language_name,
-                            source_lang_name,
-                            segment_id,
-                            text,
-                            booth_id_str,
-                            uuid_segment_id,
-                            seq,
-                            target_booth_id,
-                        )
-                    )
-
+            tasks = self._build_language_tasks(job, segment_id, text, booth_id_str, uuid_segment_id, seq)
             if tasks:
                 logger.error(f"[{booth_id_str}] Spawning {len(tasks)} translation tasks for active listeners")
                 await asyncio.gather(*tasks)
+
+    async def _resolve_translation_job(
+        self, session, room_id: int, segment, booth_id_str: str
+    ) -> _ResolvedTranslation | None:
+        """Resolve the room, provider, model, enabled languages and source language for a segment.
+
+        Returns ``None`` (after logging, where applicable) when the segment cannot be translated.
+        """
+        from sqlalchemy import select
+
+        context = await self._resolve_job_context(session, room_id, segment, booth_id_str)
+        if context is None:
+            return None
+        provider, model, enabled_langs, room, source_lang_code = context
+
+        if not provider or not model or not enabled_langs or not room:
+            logger.error(
+                f"[{booth_id_str}] handle_translation abort: missing config. provider={provider}, model={model}, langs={enabled_langs}"
+            )
+            return None
+
+        event = await session.scalar(select(Event).where(Event.id == room.event_id))
+        if not event:
+            return None
+
+        api_key = self._get_translation_api_key(event, provider)
+        if not api_key and provider != TranslationProviderEnum.LOCAL.value:
+            logger.error(f"[{booth_id_str}] Translation API key not found for provider {provider}")
+            return None
+
+        return _ResolvedTranslation(
+            event=event,
+            room=room,
+            provider=provider,
+            model=model,
+            api_key=api_key,
+            enabled_langs=enabled_langs,
+            source_lang_code=source_lang_code,
+            source_lang_name=_resolve_source_lang_name(source_lang_code),
+        )
+
+    async def _resolve_job_context(self, session, room_id: int, segment, booth_id_str: str):
+        """Dispatch to the floor or booth context resolver.
+
+        Returns ``(provider, model, enabled_langs, room, source_lang_code)`` or ``None``.
+        """
+        if segment.booth_id is None:
+            return await self._resolve_floor_context(session, room_id, booth_id_str)
+        return await self._resolve_booth_context(session, room_id, segment)
+
+    async def _resolve_floor_context(self, session, room_id: int, booth_id_str: str):
+        """Resolve translation config for a floor (non-booth) segment."""
+        from sqlalchemy import select
+        from sqlalchemy.orm import selectinload
+
+        room = await session.scalar(
+            select(Room).options(selectinload(Room.translation_languages)).where(Room.id == room_id)
+        )
+        if not room or not room.floor_translation_enabled:
+            logger.error(
+                f"[{booth_id_str}] handle_translation abort: floor_translation_enabled is false for room {room_id}"
+            )
+            return None
+
+        enabled_langs = [lang for lang in room.translation_languages if lang.enabled]
+        return (
+            room.floor_translation_provider,
+            room.floor_translation_model,
+            enabled_langs,
+            room,
+            room.floor_language_code,
+        )
+
+    async def _resolve_booth_context(self, session, room_id: int, segment):
+        """Resolve translation config for a booth segment."""
+        from sqlalchemy import select
+        from sqlalchemy.orm import selectinload
+
+        booth = await session.scalar(
+            select(DBBooth).options(selectinload(DBBooth.translation_languages)).where(DBBooth.id == segment.booth_id)
+        )
+        if not booth or not booth.translation_enabled:
+            return None
+
+        enabled_langs = [lang for lang in booth.translation_languages if lang.enabled]
+        room = await session.scalar(select(Room).where(Room.id == room_id))
+        return booth.translation_provider, booth.translation_model, enabled_langs, room, booth.language_code
+
+    def _build_language_tasks(
+        self, job: _ResolvedTranslation, segment_id: int, text: str, booth_id_str: str, uuid_segment_id: str, seq: int
+    ) -> list:
+        """Build the per-language broadcast/translation coroutines for a resolved job."""
+        from portal.websockets.manager import listener_manager, tts_manager
+
+        tasks = []
+        for lang in job.enabled_langs:
+            target_booth_id = f"{job.event.slug}-{job.room.id}-{lang.language_code}"
+            if lang.language_code == job.source_lang_code:
+                # Target == Source: bypass translation/TTS entirely. It was already broadcast instantly
+                # on the base room. We just need to mark it done for anyone who might have connected
+                # specifically to the source-language target websocket.
+                tasks.append(
+                    _broadcast_source_language(
+                        job.room.id, lang.language_code, booth_id_str, uuid_segment_id, seq, text, target_booth_id
+                    )
+                )
+            else:
+                # Lazy translation: only translate if someone is actually listening!
+                has_tts = tts_manager.has_listeners(job.room.id, lang.language_code, booth_id_str)
+                has_text = listener_manager.has_listeners(target_booth_id)
+                if not has_tts and not has_text:
+                    continue
+
+                tasks.append(
+                    self._translate_and_broadcast(
+                        job.event,
+                        job.room,
+                        job.provider,
+                        job.model,
+                        job.api_key,
+                        lang.language_code,
+                        lang.language_name,
+                        job.source_lang_name,
+                        segment_id,
+                        text,
+                        booth_id_str,
+                        uuid_segment_id,
+                        seq,
+                        target_booth_id,
+                    )
+                )
+
+        return tasks
 
     def _get_translation_api_key(self, event: Event, provider: str) -> str | None:
         return get_translation_api_key(event, provider)

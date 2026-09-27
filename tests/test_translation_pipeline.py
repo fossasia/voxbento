@@ -180,3 +180,79 @@ async def test_source_language_bypass(db_data, mock_broadcast):
         assert en_call.args[6] == "Hello world"  # original text
         assert en_call.args[7] == "Hello world"  # translation == original text
         assert en_call.args[8] is None  # no error
+
+
+@pytest.mark.anyio
+async def test_handle_translation_missing_segment_aborts(db_data, mock_broadcast):
+    """A segment id that does not exist must abort without broadcasting anything."""
+    worker = TranslationWorker(mock_broadcast)
+
+    with patch(
+        "portal.websockets.manager.TTSConnectionManager.broadcast_bundle", new_callable=AsyncMock
+    ) as mock_bundle:
+        await worker.handle_translation(
+            room_id=db_data["room"].id,
+            segment_id=999999,
+            text="Hello world",
+            booth_id_str="floor",
+            uuid_segment_id="missing-uuid",
+            seq=1,
+        )
+
+    assert mock_bundle.call_count == 0
+
+
+@pytest.mark.anyio
+async def test_handle_translation_no_active_listeners_skips_translation(db_data, mock_broadcast):
+    """With no TTS or caption listeners, only the source-language bypass broadcast fires."""
+    worker = TranslationWorker(mock_broadcast)
+
+    with (
+        patch("portal.websockets.manager.tts_manager.has_listeners", return_value=False),
+        patch("portal.websockets.manager.listener_manager.has_listeners", return_value=False),
+        patch("portal.websockets.manager.TTSConnectionManager.broadcast_bundle", new_callable=AsyncMock) as mock_bundle,
+    ):
+        await worker.handle_translation(
+            room_id=db_data["room"].id,
+            segment_id=db_data["segment"].id,
+            text="Hello world",
+            booth_id_str="floor",
+            uuid_segment_id="no-listeners-uuid",
+            seq=1,
+        )
+
+    # fr/es are skipped (no listeners); only the "en" source-language bypass is broadcast.
+    assert mock_bundle.call_count == 1
+    assert mock_bundle.call_args_list[0].args[1] == "en"
+
+
+@pytest.mark.anyio
+async def test_handle_translation_floor_disabled_aborts(db_data, mock_broadcast):
+    """When floor translation is disabled, a floor segment must not be translated."""
+    from sqlalchemy import select
+
+    worker = TranslationWorker(mock_broadcast)
+
+    async with get_session() as s:
+        room = await s.scalar(select(Room).where(Room.id == db_data["room"].id))
+        room.floor_translation_enabled = False
+        await s.flush()
+
+    try:
+        with patch(
+            "portal.websockets.manager.TTSConnectionManager.broadcast_bundle", new_callable=AsyncMock
+        ) as mock_bundle:
+            await worker.handle_translation(
+                room_id=db_data["room"].id,
+                segment_id=db_data["segment"].id,
+                text="Hello world",
+                booth_id_str="floor",
+                uuid_segment_id="floor-off-uuid",
+                seq=1,
+            )
+        assert mock_bundle.call_count == 0
+    finally:
+        async with get_session() as s2:
+            room = await s2.scalar(select(Room).where(Room.id == db_data["room"].id))
+            room.floor_translation_enabled = True
+            await s2.flush()
