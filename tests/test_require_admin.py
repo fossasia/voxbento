@@ -21,7 +21,6 @@ from portal.auth import (
     require_admin,
 )
 
-
 # helpers
 
 
@@ -288,6 +287,40 @@ async def test_require_admin_non_numeric_sub_falls_back_cleanly(setup_db):
     with pytest.raises(HTTPException) as exc:
         await require_admin(req)
     assert exc.value.status_code == 403
+
+@pytest.mark.anyio
+async def test_require_admin_room_coordinator_rejects_mismatched_event(setup_db):
+    """A room_coordinator for room X must NOT be granted access via a URL whose
+    event_id belongs to a *different* event than room X actually belongs to."""
+    from portal.database import get_session, set_room_membership
+
+    real_event = await _create_event("pycon", "PyCon")
+    other_event = await _create_event("djangocon", "DjangoCon")
+    room = await _create_room(real_event.id, "Main Hall")
+    user = await _create_user()
+    async with get_session() as s:
+        await set_room_membership(s, user_id=user.id, room_id=room.id, role="room_coordinator")
+
+    token = create_user_token(user_id=user.id, email=user.email)
+    req = _make_request({"user_token": token}, {"event_id": str(other_event.id), "room_id": str(room.id)})
+    with pytest.raises(HTTPException) as exc:
+        await require_admin(req)
+    assert exc.value.status_code == 403
+
+
+@pytest.mark.anyio
+async def test_require_admin_room_coordinator_matching_event_still_passes(setup_db):
+    from portal.database import get_session, set_room_membership
+
+    event = await _create_event("pycon", "PyCon")
+    room = await _create_room(event.id, "Main Hall")
+    user = await _create_user()
+    async with get_session() as s:
+        await set_room_membership(s, user_id=user.id, room_id=room.id, role="room_coordinator")
+
+    token = create_user_token(user_id=user.id, email=user.email)
+    req = _make_request({"user_token": token}, {"event_id": str(event.id), "room_id": str(room.id)})
+    await require_admin(req)
 
 
 @pytest.mark.anyio
