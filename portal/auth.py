@@ -94,55 +94,83 @@ class WSAuthError(Exception):
     pass
 
 
-async def require_admin(request: Request) -> None:
-    """FastAPI dependency that guards admin routes.
-
-    Checks for a valid ``admin_token`` cookie containing a JWT with
-    ``admin=True`` claim. Also accepts a valid ``user_token`` with
-    ``is_admin=True``. Returns None on success; raises HTTP 403 on failure.
-    """
+def _parse_scope_ids(request: Request) -> tuple[int | None, int | None]:
+    """Extract event_id/room_id from the route's path params, if present."""
     event_id_str = request.path_params.get("event_id")
-    event_id = int(event_id_str) if event_id_str and event_id_str.isdigit() else None
     room_id_str = request.path_params.get("room_id")
+    event_id = int(event_id_str) if event_id_str and event_id_str.isdigit() else None
     room_id = int(room_id_str) if room_id_str and room_id_str.isdigit() else None
-    user_cookie = request.cookies.get("user_token", "")
-    if user_cookie:
-        try:
-            payload = decode_token(user_cookie)
-            if payload.get("user"):
-                if payload.get("is_admin"):
-                    return
-                if payload.get("sub"):
-                    from portal.database import (
-                        get_session,
-                        get_user_by_id,
-                        list_memberships_for_user,
-                        list_room_memberships_for_user,
-                    )
+    return event_id, room_id
 
-                    async with get_session() as db_session:
-                        user = await get_user_by_id(db_session, int(payload["sub"]))
-                        if user and user.is_admin:
-                            return
-                        memberships = await list_memberships_for_user(db_session, int(payload["sub"]))
-                        rms = await list_room_memberships_for_user(db_session, int(payload["sub"]))
-                        if room_id is not None:
-                            if any((rm.room_id == room_id and rm.role == "room_coordinator" for rm in rms)):
-                                return
-                            if any((m.event_id == event_id and m.role == "event_owner" for m in memberships)):
-                                return
-                        elif event_id is not None:
-                            if any((m.event_id == event_id and m.role == "event_owner" for m in memberships)):
-                                return
-                            if any((rm.room.event_id == event_id and rm.role == "room_coordinator" for rm in rms)):
-                                return
-                        if event_id is None and room_id is None:
-                            if any((m.role == "event_owner" for m in memberships)) or any(
-                                (rm.role == "room_coordinator" for rm in rms)
-                            ):
-                                return
-        except jwt.InvalidTokenError:
-            pass
+
+def _check_event_owner(memberships, event_id: int | None) -> bool:
+    """True if any membership grants event_owner on the given event."""
+    if event_id is None:
+        return False
+    return any(m.event_id == event_id and m.role == "event_owner" for m in memberships)
+
+
+def _check_room_coordinator(room_memberships, *, room_id: int | None = None, event_id: int | None = None) -> bool:
+    """True if any room membership grants room_coordinator for the room or event."""
+    if room_id is not None:
+        return any(rm.room_id == room_id and rm.role == "room_coordinator" for rm in room_memberships)
+    if event_id is not None:
+        return any(rm.room.event_id == event_id and rm.role == "room_coordinator" for rm in room_memberships)
+    return any(rm.role == "room_coordinator" for rm in room_memberships)
+
+
+def _has_any_admin_role(memberships, room_memberships) -> bool:
+    """True if the user holds event_owner or room_coordinator anywhere (no scope requested)."""
+    return any(m.role == "event_owner" for m in memberships) or any(
+        rm.role == "room_coordinator" for rm in room_memberships
+    )
+
+
+async def _check_scoped_admin_role(user_id: int, event_id: int | None, room_id: int | None) -> bool:
+    """Check DB-backed roles (global admin / event_owner / room_coordinator) for the given scope."""
+    from portal.database import (
+        get_session,
+        get_user_by_id,
+        list_memberships_for_user,
+        list_room_memberships_for_user,
+    )
+
+    async with get_session() as db_session:
+        user = await get_user_by_id(db_session, user_id)
+        if user and user.is_admin:
+            return True
+
+        memberships = await list_memberships_for_user(db_session, user_id)
+        rms = await list_room_memberships_for_user(db_session, user_id)
+
+        if room_id is not None:
+            return _check_room_coordinator(rms, room_id=room_id) or _check_event_owner(memberships, event_id)
+        if event_id is not None:
+            return _check_event_owner(memberships, event_id) or _check_room_coordinator(rms, event_id=event_id)
+        return _has_any_admin_role(memberships, rms)
+
+
+async def _check_user_token(request: Request, event_id: int | None, room_id: int | None) -> bool:
+    """Check the user_token cookie for global-admin or scoped role-based access."""
+    user_cookie = request.cookies.get("user_token", "")
+    if not user_cookie:
+        return False
+    try:
+        payload = decode_token(user_cookie)
+    except jwt.InvalidTokenError:
+        return False
+
+    if not payload.get("user"):
+        return False
+    if payload.get("is_admin"):
+        return True
+    if not payload.get("sub"):
+        return False
+    return await _check_scoped_admin_role(int(payload["sub"]), event_id, room_id)
+
+
+def _check_admin_token(request: Request) -> None:
+    """Validate the admin_token cookie, raising HTTP 403 on any failure."""
     cookie = request.cookies.get("admin_token", "")
     if not cookie:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required.")
@@ -152,6 +180,24 @@ async def require_admin(request: Request) -> None:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid admin token.")
     if not payload.get("admin"):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required.")
+
+
+async def require_admin(request: Request) -> None:
+    """FastAPI dependency that guards admin routes.
+
+    Accepts either a ``user_token`` cookie with ``is_admin=True`` (or a
+    DB-backed role -- global admin, event_owner, or room_coordinator --
+    scoped to the requested event/room), or an ``admin_token`` cookie
+    containing a JWT with ``admin=True`` claim.
+
+    Returns None on success; raises HTTP 403 on failure.
+    """
+    event_id, room_id = _parse_scope_ids(request)
+
+    if await _check_user_token(request, event_id, room_id):
+        return
+
+    _check_admin_token(request)
 
 
 async def require_super_admin(request: Request) -> None:
