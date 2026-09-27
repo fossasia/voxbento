@@ -168,6 +168,10 @@ async def get_event_by_id(session: AsyncSession, event_id: int) -> Event | None:
     return result.scalar_one_or_none()
 
 
+def escape_event_search_term(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 async def count_events(
     session: AsyncSession,
     *,
@@ -178,7 +182,13 @@ async def count_events(
     if allowed_event_ids is not None:
         stmt = stmt.where(Event.id.in_(allowed_event_ids))
     if search:
-        stmt = stmt.where(or_(Event.slug.ilike(f"%{search}%"), Event.display_name.ilike(f"%{search}%")))
+        search_pattern = f"%{escape_event_search_term(search)}%"
+        stmt = stmt.where(
+            or_(
+                Event.slug.ilike(search_pattern, escape="\\"),
+                Event.display_name.ilike(search_pattern, escape="\\"),
+            )
+        )
     result = await session.execute(stmt)
     return result.scalar_one()
 
@@ -195,7 +205,13 @@ async def list_events(
     if allowed_event_ids is not None:
         stmt = stmt.where(Event.id.in_(allowed_event_ids))
     if search:
-        stmt = stmt.where(or_(Event.slug.ilike(f"%{search}%"), Event.display_name.ilike(f"%{search}%")))
+        search_pattern = f"%{escape_event_search_term(search)}%"
+        stmt = stmt.where(
+            or_(
+                Event.slug.ilike(search_pattern, escape="\\"),
+                Event.display_name.ilike(search_pattern, escape="\\"),
+            )
+        )
     result = await session.execute(stmt.limit(limit).offset(offset))
     return list(result.scalars().all())
 

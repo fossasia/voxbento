@@ -269,6 +269,50 @@ class TestEventCRUD:
         assert f'value="{search_term}"' in resp.text
 
     @pytest.mark.anyio
+    @pytest.mark.parametrize(
+        ("search_term", "literal_name", "near_match"),
+        [
+            ("Alpha_Beta", "Alpha_Beta", "AlphaXBeta"),
+            ("Alpha%Beta", "Alpha%Beta", "AlphaXBeta"),
+            ("Alpha\\Beta", "Alpha\\Beta", "AlphaBeta"),
+        ],
+    )
+    async def test_event_list_search_treats_like_wildcards_literally(
+        self, admin_cookie, search_term, literal_name, near_match
+    ):
+        from portal.database import create_event, get_session
+
+        async with get_session() as session:
+            await create_event(session, slug="literal-match", display_name=literal_name)
+            await create_event(session, slug="near-match", display_name=near_match)
+
+        async with _client() as c:
+            resp = await c.get("/admin/events/", params={"search": search_term}, cookies=admin_cookie)
+
+        assert resp.status_code == 200
+        assert "literal-match" in resp.text
+        assert "near-match" not in resp.text
+
+    @pytest.mark.anyio
+    async def test_event_list_pagination_url_encodes_search(self, admin_cookie):
+        from portal.database import create_event, get_session
+
+        search_term = "special&#"
+        async with get_session() as session:
+            for index in range(21):
+                await create_event(
+                    session,
+                    slug=f"special-search-{index}",
+                    display_name=f"{search_term} event {index}",
+                )
+
+        async with _client() as c:
+            resp = await c.get("/admin/events/", params={"search": search_term}, cookies=admin_cookie)
+
+        assert resp.status_code == 200
+        assert 'href="?page=2&amp;search=special%26%23"' in resp.text
+
+    @pytest.mark.anyio
     async def test_event_list_search_with_no_matches_shows_clearable_empty_state(self, admin_cookie, seed_event):
         async with _client() as c:
             resp = await c.get("/admin/events/", params={"search": "no-such-event"}, cookies=admin_cookie)
@@ -366,6 +410,20 @@ class TestEventCRUD:
 # ---------------------------------------------------------------------------
 # Room CRUD
 # ---------------------------------------------------------------------------
+
+
+class TestBreadcrumbs:
+    @pytest.mark.anyio
+    @pytest.mark.parametrize("path", ["/admin/events/", "/admin/users/"])
+    async def test_breadcrumb_marks_current_page_and_uses_slash_separator(self, admin_cookie, path):
+        async with _client() as c:
+            resp = await c.get(path, cookies=admin_cookie)
+        assert resp.status_code == 200
+        start = resp.text.index('<nav class="breadcrumb">')
+        nav = resp.text[start : resp.text.index("</nav>", start)]
+        assert 'class="breadcrumb-current" aria-current="page"' in nav
+        assert "›" not in nav
+        assert "<span>/</span>" in nav
 
 
 class TestRoomCRUD:
