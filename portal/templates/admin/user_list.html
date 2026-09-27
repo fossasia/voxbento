@@ -82,7 +82,7 @@
         <span class="status-offline">○ Inactive</span>
         {% endif %}
       </td>
-      <td>{{ user.created_at.strftime('%Y-%m-%d') if user.created_at else '—' }}</td>
+      <td>{{ user.created_at.strftime('%b %d, %Y') if user.created_at else '—' }}</td>
       <td class="actions-cell">
         <form method="post" action="/admin/users/{{ user.id }}/toggle-active" class="inline-form">
           <button type="submit" class="btn btn-sm {{ 'btn-warning' if user.is_active else 'btn-success' }}">

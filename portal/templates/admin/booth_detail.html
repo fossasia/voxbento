@@ -41,7 +41,7 @@
       <dt>Language</dt>
       <dd>{{ booth.language_name }} ({{ booth.language_code }})</dd>
       <dt>Created</dt>
-      <dd>{{ booth.created_at.strftime('%Y-%m-%d %H:%M UTC') if booth.created_at else '—' }}</dd>
+      <dd>{{ booth.created_at.strftime('%b %d, %Y, %H:%M UTC') if booth.created_at else '—' }}</dd>
     </dl>
   </div>
 
@@ -616,8 +616,8 @@
           <span class="badge badge-valid">Valid</span>
           {% endif %}
         </td>
-        <td>{{ tok.expires_at.strftime('%Y-%m-%d %H:%M') if tok.expires_at else 'Never' }}</td>
-        <td>{{ tok.created_at.strftime('%Y-%m-%d %H:%M') if tok.created_at else '—' }}</td>
+        <td>{{ tok.expires_at.strftime('%b %d, %Y, %H:%M') if tok.expires_at else 'Never' }}</td>
+        <td>{{ tok.created_at.strftime('%b %d, %Y, %H:%M') if tok.created_at else '—' }}</td>
         <td>
           {% if not tok.is_used and not tok.is_expired %}
           <form method="post"
