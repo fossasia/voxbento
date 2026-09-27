@@ -270,7 +270,7 @@ async def _resolve_embed_channel(
 def _sanitize_embed_theme(
     theme: str, font: str, primary_color: str, custom_css_url: str | None
 ) -> tuple[str, str, str, str | None]:
-    """Sanitize embed theming params against allowlists - no free-text values accepted."""
+    """Sanitize embed theming params: theme, font, and color are allowlisted; custom CSS is accepted from arbitrary HTTPS URLs."""
     safe_theme = theme if theme in _ALLOWED_THEMES else "dark"
     safe_font = font if font in _ALLOWED_FONTS else "inter"
     safe_primary = primary_color if _PRIMARY_COLOR_RE.match(primary_color) else _DEFAULT_PRIMARY
