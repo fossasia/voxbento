@@ -198,6 +198,7 @@ class TestHomePage:
             resp = await c.get("/")
         assert resp.status_code == 200
         assert b"TestCon 2026" in resp.content
+        assert b"Main Hall" in resp.content
 
     @pytest.mark.anyio
     async def test_home_shows_listener_links(self, seed_event):
@@ -273,7 +274,59 @@ class TestEventCRUD:
             resp = await c.get(f"/admin/events/{event.id}/", cookies=admin_cookie)
         assert resp.status_code == 200
         assert b"TestCon 2026" in resp.content
-        assert b"Main Hall" in resp.content
+
+    @pytest.mark.anyio
+    async def test_api_settings_update_and_clear_keys(self, admin_cookie, seed_event):
+        from portal.crypto import decrypt_val
+        from portal.database import get_event_by_id, get_session
+
+        event, _, _ = seed_event
+        keys = {
+            "openai_api_key": " openai-secret ",
+            "deepgram_api_key": "deepgram-secret",
+            "nvidia_api_key": "nvidia-secret",
+            "elevenlabs_api_key": "elevenlabs-secret",
+            "translation_openai_api_key": "translation-openai-secret",
+            "openrouter_api_key": "openrouter-secret",
+            "gemini_api_key": "gemini-secret",
+            "anthropic_api_key": "anthropic-secret",
+            "groq_api_key": "groq-secret",
+        }
+        async with _client() as c:
+            response = await c.post(
+                f"/admin/events/{event.id}/api-settings",
+                cookies=admin_cookie,
+                data={"transcription_api_enabled": "1", **keys},
+                follow_redirects=False,
+            )
+        assert response.status_code == 303
+
+        async with get_session() as session:
+            updated = await get_event_by_id(session, event.id)
+            assert updated is not None
+            assert updated.transcription_api_enabled is True
+            for form_name, expected in keys.items():
+                attribute = f"encrypted_{form_name}"
+                assert decrypt_val(getattr(updated, attribute)) == expected.strip()
+
+        async with _client() as c:
+            response = await c.post(
+                f"/admin/events/{event.id}/api-settings",
+                cookies=admin_cookie,
+                data={
+                    "openai_api_key": "replacement",
+                    "clear_openai_api_key": "1",
+                    "deepgram_api_key": "   ",
+                },
+                follow_redirects=False,
+            )
+        assert response.status_code == 303
+
+        async with get_session() as session:
+            updated = await get_event_by_id(session, event.id)
+            assert updated is not None
+            assert updated.encrypted_openai_api_key is None
+            assert decrypt_val(updated.encrypted_deepgram_api_key) == "deepgram-secret"
 
     @pytest.mark.anyio
     async def test_event_detail_shows_booth_links(self, admin_cookie, seed_event):
