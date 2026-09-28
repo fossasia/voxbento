@@ -175,6 +175,8 @@ body:has(.login-page) .portal-footer {
   color: #888;
   font: inherit;
   font-size: 0.9em;
+  /* The button reset drops the underline the anchor had; restore it so the control still reads as a link. */
+  text-decoration: underline;
   cursor: pointer;
 }
 .btn-block { width: 100%; }
