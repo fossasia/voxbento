@@ -85,11 +85,15 @@ If your feature requires changes to the database schema:
 # 1. Edit your SQLAlchemy models in portal/models.py
 # 2. Generate a new migration file locally
 uv run alembic revision --autogenerate -m "describe your change"
-# Note: Please rename the generated revision ID to be sequential (e.g., 009, 010) to match our existing migrations. Do not use Alembic's default random hex IDs.
+# Keep Alembic's generated hexadecimal revision ID and filename unchanged.
 # 3. Apply it to the running Docker container
 docker compose exec portal uv run alembic upgrade head
 ```
 Always commit the generated migration files in `alembic/versions/`. Do **not** commit your local `.db` files.
+
+Existing migrations retain their sequential IDs for compatibility. If parallel
+branches introduce multiple heads, rebase onto the latest `dev` branch and run
+`uv run alembic merge heads -m "merge migration heads"` before opening the PR.
 
 ---
 

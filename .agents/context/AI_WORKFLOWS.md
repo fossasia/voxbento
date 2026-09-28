@@ -122,16 +122,20 @@ node --check portal/static/js/*.js
 ```bash
 uv run alembic revision --autogenerate -m "description"
 ```
-3. Review generated file in `alembic/versions/` — autogenerate is not always correct for SQLite batch mode.
-4. For SQLite, `batch_alter_table` is required for column changes (see migration 008 as example).
-5. Apply:
+3. Keep Alembic's generated hexadecimal revision ID and filename unchanged.
+4. Review generated file in `alembic/versions/` — autogenerate is not always correct for SQLite batch mode.
+5. For SQLite, `batch_alter_table` is required for column changes (see migration 008 as example).
+6. Apply:
 ```bash
 uv run alembic upgrade head
 ```
-6. Verify:
+7. Verify:
 ```bash
 uv run pytest tests/test_database.py -v
 ```
+
+If parallel branches create multiple heads, rebase onto `dev` and run
+`uv run alembic merge heads -m "merge migration heads"`.
 
 ---
 
