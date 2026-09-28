@@ -159,7 +159,7 @@ async def resolve_vocabulary_entries(
     for entry in candidates:
         # "all" and target-specific rows compete for the same source term.
         # The scope/priority sort above decides which translation wins.
-        key = entry.source_term.casefold()
+        key = entry.source_term if entry.case_sensitive else entry.source_term.casefold()
         if key in seen:
             continue
         seen.add(key)

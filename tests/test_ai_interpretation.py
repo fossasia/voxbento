@@ -130,6 +130,22 @@ async def test_resolver_prefers_room_entries_and_limits_prompt_size():
                     ),
                     AIVocabularyEntry(
                         event_id=event.id,
+                        source_term="US",
+                        target_language="all",
+                        target_term="US",
+                        case_sensitive=True,
+                        priority=99,
+                    ),
+                    AIVocabularyEntry(
+                        event_id=event.id,
+                        source_term="us",
+                        target_language="de",
+                        target_term="uns",
+                        case_sensitive=True,
+                        priority=98,
+                    ),
+                    AIVocabularyEntry(
+                        event_id=event.id,
                         source_term="WebRTC",
                         target_language="de",
                         target_term="WebRTC",
@@ -151,12 +167,14 @@ async def test_resolver_prefers_room_entries_and_limits_prompt_size():
                 room_id=room.id,
                 booth_id=None,
                 target_language="de",
-                transcript_text="Voxbento uses WebRTC",
-                max_entries=2,
+                transcript_text="Voxbento brings US and us together over WebRTC",
+                max_entries=4,
             )
 
         assert [(entry.source_term, entry.target_term) for entry in entries] == [
             ("Voxbento", "Room Voxbento"),
+            ("US", "US"),
+            ("us", "uns"),
             ("WebRTC", "WebRTC"),
         ]
     finally:
