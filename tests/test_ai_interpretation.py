@@ -116,7 +116,7 @@ async def test_resolver_prefers_room_entries_and_limits_prompt_size():
                     AIVocabularyEntry(
                         event_id=event.id,
                         source_term="Voxbento",
-                        target_language="all",
+                        target_language="de",
                         target_term="Event Voxbento",
                         priority=100,
                     ),

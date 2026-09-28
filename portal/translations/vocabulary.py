@@ -155,9 +155,11 @@ async def resolve_vocabulary_entries(
 
     candidates.sort(key=lambda entry: (scope_rank(entry), entry.priority, entry.id), reverse=True)
     selected: list[AIVocabularyEntry] = []
-    seen: set[tuple[str, str]] = set()
+    seen: set[str] = set()
     for entry in candidates:
-        key = (entry.source_term.casefold(), entry.target_language)
+        # "all" and target-specific rows compete for the same source term.
+        # The scope/priority sort above decides which translation wins.
+        key = entry.source_term.casefold()
         if key in seen:
             continue
         seen.add(key)
