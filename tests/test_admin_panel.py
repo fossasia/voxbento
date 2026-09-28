@@ -414,6 +414,81 @@ class TestRoomCRUD:
         assert b'name="audio_delay_ms"' in resp.content
 
     @pytest.mark.anyio
+    async def test_update_room_ai_interpretation_settings(self, admin_cookie, seed_event):
+        event, room, _ = seed_event
+        async with _client() as c:
+            resp = await c.post(
+                f"/admin/events/{event.id}/rooms/{room.id}/edit",
+                data={
+                    "form_section": "translation",
+                    "floor_translation_provider": "openai",
+                    "floor_translation_model": "gpt-4o-mini",
+                    "floor_ai_interpreter_persona": "Technical conference interpreter",
+                    "floor_ai_interpretation_style": "Formal and concise",
+                    "floor_ai_vocabulary_enabled": "on",
+                },
+                cookies=admin_cookie,
+                follow_redirects=False,
+            )
+        assert resp.status_code == 303
+
+        from portal.database import get_room_by_id, get_session
+
+        async with get_session() as session:
+            updated = await get_room_by_id(session, room.id)
+            assert updated.floor_ai_interpreter_persona == "Technical conference interpreter"
+            assert updated.floor_ai_interpretation_style == "Formal and concise"
+            assert updated.floor_ai_vocabulary_enabled is True
+
+    @pytest.mark.anyio
+    async def test_room_vocabulary_upload_preview_and_export(self, admin_cookie, seed_event):
+        event, room, _ = seed_event
+        csv_content = (
+            "source_term,target_language,target_term,description,case_sensitive,match_type,priority\n"
+            "Voxbento,all,Voxbento,Product name,true,exact,100\n"
+            "WebRTC,de,WebRTC,Protocol,false,phrase,90\n"
+        )
+        async with _client() as c:
+            upload = await c.post(
+                f"/admin/events/{event.id}/rooms/{room.id}/ai-vocabulary/upload",
+                data={"import_mode": "append"},
+                files={"vocabulary_file": ("glossary.csv", csv_content, "text/csv")},
+                cookies=admin_cookie,
+                follow_redirects=False,
+            )
+            assert upload.status_code == 303
+            assert "vocab_imported=2" in upload.headers["location"]
+
+            page = await c.get(upload.headers["location"], cookies=admin_cookie)
+            assert page.status_code == 200
+            assert b"Imported 2 rows" in page.content
+            assert b"Voxbento" in page.content
+            assert b"WebRTC" in page.content
+
+            export = await c.get(
+                f"/admin/events/{event.id}/rooms/{room.id}/ai-vocabulary/export",
+                cookies=admin_cookie,
+            )
+        assert export.status_code == 200
+        assert export.headers["content-type"].startswith("text/csv")
+        assert "Voxbento,all,Voxbento" in export.text
+
+    @pytest.mark.anyio
+    async def test_room_vocabulary_upload_reports_invalid_rows(self, admin_cookie, seed_event):
+        event, room, _ = seed_event
+        csv_content = "source_term,target_language,target_term,match_type\nBad,de,Term,regex\n"
+        async with _client() as c:
+            upload = await c.post(
+                f"/admin/events/{event.id}/rooms/{room.id}/ai-vocabulary/upload",
+                files={"vocabulary_file": ("glossary.csv", csv_content, "text/csv")},
+                cookies=admin_cookie,
+                follow_redirects=False,
+            )
+        assert upload.status_code == 303
+        assert "vocab_imported=0" in upload.headers["location"]
+        assert "unsupported+match_type" in upload.headers["location"]
+
+    @pytest.mark.anyio
     async def test_update_room_audio_delay(self, admin_cookie, seed_event):
         event, room, _ = seed_event
         async with _client() as c:

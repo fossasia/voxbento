@@ -194,6 +194,29 @@
       </div>
     </div>
 
+    <div class="ai-interpretation-grid">
+      <div class="form-group">
+        <label for="floor_ai_interpreter_persona">AI interpreter persona</label>
+        <textarea id="floor_ai_interpreter_persona" name="floor_ai_interpreter_persona" class="input ai-interpretation-textarea" rows="4" placeholder="Example: A professional simultaneous interpreter for open source technical conferences.">{{ room.floor_ai_interpreter_persona or '' }}</textarea>
+        <p class="form-help">Describe the interpreter's domain expertise and role.</p>
+      </div>
+      <div class="form-group">
+        <label for="floor_ai_interpretation_style">AI interpretation style</label>
+        <textarea id="floor_ai_interpretation_style" name="floor_ai_interpretation_style" class="input ai-interpretation-textarea" rows="4" placeholder="Example: Use clear formal conference language. Preserve API names and issue numbers.">{{ room.floor_ai_interpretation_style or '' }}</textarea>
+        <p class="form-help">Set tone, formality, terminology, and language-specific conventions.</p>
+      </div>
+    </div>
+
+    <div class="form-row">
+      <div class="form-group">
+        <label class="checkbox-label ai-vocabulary-toggle">
+          <input type="checkbox" name="floor_ai_vocabulary_enabled" id="floor_ai_vocabulary_enabled" {% if room.floor_ai_vocabulary_enabled %}checked{% endif %}>
+          Use the room vocabulary glossary in AI prompts
+        </label>
+        <p class="form-help">Only matching terms and high-priority entries are sent to the provider, up to 80 entries per segment.</p>
+      </div>
+    </div>
+
     <div class="form-row">
       <div class="form-group" style="flex: 1;">
         <label>Target Languages</label>
@@ -214,6 +237,75 @@
     </div>
   </div>
 </form>
+
+<section class="token-form-card ai-vocabulary-card" aria-labelledby="ai-vocabulary-heading">
+  <div class="ai-vocabulary-header">
+    <div>
+      <h3 id="ai-vocabulary-heading">AI interpretation vocabulary</h3>
+      <p class="form-help">Upload event terminology for consistent translated captions and translated TTS.</p>
+    </div>
+    <a class="btn btn-outline btn-sm" href="/admin/events/{{ event.id }}/rooms/{{ room.id }}/ai-vocabulary/export">Export CSV</a>
+  </div>
+
+  {% if vocabulary_imported is not none %}
+    <div class="alert alert-success ai-vocabulary-alert">
+      Imported {{ vocabulary_imported }} row{% if vocabulary_imported != '1' %}s{% endif %}.
+      {% if vocabulary_languages %} Languages: {{ vocabulary_languages }}.{% endif %}
+    </div>
+  {% endif %}
+  {% if vocabulary_warnings %}
+    <div class="alert alert-warning ai-vocabulary-alert"><strong>Import warnings:</strong> {{ vocabulary_warnings }}</div>
+  {% endif %}
+
+  <form method="post" action="/admin/events/{{ event.id }}/rooms/{{ room.id }}/ai-vocabulary/upload" enctype="multipart/form-data" class="ai-vocabulary-upload">
+    <div class="form-group ai-vocabulary-file">
+      <label for="vocabulary_file">Vocabulary CSV</label>
+      <input type="file" id="vocabulary_file" name="vocabulary_file" accept=".csv,text/csv" required>
+      <p class="form-help">Required columns: source_term, target_language, target_term. Maximum size: 2 MB.</p>
+    </div>
+    <div class="form-group ai-vocabulary-mode">
+      <label for="import_mode">Import mode</label>
+      <select id="import_mode" name="import_mode" class="input">
+        <option value="append">Append new entries</option>
+        <option value="replace">Replace room vocabulary</option>
+      </select>
+    </div>
+    <button type="submit" class="btn btn-primary">Upload vocabulary</button>
+  </form>
+
+  {% if vocabulary_entries %}
+    <div class="ai-vocabulary-table-wrap">
+      <table class="data-table ai-vocabulary-table">
+        <thead>
+          <tr><th>Source term</th><th>Language</th><th>Target term</th><th>Match</th><th>Priority</th><th></th></tr>
+        </thead>
+        <tbody>
+          {% for entry in vocabulary_entries %}
+            <tr>
+              <td><strong>{{ entry.source_term }}</strong>{% if entry.description %}<small>{{ entry.description }}</small>{% endif %}</td>
+              <td><span class="badge">{{ entry.target_language }}</span></td>
+              <td>{{ entry.target_term }}</td>
+              <td>{{ entry.match_type }}{% if entry.case_sensitive %}, case-sensitive{% endif %}</td>
+              <td>{{ entry.priority }}</td>
+              <td>
+                <form method="post" action="/admin/events/{{ event.id }}/rooms/{{ room.id }}/ai-vocabulary/delete">
+                  <input type="hidden" name="entry_id" value="{{ entry.id }}">
+                  <button type="submit" class="btn btn-sm btn-outline">Delete</button>
+                </form>
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <form method="post" action="/admin/events/{{ event.id }}/rooms/{{ room.id }}/ai-vocabulary/delete" class="ai-vocabulary-clear">
+      <input type="hidden" name="entry_id" value="all">
+      <button type="submit" class="btn btn-sm btn-outline">Delete all room vocabulary</button>
+    </form>
+  {% else %}
+    <p class="ai-vocabulary-empty">No room vocabulary has been uploaded yet.</p>
+  {% endif %}
+</section>
 
 <form method="post" action="/admin/events/{{ event.id }}/rooms/{{ room.id }}/edit" class="token-form" id="floor_tts_form">
   <input type="hidden" name="form_section" value="tts">
