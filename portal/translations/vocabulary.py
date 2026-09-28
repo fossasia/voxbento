@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import io
+import re
 from dataclasses import dataclass
 
 import pycountry
@@ -125,6 +126,11 @@ def parse_vocabulary_csv(file_content: str) -> tuple[list[VocabularyEntryInput],
 def _term_matches(entry: AIVocabularyEntry, transcript_text: str) -> bool:
     if entry.priority >= HIGH_PRIORITY_THRESHOLD:
         return True
+    if entry.match_type == "exact":
+        # Word boundaries, so "US" does not match inside "USB" or "status".
+        pattern = rf"(?<!\w){re.escape(entry.source_term)}(?!\w)"
+        flags = 0 if entry.case_sensitive else re.IGNORECASE
+        return re.search(pattern, transcript_text, flags) is not None
     haystack = transcript_text if entry.case_sensitive else transcript_text.casefold()
     needle = entry.source_term if entry.case_sensitive else entry.source_term.casefold()
     return needle in haystack

@@ -11,7 +11,7 @@ from portal.translations.prompts import build_interpretation_messages
 from portal.translations.providers.anthropic import AnthropicProvider
 from portal.translations.providers.gemini import GeminiProvider
 from portal.translations.providers.openai import OpenAIProvider
-from portal.translations.vocabulary import parse_vocabulary_csv, resolve_vocabulary_entries
+from portal.translations.vocabulary import _term_matches, parse_vocabulary_csv, resolve_vocabulary_entries
 
 
 def test_prompt_builder_combines_persona_style_and_vocabulary():
@@ -37,6 +37,30 @@ def test_prompt_builder_combines_persona_style_and_vocabulary():
     assert "A technical conference interpreter." in system
     assert "Use formal language." in system
     assert "Voxbento -> Voxbento (Product name)" in system
+
+
+def test_exact_match_type_requires_word_boundaries():
+    def entry(term, match_type, case_sensitive=False):
+        return AIVocabularyEntry(
+            event_id=1,
+            source_term=term,
+            target_language="de",
+            target_term=term,
+            case_sensitive=case_sensitive,
+            match_type=match_type,
+            priority=0,
+        )
+
+    assert _term_matches(entry("US", "exact", case_sensitive=True), "We ship to the US today")
+    assert not _term_matches(entry("US", "exact", case_sensitive=True), "Plug in the USB cable")
+    assert not _term_matches(entry("us", "exact"), "Stay focused on the business")
+    assert _term_matches(entry("us", "exact"), "Come with US now")
+    # phrase entries keep matching inside longer words
+    assert _term_matches(entry("US", "phrase", case_sensitive=True), "Plug in the USB cable")
+    # a high-priority entry is always included, whatever its match type
+    always = entry("US", "exact", case_sensitive=True)
+    always.priority = 100
+    assert _term_matches(always, "nothing relevant here")
 
 
 def test_csv_parser_reports_invalid_and_duplicate_rows():
