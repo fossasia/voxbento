@@ -213,3 +213,31 @@ class TestTranscriptionProviders:
             assert kwargs.get("log_prob_threshold") == -1.0
             assert kwargs.get("condition_on_previous_text") is False
             assert kwargs.get("vad_filter") is True
+
+
+class TestProviderRegistry:
+    def test_registry_lists_every_transcription_backend(self):
+        from portal.transcription.constants import ProviderEnum
+        from portal.transcription.worker import PROVIDERS
+
+        expected = {"local", "openai", "deepgram", "nvidia", "elevenlabs"}
+        assert set(PROVIDERS) == expected
+        # Every selectable provider (all but the "none" sentinel) must have a backend.
+        assert {p.value for p in ProviderEnum if p is not ProviderEnum.NONE} == expected
+
+    def test_registry_backends_implement_transcription_provider(self):
+        from portal.transcription.providers.base import StreamingProvider
+        from portal.transcription.worker import PROVIDERS
+
+        for name, provider in PROVIDERS.items():
+            assert isinstance(provider, TranscriptionProvider), name
+            assert not isinstance(provider, StreamingProvider), name
+            assert type(provider).run_stream is not TranscriptionProvider.run_stream or (
+                type(provider).process_chunk is not TranscriptionProvider.process_chunk
+            ), f"{name} does not override process_chunk or run_stream"
+
+    def test_legacy_streaming_base_classes_are_removed(self):
+        import portal.transcription.providers.base as base
+
+        assert not hasattr(base, "ContinuousProvider")
+        assert not hasattr(base, "ChunkedProvider")
