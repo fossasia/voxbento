@@ -256,7 +256,12 @@ def _is_room_coordinator_for_event(rms, event_id: int) -> bool:
     )
 
 async def get_admin_flags(request: Request, event_id: int | None = None, room_id: int | None = None) -> dict[str, bool]:
-    """Helper to pass boolean RBAC flags to Jinja admin templates."""
+    """Return boolean RBAC flags for admin templates.
+
+    Returns:
+        A dictionary containing ``is_super_admin``, ``is_event_owner``,
+        and ``is_room_coordinator`` flags.
+    """
     flags = {"is_super_admin": False, "is_event_owner": False, "is_room_coordinator": False}
     user_cookie = request.cookies.get("user_token", "")
     if user_cookie:

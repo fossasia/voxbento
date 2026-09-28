@@ -9,7 +9,13 @@ os.environ["ADMIN_PASSWORD"] = "test-admin-pass"
 
 import pytest
 
-from portal.auth import create_admin_token, create_user_token, hash_password, verify_password
+from portal.auth import (
+    create_admin_token,
+    create_user_token,
+    get_admin_flags,
+    hash_password,
+    verify_password,
+)
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -38,6 +44,12 @@ def _client():
 
     return AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
 
+def _make_request(cookies: dict[str, str]):
+    from unittest.mock import MagicMock
+
+    request = MagicMock()
+    request.cookies = cookies
+    return request
 
 async def _create_test_user(email="test@example.com", display_name="Test User", password="securepass123"):
     from portal.database import create_user, get_session
@@ -425,3 +437,118 @@ class TestHomePageAuthLinks:
             resp = await c.get("/", cookies={"user_token": token})
         assert resp.status_code == 200
         assert b"Logout" in resp.content
+
+@pytest.mark.anyio
+async def test_get_admin_flags_superuser_from_user_token(setup_db):
+
+    token = create_user_token(
+        user_id=1,
+        email="admin@example.com",
+        is_admin=True,
+    )
+
+    request = _make_request({"user_token": token})
+    flags = await get_admin_flags(request)
+
+    assert flags == {
+        "is_super_admin": True,
+        "is_event_owner": True,
+        "is_room_coordinator": True,
+    }
+
+
+@pytest.mark.anyio
+async def test_get_admin_flags_admin_cookie(setup_db):
+    token = create_admin_token()
+
+    request = _make_request({"admin_token": token})
+    flags = await get_admin_flags(request)
+
+    assert flags == {
+        "is_super_admin": True,
+        "is_event_owner": True,
+        "is_room_coordinator": True,
+    }
+
+
+@pytest.mark.anyio
+async def test_get_admin_flags_event_owner(setup_db):
+    from portal.database import create_event, get_session, set_event_membership
+
+    user = await _create_test_user()
+
+    async with get_session() as session:
+        event = await create_event(
+            session,
+            display_name="Test Event",
+            slug="test-event",
+        )
+        await set_event_membership(
+            session,
+            user_id=user.id,
+            event_id=event.id,
+            role="event_owner",
+        )
+
+    token = create_user_token(user_id=user.id, email=user.email)
+    request = _make_request({"user_token": token})
+
+    flags = await get_admin_flags(request, event_id=event.id)
+
+    assert flags == {
+        "is_super_admin": False,
+        "is_event_owner": True,
+        "is_room_coordinator": True,
+    }
+
+
+@pytest.mark.anyio
+async def test_get_admin_flags_room_coordinator(setup_db):
+    from portal.database import create_event, create_room, get_session, set_room_membership
+
+    user = await _create_test_user()
+
+    async with get_session() as session:
+        event = await create_event(
+            session,
+            display_name="Test Event",
+            slug="test-event",
+        )
+        room = await create_room(
+            session,
+            event_id=event.id,
+            display_name="Room 1",
+        )
+        await set_room_membership(
+            session,
+            user_id=user.id,
+            room_id=room.id,
+            role="room_coordinator",
+        )
+
+    token = create_user_token(user_id=user.id, email=user.email)
+    request = _make_request({"user_token": token})
+
+    flags = await get_admin_flags(request, room_id=room.id)
+
+    assert flags == {
+        "is_super_admin": False,
+        "is_event_owner": False,
+        "is_room_coordinator": True,
+    }
+
+
+@pytest.mark.anyio
+async def test_get_admin_flags_non_admin(setup_db):
+    user = await _create_test_user()
+
+    token = create_user_token(user_id=user.id, email=user.email)
+    request = _make_request({"user_token": token})
+
+    flags = await get_admin_flags(request)
+
+    assert flags == {
+        "is_super_admin": False,
+        "is_event_owner": False,
+        "is_room_coordinator": False,
+    }
