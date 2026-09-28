@@ -1,0 +1,67 @@
+# AI interpretation configuration
+
+Voxbento can apply room-specific instructions to AI-generated translated captions and the translated text sent to text-to-speech. These settings affect only text translation. They do not change WHIP, WHEP, MediaMTX, RTP, browser WebRTC, transcription, or audio transport.
+
+## Persona and style
+
+Open a room in the admin panel and find **Floor Audio Translation**.
+
+- **AI interpreter persona** describes the interpreter's role and domain expertise. For example: “A professional simultaneous interpreter for open source software and nonprofit conferences.”
+- **AI interpretation style** describes tone and output conventions. For example: “Use formal conference language, preserve API names and issue numbers, and do not summarize.”
+
+Voxbento combines these settings with a fixed safety-oriented prompt that requests only translated speech, without commentary or Markdown. Empty settings retain the default translation behavior.
+
+The same translated text is broadcast as captions and passed to the configured TTS provider, so captions and translated speech share one interpretation result.
+
+## Vocabulary CSV
+
+Room owners can upload a UTF-8 CSV from the **AI interpretation vocabulary** card. Files may be appended to the current room glossary or replace it. Uploads are limited to 2 MB.
+
+Required columns:
+
+```text
+source_term,target_language,target_term
+```
+
+Optional columns:
+
+```text
+description,case_sensitive,match_type,priority,notes
+```
+
+Example:
+
+```csv
+source_term,target_language,target_term,description,case_sensitive,match_type,priority
+FOSSASIA,all,FOSSASIA,Organizer name,true,exact,100
+Voxbento,all,Voxbento,Interpretation platform,true,exact,100
+WebRTC,all,WebRTC,Protocol name,true,exact,90
+Pull Request,de,Pull Request,Developer term in German,false,phrase,80
+```
+
+`target_language` accepts `all` or a two-letter ISO 639-1 language code. `case_sensitive` accepts `true`, `false`, `yes`, `no`, `1`, or `0`. `match_type` accepts `exact` or `phrase`. Invalid and duplicate rows are skipped and reported after import. Text cells beginning with spreadsheet formula characters are rejected to prevent CSV injection.
+
+The export action downloads the normalized room glossary in the same format.
+
+## Prompt size and latency
+
+Voxbento does not send the full glossary with every segment. For each target language it:
+
+1. considers entries for that language and entries marked `all`;
+2. prefers booth-specific entries, then room entries, then event-wide entries;
+3. includes terms found in the current transcript segment;
+4. always includes entries with priority 90 or greater; and
+5. limits the final glossary to 80 entries.
+
+This keeps real-time prompts bounded and reduces provider latency and token cost.
+
+## Provider behavior
+
+- OpenAI-compatible providers receive the shared system and user messages.
+- Gemini receives the same system text through `systemInstruction`.
+- Anthropic receives the same system text through its `system` field.
+- The local NLLB provider remains deterministic and does not use LLM persona or style instructions.
+
+## Privacy and production guidance
+
+Persona, style, matching vocabulary entries, and transcript text are sent to the selected cloud translation provider. Do not place secrets or personal data in interpretation settings or glossaries. Review provider retention policies and test terminology, tone, pronunciation, and latency before a live event.
