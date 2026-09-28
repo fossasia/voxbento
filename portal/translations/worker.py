@@ -43,6 +43,14 @@ class _ResolvedTranslation:
     source_lang_name: str
 
 
+def _enabled_translation_langs(owner) -> list:
+    """Enabled translation languages for a room or booth.
+
+    Centralised so the floor and booth paths cannot drift apart.
+    """
+    return [lang for lang in owner.translation_languages if lang.enabled]
+
+
 def _resolve_source_lang_name(source_lang_code: str | None) -> str:
     """Human-readable source language name, falling back to the code (or English)."""
     import pycountry
@@ -170,7 +178,7 @@ class TranslationWorker:
             )
             return None
 
-        enabled_langs = [lang for lang in room.translation_languages if lang.enabled]
+        enabled_langs = _enabled_translation_langs(room)
         return (
             room.floor_translation_provider,
             room.floor_translation_model,
@@ -190,7 +198,7 @@ class TranslationWorker:
         if not booth or not booth.translation_enabled:
             return None
 
-        enabled_langs = [lang for lang in booth.translation_languages if lang.enabled]
+        enabled_langs = _enabled_translation_langs(booth)
         room = await session.scalar(select(Room).where(Room.id == room_id))
         return booth.translation_provider, booth.translation_model, enabled_langs, room, booth.language_code
 
