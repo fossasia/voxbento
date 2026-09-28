@@ -156,3 +156,44 @@ async def test_elevenlabs_raises_on_a_rejected_key(status):
 
     assert exc.value.error_code == "auth_failed"
     assert str(status) in exc.value.detail
+
+
+@pytest.mark.anyio
+async def test_reason_travels_from_process_chunk_through_the_real_run_stream():
+    """The provider path the worker actually uses, not a stubbed run_stream."""
+    from portal.transcription.providers.base import TranscriptionProvider
+
+    class RejectingProvider(TranscriptionProvider):
+        def __init__(self):
+            self.chunks = 0
+
+        async def process_chunk(self, chunk, language_code, model_variant, config, booth_state=None):
+            self.chunks += 1
+            raise TranscriptionAuthError("openai", "OpenAI API key was rejected (401 Unauthorized).", 401)
+
+    provider = RejectingProvider()
+
+    async def feed(self):
+        self.process = await asyncio.create_subprocess_exec(
+            "bash",
+            "-c",
+            "head -c 200000 /dev/zero; sleep 1000",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            start_new_session=True,
+        )
+        self.stderr_task = asyncio.create_task(self._log_stderr())
+        return self.process
+
+    original = FfmpegProcess.__aenter__
+    FfmpegProcess.__aenter__ = feed
+    try:
+        session, calls = await _run_and_collect(provider)
+    finally:
+        FfmpegProcess.__aenter__ = original
+
+    stopped = [payload for event, payload in calls if event == "booth.transcription.stopped"]
+    assert stopped[-1]["error_code"] == "auth_failed"
+    assert stopped[-1]["error_detail"] == "OpenAI API key was rejected (401 Unauthorized)."
+    # One rejected chunk is enough; it must not grind through the retry budget.
+    assert provider.chunks == 1
