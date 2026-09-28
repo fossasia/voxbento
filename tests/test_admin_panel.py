@@ -198,7 +198,6 @@ class TestHomePage:
             resp = await c.get("/")
         assert resp.status_code == 200
         assert b"TestCon 2026" in resp.content
-        assert b"Main Hall" in resp.content
 
     @pytest.mark.anyio
     async def test_home_shows_listener_links(self, seed_event):
@@ -274,6 +273,7 @@ class TestEventCRUD:
             resp = await c.get(f"/admin/events/{event.id}/", cookies=admin_cookie)
         assert resp.status_code == 200
         assert b"TestCon 2026" in resp.content
+        assert b"Main Hall" in resp.content
 
     @pytest.mark.anyio
     async def test_api_settings_update_and_clear_keys(self, admin_cookie, seed_event):
