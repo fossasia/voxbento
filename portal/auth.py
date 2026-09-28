@@ -130,13 +130,6 @@ def _check_room_coordinator(room_memberships, *, room_id: int | None = None, eve
     return any(rm.role == "room_coordinator" for rm in room_memberships)
 
 
-def _has_any_admin_role(memberships, room_memberships) -> bool:
-    """True if the user holds event_owner or room_coordinator anywhere (no scope requested)."""
-    return any(m.role == "event_owner" for m in memberships) or any(
-        rm.role == "room_coordinator" for rm in room_memberships
-    )
-
-
 async def _check_scoped_admin_role(user_id: int, event_id: int | None, room_id: int | None) -> bool:
     """Check DB-backed roles (global admin / event_owner / room_coordinator) for the given scope."""
     from portal.database import (
@@ -160,7 +153,7 @@ async def _check_scoped_admin_role(user_id: int, event_id: int | None, room_id: 
             )
         if event_id is not None:
             return _check_event_owner(memberships, event_id) or _check_room_coordinator(rms, event_id=event_id)
-        return _has_any_admin_role(memberships, rms)
+        return any(m.role == "event_owner" for m in memberships) or _check_room_coordinator(rms)
 
 
 async def _check_user_token(request: Request, event_id: int | None, room_id: int | None) -> bool:

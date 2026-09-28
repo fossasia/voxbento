@@ -1,5 +1,3 @@
-"""Tests for the refactored portal.auth.require_admin and its helpers."""
-
 from __future__ import annotations
 
 import os
@@ -7,19 +5,26 @@ import os
 os.environ.setdefault("BOOTH_ACCESS_TOKEN", "")
 os.environ.setdefault("ADMIN_PASSWORD", "test-admin-pass")
 
+from datetime import datetime, timedelta, timezone
+from unittest.mock import MagicMock
+
+import jwt
 import pytest
 from fastapi import HTTPException
 
 from portal.auth import (
+    _check_admin_token,
     _check_event_owner,
     _check_room_coordinator,
-    _has_any_admin_role,
+    _check_scoped_admin_role,
+    _check_user_token,
     _parse_scope_ids,
     create_admin_token,
     create_user_token,
     hash_password,
     require_admin,
 )
+from portal.config import settings
 
 # helpers
 
@@ -36,298 +41,339 @@ async def setup_db():
 
 def _make_request(cookies: dict[str, str], path_params: dict | None = None):
     """Build a minimal fake Request with the given cookies and path params."""
-    from unittest.mock import MagicMock
-
     req = MagicMock()
     req.cookies = cookies
     req.path_params = path_params or {}
     return req
 
 
-async def _create_user(email: str = "u@example.com") -> object:
+def _signed(claims: dict, *, secret: str | None = None, expires_in: int = 60) -> str:
+    """Sign an arbitrary claim set with the app's JWT secret (or a custom one)."""
+    now = datetime.now(timezone.utc)
+    payload = {"iat": now, "exp": now + timedelta(seconds=expires_in), **claims}
+    return jwt.encode(payload, secret or settings.effective_jwt_secret, algorithm="HS256")
+
+
+async def _create_user(email: str = "u@example.com"):
     from portal.database import create_user, get_session
 
-    pw_hash = hash_password("password123")
     async with get_session() as s:
-        return await create_user(s, email=email, display_name="Test", password_hash=pw_hash)
+        return await create_user(s, email=email, display_name="Test", password_hash=hash_password("password123"))
 
 
-async def _create_event(slug: str, name: str) -> object:
+async def _create_event(slug: str, name: str):
     from portal.database import create_event, get_session
 
     async with get_session() as s:
         return await create_event(s, slug=slug, display_name=name)
 
 
-async def _create_room(event_id: int, name: str) -> object:
+async def _create_room(event_id: int, name: str):
     from portal.database import create_room, get_session
 
     async with get_session() as s:
         return await create_room(s, event_id=event_id, display_name=name)
 
 
-# Pure helper unit tests no DB, no request, no async needed
+async def _grant_event_role(user_id: int, event_id: int, role: str) -> None:
+    from portal.database import get_session, set_event_membership
+
+    async with get_session() as s:
+        await set_event_membership(s, user_id=user_id, event_id=event_id, role=role)
 
 
-class _FakeMembership:
+async def _grant_room_role(user_id: int, room_id: int, role: str) -> None:
+    from portal.database import get_session, set_room_membership
+
+    async with get_session() as s:
+        await set_room_membership(s, user_id=user_id, room_id=room_id, role=role)
+
+
+class _Membership:
     def __init__(self, event_id: int, role: str):
         self.event_id = event_id
         self.role = role
 
 
-class _FakeRoom:
-    def __init__(self, event_id: int):
-        self.event_id = event_id
-
-
-class _FakeRoomMembership:
-    def __init__(self, room_id: int, role: str, event_id: int | None = None):
+class _RoomMembership:
+    def __init__(self, room_id: int, role: str, event_id: int):
         self.room_id = room_id
         self.role = role
-        self.room = _FakeRoom(event_id) if event_id is not None else None
+        self.room = MagicMock(event_id=event_id)
+
+
+# pure helpers
 
 
 def test_parse_scope_ids_reads_digits_only():
-    req = _make_request({}, {"event_id": "5", "room_id": "12"})
-    assert _parse_scope_ids(req) == (5, 12)
+    assert _parse_scope_ids(_make_request({}, {"event_id": "5", "room_id": "12"})) == (5, 12)
 
 
 def test_parse_scope_ids_ignores_non_digit_or_missing():
-    req = _make_request({}, {"event_id": "not-a-number"})
-    assert _parse_scope_ids(req) == (None, None)
+    assert _parse_scope_ids(_make_request({}, {"event_id": "not-a-number"})) == (None, None)
+    assert _parse_scope_ids(_make_request({})) == (None, None)
 
 
-def test_check_event_owner_true_for_matching_membership():
-    memberships = [_FakeMembership(1, "event_owner"), _FakeMembership(2, "interpreter")]
-    assert _check_event_owner(memberships, event_id=1) is True
+def test_check_event_owner_matches_only_owner_role_on_that_event():
+    memberships = [_Membership(1, "event_owner"), _Membership(2, "interpreter")]
+    assert _check_event_owner(memberships, 1) is True
+    assert _check_event_owner(memberships, 2) is False  # wrong role
+    assert _check_event_owner(memberships, 3) is False  # wrong event
+    assert _check_event_owner(memberships, None) is False  # no event scope
 
 
-def test_check_event_owner_false_when_event_id_none():
-    memberships = [_FakeMembership(1, "event_owner")]
-    assert _check_event_owner(memberships, event_id=None) is False
-
-
-def test_check_room_coordinator_by_room_id():
-    rms = [_FakeRoomMembership(room_id=10, role="room_coordinator")]
+def test_check_room_coordinator_by_room_requires_matching_event_when_given():
+    rms = [_RoomMembership(room_id=10, role="room_coordinator", event_id=7)]
     assert _check_room_coordinator(rms, room_id=10) is True
+    assert _check_room_coordinator(rms, room_id=10, event_id=7) is True
+    assert _check_room_coordinator(rms, room_id=10, event_id=8) is False  # room is in event 7
     assert _check_room_coordinator(rms, room_id=99) is False
 
 
-def test_check_room_coordinator_by_event_id():
-    rms = [_FakeRoomMembership(room_id=10, role="room_coordinator", event_id=7)]
+def test_check_room_coordinator_by_event_and_unscoped():
+    rms = [_RoomMembership(room_id=10, role="room_coordinator", event_id=7)]
     assert _check_room_coordinator(rms, event_id=7) is True
     assert _check_room_coordinator(rms, event_id=8) is False
-
-
-def test_check_room_coordinator_no_scope_checks_any():
-    rms = [_FakeRoomMembership(room_id=10, role="room_coordinator")]
     assert _check_room_coordinator(rms) is True
+    assert _check_room_coordinator([_RoomMembership(10, "interpreter", 7)]) is False
 
 
-def test_has_any_admin_role():
-    assert _has_any_admin_role([_FakeMembership(1, "event_owner")], []) is True
-    assert _has_any_admin_role([], [_FakeRoomMembership(1, "room_coordinator")]) is True
-    assert _has_any_admin_role([_FakeMembership(1, "interpreter")], []) is False
+# admin_token session
 
 
+def test_admin_token_valid_passes():
+    assert _check_admin_token(_make_request({"admin_token": create_admin_token()})) is None
 
-# require_admin end-to-end behavior, matching the original semantics
+
+def test_admin_token_missing_is_403():
+    with pytest.raises(HTTPException) as exc:
+        _check_admin_token(_make_request({}))
+    assert exc.value.status_code == 403
+    assert exc.value.detail == "Admin access required."
+
+
+@pytest.mark.parametrize(
+    "token",
+    [
+        "not-a-real-jwt",
+        _signed({"admin": True}, expires_in=-10),  # expired
+        _signed({"admin": True}, secret="some-other-secret-that-is-32-bytes!!"),  # bad signature
+    ],
+    ids=["garbage", "expired", "wrong-signature"],
+)
+def test_admin_token_invalid_is_403(token):
+    with pytest.raises(HTTPException) as exc:
+        _check_admin_token(_make_request({"admin_token": token}))
+    assert exc.value.status_code == 403
+    assert exc.value.detail == "Invalid admin token."
+
+
+@pytest.mark.parametrize("claims", [{}, {"admin": False}], ids=["no-claim", "false-claim"])
+def test_admin_token_valid_signature_without_admin_claim_is_403(claims):
+    with pytest.raises(HTTPException) as exc:
+        _check_admin_token(_make_request({"admin_token": _signed(claims)}))
+    assert exc.value.status_code == 403
+    assert exc.value.detail == "Admin access required."
+
+
+# user_token claims
 
 
 @pytest.mark.anyio
-async def test_require_admin_no_cookies_raises_403(setup_db):
-    req = _make_request({})
+async def test_user_token_absent_or_invalid_returns_false():
+    assert await _check_user_token(_make_request({}), None, None) is False
+    assert await _check_user_token(_make_request({"user_token": "garbage"}), None, None) is False
+    expired = _signed({"user": True, "sub": "1", "is_admin": True}, expires_in=-10)
+    assert await _check_user_token(_make_request({"user_token": expired}), None, None) is False
+
+
+@pytest.mark.anyio
+async def test_user_token_without_user_claim_returns_false():
+    """An admin-style token (no ``user`` claim) must not be accepted in the user_token slot."""
+    token = _signed({"admin": True, "is_admin": True, "sub": "1"})
+    assert await _check_user_token(_make_request({"user_token": token}), None, None) is False
+
+
+@pytest.mark.anyio
+async def test_user_token_is_admin_claim_short_circuits_without_db():
+    token = create_user_token(user_id=1, email="a@test.com", is_admin=True)
+    assert await _check_user_token(_make_request({"user_token": token}), 1, 2) is True
+
+
+@pytest.mark.anyio
+async def test_user_token_missing_or_non_numeric_sub_returns_false():
+    for claims in ({"user": True}, {"user": True, "sub": "not-a-number"}, {"user": True, "sub": [1]}):
+        token = _signed(claims)
+        assert await _check_user_token(_make_request({"user_token": token}), None, None) is False
+
+
+@pytest.mark.anyio
+async def test_user_token_delegates_to_db_roles(setup_db):
+    event = await _create_event("pycon", "PyCon")
+    owner = await _create_user("owner@example.com")
+    nobody = await _create_user("nobody@example.com")
+    await _grant_event_role(owner.id, event.id, "event_owner")
+
+    def request_for(user):
+        return _make_request({"user_token": create_user_token(user_id=user.id, email=user.email)})
+
+    assert await _check_user_token(request_for(owner), event.id, None) is True
+    assert await _check_user_token(request_for(nobody), event.id, None) is False
+
+
+# DB-backed scoped roles
+
+
+@pytest.mark.anyio
+async def test_scoped_role_unknown_user_is_false(setup_db):
+    assert await _check_scoped_admin_role(9999, None, None) is False
+
+
+@pytest.mark.anyio
+async def test_scoped_role_db_global_admin_passes_any_scope(setup_db):
+    """DB is_admin wins even when the JWT's is_admin claim is stale."""
+    from portal.database import get_session, get_user_by_id
+
+    user = await _create_user()
+    async with get_session() as s:
+        (await get_user_by_id(s, user.id)).is_admin = True
+
+    assert await _check_scoped_admin_role(user.id, 123, 456) is True
+
+
+@pytest.mark.anyio
+async def test_scoped_role_event_scope(setup_db):
+    event = await _create_event("pycon", "PyCon")
+    other = await _create_event("djangocon", "DjangoCon")
+    room = await _create_room(event.id, "Main Hall")
+    owner = await _create_user("owner@example.com")
+    coordinator = await _create_user("coord@example.com")
+    await _grant_event_role(owner.id, event.id, "event_owner")
+    await _grant_room_role(coordinator.id, room.id, "room_coordinator")
+
+    assert await _check_scoped_admin_role(owner.id, event.id, None) is True
+    assert await _check_scoped_admin_role(owner.id, other.id, None) is False
+    assert await _check_scoped_admin_role(coordinator.id, event.id, None) is True
+    assert await _check_scoped_admin_role(coordinator.id, other.id, None) is False
+
+
+@pytest.mark.anyio
+async def test_scoped_role_room_scope(setup_db):
+    event = await _create_event("pycon", "PyCon")
+    other = await _create_event("djangocon", "DjangoCon")
+    room = await _create_room(event.id, "Main Hall")
+    other_room = await _create_room(event.id, "Side Room")
+    owner = await _create_user("owner@example.com")
+    coordinator = await _create_user("coord@example.com")
+    await _grant_event_role(owner.id, event.id, "event_owner")
+    await _grant_room_role(coordinator.id, room.id, "room_coordinator")
+
+    # coordinator: only their own room, and only via the event that room belongs to
+    assert await _check_scoped_admin_role(coordinator.id, event.id, room.id) is True
+    assert await _check_scoped_admin_role(coordinator.id, None, room.id) is True
+    assert await _check_scoped_admin_role(coordinator.id, event.id, other_room.id) is False
+    assert await _check_scoped_admin_role(coordinator.id, other.id, room.id) is False  # mismatched event
+    # event_owner falls back to owning the event named in the URL
+    assert await _check_scoped_admin_role(owner.id, event.id, room.id) is True
+    assert await _check_scoped_admin_role(owner.id, other.id, room.id) is False
+
+
+@pytest.mark.anyio
+async def test_scoped_role_no_scope_accepts_any_admin_role_only(setup_db):
+    event = await _create_event("pycon", "PyCon")
+    room = await _create_room(event.id, "Main Hall")
+    owner = await _create_user("owner@example.com")
+    coordinator = await _create_user("coord@example.com")
+    interpreter = await _create_user("interp@example.com")
+    await _grant_event_role(owner.id, event.id, "event_owner")
+    await _grant_room_role(coordinator.id, room.id, "room_coordinator")
+    await _grant_event_role(interpreter.id, event.id, "interpreter")
+
+    assert await _check_scoped_admin_role(owner.id, None, None) is True
+    assert await _check_scoped_admin_role(coordinator.id, None, None) is True
+    assert await _check_scoped_admin_role(interpreter.id, None, None) is False
+
+
+# require_admin: dispatch order and fallback
+
+
+@pytest.mark.anyio
+async def test_require_admin_no_cookies_is_403(setup_db):
     with pytest.raises(HTTPException) as exc:
-        await require_admin(req)
+        await require_admin(_make_request({}))
     assert exc.value.status_code == 403
 
 
 @pytest.mark.anyio
 async def test_require_admin_valid_admin_token_passes(setup_db):
-    req = _make_request({"admin_token": create_admin_token()})
-    await require_admin(req)  # should not raise
+    await require_admin(_make_request({"admin_token": create_admin_token()}))
 
 
 @pytest.mark.anyio
-async def test_require_admin_invalid_admin_token_raises_403(setup_db):
-    req = _make_request({"admin_token": "not-a-real-jwt"})
+async def test_require_admin_invalid_admin_token_is_403(setup_db):
     with pytest.raises(HTTPException) as exc:
-        await require_admin(req)
+        await require_admin(_make_request({"admin_token": "not-a-real-jwt"}))
     assert exc.value.status_code == 403
-    assert "Invalid admin token" in exc.value.detail
+    assert exc.value.detail == "Invalid admin token."
 
 
 @pytest.mark.anyio
-async def test_require_admin_user_token_is_admin_flag_passes(setup_db):
+async def test_require_admin_user_token_wins_before_admin_cookie_is_checked(setup_db):
+    """An authorised user_token short-circuits; a bad admin_token isn't consulted."""
     token = create_user_token(user_id=1, email="a@test.com", is_admin=True)
-    req = _make_request({"user_token": token})
-    await require_admin(req)
+    await require_admin(_make_request({"user_token": token, "admin_token": "garbage"}))
 
 
 @pytest.mark.anyio
-async def test_require_admin_db_global_admin_passes(setup_db):
-    """A user whose DB record has is_admin=True qualifies even if the JWT's
-    is_admin claim is stale/false — this is the get_user_by_id(...).is_admin
-    branch inside _check_scoped_admin_role."""
-    from portal.database import get_session, get_user_by_id
-
-    user = await _create_user()
-    async with get_session() as s:
-        db_user = await get_user_by_id(s, user.id)
-        db_user.is_admin = True
-
-    token = create_user_token(user_id=user.id, email=user.email, is_admin=False)
-    req = _make_request({"user_token": token})
-    await require_admin(req)
-
-
-@pytest.mark.anyio
-async def test_require_admin_event_owner_in_scope_passes(setup_db):
-    from portal.database import get_session, set_event_membership
-
-    event = await _create_event("pycon", "PyCon")
-    user = await _create_user()
-    async with get_session() as s:
-        await set_event_membership(s, user_id=user.id, event_id=event.id, role="event_owner")
-
-    token = create_user_token(user_id=user.id, email=user.email)
-    req = _make_request({"user_token": token}, {"event_id": str(event.id)})
-    await require_admin(req)
-
-
-@pytest.mark.anyio
-async def test_require_admin_event_owner_wrong_event_falls_through_and_raises(setup_db):
-    from portal.database import get_session, set_event_membership
-
-    owned_event = await _create_event("pycon", "PyCon")
-    other_event = await _create_event("djangocon", "DjangoCon")
-    user = await _create_user()
-    async with get_session() as s:
-        await set_event_membership(s, user_id=user.id, event_id=owned_event.id, role="event_owner")
-
-    token = create_user_token(user_id=user.id, email=user.email)
-    req = _make_request({"user_token": token}, {"event_id": str(other_event.id)})
-    with pytest.raises(HTTPException) as exc:
-        await require_admin(req)
-    assert exc.value.status_code == 403
-
-
-@pytest.mark.anyio
-async def test_require_admin_room_coordinator_in_scope_passes(setup_db):
-    from portal.database import get_session, set_room_membership
-
+async def test_require_admin_role_user_token_passes_in_scope(setup_db):
     event = await _create_event("pycon", "PyCon")
     room = await _create_room(event.id, "Main Hall")
     user = await _create_user()
-    async with get_session() as s:
-        await set_room_membership(s, user_id=user.id, room_id=room.id, role="room_coordinator")
+    await _grant_room_role(user.id, room.id, "room_coordinator")
 
     token = create_user_token(user_id=user.id, email=user.email)
-    req = _make_request({"user_token": token}, {"room_id": str(room.id)})
-    await require_admin(req)
+    scope = {"event_id": str(event.id), "room_id": str(room.id)}
+    await require_admin(_make_request({"user_token": token}, scope))
 
 
 @pytest.mark.anyio
-async def test_require_admin_room_coordinator_falls_back_to_event_owner(setup_db):
-    """When room_id is in scope, an event_owner of the room's event also qualifies."""
-    from portal.database import get_session, set_event_membership
-
-    event = await _create_event("pycon", "PyCon")
-    room = await _create_room(event.id, "Main Hall")
-    user = await _create_user()
-    async with get_session() as s:
-        await set_event_membership(s, user_id=user.id, event_id=event.id, role="event_owner")
-
-    token = create_user_token(user_id=user.id, email=user.email)
-    req = _make_request({"user_token": token}, {"event_id": str(event.id), "room_id": str(room.id)})
-    await require_admin(req)
-
-
-@pytest.mark.anyio
-async def test_require_admin_no_scope_uses_any_role(setup_db):
-    from portal.database import get_session, set_event_membership
-
-    event = await _create_event("pycon", "PyCon")
-    user = await _create_user()
-    async with get_session() as s:
-        await set_event_membership(s, user_id=user.id, event_id=event.id, role="event_owner")
-
-    token = create_user_token(user_id=user.id, email=user.email)
-    req = _make_request({"user_token": token})  # no event_id/room_id path params
-    await require_admin(req)
-
-
-@pytest.mark.anyio
-async def test_require_admin_malformed_user_token_falls_back_to_admin_cookie(setup_db):
-    req = _make_request({"user_token": "garbage", "admin_token": create_admin_token()})
-    await require_admin(req)  # user_token is ignored, admin_token still validates
-
-
-@pytest.mark.anyio
-async def test_require_admin_non_numeric_sub_falls_back_cleanly(setup_db):
-    """A validly-signed token with a non-numeric `sub` claim must fall back to
-    the admin_token check (and 403) rather than raising an unhandled 500."""
-    from datetime import datetime, timedelta, timezone
-
-    import jwt as pyjwt
-
-    from portal.config import settings
-
-    now = datetime.now(timezone.utc)
-    payload = {
-        "sub": "not-a-number",
-        "user": True,
-        "is_admin": False,
-        "iat": now,
-        "exp": now + timedelta(seconds=60),
-    }
-    bad_token = pyjwt.encode(payload, settings.effective_jwt_secret, algorithm="HS256")
-
-    req = _make_request({"user_token": bad_token})
-    with pytest.raises(HTTPException) as exc:
-        await require_admin(req)
-    assert exc.value.status_code == 403
-
-@pytest.mark.anyio
-async def test_require_admin_room_coordinator_rejects_mismatched_event(setup_db):
-    """A room_coordinator for room X must NOT be granted access via a URL whose
-    event_id belongs to a *different* event than room X actually belongs to."""
-    from portal.database import get_session, set_room_membership
-
+async def test_require_admin_room_coordinator_rejected_for_mismatched_event(setup_db):
+    """URL pairs another event's id with this coordinator's room: must be denied."""
     real_event = await _create_event("pycon", "PyCon")
     other_event = await _create_event("djangocon", "DjangoCon")
     room = await _create_room(real_event.id, "Main Hall")
     user = await _create_user()
-    async with get_session() as s:
-        await set_room_membership(s, user_id=user.id, room_id=room.id, role="room_coordinator")
+    await _grant_room_role(user.id, room.id, "room_coordinator")
 
     token = create_user_token(user_id=user.id, email=user.email)
-    req = _make_request({"user_token": token}, {"event_id": str(other_event.id), "room_id": str(room.id)})
+    scope = {"event_id": str(other_event.id), "room_id": str(room.id)}
     with pytest.raises(HTTPException) as exc:
-        await require_admin(req)
+        await require_admin(_make_request({"user_token": token}, scope))
     assert exc.value.status_code == 403
 
 
 @pytest.mark.anyio
-async def test_require_admin_room_coordinator_matching_event_still_passes(setup_db):
-    from portal.database import get_session, set_room_membership
-
-    event = await _create_event("pycon", "PyCon")
-    room = await _create_room(event.id, "Main Hall")
+async def test_require_admin_ineligible_user_token_falls_back_to_admin_cookie(setup_db):
     user = await _create_user()
-    async with get_session() as s:
-        await set_room_membership(s, user_id=user.id, room_id=room.id, role="room_coordinator")
-
     token = create_user_token(user_id=user.id, email=user.email)
-    req = _make_request({"user_token": token}, {"event_id": str(event.id), "room_id": str(room.id)})
-    await require_admin(req)
+    await require_admin(_make_request({"user_token": token, "admin_token": create_admin_token()}))
 
 
 @pytest.mark.anyio
-async def test_require_admin_no_matching_role_raises_403(setup_db):
+async def test_require_admin_ineligible_user_token_without_admin_cookie_is_403(setup_db):
     user = await _create_user()
     token = create_user_token(user_id=user.id, email=user.email)
-    req = _make_request({"user_token": token})
     with pytest.raises(HTTPException) as exc:
-        await require_admin(req)
+        await require_admin(_make_request({"user_token": token}))
     assert exc.value.status_code == 403
+
+
+@pytest.mark.anyio
+async def test_require_admin_malformed_user_tokens_fall_back_cleanly(setup_db):
+    """Garbage or non-numeric user tokens is never 500; they defer to admin_token."""
+    bad_tokens = ["garbage", _signed({"user": True, "sub": "not-a-number"})]
+    for bad in bad_tokens:
+        with pytest.raises(HTTPException) as exc:
+            await require_admin(_make_request({"user_token": bad}))
+        assert exc.value.status_code == 403
+        await require_admin(_make_request({"user_token": bad, "admin_token": create_admin_token()}))
