@@ -196,16 +196,15 @@ class TranscriptionProvider:
 
         done, _ = await asyncio.wait([reader, inference], return_when=asyncio.FIRST_COMPLETED)
 
-        reader.cancel()
-        inference.cancel()
-
-        for task in done:
-            try:
-                error = task.exception()
-            except asyncio.CancelledError:
-                continue
-            if error is not None:
-                raise error
+        try:
+            if reader in done:
+                await reader
+            await inference
+        finally:
+            for task in (reader, inference):
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(reader, inference, return_exceptions=True)
 
 
 @dataclass(frozen=True)

@@ -13,7 +13,7 @@ import pytest
 
 from portal.transcription.errors import TranscriptionAuthError
 from portal.transcription.process import FfmpegProcess
-from portal.transcription.providers.base import ProviderConfig
+from portal.transcription.providers.base import ProviderConfig, TranscriptionProvider
 from portal.transcription.worker import TranscriptionWorkerSession, active_workers
 
 
@@ -161,8 +161,6 @@ async def test_elevenlabs_raises_on_a_rejected_key(status):
 @pytest.mark.anyio
 async def test_reason_travels_from_process_chunk_through_the_real_run_stream():
     """The provider path the worker actually uses, not a stubbed run_stream."""
-    from portal.transcription.providers.base import TranscriptionProvider
-
     class RejectingProvider(TranscriptionProvider):
         def __init__(self):
             self.chunks = 0
@@ -196,4 +194,53 @@ async def test_reason_travels_from_process_chunk_through_the_real_run_stream():
     assert stopped[-1]["error_code"] == "auth_failed"
     assert stopped[-1]["error_detail"] == "OpenAI API key was rejected (401 Unauthorized)."
     # One rejected chunk is enough; it must not grind through the retry budget.
+    assert provider.chunks == 1
+
+
+@pytest.mark.anyio
+async def test_reason_survives_when_audio_ends_before_provider_response():
+    eof_read = asyncio.Event()
+
+    class FiniteStdout:
+        def __init__(self):
+            self.read_count = 0
+
+        async def readexactly(self, size):
+            self.read_count += 1
+            if self.read_count == 1:
+                return bytes(size)
+            eof_read.set()
+            raise asyncio.IncompleteReadError(b"", size)
+
+    class FiniteProcess:
+        returncode = None
+        stdout = FiniteStdout()
+
+    class DelayedRejectingProvider(TranscriptionProvider):
+        def __init__(self):
+            self.chunks = 0
+
+        async def process_chunk(self, chunk, language_code, model_variant, config, booth_state=None):
+            self.chunks += 1
+            await eof_read.wait()
+            await asyncio.sleep(0)
+            raise TranscriptionAuthError("openai", "OpenAI API key was rejected after EOF.", 401)
+
+    async def enter_finite_stream(self):
+        self.process = FiniteProcess()
+        return self.process
+
+    async def exit_finite_stream(self, exc_type, exc_value, traceback):
+        return None
+
+    provider = DelayedRejectingProvider()
+    with (
+        patch.object(FfmpegProcess, "__aenter__", enter_finite_stream),
+        patch.object(FfmpegProcess, "__aexit__", exit_finite_stream),
+    ):
+        session, calls = await _run_and_collect(provider)
+
+    stopped = [payload for event, payload in calls if event == "booth.transcription.stopped"]
+    assert stopped[-1]["error_code"] == "auth_failed"
+    assert stopped[-1]["error_detail"] == "OpenAI API key was rejected after EOF."
     assert provider.chunks == 1
