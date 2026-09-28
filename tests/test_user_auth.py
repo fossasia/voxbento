@@ -536,6 +536,21 @@ async def test_get_admin_flags_room_coordinator(setup_db):
         "is_event_owner": False,
         "is_room_coordinator": True,
     }
+    flags = await get_admin_flags(request, room_id=room.id)
+
+    assert flags == {
+        "is_super_admin": False,
+        "is_event_owner": False,
+        "is_room_coordinator": True,
+    }
+
+    event_flags = await get_admin_flags(request, event_id=event.id)
+
+    assert event_flags == {
+        "is_super_admin": False,
+        "is_event_owner": False,
+        "is_room_coordinator": True,
+    }
 
 
 @pytest.mark.anyio
