@@ -170,12 +170,11 @@ class BoothRegistry:
         from the coordinates.  When no explicit ``channel_id`` is given it
         defaults to the MediaMTX path (``{event_slug}/{language_code}``).
 
-        ``room_id`` is an optional foreign key to an Eventyay Room.  It is
-        nullable and has no effect on booth identity — it exists to support
-        future Eventyay integration.
+        ``room_id`` is the Eventyay Room and is part of the booth ID, so it
+        is required.
 
-        Raises ``ValueError`` if the slug or language code is invalid, or if
-        a booth with the same ID already exists.
+        Raises ``ValueError`` if the slug, room ID or language code is
+        invalid, or if a booth with the same ID already exists.
         """
         slug = validate_event_slug(event_slug)
         code = validate_language_code(language_code)
@@ -244,9 +243,13 @@ class BoothRegistry:
             participant = booth.participants.pop(participant_id, None)
             if participant is None:
                 return booth.as_public_dict()
-            if booth.active_interpreter_id == participant_id:
+            was_active = booth.active_interpreter_id == participant_id
+            if was_active:
                 booth.active_interpreter_id = _pick_next_interpreter(booth)
-                booth.handoff_state = "pending" if booth.active_interpreter_id else "idle"
+            # A handoff cannot complete once its initiator or the active interpreter has left.
+            if was_active or participant_id == booth.handoff_initiator_id:
+                booth.handoff_state = "idle"
+                booth.handoff_initiator_id = None
             if not booth.participants:
                 booth.ingest_status = "disconnected"
                 booth.handoff_state = "idle"
@@ -309,7 +312,9 @@ class BoothRegistry:
                     "Only coordinators/admins or the active interpreter can reassign another interpreter."
                 )
             booth.active_interpreter_id = target_id
-            booth.handoff_state = "completed"
+            # A direct reassignment supersedes any handoff in progress.
+            booth.handoff_state = "idle"
+            booth.handoff_initiator_id = None
             for p in booth.participants.values():
                 p.ingest_connected = p.participant_id == target_id and p.ingest_connected
                 p.mic_active = p.participant_id == target_id and p.mic_active
@@ -520,11 +525,6 @@ class BoothRegistry:
             if booth.active_interpreter_id != participant_id:
                 raise PermissionError("Only the active interpreter can publish audio.")
 
-    async def is_active_interpreter(self, booth_id: str, participant_id: str, language: str, channel_id: str) -> bool:
-        async with self._lock:
-            booth = self._get_or_create_booth(booth_id, language, channel_id)
-            return booth.active_interpreter_id == participant_id
-
     async def list_booths_for_event(self, event_slug: str) -> list[dict]:
         """Return public snapshots of all booths belonging to *event_slug*."""
         async with self._lock:
@@ -572,9 +572,3 @@ class BoothRegistry:
             event_slug = ""
         if event_slug != expected_event:
             raise PermissionError(f"Booth '{booth_id}' does not belong to event '{expected_event}'.")
-
-    async def set_ingest_status(self, booth_id: str, status: str, language: str, channel_id: str) -> dict:
-        async with self._lock:
-            booth = self._get_or_create_booth(booth_id, language, channel_id)
-            booth.ingest_status = status
-            return booth.as_public_dict()

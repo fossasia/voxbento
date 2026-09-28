@@ -108,6 +108,7 @@ code { font-family: var(--font-mono); font-size: 0.85em; background: var(--color
 .breadcrumb a { color: var(--color-primary); text-decoration: none; }
 .breadcrumb a:hover { text-decoration: underline; }
 .breadcrumb span { margin: 0 4px; }
+.breadcrumb .breadcrumb-current { color: var(--color-text); font-weight: 600; }
 
 /* ── Main ────────────────────────────────────────────────────────────────── */
 
@@ -172,6 +173,7 @@ code { font-family: var(--font-mono); font-size: 0.85em; background: var(--color
 .card-body { padding: 8px 20px 16px; }
 .card-actions { padding: 12px 20px; border-top: 1px solid var(--color-border); background: #fafbfc; margin-top: auto; }
 .card-actions--flush { border-top: none; padding-top: 0; }
+.card-actions--row { display: flex; gap: 8px; }
 
 .stat-row { display: flex; justify-content: space-between; padding: 4px 0; font-size: 0.875rem; }
 .stat-label { color: var(--color-text-secondary); }
@@ -309,6 +311,8 @@ code { font-family: var(--font-mono); font-size: 0.85em; background: var(--color
   min-width: 200px; margin: 0; box-sizing: border-box; background: var(--color-surface);
 }
 .inline-form input:focus, .inline-form select:focus { outline: none; border-color: var(--color-primary); box-shadow: 0 0 0 3px var(--color-primary-subtle); }
+.inline-form .input-grow { flex: 1; }
+.inline-form .input-code { min-width: 140px; }
 .inline-delete { display: inline; }
 
 /* ── Danger Zone ─────────────────────────────────────────────────────────── */
@@ -334,7 +338,11 @@ code { font-family: var(--font-mono); font-size: 0.85em; background: var(--color
   border-radius: var(--radius-lg);
 }
 .empty-state-icon { font-size: 2.5rem; margin-bottom: 8px; }
+.empty-state-icon--sm { font-size: 2rem; }
 .empty-state-title { font-size: 1.2rem; margin-bottom: 6px; }
+.empty-state-title--lg { font-size: 1.25rem; }
+.empty-state-text { margin-bottom: 20px; }
+.empty-state-text--narrow { max-width: 440px; margin: 0 auto 20px; }
 
 .muted { color: var(--color-text-secondary); font-size: 0.875rem; }
 .link-external { font-size: 0.8125rem; }
@@ -814,6 +822,7 @@ code { font-family: var(--font-mono); font-size: 0.85em; background: var(--color
 
 /* ── Toolbar ─────────────────────────────────────────────────────────────── */
 .toolbar { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 18px; }
+.toolbar h1 { font-size: 1.6rem; font-weight: 800; letter-spacing: -0.02em; }
 
 /* ── Create panel (progressive disclosure) ──────────────────────────────── */
 .create-panel { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius); box-shadow: var(--shadow-sm); margin-bottom: 22px; overflow: hidden; }
@@ -822,6 +831,21 @@ code { font-family: var(--font-mono); font-size: 0.85em; background: var(--color
 .create-panel > summary::before { content: '+'; display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; border-radius: 7px; background: var(--color-primary-subtle); color: var(--color-primary-active); font-weight: 800; }
 .create-panel[open] > summary::before { content: '\2013'; }
 .create-panel .create-body { padding: 0 22px 22px; }
+.create-panel .create-hint { margin-bottom: 14px; font-size: 0.85rem; }
+
+/* ── Search and sortable headers ─────────────────────────────────────────── */
+
+.search-bar { margin-bottom: 24px; }
+.search-form { display: flex; gap: 10px; max-width: 500px; }
+.search-form .search-input {
+  min-height: 42px; padding: 10px 12px; font-size: 0.95rem;
+  border: 1px solid var(--color-border-strong); border-radius: 10px;
+  background: var(--color-surface); width: 100%; box-sizing: border-box;
+  font-family: inherit; color: var(--color-text); outline: none;
+}
+.sort-link { text-decoration: none; color: inherit; display: flex; align-items: center; gap: 4px; }
+.sort-indicator { font-size: 0.8em; }
+.sort-indicator--placeholder { color: transparent; }
 
 /* ── Field / form grid ───────────────────────────────────────────────────── */
 .field { display: flex; flex-direction: column; gap: 6px; margin-bottom: 16px; }
@@ -853,11 +877,26 @@ code { font-family: var(--font-mono); font-size: 0.85em; background: var(--color
 .step.is-active .step-label { color: var(--color-primary-active); }
 .step.is-done .step-bubble { background: var(--color-success); border-color: var(--color-success); color: #fff; }
 .step.is-done .step-label { color: var(--color-text); }
+.stepper a.step-bubble, .stepper a.step-bubble:hover { text-decoration: none; }
 
 .wizard-card { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-lg); box-shadow: var(--shadow-md); padding: 32px; }
 .wizard-card h2 { font-size: 1.35rem; font-weight: 800; letter-spacing: -0.02em; }
 .wizard-card .wizard-sub { color: var(--color-text-secondary); margin: 6px 0 24px; }
 .wizard-actions { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-top: 28px; flex-wrap: wrap; }
+.wizard-card .create-panel { box-shadow: none; }
+.wizard-card .field--flush { margin-bottom: 0; }
+.wizard-card .field-row--end { align-items: end; }
+.wizard-card .btn-field { min-height: 42px; }
+.wizard-card .wizard-grow { flex: 1; }
+.wizard-card .btn.is-disabled { opacity: 0.5; pointer-events: none; }
+.wizard-card .wizard-empty-hint { margin-top: 14px; }
+.wizard-card .wizard-section-title { font-size: 1rem; margin-bottom: 10px; }
+.wizard-card .wizard-section-title--spaced { margin: 26px 0 6px; }
+.wizard-card .wizard-section-hint { margin-bottom: 12px; }
+.wizard-card .wizard-share-row { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; }
+.wizard-card .wizard-share-field { flex: 1; min-width: 260px; }
+.wizard-card .wizard-room-group { margin-top: 18px; }
+.wizard-card .wizard-room-label { font-weight: 600; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 6px; }
 
 /* ── Mini list (added items in wizard) ───────────────────────────────────── */
 .mini-list { list-style: none; display: flex; flex-direction: column; gap: 8px; margin: 8px 0 0; padding: 0; }

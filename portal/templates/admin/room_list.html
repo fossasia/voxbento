@@ -6,7 +6,7 @@
   <a href="/admin/">Dashboard</a> <span>/</span>
   <a href="/admin/events/">Events</a> <span>/</span>
   <a href="/admin/events/{{ event.id }}/">{{ event.display_name }}</a> <span>/</span>
-  <span>Rooms</span>
+  <span class="breadcrumb-current" aria-current="page">Rooms</span>
 </nav>
 {% endblock %}
 
@@ -22,7 +22,7 @@
   <h3>Add a room</h3>
   <p class="form-card-hint">Rooms are the spaces at your event (e.g. “Main Hall”). Each room can host multiple language booths.</p>
   <form method="post" action="/admin/events/{{ event.id }}/rooms/" class="inline-form">
-    <input type="text" name="display_name" placeholder="Room name (e.g. Main Hall)" required style="flex:1;" />
+    <input type="text" name="display_name" placeholder="Room name (e.g. Main Hall)" required class="input-grow" />
     <button type="submit" class="btn btn-primary">Add room</button>
   </form>
 </div>
@@ -42,7 +42,7 @@
     <tr>
       <td><a href="/admin/events/{{ event.id }}/rooms/{{ rd.room.id }}/">{{ rd.room.display_name }}</a></td>
       <td>{{ rd.booth_count }}</td>
-      <td>{{ rd.room.created_at.strftime('%Y-%m-%d %H:%M') if rd.room.created_at else '—' }}</td>
+      <td>{{ rd.room.created_at.strftime('%b %d, %Y, %H:%M') if rd.room.created_at else '—' }}</td>
       <td>
         <a href="/admin/events/{{ event.id }}/rooms/{{ rd.room.id }}/" class="btn btn-sm">View</a>
         <a href="/admin/events/{{ event.id }}/rooms/{{ rd.room.id }}/booths/" class="btn btn-sm">Booths</a>
@@ -57,7 +57,7 @@
 </table>
 {% else %}
 <div class="empty-state">
-  <div style="font-size:2rem; margin-bottom:8px;">🏛️</div>
+  <div class="empty-state-icon empty-state-icon--sm">🏛️</div>
   <p>No rooms yet. Add one above to get started.</p>
 </div>
 {% endif %}

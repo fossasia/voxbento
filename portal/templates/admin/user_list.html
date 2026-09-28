@@ -4,35 +4,36 @@
 
 {% block breadcrumb %}
 <nav class="breadcrumb">
-  <a href="/admin/">Dashboard</a> › <span>Users</span>
+  <a href="/admin/">Dashboard</a> <span>/</span> <span class="breadcrumb-current" aria-current="page">Users</span>
 </nav>
 {% endblock %}
 
 {% block content %}
 <div class="page-header">
   <h1>Registered Users</h1>
-  <span class="badge">{{ users|length }} displayed</span>
+  <span class="badge">Total: {{ total_users }} user{{ 's' if total_users != 1 }}</span>
 </div>
 
 {% macro sortable_header(column, label) %}
   {% set new_sort_order = 'desc' if sort_by == column and sort_order == 'asc' else 'asc' %}
   <th>
-    <a href="?sort_by={{ column }}&sort_order={{ new_sort_order }}{% if search %}&search={{ search }}{% endif %}" style="text-decoration: none; color: inherit; display: flex; align-items: center; gap: 4px;">
+    <a href="?sort_by={{ column }}&sort_order={{ new_sort_order }}{% if search %}&search={{ search }}{% endif %}{% if limit %}&limit={{ limit }}{% endif %}" class="sort-link">
       {{ label }}
       {% if sort_by == column %}
-        <span style="font-size: 0.8em;">{% if sort_order == 'asc' %}▲{% else %}▼{% endif %}</span>
+        <span class="sort-indicator">{% if sort_order == 'asc' %}▲{% else %}▼{% endif %}</span>
       {% else %}
-        <span style="font-size: 0.8em; color: transparent;">▲</span>
+        <span class="sort-indicator sort-indicator--placeholder">▲</span>
       {% endif %}
     </a>
   </th>
 {% endmacro %}
 
-<div class="search-bar" style="margin-bottom: 24px;">
-  <form method="get" action="/admin/users/" style="display: flex; gap: 10px; max-width: 500px;">
+<div class="search-bar">
+  <form method="get" action="/admin/users/" class="search-form">
     {% if sort_by %}<input type="hidden" name="sort_by" value="{{ sort_by }}">{% endif %}
     {% if sort_order %}<input type="hidden" name="sort_order" value="{{ sort_order }}">{% endif %}
-    <input type="text" name="search" value="{{ search or '' }}" placeholder="Search by email or name..." style="min-height: 42px; padding: 10px 12px; font-size: 0.95rem; border: 1px solid var(--color-border-strong); border-radius: 10px; background: var(--color-surface); width: 100%; box-sizing: border-box; font-family: inherit; color: var(--color-text); outline: none;">
+    {% if limit %}<input type="hidden" name="limit" value="{{ limit }}">{% endif %}
+    <input type="text" name="search" value="{{ search or '' }}" placeholder="Search by email or name..." class="search-input">
     <button type="submit" class="btn btn-primary">Search</button>
     {% if search %}
       <a href="/admin/users/" class="btn">Clear</a>
@@ -44,7 +45,7 @@
 <table class="data-table">
   <thead>
     <tr>
-      {{ sortable_header('id', 'ID') }}
+      <th>#</th>
       {{ sortable_header('email', 'Email') }}
       {{ sortable_header('display_name', 'Display Name') }}
       {{ sortable_header('is_admin', 'Admin') }}
@@ -57,7 +58,7 @@
   <tbody>
     {% for user in users %}
     <tr>
-      <td>{{ user.id }}</td>
+      <td>{{ (page - 1) * (limit or 50) + loop.index if page and page > 1 else loop.index }}</td>
       <td><a href="/admin/users/{{ user.id }}/">{{ user.email }}</a></td>
       <td><a href="/admin/users/{{ user.id }}/">{{ user.display_name }}</a></td>
       <td>
@@ -81,7 +82,7 @@
         <span class="status-offline">○ Inactive</span>
         {% endif %}
       </td>
-      <td>{{ user.created_at.strftime('%Y-%m-%d') if user.created_at else '—' }}</td>
+      <td>{{ user.created_at.strftime('%b %d, %Y') if user.created_at else '—' }}</td>
       <td class="actions-cell">
         <form method="post" action="/admin/users/{{ user.id }}/toggle-active" class="inline-form">
           <button type="submit" class="btn btn-sm {{ 'btn-warning' if user.is_active else 'btn-success' }}">

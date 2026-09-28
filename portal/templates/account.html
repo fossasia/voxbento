@@ -39,7 +39,7 @@
         </tr>
         <tr style="border-bottom: 1px solid var(--color-border);">
           <th style="padding: 20px 24px; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; color: #64748b; background: #f8fafc; border: none; border-right: 1px solid var(--color-border);">Joined</th>
-          <td style="padding: 20px 24px; border: none; font-variant-numeric: tabular-nums; color: var(--color-text-secondary);">{{ user.created_at.strftime('%Y-%m-%d %H:%M UTC') if user.created_at else '—' }}</td>
+          <td style="padding: 20px 24px; border: none; font-variant-numeric: tabular-nums; color: var(--color-text-secondary);">{{ user.created_at.strftime('%b %d, %Y, %H:%M UTC') if user.created_at else '—' }}</td>
         </tr>
         <tr style="border-bottom: 1px solid var(--color-border);">
           <th style="padding: 20px 24px; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; color: #64748b; background: #f8fafc; border: none; border-right: 1px solid var(--color-border);">Status</th>
@@ -102,7 +102,7 @@
               <span class="badge badge-role badge-{{ m.role }}" style="padding: 4px 10px; border-radius: 9999px; font-size: 0.75rem; font-weight: 600;">{{ m.role }}</span>
             </td>
             <td style="padding: 16px 24px; border: none; font-variant-numeric: tabular-nums; color: var(--color-text-secondary); font-size: 0.95rem;">
-              {{ m.created_at.strftime('%Y-%m-%d') if m.created_at else '—' }}
+              {{ m.created_at.strftime('%b %d, %Y') if m.created_at else '—' }}
             </td>
           </tr>
           {% endfor %}
