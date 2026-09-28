@@ -42,7 +42,7 @@
     <tr>
       <td><a href="/admin/events/{{ event.id }}/rooms/{{ rd.room.id }}/">{{ rd.room.display_name }}</a></td>
       <td>{{ rd.booth_count }}</td>
-      <td>{{ rd.room.created_at.strftime('%Y-%m-%d %H:%M') if rd.room.created_at else '—' }}</td>
+      <td>{{ rd.room.created_at.strftime('%b %d, %Y, %H:%M') if rd.room.created_at else '—' }}</td>
       <td>
         <a href="/admin/events/{{ event.id }}/rooms/{{ rd.room.id }}/" class="btn btn-sm">View</a>
         <a href="/admin/events/{{ event.id }}/rooms/{{ rd.room.id }}/booths/" class="btn btn-sm">Booths</a>

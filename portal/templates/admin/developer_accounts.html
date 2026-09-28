@@ -37,7 +37,7 @@
           {{ acc.organization_name or '-' }}
         </td>
         <td style="padding: 16px 24px; border: none; font-variant-numeric: tabular-nums; color: var(--color-text-secondary);">
-          {{ acc.created_at.strftime('%Y-%m-%d %H:%M') }}
+          {{ acc.created_at.strftime('%b %d, %Y, %H:%M') }}
         </td>
         <td style="padding: 16px 24px; border: none;">
           {% if acc.status == 'approved' %}
