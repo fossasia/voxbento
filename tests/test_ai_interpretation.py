@@ -11,7 +11,14 @@ from portal.translations.prompts import build_interpretation_messages
 from portal.translations.providers.anthropic import AnthropicProvider
 from portal.translations.providers.gemini import GeminiProvider
 from portal.translations.providers.openai import OpenAIProvider
-from portal.translations.vocabulary import _term_matches, parse_vocabulary_csv, resolve_vocabulary_entries
+from portal.translations.vocabulary import (
+    VocabularyEntryInput,
+    VocabularyOverlapIndex,
+    _term_matches,
+    parse_vocabulary_csv,
+    resolve_vocabulary_entries,
+    vocabulary_terms_overlap,
+)
 
 
 def test_prompt_builder_combines_persona_style_and_vocabulary():
@@ -61,6 +68,33 @@ def test_exact_match_type_requires_word_boundaries():
     always = entry("US", "exact", case_sensitive=True)
     always.priority = 100
     assert _term_matches(always, "nothing relevant here")
+
+
+def test_overlap_index_matches_the_pairwise_rule():
+    import itertools
+
+    def make(term, case_sensitive, language):
+        return VocabularyEntryInput(
+            source_term=term, target_language=language, target_term="x", case_sensitive=case_sensitive
+        )
+
+    combinations = list(itertools.product(["US", "us", "Us", "USA"], [True, False], ["de", "fr"]))
+    for first in combinations:
+        for second in combinations:
+            left, right = make(*first), make(*second)
+            index = VocabularyOverlapIndex()
+            index.add(left)
+            expected = left.target_language == right.target_language and vocabulary_terms_overlap(left, right)
+            assert index.conflicts(right) is expected, (first, second)
+
+
+def test_csv_parser_stays_linear_on_large_uploads():
+    # The 2 MB upload cap allows roughly 285k rows; a pairwise scan would not finish.
+    rows = "".join(f"term{i},de,ziel{i}\n" for i in range(20000))
+    entries, warnings = parse_vocabulary_csv("source_term,target_language,target_term\n" + rows)
+
+    assert len(entries) == 20000
+    assert warnings == []
 
 
 def test_csv_parser_reports_invalid_and_duplicate_rows():

@@ -39,6 +39,32 @@ def vocabulary_terms_overlap(
     return left.source_term.casefold() == right.source_term.casefold()
 
 
+class VocabularyOverlapIndex:
+    """Constant-time equivalent of vocabulary_terms_overlap over a growing set of entries."""
+
+    def __init__(self) -> None:
+        self._case_sensitive_terms: set[tuple[str, str]] = set()
+        self._case_sensitive_folded: set[tuple[str, str]] = set()
+        self._case_insensitive_folded: set[tuple[str, str]] = set()
+
+    def conflicts(self, entry: VocabularyEntryInput | AIVocabularyEntry) -> bool:
+        exact = (entry.target_language, entry.source_term)
+        folded = (entry.target_language, entry.source_term.casefold())
+        if folded in self._case_insensitive_folded:
+            return True
+        if entry.case_sensitive:
+            return exact in self._case_sensitive_terms
+        return folded in self._case_sensitive_folded
+
+    def add(self, entry: VocabularyEntryInput | AIVocabularyEntry) -> None:
+        folded = (entry.target_language, entry.source_term.casefold())
+        if entry.case_sensitive:
+            self._case_sensitive_terms.add((entry.target_language, entry.source_term))
+            self._case_sensitive_folded.add(folded)
+        else:
+            self._case_insensitive_folded.add(folded)
+
+
 class VocabularyRowError(ValueError):
     pass
 
@@ -104,21 +130,19 @@ def parse_vocabulary_csv(file_content: str) -> tuple[list[VocabularyEntryInput],
 
     entries: list[VocabularyEntryInput] = []
     warnings: list[str] = []
-    seen: list[VocabularyEntryInput] = []
+    seen = VocabularyOverlapIndex()
     for row_number, row in enumerate(reader, start=2):
         try:
             entry = validate_vocabulary_entry(row, row_number)
         except VocabularyRowError as exc:
             warnings.append(str(exc))
             continue
-        if any(
-            prior.target_language == entry.target_language and vocabulary_terms_overlap(prior, entry) for prior in seen
-        ):
+        if seen.conflicts(entry):
             warnings.append(
                 f"Row {row_number}: duplicate term '{entry.source_term}' for target language '{entry.target_language}'"
             )
             continue
-        seen.append(entry)
+        seen.add(entry)
         entries.append(entry)
     return entries, warnings
 

@@ -89,7 +89,11 @@ from portal.models import (
 from portal.transcription import ALLOWED_MODELS, ProviderConfig, ProviderEnum, get_api_key
 from portal.transcription.worker import start_transcription_worker, stop_transcription_worker
 from portal.translations.constants import TRANSLATION_MODELS, TranslationProviderEnum
-from portal.translations.vocabulary import parse_vocabulary_csv, serialize_vocabulary_csv, vocabulary_terms_overlap
+from portal.translations.vocabulary import (
+    VocabularyOverlapIndex,
+    parse_vocabulary_csv,
+    serialize_vocabulary_csv,
+)
 from portal.utils import _check_mediamtx, _make_jitsi_url, safe_redirect
 from portal.websockets.manager import broadcast_transcription
 
@@ -902,20 +906,19 @@ async def admin_upload_ai_vocabulary(request: Request, event_id: int, room_id: i
                     AIVocabularyEntry.room_id == room_id,
                 )
             )
-            accepted_entries = []
+            accepted = VocabularyOverlapIndex()
         else:
-            accepted_entries = existing_entries.copy()
+            accepted = VocabularyOverlapIndex()
+            for existing in existing_entries:
+                accepted.add(existing)
 
         for entry in parsed_entries:
-            if any(
-                prior.target_language == entry.target_language and vocabulary_terms_overlap(prior, entry)
-                for prior in accepted_entries
-            ):
+            if accepted.conflicts(entry):
                 warnings.append(
                     f"Existing duplicate: '{entry.source_term}' for target language '{entry.target_language}'"
                 )
                 continue
-            accepted_entries.append(entry)
+            accepted.add(entry)
             languages.add(entry.target_language)
             session.add(
                 AIVocabularyEntry(
