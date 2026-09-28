@@ -873,7 +873,9 @@ code { font-family: var(--font-mono); font-size: 0.85em; background: var(--color
 .model-modal-icon { width: 48px; height: 48px; border-radius: 50%; background: #e6f4ea; color: #1e8e3e; display: flex; align-items: center; justify-content: center; font-size: 24px; margin: 0 auto 1rem auto; }
 .btn.btn-modal-dismiss { padding: 0.5rem 2rem; border-radius: 6px; }
 
-.token-form .form-group--action-plain { align-self: flex-end; }
+.form-row--spaced { margin-bottom: 1rem; }
+.form-row--spaced .form-group--grow { flex: 1; }
+.form-group--align-end { align-self: flex-end; }
 .transcript-viewer { background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 6px; padding: 1rem; max-height: 600px; overflow-y: auto; }
 .transcript-placeholder { text-align: center; margin-top: 2rem; }
 .transcript-table { margin: 0; width: 100%; }
