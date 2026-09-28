@@ -7,6 +7,7 @@ import logging
 from tenacity import AsyncRetrying, retry_if_exception, stop_after_attempt, wait_exponential
 
 from portal.globals import get_http_client
+from portal.transcription.errors import TranscriptionAuthError
 from portal.transcription.providers.base import (
     BoothTranscriptionState,
     ProviderConfig,
@@ -49,9 +50,20 @@ class OpenAIProvider(TranscriptionProvider):
                     resp = await client.post(
                         "https://api.openai.com/v1/audio/transcriptions", headers=headers, files=files, data=data
                     )
-                    # Surface every non-2xx (401/403/400/500…) instead of dropping the chunk silently.
-                    resp.raise_for_status()
-                    return resp.json().get("text", "").strip()
+                    if resp.status_code in (429, 502, 503, 504):
+                        resp.raise_for_status()
+                    if resp.status_code in (401, 403):
+                        raise TranscriptionAuthError(
+                            "openai",
+                            "OpenAI API key was rejected.",
+                            resp.status_code,
+                        )
+                    if resp.status_code == 200:
+                        return resp.json().get("text", "").strip()
+                    else:
+                        logger.error(f"OpenAI error status={resp.status_code}")
+        except TranscriptionAuthError:
+            raise
         except Exception as e:
             logger.error(f"OpenAI request failed: {e}")
             raise e

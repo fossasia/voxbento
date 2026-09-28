@@ -4,6 +4,7 @@ import logging
 
 from tenacity import AsyncRetrying, retry_if_exception, stop_after_attempt, wait_exponential
 
+from portal.transcription.errors import TranscriptionAuthError
 from portal.transcription.providers.base import (
     BoothTranscriptionState,
     ProviderConfig,
@@ -48,9 +49,21 @@ class ElevenLabsProvider(TranscriptionProvider):
                     resp = await client.post(
                         "https://api.elevenlabs.io/v1/speech-to-text", headers=headers, files=files, data=data
                     )
-                    # Surface every non-2xx (401/403/400/500…) instead of dropping the chunk silently.
-                    resp.raise_for_status()
-                    return resp.json().get("text", "").strip()
+                    if resp.status_code in (429, 502, 503, 504):
+                        resp.raise_for_status()
+
+                    if resp.status_code in (401, 403):
+                        raise TranscriptionAuthError(
+                            "elevenlabs",
+                            "ElevenLabs API key was rejected.",
+                            resp.status_code,
+                        )
+                    if resp.status_code == 200:
+                        return resp.json().get("text", "").strip()
+                    else:
+                        logger.error(f"ElevenLabs error status={resp.status_code}")
+        except TranscriptionAuthError:
+            raise
         except Exception as e:
             logger.error(f"ElevenLabs request failed: {e}")
             raise e
