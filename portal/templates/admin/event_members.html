@@ -18,30 +18,30 @@
 </div>
 
 {% if request.query_params.get('error') == 'user_not_found' %}
-<div class="alert alert-danger" style="margin-bottom: 1rem; color: #d32f2f; background-color: #fde0e0; padding: 10px; border-radius: 4px;">
+<div class="alert alert-danger alert-flash">
   <strong>Error:</strong> User with that email address was not found. They must register first.
 </div>
 {% endif %}
 {% if request.query_params.get('error') == 'invalid_role' %}
-<div class="alert alert-danger" style="margin-bottom: 1rem; color: #d32f2f; background-color: #fde0e0; padding: 10px; border-radius: 4px;">
+<div class="alert alert-danger alert-flash">
   <strong>Error:</strong> Invalid role selected.
 </div>
 {% endif %}
 
-<div class="section-card" style="margin-bottom: 2rem;">
+<div class="section-card section-card--spaced-lg">
   <div class="section-header">
     <h2>Assign Event Owner</h2>
   </div>
   <div class="card-body">
     <form method="post" action="/admin/events/{{ event.id }}/members/" class="token-form">
       <div class="form-row">
-        <div class="form-group" style="flex: 2;">
+        <div class="form-group form-group--wide">
           <label for="email">User Email</label>
           <input type="email" name="email" id="email" placeholder="user@example.com" required />
         </div>
         <div class="form-group">
           <label for="role">Role</label>
-          <input type="text" name="role" id="role" value="event_owner" readonly style="background-color: #f5f5f5;" />
+          <input type="text" name="role" id="role" value="event_owner" readonly class="input-readonly" />
         </div>
         <div class="form-group form-group-btn">
           <button type="submit" class="btn btn-primary">Assign Role</button>
@@ -80,9 +80,8 @@
       <td class="actions-cell">
         <form method="post"
               action="/admin/events/{{ event.id }}/members/{{ m.id }}/invite"
-              class="inline-form"
-              style="margin-right: 8px;">
-          <button type="submit" class="btn btn-sm btn-outline" style="border: 2px solid #000; background: #fff; color: #000; border-radius: 4px; box-shadow: 2px 2px 0px #000; padding: 4px 12px; font-weight: bold;">✉️ Invite</button>
+              class="inline-form form-inline-spaced">
+          <button type="submit" class="btn btn-sm btn-outline btn-invite">✉️ Invite</button>
         </form>
         <form method="post"
               action="/admin/events/{{ event.id }}/members/{{ m.id }}/delete"
