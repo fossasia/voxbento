@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from collections.abc import Sequence
+from typing import Any
 
 
 class TranslationProvider(ABC):
@@ -14,6 +16,9 @@ class TranslationProvider(ABC):
         source_lang_name: str,
         model: str,
         api_key: str | None,
+        persona: str | None = None,
+        style: str | None = None,
+        vocabulary_entries: Sequence[Any] = (),
     ) -> str | None:
         """
         Translates text to the target language.

@@ -61,7 +61,7 @@ async def test_language_independence(db_data, mock_broadcast):
     # We will mock _call_llm and synthesize.
     # We want French to be slow and Spanish to be fast.
 
-    async def fake_call_llm(provider, model, api_key, text, lang_name, source_lang_name):
+    async def fake_call_llm(provider, model, api_key, text, lang_name, source_lang_name, **kwargs):
         if lang_name == "French":
             await asyncio.sleep(0.2)
             return "Bonjour le monde"
@@ -114,7 +114,7 @@ async def test_pipeline_failure_degrades_gracefully(db_data, mock_broadcast):
     worker = TranslationWorker(mock_broadcast)
 
     # Simulate LLM failure for Spanish, and TTS timeout for French
-    async def fake_call_llm(provider, model, api_key, text, lang_name, source_lang_name):
+    async def fake_call_llm(provider, model, api_key, text, lang_name, source_lang_name, **kwargs):
         if lang_name == "Spanish":
             return None  # Simulate failure
         return "Bonjour le monde"

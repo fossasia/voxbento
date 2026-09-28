@@ -6,8 +6,9 @@ import logging
 import os
 import threading
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     import ctranslate2
@@ -228,6 +229,9 @@ class LocalProvider(TranslationProvider):
         source_lang_name: str,
         model: str,
         api_key: str | None,
+        persona: str | None = None,
+        style: str | None = None,
+        vocabulary_entries: Sequence[Any] = (),
     ) -> str | None:
         logger.debug(
             f"[NLLB] translate called: source='{source_lang_name}' -> target='{target_lang_name}' "
