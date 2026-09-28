@@ -119,6 +119,47 @@ async def test_language_independence(db_data, mock_broadcast):
 
 
 @pytest.mark.anyio
+async def test_vocabulary_lookup_failure_still_translates(db_data, mock_broadcast):
+    worker = TranslationWorker(mock_broadcast)
+    seen_vocabulary = {}
+
+    async with get_session() as s:
+        room = await s.get(Room, db_data["room"].id)
+        room.floor_ai_vocabulary_enabled = True
+
+    async def fake_call_llm(provider, model, api_key, text, lang_name, source_lang_name, **kwargs):
+        seen_vocabulary[lang_name] = kwargs.get("vocabulary_entries")
+        return f"translated {lang_name}"
+
+    async def boom(*args, **kwargs):
+        raise RuntimeError("glossary database is down")
+
+    async def fake_synthesize(room_id, text, lang_code):
+        return b"fake_audio"
+
+    with patch.object(worker, "_call_llm", new=fake_call_llm):
+        with patch("portal.translations.worker.resolve_vocabulary_entries", new=boom):
+            with patch("portal.tts.worker.synthesize", new=fake_synthesize):
+                with patch("portal.websockets.manager.tts_manager.has_listeners", return_value=True):
+                    with patch(
+                        "portal.websockets.manager.TTSConnectionManager.broadcast_bundle", new_callable=AsyncMock
+                    ) as mock_bundle:
+                        await worker.handle_translation(
+                            room_id=db_data["room"].id,
+                            segment_id=db_data["segment"].id,
+                            text="Hello world",
+                            booth_id_str="floor",
+                            uuid_segment_id="1234-uuid",
+                            seq=1,
+                        )
+
+    es_call = next(c for c in mock_bundle.call_args_list if c.args[1] == "es")
+    assert es_call.args[7] == "translated Spanish"
+    assert es_call.args[8] is None
+    assert seen_vocabulary["Spanish"] == []
+
+
+@pytest.mark.anyio
 async def test_pipeline_failure_degrades_gracefully(db_data, mock_broadcast):
     worker = TranslationWorker(mock_broadcast)
 

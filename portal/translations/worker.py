@@ -219,15 +219,23 @@ class TranslationWorker:
 
                     vocabulary_entries = []
                     if room.floor_ai_vocabulary_enabled:
-                        async with get_session() as vocabulary_session:
-                            vocabulary_entries = await resolve_vocabulary_entries(
-                                vocabulary_session,
-                                event_id=event.id,
-                                room_id=room.id,
-                                booth_id=source_booth_id,
-                                target_language=lang_code,
-                                transcript_text=text,
+                        # The glossary is optional context; a lookup failure must not drop the segment.
+                        try:
+                            async with get_session() as vocabulary_session:
+                                vocabulary_entries = await resolve_vocabulary_entries(
+                                    vocabulary_session,
+                                    event_id=event.id,
+                                    room_id=room.id,
+                                    booth_id=source_booth_id,
+                                    target_language=lang_code,
+                                    transcript_text=text,
+                                )
+                        except Exception as e:
+                            logger.warning(
+                                f"[{booth_id_str}] Vocabulary lookup failed for {lang_code}: {e}. "
+                                "Translating without glossary entries."
                             )
+                            vocabulary_entries = []
                     translated_text = await asyncio.wait_for(
                         self._call_llm(
                             provider,
