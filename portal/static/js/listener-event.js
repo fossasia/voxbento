@@ -13,6 +13,7 @@ document
 const eventDataEl = document.getElementById("listener-data");
 const eventData = JSON.parse(eventDataEl.textContent);
 var eventSlug = eventData.eventSlug;
+var listenerToken = eventData.listenerToken || "";
 var boothsData = eventData.booths;
 
 var roomsData = eventData.rooms;
@@ -25,7 +26,8 @@ var translationLangSelect = document.getElementById("translation-lang-select");
 var audioEl = document.getElementById("audio-player");
 var statusEl = document.getElementById("status");
 var captionsBox = document.getElementById("live-captions");
-var captionsWs = null;
+var captionsWs = null;         // WS for source booth (original captions)
+var translationCaptionsWs = null; // WS for target translation booth (translated text)
 
 var ttsWs = null;
 var audioCtx = null;
@@ -33,6 +35,7 @@ var nextStartTime = 0;
 var currentAudioDelayMs = 0;
 var currentRoomId = null;
 var currentSourceType = null;
+var currentTtsLanguage = null; // language of the AI booth being played, if any
 /** @type {ReturnType<typeof window.AudioScheduler.create>|null} */
 var audioScheduler = null;
 
@@ -73,7 +76,7 @@ var pendingAudioDelayMs = 0;
 var pendingTtsLang = null; // TTS language to start once live
 var pendingRoomId = null;
 var segmentStore = Object.create(null);
-var expectedSeq = 1;
+var expectedSeq = null; // set from the first TTS frame of a stream
 var isSegmentPlaying = false;
 var fallbackQueueTimer = null;
 var seqWaitTimer = null;
@@ -95,6 +98,7 @@ function stopCurrentStream() {
   pendingRoomId = null;
   currentRoomId = null;
   currentSourceType = null;
+  currentTtsLanguage = null;
 
   // Clear all queued segments and timers
   if (seqWaitTimer) {
@@ -106,7 +110,7 @@ function stopCurrentStream() {
     fallbackQueueTimer = null;
   }
   segmentStore = Object.create(null);
-  expectedSeq = 1;
+  expectedSeq = null;
   isSegmentPlaying = false;
   if (audioScheduler) {
     audioScheduler.reset();
@@ -117,6 +121,10 @@ function stopCurrentStream() {
     captionsWs.close();
     captionsWs = null;
   }
+  if (translationCaptionsWs) {
+    translationCaptionsWs.close();
+    translationCaptionsWs = null;
+  }
   showAudioPlayer(false);
   audioEl.muted = false;
   document.getElementById("caption-history").innerHTML = "";
@@ -125,7 +133,24 @@ function stopCurrentStream() {
   setStatus("Waiting for selection...", "waiting");
 }
 
-function startTtsWs(roomId, langCode, boothId, audioDelayMs) {
+/**
+ * Open a WebSocket to a portal path, carrying the listener token so the
+ * connection is accepted when the portal requires WebSocket authentication.
+ *
+ * A browser cannot set an Authorization header on a WebSocket, so the token
+ * travels as a "bearer.<token>" subprotocol instead of a query parameter:
+ * proxy and load-balancer access logs record the request line, not the
+ * subprotocol the two sides negotiated.
+ * @param {string} path  e.g. "/ws/captions/my-event-1-en"
+ */
+function openWs(path) {
+  var wsProto = window.location.protocol === "https:" ? "wss:" : "ws:";
+  var url = wsProto + "//" + window.location.host + path;
+  if (!listenerToken) return new WebSocket(url);
+  return new WebSocket(url, ["bearer." + listenerToken]);
+}
+
+function startTtsWs(targetBoothId, audioDelayMs) {
   stopTtsWs();
   if (!audioCtx) {
     audioCtx = new (window.AudioContext || window.webkitAudioContext)();
@@ -144,18 +169,8 @@ function startTtsWs(roomId, langCode, boothId, audioDelayMs) {
     comfortNoiseLevelDb: -40,
   });
 
-  var wsProto = window.location.protocol === "https:" ? "wss:" : "ws:";
-  var wsUrl =
-    wsProto +
-    "//" +
-    window.location.host +
-    "/ws/tts/" +
-    roomId +
-    "/" +
-    langCode +
-    "/" +
-    boothId;
-  ttsWs = new WebSocket(wsUrl);
+  // targetBoothId = e.g. "my-event-1-ai-fr" — matches /ws/tts/{booth_id} on the server
+  ttsWs = openWs("/ws/tts/" + targetBoothId);
   ttsWs.binaryType = "arraybuffer";
 
   ttsWs.onmessage = function (event) {
@@ -169,6 +184,8 @@ function startTtsWs(roomId, langCode, boothId, audioDelayMs) {
         if (expectedSeq === null || expectedSeq === undefined) {
           expectedSeq = seq;
         }
+        // A late frame for a segment we already moved past would never be played.
+        if (seq < expectedSeq) return;
 
         segmentStore[seq] = {
           seq: seq,
@@ -250,7 +267,6 @@ function fetchRoomAudioDelay(roomId) {
     })
     .then(function (data) {
       var delayMs = normalizeAudioDelayMs(data.audio_delay_ms);
-      
       return delayMs;
     });
 }
@@ -278,11 +294,26 @@ function startWhepAndCaptions(whepUrl, boothId, audioDelayMs) {
 
 function openCaptionsWs(boothId) {
   if (!boothId) return;
-  var wsProto = window.location.protocol === "https:" ? "wss:" : "ws:";
-  captionsWs = new WebSocket(
-    wsProto + "//" + window.location.host + "/ws/captions/" + boothId,
-  );
+  captionsWs = openWs("/ws/captions/" + boothId);
   captionsWs.onmessage = handleCaptionsMessage;
+}
+
+/**
+ * Open a second captions WS to receive translated text for the chosen target language.
+ * The worker broadcasts translated text to listener_manager at {slug}-{roomId}-{langCode}.
+ * @param {string} eventSlug
+ * @param {number} roomId
+ * @param {string} langCode  e.g. "de"
+ */
+function openTranslationCaptionsWs(eventSlug, roomId, langCode) {
+  if (translationCaptionsWs) {
+    translationCaptionsWs.close();
+    translationCaptionsWs = null;
+  }
+  if (!langCode || !roomId) return;
+  var targetBoothId = eventSlug + "-" + roomId + "-" + langCode;
+  translationCaptionsWs = openWs("/ws/captions/" + targetBoothId);
+  translationCaptionsWs.onmessage = handleTranslationMessage;
 }
 
 function renderItem(data) {
@@ -298,7 +329,11 @@ function renderItem(data) {
           ? document.getElementById("segment-" + data.segment_id)
           : null;
         var srcLangOpt = languageSelect.options[languageSelect.selectedIndex];
-        var srcLangName = srcLangOpt ? srcLangOpt.text : "Source";
+        var srcLangName = currentTtsLanguage
+          ? "Original"
+          : srcLangOpt
+            ? srcLangOpt.text
+            : "Source";
 
         if (!existingBlock) {
           var block = document.createElement("div");
@@ -319,6 +354,8 @@ function renderItem(data) {
 
           if (mode === "translated") {
             srcDiv.style.display = "none";
+            // Nothing to show until a translation lands in this block; avoids empty rows.
+            block.style.display = "none";
           }
 
           block.appendChild(srcDiv);
@@ -374,6 +411,7 @@ function renderItem(data) {
         } else {
           block.appendChild(tDiv);
         }
+        if (mode !== "original") block.style.display = "flex";
       } else {
         // Fallback if we missed the original caption
         block = document.createElement("div");
@@ -431,6 +469,8 @@ function pumpSegmentQueue() {
     clearTimeout(seqWaitTimer);
     seqWaitTimer = null;
   }
+  var waitingText = document.getElementById("waiting-text");
+  if (waitingText) waitingText.style.display = "none";
 
   isSegmentPlaying = true;
 
@@ -444,10 +484,13 @@ function pumpSegmentQueue() {
     });
   }
 
-  // 2. Render Translation
+  // 2. Render Translation. The bundle carries the AI booth's own language; captions in
+  // any other language arrive on translationCaptionsWs instead.
   var mode = captionModeSelect ? captionModeSelect.value : "original";
   var isTranslationActive =
-    Boolean(translationLangSelect.value) && mode !== "original";
+    Boolean(translationLangSelect.value) &&
+    translationLangSelect.value === currentTtsLanguage &&
+    mode !== "original";
   if (isTranslationActive) {
     var tText = nextSeg.translation;
     if (!tText && nextSeg.error === "pipeline_failed") {
@@ -469,10 +512,7 @@ function pumpSegmentQueue() {
   }
 
   // 3. Play audio or timeout
-  var isTtsActive =
-    ttsSyncEnabled &&
-    Boolean(translationLangSelect.value) &&
-    mode !== "original";
+  var isTtsActive = currentSourceType === "tts";
 
   if (isTtsActive && !nextSeg.error && audioCtx) {
     if (nextSeg.audioBuffer) {
@@ -565,15 +605,13 @@ function handleCaptionsMessage(event) {
           pendingBoothId = null;
           startWhepStream(url, delayMs);
         } else if (pendingTtsLang) {
-          var plang = pendingTtsLang;
-          var prid = pendingRoomId;
+          var pBoothId = pendingTtsLang; // pendingTtsLang now stores target_booth_id
           var ttsDelayMs = pendingAudioDelayMs;
-          var pBoothId = pendingBoothId;
           pendingTtsLang = null;
           pendingAudioDelayMs = 0;
           pendingRoomId = null;
           pendingBoothId = null;
-          startTtsWs(prid, plang, pBoothId, ttsDelayMs);
+          startTtsWs(pBoothId, ttsDelayMs);
           setStatus("Live (TTS Audio)", "live");
         }
       }
@@ -643,12 +681,15 @@ function handleCaptionsMessage(event) {
         var currentBox = document.getElementById("caption-current");
         if (currentBox) currentBox.textContent = "";
       }
-    } else if (data.type === "translation") {
-      // Legacy support: translations should now come via the atomic bundle on ttsWs.
-      // This block is preserved just in case some legacy clients still send it,
-      // but under the new architecture it shouldn't be hit for floor audio.
-      var sid = data.segment_id;
-      renderItem(data);
+    } else if (data.type === "translation" || data.type === "translated_caption") {
+      // translation messages come from the translationCaptionsWs but may also
+      // appear on the source captionsWs for legacy compatibility.
+      renderItem({
+        type: "translation",
+        language_code: translationLangSelect.value,
+        text: data.text,
+        segment_id: data.segment_id,
+      });
     } else if (data.type === "ping") {
       if (captionsWs && captionsWs.readyState === WebSocket.OPEN) {
         captionsWs.send("pong");
@@ -656,6 +697,32 @@ function handleCaptionsMessage(event) {
     }
   } catch (e) {
     console.error(e);
+  }
+}
+
+/**
+ * Handler for the translation captions WebSocket (translationCaptionsWs).
+ * The server sends {type: "translated_caption", text: "...", segment_id: "..."}.
+ */
+function handleTranslationMessage(event) {
+  try {
+    var data = JSON.parse(event.data);
+    if (data.type === "translated_caption" || data.type === "translation") {
+      var mode = captionModeSelect ? captionModeSelect.value : "original";
+      if (mode === "original") return; // user only wants original, skip
+      renderItem({
+        type: "translation",
+        language_code: translationLangSelect.value,
+        text: data.text,
+        segment_id: data.segment_id,
+      });
+    } else if (data.type === "ping") {
+      if (translationCaptionsWs && translationCaptionsWs.readyState === WebSocket.OPEN) {
+        translationCaptionsWs.send("pong");
+      }
+    }
+  } catch (e) {
+    console.error("handleTranslationMessage:", e);
   }
 }
 
@@ -727,10 +794,15 @@ roomSelect.addEventListener("change", function () {
 
   roomBooths.forEach(function (b) {
     var opt = document.createElement("option");
-    opt.value = b.whep_url;
-    opt.textContent = b.language_name;
-    opt.dataset.type = "whep";
-    if (b.language_code === "floor") {
+    opt.value = b.is_ai ? b.id : (b.whep_url || b.id);
+    opt.textContent = b.label || b.language_name;
+    opt.dataset.type = b.is_ai ? "tts" : "whep";
+    opt.dataset.isAi = b.is_ai ? "true" : "false";
+    if (b.is_ai) {
+      // For AI booths: boothId = target_booth_id (e.g. slug-roomId-ai-langCode)
+      opt.dataset.boothId = b.id;
+      opt.dataset.languageCode = b.language_code;
+    } else if (b.language_code === "floor") {
       opt.dataset.boothId = eventSlug + "-" + roomId + "-floor";
       opt.dataset.languageCode = "floor";
     } else {
@@ -750,16 +822,7 @@ roomSelect.addEventListener("change", function () {
   if (transGroup) transGroup.style.display = "none";
 });
 
-var ttsSyncEnabled = false;
-var ttsSyncToggle = document.getElementById("tts-sync-toggle");
-if (ttsSyncToggle) {
-  ttsSyncToggle.addEventListener("change", function () {
-    ttsSyncEnabled = this.checked;
-    if (languageSelect.value) {
-      applyTtsOverlay();
-    }
-  });
-}
+
 
 translationLangSelect.addEventListener("change", function () {
   if (this.value) {
@@ -771,28 +834,12 @@ translationLangSelect.addEventListener("change", function () {
   }
   applyCaptionMode();
 
-  if (fallbackQueueTimer) {
-    clearTimeout(fallbackQueueTimer);
-    fallbackQueueTimer = null;
-  }
-  if (isSegmentPlaying) {
-    isSegmentPlaying = false;
-  }
-
-  // Completely clear segment store and reset expected sequence
-  segmentStore = {};
-  expectedSeq = null;
-
-  console.log(
-    "Language switched to:",
-    this.value,
-    "Selected index:",
-    this.selectedIndex,
-  );
-
-  if (languageSelect.value) {
-    applyTtsOverlay();
-  }
+  // Captions in the AI booth's own language arrive with its audio. Any other language comes
+  // from that language's text channel, which also tells the worker someone wants it translated.
+  // The audio stream is left alone, so a listener can hear one language and read another.
+  var roomId = parseInt(roomSelect.value, 10);
+  var newLangCode = this.value !== currentTtsLanguage ? this.value : "";
+  openTranslationCaptionsWs(eventSlug, roomId, newLangCode);
 });
 
 languageSelect.addEventListener("change", function () {
@@ -805,46 +852,77 @@ languageSelect.addEventListener("change", function () {
   var roomId = parseInt(roomSelect.value, 10);
   var rData = roomsData.find((r) => r.id.toString() === roomId.toString());
 
-  // Setup translation options based on the selected audio source
+  var isAi = selectedOpt ? selectedOpt.dataset.isAi === "true" : false;
   var transGroup = document.getElementById("translation-lang-group");
-  if (sourceData) {
-    var bData = sourceData;
-    if (
-      bData &&
-      bData.translation_enabled &&
-      bData.translation_languages &&
-      bData.translation_languages.length > 0
-    ) {
-      if (transGroup) transGroup.style.display = "flex";
-      captionModeSelect.disabled = false;
 
-      // Preserve current selection if possible
-      var currentSelection = translationLangSelect.value;
-      translationLangSelect.innerHTML = "";
+  if (isAi) {
+    // AI booths: captions default to the booth's own language, whose text arrives with
+    // the audio. The listener can read the original or any other room language instead.
+    var aiLangs = (rData && rData.translation_languages) || [];
+    if (transGroup) transGroup.style.display = "flex";
+    captionModeSelect.disabled = false;
+    translationLangSelect.innerHTML = "";
 
-      // Add "Original" as the first default option
-      var origOpt = document.createElement("option");
-      origOpt.value = "";
-      origOpt.textContent = "Original";
-      translationLangSelect.appendChild(origOpt);
+    var origOpt = document.createElement("option");
+    origOpt.value = "";
+    origOpt.textContent = "Original";
+    translationLangSelect.appendChild(origOpt);
 
-      var optionExists = false;
-      bData.translation_languages.forEach((lang) => {
-        var opt = document.createElement("option");
-        opt.value = lang.code;
-        opt.textContent = lang.name;
-        translationLangSelect.appendChild(opt);
-        if (lang.code === currentSelection) optionExists = true;
-      });
-      if (optionExists && currentSelection !== "") {
-        translationLangSelect.value = currentSelection;
-        if (captionModeSelect.value === "original") {
-          captionModeSelect.value = "stacked";
+    aiLangs.forEach(function (lang) {
+      var opt = document.createElement("option");
+      opt.value = lang.code;
+      opt.textContent = lang.name;
+      translationLangSelect.appendChild(opt);
+    });
+
+    translationLangSelect.value = languageCode;
+    captionModeSelect.value = "translated";
+  } else {
+    // Setup translation options based on the selected audio source
+    if (sourceData) {
+      var bData = sourceData;
+      if (
+        bData &&
+        bData.translation_enabled &&
+        bData.translation_languages &&
+        bData.translation_languages.length > 0
+      ) {
+        if (transGroup) transGroup.style.display = "flex";
+        captionModeSelect.disabled = false;
+
+        // Preserve current selection if possible
+        var currentSelection = translationLangSelect.value;
+        translationLangSelect.innerHTML = "";
+
+        // Add "Original" as the first default option
+        var origOpt = document.createElement("option");
+        origOpt.value = "";
+        origOpt.textContent = "Original";
+        translationLangSelect.appendChild(origOpt);
+
+        var optionExists = false;
+        bData.translation_languages.forEach((lang) => {
+          var opt = document.createElement("option");
+          opt.value = lang.code;
+          opt.textContent = lang.name;
+          translationLangSelect.appendChild(opt);
+          if (lang.code === currentSelection) optionExists = true;
+        });
+        if (optionExists && currentSelection !== "") {
+          translationLangSelect.value = currentSelection;
+          if (captionModeSelect.value === "original") {
+            captionModeSelect.value = "stacked";
+          }
+        } else {
+          // Default to Original
+          translationLangSelect.value = "";
+          captionModeSelect.value = "original";
         }
       } else {
-        // Default to Original
-        translationLangSelect.value = "";
+        if (transGroup) transGroup.style.display = "none";
+        captionModeSelect.disabled = true;
         captionModeSelect.value = "original";
+        translationLangSelect.innerHTML = "";
       }
     } else {
       if (transGroup) transGroup.style.display = "none";
@@ -852,125 +930,75 @@ languageSelect.addEventListener("change", function () {
       captionModeSelect.value = "original";
       translationLangSelect.innerHTML = "";
     }
-  } else {
-    if (transGroup) transGroup.style.display = "none";
-    captionModeSelect.disabled = true;
-    captionModeSelect.value = "original";
-    translationLangSelect.innerHTML = "";
-  }
-
-  var canSyncTts = languageCode === "floor" && rData && rData.floor_tts_enabled;
-  var ttsSyncGroup = document.getElementById("tts-sync-group");
-  if (
-    canSyncTts &&
-    sourceData &&
-    sourceData.translation_enabled &&
-    sourceData.translation_languages &&
-    sourceData.translation_languages.length > 0
-  ) {
-    ttsSyncGroup.style.display = "flex";
-  } else {
-    ttsSyncGroup.style.display = "none";
-    ttsSyncEnabled = false;
-    if (ttsSyncToggle) ttsSyncToggle.checked = false;
   }
 
   applyCaptionMode();
 
-  // Always start WHEP as the base stream
+  // Always stop existing streams
   stopCurrentStream();
-  var whepUrl = this.value;
+  stopTtsWs();
+
   var boothId = selectedOpt ? selectedOpt.dataset.boothId : null;
   var selectedAudioDelayMs = normalizeAudioDelayMs(
     sourceData ? sourceData.audio_delay_ms : 0,
   );
   currentRoomId = roomId || null;
-  currentSourceType = "whep";
 
-  if (whepUrl) {
-    if (boothId && languageCode) {
-      openCaptionsWs(boothId);
-      if (languageCode === "floor") {
-        // Floor audio has no WHIP ingest — start WHEP immediately.
-        startWhepAndCaptions(whepUrl, null, selectedAudioDelayMs);
-      } else {
-        // Check booth live status before starting WHEP to avoid phantom timer.
-        fetch("/api/events/" + eventSlug + "/booths/" + languageCode + "/state?room_id=" + roomId)
-          .then(function (r) {
-            return r.ok ? r.json() : null;
-          })
-          .then(function (bstate) {
-            if (bstate && bstate.ingest_status === "connected") {
-              startWhepAndCaptions(whepUrl, null, selectedAudioDelayMs);
-            } else {
-              // Not live yet — wait for booth:state via WS
-              pendingWhepUrl = whepUrl;
-              pendingAudioDelayMs = selectedAudioDelayMs;
-              pendingBoothId = boothId;
-              setStatus("Broadcast not live yet — waiting...", "waiting");
-              showAudioPlayer(false);
-            }
-          })
-          .catch(function () {
-            // Can't determine state — start anyway
-            startWhepAndCaptions(whepUrl, null, selectedAudioDelayMs);
-          });
-      }
+  if (this.value) {
+    if (isAi) {
+      // AI booth: audio and its captions (original + AI language) come as TTS bundles.
+      currentSourceType = "tts";
+      currentTtsLanguage = languageCode;
+      audioEl.muted = false;
+      startTtsWs(boothId, selectedAudioDelayMs);
+      setStatus("Live (AI Audio)", "live");
     } else {
-      startWhepAndCaptions(whepUrl, null, selectedAudioDelayMs);
+      // Human / Floor booth: audio from WHEP, captions from /ws/captions/
+      currentSourceType = "whep";
+      var whepUrl = this.value;
+      // Open translation captions WS if user has a text language already chosen
+      var existingTextLang2 = translationLangSelect.value;
+      if (existingTextLang2 && roomId) {
+        openTranslationCaptionsWs(eventSlug, roomId, existingTextLang2);
+      }
+      if (boothId && languageCode) {
+        openCaptionsWs(boothId);
+        if (languageCode === "floor") {
+          setStatus("Connecting...", "recovering");
+          startWhepStream(whepUrl, selectedAudioDelayMs);
+        } else {
+          var capturedBoothId = boothId;
+          var capturedWhepUrl = whepUrl;
+          var capturedDelayMs = selectedAudioDelayMs;
+          fetch("/api/events/" + eventSlug + "/booths/" + languageCode + "/state?room_id=" + roomId)
+            .then(function (r) {
+              return r.ok ? r.json() : null;
+            })
+            .then(function (bstate) {
+              if (bstate && bstate.ingest_status === "connected") {
+                setStatus("Connecting...", "recovering");
+                startWhepStream(capturedWhepUrl, capturedDelayMs);
+              } else {
+                pendingWhepUrl = capturedWhepUrl;
+                pendingAudioDelayMs = capturedDelayMs;
+                pendingBoothId = capturedBoothId;
+                setStatus("Broadcast not live yet — waiting...", "waiting");
+                showAudioPlayer(false);
+              }
+            })
+            .catch(function () {
+              setStatus("Connecting...", "recovering");
+              startWhepStream(capturedWhepUrl, capturedDelayMs);
+            });
+        }
+      } else {
+        setStatus("Connecting...", "recovering");
+        startWhepStream(whepUrl, selectedAudioDelayMs);
+      }
     }
   }
-
-  // Apply TTS overlay if it was already enabled
-  applyTtsOverlay();
 });
 
-function applyTtsOverlay() {
-  var selectedOpt = languageSelect.options[languageSelect.selectedIndex];
-  var languageCode = selectedOpt ? selectedOpt.dataset.languageCode : null;
-  var roomId = parseInt(roomSelect.value, 10);
-  var rData = roomsData.find((r) => r.id.toString() === roomId.toString());
-  var canSyncTts = languageCode === "floor" && rData && rData.floor_tts_enabled;
-  var targetLangValue = translationLangSelect.value;
-  var boothObjId = selectedOpt ? selectedOpt.dataset.boothObjId : null;
-  var boothId = selectedOpt ? selectedOpt.dataset.boothId : null;
-  var sourceData = boothObjId
-    ? boothsData.find((b) => b.id.toString() === boothObjId.toString())
-    : null;
-  var selectedAudioDelayMs = normalizeAudioDelayMs(
-    sourceData ? sourceData.audio_delay_ms : 0,
-  );
-
-  stopTtsWs(); // Stop any existing TTS stream
-
-  // We need the TTS stream if we want synchronized TTS audio OR if we want translation text
-  var mode = captionModeSelect ? captionModeSelect.value : "original";
-  var wantsTranslationText = Boolean(targetLangValue) && mode !== "original";
-  var wantsTtsAudio = ttsSyncEnabled && Boolean(targetLangValue) && canSyncTts;
-
-  if (wantsTranslationText || wantsTtsAudio) {
-    startTtsWs(roomId, targetLangValue, boothId, selectedAudioDelayMs);
-
-    if (wantsTtsAudio) {
-      audioEl.muted = true;
-      var selOpt =
-        translationLangSelect.options[translationLangSelect.selectedIndex];
-      var langName = selOpt ? selOpt.text : "Translation";
-      setStatus("Live (" + langName + " TTS)", "live");
-    } else {
-      audioEl.muted = false;
-      if (currentRoomId && languageSelect.value && !pendingWhepUrl) {
-        setStatus("Live (WebRTC + Translation)", "live");
-      }
-    }
-  } else {
-    audioEl.muted = false;
-    // If we are currently connected to WHEP, refresh the badge to WebRTC
-    if (currentRoomId && languageSelect.value && !pendingWhepUrl) {
-      setStatus("Live (WebRTC)", "live");
-    }
-  }
-}
 
 // Clean up on page unload.
 window.addEventListener("beforeunload", function () {

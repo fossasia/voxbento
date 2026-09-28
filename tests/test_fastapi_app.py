@@ -98,6 +98,36 @@ def test_token_redactor_handles_split_args():
     assert "[REDACTED]" in output
 
 
+def test_token_redactor_covers_websocket_handshakes():
+    """Uvicorn logs WebSocket handshakes, token included, through uvicorn.error."""
+    import logging
+
+    from fastapi_app import _install_log_filters, _UvicornTokenRedactor
+
+    loggers = [logging.getLogger("uvicorn.error"), logging.getLogger("uvicorn.access")]
+    saved = [list(lg.filters) for lg in loggers]
+    try:
+        _install_log_filters()
+        assert any(isinstance(f, _UvicornTokenRedactor) for f in loggers[0].filters)
+    finally:
+        for lg, filters in zip(loggers, saved):
+            lg.filters = filters
+
+    record = logging.LogRecord(
+        name="uvicorn.error",
+        level=logging.INFO,
+        pathname="",
+        lineno=0,
+        msg='%s - "WebSocket %s" [accepted]',
+        args=("127.0.0.1:1234", "/ws/tts/test-event-1-ai-de?token=secretjwt123"),
+        exc_info=None,
+    )
+    _UvicornTokenRedactor().filter(record)
+    output = record.getMessage()
+    assert "secretjwt123" not in output
+    assert "/ws/tts/test-event-1-ai-de?token=[REDACTED]" in output
+
+
 def test_healthz_ok():
     res = client.get("/healthz")
     assert res.status_code == 200, res.text
@@ -1868,3 +1898,170 @@ def test_embed_captions_opt_in_websocket_auth():
     # Verify the booth_id produced by make_booth_id satisfies the startswith check.
     booth_id = "test-event-1-en"  # make_booth_id("test-event", 1, 1,  "en")
     assert booth_id.startswith(f"{payload['event_slug']}-")
+
+
+def test_ws_tts_authentication(monkeypatch):
+    """/ws/tts uses the same authentication as /ws/captions."""
+    from fastapi.websockets import WebSocketDisconnect
+
+    from portal.auth import create_listener_token
+    from portal.config import settings
+
+    monkeypatch.setattr(settings, "booth_access_token", "secret-test-token")
+
+    # 1. No token -> fails
+    with pytest.raises(WebSocketDisconnect) as exc_info:
+        with client.websocket_connect("/ws/tts/test-event-1-ai-fr") as ws:
+            ws.receive_text()
+    assert exc_info.value.code == 4001
+
+    # 2. Invalid token -> fails
+    with pytest.raises(WebSocketDisconnect) as exc_info:
+        with client.websocket_connect("/ws/tts/test-event-1-ai-fr?token=invalid") as ws:
+            ws.receive_text()
+    assert exc_info.value.code == 4001
+
+    # 3. Listener token for another event -> fails
+    other = create_listener_token(event_slug="other-event")
+    with pytest.raises(WebSocketDisconnect) as exc_info:
+        with client.websocket_connect(f"/ws/tts/test-event-1-ai-fr?token={other}") as ws:
+            ws.receive_text()
+    assert exc_info.value.code == 4003
+
+    # 4. Valid listener token -> accepted (the server waits for the client, so just close)
+    token = create_listener_token(event_slug="test-event")
+    with client.websocket_connect(f"/ws/tts/test-event-1-ai-fr?token={token}"):
+        pass
+
+
+def _ws_close_code(url: str, cookies: dict | None = None) -> int | None:
+    """Connect to *url* and return the server's close code, or None if it accepted.
+
+    Never reads from the socket: an accepted connection would block forever,
+    because these endpoints wait for the client to speak first.
+    """
+    from fastapi.websockets import WebSocketDisconnect
+
+    try:
+        with client.websocket_connect(url, cookies=cookies or {}):
+            return None
+    except WebSocketDisconnect as exc:
+        return exc.code
+
+
+def test_listener_token_cannot_reach_an_event_whose_slug_extends_its_own(monkeypatch):
+    """A token for "test-event" must not open booths owned by "test-event-other"."""
+    from portal.auth import create_listener_token
+    from portal.config import settings
+
+    monkeypatch.setattr(settings, "booth_access_token", "secret-test-token")
+
+    token = create_listener_token(event_slug="test-event")
+
+    for booth_id in ("test-event-other-1-ai-fr", "test-event-other-1-fr", "test-event-other-1-floor"):
+        for route in ("/ws/tts", "/ws/captions"):
+            assert _ws_close_code(f"{route}/{booth_id}?token={token}") == 4003, f"{route}/{booth_id} was accepted"
+
+    # The event's own booths still work, AI and human alike.
+    for booth_id in ("test-event-1-ai-fr", "test-event-1-fr", "test-event-1-floor"):
+        assert _ws_close_code(f"/ws/captions/{booth_id}?token={token}") is None
+
+    # An event slug that itself ends in "-ai" is not confused for an AI booth.
+    ai_slug_token = create_listener_token(event_slug="test-ai")
+    assert _ws_close_code(f"/ws/captions/test-ai-1-fr?token={ai_slug_token}") is None
+    assert _ws_close_code(f"/ws/tts/test-ai-1-ai-fr?token={ai_slug_token}") is None
+
+
+def test_listener_scope_matches_compares_the_whole_event_slug():
+    from portal.auth import listener_scope_matches
+
+    assert listener_scope_matches("demo", "demo-1-fr")
+    assert listener_scope_matches("demo", "demo-1-ai-fr")
+    assert listener_scope_matches("demo", "demo-1-floor")
+    assert listener_scope_matches("demo-ai", "demo-ai-2-ai-de")
+    # A slug that merely prefixes the booth's owner is rejected.
+    assert not listener_scope_matches("demo", "demo-other-1-fr")
+    assert not listener_scope_matches("demo", "demo-other-1-ai-fr")
+    # Empty and unparseable scopes fail closed.
+    assert not listener_scope_matches("", "demo-1-fr")
+    assert not listener_scope_matches("demo", "not-a-booth")
+    # MediaMTX-style paths compare their first segment exactly.
+    assert listener_scope_matches("demo", "demo/1/fr")
+    assert not listener_scope_matches("demo", "demo-other/1/fr")
+
+
+def test_ws_accepts_a_bearer_subprotocol_instead_of_a_query_token(monkeypatch):
+    """The listener page sends its token as a subprotocol so it stays out of request lines."""
+    from fastapi.websockets import WebSocketDisconnect
+
+    from portal.auth import create_listener_token
+    from portal.config import settings
+
+    monkeypatch.setattr(settings, "booth_access_token", "secret-test-token")
+
+    token = create_listener_token(event_slug="test-event")
+
+    # A valid token offered as "bearer.<token>" is accepted, and the server echoes
+    # the subprotocol back — a browser drops the connection if it does not.
+    for path in ("/ws/tts/test-event-1-ai-fr", "/ws/captions/test-event-1-fr"):
+        with client.websocket_connect(path, subprotocols=[f"bearer.{token}"]) as ws:
+            assert ws.accepted_subprotocol == f"bearer.{token}"
+
+    # The scope check still applies to a subprotocol credential.
+    other = create_listener_token(event_slug="other-event")
+    with pytest.raises(WebSocketDisconnect) as exc_info:
+        with client.websocket_connect("/ws/tts/test-event-1-ai-fr", subprotocols=[f"bearer.{other}"]) as ws:
+            ws.receive_text()
+    assert exc_info.value.code == 4003
+
+    # An unrelated subprotocol carries no credential and is not echoed back.
+    with pytest.raises(WebSocketDisconnect) as exc_info:
+        with client.websocket_connect("/ws/tts/test-event-1-ai-fr", subprotocols=["graphql-ws"]) as ws:
+            ws.receive_text()
+    assert exc_info.value.code == 4001
+
+
+def _user_cookie(user_id: int = 7, *, is_admin: bool = False) -> dict:
+    from portal.auth import create_user_token
+
+    return {"user_token": create_user_token(user_id=user_id, email="user@test.com", is_admin=is_admin)}
+
+
+@pytest.mark.parametrize("access_token", ["secret-test-token", ""])
+def test_user_cookie_reaches_a_booth_only_when_its_event_authorizes_it(monkeypatch, access_token):
+    """The WebSocket handshake rejects an unscoped user cookie the event does not authorize.
+
+    Both cookie paths are covered: the one guarded by booth_access_token and the
+    shortcut taken when it is unset. The membership lookup itself is stubbed —
+    it has its own test — so no database work happens inside the handshake.
+
+    Only the caption and TTS feeds are driven here. Accepting a ``/ws/booth``
+    connection and closing it without joining deadlocked CI: that handler also
+    resolves a role and a language name, so a parseable booth ID opens two more
+    database sessions inside the handshake. ``resolve_ws_auth`` is shared, and
+    ``/ws/booth`` keeps its own rejection tests.
+    """
+    import portal.auth as auth
+    from portal.config import settings
+
+    monkeypatch.setattr(settings, "booth_access_token", access_token)
+
+    routes = ("/ws/tts/test-event-1-ai-fr", "/ws/captions/test-event-1-fr")
+
+    async def _deny(user_id, booth_id):
+        return False
+
+    monkeypatch.setattr(auth, "user_event_authorized", _deny)
+    for route in routes:
+        assert _ws_close_code(route, cookies=_user_cookie()) == 4003, f"{route} accepted a non-member"
+
+    async def _allow(user_id, booth_id):
+        return True
+
+    monkeypatch.setattr(auth, "user_event_authorized", _allow)
+    for route in routes:
+        assert _ws_close_code(route, cookies=_user_cookie()) is None, f"{route} rejected a member"
+
+    # An admin user still reaches every booth without a membership row.
+    monkeypatch.setattr(auth, "user_event_authorized", _deny)
+    assert _ws_close_code("/ws/tts/test-event-1-ai-fr", cookies=_admin_user_cookie()) is None
