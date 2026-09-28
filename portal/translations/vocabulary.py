@@ -152,9 +152,11 @@ def _term_matches(entry: AIVocabularyEntry, transcript_text: str) -> bool:
         return True
     if entry.match_type == "exact":
         # Word boundaries, so "US" does not match inside "USB" or "status".
-        pattern = rf"(?<!\w){re.escape(entry.source_term)}(?!\w)"
-        flags = 0 if entry.case_sensitive else re.IGNORECASE
-        return re.search(pattern, transcript_text, flags) is not None
+        # Case folding rather than re.IGNORECASE, to stay consistent with the
+        # phrase branch and the overlap rules (so "Straße" matches "STRASSE").
+        term = entry.source_term if entry.case_sensitive else entry.source_term.casefold()
+        haystack = transcript_text if entry.case_sensitive else transcript_text.casefold()
+        return re.search(rf"(?<!\w){re.escape(term)}(?!\w)", haystack) is not None
     haystack = transcript_text if entry.case_sensitive else transcript_text.casefold()
     needle = entry.source_term if entry.case_sensitive else entry.source_term.casefold()
     return needle in haystack

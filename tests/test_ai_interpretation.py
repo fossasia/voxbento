@@ -65,6 +65,10 @@ def test_exact_match_type_requires_word_boundaries():
     assert _term_matches(entry("us", "exact"), "Come with US now")
     # phrase entries keep matching inside longer words
     assert _term_matches(entry("US", "phrase", case_sensitive=True), "Plug in the USB cable")
+    # case folding, not re.IGNORECASE: the German sharp s folds to "ss"
+    assert _term_matches(entry("Stra\u00dfe", "exact"), "Bitte nutzen Sie die STRASSE")
+    assert _term_matches(entry("STRASSE", "exact"), "Bitte nutzen Sie die Stra\u00dfe")
+    assert not _term_matches(entry("Stra\u00dfe", "exact", case_sensitive=True), "Bitte nutzen Sie die STRASSE")
     # a high-priority entry is always included, whatever its match type
     always = entry("US", "exact", case_sensitive=True)
     always.priority = 100
