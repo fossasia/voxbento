@@ -267,6 +267,7 @@ class TestEventCRUD:
         assert "community-summit-2026" in resp.text
         assert "testcon" not in resp.text
         assert f'value="{search_term}"' in resp.text
+        assert '<label for="admin-event-search" class="search-label">Search events</label>' in resp.text
 
     @pytest.mark.anyio
     @pytest.mark.parametrize(
