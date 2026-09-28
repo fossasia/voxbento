@@ -40,6 +40,13 @@
   </form>
 </div>
 
+{% if requested_page != page %}
+<div class="form-card-hint" role="status">
+  Page {{ requested_page }} is out of range. Showing page {{ page }}.
+  <a href="?page={{ page }}{% if search %}&amp;search={{ search|urlencode }}{% endif %}">View page {{ page }}</a>
+</div>
+{% endif %}
+
 {% if events %}
 <table class="data-table">
   <thead>

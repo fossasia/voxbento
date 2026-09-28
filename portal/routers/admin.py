@@ -316,6 +316,7 @@ async def admin_dashboard(request: Request, page: int = 1):
 
 @router.get("/admin/events/", dependencies=[Depends(require_admin)])
 async def admin_event_list(request: Request, page: int = 1, search: str | None = None):
+    requested_page = page
     search = (search or "").strip() or None
     admin_flags = await get_admin_flags(request)
     user = await get_current_user(request)
@@ -336,6 +337,7 @@ async def admin_event_list(request: Request, page: int = 1, search: str | None =
         context={
             "events": events,
             "page": page,
+            "requested_page": requested_page,
             "total_pages": total_pages,
             "search": search,
             **admin_flags,

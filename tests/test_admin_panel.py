@@ -331,12 +331,21 @@ class TestEventCRUD:
         assert 'href="?page=2&amp;search=special%26%23"' in resp.text
 
     @pytest.mark.anyio
-    async def test_event_list_clamps_out_of_range_search_page(self, admin_cookie):
+    @pytest.mark.parametrize(
+        ("event_count", "requested_page", "expected_page"),
+        [
+            pytest.param(1, 2, 1, id="single-result"),
+            pytest.param(21, 99, 2, id="last-page"),
+        ],
+    )
+    async def test_event_list_clamps_out_of_range_search_page(
+        self, admin_cookie, event_count, requested_page, expected_page
+    ):
         from portal.database import create_event, get_session
 
         search_term = "pagination-target"
         async with get_session() as session:
-            for index in range(21):
+            for index in range(event_count):
                 await create_event(
                     session,
                     slug=f"{search_term}-{index}",
@@ -344,11 +353,16 @@ class TestEventCRUD:
                 )
 
         async with _client() as c:
-            resp = await c.get("/admin/events/", params={"search": search_term, "page": 99}, cookies=admin_cookie)
+            resp = await c.get(
+                "/admin/events/",
+                params={"search": search_term, "page": requested_page},
+                cookies=admin_cookie,
+            )
 
         assert resp.status_code == 200
-        assert resp.text.count("<td>") == 4
-        assert f'href="?page=1&amp;search={search_term}"' in resp.text
+        assert f"Page {requested_page} is out of range. Showing page {expected_page}." in resp.text
+        assert f'href="?page={expected_page}&amp;search={search_term}">View page {expected_page}</a>' in resp.text
+        assert f"{search_term}-{event_count - 1}" in resp.text
         assert "No events match search" not in resp.text
 
     @pytest.mark.anyio
