@@ -480,3 +480,149 @@ async def test_kill_windows_tree_reports_nonzero_exit(caplog):
     )
     # The fallback to direct process termination must still happen.
     mock_proc.terminate.assert_called_once()
+
+
+def _fake_kill_proc():
+    proc = MagicMock()
+    proc.wait = AsyncMock(return_value=0)
+    return proc
+
+
+def _cleanup_stub_process(returncode=None, wait=None):
+    proc = MagicMock()
+    proc.pid = 4242
+    proc.returncode = returncode
+    proc.terminate = MagicMock()
+    proc.kill = MagicMock()
+    proc.wait = wait if wait is not None else AsyncMock(return_value=0)
+    return proc
+
+
+@pytest.mark.anyio
+async def test_perform_cleanup_routes_to_windows_tree_on_win32(monkeypatch):
+    """With sys.platform == 'win32', graceful cleanup must route to _kill_windows_tree.
+
+    Patching sys.platform lets this branch be exercised on POSIX CI too.
+    """
+    monkeypatch.setattr("portal.transcription.process.sys.platform", "win32")
+
+    fp = FfmpegProcess("dummy", "16000", "route-win32")
+    fp.process = _cleanup_stub_process(returncode=None)
+    fp.stderr_task = None
+
+    with (
+        patch(
+            "portal.transcription.process.asyncio.create_subprocess_exec", new=AsyncMock(return_value=_fake_kill_proc())
+        ),
+        patch.object(FfmpegProcess, "_kill_windows_tree", new=AsyncMock()) as kill_tree,
+    ):
+        await fp._perform_cleanup()
+
+    kill_tree.assert_awaited_once_with(force=False)
+
+
+@pytest.mark.anyio
+async def test_perform_cleanup_escalates_to_forced_windows_kill_on_timeout(monkeypatch):
+    """When ffmpeg ignores the graceful kill, Windows cleanup must escalate to force=True."""
+    monkeypatch.setattr("portal.transcription.process.sys.platform", "win32")
+
+    fp = FfmpegProcess("dummy", "16000", "escalate-win32")
+    fp.termination_timeout = 0.01
+    fp.process = _cleanup_stub_process(
+        returncode=None,
+        wait=AsyncMock(side_effect=[asyncio.TimeoutError(), 0]),
+    )
+    fp.stderr_task = None
+
+    with (
+        patch(
+            "portal.transcription.process.asyncio.create_subprocess_exec", new=AsyncMock(return_value=_fake_kill_proc())
+        ),
+        patch.object(FfmpegProcess, "_kill_windows_tree", new=AsyncMock()) as kill_tree,
+    ):
+        await fp._perform_cleanup()
+
+    assert kill_tree.await_count == 2
+    assert kill_tree.await_args_list[0].kwargs == {"force": False}
+    assert kill_tree.await_args_list[1].kwargs == {"force": True}
+
+
+@pytest.mark.anyio
+async def test_kill_windows_tree_tolerates_already_exited_process():
+    """If the process is reaped while taskkill runs, the fallback must not raise."""
+    fp = FfmpegProcess("dummy", "16000", "reaped-fallback")
+    proc = MagicMock()
+    proc.pid = 4242
+    proc.terminate = MagicMock(side_effect=ProcessLookupError())
+    proc.kill = MagicMock(side_effect=ProcessLookupError())
+    fp.process = proc
+
+    with patch(
+        "portal.transcription.process.asyncio.create_subprocess_exec",
+        new=AsyncMock(return_value=_fake_kill_proc()),
+    ):
+        # Must not raise, for both the graceful and the forced path.
+        await fp._kill_windows_tree(force=False)
+        await fp._kill_windows_tree(force=True)
+
+    proc.terminate.assert_called_once()
+    proc.kill.assert_called_once()
+
+
+@pytest.mark.anyio
+async def test_perform_cleanup_does_not_propagate_when_process_exits_during_cleanup(monkeypatch):
+    """Regression: a process reaped mid-cleanup must not let ProcessLookupError escape.
+
+    Simulates deterministic subprocess paths so this runs on POSIX CI as well.
+    """
+    monkeypatch.setattr("portal.transcription.process.sys.platform", "win32")
+
+    fp = FfmpegProcess("dummy", "16000", "race-regression")
+    fp.termination_timeout = 0.01
+
+    # Graceful: exits during the clean wait.
+    fp.process = _cleanup_stub_process(
+        returncode=None,
+        wait=AsyncMock(return_value=0),
+    )
+    fp.process.terminate = MagicMock(side_effect=ProcessLookupError())
+    fp.stderr_task = None
+    with patch(
+        "portal.transcription.process.asyncio.create_subprocess_exec",
+        new=AsyncMock(return_value=_fake_kill_proc()),
+    ):
+        await fp._perform_cleanup()
+
+    # Escalated: times out, then the forced fallback finds the process already gone.
+    fp2 = FfmpegProcess("dummy", "16000", "race-regression-forced")
+    fp2.termination_timeout = 0.01
+    fp2.process = _cleanup_stub_process(
+        returncode=None,
+        wait=AsyncMock(side_effect=[asyncio.TimeoutError(), 0]),
+    )
+    fp2.process.kill = MagicMock(side_effect=ProcessLookupError())
+    fp2.stderr_task = None
+    with patch(
+        "portal.transcription.process.asyncio.create_subprocess_exec",
+        new=AsyncMock(return_value=_fake_kill_proc()),
+    ):
+        await fp2._perform_cleanup()
+
+
+@pytest.mark.anyio
+async def test_perform_cleanup_swallows_process_lookup_error(monkeypatch):
+    """The outer guard must absorb ProcessLookupError so it cannot reach the worker loop.
+
+    This is the protection the reviewer asked about: even if the Windows tree helper
+    (or os.killpg on POSIX) raises because the process was already reaped, cleanup
+    must complete without unwinding into the transcription worker.
+    """
+    monkeypatch.setattr("portal.transcription.process.sys.platform", "win32")
+
+    fp = FfmpegProcess("dummy", "16000", "outer-guard")
+    fp.process = _cleanup_stub_process(returncode=None, wait=AsyncMock(return_value=0))
+    fp.stderr_task = None
+
+    with patch.object(FfmpegProcess, "_kill_windows_tree", new=AsyncMock(side_effect=ProcessLookupError())):
+        # Must not raise.
+        await fp._perform_cleanup()

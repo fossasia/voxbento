@@ -114,10 +114,16 @@ class FfmpegProcess:
         except Exception as e:
             logger.debug(f"[{self.booth_id}] taskkill process tree termination failed: {e}")
         finally:
-            if force:
-                self.process.kill()
-            else:
-                self.process.terminate()
+            # The process may have exited and been reaped while taskkill ran, in which case
+            # terminate()/kill() raise ProcessLookupError. That is the desired end state, so
+            # treat it as success rather than letting it unwind the cleanup sequence.
+            try:
+                if force:
+                    self.process.kill()
+                else:
+                    self.process.terminate()
+            except ProcessLookupError:
+                logger.debug(f"[{self.booth_id}] ffmpeg process already exited before fallback termination")
 
     async def _perform_cleanup(self):
         if self.process.returncode is None:
