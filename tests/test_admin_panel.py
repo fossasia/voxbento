@@ -1084,6 +1084,8 @@ async def test_setup_wizard_pages_have_no_inline_styles(path, admin_cookie, seed
         "/admin/events/{event}/",
         "/admin/events/{event}/members/",
         "/admin/events/{event}/rooms/{room}/booths/{booth}/",
+        "/admin/events/{event}/rooms/{room}/",
+        "/admin/events/{event}/rooms/{room}/transcripts/",
         "/admin/users/{user}/",
     ],
 )
