@@ -247,6 +247,15 @@ class TestEventCRUD:
         assert b"testcon" in resp.content
 
     @pytest.mark.anyio
+    async def test_event_list_shows_readable_created_date(self, admin_cookie, seed_event):
+        event, _, _ = seed_event
+        async with _client() as c:
+            resp = await c.get("/admin/events/", cookies=admin_cookie)
+        assert resp.status_code == 200
+        assert event.created_at.strftime("%b %d, %Y, %H:%M").encode() in resp.content
+        assert event.created_at.strftime("%Y-%m-%d").encode() not in resp.content
+
+    @pytest.mark.anyio
     async def test_create_event(self, admin_cookie):
         async with _client() as c:
             csrf_token = await _admin_csrf(c, admin_cookie)
@@ -343,6 +352,20 @@ class TestEventCRUD:
 # ---------------------------------------------------------------------------
 # Room CRUD
 # ---------------------------------------------------------------------------
+
+
+class TestBreadcrumbs:
+    @pytest.mark.anyio
+    @pytest.mark.parametrize("path", ["/admin/events/", "/admin/users/"])
+    async def test_breadcrumb_marks_current_page_and_uses_slash_separator(self, admin_cookie, path):
+        async with _client() as c:
+            resp = await c.get(path, cookies=admin_cookie)
+        assert resp.status_code == 200
+        start = resp.text.index('<nav class="breadcrumb">')
+        nav = resp.text[start : resp.text.index("</nav>", start)]
+        assert 'class="breadcrumb-current" aria-current="page"' in nav
+        assert "›" not in nav
+        assert "<span>/</span>" in nav
 
 
 class TestRoomCRUD:

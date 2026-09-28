@@ -3,7 +3,7 @@
 
 {% block breadcrumb %}
 <nav class="breadcrumb">
-  <a href="/admin/">Dashboard</a> <span>/</span> <span>Events</span>
+  <a href="/admin/">Dashboard</a> <span>/</span> <span class="breadcrumb-current" aria-current="page">Events</span>
 </nav>
 {% endblock %}
 
@@ -25,6 +25,7 @@
       <input type="text" name="slug" placeholder="event-slug" required pattern="^[a-z0-9]+(-[a-z0-9]+)*$" title="Lowercase letters, numbers, hyphens only" />
       <input type="text" name="display_name" placeholder="Display Name" required />
       <button type="submit" class="btn btn-primary">Create</button>
+      <button type="button" class="btn btn-outline" onclick="this.closest('details').removeAttribute('open'); return false;">Cancel</button>
     </form>
   </div>
 </details>
@@ -44,7 +45,7 @@
     <tr>
       <td><a href="/admin/events/{{ ev.id }}/">{{ ev.display_name }}</a></td>
       <td><code>{{ ev.slug }}</code></td>
-      <td>{{ ev.created_at.strftime('%Y-%m-%d %H:%M') if ev.created_at else '—' }}</td>
+      <td>{{ ev.created_at.strftime('%b %d, %Y, %H:%M') if ev.created_at else '—' }}</td>
       <td>
         <a href="/admin/events/{{ ev.id }}/" class="btn btn-sm">View</a>
         <form method="post" action="/admin/events/{{ ev.id }}/delete" class="inline-delete"

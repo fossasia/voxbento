@@ -88,18 +88,6 @@ def decode_token(token: str) -> dict:
     return jwt.decode(token, settings.effective_jwt_secret, algorithms=["HS256"])
 
 
-def verify_bearer(credentials: HTTPAuthorizationCredentials | None) -> None:
-    """Raise HTTP 401 if auth is required and credentials are missing or invalid."""
-    if not settings.booth_access_token:
-        return
-    if credentials is None:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing auth token.")
-    try:
-        decode_token(credentials.credentials)
-    except jwt.InvalidTokenError as exc:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=f"Invalid token: {exc}")
-
-
 class WSAuthError(Exception):
     """Raised when WebSocket authentication fails."""
 
