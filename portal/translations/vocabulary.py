@@ -193,17 +193,26 @@ async def resolve_vocabulary_entries(
             return 1
         return 0
 
+    # "all" and target-specific rows compete for the same source term; scope then
+    # priority decides which translation wins, before any cap is applied.
     candidates.sort(key=lambda entry: (scope_rank(entry), entry.priority, entry.id), reverse=True)
-    selected: list[AIVocabularyEntry] = []
+    deduplicated: list[AIVocabularyEntry] = []
     for entry in candidates:
-        # "all" and target-specific rows compete for the same source term.
-        # The scope/priority sort above decides which translation wins.
-        if any(vocabulary_terms_overlap(prior, entry) for prior in selected):
+        if any(vocabulary_terms_overlap(prior, entry) for prior in deduplicated):
             continue
-        selected.append(entry)
-        if len(selected) >= max_entries:
-            break
-    return selected
+        deduplicated.append(entry)
+
+    # High-priority entries are documented as always included, so they take the cap first.
+    deduplicated.sort(
+        key=lambda entry: (
+            entry.priority >= HIGH_PRIORITY_THRESHOLD,
+            scope_rank(entry),
+            entry.priority,
+            entry.id,
+        ),
+        reverse=True,
+    )
+    return deduplicated[:max_entries]
 
 
 def serialize_vocabulary_csv(entries: list[AIVocabularyEntry]) -> str:

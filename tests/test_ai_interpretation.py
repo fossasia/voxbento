@@ -6,7 +6,7 @@ import pytest
 
 import portal.globals as pg
 from portal.database import get_session
-from portal.models import AIVocabularyEntry, Event, Room
+from portal.models import AIVocabularyEntry, DBBooth, Event, Room
 from portal.translations.prompts import build_interpretation_messages
 from portal.translations.providers.anthropic import AnthropicProvider
 from portal.translations.providers.gemini import GeminiProvider
@@ -157,6 +157,68 @@ async def test_cloud_providers_use_shared_prompt(provider, response, system_path
         prompt = prompt[key]
     assert "Technical interpreter" in prompt
     assert "Formal" in prompt
+
+
+@pytest.mark.anyio
+async def test_high_priority_entries_survive_the_entry_cap():
+    from portal.database import configure, dispose, init_db
+
+    configure("sqlite+aiosqlite://")
+    await init_db()
+    try:
+        async with get_session() as session:
+            event = Event(slug="ai-cap", display_name="AI Cap")
+            session.add(event)
+            await session.flush()
+            room = Room(event_id=event.id, display_name="Main Hall")
+            session.add(room)
+            await session.flush()
+            booth = DBBooth(event_id=event.id, room_id=room.id, language_code="de", language_name="German")
+            session.add(booth)
+            await session.flush()
+
+            # 90 booth-scoped entries outrank the event entry on scope alone.
+            session.add_all(
+                [
+                    AIVocabularyEntry(
+                        event_id=event.id,
+                        room_id=room.id,
+                        booth_id=booth.id,
+                        source_term=f"booth{i}",
+                        target_language="de",
+                        target_term=f"kabine{i}",
+                        priority=0,
+                    )
+                    for i in range(90)
+                ]
+            )
+            session.add(
+                AIVocabularyEntry(
+                    event_id=event.id,
+                    source_term="Voxbento",
+                    target_language="de",
+                    target_term="Voxbento",
+                    priority=100,
+                )
+            )
+            await session.flush()
+
+            transcript = "Voxbento " + " ".join(f"booth{i}" for i in range(90))
+            entries = await resolve_vocabulary_entries(
+                session,
+                event_id=event.id,
+                room_id=room.id,
+                booth_id=booth.id,
+                target_language="de",
+                transcript_text=transcript,
+            )
+
+        assert len(entries) == 80
+        # The documented "always includes priority >= 90" guarantee must beat booth scope.
+        assert "Voxbento" in [entry.source_term for entry in entries]
+        assert entries[0].source_term == "Voxbento"
+    finally:
+        await dispose()
 
 
 @pytest.mark.anyio
