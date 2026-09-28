@@ -57,6 +57,7 @@ async def db_data(setup_db):
 @pytest.mark.anyio
 async def test_language_independence(db_data, mock_broadcast):
     worker = TranslationWorker(mock_broadcast)
+    synthesized_text = {}
 
     # We will mock _call_llm and synthesize.
     # We want French to be slow and Spanish to be fast.
@@ -70,6 +71,7 @@ async def test_language_independence(db_data, mock_broadcast):
         return "Unknown"
 
     async def fake_synthesize(room_id, text, lang_code):
+        synthesized_text[lang_code] = text
         return b"fake_audio"
 
     with patch.object(worker, "_call_llm", new=fake_call_llm):
@@ -107,6 +109,13 @@ async def test_language_independence(db_data, mock_broadcast):
                 fr_call = next(c for c in calls if c.args[1] == "fr")
                 assert fr_call.args[7] == "Bonjour le monde"
                 assert fr_call.args[8] is None
+
+                # TTS consumes the exact contextual translation broadcast to caption listeners;
+                # it does not perform a second, context-free translation.
+                assert synthesized_text == {
+                    "es": "Hola mundo",
+                    "fr": "Bonjour le monde",
+                }
 
 
 @pytest.mark.anyio
