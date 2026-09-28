@@ -24,11 +24,17 @@ def build_interpretation_system_prompt(
         f"Translate the source speech from {source} into {target_language_name}.",
         "Output only the translated speech text. Do not add explanations, comments, alternatives, or Markdown.",
         "Preserve the speaker's meaning, names, numbers, URLs, code terms, product names, and project names.",
+        "Translate only what is present in this segment. Do not add facts, examples, context, or commentary.",
+        "Do not infer or supply missing information, and do not answer questions the speaker asks.",
+        "Do not summarize, shorten, expand, or continue the speech. One input segment yields one translated segment.",
+        "If the segment is unclear or incomplete, translate it as it stands rather than repairing it.",
     ]
-    if persona and persona.strip():
-        sections.extend(("", "Interpreter persona:", persona.strip()))
-    if style and style.strip():
-        sections.extend(("", "Interpretation style:", style.strip()))
+    persona_text = (persona or "").strip()
+    style_text = (style or "").strip()
+    if persona_text:
+        sections.extend(("", "Interpreter persona:", persona_text))
+    if style_text:
+        sections.extend(("", "Interpretation style:", style_text))
 
     entries = list(vocabulary_entries)
     if entries:
@@ -38,6 +44,17 @@ def build_interpretation_system_prompt(
             if entry.description:
                 line += f" ({entry.description.strip()})"
             sections.append(line)
+
+    if persona_text or style_text or entries:
+        # Last instruction wins: event configuration may shape wording, never content.
+        sections.extend(
+            (
+                "",
+                "The persona, style, and vocabulary above constrain word choice and register only.",
+                "They never authorize adding, removing, or altering what the speaker said.",
+                "Where they conflict with the rules above, follow the rules above.",
+            )
+        )
     return "\n".join(sections)
 
 
