@@ -108,6 +108,7 @@ code { font-family: var(--font-mono); font-size: 0.85em; background: var(--color
 .breadcrumb a { color: var(--color-primary); text-decoration: none; }
 .breadcrumb a:hover { text-decoration: underline; }
 .breadcrumb span { margin: 0 4px; }
+.breadcrumb .breadcrumb-current { color: var(--color-text); font-weight: 600; }
 
 /* ── Main ────────────────────────────────────────────────────────────────── */
 

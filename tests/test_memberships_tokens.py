@@ -667,6 +667,7 @@ class TestEndToEndAdminWorkflow:
                     "display_name": "Alice",
                     "password": "securepass123",
                     "csrf_token": csrf_token,
+                    "password_confirm": "securepass123",
                 },
                 follow_redirects=False,
             )
