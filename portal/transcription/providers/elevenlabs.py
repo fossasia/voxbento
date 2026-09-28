@@ -175,7 +175,16 @@ class ElevenLabsProvider(TranscriptionProvider):
                     if sender_task in done and sender_task.result() == "EOF":
                         return
 
+            except TranscriptionAuthError:
+                raise
             except Exception as e:
+                status = getattr(getattr(e, "response", None), "status_code", None) or getattr(e, "status_code", None)
+                if status in (401, 403):
+                    raise TranscriptionAuthError(
+                        "elevenlabs",
+                        f"ElevenLabs API key was rejected ({status} during the websocket handshake).",
+                        status,
+                    ) from e
                 consecutive_errors += 1
                 logger.error(f"[{booth_id}] ElevenLabs connection failed ({consecutive_errors}): {e}")
                 if consecutive_errors >= 5:
