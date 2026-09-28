@@ -48,7 +48,7 @@ def _client():
 
     from fastapi_app import app
 
-    return AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
+    return AsyncClient(transport=ASGITransport(app=app), base_url="https://test")
 
 
 async def _admin_csrf(c, cookies):
