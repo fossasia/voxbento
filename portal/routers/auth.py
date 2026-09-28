@@ -33,6 +33,7 @@ from portal.database import (
 )
 from portal.email import send_magic_login_email, send_password_reset_email, send_verification_email
 from portal.email_sender import send_delayed_onboarding_email
+from portal.globals import _JS_CACHE_BUST
 from portal.rate_limit import check_rate_limit
 from portal.schemas.auth import TokenRequest, TokenResponse
 from portal.utils import safe_redirect
@@ -105,7 +106,7 @@ async def register_page(request: Request):
     current_user = await get_current_user(request)
     if current_user:
         return safe_redirect(url="/account", status_code=status.HTTP_303_SEE_OTHER)
-    return templates.TemplateResponse(request=request, name="register.html", context={})
+    return templates.TemplateResponse(request=request, name="register.html", context={"js_version": _JS_CACHE_BUST})
 
 
 @router.post("/register")
@@ -115,6 +116,7 @@ async def register_submit(request: Request):
     display_name = form.get("display_name", "").strip()
     password_raw = form.get("password", "")
     password = password_raw.strip()
+    password_confirm = form.get("password_confirm", "")
 
     errors = []
     if not email or "@" not in email:
@@ -123,6 +125,8 @@ async def register_submit(request: Request):
         errors.append("Display name is required.")
     if password_raw and not password:
         errors.append("Password cannot be blank or only whitespace.")
+    elif password_raw and password_raw != password_confirm:
+        errors.append("Passwords do not match.")
 
     if not errors:
         async with get_session() as session:
@@ -160,7 +164,7 @@ async def register_submit(request: Request):
     return templates.TemplateResponse(
         request=request,
         name="register.html",
-        context={"errors": errors, "email": email, "display_name": display_name},
+        context={"errors": errors, "email": email, "display_name": display_name, "js_version": _JS_CACHE_BUST},
         status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
     )
 

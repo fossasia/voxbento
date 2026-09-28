@@ -7,7 +7,7 @@
   <a href="/admin/events/">Events</a> <span>/</span>
   <a href="/admin/events/{{ event.id }}/">{{ event.display_name }}</a> <span>/</span>
   <a href="/admin/events/{{ event.id }}/rooms/">Rooms</a> <span>/</span>
-  <span>{{ room.display_name }}</span>
+  <span class="breadcrumb-current" aria-current="page">{{ room.display_name }}</span>
 </nav>
 {% endblock %}
 
@@ -16,7 +16,7 @@
   <h1>{{ room.display_name }}</h1>
   <div class="header-meta">
     <span class="meta-text">Event: {{ event.display_name }}</span>
-    <span class="meta-text">Created {{ room.created_at.strftime('%Y-%m-%d') if room.created_at else '—' }}</span>
+    <span class="meta-text">Created {{ room.created_at.strftime('%b %d, %Y') if room.created_at else '—' }}</span>
   </div>
 </div>
 
