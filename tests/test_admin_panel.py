@@ -455,6 +455,109 @@ class TestRoomCRUD:
         assert resp.status_code == 400
 
     @pytest.mark.anyio
+    async def test_edit_room_transcription_section_preserves_other_settings(self, admin_cookie, seed_event):
+        from portal.database import get_room_by_id, get_session
+
+        event, room, booth = seed_event
+        async with get_session() as session:
+            stored = await get_room_by_id(session, room.id)
+            assert stored is not None
+            stored.display_name = "Original Hall"
+            stored.jitsi_url = "https://meet.example/original"
+            stored.relay_booth_id = booth.id
+            stored.audio_delay_ms = 750
+            stored.floor_translation_enabled = True
+            stored.floor_translation_provider = "local"
+            stored.floor_translation_model = "existing-model"
+            stored.floor_tts_enabled = True
+            stored.floor_tts_provider = "supertonic"
+            stored.floor_tts_voice = "F3"
+            await session.flush()
+
+        async with _client() as c:
+            response = await c.post(
+                f"/admin/events/{event.id}/rooms/{room.id}/edit",
+                cookies=admin_cookie,
+                data={
+                    "form_section": "transcription",
+                    "floor_transcription_enabled": "on",
+                    "floor_transcription_provider": "deepgram",
+                    "floor_transcription_model": "nova-2",
+                    "floor_language_code": "fr",
+                },
+                follow_redirects=False,
+            )
+        assert response.status_code == 303
+
+        async with get_session() as session:
+            updated = await get_room_by_id(session, room.id)
+            assert updated is not None
+            assert updated.floor_transcription_enabled is True
+            assert updated.floor_transcription_provider == "deepgram"
+            assert updated.floor_transcription_model == "nova-2"
+            assert updated.floor_language_code == "fr"
+            assert updated.display_name == "Original Hall"
+            assert updated.jitsi_url == "https://meet.example/original"
+            assert updated.relay_booth_id == booth.id
+            assert updated.audio_delay_ms == 750
+            assert updated.floor_translation_provider == "local"
+            assert updated.floor_translation_model == "existing-model"
+            assert updated.floor_tts_provider == "supertonic"
+            assert updated.floor_tts_voice == "F3"
+
+    @pytest.mark.anyio
+    async def test_edit_room_translation_section_syncs_languages(self, admin_cookie, seed_event):
+        from portal.database import get_room_by_id, get_session
+        from portal.models import RoomTranslationLanguage
+
+        event, room, _ = seed_event
+        async with get_session() as session:
+            session.add_all(
+                [
+                    RoomTranslationLanguage(
+                        room_id=room.id,
+                        language_code="fr",
+                        language_name="French",
+                        enabled=True,
+                    ),
+                    RoomTranslationLanguage(
+                        room_id=room.id,
+                        language_code="es",
+                        language_name="Spanish",
+                        enabled=False,
+                    ),
+                ]
+            )
+            await session.flush()
+
+        async with _client() as c:
+            response = await c.post(
+                f"/admin/events/{event.id}/rooms/{room.id}/edit",
+                cookies=admin_cookie,
+                data={
+                    "form_section": "translation",
+                    "floor_translation_enabled": "on",
+                    "floor_translation_provider": "local",
+                    "floor_translation_model": "nllb",
+                    "floor_translation_languages": ["es", "de"],
+                },
+                follow_redirects=False,
+            )
+        assert response.status_code == 303
+
+        async with get_session() as session:
+            updated = await get_room_by_id(session, room.id)
+            assert updated is not None
+            assert updated.floor_translation_enabled is True
+            assert updated.floor_translation_provider == "local"
+            assert updated.floor_translation_model == "nllb"
+            languages = {language.language_code: language for language in updated.translation_languages}
+            assert languages["fr"].enabled is False
+            assert languages["es"].enabled is True
+            assert languages["de"].enabled is True
+            assert languages["de"].language_name == "German"
+
+    @pytest.mark.anyio
     async def test_listener_page_includes_room_audio_delay(self, seed_event):
         event, room, _ = seed_event
 
