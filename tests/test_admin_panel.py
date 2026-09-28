@@ -78,10 +78,14 @@ def _client():
 
     return AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
 
+
 async def _admin_csrf(c, cookies):
     resp = await c.get("/admin/events/", cookies=cookies)
     assert resp.status_code == 200
-    return c.cookies.get("admin_csrf")
+    csrf_token = resp.cookies.get("admin_csrf")
+    c.cookies.set("admin_csrf", csrf_token)
+    return csrf_token
+
 
 # ---------------------------------------------------------------------------
 # Login / Logout tests
@@ -308,7 +312,7 @@ class TestEventCRUD:
             c.cookies.update(admin_cookie)
             resp = await c.post(
                 f"/admin/events/{event.id}/rooms/{room.id}/edit",
-                data={"form_section": "relay", "relay_booth_id": str(booth.id),"csrf_token": csrf_token},
+                data={"form_section": "relay", "relay_booth_id": str(booth.id), "csrf_token": csrf_token},
                 follow_redirects=False,
             )
             assert resp.status_code == 303
@@ -327,7 +331,7 @@ class TestEventCRUD:
                 data={"csrf_token": csrf_token},
                 cookies=admin_cookie,
                 follow_redirects=False,
-      )
+            )
         assert resp.status_code == 303
         async with _client() as c:
             resp = await c.get("/admin/events/", cookies=admin_cookie)
@@ -361,7 +365,7 @@ class TestRoomCRUD:
             csrf_token = await _admin_csrf(c, admin_cookie)
             resp = await c.post(
                 f"/admin/events/{event.id}/rooms/",
-                data={"display_name": "Track B","csrf_token": csrf_token},
+                data={"display_name": "Track B", "csrf_token": csrf_token},
                 cookies=admin_cookie,
                 follow_redirects=False,
             )
@@ -528,7 +532,7 @@ class TestBoothCRUD:
             csrf_token = await _admin_csrf(c, admin_cookie)
             resp = await c.post(
                 f"/admin/events/{event.id}/rooms/{room.id}/booths/",
-                data={"language_code": "fr", "language_name": "French","csrf_token": csrf_token},
+                data={"language_code": "fr", "language_name": "French", "csrf_token": csrf_token},
                 cookies=admin_cookie,
                 follow_redirects=False,
             )
@@ -740,8 +744,18 @@ class TestAPIKeyCRUD:
             assert res.json() == []
             csrf_token = await _admin_csrf(c, {"user_token": token})
 
+            res_no_csrf = await c.post(
+                f"/admin/api/events/{event_id}/api-keys",
+                json={"name": "No CSRF"},
+            )
+            assert res_no_csrf.status_code == 403
+
             # Create API key
-            res = await c.post(f"/admin/api/events/{event_id}/api-keys", json={"name": "Integration Key"},headers={"X-CSRF-Token": csrf_token},)
+            res = await c.post(
+                f"/admin/api/events/{event_id}/api-keys",
+                json={"name": "Integration Key"},
+                headers={"X-CSRF-Token": csrf_token},
+            )
             assert res.status_code == 200
             data = res.json()
             assert data["name"] == "Integration Key"
@@ -751,12 +765,20 @@ class TestAPIKeyCRUD:
             key_id = data["id"]
 
             # Prevent duplicate name
-            res_dup = await c.post(f"/admin/api/events/{event_id}/api-keys", json={"name": "Integration Key"},headers={"X-CSRF-Token": csrf_token},)
+            res_dup = await c.post(
+                f"/admin/api/events/{event_id}/api-keys",
+                json={"name": "Integration Key"},
+                headers={"X-CSRF-Token": csrf_token},
+            )
             assert res_dup.status_code == 400
             assert "already exists" in res_dup.json()["detail"]
 
             # Prevent blank name
-            res_blank = await c.post(f"/admin/api/events/{event_id}/api-keys", json={"name": "   "},headers={"X-CSRF-Token": csrf_token},)
+            res_blank = await c.post(
+                f"/admin/api/events/{event_id}/api-keys",
+                json={"name": "   "},
+                headers={"X-CSRF-Token": csrf_token},
+            )
             assert res_blank.status_code == 400
             assert "cannot be blank" in res_blank.json()["detail"]
 
@@ -770,7 +792,10 @@ class TestAPIKeyCRUD:
             assert "raw_key" not in keys[0]
 
             # Revoke key
-            res_del = await c.delete(f"/admin/api/events/{event_id}/api-keys/{key_id}")
+            res_del = await c.delete(
+                f"/admin/api/events/{event_id}/api-keys/{key_id}",
+                headers={"X-CSRF-Token": csrf_token},
+            )
             assert res_del.status_code == 200
 
             # List keys (should be empty again)
@@ -779,7 +804,11 @@ class TestAPIKeyCRUD:
             assert res.json() == []
 
             # Duplicate name is now allowed since the old one is revoked
-            res_remake = await c.post(f"/admin/api/events/{event_id}/api-keys", json={"name": "Integration Key"},headers={"X-CSRF-Token": csrf_token},)
+            res_remake = await c.post(
+                f"/admin/api/events/{event_id}/api-keys",
+                json={"name": "Integration Key"},
+                headers={"X-CSRF-Token": csrf_token},
+            )
             assert res_remake.status_code == 200
             assert res_remake.json()["name"] == "Integration Key"
 

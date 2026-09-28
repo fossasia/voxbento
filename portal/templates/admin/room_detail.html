@@ -728,6 +728,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 action="/admin/events/{{ event.id }}/rooms/{{ room.id }}/members/{{ m.id }}/delete"
                 class="inline-form"
                 data-confirm="Remove {{ u.display_name }} from this room?">
+              <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <button type="submit" class="btn btn-sm btn-danger">Remove</button>
           </form>
         </td>

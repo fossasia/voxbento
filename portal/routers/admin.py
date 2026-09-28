@@ -20,8 +20,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from portal.auth import (
     create_admin_token,
     get_accessible_event_ids,
-    get_admin_flags,
     get_admin_csrf_token,
+    get_admin_flags,
     get_current_user,
     require_admin,
     require_admin_csrf,
@@ -94,6 +94,7 @@ from portal.utils import _check_mediamtx, _make_jitsi_url, safe_redirect
 from portal.websockets.manager import broadcast_transcription
 
 _BASE_DIR = Path(__file__).resolve().parent.parent
+
 
 def _admin_template_context(request: Request) -> dict:
     csrf_token = get_admin_csrf_token(request)
@@ -381,6 +382,7 @@ async def admin_setup_start(request: Request):
         context=admin_flags,
     )
 
+
 @router.post(
     "/admin/setup",
     dependencies=[Depends(require_admin), Depends(require_admin_csrf)],
@@ -478,7 +480,9 @@ async def admin_setup_booths(request: Request, event_id: int):
     )
 
 
-@router.post("/admin/events/{event_id}/setup/booths", dependencies=[Depends(require_admin), Depends(require_admin_csrf)])
+@router.post(
+    "/admin/events/{event_id}/setup/booths", dependencies=[Depends(require_admin), Depends(require_admin_csrf)]
+)
 async def admin_setup_add_booth(request: Request, event_id: int):
     form = await request.form()
     room_id_str = form.get("room_id", "").strip()
@@ -532,7 +536,9 @@ async def admin_setup_invite(request: Request, event_id: int, success: str | Non
     )
 
 
-@router.post("/admin/events/{event_id}/setup/invite", dependencies=[Depends(require_admin), Depends(require_admin_csrf)])
+@router.post(
+    "/admin/events/{event_id}/setup/invite", dependencies=[Depends(require_admin), Depends(require_admin_csrf)]
+)
 async def admin_setup_add_invite(request: Request, event_id: int):
     form = await request.form()
     email = form.get("email", "").strip()
@@ -560,7 +566,9 @@ async def admin_setup_add_invite(request: Request, event_id: int):
     )
 
 
-@router.post("/admin/events/{event_id}/regenerate_join_code/", dependencies=[Depends(require_admin), Depends(require_admin_csrf)])
+@router.post(
+    "/admin/events/{event_id}/regenerate_join_code/", dependencies=[Depends(require_admin), Depends(require_admin_csrf)]
+)
 async def admin_regenerate_join_code(request: Request, event_id: int):
     async with get_session() as session:
         event = await get_event_by_id(session, event_id)
@@ -611,7 +619,9 @@ async def admin_event_api_settings_get(request: Request, event_id: int):
     )
 
 
-@router.post("/admin/events/{event_id}/api-settings", dependencies=[Depends(require_admin), Depends(require_admin_csrf)])
+@router.post(
+    "/admin/events/{event_id}/api-settings", dependencies=[Depends(require_admin), Depends(require_admin_csrf)]
+)
 async def admin_event_api_settings_post(
     request: Request,
     event_id: int,
@@ -787,7 +797,9 @@ async def admin_room_transcripts(request: Request, event_id: int, room_id: int):
     )
 
 
-@router.post("/admin/events/{event_id}/rooms/{room_id}/edit", dependencies=[Depends(require_admin), Depends(require_admin_csrf)])
+@router.post(
+    "/admin/events/{event_id}/rooms/{room_id}/edit", dependencies=[Depends(require_admin), Depends(require_admin_csrf)]
+)
 async def admin_edit_room(request: Request, event_id: int, room_id: int):
     form = await request.form()
     form_section = form.get("form_section", "").strip()
@@ -897,7 +909,9 @@ async def admin_list_api_keys(request: Request, event_id: int):
         ]
 
 
-@router.post("/admin/api/events/{event_id}/api-keys", dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)])
+@router.post(
+    "/admin/api/events/{event_id}/api-keys", dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)]
+)
 async def admin_create_api_key(request: Request, event_id: int, data: APIKeyCreateRequest):
     if not data.name or not data.name.strip():
         raise HTTPException(status_code=400, detail="API Key name cannot be blank.")
@@ -927,7 +941,10 @@ async def admin_create_api_key(request: Request, event_id: int, data: APIKeyCrea
         }
 
 
-@router.delete("/admin/api/events/{event_id}/api-keys/{key_id}", dependencies=[Depends(require_event_owner)])
+@router.delete(
+    "/admin/api/events/{event_id}/api-keys/{key_id}",
+    dependencies=[Depends(require_event_owner), Depends(require_admin_csrf)],
+)
 async def admin_delete_api_key(request: Request, event_id: int, key_id: int):
     async with get_session() as session:
         success = await revoke_api_key(session, key_id, event_id)
@@ -936,7 +953,9 @@ async def admin_delete_api_key(request: Request, event_id: int, key_id: int):
         return {"success": True}
 
 
-@router.post("/api/rooms/{room_id}/floor-transcription/start", dependencies=[Depends(require_admin), Depends(require_admin_csrf)])
+@router.post(
+    "/api/rooms/{room_id}/floor-transcription/start", dependencies=[Depends(require_admin), Depends(require_admin_csrf)]
+)
 async def api_start_floor_transcription(room_id: int):
     async with get_session() as session:
         room = await get_room_by_id(session, room_id)
@@ -1002,7 +1021,9 @@ async def api_start_floor_transcription(room_id: int):
     return {"status": "started"}
 
 
-@router.post("/api/rooms/{room_id}/floor-transcription/stop", dependencies=[Depends(require_admin), Depends(require_admin_csrf)])
+@router.post(
+    "/api/rooms/{room_id}/floor-transcription/stop", dependencies=[Depends(require_admin), Depends(require_admin_csrf)]
+)
 async def api_stop_floor_transcription(room_id: int):
     async with get_session() as session:
         room = await get_room_by_id(session, room_id)
@@ -1053,7 +1074,10 @@ async def api_floor_transcription_status(room_id: int):
     return {"running": running, "stage": stage, "bot_reachable": bot_reachable}
 
 
-@router.post("/admin/events/{event_id}/rooms/{room_id}/delete", dependencies=[Depends(require_admin), Depends(require_admin_csrf)])
+@router.post(
+    "/admin/events/{event_id}/rooms/{room_id}/delete",
+    dependencies=[Depends(require_admin), Depends(require_admin_csrf)],
+)
 async def admin_delete_room(request: Request, event_id: int, room_id: int):
     async with get_session() as session:
         await delete_room(session, room_id)
@@ -1084,7 +1108,10 @@ async def admin_booth_list(request: Request, event_id: int, room_id: int):
     )
 
 
-@router.post("/admin/events/{event_id}/rooms/{room_id}/booths/", dependencies=[Depends(require_admin), Depends(require_admin_csrf)])
+@router.post(
+    "/admin/events/{event_id}/rooms/{room_id}/booths/",
+    dependencies=[Depends(require_admin), Depends(require_admin_csrf)],
+)
 async def admin_create_booth(request: Request, event_id: int, room_id: int):
     form = await request.form()
     language_code = form.get("language_code", "").strip().lower()
@@ -1158,7 +1185,10 @@ async def admin_booth_detail(request: Request, event_id: int, room_id: int, boot
     )
 
 
-@router.post("/admin/events/{event_id}/rooms/{room_id}/members/", dependencies=[Depends(require_admin), Depends(require_admin_csrf)])
+@router.post(
+    "/admin/events/{event_id}/rooms/{room_id}/members/",
+    dependencies=[Depends(require_admin), Depends(require_admin_csrf)],
+)
 async def admin_add_room_member(request: Request, event_id: int, room_id: int):
     form = await request.form()
     email = form.get("email", "").strip()
@@ -1197,7 +1227,8 @@ async def admin_add_room_member(request: Request, event_id: int, room_id: int):
 
 
 @router.post(
-    "/admin/events/{event_id}/rooms/{room_id}/members/{membership_id}/invite", dependencies=[Depends(require_admin), Depends(require_admin_csrf)]
+    "/admin/events/{event_id}/rooms/{room_id}/members/{membership_id}/invite",
+    dependencies=[Depends(require_admin), Depends(require_admin_csrf)],
 )
 async def admin_invite_room_member(request: Request, event_id: int, room_id: int, membership_id: int):
     async with get_session() as session:
@@ -1219,7 +1250,8 @@ async def admin_invite_room_member(request: Request, event_id: int, room_id: int
 
 
 @router.post(
-    "/admin/events/{event_id}/rooms/{room_id}/members/{membership_id}/delete", dependencies=[Depends(require_admin), Depends(require_admin_csrf)]
+    "/admin/events/{event_id}/rooms/{room_id}/members/{membership_id}/delete",
+    dependencies=[Depends(require_admin), Depends(require_admin_csrf)],
 )
 async def admin_remove_room_member(request: Request, event_id: int, room_id: int, membership_id: int):
     async with get_session() as session:
@@ -1228,7 +1260,8 @@ async def admin_remove_room_member(request: Request, event_id: int, room_id: int
 
 
 @router.post(
-    "/admin/events/{event_id}/rooms/{room_id}/booths/{booth_id}/members/", dependencies=[Depends(require_admin), Depends(require_admin_csrf)]
+    "/admin/events/{event_id}/rooms/{room_id}/booths/{booth_id}/members/",
+    dependencies=[Depends(require_admin), Depends(require_admin_csrf)],
 )
 async def admin_add_booth_member(request: Request, event_id: int, room_id: int, booth_id: int):
     form = await request.form()
@@ -1305,7 +1338,10 @@ async def admin_remove_booth_member(request: Request, event_id: int, room_id: in
     )
 
 
-@router.post("/admin/events/{event_id}/rooms/{room_id}/booths/{booth_id}/delete", dependencies=[Depends(require_admin), Depends(require_admin_csrf)])
+@router.post(
+    "/admin/events/{event_id}/rooms/{room_id}/booths/{booth_id}/delete",
+    dependencies=[Depends(require_admin), Depends(require_admin_csrf)],
+)
 async def admin_delete_booth(request: Request, event_id: int, room_id: int, booth_id: int):
     async with get_session() as session:
         await delete_booth(session, booth_id)
@@ -1361,7 +1397,10 @@ async def admin_booth_translation_settings(
     )
 
 
-@router.post("/admin/events/{event_id}/rooms/{room_id}/booths/{booth_id}/edit", dependencies=[Depends(require_admin), Depends(require_admin_csrf)])
+@router.post(
+    "/admin/events/{event_id}/rooms/{room_id}/booths/{booth_id}/edit",
+    dependencies=[Depends(require_admin), Depends(require_admin_csrf)],
+)
 async def admin_edit_booth(request: Request, event_id: int, room_id: int, booth_id: int):
     form = await request.form()
     language_name = form.get("language_name", "").strip()
@@ -1493,7 +1532,9 @@ async def admin_users(
     )
 
 
-@router.post("/admin/users/{user_id}/toggle-active", dependencies=[Depends(require_super_admin), Depends(require_admin_csrf)])
+@router.post(
+    "/admin/users/{user_id}/toggle-active", dependencies=[Depends(require_super_admin), Depends(require_admin_csrf)]
+)
 async def admin_toggle_user_active(request: Request, user_id: int):
     async with get_session() as session:
         user = await get_user_by_id(session, user_id)
@@ -1532,7 +1573,9 @@ async def admin_user_detail(request: Request, user_id: int):
     )
 
 
-@router.post("/admin/users/{user_id}/toggle-admin", dependencies=[Depends(require_super_admin), Depends(require_admin_csrf)])
+@router.post(
+    "/admin/users/{user_id}/toggle-admin", dependencies=[Depends(require_super_admin), Depends(require_admin_csrf)]
+)
 async def admin_toggle_user_admin(request: Request, user_id: int):
     async with get_session() as session:
         user = await get_user_by_id(session, user_id)
@@ -1543,7 +1586,10 @@ async def admin_toggle_user_admin(request: Request, user_id: int):
     return safe_redirect(url=f"/admin/users/{user_id}/", status_code=status.HTTP_303_SEE_OTHER)
 
 
-@router.post("/admin/users/{user_id}/events/{event_id}/toggle-owner", dependencies=[Depends(require_super_admin), Depends(require_admin_csrf)])
+@router.post(
+    "/admin/users/{user_id}/events/{event_id}/toggle-owner",
+    dependencies=[Depends(require_super_admin), Depends(require_admin_csrf)],
+)
 async def admin_toggle_user_event_owner(request: Request, user_id: int, event_id: int):
     async with get_session() as session:
         user = await get_user_by_id(session, user_id)
@@ -1610,7 +1656,10 @@ async def admin_add_event_member(request: Request, event_id: int):
     return safe_redirect(url=f"/admin/events/{event_id}/members/", status_code=status.HTTP_303_SEE_OTHER)
 
 
-@router.post("/admin/events/{event_id}/members/{membership_id}/invite", dependencies=[Depends(require_admin), Depends(require_admin_csrf)])
+@router.post(
+    "/admin/events/{event_id}/members/{membership_id}/invite",
+    dependencies=[Depends(require_admin), Depends(require_admin_csrf)],
+)
 async def admin_invite_event_member(request: Request, event_id: int, membership_id: int):
     async with get_session() as session:
         memberships = await list_memberships_for_event(session, event_id)
@@ -1627,7 +1676,10 @@ async def admin_invite_event_member(request: Request, event_id: int, membership_
     )
 
 
-@router.post("/admin/events/{event_id}/members/{membership_id}/delete", dependencies=[Depends(require_admin), Depends(require_admin_csrf)])
+@router.post(
+    "/admin/events/{event_id}/members/{membership_id}/delete",
+    dependencies=[Depends(require_admin), Depends(require_admin_csrf)],
+)
 async def admin_remove_event_member(request: Request, event_id: int, membership_id: int):
     async with get_session() as session:
         await remove_event_membership(session, membership_id)
@@ -1635,7 +1687,8 @@ async def admin_remove_event_member(request: Request, event_id: int, membership_
 
 
 @router.post(
-    "/admin/events/{event_id}/rooms/{room_id}/booths/{booth_id}/tokens/", dependencies=[Depends(require_admin), Depends(require_admin_csrf)]
+    "/admin/events/{event_id}/rooms/{room_id}/booths/{booth_id}/tokens/",
+    dependencies=[Depends(require_admin), Depends(require_admin_csrf)],
 )
 async def admin_create_token(request: Request, event_id: int, room_id: int, booth_id: int):
     form = await request.form()
@@ -1734,7 +1787,9 @@ async def api_download_progress(model: str = Query("nllb-200-distilled-600M")):
     return progress
 
 
-@router.post("/admin/models/supertonic/trigger_download", dependencies=[Depends(require_admin), Depends(require_admin_csrf)])
+@router.post(
+    "/admin/models/supertonic/trigger_download", dependencies=[Depends(require_admin), Depends(require_admin_csrf)]
+)
 async def api_supertonic_trigger_download():
     from portal.tts.providers.supertonic import trigger_supertonic_download
 
