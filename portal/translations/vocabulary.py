@@ -215,6 +215,13 @@ async def resolve_vocabulary_entries(
     return deduplicated[:max_entries]
 
 
+def _neutralize_csv_text(value: str) -> str:
+    """Prefix a leading formula character so spreadsheets treat the cell as text."""
+    if value.lstrip().startswith(_CSV_FORMULA_PREFIXES):
+        return "'" + value
+    return value
+
+
 def serialize_vocabulary_csv(entries: list[AIVocabularyEntry]) -> str:
     output = io.StringIO()
     writer = csv.writer(output, lineterminator="\n")
@@ -224,10 +231,10 @@ def serialize_vocabulary_csv(entries: list[AIVocabularyEntry]) -> str:
     for entry in entries:
         writer.writerow(
             (
-                entry.source_term,
+                _neutralize_csv_text(entry.source_term),
                 entry.target_language,
-                entry.target_term,
-                entry.description or "",
+                _neutralize_csv_text(entry.target_term),
+                _neutralize_csv_text(entry.description or ""),
                 str(entry.case_sensitive).lower(),
                 entry.match_type,
                 entry.priority,

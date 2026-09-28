@@ -17,6 +17,7 @@ from portal.translations.vocabulary import (
     _term_matches,
     parse_vocabulary_csv,
     resolve_vocabulary_entries,
+    serialize_vocabulary_csv,
     vocabulary_terms_overlap,
 )
 
@@ -95,6 +96,40 @@ def test_csv_parser_stays_linear_on_large_uploads():
 
     assert len(entries) == 20000
     assert warnings == []
+
+
+def test_export_neutralizes_spreadsheet_formula_values():
+    # Import rejects these, but a record could reach the table by another route.
+    entries = [
+        AIVocabularyEntry(
+            event_id=1,
+            source_term="=cmd|'/c calc'!A1",
+            target_language="de",
+            target_term="+1234",
+            description="@SUM(A1)",
+            case_sensitive=False,
+            match_type="phrase",
+            priority=0,
+        ),
+        AIVocabularyEntry(
+            event_id=1,
+            source_term="Voxbento",
+            target_language="de",
+            target_term="Voxbento",
+            description=None,
+            case_sensitive=True,
+            match_type="exact",
+            priority=100,
+        ),
+    ]
+
+    rows = serialize_vocabulary_csv(entries).splitlines()
+
+    assert rows[1].startswith("'=cmd")
+    assert "'+1234" in rows[1]
+    assert "'@SUM(A1)" in rows[1]
+    # An ordinary row is untouched.
+    assert rows[2].startswith("Voxbento,de,Voxbento,,true,exact,100")
 
 
 def test_csv_parser_reports_invalid_and_duplicate_rows():
