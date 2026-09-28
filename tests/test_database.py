@@ -797,6 +797,50 @@ async def test_list_users_pagination(db: AsyncSession):
     assert users[0].email == "u1@test.com"
 
 
+async def _create_users_joined_at(db: AsyncSession, joined: list[datetime]) -> list[int]:
+    ids = []
+    for i, created_at in enumerate(joined):
+        user = await create_user(db, email=f"sort{i}@test.com", display_name=f"Sort {i}")
+        user.created_at = created_at
+        ids.append(user.id)
+    await db.flush()
+    return ids
+
+
+@pytest.mark.anyio
+async def test_list_users_created_at_desc_is_newest_first(db: AsyncSession):
+    base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    ids = await _create_users_joined_at(db, [base + timedelta(days=2), base, base + timedelta(days=1)])
+
+    users = await list_users(db, sort_by="created_at", sort_order="desc")
+
+    assert [u.id for u in users] == [ids[0], ids[2], ids[1]]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("sort_order", ["asc", "desc"])
+async def test_list_users_breaks_created_at_ties_by_id(db: AsyncSession, sort_order: str):
+    same_moment = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    ids = await _create_users_joined_at(db, [same_moment] * 4)
+
+    users = await list_users(db, sort_by="created_at", sort_order=sort_order)
+
+    assert [u.id for u in users] == sorted(ids, reverse=sort_order == "desc")
+
+
+@pytest.mark.anyio
+async def test_list_users_pages_through_created_at_ties_without_gaps(db: AsyncSession):
+    same_moment = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    ids = await _create_users_joined_at(db, [same_moment] * 5)
+
+    seen = []
+    for offset in range(0, 5, 2):
+        page = await list_users(db, limit=2, offset=offset, sort_by="created_at", sort_order="desc")
+        seen.extend(u.id for u in page)
+
+    assert seen == sorted(ids, reverse=True)
+
+
 @pytest.mark.anyio
 async def test_list_events_default_limit_does_not_break(db: AsyncSession):
     for i in range(3):
