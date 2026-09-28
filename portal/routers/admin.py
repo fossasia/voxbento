@@ -322,17 +322,24 @@ async def admin_event_list(request: Request, page: int = 1, search: str | None =
     user_id = int(user["sub"]) if user and user.get("sub") else None
     _, allowed_event_ids = await get_accessible_event_ids(request, user_id=user_id)
     limit = 20
-    offset = (page - 1) * limit
     async with get_session() as session:
         total_events = await count_events(session, allowed_event_ids=allowed_event_ids, search=search)
+        total_pages = max(1, math.ceil(total_events / limit))
+        page = min(max(page, 1), total_pages)
+        offset = (page - 1) * limit
         events = await list_events(
             session, limit=limit, offset=offset, allowed_event_ids=allowed_event_ids, search=search
         )
-    total_pages = max(1, math.ceil(total_events / limit))
     return templates.TemplateResponse(
         request=request,
         name="admin/event_list.html",
-        context={"events": events, "page": page, "total_pages": total_pages, "search": search, **admin_flags},
+        context={
+            "events": events,
+            "page": page,
+            "total_pages": total_pages,
+            "search": search,
+            **admin_flags,
+        },
     )
 
 

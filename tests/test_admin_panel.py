@@ -252,7 +252,7 @@ class TestEventCRUD:
         assert event.created_at.strftime("%Y-%m-%d").encode() not in resp.content
 
     @pytest.mark.anyio
-    @pytest.mark.parametrize("search_term", ("summit", "fossasia"))
+    @pytest.mark.parametrize("search_term", ("SUMMIT", "fossasia"))
     async def test_event_list_searches_by_slug_or_display_name(self, admin_cookie, seed_event, search_term):
         from portal.database import create_event, get_session
 
@@ -268,6 +268,23 @@ class TestEventCRUD:
         assert "testcon" not in resp.text
         assert f'value="{search_term}"' in resp.text
         assert '<label for="admin-event-search" class="search-label">Search events</label>' in resp.text
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize("search_term", ("", "   "))
+    async def test_event_list_empty_search_shows_all_events(self, admin_cookie, seed_event, search_term):
+        from portal.database import create_event, get_session
+
+        async with get_session() as session:
+            await create_event(session, slug="unrelated-event", display_name="Unrelated Event")
+
+        async with _client() as c:
+            resp = await c.get("/admin/events/", params={"search": search_term}, cookies=admin_cookie)
+
+        assert resp.status_code == 200
+        assert "TestCon 2026" in resp.text
+        assert "Unrelated Event" in resp.text
+        assert 'value=""' in resp.text
+        assert 'href="/admin/events/" class="btn">Clear</a>' not in resp.text
 
     @pytest.mark.anyio
     @pytest.mark.parametrize(
@@ -314,12 +331,33 @@ class TestEventCRUD:
         assert 'href="?page=2&amp;search=special%26%23"' in resp.text
 
     @pytest.mark.anyio
+    async def test_event_list_clamps_out_of_range_search_page(self, admin_cookie):
+        from portal.database import create_event, get_session
+
+        search_term = "pagination-target"
+        async with get_session() as session:
+            for index in range(21):
+                await create_event(
+                    session,
+                    slug=f"{search_term}-{index}",
+                    display_name=f"Pagination Target {index}",
+                )
+
+        async with _client() as c:
+            resp = await c.get("/admin/events/", params={"search": search_term, "page": 99}, cookies=admin_cookie)
+
+        assert resp.status_code == 200
+        assert resp.text.count("<td>") == 4
+        assert f'href="?page=1&amp;search={search_term}"' in resp.text
+        assert "No events match search" not in resp.text
+
+    @pytest.mark.anyio
     async def test_event_list_search_with_no_matches_shows_clearable_empty_state(self, admin_cookie, seed_event):
         async with _client() as c:
             resp = await c.get("/admin/events/", params={"search": "no-such-event"}, cookies=admin_cookie)
 
         assert resp.status_code == 200
-        assert "No events found" in resp.text
+        assert "No events match search" in resp.text
         assert 'name="search"' in resp.text
         assert 'href="/admin/events/" class="btn">Clear</a>' in resp.text
         assert "testcon" not in resp.text

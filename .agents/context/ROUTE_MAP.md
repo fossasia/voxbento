@@ -66,7 +66,7 @@ All admin routes require `admin_token` cookie (or `user_token` with `is_admin=Tr
 | POST | `/admin/login` | — | Sets `admin_token` cookie → `/admin/` |
 | GET | `/admin/logout` | — | Deletes `admin_token` → `/admin/login` |
 | GET | `/admin/` | `admin/dashboard.html` | Event list with live booth counts + MediaMTX status |
-| GET | `/admin/events/` | `admin/event_list.html` | Search by event slug or display name with `?search=`; `%` and `_` are literal; pagination URL-encodes the search term and uses the filtered result set |
+| GET | `/admin/events/` | `admin/event_list.html` | Search by event slug or display name with `?search=`; blank queries show all events; `%` and `_` are literal; pagination URL-encodes the term and clamps out-of-range pages |
 | POST | `/admin/events/` | — | Creates event (slug + display_name) |
 | GET | `/admin/events/{event_id}/` | `admin/event_detail.html` | Event + rooms + booths |
 | GET | `/admin/events/{event_id}/api-settings/` | `admin/api_settings.html` | View encrypted API keys |

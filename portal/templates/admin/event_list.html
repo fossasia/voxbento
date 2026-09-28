@@ -32,7 +32,7 @@
 <div class="search-bar">
   <form method="get" action="/admin/events/" class="search-form">
     <label for="admin-event-search" class="search-label">Search events</label>
-    <input id="admin-event-search" type="text" name="search" value="{{ search or '' }}" placeholder="Search by event name or slug..." class="search-input">
+    <input id="admin-event-search" type="text" name="search" value="{{ search or '' }}" placeholder="Search events by name or slug..." class="search-input">
     <button type="submit" class="btn btn-primary">Search</button>
     {% if search %}
       <a href="/admin/events/" class="btn">Clear</a>
@@ -71,8 +71,8 @@
 {% else %}
 <div class="empty-state">
   {% if search %}
-  <h2>No events found</h2>
-  <p>Try a different event name or slug.</p>
+  <h2>No events match search</h2>
+  <p>Try another event name or slug.</p>
   {% else %}
   <div class="empty-state-icon">🎧</div>
   <h2 class="empty-state-title">No events yet</h2>
