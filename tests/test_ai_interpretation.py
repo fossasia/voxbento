@@ -181,6 +181,50 @@ def test_prompt_omits_the_guard_when_nothing_is_configured():
     assert "constrain word choice and register only" not in prompt
 
 
+@pytest.mark.anyio
+async def test_local_provider_ignores_interpretation_settings_and_says_so(caplog):
+    import logging
+
+    from portal.translations.providers.local import LocalProvider
+
+    entry = AIVocabularyEntry(
+        event_id=1, source_term="Voxbento", target_language="all", target_term="Voxbento"
+    )
+    captured = {}
+
+    def fake_inference(self, text, source_token, target_token, model_size):
+        captured["text"] = text
+        return "Willkommen"
+
+    LocalProvider._warned_unsupported_settings = False
+    original = LocalProvider._run_inference
+    LocalProvider._run_inference = fake_inference
+    try:
+        with caplog.at_level(logging.WARNING):
+            result = await LocalProvider().translate(
+                provider_name="local",
+                text="Welcome to Voxbento",
+                target_lang_name="German",
+                target_lang_code="de",
+                source_lang_name="English",
+                model="nllb-200-distilled-600M",
+                api_key=None,
+                persona="A commentator who adds background context.",
+                style="Summarize aggressively.",
+                vocabulary_entries=[entry],
+            )
+    finally:
+        LocalProvider._run_inference = original
+        LocalProvider._warned_unsupported_settings = False
+
+    assert result == "Willkommen"
+    # The model sees the raw segment: no persona, style or glossary is injected.
+    assert captured["text"] == "Welcome to Voxbento"
+    warning = "".join(record.message for record in caplog.records if record.levelno >= logging.WARNING)
+    assert "ignores persona, style, vocabulary" in warning
+    assert "cloud translation provider" in warning
+
+
 def test_csv_parser_reports_invalid_and_duplicate_rows():
     content = """source_term,target_language,target_term,case_sensitive,match_type,priority
 Voxbento,all,Voxbento,false,exact,100

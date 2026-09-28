@@ -62,6 +62,14 @@ This keeps real-time prompts bounded and reduces provider latency and token cost
 - Anthropic receives the same system text through its `system` field.
 - The local NLLB provider remains deterministic and does not use LLM persona or style instructions.
 
+### Local provider and interpretation settings
+
+NLLB is a sequence-to-sequence translation model with no system-prompt channel, so persona, style
+and vocabulary **cannot** be applied to it. When a room uses the local provider, those settings are
+accepted and stored but have no effect on the output: the model receives the transcript segment
+unchanged. The room settings page states this, and the worker logs a warning the first time a local
+translation runs with any of them configured. Select a cloud provider for them to take effect.
+
 ## Privacy and production guidance
 
 Persona, style, matching vocabulary entries, and transcript text are sent to the selected cloud translation provider. Do not place secrets or personal data in interpretation settings or glossaries. Review provider retention policies and test terminology, tone, pronunciation, and latency before a live event.

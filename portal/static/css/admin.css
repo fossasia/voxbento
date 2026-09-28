@@ -956,6 +956,7 @@ code { font-family: var(--font-mono); font-size: 0.85em; background: var(--color
   color: var(--color-text); font: inherit; line-height: 1.5;
 }
 .token-form .ai-interpretation-textarea:focus { outline: none; border-color: var(--color-primary); box-shadow: 0 0 0 3px var(--color-primary-subtle); }
+.ai-interpretation-note { margin-top: 12px; }
 .ai-vocabulary-toggle { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
 .ai-vocabulary-card { margin-bottom: 2rem; }
 .ai-vocabulary-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 16px; }
