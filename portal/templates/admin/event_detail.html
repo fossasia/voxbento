@@ -5,7 +5,7 @@
 <nav class="breadcrumb">
   <a href="/admin/">Dashboard</a> <span>/</span>
   <a href="/admin/events/">Events</a> <span>/</span>
-  <span>{{ event.display_name }}</span>
+  <span class="breadcrumb-current" aria-current="page">{{ event.display_name }}</span>
 </nav>
 {% endblock %}
 
@@ -15,7 +15,7 @@
     <h1>{{ event.display_name }}</h1>
     <div class="header-meta" style="margin-top:6px;">
       <span class="badge badge-slug">{{ event.slug }}</span>
-      <span class="meta-text">Created {{ event.created_at.strftime('%Y-%m-%d') if event.created_at else '—' }}</span>
+      <span class="meta-text">Created {{ event.created_at.strftime('%b %d, %Y') if event.created_at else '—' }}</span>
       {% if live_count > 0 %}
       <span class="status-live">● {{ live_count }} booth{{ 's' if live_count != 1 else '' }} live</span>
       {% else %}

@@ -35,7 +35,7 @@ After connecting, you will receive two types of server-pushed messages. No clien
 | `type` | Description |
 | --- | --- |
 | `booth:state` | Full booth state object (identical to the one sent on `/ws/booth/{booth_id}`). Delivered once immediately on connect and again whenever booth state changes. |
-| `caption` | A caption event containing a `status` field (`partial`, `final`, or `clear`) and, for non-clear events, a `text` field with the transcribed content. |
+| `caption` | A caption event containing a `status` field (`partial`, `final`, or `clear`) and a `text` field with the transcribed content (which is an empty string for `clear` events). |
 
 ## Caption Message Format
 
@@ -43,8 +43,8 @@ The three caption status values represent distinct moments in the transcription 
 
 ```json
 { "type": "caption", "status": "partial", "text": "Good morning everyone, today we" }
-{ "type": "caption", "status": "final",   "text": "Good morning everyone, today we will discuss the agenda." }
-{ "type": "caption", "status": "clear" }
+{ "type": "caption", "status": "final",   "text": "Good morning everyone, today we will discuss the agenda.", "segment_id": "9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d", "seq": 42 }
+{ "type": "caption", "status": "clear",   "text": "" }
 ```
 
 ## Caption Status Reference
@@ -66,7 +66,7 @@ A complete sentence has been detected. The `text` field contains the finished, s
 </TabItem>
   <TabItem value="clear" label="clear">
 
-Silence or end of utterance detected. No `text` field is present. Clear the caption display area. This event is also sent when the active interpreter stops streaming.
+Silence or end of utterance detected. The `text` field will be an empty string `""`. Clear the caption display area. This event is also sent when the active interpreter stops streaming.
 
 </TabItem>
 </Tabs>
@@ -104,7 +104,11 @@ Captions are only produced when transcription is enabled for the booth by the ev
 
   **`status`** *(string)* — One of `"partial"`, `"final"`, or `"clear"`. Determines how your UI should handle the message.
 
-  **`text`** *(string)* — The transcribed text. Present for `partial` and `final` status values. Omitted for `clear`.
+  **`text`** *(string)* — The transcribed text. Present for `partial` and `final` status values. For `clear`, this is an empty string `""`.
+  
+  **`segment_id`** *(string)* — A unique UUID for the finalized transcription segment. Present only when `status` is `final`.
+
+  **`seq`** *(integer)* — A monotonically increasing sequence number for finalized segments within the current session. Present only when `status` is `final`.
 
 </details>
 

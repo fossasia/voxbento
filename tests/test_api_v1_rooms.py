@@ -199,7 +199,7 @@ async def test_create_without_name_is_rejected():
             headers=_auth(),
         )
 
-    assert resp.status_code == 422
+    assert resp.status_code == 400
     assert "name" in resp.text
 
 
@@ -213,6 +213,7 @@ async def test_create_without_name_is_rejected():
         {"name": "Main Hall", "target_languages": ["français"]},
         {"name": "Main Hall", "target_languages": ["x" * 40]},
         {"name": "Main Hall", "target_languages": ["zz"]},
+        {"name": "Main Hall", "target_languages": ["floor"]},
     ],
 )
 async def test_invalid_values_are_rejected(payload):

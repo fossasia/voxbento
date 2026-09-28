@@ -12,8 +12,8 @@
 
     {% if rooms %}
     <form method="post" action="/admin/events/{{ event.id }}/setup/booths">
-      <div class="field-row" style="align-items:end;">
-        <div class="field" style="margin-bottom:0;">
+      <div class="field-row field-row--end">
+        <div class="field field--flush">
           <label for="room_id">Room</label>
           <select id="room_id" name="room_id" required>
             {% for room in rooms %}
@@ -21,7 +21,7 @@
             {% endfor %}
           </select>
         </div>
-        <div class="field" style="margin-bottom:0;">
+        <div class="field field--flush">
           <label for="language_code">Language</label>
           <select id="language_code" name="language_code" required>
             {% for code, name in common_languages %}
@@ -29,8 +29,8 @@
             {% endfor %}
           </select>
         </div>
-        <div class="field" style="margin-bottom:0;">
-          <button type="submit" class="btn btn-primary" style="min-height:42px;">Add booth</button>
+        <div class="field field--flush">
+          <button type="submit" class="btn btn-primary btn-field">Add booth</button>
         </div>
       </div>
     </form>
@@ -40,8 +40,8 @@
       {% set rbooths = booths_by_room.get(room.id, []) %}
       {% if rbooths %}
         {% set ns.total = ns.total + rbooths|length %}
-        <div style="margin-top:18px;">
-          <div class="text-secondary" style="font-weight:600; font-size:0.75rem; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:6px;">{{ room.display_name }}</div>
+        <div class="wizard-room-group">
+          <div class="text-secondary wizard-room-label">{{ room.display_name }}</div>
           <ul class="mini-list">
             {% for b in rbooths %}
             <li><span>🎧 &nbsp;{{ b.language_name }} &nbsp;<code>{{ b.language_code }}</code></span></li>
@@ -51,7 +51,7 @@
       {% endif %}
     {% endfor %}
     {% if ns.total == 0 %}
-    <p class="text-secondary" style="margin-top:14px;">No booths yet — add at least one to continue.</p>
+    <p class="text-secondary wizard-empty-hint">No booths yet — add at least one to continue.</p>
     {% endif %}
     {% else %}
     <div class="alert alert-warning">You need a room first. <a href="/admin/events/{{ event.id }}/setup/rooms">Go back and add a room</a>.</div>
