@@ -126,8 +126,7 @@ Enforced in: `portal/websockets/handlers.py` (`_handle_join`), `portal/routers/a
 | Purpose | Token type | Cookie name | Key claims |
 |---|---|---|---|
 | Invite-link participant | `create_participant_token()` | `session_token` | `booth_id`, `role`, `event_slug`, `language_code` |
-| Registered user | `create_user_token()` | `user_token` | `sub` (user_id), `email`, `is_admin`, `user=True` |
-| Admin panel | `create_admin_token()` | `admin_token` | `admin=True` |
+| Registered user / Admin | `create_user_token()` | `user_token` | `sub` (user_id), `email`, `is_admin`, `user=True` |
 
 All tokens: HS256, `settings.effective_jwt_secret`, expiry = `jwt_expiry_seconds`.
 Password hashing: bcrypt (`portal/auth.py` `hash_password` / `verify_password`).

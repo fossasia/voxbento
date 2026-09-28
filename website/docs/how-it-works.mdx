@@ -150,6 +150,16 @@ For example:
 
 Listeners connected to the caption WebSocket receive transcription segments as they are produced. The caption stream is independent of the audio stream — listeners can receive captions even while audio is playing through WHEP or HLS.
 
+## Administrative access
+
+Administrative access is tied to registered user accounts rather than a shared
+deployment password. A site-wide administrator signs in at `/admin/login` with
+their email address and password and receives the normal `user_token` session
+cookie. Event owners and room coordinators receive only the scoped access their
+memberships allow. Operators should maintain at least two active administrator
+accounts; the [admin-login migration guide](https://github.com/fossasia/voxbento/blob/dev/docs/admin-password-removal-migration.md)
+documents the controlled recovery procedure.
+
 ## Security Layers
 
 Publishing audio to a booth is protected by three independent enforcement layers:

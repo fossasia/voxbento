@@ -60,9 +60,6 @@ cd voxbento
 # Configure environment
 cp .env.example .env
 
-# Required: set your admin password (or generate a secure random password)
-echo "ADMIN_PASSWORD=$(openssl rand -hex 16)" >> .env
-
 # Required for API key encryption: set your encryption key (must be 32 characters or longer)
 echo "API_KEY_ENCRYPTION_KEY=$(openssl rand -hex 32)" >> .env
 
@@ -81,6 +78,14 @@ For detailed API documentation, environment variables, and configuration, visit 
 ---
 
 ## Upgrade Notes
+
+### Admin login migration
+
+The legacy shared `ADMIN_PASSWORD` login has been removed. Before upgrading,
+ensure two active administrator accounts can sign in with their own credentials,
+then remove that variable from all deployment configuration. See the
+[operator migration guide](docs/admin-password-removal-migration.md) for the
+rollout and break-glass recovery procedure.
 
 ### API Key Encryption & Rotation
 A mandatory environment variable `API_KEY_ENCRYPTION_KEY` securely encrypts third-party API keys in the database. 

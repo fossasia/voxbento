@@ -16,7 +16,6 @@ These variables must be set before running Voxbento in any non-trivial environme
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `ADMIN_PASSWORD` | _(none)_ | Password for the admin panel at `/admin/login`. Leave empty to disable admin login entirely. Required to access all admin features. |
 | `SECRET_KEY` | `change-me` | JWT signing key used to sign and verify session tokens. Use 64 or more random characters in production. Never use the default value in a live deployment. |
 | `API_KEY_ENCRYPTION_KEY` | _(none)_ | 32-character minimum key used to encrypt third-party API keys (e.g. cloud transcription credentials) at rest in the database. Required if you use any cloud transcription provider. |
 

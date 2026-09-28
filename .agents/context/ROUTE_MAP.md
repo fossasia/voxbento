@@ -1,7 +1,7 @@
 # VoxBento — Route Map
 
 > All HTTP and WebSocket routes are now modularized in `portal/routers/` and `portal/websockets/`.
-> Auth column: `user` = user_token cookie; `admin` = admin_token cookie; `session` = session_token cookie; `open` = no auth required; `token/Bearer` = optional legacy token guard.
+> Auth column: `user` = user_token cookie; `session` = session_token cookie; `open` = no auth required; `token/Bearer` = optional legacy token guard.
 
 ---
 
@@ -58,13 +58,13 @@
 
 ## Admin Panel (`/admin/*`)
 
-All admin routes require `admin_token` cookie (or `user_token` with `is_admin=True` or `event_owner` membership for event-scoped routes).
+All admin routes require a `user_token` with `is_admin=True`, or the appropriate `event_owner` / `room_coordinator` membership for scoped routes.
 
 | Method | Path | Template | Notes |
 |---|---|---|---|
 | GET | `/admin/login` | `admin/login.html` | Redirects to `/admin/` if already admin |
-| POST | `/admin/login` | — | Sets `admin_token` cookie → `/admin/` |
-| GET | `/admin/logout` | — | Deletes `admin_token` → `/admin/login` |
+| POST | `/admin/login` | — | Validates account credentials and sets `user_token` → `/admin/` |
+| GET | `/admin/logout` | — | Deletes session cookies → `/admin/login` |
 | GET | `/admin/` | `admin/dashboard.html` | Event list with live booth counts + MediaMTX status |
 | GET | `/admin/events/` | `admin/event_list.html` | — |
 | POST | `/admin/events/` | — | Creates event (slug + display_name) |

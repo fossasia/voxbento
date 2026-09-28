@@ -5,11 +5,10 @@ from __future__ import annotations
 import os
 
 os.environ.setdefault("BOOTH_ACCESS_TOKEN", "")
-os.environ.setdefault("ADMIN_PASSWORD", "test-admin-pass")
 
 import pytest
 
-from portal.auth import create_admin_token, create_user_token, hash_password
+from portal.auth import create_user_token, hash_password
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -57,14 +56,14 @@ async def _create_event(slug: str, name: str) -> object:
 
 @pytest.mark.anyio
 async def test_get_accessible_event_ids_super_admin_sees_all(setup_db):
-    """admin_token with admin=True → is_super_admin=True and allowed_event_ids=None."""
+    """user_token with is_admin=True → is_super_admin=True and allowed_event_ids=None."""
     from portal.auth import get_accessible_event_ids
 
     await _create_event("ev1", "Event 1")
     await _create_event("ev2", "Event 2")
     await _create_event("ev3", "Event 3")
 
-    req = _make_request({"admin_token": create_admin_token()})
+    req = _make_request({"user_token": create_user_token(user_id=1, email="admin@example.com", is_admin=True)})
     is_super_admin, allowed_event_ids = await get_accessible_event_ids(req, user_id=1)
 
     assert is_super_admin is True

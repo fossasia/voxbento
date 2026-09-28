@@ -14,7 +14,6 @@ Securing your Voxbento deployment involves more than setting a strong admin pass
 
 Before exposing your Voxbento instance to the internet, verify each of the following. These are the most critical configuration steps and the most common sources of security incidents on self-hosted platforms.
 
-- Set `ADMIN_PASSWORD` to a strong, randomly generated password of 16 or more characters
 - Generate `SECRET_KEY` with `openssl rand -hex 32` — never use the default `change-me` value
 - Generate `API_KEY_ENCRYPTION_KEY` with `openssl rand -hex 32` — required if you store any third-party API credentials
 - Change `JVB_AUTH_PASSWORD` and `JICOFO_AUTH_PASSWORD` from `changeme` to strong random values

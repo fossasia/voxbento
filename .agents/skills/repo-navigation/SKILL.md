@@ -77,7 +77,7 @@ grep -rn "settings\." portal/ | head -40
 
 ### Find all auth cookie checks
 ```bash
-grep -rn "session_token\|user_token\|admin_token" portal/routers/
+grep -rn "session_token\|user_token" portal/routers/
 ```
 
 ### Find where a DB model is used

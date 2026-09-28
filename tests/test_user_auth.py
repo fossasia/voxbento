@@ -5,11 +5,10 @@ from __future__ import annotations
 import os
 
 os.environ["BOOTH_ACCESS_TOKEN"] = ""
-os.environ["ADMIN_PASSWORD"] = "test-admin-pass"
 
 import pytest
 
-from portal.auth import create_admin_token, create_user_token, hash_password, verify_password
+from portal.auth import create_user_token, hash_password, verify_password
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -28,7 +27,7 @@ async def setup_db():
 
 @pytest.fixture
 def admin_cookie():
-    return {"admin_token": create_admin_token()}
+    return {"user_token": create_user_token(user_id=1, email="admin@example.com", is_admin=True)}
 
 
 def _client():

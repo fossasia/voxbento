@@ -13,17 +13,12 @@ from __future__ import annotations
 import os
 
 os.environ["BOOTH_ACCESS_TOKEN"] = ""
-os.environ["ADMIN_PASSWORD"] = "test-admin-pass"
 
 from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from portal.auth import create_admin_token, decode_token
-from portal.config import settings
-
-settings.admin_password = "test-admin-pass"
-
+from portal.auth import create_user_token, decode_token, hash_password
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -43,9 +38,9 @@ async def setup_db():
 
 @pytest.fixture
 def admin_cookie():
-    """Return a dict with the admin_token cookie for authenticated requests."""
-    token = create_admin_token()
-    return {"admin_token": token}
+    """Return a dict with the user_token cookie for authenticated admin requests."""
+    token = create_user_token(user_id=1, email="admin@example.com", is_admin=True)
+    return {"user_token": token}
 
 
 @pytest.fixture
@@ -91,54 +86,100 @@ class TestAdminLogin:
             resp = await c.get("/admin/login")
         assert resp.status_code == 200
         assert b"Admin" in resp.content
+        assert b'name="email"' in resp.content
+        assert b'name="password"' in resp.content
 
     @pytest.mark.anyio
-    async def test_login_with_correct_password(self):
+    async def test_login_with_correct_credentials(self, setup_db):
+        from portal.database import create_user, get_session
+
+        async with get_session() as s:
+            await create_user(
+                s,
+                email="admin@example.com",
+                display_name="Admin",
+                password_hash=hash_password("test-admin-pass"),
+                is_admin=True,
+            )
+
         async with _client() as c:
             resp = await c.post(
                 "/admin/login",
-                data={"password": "test-admin-pass"},
+                data={"email": "admin@example.com", "password": "test-admin-pass"},
                 follow_redirects=False,
             )
         assert resp.status_code == 303
         assert resp.headers["location"] == "/admin/"
-        assert "admin_token" in resp.headers.get("set-cookie", "")
+        assert "user_token" in resp.headers.get("set-cookie", "")
 
     @pytest.mark.anyio
-    async def test_login_with_wrong_password(self):
+    async def test_login_with_wrong_password(self, setup_db):
+        from portal.database import create_user, get_session
+
+        async with get_session() as s:
+            await create_user(
+                s,
+                email="admin@example.com",
+                display_name="Admin",
+                password_hash=hash_password("test-admin-pass"),
+                is_admin=True,
+            )
+
         async with _client() as c:
             resp = await c.post(
                 "/admin/login",
-                data={"password": "wrong"},
+                data={"email": "admin@example.com", "password": "wrong"},
                 follow_redirects=False,
             )
         assert resp.status_code == 403
-        assert b"Invalid password" in resp.content
+        assert b"Invalid email or password" in resp.content
 
     @pytest.mark.anyio
-    async def test_login_strips_surrounding_whitespace(self):
+    async def test_login_with_non_admin_user_rejected(self, setup_db):
+        from portal.database import create_user, get_session
+
+        async with get_session() as s:
+            await create_user(
+                s,
+                email="regular@example.com",
+                display_name="Regular",
+                password_hash=hash_password("test-admin-pass"),
+                is_admin=False,
+            )
+
         async with _client() as c:
             resp = await c.post(
                 "/admin/login",
-                data={"password": " test-admin-pass\n"},
+                data={"email": "regular@example.com", "password": "test-admin-pass"},
                 follow_redirects=False,
             )
-        assert resp.status_code == 303
-        assert resp.headers["location"] == "/admin/"
+        assert resp.status_code == 403
+        assert b"Admin privileges required" in resp.content
 
     @pytest.mark.anyio
-    async def test_login_rejects_empty_password_when_admin_password_is_whitespace_only(self):
-        settings.admin_password = "   "
-        try:
-            async with _client() as c:
-                resp = await c.post(
-                    "/admin/login",
-                    data={"password": ""},
-                    follow_redirects=False,
-                )
-            assert resp.status_code == 403
-        finally:
-            settings.admin_password = "test-admin-pass"
+    async def test_login_rejects_empty_credentials(self):
+        async with _client() as c:
+            resp = await c.post(
+                "/admin/login",
+                data={"email": "", "password": ""},
+                follow_redirects=False,
+            )
+        assert resp.status_code == 403
+
+    @pytest.mark.anyio
+    async def test_login_fails_closed_when_legacy_password_is_set(self, monkeypatch, setup_db):
+        """A removed shared secret must never regain access through the environment."""
+        monkeypatch.setenv("ADMIN_PASSWORD", "legacy-shared-secret")
+
+        async with _client() as c:
+            resp = await c.post(
+                "/admin/login",
+                data={"email": "admin@example.com", "password": "legacy-shared-secret"},
+                follow_redirects=False,
+            )
+
+        assert resp.status_code == 403
+        assert "user_token" not in resp.headers.get("set-cookie", "")
 
     @pytest.mark.anyio
     async def test_logout_clears_cookie(self):
@@ -175,7 +216,7 @@ class TestRequireAdmin:
     @pytest.mark.anyio
     async def test_invalid_cookie_rejected(self):
         async with _client() as c:
-            resp = await c.get("/admin/", cookies={"admin_token": "garbage"})
+            resp = await c.get("/admin/", cookies={"user_token": "garbage"})
         assert resp.status_code == 403
 
 
@@ -618,16 +659,17 @@ class TestBoothCRUD:
 
 class TestAdminToken:
     @pytest.mark.anyio
-    async def test_create_admin_token_has_admin_claim(self, setup_db):
-        token = create_admin_token()
+    async def test_create_user_token_has_admin_claim(self, setup_db):
+        token = create_user_token(user_id=1, email="admin@example.com", is_admin=True)
         payload = decode_token(token)
-        assert payload["admin"] is True
+        assert payload["is_admin"] is True
+        assert payload["user"] is True
         assert "exp" in payload
         assert "iat" in payload
 
     @pytest.mark.anyio
-    async def test_admin_token_is_valid_jwt(self, setup_db):
-        token = create_admin_token()
+    async def test_admin_user_token_is_valid_jwt(self, setup_db):
+        token = create_user_token(user_id=1, email="admin@example.com", is_admin=True)
         payload = decode_token(token)
         assert isinstance(payload, dict)
 

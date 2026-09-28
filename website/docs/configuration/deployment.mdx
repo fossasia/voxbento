@@ -58,12 +58,9 @@ Copy the example environment file to create your local configuration:
 
   ### Set required environment variables
 
-Open `.env` in a text editor and configure at minimum the following four variables before starting any service:
+Open `.env` in a text editor and configure at minimum the following variables before starting any service:
 
     ```bash
-    # Strong password for /admin/login
-    ADMIN_PASSWORD=your-strong-admin-password
-
     # JWT signing key — generate with: openssl rand -hex 32
     SECRET_KEY=your-64-char-random-string
 
@@ -110,7 +107,7 @@ Log in to the admin panel to create events, rooms, and booths:
     http://your-server-ip:8000/admin/login
     ```
 
-    Enter the `ADMIN_PASSWORD` you set in `.env`.
+    Enter the email and password of an administrator account.
 
 ## Health Check
 

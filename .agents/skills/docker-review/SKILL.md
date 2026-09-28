@@ -51,7 +51,6 @@ sh -c "uv run alembic upgrade head && uv run uvicorn fastapi_app:app --host 0.0.
 |---|---|---|
 | `SECRET_KEY` | `change-me` | ✓ |
 | `API_KEY_ENCRYPTION_KEY` | (empty) | ✓ if transcription used |
-| `ADMIN_PASSWORD` | (empty) | ✓ |
 | `JWT_SECRET` | (empty, falls back to SECRET_KEY) | Recommended |
 | `DATABASE_URL` | SQLite `/data/interpretation.db` | ✓ for PostgreSQL |
 | `MEDIAMTX_WHIP_BASE` | `http://localhost:8889` | ✓ (must be browser-reachable) |
@@ -116,7 +115,7 @@ Key settings in `mediamtx.yml`:
 
 - [ ] `SECRET_KEY` set to random 32+ char string.
 - [ ] `API_KEY_ENCRYPTION_KEY` set if using transcription.
-- [ ] `ADMIN_PASSWORD` set.
+- [ ] At least two active administrator accounts can sign in independently.
 - [ ] `DATABASE_URL` set to PostgreSQL.
 - [ ] `MEDIAMTX_WHIP_BASE` set to HTTPS public URL.
 - [ ] `JITSI_DOMAIN` and `JITSI_BASE_URL` set.

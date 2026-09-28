@@ -97,9 +97,9 @@ class WSAuthError(Exception):
 async def require_admin(request: Request) -> None:
     """FastAPI dependency that guards admin routes.
 
-    Checks for a valid ``admin_token`` cookie containing a JWT with
-    ``admin=True`` claim. Also accepts a valid ``user_token`` with
-    ``is_admin=True``. Returns None on success; raises HTTP 403 on failure.
+    Checks for a valid ``user_token`` cookie containing a JWT with
+    ``is_admin=True`` or appropriate event_owner / room_coordinator roles in the
+    database. Raises HTTP 403 on failure.
     """
     event_id_str = request.path_params.get("event_id")
     event_id = int(event_id_str) if event_id_str and event_id_str.isdigit() else None
@@ -143,23 +143,14 @@ async def require_admin(request: Request) -> None:
                                 return
         except jwt.InvalidTokenError:
             pass
-    cookie = request.cookies.get("admin_token", "")
-    if not cookie:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required.")
-    try:
-        payload = decode_token(cookie)
-    except jwt.InvalidTokenError:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid admin token.")
-    if not payload.get("admin"):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required.")
+    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required.")
 
 
 async def require_super_admin(request: Request) -> None:
     """FastAPI dependency that guards super-admin routes.
 
-    Checks for a valid ``admin_token`` cookie containing a JWT with
-    ``admin=True`` claim. Also accepts a valid ``user_token`` with
-    ``is_admin=True``. Returns None on success; raises HTTP 403 on failure.
+    Checks for a valid ``user_token`` with ``is_admin=True``.
+    Returns None on success; raises HTTP 403 on failure.
     """
     user_cookie = request.cookies.get("user_token", "")
     if user_cookie:
@@ -178,24 +169,14 @@ async def require_super_admin(request: Request) -> None:
         except jwt.InvalidTokenError:
             pass
 
-    cookie = request.cookies.get("admin_token", "")
-    if not cookie:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Super-admin access required.")
-    try:
-        payload = decode_token(cookie)
-    except jwt.InvalidTokenError:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid admin token.")
-    if not payload.get("admin"):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Super-admin access required.")
+    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Super-admin access required.")
 
 
 async def require_event_owner(request: Request) -> None:
     """FastAPI dependency that guards event owner routes.
 
-    Checks for a valid ``admin_token`` cookie containing a JWT with
-    ``admin=True`` claim. Also accepts a valid ``user_token`` with
-    ``is_admin=True``, or if the user is an event_owner for the specified event.
-    Returns None on success; raises HTTP 403 on failure.
+    Checks for a valid ``user_token`` with ``is_admin=True``, or if the user
+    is an event_owner for the specified event. Returns None on success; raises HTTP 403 on failure.
     """
     event_id_str = request.path_params.get("event_id")
     event_id = int(event_id_str) if event_id_str and event_id_str.isdigit() else None
@@ -224,22 +205,7 @@ async def require_event_owner(request: Request) -> None:
         except jwt.InvalidTokenError:
             pass
 
-    cookie = request.cookies.get("admin_token", "")
-    if not cookie:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required.")
-    try:
-        payload = decode_token(cookie)
-    except jwt.InvalidTokenError:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid admin token.")
-    if not payload.get("admin"):
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required.")
-
-
-def create_admin_token() -> str:
-    """Create a JWT with admin=True claim for admin panel access."""
-    now = datetime.now(timezone.utc)
-    payload = {"admin": True, "iat": now, "exp": now + timedelta(seconds=settings.jwt_expiry_seconds)}
-    return jwt.encode(payload, settings.effective_jwt_secret, algorithm="HS256")
+    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required.")
 
 
 async def get_admin_flags(request: Request, event_id: int | None = None, room_id: int | None = None) -> dict[str, bool]:
@@ -284,16 +250,6 @@ async def get_admin_flags(request: Request, event_id: int | None = None, room_id
                                 flags["is_room_coordinator"] = True
         except jwt.InvalidTokenError:
             pass
-    admin_cookie = request.cookies.get("admin_token", "")
-    if admin_cookie:
-        try:
-            payload = decode_token(admin_cookie)
-            if payload.get("admin"):
-                flags["is_super_admin"] = True
-                flags["is_event_owner"] = True
-                flags["is_room_coordinator"] = True
-        except jwt.InvalidTokenError:
-            pass
     return flags
 
 
@@ -329,7 +285,7 @@ async def get_current_user(request: Request) -> dict | None:
 async def get_accessible_event_ids(request: Request, *, user_id: int | None) -> tuple[bool, set[int] | None]:
     """Return (is_super_admin, allowed_event_ids) for the current request.
 
-    Checks admin_token and user_token cookies to determine super-admin status.
+    Checks the user_token cookie to determine super-admin status.
     For non-super-admins with a user_id, returns the set of event IDs the user
     may access (as event_owner or room_coordinator). Super-admins get None,
     meaning "all events".
@@ -345,14 +301,6 @@ async def get_accessible_event_ids(request: Request, *, user_id: int | None) -> 
     from portal.database import get_session, list_memberships_for_user, list_room_memberships_for_user
 
     is_super_admin = False
-    admin_cookie = request.cookies.get("admin_token", "")
-    if admin_cookie:
-        try:
-            payload = decode_token(admin_cookie)
-            if payload.get("admin"):
-                is_super_admin = True
-        except jwt.InvalidTokenError:
-            pass
     user_cookie = request.cookies.get("user_token", "")
     if user_cookie:
         try:
@@ -398,7 +346,7 @@ def get_booth_session(request: Request | WebSocket) -> dict | None:
 
     Returns None if neither cookie exists or both are invalid.
     """
-    for cookie_name in ("admin_token", "user_token", "session_token"):
+    for cookie_name in ("user_token", "session_token"):
         cookie = request.cookies.get(cookie_name, "")
         if not cookie:
             continue
