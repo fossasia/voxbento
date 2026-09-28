@@ -244,3 +244,42 @@ async def test_reason_survives_when_audio_ends_before_provider_response():
     assert stopped[-1]["error_code"] == "auth_failed"
     assert stopped[-1]["error_detail"] == "OpenAI API key was rejected after EOF."
     assert provider.chunks == 1
+
+
+@pytest.mark.anyio
+async def test_overload_drain_preserves_audio_eof():
+    real_sleep = asyncio.sleep
+
+    class FiniteStdout:
+        def __init__(self):
+            self.read_count = 0
+
+        async def readexactly(self, size):
+            self.read_count += 1
+            if self.read_count <= 2:
+                return bytes(size)
+            raise asyncio.IncompleteReadError(b"", size)
+
+    class FiniteProcess:
+        returncode = None
+        stdout = FiniteStdout()
+
+    class OverloadedProvider(TranscriptionProvider):
+        async def process_chunk(self, chunk, language_code, model_variant, config, booth_state=None):
+            booth_state.consecutive_drops = 4
+            await real_sleep(0)
+            raise RuntimeError("transient provider error")
+
+    provider = OverloadedProvider()
+    with patch("portal.transcription.providers.base.asyncio.sleep", new=AsyncMock()):
+        await asyncio.wait_for(
+            provider.run_stream(
+                FiniteProcess(),
+                "en",
+                "model",
+                ProviderConfig(api_key="k"),
+                AsyncMock(),
+                "pycon2026-1-en",
+            ),
+            timeout=1,
+        )

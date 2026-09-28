@@ -129,11 +129,15 @@ class TranscriptionProvider:
 
                 if booth_state.consecutive_drops > 3:
                     logger.error(f"[{booth_id}] Overload Protection triggered. Pausing inference for 10s.")
+                    stream_ended = False
                     while not queue.empty():
                         try:
-                            queue.get_nowait()
+                            if queue.get_nowait() is None:
+                                stream_ended = True
                         except asyncio.QueueEmpty:
                             break
+                    if stream_ended:
+                        queue.put_nowait(None)
                     await broadcast_callback(booth_id, "[Server overloaded - transcription temporarily paused]")
                     await asyncio.sleep(10)
                     booth_state.consecutive_drops = 0
