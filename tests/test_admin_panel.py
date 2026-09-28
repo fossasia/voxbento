@@ -467,6 +467,23 @@ class TestRoomCRUD:
             assert b"Voxbento" in page.content
             assert b"WebRTC" in page.content
 
+            overlapping_upload = await c.post(
+                f"/admin/events/{event.id}/rooms/{room.id}/ai-vocabulary/upload",
+                data={"import_mode": "append"},
+                files={
+                    "vocabulary_file": (
+                        "overlap.csv",
+                        "source_term,target_language,target_term,case_sensitive\nuS,de,wir,false\n",
+                        "text/csv",
+                    )
+                },
+                cookies=admin_cookie,
+                follow_redirects=False,
+            )
+            assert overlapping_upload.status_code == 303
+            assert "vocab_imported=0" in overlapping_upload.headers["location"]
+            assert "Existing+duplicate" in overlapping_upload.headers["location"]
+
             export = await c.get(
                 f"/admin/events/{event.id}/rooms/{room.id}/ai-vocabulary/export",
                 cookies=admin_cookie,

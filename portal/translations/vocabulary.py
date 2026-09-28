@@ -29,6 +29,15 @@ class VocabularyEntryInput:
     priority: int = 0
 
 
+def vocabulary_terms_overlap(
+    left: VocabularyEntryInput | AIVocabularyEntry,
+    right: VocabularyEntryInput | AIVocabularyEntry,
+) -> bool:
+    if left.case_sensitive and right.case_sensitive:
+        return left.source_term == right.source_term
+    return left.source_term.casefold() == right.source_term.casefold()
+
+
 class VocabularyRowError(ValueError):
     pass
 
@@ -94,23 +103,21 @@ def parse_vocabulary_csv(file_content: str) -> tuple[list[VocabularyEntryInput],
 
     entries: list[VocabularyEntryInput] = []
     warnings: list[str] = []
-    seen: set[tuple[str, str]] = set()
+    seen: list[VocabularyEntryInput] = []
     for row_number, row in enumerate(reader, start=2):
         try:
             entry = validate_vocabulary_entry(row, row_number)
         except VocabularyRowError as exc:
             warnings.append(str(exc))
             continue
-        duplicate_key = (
-            entry.source_term if entry.case_sensitive else entry.source_term.casefold(),
-            entry.target_language,
-        )
-        if duplicate_key in seen:
+        if any(
+            prior.target_language == entry.target_language and vocabulary_terms_overlap(prior, entry) for prior in seen
+        ):
             warnings.append(
                 f"Row {row_number}: duplicate term '{entry.source_term}' for target language '{entry.target_language}'"
             )
             continue
-        seen.add(duplicate_key)
+        seen.append(entry)
         entries.append(entry)
     return entries, warnings
 
@@ -158,14 +165,11 @@ async def resolve_vocabulary_entries(
 
     candidates.sort(key=lambda entry: (scope_rank(entry), entry.priority, entry.id), reverse=True)
     selected: list[AIVocabularyEntry] = []
-    seen: set[str] = set()
     for entry in candidates:
         # "all" and target-specific rows compete for the same source term.
         # The scope/priority sort above decides which translation wins.
-        key = entry.source_term if entry.case_sensitive else entry.source_term.casefold()
-        if key in seen:
+        if any(vocabulary_terms_overlap(prior, entry) for prior in selected):
             continue
-        seen.add(key)
         selected.append(entry)
         if len(selected) >= max_entries:
             break

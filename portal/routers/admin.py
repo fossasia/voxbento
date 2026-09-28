@@ -89,7 +89,7 @@ from portal.models import (
 from portal.transcription import ALLOWED_MODELS, ProviderConfig, ProviderEnum, get_api_key
 from portal.transcription.worker import start_transcription_worker, stop_transcription_worker
 from portal.translations.constants import TRANSLATION_MODELS, TranslationProviderEnum
-from portal.translations.vocabulary import parse_vocabulary_csv, serialize_vocabulary_csv
+from portal.translations.vocabulary import parse_vocabulary_csv, serialize_vocabulary_csv, vocabulary_terms_overlap
 from portal.utils import _check_mediamtx, _make_jitsi_url, safe_redirect
 from portal.websockets.manager import broadcast_transcription
 
@@ -902,27 +902,20 @@ async def admin_upload_ai_vocabulary(request: Request, event_id: int, room_id: i
                     AIVocabularyEntry.room_id == room_id,
                 )
             )
-            existing_keys: set[tuple[str, str]] = set()
+            accepted_entries = []
         else:
-            existing_keys = {
-                (
-                    entry.source_term if entry.case_sensitive else entry.source_term.casefold(),
-                    entry.target_language,
-                )
-                for entry in existing_entries
-            }
+            accepted_entries = existing_entries.copy()
 
         for entry in parsed_entries:
-            key = (
-                entry.source_term if entry.case_sensitive else entry.source_term.casefold(),
-                entry.target_language,
-            )
-            if key in existing_keys:
+            if any(
+                prior.target_language == entry.target_language and vocabulary_terms_overlap(prior, entry)
+                for prior in accepted_entries
+            ):
                 warnings.append(
                     f"Existing duplicate: '{entry.source_term}' for target language '{entry.target_language}'"
                 )
                 continue
-            existing_keys.add(key)
+            accepted_entries.append(entry)
             languages.add(entry.target_language)
             session.add(
                 AIVocabularyEntry(

@@ -45,6 +45,7 @@ Voxbento,all,Voxbento,false,exact,100
 Voxbento,all,Vox Bento,false,phrase,10
 US,de,US,true,exact,99
 us,de,uns,true,exact,98
+Us,de,wir,false,exact,97
 Unsafe,de,=CMD(),false,phrase,0
 WebRTC,zz,WebRTC,false,phrase,90
 """
@@ -52,6 +53,7 @@ WebRTC,zz,WebRTC,false,phrase,90
 
     assert [entry.source_term for entry in entries] == ["Voxbento", "US", "us"]
     assert any("duplicate term" in warning for warning in warnings)
+    assert any("duplicate term 'Us'" in warning for warning in warnings)
     assert any("spreadsheet formula" in warning for warning in warnings)
     assert any("unsupported target_language" in warning for warning in warnings)
 
