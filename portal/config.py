@@ -31,14 +31,7 @@ class Settings(BaseSettings):
     # paths with alwaysAvailable so WHEP readers survive publisher handoffs.
     mediamtx_api_base: str = "http://localhost:9997"
     mediamtx_rtsp_base: str = "rtsp://mediamtx:8554"
-    # Optional internal MediaMTX base URL. When empty, falls back to
-    # mediamtx_api_base. docker-compose sets this to http://mediamtx:8888.
-    mediamtx_internal_base: str = ""
     floor_bot_base: str = "http://floor-bot:8080"
-
-    @property
-    def effective_mediamtx_internal_base(self) -> str:
-        return self.mediamtx_internal_base or self.mediamtx_api_base
 
     @property
     def effective_jitsi_base_url(self) -> str:
@@ -97,10 +90,6 @@ class Settings(BaseSettings):
 
     # Transcription Settings
     nvidia_function_id: str = ""
-
-    # Supertonic TTS — optional sidecar URL for the Voice Builder import API.
-    # Leave empty to use in-process TTS (no sidecar needed).
-    supertonic_base_url: str = ""
 
     # Supertonic synthesis quality/speed trade-off. Fewer diffusion steps =
     # faster (lower real-time factor) at a small quality cost. 4 keeps CPU

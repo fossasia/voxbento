@@ -21,10 +21,10 @@
         <span class="hint">This is what interpreters and listeners will see.</span>
       </div>
 
-      <details class="create-panel" style="box-shadow:none;" {% if slug %}open{% endif %}>
+      <details class="create-panel" {% if slug %}open{% endif %}>
         <summary>Advanced — customise the URL slug</summary>
         <div class="create-body">
-          <div class="field" style="margin-bottom:0;">
+          <div class="field field--flush">
             <label for="slug">URL slug</label>
             <input type="text" id="slug" name="slug" placeholder="auto-generated from the name"
                    value="{{ slug|default('', true) }}" pattern="^[a-z0-9]+(-[a-z0-9]+)*$" />

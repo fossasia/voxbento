@@ -402,9 +402,25 @@ function pumpSegmentQueue() {
           expectedSeq,
           "- forcefully advancing buffer",
         );
-        expectedSeq++;
-        seqWaitTimer = null;
-        pumpSegmentQueue();
+        var storedSeqs = Object.keys(segmentStore)
+          .map(Number)
+          .filter(function (n) {
+            return !isNaN(n);
+          })
+          .sort(function (a, b) {
+            return a - b;
+          });
+        var nextAvailable = storedSeqs.find(function (s) {
+          return s > expectedSeq;
+        });
+
+        if (nextAvailable) {
+          expectedSeq = nextAvailable;
+          seqWaitTimer = null;
+          pumpSegmentQueue();
+        } else {
+          seqWaitTimer = null;
+        }
       }, 65000);
     }
     return;

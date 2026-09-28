@@ -13,16 +13,16 @@
     {% if success == 'invite_sent' %}<div class="alert alert-success">Invitation sent.</div>{% endif %}
     {% if error == 'invalid_role' %}<div class="alert alert-danger">That role isn't valid.</div>{% endif %}
 
-    <h3 style="font-size:1rem; margin-bottom:10px;">Event owners</h3>
+    <h3 class="wizard-section-title">Event owners</h3>
     <form method="post" action="/admin/events/{{ event.id }}/setup/invite">
-      <div class="field-row" style="align-items:end;">
-        <div class="field" style="margin-bottom:0;">
+      <div class="field-row field-row--end">
+        <div class="field field--flush">
           <label for="email">Email address</label>
           <input type="email" id="email" name="email" placeholder="colleague@example.com" required />
         </div>
         <input type="hidden" name="role" value="event_owner" />
-        <div class="field" style="margin-bottom:0;">
-          <button type="submit" class="btn btn-primary" style="min-height:42px;">Send invite</button>
+        <div class="field field--flush">
+          <button type="submit" class="btn btn-primary btn-field">Send invite</button>
         </div>
       </div>
     </form>
@@ -38,11 +38,11 @@
     </ul>
     {% endif %}
 
-    <h3 style="font-size:1rem; margin:26px 0 6px;">Listener access</h3>
-    <p class="text-secondary" style="margin-bottom:12px;">Share this code or link so your audience can listen in.</p>
-    <div style="display:flex; gap:16px; align-items:center; flex-wrap:wrap;">
+    <h3 class="wizard-section-title wizard-section-title--spaced">Listener access</h3>
+    <p class="text-secondary wizard-section-hint">Share this code or link so your audience can listen in.</p>
+    <div class="wizard-share-row">
       <span class="join-code">{{ event.listener_join_code }}</span>
-      <div class="copy-field" style="flex:1; min-width:260px;">
+      <div class="copy-field wizard-share-field">
         <input type="text" readonly aria-label="Listener link"
                value="{{ public_base_url }}/listener/{{ event.slug }}?code={{ event.listener_join_code }}"
                onclick="this.select()" />
