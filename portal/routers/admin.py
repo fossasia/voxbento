@@ -904,10 +904,19 @@ async def admin_upload_ai_vocabulary(request: Request, event_id: int, room_id: i
             )
             existing_keys: set[tuple[str, str]] = set()
         else:
-            existing_keys = {(entry.source_term.casefold(), entry.target_language) for entry in existing_entries}
+            existing_keys = {
+                (
+                    entry.source_term if entry.case_sensitive else entry.source_term.casefold(),
+                    entry.target_language,
+                )
+                for entry in existing_entries
+            }
 
         for entry in parsed_entries:
-            key = (entry.source_term.casefold(), entry.target_language)
+            key = (
+                entry.source_term if entry.case_sensitive else entry.source_term.casefold(),
+                entry.target_language,
+            )
             if key in existing_keys:
                 warnings.append(
                     f"Existing duplicate: '{entry.source_term}' for target language '{entry.target_language}'"

@@ -41,14 +41,16 @@ def test_prompt_builder_combines_persona_style_and_vocabulary():
 
 def test_csv_parser_reports_invalid_and_duplicate_rows():
     content = """source_term,target_language,target_term,case_sensitive,match_type,priority
-Voxbento,all,Voxbento,true,exact,100
+Voxbento,all,Voxbento,false,exact,100
 Voxbento,all,Vox Bento,false,phrase,10
+US,de,US,true,exact,99
+us,de,uns,true,exact,98
 Unsafe,de,=CMD(),false,phrase,0
 WebRTC,zz,WebRTC,false,phrase,90
 """
     entries, warnings = parse_vocabulary_csv(content)
 
-    assert [entry.source_term for entry in entries] == ["Voxbento"]
+    assert [entry.source_term for entry in entries] == ["Voxbento", "US", "us"]
     assert any("duplicate term" in warning for warning in warnings)
     assert any("spreadsheet formula" in warning for warning in warnings)
     assert any("unsupported target_language" in warning for warning in warnings)

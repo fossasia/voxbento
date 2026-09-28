@@ -101,7 +101,10 @@ def parse_vocabulary_csv(file_content: str) -> tuple[list[VocabularyEntryInput],
         except VocabularyRowError as exc:
             warnings.append(str(exc))
             continue
-        duplicate_key = (entry.source_term.casefold(), entry.target_language)
+        duplicate_key = (
+            entry.source_term if entry.case_sensitive else entry.source_term.casefold(),
+            entry.target_language,
+        )
         if duplicate_key in seen:
             warnings.append(
                 f"Row {row_number}: duplicate term '{entry.source_term}' for target language '{entry.target_language}'"

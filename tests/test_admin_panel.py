@@ -447,6 +447,8 @@ class TestRoomCRUD:
             "source_term,target_language,target_term,description,case_sensitive,match_type,priority\n"
             "Voxbento,all,Voxbento,Product name,true,exact,100\n"
             "WebRTC,de,WebRTC,Protocol,false,phrase,90\n"
+            "US,de,US,Country,true,exact,80\n"
+            "us,de,uns,Pronoun,true,exact,70\n"
         )
         async with _client() as c:
             upload = await c.post(
@@ -457,11 +459,11 @@ class TestRoomCRUD:
                 follow_redirects=False,
             )
             assert upload.status_code == 303
-            assert "vocab_imported=2" in upload.headers["location"]
+            assert "vocab_imported=4" in upload.headers["location"]
 
             page = await c.get(upload.headers["location"], cookies=admin_cookie)
             assert page.status_code == 200
-            assert b"Imported 2 rows" in page.content
+            assert b"Imported 4 rows" in page.content
             assert b"Voxbento" in page.content
             assert b"WebRTC" in page.content
 
@@ -472,6 +474,8 @@ class TestRoomCRUD:
         assert export.status_code == 200
         assert export.headers["content-type"].startswith("text/csv")
         assert "Voxbento,all,Voxbento" in export.text
+        assert "US,de,US" in export.text
+        assert "us,de,uns" in export.text
 
     @pytest.mark.anyio
     async def test_room_vocabulary_upload_reports_invalid_rows(self, admin_cookie, seed_event):
