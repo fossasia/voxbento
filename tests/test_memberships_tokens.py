@@ -558,8 +558,7 @@ class TestAccountMemberships:
 
         assert resp.status_code == 200
         assert not re.search(rb"\sstyle\s*=", resp.content, re.IGNORECASE)
-        assert b"onmouseover" not in resp.content
-        assert b"onmouseout" not in resp.content
+        assert not re.search(rb"\son(?:mouseover|mouseout)\s*=", resp.content, re.IGNORECASE)
 
 
 # ---------------------------------------------------------------------------
@@ -675,6 +674,7 @@ class TestEndToEndAdminWorkflow:
                     "email": "alice@e2e.com",
                     "display_name": "Alice",
                     "password": "securepass123",
+                    "password_confirm": "securepass123",
                 },
                 follow_redirects=False,
             )

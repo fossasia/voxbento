@@ -39,7 +39,7 @@
         </tr>
         <tr class="account-row">
           <th>Joined</th>
-          <td class="account-td--date">{{ user.created_at.strftime('%Y-%m-%d %H:%M UTC') if user.created_at else '—' }}</td>
+          <td class="account-td--date">{{ user.created_at.strftime('%b %d, %Y, %H:%M UTC') if user.created_at else '—' }}</td>
         </tr>
         <tr class="account-row">
           <th>Status</th>
@@ -102,7 +102,7 @@
               <span class="badge badge-role badge-{{ m.role }} account-badge">{{ m.role }}</span>
             </td>
             <td class="account-td--since">
-              {{ m.created_at.strftime('%Y-%m-%d') if m.created_at else '—' }}
+              {{ m.created_at.strftime('%b %d, %Y') if m.created_at else '—' }}
             </td>
           </tr>
           {% endfor %}
