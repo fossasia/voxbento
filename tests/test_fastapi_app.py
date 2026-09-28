@@ -645,6 +645,30 @@ def test_ws_auth_invalid_token_fails_fast(monkeypatch):
     assert exc_info.value.code == 4001
 
 
+def test_ws_auth_query_participant_token_enforces_scope(monkeypatch):
+    """A participant query token is accepted only for its event, room, and language."""
+    from fastapi.websockets import WebSocketDisconnect
+
+    from portal.config import settings
+
+    monkeypatch.setattr(settings, "booth_access_token", "secret-test-token")
+    token = create_participant_token(
+        booth_id=1,
+        role="interpreter",
+        event_slug="test-event",
+        room_id=7,
+        language_code="en",
+    )
+
+    with client.websocket_connect(f"/ws/booth/test-event-7-en?token={token}") as ws:
+        ws.close()
+
+    with pytest.raises(WebSocketDisconnect) as exc_info:
+        with client.websocket_connect(f"/ws/booth/test-event-8-en?token={token}") as ws:
+            ws.receive_text()
+    assert exc_info.value.code == 4003
+
+
 def test_ws_auth_valid_generic_token_without_cookie_rejected(monkeypatch):
     """A cryptographically valid API token with no role falls back to the cookie.
     If no cookie is present, it must cleanly reject the connection."""
