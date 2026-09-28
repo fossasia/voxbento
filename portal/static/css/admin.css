@@ -841,6 +841,44 @@ code { font-family: var(--font-mono); font-size: 0.85em; background: var(--color
 .user-facts td.user-facts-label { font-weight: 500; }
 .user-facts td.user-facts-label--wide { width: 200px; }
 
+/* ── Admin room pages ───────────────────────────────────────────────────────
+   Classes for the styles that used to sit in style attributes on the room
+   detail and room transcripts templates. Elements whose display is toggled
+   from JavaScript keep their display value inline. */
+
+.card-head { display: flex; justify-content: space-between; align-items: center; }
+.card-head h3 { margin: 0; }
+.card-head--spaced { margin-bottom: 1rem; }
+.card-head-actions { display: flex; gap: 0.5rem; align-items: center; }
+
+.status-pill { display: inline-flex; align-items: center; gap: 0.4rem; font-size: 0.8rem; font-weight: 600; padding: 0.25rem 0.6rem; border-radius: 999px; background: #eee; color: #666; }
+.status-dot { width: 8px; height: 8px; border-radius: 50%; background: #999; }
+.btn-outline.btn-stop,
+.btn-outline.btn-stop:hover { border-color: #dc3545; color: #dc3545; }
+
+.download-progress { align-items: center; gap: 0.75rem; }
+.download-speed { font-size: 0.8rem; color: #666; }
+.download-percent { font-size: 0.85rem; font-weight: 600; color: #0056b3; min-width: 40px; }
+.progress-track { width: 100px; height: 8px; background: #eee; border-radius: 4px; overflow: hidden; position: relative; }
+.progress-fill { position: absolute; top: 0; left: 0; height: 100%; width: 0%; background: #0056b3; transition: width 0.3s ease; }
+
+.model-modal-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 9999; align-items: center; justify-content: center; }
+.model-modal { background: white; padding: 2rem; border-radius: 8px; max-width: 400px; text-align: center; box-shadow: 0 4px 12px rgba(0,0,0,0.15); }
+.model-modal h3 { margin-top: 0; }
+.model-modal p { color: #666; margin-bottom: 1.5rem; }
+.model-modal-actions { display: flex; gap: 1rem; justify-content: center; }
+.model-modal--success { padding: 2.5rem 2rem; border-radius: 12px; box-shadow: 0 8px 24px rgba(0,0,0,0.2); }
+.model-modal--success h3 { color: #1e8e3e; }
+.model-modal--success p { color: #5f6368; line-height: 1.5; }
+.model-modal-icon { width: 48px; height: 48px; border-radius: 50%; background: #e6f4ea; color: #1e8e3e; display: flex; align-items: center; justify-content: center; font-size: 24px; margin: 0 auto 1rem auto; }
+.btn.btn-modal-dismiss { padding: 0.5rem 2rem; border-radius: 6px; }
+
+.token-form .form-group--action-plain { align-self: flex-end; }
+.transcript-viewer { background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 6px; padding: 1rem; max-height: 600px; overflow-y: auto; }
+.transcript-placeholder { text-align: center; margin-top: 2rem; }
+.transcript-table { margin: 0; width: 100%; }
+.transcript-table th.transcript-time-col { width: 150px; }
+
 /* ── Badges (extra) ──────────────────────────────────────────────────────── */
 .badge-event_owner { background: #ede9fe; color: #5b21b6; }
 
