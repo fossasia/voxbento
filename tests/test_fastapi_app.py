@@ -1892,3 +1892,43 @@ def test_embed_captions_opt_in_websocket_auth():
     # Verify the booth_id produced by make_booth_id satisfies the startswith check.
     booth_id = "test-event-1-en"  # make_booth_id("test-event", 1, 1,  "en")
     assert booth_id.startswith(f"{payload['event_slug']}-")
+
+
+def test_listener_scope_rejects_a_sibling_event_sharing_a_slug_prefix():
+    """A listener scoped to 'conf' must not be admitted to 'conf-private' booths.
+
+    Event slugs may contain hyphens, so a prefix match on '{event_slug}-' lets a
+    token for 'conf' satisfy the check for booth 'conf-private-3-en', which
+    parse_booth_id attributes to the separate event 'conf-private'.
+    """
+    import asyncio
+    from unittest.mock import AsyncMock
+
+    from portal.auth import WSAuthError, _validate_listener_scope
+    from portal.booth_identity import parse_booth_id
+
+    foreign_booth = "conf-private-3-en"
+    assert parse_booth_id(foreign_booth)[0] == "conf-private"
+
+    websocket = AsyncMock()
+
+    async def run(booth_id, event_slug):
+        await _validate_listener_scope(
+            websocket, booth_id, event_slug, credential="token", allow_path_id=True
+        )
+
+    # A token for the sibling event must be rejected.
+    with pytest.raises(WSAuthError):
+        asyncio.run(run(foreign_booth, "conf"))
+    websocket.close.assert_awaited_with(code=4003)
+
+    # The legacy "{event_slug}-{language}" form is covered too.
+    with pytest.raises(WSAuthError):
+        asyncio.run(run("conf-private-english", "conf"))
+
+    # The event that actually owns the booth is still admitted.
+    asyncio.run(run(foreign_booth, "conf-private"))
+    # So is the ordinary single-word case,
+    asyncio.run(run("conf-3-en", "conf"))
+    # and the legacy form for its own event.
+    asyncio.run(run("event-a-english", "event-a"))

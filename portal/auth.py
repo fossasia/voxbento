@@ -442,8 +442,16 @@ async def _validate_listener_scope(
     credential: str,
     allow_path_id: bool,
 ) -> None:
-    prefixes = (f"{event_slug}-", f"{event_slug}/") if allow_path_id else (f"{event_slug}-",)
-    if not event_slug or not booth_id.startswith(prefixes):
+    # Event slugs may contain hyphens, so a prefix match would admit a token for
+    # "conf" to booth "conf-private-3-en". Compare the booth's own event instead.
+    try:
+        booth_event = parse_booth_id(booth_id)[0]
+    except ValueError:
+        # Legacy "{event_slug}-{language}" ids do not parse; the event is still
+        # everything before the final segment.
+        booth_event = booth_id.rsplit("-", 1)[0] if "-" in booth_id else None
+    path_form_matches = allow_path_id and booth_id.startswith(f"{event_slug}/")
+    if not event_slug or not (booth_event == event_slug or path_form_matches):
         await _reject_ws_auth(
             websocket,
             4003,
