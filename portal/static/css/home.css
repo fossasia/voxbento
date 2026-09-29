@@ -196,6 +196,9 @@
 
 .solution-card-front {
   color: white;
+  /* Firefox ignores backface-visibility on this face without its own transform,
+     because the back face comes first in the markup, and shows it mirrored. */
+  transform: rotateY(0deg);
 }
 
 .solution-card-front .front-content {
