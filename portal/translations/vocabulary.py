@@ -171,13 +171,21 @@ async def resolve_vocabulary_entries(
     transcript_text: str,
     max_entries: int = 80,
 ) -> list[AIVocabularyEntry]:
+    # Each scope is matched exactly: an entry pinned to one booth must not be
+    # selected for its siblings just because they share a room.
     scope_filters = [
         (AIVocabularyEntry.room_id.is_(None) & AIVocabularyEntry.booth_id.is_(None)),
     ]
     if room_id is not None:
-        scope_filters.append(AIVocabularyEntry.room_id == room_id)
+        scope_filters.append((AIVocabularyEntry.room_id == room_id) & AIVocabularyEntry.booth_id.is_(None))
     if booth_id is not None:
-        scope_filters.append(AIVocabularyEntry.booth_id == booth_id)
+        booth_filter = AIVocabularyEntry.booth_id == booth_id
+        if room_id is not None:
+            # Guard against rows whose room and booth disagree.
+            booth_filter = booth_filter & (
+                AIVocabularyEntry.room_id.is_(None) | (AIVocabularyEntry.room_id == room_id)
+            )
+        scope_filters.append(booth_filter)
     result = await session.scalars(
         select(AIVocabularyEntry).where(
             AIVocabularyEntry.event_id == event_id,
@@ -191,7 +199,7 @@ async def resolve_vocabulary_entries(
     def scope_rank(entry: AIVocabularyEntry) -> int:
         if booth_id is not None and entry.booth_id == booth_id:
             return 2
-        if room_id is not None and entry.room_id == room_id:
+        if room_id is not None and entry.booth_id is None and entry.room_id == room_id:
             return 1
         return 0
 

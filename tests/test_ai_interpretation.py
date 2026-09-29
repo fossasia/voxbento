@@ -292,6 +292,73 @@ async def test_cloud_providers_use_shared_prompt(provider, response, system_path
 
 
 @pytest.mark.anyio
+async def test_booth_entries_do_not_leak_into_sibling_booths():
+    from portal.database import configure, dispose, init_db
+
+    configure("sqlite+aiosqlite://")
+    await init_db()
+    try:
+        async with get_session() as session:
+            event = Event(slug="ai-scope", display_name="AI Scope")
+            session.add(event)
+            await session.flush()
+            room = Room(event_id=event.id, display_name="Main Hall")
+            session.add(room)
+            await session.flush()
+            french = DBBooth(event_id=event.id, room_id=room.id, language_code="fr", language_name="French")
+            german = DBBooth(event_id=event.id, room_id=room.id, language_code="de", language_name="German")
+            session.add_all([french, german])
+            await session.flush()
+
+            session.add_all(
+                [
+                    # Room-wide entry: every booth in the room should see it.
+                    AIVocabularyEntry(
+                        event_id=event.id,
+                        room_id=room.id,
+                        source_term="Keynote",
+                        target_language="all",
+                        target_term="Keynote",
+                    ),
+                    # Booth-specific entry: only the German booth should see it.
+                    AIVocabularyEntry(
+                        event_id=event.id,
+                        room_id=room.id,
+                        booth_id=german.id,
+                        source_term="Keynote",
+                        target_language="all",
+                        target_term="Hauptvortrag",
+                    ),
+                ]
+            )
+            await session.flush()
+
+            for_german = await resolve_vocabulary_entries(
+                session,
+                event_id=event.id,
+                room_id=room.id,
+                booth_id=german.id,
+                target_language="de",
+                transcript_text="The Keynote starts now",
+            )
+            for_french = await resolve_vocabulary_entries(
+                session,
+                event_id=event.id,
+                room_id=room.id,
+                booth_id=french.id,
+                target_language="fr",
+                transcript_text="The Keynote starts now",
+            )
+
+        # The German booth's own entry wins for that booth.
+        assert [e.target_term for e in for_german] == ["Hauptvortrag"]
+        # The French booth must not receive the German booth's entry.
+        assert [e.target_term for e in for_french] == ["Keynote"]
+    finally:
+        await dispose()
+
+
+@pytest.mark.anyio
 async def test_high_priority_entries_survive_the_entry_cap():
     from portal.database import configure, dispose, init_db
 
