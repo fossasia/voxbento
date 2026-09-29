@@ -253,7 +253,7 @@ class TestEventCRUD:
 
     @pytest.mark.anyio
     @pytest.mark.parametrize("search_term", ("SUMMIT", "fossasia"))
-    async def test_event_list_searches_by_slug_or_display_name(self, admin_cookie, seed_event, search_term):
+    async def test_event_list_searches_by_slug_or_display_name_case_insensitively(self, admin_cookie, seed_event, search_term):
         from portal.database import create_event, get_session
 
         async with get_session() as session:
@@ -267,7 +267,7 @@ class TestEventCRUD:
         assert "community-summit-2026" in resp.text
         assert "testcon" not in resp.text
         assert f'value="{search_term}"' in resp.text
-        assert '<label for="admin-event-search" class="search-label">Search events</label>' in resp.text
+        assert '<label for="admin-event-search" class="search-label">Search events by name or slug</label>' in resp.text
 
     @pytest.mark.anyio
     @pytest.mark.parametrize("search_term", ("", "   "))
