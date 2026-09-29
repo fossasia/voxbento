@@ -719,10 +719,9 @@ document.addEventListener('DOMContentLoaded', function() {
         <td class="actions-cell">
           <form method="post"
                 action="/admin/events/{{ event.id }}/rooms/{{ room.id }}/members/{{ m.id }}/invite"
-                class="inline-form"
-                style="margin-right: 8px;">
+                class="inline-form form-inline-spaced">
               <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-            <button type="submit" class="btn btn-sm btn-outline" style="border: 2px solid #000; background: #fff; color: #000; border-radius: 4px; box-shadow: 2px 2px 0px #000; padding: 4px 12px; font-weight: bold;">✉️ Invite</button>
+            <button type="submit" class="btn btn-sm btn-outline btn-invite">✉️ Invite</button>
           </form>
           <form method="post"
                 action="/admin/events/{{ event.id }}/rooms/{{ room.id }}/members/{{ m.id }}/delete"
