@@ -10,8 +10,10 @@ from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from portal.models import AIVocabularyEntry
+from portal.translations.prompts import MAX_DESCRIPTION_CHARS, MAX_TERM_CHARS
 
 REQUIRED_COLUMNS = {"source_term", "target_language", "target_term"}
+MAX_ROWS = 5000
 SUPPORTED_MATCH_TYPES = {"exact", "phrase"}
 HIGH_PRIORITY_THRESHOLD = 90
 _TRUE_VALUES = {"true", "yes", "1"}
@@ -91,14 +93,26 @@ def _parse_bool(value: str) -> bool:
     raise VocabularyRowError("case_sensitive must be true, false, yes, no, 1, or 0")
 
 
+def _bounded(value: str, field: str, limit: int) -> str:
+    if len(value) > limit:
+        raise VocabularyRowError(f"{field} is longer than {limit} characters")
+    return value
+
+
 def validate_vocabulary_entry(row: dict[str, str], row_number: int) -> VocabularyEntryInput:
     try:
-        source_term = _safe_csv_text(_required_text(row, "source_term"), "source_term")
+        source_term = _bounded(
+            _safe_csv_text(_required_text(row, "source_term"), "source_term"), "source_term", MAX_TERM_CHARS
+        )
         target_language = _required_text(row, "target_language").lower()
-        target_term = _safe_csv_text(_required_text(row, "target_term"), "target_term")
+        target_term = _bounded(
+            _safe_csv_text(_required_text(row, "target_term"), "target_term"), "target_term", MAX_TERM_CHARS
+        )
         description = (row.get("description") or row.get("notes") or "").strip() or None
         if description:
-            description = _safe_csv_text(description, "description")
+            description = _bounded(
+                _safe_csv_text(description, "description"), "description", MAX_DESCRIPTION_CHARS
+            )
         if target_language != "all" and pycountry.languages.get(alpha_2=target_language) is None:
             raise VocabularyRowError(f"unsupported target_language '{target_language}'")
         match_type = (row.get("match_type") or "phrase").strip().lower()
@@ -132,6 +146,9 @@ def parse_vocabulary_csv(file_content: str) -> tuple[list[VocabularyEntryInput],
     warnings: list[str] = []
     seen = VocabularyOverlapIndex()
     for row_number, row in enumerate(reader, start=2):
+        if len(entries) >= MAX_ROWS:
+            warnings.append(f"Stopped after {MAX_ROWS} entries; the rest of the file was ignored.")
+            break
         try:
             entry = validate_vocabulary_entry(row, row_number)
         except VocabularyRowError as exc:
