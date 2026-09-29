@@ -253,7 +253,9 @@ class TestEventCRUD:
 
     @pytest.mark.anyio
     @pytest.mark.parametrize("search_term", ("SUMMIT", "fossasia"))
-    async def test_event_list_searches_by_slug_or_display_name_case_insensitively(self, admin_cookie, seed_event, search_term):
+    async def test_event_list_searches_by_slug_or_display_name_case_insensitively(
+        self, admin_cookie, seed_event, search_term
+    ):
         from portal.database import create_event, get_session
 
         async with get_session() as session:
