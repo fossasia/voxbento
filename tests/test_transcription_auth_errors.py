@@ -332,22 +332,25 @@ async def _run_elevenlabs_with_frames(frames):
     process.stdout = MagicMock()
     process.stdout.readexactly = AsyncMock(return_value=b"\x00" * 4096)
 
-    aggregator = MagicMock()
-    aggregator.handle_final = AsyncMock()
-    aggregator.handle_partial = AsyncMock()
-    aggregator.handle_clear = AsyncMock()
+    # run_stream builds a real CaptionAggregator around this callback and awaits it,
+    # so it has to be awaitable: a MagicMock would raise TypeError inside the receiver
+    # and send the run around the retry loop instead of exercising the frame path.
+    broadcast_callback = AsyncMock()
 
     ws = _FakeElevenLabsWS([json.dumps(frame) for frame in frames])
 
+    # Bounded so a provider that never surfaces the auth error fails the test
+    # quickly instead of hanging CI in the reconnect loop.
     with patch("websockets.connect", return_value=ws):
-        await ElevenLabsProvider().run_stream(
-            process,
-            "en",
-            "scribe_v1",
-            ProviderConfig(api_key="bad-key"),
-            aggregator,
-            "booth-1",
-        )
+        async with asyncio.timeout(10):
+            await ElevenLabsProvider().run_stream(
+                process,
+                "en",
+                "scribe_v1",
+                ProviderConfig(api_key="bad-key"),
+                broadcast_callback,
+                "booth-1",
+            )
 
 
 @pytest.mark.anyio
