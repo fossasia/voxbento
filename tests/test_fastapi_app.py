@@ -847,7 +847,7 @@ def test_ws_broadcast_unlock_authorized_user_can_toggle():
 def test_ws_broadcast_unlock_interpreter_rejected():
     """Interpreter session cannot toggle broadcast lock."""
     client.post("/api/events/broadcastdeny/booths", json={"language_code": "en", "room_id": 1, "language": "English"})
-    booth = "broadcastdeny-en"
+    booth = "broadcastdeny-1-en"  # canonical make_booth_id form, carrying the room
     channel = "broadcastdeny/en"
 
     with client.websocket_connect(
@@ -1968,3 +1968,34 @@ def test_cookie_fallback_is_scope_checked_when_no_booth_access_token(monkeypatch
         # The booth the cookie is actually scoped to still works.
         websocket.reset_mock()
         assert asyncio.run(resolve_ws_auth(websocket, "event-a-1-en")) == foreign_payload
+
+
+def test_room_scoped_token_is_rejected_on_a_roomless_legacy_channel():
+    """A room-scoped participant token must not carry its role onto a roomless channel.
+
+    Legacy '{event_slug}-{language}' ids name no room, so the token's room claim
+    cannot be verified against the channel; granting the role there would widen it.
+    """
+    import asyncio
+    from unittest.mock import AsyncMock
+
+    from portal.auth import WSAuthError, _validate_participant_scope
+
+    async def check(booth_id, payload):
+        websocket = AsyncMock()
+        await _validate_participant_scope(websocket, booth_id, payload, credential="cookie")
+
+    room_scoped = {"event_slug": "event-a", "language_code": "en", "room_id": 5}
+    roomless = {"event_slug": "event-a", "language_code": "en"}
+
+    # Room-scoped token on a channel with no room: refused.
+    with pytest.raises(WSAuthError):
+        asyncio.run(check("event-a-en", room_scoped))
+
+    # A token with no room claim is still accepted on the legacy channel.
+    asyncio.run(check("event-a-en", roomless))
+
+    # And the canonical form still checks the room properly.
+    asyncio.run(check("event-a-5-en", room_scoped))
+    with pytest.raises(WSAuthError):
+        asyncio.run(check("event-a-1-en", room_scoped))

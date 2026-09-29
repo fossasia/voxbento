@@ -477,8 +477,14 @@ async def _validate_participant_scope(
         actual_room = None
 
     token_room = payload.get("room_id")
-    if actual_room is None:
-        token_room = None
+    if actual_room is None and token_room is not None:
+        # A roomless legacy channel cannot be checked against the token's room, so a
+        # room-scoped token must not be granted its role there.
+        await _reject_ws_auth(
+            websocket,
+            4003,
+            f"Participant {credential} is room-scoped; booth_id carries no room.",
+        )
     if (
         payload["event_slug"] != actual_event
         or payload["language_code"] != actual_lang
