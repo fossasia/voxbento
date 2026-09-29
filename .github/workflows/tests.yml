@@ -219,14 +219,21 @@ jobs:
           ADMIN_COOKIE=$(echo "$resp" | grep -i 'set-cookie.*admin_token' | sed 's/.*admin_token=\([^;]*\).*/\1/')
           echo "Admin token: ${ADMIN_COOKIE:0:20}..."
 
+          # Get CSRF token
+          csrf_resp=$(curl -s -D - -o /dev/null -b "admin_token=${ADMIN_COOKIE}" "${BASE}/admin/events/")
+          CSRF_TOKEN=$(echo "$csrf_resp" | grep -i 'set-cookie.*admin_csrf' | sed 's/.*admin_csrf=\([^;]*\).*/\1/')
+          echo "CSRF token: ${CSRF_TOKEN:0:20}..."
+
           # Dashboard loads
           code=$(curl -s -o /dev/null -w '%{http_code}' -b "admin_token=${ADMIN_COOKIE}" "${BASE}/admin/")
           echo "GET /admin/ → $code"
           [ "$code" = "200" ] || { echo "FAIL"; exit 1; }
 
           # Create event
-          code=$(curl -s -o /dev/null -w '%{http_code}' -X POST -b "admin_token=${ADMIN_COOKIE}" \
-            -d "slug=ci-smoke&display_name=CI+Smoke+Test" "${BASE}/admin/events/")
+          code=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+            -b "admin_token=${ADMIN_COOKIE}; admin_csrf=${CSRF_TOKEN}" \
+            -d "slug=ci-smoke&display_name=CI+Smoke+Test&csrf_token=${CSRF_TOKEN}" \
+            "${BASE}/admin/events/")
           echo "POST /admin/events/ → $code"
           [ "$code" = "303" ] || { echo "FAIL"; exit 1; }
 
