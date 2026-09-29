@@ -277,6 +277,53 @@ async def test_captions_and_tts_share_one_contextual_translation(db_data, mock_b
 
 
 @pytest.mark.anyio
+async def test_glossary_lookup_does_not_hold_an_inference_slot(db_data, mock_broadcast):
+    """A slow lookup must not occupy one of the two per-language inference slots."""
+    from portal.translations import worker as worker_module
+
+    worker = TranslationWorker(mock_broadcast)
+    held_during_lookup = []
+
+    async with get_session() as s:
+        room = await s.get(Room, db_data["room"].id)
+        room.floor_ai_vocabulary_enabled = True
+
+    async def slow_lookup(*args, **kwargs):
+        # Record how many inference slots are taken while the lookup is in flight.
+        sem = worker_module.LANGUAGE_SEMAPHORES.get("es")
+        held_during_lookup.append(0 if sem is None else 2 - sem._value)
+        await asyncio.sleep(0.2)
+        return []
+
+    async def fake_call_llm(provider, model, api_key, text, lang_name, source_lang_name, **kwargs):
+        return f"translated {lang_name}"
+
+    async def fake_synthesize(room_id, text, lang_code):
+        return b"fake_audio"
+
+    with patch.object(worker, "_call_llm", new=fake_call_llm):
+        with patch("portal.translations.worker.resolve_vocabulary_entries", new=slow_lookup):
+            with patch("portal.tts.worker.synthesize", new=fake_synthesize):
+                with patch("portal.websockets.manager.tts_manager.has_listeners", return_value=True):
+                    with patch(
+                        "portal.websockets.manager.TTSConnectionManager.broadcast_bundle", new_callable=AsyncMock
+                    ):
+                        await worker.handle_translation(
+                            room_id=db_data["room"].id,
+                            segment_id=db_data["segment"].id,
+                            text="Hello world",
+                            booth_id_str="floor",
+                            uuid_segment_id="1234-uuid",
+                            seq=1,
+                        )
+
+    assert held_during_lookup, "the lookup never ran"
+    assert max(held_during_lookup) == 0, (
+        f"glossary lookup held {max(held_during_lookup)} inference slot(s); it must resolve before acquiring one"
+    )
+
+
+@pytest.mark.anyio
 async def test_pipeline_failure_degrades_gracefully(db_data, mock_broadcast):
     worker = TranslationWorker(mock_broadcast)
 
