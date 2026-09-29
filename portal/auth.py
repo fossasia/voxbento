@@ -133,6 +133,7 @@ def _check_room_coordinator(room_memberships, *, room_id: int | None = None, eve
 async def _check_scoped_admin_role(user_id: int, event_id: int | None, room_id: int | None) -> bool:
     """Check DB-backed roles (global admin / event_owner / room_coordinator) for the given scope."""
     from portal.database import (
+        get_room_by_id,
         get_session,
         get_user_by_id,
         list_memberships_for_user,
@@ -143,6 +144,11 @@ async def _check_scoped_admin_role(user_id: int, event_id: int | None, room_id: 
         user = await get_user_by_id(db_session, user_id)
         if user and user.is_admin:
             return True
+
+        if room_id is not None and event_id is not None:
+            room = await get_room_by_id(db_session, room_id)
+            if room is None or room.event_id != event_id:
+                return False
 
         memberships = await list_memberships_for_user(db_session, user_id)
         rms = await list_room_memberships_for_user(db_session, user_id)
