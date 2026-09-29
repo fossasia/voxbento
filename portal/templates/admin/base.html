@@ -58,6 +58,10 @@
       </div>
     </div>
 
+    <!-- Toast container for transient feedback (e.g. copy success/failure). Visible text plus
+         aria-live so both sighted and assistive-tech users get the same confirmation. -->
+    <div id="toast-container" class="toast-container" role="status" aria-live="polite"></div>
+
     <script type="module" src="{{ url_for('static', path='js/admin.js') }}"></script>
   </body>
 </html>

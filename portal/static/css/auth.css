@@ -168,7 +168,17 @@ body:has(.login-page) .portal-footer {
   font-weight: 500;
 }
 .login-forgot-row { text-align: right; margin-top: 8px; }
-.login-forgot-link { font-size: 0.9em; color: #888; }
+.login-forgot-link {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: #888;
+  font: inherit;
+  font-size: 0.9em;
+  /* The button reset drops the underline the anchor had; restore it so the control still reads as a link. */
+  text-decoration: underline;
+  cursor: pointer;
+}
 .btn-block { width: 100%; }
 .field-hint-optional { font-weight: normal; color: #888; }
 .field-hint {

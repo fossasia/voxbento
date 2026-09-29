@@ -44,9 +44,10 @@
     <div class="wizard-share-row">
       <span class="join-code">{{ event.listener_join_code }}</span>
       <div class="copy-field wizard-share-field">
-        <input type="text" readonly aria-label="Listener link"
+        <input type="text" readonly aria-label="Listener link" id="wizard-listener-link"
                value="{{ public_base_url }}/listener/{{ event.slug }}?code={{ event.listener_join_code }}"
                onclick="this.select()" />
+        <button type="button" class="btn btn-sm btn-copy" data-copy-target="wizard-listener-link">Copy</button>
       </div>
     </div>
 

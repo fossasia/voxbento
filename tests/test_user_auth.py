@@ -196,6 +196,8 @@ class TestUserLogin:
             resp = await c.get("/login")
         assert resp.status_code == 200
         assert b"Sign in" in resp.content
+        assert b'type="button" id="forgot-password-link"' in resp.content
+        assert b'href="#" id="forgot-password-link"' not in resp.content
 
     @pytest.mark.anyio
     async def test_login_with_correct_credentials(self, setup_db):

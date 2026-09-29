@@ -1131,12 +1131,45 @@ async def test_setup_wizard_pages_have_no_inline_styles(path, admin_cookie, seed
 
 
 @pytest.mark.anyio
+async def test_event_detail_listener_link_has_copy_button(admin_cookie, seed_event):
+    from portal.database import get_session
+
+    event, _, _ = seed_event
+    async with get_session() as s:
+        db_event = await s.get(type(event), event.id)
+        db_event.listener_join_code = "ROOM42"
+
+    async with _client() as c:
+        resp = await c.get(f"/admin/events/{event.id}/", cookies=admin_cookie)
+
+    assert resp.status_code == 200
+    assert 'id="listener-link"' in resp.text
+    assert 'data-copy-target="listener-link"' in resp.text
+
+
+@pytest.mark.anyio
+async def test_admin_pages_have_a_toast_live_region(admin_cookie, seed_event):
+    """The copy-to-clipboard success/failure feedback in admin.js needs the
+    aria-live toast container from admin/base.html on every admin page."""
+    event, _, _ = seed_event
+
+    async with _client() as c:
+        resp = await c.get(f"/admin/events/{event.id}/", cookies=admin_cookie)
+
+    assert resp.status_code == 200
+    assert 'id="toast-container"' in resp.text
+    assert 'aria-live="polite"' in resp.text
+
+
+@pytest.mark.anyio
 @pytest.mark.parametrize(
     "path",
     [
         "/admin/events/{event}/",
         "/admin/events/{event}/members/",
         "/admin/events/{event}/rooms/{room}/booths/{booth}/",
+        "/admin/events/{event}/rooms/{room}/",
+        "/admin/events/{event}/rooms/{room}/transcripts/",
         "/admin/users/{user}/",
     ],
 )
