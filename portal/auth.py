@@ -469,9 +469,16 @@ async def _validate_participant_scope(
     try:
         actual_event, actual_room, actual_lang = parse_booth_id(booth_id)
     except ValueError:
-        await _reject_ws_auth(websocket, 4003, "Invalid booth_id format.")
+        # Legacy "{event_slug}-{language}" ids carry no room; still scope-check
+        # the event and language rather than refusing or waving them through.
+        if "-" not in booth_id:
+            await _reject_ws_auth(websocket, 4003, "Invalid booth_id format.")
+        actual_event, _, actual_lang = booth_id.rpartition("-")
+        actual_room = None
 
     token_room = payload.get("room_id")
+    if actual_room is None:
+        token_room = None
     if (
         payload["event_slug"] != actual_event
         or payload["language_code"] != actual_lang
@@ -541,12 +548,16 @@ async def resolve_ws_auth(websocket: WebSocket, booth_id: str) -> dict:
         if _query_payload_is_authorized(payload):
             return payload
 
-    if not settings.booth_access_token:
-        return get_booth_session(websocket) or {}
+    # booth_access_token defaults to empty, so this fallback is live in a default
+    # deployment. A cookie still has to pass the origin and scope checks; only the
+    # missing-session rejection is conditional on the shared token being configured.
+    anonymous_allowed = not settings.booth_access_token
 
     await _validate_ws_origin(websocket)
     payload = get_booth_session(websocket)
     if not payload:
+        if anonymous_allowed:
+            return {}
         await _reject_ws_auth(websocket, 4001, "Missing WebSocket token and session cookie.")
 
     await _validate_ws_payload_scope(

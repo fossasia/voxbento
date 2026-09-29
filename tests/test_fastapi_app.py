@@ -1932,3 +1932,39 @@ def test_listener_scope_rejects_a_sibling_event_sharing_a_slug_prefix():
     asyncio.run(run("conf-3-en", "conf"))
     # and the legacy form for its own event.
     asyncio.run(run("event-a-english", "event-a"))
+
+
+def test_cookie_fallback_is_scope_checked_when_no_booth_access_token(monkeypatch):
+    """With booth_access_token unset, a cookie for one booth must not authorize another.
+
+    settings.booth_access_token defaults to empty, so this fallback is live in a
+    default deployment; skipping scope validation there let a role-bearing cookie
+    for booth A reach resolve_booth_role on booth B.
+    """
+    import asyncio
+    from unittest.mock import AsyncMock, patch
+
+    from portal.auth import WSAuthError, resolve_ws_auth
+    from portal.config import settings
+
+    monkeypatch.setattr(settings, "booth_access_token", "")
+
+    websocket = AsyncMock()
+    websocket.query_params = {}
+    websocket.headers = {}
+
+    foreign_payload = {
+        "role": "interpreter",
+        "event_slug": "event-a",
+        "language_code": "en",
+        "room_id": 1,
+    }
+
+    with patch("portal.auth.get_booth_session", return_value=foreign_payload):
+        with pytest.raises(WSAuthError):
+            asyncio.run(resolve_ws_auth(websocket, "event-b-1-en"))
+        websocket.close.assert_awaited_with(code=4003)
+
+        # The booth the cookie is actually scoped to still works.
+        websocket.reset_mock()
+        assert asyncio.run(resolve_ws_auth(websocket, "event-a-1-en")) == foreign_payload
