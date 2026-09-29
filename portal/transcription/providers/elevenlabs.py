@@ -69,6 +69,23 @@ class ElevenLabsProvider(TranscriptionProvider):
             raise e
         return ""
 
+    @staticmethod
+    def _auth_error_from_frame(data: dict) -> TranscriptionAuthError | None:
+        """Return an auth error if this frame is ElevenLabs rejecting the key."""
+        message_type = (data.get("message_type") or "").lower()
+        detail = str(data.get("error") or data.get("message") or data).strip()
+        if message_type in ("auth_error", "authentication_error", "unauthorized"):
+            return TranscriptionAuthError(
+                "elevenlabs", f"ElevenLabs API key was rejected ({detail})."
+            )
+        if "error" in message_type and any(
+            token in detail.lower() for token in ("api key", "api_key", "unauthorized", "authentication")
+        ):
+            return TranscriptionAuthError(
+                "elevenlabs", f"ElevenLabs API key was rejected ({detail})."
+            )
+        return None
+
     async def run_stream(
         self,
         process: asyncio.subprocess.Process,
@@ -110,6 +127,9 @@ class ElevenLabsProvider(TranscriptionProvider):
                     init_msg = await ws.recv()
                     init_data = json.loads(init_msg)
                     if init_data.get("message_type") != "session_started":
+                        auth_error = self._auth_error_from_frame(init_data)
+                        if auth_error:
+                            raise auth_error
                         logger.error(f"[{booth_id}] Expected ElevenLabs session_started, got: {init_data}")
                         return
 
@@ -154,7 +174,12 @@ class ElevenLabsProvider(TranscriptionProvider):
                                     if text:
                                         await aggregator.handle_partial(booth_id, text)
                                 elif message_type and "error" in message_type:
+                                    auth_error = self._auth_error_from_frame(data)
+                                    if auth_error:
+                                        raise auth_error
                                     logger.error(f"[{booth_id}] ElevenLabs Realtime Error: {data}")
+                        except TranscriptionAuthError:
+                            raise
                         except Exception as e:
                             logger.error(f"[{booth_id}] ElevenLabs WS receiver error: {e}")
                             return "ERROR"
@@ -168,6 +193,14 @@ class ElevenLabsProvider(TranscriptionProvider):
 
                     for task in pending:
                         task.cancel()
+
+                    for task in done:
+                        try:
+                            error = task.exception()
+                        except asyncio.CancelledError:
+                            continue
+                        if error is not None:
+                            raise error
 
                     if process.returncode is not None:
                         return
