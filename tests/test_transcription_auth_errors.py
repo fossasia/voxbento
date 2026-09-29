@@ -283,3 +283,94 @@ async def test_overload_drain_preserves_audio_eof():
             ),
             timeout=1,
         )
+
+
+class _FramesExhausted(Exception):
+    """Raised when the fake websocket runs out of scripted frames."""
+
+
+class _FakeElevenLabsWS:
+    """A websocket that yields the frames a rejected ElevenLabs key produces."""
+
+    def __init__(self, frames):
+        self._frames = list(frames)
+        self.sent = []
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def recv(self):
+        if not self._frames:
+            raise _FramesExhausted("no frames left")
+        return self._frames.pop(0)
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        if not self._frames:
+            raise StopAsyncIteration
+        return self._frames.pop(0)
+
+    async def send(self, payload):
+        self.sent.append(payload)
+        # Yield, so the sender loop cannot starve the receiver in the test loop.
+        await asyncio.sleep(0)
+
+
+async def _run_elevenlabs_with_frames(frames):
+    """Drive the real run_stream against a websocket serving `frames`."""
+    import json
+
+    from portal.transcription.providers.elevenlabs import ElevenLabsProvider
+
+    process = MagicMock()
+    process.returncode = None
+    process.stdout = MagicMock()
+    process.stdout.readexactly = AsyncMock(return_value=b"\x00" * 4096)
+
+    aggregator = MagicMock()
+    aggregator.handle_final = AsyncMock()
+    aggregator.handle_partial = AsyncMock()
+    aggregator.handle_clear = AsyncMock()
+
+    ws = _FakeElevenLabsWS([json.dumps(frame) for frame in frames])
+
+    with patch("websockets.connect", return_value=ws):
+        await ElevenLabsProvider().run_stream(
+            process,
+            "en",
+            "scribe_v1",
+            ProviderConfig(api_key="bad-key"),
+            aggregator,
+            "booth-1",
+        )
+
+
+@pytest.mark.anyio
+async def test_elevenlabs_auth_error_as_the_first_frame_is_reported():
+    with pytest.raises(TranscriptionAuthError) as excinfo:
+        await _run_elevenlabs_with_frames(
+            [{"message_type": "auth_error", "error": "Invalid API key"}]
+        )
+
+    assert excinfo.value.error_code == "auth_failed"
+    assert excinfo.value.provider == "elevenlabs"
+
+
+@pytest.mark.anyio
+async def test_elevenlabs_auth_error_after_the_session_starts_is_reported():
+    with pytest.raises(TranscriptionAuthError) as excinfo:
+        await _run_elevenlabs_with_frames(
+            [
+                {"message_type": "session_started"},
+                {"message_type": "partial_transcript", "text": "hello"},
+                {"message_type": "auth_error", "error": "API key revoked"},
+            ]
+        )
+
+    assert excinfo.value.error_code == "auth_failed"
+    assert excinfo.value.provider == "elevenlabs"
