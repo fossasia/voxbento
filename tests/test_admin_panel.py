@@ -366,6 +366,20 @@ class TestEventCRUD:
         assert "No events match search" not in resp.text
 
     @pytest.mark.anyio
+    async def test_event_list_out_of_range_page_with_no_matches_only_shows_empty_state(self, admin_cookie, seed_event):
+        async with _client() as c:
+            resp = await c.get(
+                "/admin/events/",
+                params={"search": "no-such-event", "page": 99},
+                cookies=admin_cookie,
+            )
+
+        assert resp.status_code == 200
+        assert "No events match search" in resp.text
+        assert "Page 99 is out of range" not in resp.text
+        assert "View page" not in resp.text
+
+    @pytest.mark.anyio
     async def test_event_list_search_with_no_matches_shows_clearable_empty_state(self, admin_cookie, seed_event):
         async with _client() as c:
             resp = await c.get("/admin/events/", params={"search": "no-such-event"}, cookies=admin_cookie)

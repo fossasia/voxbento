@@ -339,6 +339,7 @@ async def admin_event_list(request: Request, page: int = 1, search: str | None =
             "page": page,
             "requested_page": requested_page,
             "total_pages": total_pages,
+            "total_events": total_events,
             "search": search,
             **admin_flags,
         },
