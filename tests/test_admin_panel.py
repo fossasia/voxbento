@@ -455,6 +455,47 @@ class TestRoomCRUD:
         assert resp.status_code == 400
 
     @pytest.mark.anyio
+    async def test_edit_room_ignores_a_stale_relay_value_on_another_section(self, admin_cookie, seed_event):
+        """A stray relay_booth_id must not block a transcription-only update."""
+        from portal.database import get_room_by_id, get_session
+
+        event, room, booth = seed_event
+
+        async with _client() as c:
+            response = await c.post(
+                f"/admin/events/{event.id}/rooms/{room.id}/edit",
+                cookies=admin_cookie,
+                data={
+                    "form_section": "transcription",
+                    "relay_booth_id": "not-an-id",
+                    "floor_transcription_enabled": "on",
+                    "floor_transcription_provider": "deepgram",
+                    "floor_transcription_model": "nova-2",
+                },
+                follow_redirects=False,
+            )
+        assert response.status_code == 303
+
+        async with get_session() as session:
+            updated = await get_room_by_id(session, room.id)
+            assert updated is not None
+            assert updated.floor_transcription_provider == "deepgram"
+
+    @pytest.mark.anyio
+    async def test_edit_room_rejects_an_invalid_relay_selection(self, admin_cookie, seed_event):
+        """An invalid relay id on the relay section is a 400, not a 500."""
+        event, room, booth = seed_event
+
+        async with _client() as c:
+            response = await c.post(
+                f"/admin/events/{event.id}/rooms/{room.id}/edit",
+                cookies=admin_cookie,
+                data={"form_section": "relay", "relay_booth_id": "not-an-id"},
+                follow_redirects=False,
+            )
+        assert response.status_code == 400
+
+    @pytest.mark.anyio
     async def test_edit_room_transcription_section_preserves_other_settings(self, admin_cookie, seed_event):
         from portal.database import get_room_by_id, get_session
 

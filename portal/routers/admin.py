@@ -798,12 +798,20 @@ def _normalise_tts_voice(value: str | None) -> str:
 
 
 def _parse_room_edit_values(form: FormData) -> RoomEditValues:
-    relay_booth_id = str(form.get("relay_booth_id", "")).strip()
+    form_section = str(form.get("form_section", "")).strip()
+    # Only the relay submission (or an all-sections save) consumes this field, so a
+    # stale value left on another section's form must not block that update.
+    relay_booth_id = None
+    if not form_section or form_section == "relay":
+        try:
+            relay_booth_id = _parse_relay_booth_id(str(form.get("relay_booth_id", "")).strip())
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="Invalid relay booth selection.") from exc
     return RoomEditValues(
-        form_section=str(form.get("form_section", "")).strip(),
+        form_section=form_section,
         display_name=str(form.get("display_name", "")).strip(),
         jitsi_url=str(form.get("jitsi_url", "")).strip(),
-        relay_booth_id=_parse_relay_booth_id(relay_booth_id),
+        relay_booth_id=relay_booth_id,
         audio_delay_ms=parse_audio_delay_ms(form.get("audio_delay_ms", "0")),
         floor_transcription_enabled=form.get("floor_transcription_enabled") == "on",
         floor_transcription_provider=str(form.get("floor_transcription_provider", "local")).strip(),
