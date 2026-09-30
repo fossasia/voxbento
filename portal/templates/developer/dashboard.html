@@ -147,11 +147,22 @@
         <a class="brand" href="/">VoxBento</a>
         <span class="header-badge">Developers</span>
       </div>
-      <nav class="header-nav">
+      <nav class="header-nav" id="developer-header-nav">
         <a href="/account">My Account</a>
         <a href="/admin/">Admin Panel</a>
         <a href="/">Portal Home</a>
       </nav>
+      <button
+        type="button"
+        class="header-nav-toggle"
+        aria-expanded="false"
+        aria-controls="developer-header-nav"
+        aria-label="Toggle navigation menu"
+      >
+        <span class="header-nav-toggle-bar"></span>
+        <span class="header-nav-toggle-bar"></span>
+        <span class="header-nav-toggle-bar"></span>
+      </button>
     </header>
 
     <main class="admin-main" style="max-width: 1000px; padding: 40px 24px;">
@@ -394,6 +405,7 @@
     </div>
     {% endif %}
 
+    <script type="module" src="{{ url_for('static', path='js/nav-toggle.js') }}"></script>
     <script>
       const btnCreate = document.getElementById('btn-create-app');
       const modalCreate = document.getElementById('modal-create-app');

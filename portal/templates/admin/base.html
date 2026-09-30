@@ -16,7 +16,7 @@
         <a class="brand" href="/admin/">VoxBento</a>
         <span class="header-badge">Console</span>
       </div>
-      <nav class="header-nav">
+      <nav class="header-nav" id="admin-header-nav">
         <a href="/admin/" class="{{ 'is-active' if _path == '/admin/' else '' }}">Dashboard</a>
         <a href="/admin/events/" class="{{ 'is-active' if _path.startswith('/admin/events') or _path.startswith('/admin/setup') else '' }}">Events</a>
         {% if is_super_admin|default(false) or is_event_owner|default(false) or is_room_coordinator|default(false) %}
@@ -32,6 +32,17 @@
         <a href="/admin/setup" class="btn btn-sm btn-primary">+ New event</a>
         <a href="/admin/logout" class="nav-logout">Logout</a>
       </nav>
+      <button
+        type="button"
+        class="header-nav-toggle"
+        aria-expanded="false"
+        aria-controls="admin-header-nav"
+        aria-label="Toggle navigation menu"
+      >
+        <span class="header-nav-toggle-bar"></span>
+        <span class="header-nav-toggle-bar"></span>
+        <span class="header-nav-toggle-bar"></span>
+      </button>
     </header>
 
     {% block breadcrumb %}{% endblock %}
@@ -57,6 +68,7 @@
       </div>
     </div>
 
+    <script type="module" src="{{ url_for('static', path='js/nav-toggle.js') }}"></script>
     <script type="module" src="{{ url_for('static', path='js/admin.js') }}"></script>
   </body>
 </html>
