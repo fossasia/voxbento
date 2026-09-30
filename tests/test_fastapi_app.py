@@ -1434,6 +1434,47 @@ def test_event_booth_whip_url_standby_rejected():
             assert res.status_code == 403
 
 
+def test_api_cross_event_idor_rejected():
+    """An event-scoped JWT for Event A must not be able to delete a booth in Event B."""
+    import os
+
+    from portal.auth import create_participant_token
+    from portal.config import settings
+
+    # 1. Create Event B and its booth (while auth is disabled)
+    res_b = client.post(
+        "/api/events/event-b-idor/booths", json={"language_code": "fr", "room_id": 1, "language": "French"}
+    )
+    assert res_b.status_code == 201
+
+    # 2. Generate an interpreter token scoped to Event A
+    token_a = create_participant_token(
+        booth_id=999, role="interpreter", event_slug="event-a-idor", room_id=999, language_code="en"
+    )
+
+    # Enable auth so _require_access actually validates the token
+    os.environ["BOOTH_ACCESS_TOKEN"] = "test-booth-token"
+    settings.booth_access_token = "test-booth-token"
+
+    try:
+        # 3. Attempt to delete Event B's booth using Event A's token
+        delete_res = client.delete(
+            "/api/events/event-b-idor/rooms/1/booths/fr", headers={"Authorization": f"Bearer {token_a}"}
+        )
+
+        # 4. Assert that the request is rejected
+        assert delete_res.status_code == 403
+    finally:
+        os.environ["BOOTH_ACCESS_TOKEN"] = ""
+        settings.booth_access_token = ""
+
+    # Verify if the booth was actually deleted
+    list_res = client.get("/api/events/event-b-idor/booths")
+    assert list_res.status_code == 200
+    booths = list_res.json().get("booths", [])
+    assert any(b["language_code"] == "fr" for b in booths), "Booth was permanently deleted by the IDOR!"
+
+
 def test_cross_event_listing_isolation():
     """Booths created under event A must not appear in event B listing."""
     client.post("/api/events/isolatea/booths", json={"language_code": "en", "room_id": 1, "language": "English"})
@@ -1868,3 +1909,55 @@ def test_embed_captions_opt_in_websocket_auth():
     # Verify the booth_id produced by make_booth_id satisfies the startswith check.
     booth_id = "test-event-1-en"  # make_booth_id("test-event", 1, 1,  "en")
     assert booth_id.startswith(f"{payload['event_slug']}-")
+
+
+def test_delete_booth_routes_differentiated():
+    import os
+
+    import anyio
+    from sqlalchemy import select
+
+    from portal.auth import create_participant_token
+    from portal.config import settings
+    from portal.database import get_session
+    from portal.models import Event, Room
+
+    client.post("/api/events/route-test/booths", json={"language_code": "en", "room_id": 1, "language": "English"})
+
+    async def _setup_db():
+        async with get_session() as session:
+            room = await session.scalar(select(Room).join(Event).where(Event.slug == "route-test"))
+            room.eventyay_room_id = "test-eventyay-123"
+            session.add(room)
+            await session.commit()
+
+    anyio.run(_setup_db)
+
+    token = create_participant_token(
+        booth_id=999, role="interpreter", event_slug="route-test", room_id=999, language_code="en"
+    )
+
+    prev_env = os.environ.get("BOOTH_ACCESS_TOKEN")
+    prev_setting = settings.booth_access_token
+    os.environ["BOOTH_ACCESS_TOKEN"] = "test-booth-token"
+    settings.booth_access_token = "test-booth-token"
+
+    try:
+        # Internal route
+        res = client.delete("/api/events/route-test/rooms/1/booths/en", headers={"Authorization": "Bearer " + token})
+        assert res.status_code == 204
+
+        client.post("/api/events/route-test/booths", json={"language_code": "en", "room_id": 1, "language": "English"})
+
+        # External route
+        res2 = client.delete(
+            "/api/events/route-test/eventyay-rooms/test-eventyay-123/booths/en",
+            headers={"Authorization": "Bearer " + token},
+        )
+        assert res2.status_code == 204
+    finally:
+        if prev_env is None:
+            os.environ.pop("BOOTH_ACCESS_TOKEN", None)
+        else:
+            os.environ["BOOTH_ACCESS_TOKEN"] = prev_env
+        settings.booth_access_token = prev_setting
