@@ -270,6 +270,7 @@ class TestEventCRUD:
         assert "testcon" not in resp.text
         assert f'value="{search_term}"' in resp.text
         assert '<label for="admin-event-search" class="search-label">Search events by name or slug</label>' in resp.text
+        assert 'aria-label="Search events by name or slug"' in resp.text
 
     @pytest.mark.anyio
     @pytest.mark.parametrize("search_term", ("", "   "))

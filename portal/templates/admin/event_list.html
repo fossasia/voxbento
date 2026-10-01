@@ -32,7 +32,7 @@
 <div class="search-bar">
   <form method="get" action="/admin/events/" class="search-form">
     <label for="admin-event-search" class="search-label">Search events by name or slug</label>
-    <input id="admin-event-search" type="text" name="search" value="{{ search or '' }}" placeholder="Search events by name or slug..." class="search-input">
+    <input id="admin-event-search" type="text" name="search" value="{{ search or '' }}" placeholder="Search events by name or slug..." aria-label="Search events by name or slug" class="search-input">
     <button type="submit" class="btn btn-primary">Search</button>
     {% if search %}
       <a href="/admin/events/" class="btn">Clear</a>
