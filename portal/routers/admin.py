@@ -666,18 +666,22 @@ async def admin_delete_event(request: Request, event_id: int):
 
 
 @router.get("/admin/events/{event_id}/rooms/", dependencies=[Depends(require_admin)])
-async def admin_room_list(request: Request, event_id: int):
+async def admin_room_list(request: Request, event_id: int, search: str | None = Query(None)):
+    search_q = (search or "").strip()
+    search_val = search_q if search_q else None
     async with get_session() as session:
         event = await get_event_by_id(session, event_id)
         if event is None:
             raise HTTPException(status_code=404, detail="Event not found.")
-        rooms = await list_rooms_for_event(session, event_id)
+        rooms = await list_rooms_for_event(session, event_id, search=search_val)
         room_data = []
         for room in rooms:
             room_booths = await list_booths_for_room(session, room.id)
             room_data.append({"room": room, "booth_count": len(room_booths)})
     return templates.TemplateResponse(
-        request=request, name="admin/room_list.html", context={"event": event, "room_data": room_data}
+        request=request,
+        name="admin/room_list.html",
+        context={"event": event, "room_data": room_data, "search": search_val or ""},
     )
 
 

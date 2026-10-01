@@ -364,6 +364,65 @@ class TestRoomCRUD:
         assert b"Main Hall" in resp.content
 
     @pytest.mark.anyio
+    async def test_room_list_search(self, admin_cookie, seed_event):
+        event, _, _ = seed_event
+        # Create an additional room to test search filtering
+        async with _client() as c:
+            await c.post(
+                f"/admin/events/{event.id}/rooms/",
+                data={"display_name": "Workshop Room"},
+                cookies=admin_cookie,
+                follow_redirects=False,
+            )
+
+        # Search for "Workshop" -> should return "Workshop Room" link and hide "Main Hall" link
+        async with _client() as c:
+            resp = await c.get(f"/admin/events/{event.id}/rooms/?search=workshop", cookies=admin_cookie)
+        assert resp.status_code == 200
+        assert b">Workshop Room</a>" in resp.content
+        assert b">Main Hall</a>" not in resp.content
+
+        # Search for non-existent room -> empty state message
+        async with _client() as c:
+            resp = await c.get(f"/admin/events/{event.id}/rooms/?search=NonExistent", cookies=admin_cookie)
+        assert resp.status_code == 200
+        assert b"No rooms match search" in resp.content
+
+        # Searching for literal "%" or "_" when no room names contain them should return empty match, not all rooms
+        async with _client() as c:
+            resp = await c.get(f"/admin/events/{event.id}/rooms/?search=%25", cookies=admin_cookie)
+        assert resp.status_code == 200
+        assert b"No rooms match search" in resp.content
+
+        async with _client() as c:
+            resp = await c.get(f"/admin/events/{event.id}/rooms/?search=_", cookies=admin_cookie)
+        assert resp.status_code == 200
+        assert b"No rooms match search" in resp.content
+
+        # Create a room with display_name containing a literal backslash
+        async with _client() as c:
+            await c.post(
+                f"/admin/events/{event.id}/rooms/",
+                data={"display_name": "Backslash \\ Room"},
+                cookies=admin_cookie,
+                follow_redirects=False,
+            )
+
+        # Search using the URL-encoded backslash
+        async with _client() as c:
+            resp = await c.get(f"/admin/events/{event.id}/rooms/?search=%5C", cookies=admin_cookie)
+        assert resp.status_code == 200
+        assert b">Backslash \\ Room</a>" in resp.content
+
+        # Whitespace-only search query should be ignored and render all rooms without active search state
+        async with _client() as c:
+            resp = await c.get(f"/admin/events/{event.id}/rooms/?search=%20%20", cookies=admin_cookie)
+        assert resp.status_code == 200
+        assert b">Main Hall</a>" in resp.content
+        assert b">Workshop Room</a>" in resp.content
+        assert b"No rooms match search" not in resp.content
+
+    @pytest.mark.anyio
     async def test_create_room(self, admin_cookie, seed_event):
         event, _, _ = seed_event
         async with _client() as c:
@@ -1075,3 +1134,74 @@ async def test_setup_wizard_pages_have_no_inline_styles(path, admin_cookie, seed
 
     assert resp.status_code == 200
     assert not re.search(rb"\sstyle\s*=", resp.content, re.IGNORECASE)
+
+
+@pytest.mark.anyio
+async def test_event_detail_listener_link_has_copy_button(admin_cookie, seed_event):
+    from portal.database import get_session
+
+    event, _, _ = seed_event
+    async with get_session() as s:
+        db_event = await s.get(type(event), event.id)
+        db_event.listener_join_code = "ROOM42"
+
+    async with _client() as c:
+        resp = await c.get(f"/admin/events/{event.id}/", cookies=admin_cookie)
+
+    assert resp.status_code == 200
+    assert 'id="listener-link"' in resp.text
+    assert 'data-copy-target="listener-link"' in resp.text
+
+
+@pytest.mark.anyio
+async def test_admin_pages_have_a_toast_live_region(admin_cookie, seed_event):
+    """The copy-to-clipboard success/failure feedback in admin.js needs the
+    aria-live toast container from admin/base.html on every admin page."""
+    event, _, _ = seed_event
+
+    async with _client() as c:
+        resp = await c.get(f"/admin/events/{event.id}/", cookies=admin_cookie)
+
+    assert resp.status_code == 200
+    assert 'id="toast-container"' in resp.text
+    assert 'aria-live="polite"' in resp.text
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/admin/events/{event}/",
+        "/admin/events/{event}/members/",
+        "/admin/events/{event}/rooms/{room}/booths/{booth}/",
+        "/admin/events/{event}/rooms/{room}/",
+        "/admin/events/{event}/rooms/{room}/transcripts/",
+        "/admin/users/{user}/",
+    ],
+)
+async def test_admin_detail_pages_have_no_inline_styles(path, admin_cookie, seed_event):
+    import re
+
+    from portal.auth import hash_password
+    from portal.database import create_user, get_session
+
+    event, room, booth = seed_event
+    async with get_session() as s:
+        user = await create_user(
+            s,
+            email="detail@test.com",
+            display_name="Detail User",
+            password_hash=hash_password("securepass123"),
+            email_verified=True,
+        )
+
+    async with _client() as c:
+        resp = await c.get(
+            path.format(event=event.id, room=room.id, booth=booth.id, user=user.id),
+            cookies=admin_cookie,
+        )
+
+    assert resp.status_code == 200
+    # The API key modals keep style="display: none", which admin.js toggles.
+    body = resp.content.replace(b'style="display: none;"', b"")
+    assert not re.search(rb"\sstyle\s*=", body, re.IGNORECASE)
