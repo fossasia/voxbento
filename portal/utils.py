@@ -117,17 +117,26 @@ def _require_access(
     request: Request,
     credentials: HTTPAuthorizationCredentials | None,
     token_query: str | None = None,
+    expected_event_slug: str | None = None,
 ) -> None:
-    """Allow request if access token is unset, or if a valid JWT or legacy token is provided."""
+    """Allow request if access is unset, or if a valid JWT or legacy token is provided; scoped JWTs must match the requested event, while global/admin JWTs without an event_slug are accepted."""
     if not settings.booth_access_token:
         return
+
+    def _check_scope(payload: dict) -> None:
+        if payload.get("role") == "listener":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN, detail="Listener tokens cannot be used for this API."
+            )
+        token_event = payload.get("event_slug")
+        if expected_event_slug and token_event:
+            if token_event != expected_event_slug:
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Token event scope mismatch")
+
     if credentials is not None:
         try:
             payload = decode_token(credentials.credentials)
-            if payload.get("role") == "listener":
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN, detail="Listener tokens cannot be used for this API."
-                )
+            _check_scope(payload)
             return
         except pyjwt.InvalidTokenError:
             pass
@@ -139,10 +148,7 @@ def _require_access(
 
     payload = get_booth_session(request)
     if payload:
-        if payload.get("role") == "listener":
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN, detail="Listener tokens cannot be used for this API."
-            )
+        _check_scope(payload)
         return
 
     raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid or missing auth token.")
