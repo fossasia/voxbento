@@ -107,6 +107,11 @@ class Settings(BaseSettings):
     smtp_password: str = ""
     smtp_from_email: str = "noreply@voxbento.com"
     public_base_url: str = "https://voxbento.com"
+    # Authentication Rate Limiting (slowapi, per client IP)
+    rate_limit_enabled: bool = True
+    rate_limit_register: str = "5/minute"
+    rate_limit_login: str = "10/minute"
+    rate_limit_admin_login: str = "5/minute"
 
 
 settings = Settings()

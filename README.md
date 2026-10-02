@@ -92,3 +92,16 @@ NVIDIA Riva support is now an optional dependency to reduce the default installa
 ```bash
 uv pip install -e .[nvidia]
 ```
+
+### Authentication Rate Limiting
+Authentication routes (`POST /register`, `POST /login`, `POST /admin/login`) are protected with IP-based rate limiting via SlowAPI:
+- `RATE_LIMIT_ENABLED`: Master toggle for rate limiting (`true` by default; set to `false` for testing or automated benchmarking).
+- `RATE_LIMIT_REGISTER`: Limit for registration attempts per IP (default: `5/minute`).
+- `RATE_LIMIT_LOGIN`: Limit for user login attempts per IP (default: `10/minute`).
+- `RATE_LIMIT_ADMIN_LOGIN`: Limit for admin login attempts per IP (default: `5/minute`).
+
+When deployed behind a reverse proxy (such as Caddy or Nginx):
+- The bundled `Caddyfile` sets `header_up X-Forwarded-For {remote_host}` to forward the client IP.
+- The ASGI server (Uvicorn) must be configured at the deployment boundary to trust ONLY the specific reverse-proxy IP(s) (e.g., via `--forwarded-allow-ips 127.0.0.1` or the specific reverse proxy container/host IP) so `request.client.host` is safely populated. Do not use an unrestricted wildcard (`*`) to prevent forwarded-header spoofing.
+
+

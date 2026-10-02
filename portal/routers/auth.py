@@ -34,6 +34,7 @@ from portal.database import (
 from portal.email import send_magic_login_email, send_password_reset_email, send_verification_email
 from portal.email_sender import send_delayed_onboarding_email
 from portal.globals import _JS_CACHE_BUST
+from portal.limiter import limiter
 from portal.rate_limit import check_rate_limit
 from portal.schemas.auth import TokenRequest, TokenResponse
 from portal.utils import safe_redirect
@@ -110,6 +111,7 @@ async def register_page(request: Request):
 
 
 @router.post("/register")
+@limiter.limit(lambda: settings.rate_limit_register)
 async def register_submit(request: Request):
     form = await request.form()
     email = form.get("email", "").strip().lower()
@@ -203,6 +205,7 @@ async def user_login_page(request: Request, next: str = ""):
 
 
 @router.post("/login")
+@limiter.limit(lambda: settings.rate_limit_login)
 async def user_login_submit(request: Request):
     form = await request.form()
     email = form.get("email", "").strip().lower()
