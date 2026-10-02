@@ -25,12 +25,47 @@ from portal.models import (
     RoomTranslationLanguage,
 )
 from portal.rate_limit import auth_rate_limiter
+from portal.transcription import ProviderConfig, get_api_key
 from portal.transcription.constants import ProviderEnum
 from portal.transcription.worker import start_transcription_worker, stop_transcription_worker
+from portal.websockets.manager import broadcast_transcription
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1")
+
+
+def _transcription_settings(event: Event, booth: DBBooth) -> tuple[str, str, ProviderConfig]:
+    """Resolve the provider, model and API key the transcription worker needs.
+
+    Raises ``HTTPException`` when the booth is not configured for transcription
+    or the event is missing a usable key for the selected provider.
+    """
+    if not booth.transcription_enabled:
+        raise HTTPException(status_code=400, detail="Transcription is not enabled for this booth.")
+
+    try:
+        provider = ProviderEnum(booth.transcription_provider)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Unknown transcription provider configured for this booth.")
+
+    if provider is not ProviderEnum.LOCAL:
+        if not event.transcription_api_enabled:
+            raise HTTPException(status_code=400, detail="External API transcription is disabled for this event.")
+        try:
+            api_key = get_api_key(event, provider)
+        except ValueError:
+            logger.exception("Could not decrypt the %s key for event %s", provider.value, event.slug)
+            raise HTTPException(
+                status_code=400,
+                detail="Stored API key could not be decrypted. Re-enter it in the admin portal.",
+            )
+        if not api_key:
+            raise HTTPException(status_code=400, detail=f"No {provider.value} API key configured for this event.")
+    else:
+        api_key = None
+
+    return booth.transcription_provider, booth.transcription_model, ProviderConfig(api_key=api_key)
 
 
 async def _verify_token_rbac(db: AsyncSession, token: OAuthToken, event: Event, room_id: int | None = None) -> None:
@@ -609,6 +644,7 @@ async def start_transcription(
     db: AsyncSession = Depends(get_db_session),
     token: OAuthToken = Depends(require_oauth_scope("sessions:manage")),
 ):
+    """Start the transcription worker for a live booth."""
     result = await db.execute(select(Event).where(Event.slug == event_slug))
     event = result.scalars().first()
     if not event:
@@ -616,14 +652,34 @@ async def start_transcription(
 
     await _verify_token_rbac(db, token, event, room_id)
 
-    booth_id = make_booth_id(event_slug, language_code)
-
-    # Actually start transcription using the registry
-    if booth_id not in booths:
+    booth_id = make_booth_id(event_slug, room_id, language_code)
+    if booths.get_booth_sync(booth_id) is None:
         raise HTTPException(status_code=400, detail="Booth not active in memory")
 
-    # We call the real worker
-    await start_transcription_worker(booth_id, event.id)
+    stmt = select(DBBooth).where(
+        DBBooth.event_id == event.id,
+        DBBooth.room_id == room_id,
+        DBBooth.language_code == language_code,
+    )
+    booth = await db.scalar(stmt)
+    if not booth:
+        raise HTTPException(status_code=404, detail="Booth not found")
+
+    provider, model, config = _transcription_settings(event, booth)
+    try:
+        await start_transcription_worker(
+            event_slug,
+            language_code,
+            booth_id,
+            broadcast_transcription,
+            provider,
+            model,
+            config,
+            room_id=room_id,
+        )
+    except ValueError as exc:
+        logger.warning("Refused to start transcription for %s: %s", booth_id, exc)
+        raise HTTPException(status_code=429, detail=str(exc))
 
     return {"status": "started", "booth_id": booth_id}
 
