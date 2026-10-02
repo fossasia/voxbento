@@ -6,6 +6,7 @@ from typing import Dict
 
 import portal.webhooks.worker as _wh_worker
 from portal.config import settings
+from portal.transcription.errors import TranscriptionAuthError
 from portal.transcription.process import FfmpegProcess
 from portal.transcription.providers.base import ProviderConfig
 from portal.transcription.providers.deepgram import DeepgramProvider
@@ -62,6 +63,7 @@ class TranscriptionWorkerSession:
         self.state = State.STARTING
         self.stop_event = asyncio.Event()
         self.task: asyncio.Task | None = None
+        self.stop_error: tuple[str, str] | None = None
 
         from portal.booth_identity import make_mediamtx_path
 
@@ -152,6 +154,12 @@ class TranscriptionWorkerSession:
                     except asyncio.CancelledError:
                         logger.info(f"[{self.booth_id}][{self.session_id}] Transcription worker cancelled.")
                         raise
+                    except TranscriptionAuthError as e:
+                        logger.error(
+                            f"[{self.booth_id}][{self.session_id}] {e.provider} rejected the API key: {e.detail}"
+                        )
+                        self.stop_error = (e.error_code, e.detail)
+                        self.state = State.STOPPING
                     except Exception as e:
                         logger.error(f"[{self.booth_id}][{self.session_id}] Transcription error: {e}. Retrying...")
 
@@ -168,9 +176,14 @@ class TranscriptionWorkerSession:
                     pass
         finally:
             self.state = State.STOPPED
-            await _wh_worker.enqueue_webhook(
-                "booth.transcription.stopped", {"booth_id": self.booth_id, "session_id": self.session_id, "event_slug": self.event_slug}
-            )
+            stopped_payload = {
+                "booth_id": self.booth_id,
+                "session_id": self.session_id,
+                "event_slug": self.event_slug,
+            }
+            if self.stop_error:
+                stopped_payload["error_code"], stopped_payload["error_detail"] = self.stop_error
+            await _wh_worker.enqueue_webhook("booth.transcription.stopped", stopped_payload)
             if self.provider_name == "local":
                 from portal.transcription.providers.local import decrement_model_ref
 
