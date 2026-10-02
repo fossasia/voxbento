@@ -9,7 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from portal.auth import require_oauth_scope
-from portal.booth_identity import make_booth_id, make_mediamtx_path
+from portal.booth_identity import make_booth_id, make_mediamtx_path, validate_language_code
 from portal.database import get_db_session
 from portal.globals import booths
 from portal.models import (
@@ -232,8 +232,8 @@ async def delete_event(
 
 
 class RoomUpsert(BaseModel):
-    name: str | None = None
-    description: str | None = None
+    name: str | None = Field(None, min_length=1, max_length=200)
+    description: str | None = Field(None, max_length=1000)
     enabled: bool | None = None
     target_languages: list[str] | None = None
     enable_transcription: bool | None = None
@@ -250,6 +250,19 @@ class RoomUpsert(BaseModel):
         if v == "":
             return None
         return v
+
+    @field_validator("target_languages")
+    @classmethod
+    def check_language_codes(cls, codes: list[str] | None) -> list[str] | None:
+        if codes is None:
+            return None
+        validated = []
+        for code in codes:
+            normalised = validate_language_code(code)
+            if normalised == "floor":
+                raise ValueError("'floor' is not a valid booth language for a room.")
+            validated.append(normalised)
+        return validated
 
 
 def _apply_floor_settings(room, payload_dict: dict):
