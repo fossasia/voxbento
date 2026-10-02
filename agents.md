@@ -97,7 +97,7 @@ VoxBento is a production-grade **browser-first interpretation booth console** fo
 7. **`uv.lock` is the dependency source of truth.** Never modify without running `uv sync --python 3.13 --dev` and confirming tests pass.
 8. **`from __future__ import annotations`** at the top of every Python file.
 9. **`portal.*` imports for all new Python code.**
-10. **Role is never trusted from client data.** WS handler reads `Session.granted_role` (derived from cookies at connect time).
+10. **Role and participant identity are never trusted from client data.** WS handler reads `Session.granted_role` (resolved from the cookie or `?token=` at connect time) and `Session.participant_id` (server-assigned on the first join, then held on the session).
 11. **No open redirects.** All redirects use `safe_redirect()` which validates path starts with `/` and has no netloc.
 
 ---
@@ -153,7 +153,7 @@ Validation: `portal/booth_identity.py` — slug: `^[a-z0-9]+(?:-[a-z0-9]+)*$`; l
 
 | Client → Server | Handler | Trusted fields |
 |---|---|---|
-| `booth:join` | `_handle_join` | role overridden from `session.granted_role` |
+| `booth:join` | `_handle_join` | role and participant id overridden from `session.granted_role` / `session.participant_id` |
 | `booth:leave` | `_handle_leave` | — |
 | `booth:chat` | `_handle_chat` | `body` only |
 | `booth:set-active` | `_handle_set_active` | `target_id` |

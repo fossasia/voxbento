@@ -32,7 +32,7 @@ Voxbento resolves your identity and role from one of two sources when you open t
 - **Cookie (automatic):** if your browser already holds a `session_token` (participant invite) or `user_token` (registered user) cookie for the Voxbento origin, it is sent automatically with the upgrade request — no extra steps needed.
 
 :::info
-Roles are determined server-side from your session token. The server ignores any role claim in client messages.
+Your role comes from the token you connected with. Your participant ID is assigned by the server on your first `booth:join` and then held against the connection. Neither is taken from a client message, so a `role` or `participant_id` you send is ignored.
 :::
 
 ## Client → Server Messages
@@ -47,13 +47,19 @@ You send JSON objects with a `type` field. The table below lists every supported
 | `booth:set-active` | Promote a specific interpreter to the active role. | `room_coordinator`, `event_owner`, or the currently active interpreter |
 | `booth:update-state` | Update the `mic_active` and `ingest_connected` flags for the sending interpreter. | `interpreter` |
 
+### Identity on `booth:join`
+
+`booth:join` does not carry your identity. Your role is read from the token you connected with, and your participant ID is minted by the server the first time you join. That ID is then kept against your connection, so joining again on the same socket returns the ID you already have, while a second socket always becomes a second participant however it fills in the message.
+
+Older web and mobile clients send `role` and `participant_id` on join. They keep working, because the fields are ignored rather than rejected, so the join still succeeds and the server uses its own values. Read your participant ID from the `booth:joined` reply and use that from then on. It is the ID everyone else sees for you in `booth:state`.
+
 ## Server → Client Messages
 
 The server pushes JSON objects to every connected participant. You do not need to request these — they arrive automatically when booth state changes.
 
 | `type` | Description |
 | --- | --- |
-| `booth:joined` | Sent only to the new participant confirming a successful join. Contains their server-assigned role. |
+| `booth:joined` | Sent only to the new participant confirming a successful join. Contains their server-assigned participant ID and the current booth state. |
 | `booth:state` | Full booth state broadcast to all participants after any change (join, leave, chat, handoff, flag update). |
 | `booth:chat` | A chat message broadcast to all participants when anyone sends `booth:chat`. |
 | `booth:error` | An error message sent to the originating client (e.g. permission denied, unknown message type). |
@@ -118,7 +124,8 @@ The examples below show the exact JSON structure for the most common messages.
 ```json
 {
   "type": "booth:joined",
-  "role": "interpreter"
+  "participant_id": "3f8a9c1d4b2e47f0",
+  "state": {}
 }
 ```
 
@@ -128,14 +135,17 @@ The examples below show the exact JSON structure for the most common messages.
 ```json
 {
   "type": "booth:state",
-  "booth_id": "pycon2026-en",
-  "active_interpreter_id": "user-abc123",
-  "participants": [
-    { "user_id": "user-abc123", "display_name": "Alice", "role": "interpreter" },
-    { "user_id": "user-def456", "display_name": "Bob",   "role": "coordinator" }
-  ],
-  "mic_active": true,
-  "ingest_connected": true
+  "state": {
+    "booth_id": "pycon2026-en",
+    "active_interpreter_id": "3f8a9c1d4b2e47f0",
+    "participants": [
+      { "participant_id": "3f8a9c1d4b2e47f0", "display_name": "Alice", "role": "interpreter", "mic_active": true, "ingest_connected": true },
+      { "participant_id": "7b40d6e2a915c83f", "display_name": "Bob", "role": "room_coordinator", "mic_active": false, "ingest_connected": false }
+    ],
+    "handoff_state": "idle",
+    "broadcast_unlocked": true,
+    "ingest_status": "connected"
+  }
 }
 ```
 
@@ -197,7 +207,7 @@ The examples below show the exact JSON structure for the most common messages.
   
 
   
-    The `user_id` of the interpreter to promote to active. Must be a current booth participant.
+    The `participant_id` of the interpreter to promote to active. Must be a current booth participant.
   
 
 </details>
@@ -224,7 +234,9 @@ The examples below show the exact JSON structure for the most common messages.
 
 **`type`** *(string)* — Always `"booth:joined"`.
 
-  **`role`** *(string)* — The server-assigned role for this participant: `interpreter`, `room_coordinator`, `event_owner`, or `listener`.
+  **`participant_id`** *(string)* — The participant ID the server assigned to this connection. Anything you sent as `participant_id` on join was ignored; this is the value to use from here on.
+
+  **`state`** *(object)* — The booth snapshot, the same object `booth:state` carries under its own `state` key. Your own record in `participants` carries your server-assigned role.
 
 </details>
 
@@ -233,15 +245,19 @@ The examples below show the exact JSON structure for the most common messages.
 
 **`type`** *(string)* — Always `"booth:state"`.
 
-  **`booth_id`** *(string)* — The booth identifier in `{event_slug}-{language_code}` format.
+  **`state`** *(object)* — The booth snapshot. Every field below sits inside it, not at the top level of the message.
 
-  **`active_interpreter_id`** *(string | null)* — The `user_id` of the currently active interpreter, or `null` if no interpreter is active.
+  **`state.booth_id`** *(string)* — The booth identifier in `{event_slug}-{language_code}` format.
 
-  **`participants`** *(array)* — List of all current booth participants, each with `user_id`, `display_name`, and `role`.
+  **`state.active_interpreter_id`** *(string | null)* — The `participant_id` of the currently active interpreter, or `null` if no interpreter is active.
 
-  **`mic_active`** *(boolean)* — Whether the active interpreter's microphone is currently live.
+  **`state.participants`** *(array)* — List of all current booth participants, each with `participant_id`, `display_name`, `role`, `language`, `channel_id`, `mic_active`, `ingest_connected`, `connected`, `joined_at` and `updated_at`. `mic_active` and `ingest_connected` are per participant, not per booth.
 
-  **`ingest_connected`** *(boolean)* — Whether the active interpreter's WHIP stream is connected.
+  **`state.handoff_state`** *(string)* — Where the booth is in an interpreter handoff: `idle`, `requested` or `offered`.
+
+  **`state.broadcast_unlocked`** *(boolean)* — Whether Mission Control has the booth live.
+
+  **`state.ingest_status`** *(string)* — `connected` while any participant has a live WHIP stream, `disconnected` otherwise.
 
 </details>
 

@@ -599,7 +599,6 @@ function setBoothVolume(pct) {
 
 function joinBooth() {
   const displayName = portal.dataset.displayName || 'Interpreter'
-  const requestedRole = state.grantedRole || 'interpreter'
 
   const rawRoomId = portal.dataset.roomId
   const parsedRoomId =
@@ -608,13 +607,14 @@ function joinBooth() {
       : undefined
   const roomId = Number.isNaN(parsedRoomId) ? undefined : parsedRoomId
 
+  // Role and participant id are not sent. The server reads the role off the
+  // token the socket connected with and assigns the participant id itself, so
+  // either field would only be ignored. Our own id arrives on booth:joined.
   const payload = {
     type: 'booth:join',
     display_name: displayName,
-    role: requestedRole,
     language: state.language,
     channel_id: state.channelId,
-    participant_id: state.participantId,
     event_slug: portal.dataset.eventSlug || '',
   }
 
