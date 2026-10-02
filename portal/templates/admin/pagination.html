@@ -1,5 +1,5 @@
 {% if total_pages > 1 %}
-{% set search_qs = '&search=' ~ search if search else '' %}
+{% set search_qs = '&search=' ~ (search|urlencode) if search else '' %}
 {% set sort_qs = '' %}
 {% if sort_by %}
   {% set sort_qs = sort_qs ~ '&sort_by=' ~ sort_by %}
