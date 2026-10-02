@@ -165,7 +165,7 @@ Read `portal/transcription/worker.py`, `portal/transcription/aggregator.py`,
 - Pipeline diagram (text): MediaMTX RTSP → ffmpeg PCM → TranscriptionProvider → CaptionAggregator → WebSocket broadcast
 - Provider table: name, class, file, status (functional/stub), external dependency
 - Worker lifecycle: `start_transcription_worker` / `stop_transcription_worker` signatures
-- `MAX_TOTAL_WORKERS` = 10
+- `MAX_TRANSCRIPTION_WORKERS` defaults to 10
 - `CaptionAggregator`: forced finalization at 15 s / 50 words
 
 **Verify**: `grep -c 'provider' .github/.agents/context/TRANSCRIPTION_MAP.md` → 5 or more

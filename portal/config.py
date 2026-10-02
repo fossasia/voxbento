@@ -90,6 +90,7 @@ class Settings(BaseSettings):
 
     # Transcription Settings
     nvidia_function_id: str = ""
+    max_transcription_workers: int = Field(default=10, ge=1)
 
     # Supertonic synthesis quality/speed trade-off. Fewer diffusion steps =
     # faster (lower real-time factor) at a small quality cost. 4 keeps CPU
