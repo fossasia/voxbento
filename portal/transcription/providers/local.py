@@ -1,106 +1,31 @@
 from __future__ import annotations
 
-import asyncio
-import gc
+import base64
 import logging
-import threading
-import time
-from dataclasses import dataclass
 from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from faster_whisper import WhisperModel
 
 import numpy as np
 
-from portal.transcription.providers.base import BoothTranscriptionState, ProviderConfig, TranscriptionProvider
+if TYPE_CHECKING:
+    from portal.transcription.providers.base import BoothTranscriptionState, ProviderConfig
+
+from portal.ray_serve.client import RayClient
+from portal.transcription.providers.base import TranscriptionProvider
 
 logger = logging.getLogger(__name__)
 
 
-@dataclass
-class ModelEntry:
-    model: WhisperModel
-    last_used: float
-
-
-_loaded_models = {}
-_active_booths_per_model = {}
-_model_lock = threading.Lock()
-_load_lock = threading.Lock()
-
-
-def increment_model_ref(model_size: str):
-    with _model_lock:
-        _active_booths_per_model[model_size] = _active_booths_per_model.get(model_size, 0) + 1
-
-
-def decrement_model_ref(model_size: str):
-    with _model_lock:
-        if model_size in _active_booths_per_model:
-            _active_booths_per_model[model_size] = max(0, _active_booths_per_model[model_size] - 1)
-
-
-def get_model(model_size: str):
-    with _model_lock:
-        if model_size in _loaded_models:
-            _loaded_models[model_size].last_used = time.time()
-            return _loaded_models[model_size].model
-
-    with _load_lock:
-        # Double-check inside the load lock
-        with _model_lock:
-            if model_size in _loaded_models:
-                _loaded_models[model_size].last_used = time.time()
-                return _loaded_models[model_size].model
-
-        logger.info(f"Loading faster-whisper model: {model_size}")
-        from faster_whisper import WhisperModel
-
-        model = WhisperModel(model_size, device="cpu", compute_type="int8")
-        with _model_lock:
-            _loaded_models[model_size] = ModelEntry(model=model, last_used=time.time())
-            return _loaded_models[model_size].model
-
-
-async def eviction_loop():
-    while True:
-        await asyncio.sleep(60 * 15)  # Check every 15 minutes
-        now = time.time()
-        to_delete = []
-        with _model_lock:
-            for size, entry in _loaded_models.items():
-                refs = _active_booths_per_model.get(size, 0)
-                if refs == 0 and (now - entry.last_used) > 3600:
-                    to_delete.append(size)
-            for size in to_delete:
-                logger.info(f"Evicting idle model: {size}")
-                del _loaded_models[size]
-        if to_delete:
-            gc.collect()
-
-
-_eviction_task = None
-
-
-def start_eviction_loop():
-    global _eviction_task
-    if _eviction_task is None:
-        try:
-            loop = asyncio.get_running_loop()
-            _eviction_task = loop.create_task(eviction_loop())
-        except RuntimeError:
-            pass
-
-
 class LocalProvider(TranscriptionProvider):
+    def __init__(self):
+        self.ray_client = RayClient()
+
     async def process_chunk(
         self,
         chunk: bytes,
         language_code: str,
         model_variant: str,
-        config: ProviderConfig,
-        booth_state: BoothTranscriptionState | None = None,
+        config: "ProviderConfig",
+        booth_state: "BoothTranscriptionState" | None = None,
     ) -> str:
         if booth_state:
             # Append overlap buffer (last 1.0s) to current 3.0s chunk -> 4.0s total
@@ -116,34 +41,28 @@ class LocalProvider(TranscriptionProvider):
         else:
             overlap_audio = chunk
 
+        # Convert bytes to float32 numpy array, same as original
         audio_data = np.frombuffer(overlap_audio, np.int16).astype(np.float32) / 32768.0
-        return await asyncio.to_thread(self._run_inference, audio_data, language_code, model_variant, booth_state)
 
-    def _run_inference(
-        self, audio_data: np.ndarray, language_code: str, model_size: str, booth_state: BoothTranscriptionState | None
-    ) -> str:
-        model = get_model(model_size)
-        segments, _ = model.transcribe(
-            audio_data,
-            beam_size=5,
-            vad_filter=True,
-            language=language_code if language_code else None,
-            word_timestamps=True,
-            compression_ratio_threshold=2.4,
-            no_speech_threshold=0.6,
-            log_prob_threshold=-1.0,
-            condition_on_previous_text=False,
-        )
+        # Encode float32 numpy array bytes directly into base64 for JSON transmission
+        audio_bytes = audio_data.tobytes()
+        audio_b64 = base64.b64encode(audio_bytes).decode("utf-8")
 
-        valid_words = []
-        for segment in segments:
-            if not getattr(segment, "words", None):
-                # Fallback if words aren't available
-                valid_words.append(segment.text.strip())
-                continue
+        payload = {
+            "audio_b64": audio_b64,
+            "language_code": language_code,
+            "model_size": model_variant,
+        }
 
-            for word in segment.words:
-                if word.end > 1.0:  # Skip words completely inside the 1.0s overlap period
-                    valid_words.append(word.word.strip())
+        headers = {"X-Serve-Multiplexed-Model-Id": model_variant}
 
-        return " ".join(valid_words).strip()
+        try:
+            result = await self.ray_client.predict("transcriber", payload, headers=headers)
+            if "transcribed_text" in result:
+                return result["transcribed_text"]
+            else:
+                logger.error(f"[Whisper Ray] Unexpected response: {result}")
+                raise RuntimeError(f"Unexpected response from Ray Serve: {result}")
+        except Exception as e:
+            logger.error(f"[Whisper Ray] Request to Ray Serve failed: {e}")
+            raise

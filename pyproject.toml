@@ -27,6 +27,7 @@ dependencies = [
     "fastapi-mail>=1.4.2",
     "ctranslate2>=4.5.0",
     "transformers>=4.40.0",
+    "ray[serve,default]>=2.40.0",
 ]
 
 [project.optional-dependencies]
