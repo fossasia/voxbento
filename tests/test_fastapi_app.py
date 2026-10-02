@@ -645,6 +645,30 @@ def test_ws_auth_invalid_token_fails_fast(monkeypatch):
     assert exc_info.value.code == 4001
 
 
+def test_ws_auth_query_participant_token_enforces_scope(monkeypatch):
+    """A participant query token is accepted only for its event, room, and language."""
+    from fastapi.websockets import WebSocketDisconnect
+
+    from portal.config import settings
+
+    monkeypatch.setattr(settings, "booth_access_token", "secret-test-token")
+    token = create_participant_token(
+        booth_id=1,
+        role="interpreter",
+        event_slug="test-event",
+        room_id=7,
+        language_code="en",
+    )
+
+    with client.websocket_connect(f"/ws/booth/test-event-7-en?token={token}") as ws:
+        ws.close()
+
+    with pytest.raises(WebSocketDisconnect) as exc_info:
+        with client.websocket_connect(f"/ws/booth/test-event-8-en?token={token}") as ws:
+            ws.receive_text()
+    assert exc_info.value.code == 4003
+
+
 def test_ws_auth_valid_generic_token_without_cookie_rejected(monkeypatch):
     """A cryptographically valid API token with no role falls back to the cookie.
     If no cookie is present, it must cleanly reject the connection."""
@@ -823,7 +847,7 @@ def test_ws_broadcast_unlock_authorized_user_can_toggle():
 def test_ws_broadcast_unlock_interpreter_rejected():
     """Interpreter session cannot toggle broadcast lock."""
     client.post("/api/events/broadcastdeny/booths", json={"language_code": "en", "room_id": 1, "language": "English"})
-    booth = "broadcastdeny-en"
+    booth = "broadcastdeny-1-en"  # canonical make_booth_id form, carrying the room
     channel = "broadcastdeny/en"
 
     with client.websocket_connect(
@@ -1868,3 +1892,110 @@ def test_embed_captions_opt_in_websocket_auth():
     # Verify the booth_id produced by make_booth_id satisfies the startswith check.
     booth_id = "test-event-1-en"  # make_booth_id("test-event", 1, 1,  "en")
     assert booth_id.startswith(f"{payload['event_slug']}-")
+
+
+def test_listener_scope_rejects_a_sibling_event_sharing_a_slug_prefix():
+    """A listener scoped to 'conf' must not be admitted to 'conf-private' booths.
+
+    Event slugs may contain hyphens, so a prefix match on '{event_slug}-' lets a
+    token for 'conf' satisfy the check for booth 'conf-private-3-en', which
+    parse_booth_id attributes to the separate event 'conf-private'.
+    """
+    import asyncio
+    from unittest.mock import AsyncMock
+
+    from portal.auth import WSAuthError, _validate_listener_scope
+    from portal.booth_identity import parse_booth_id
+
+    foreign_booth = "conf-private-3-en"
+    assert parse_booth_id(foreign_booth)[0] == "conf-private"
+
+    websocket = AsyncMock()
+
+    async def run(booth_id, event_slug):
+        await _validate_listener_scope(
+            websocket, booth_id, event_slug, credential="token", allow_path_id=True
+        )
+
+    # A token for the sibling event must be rejected.
+    with pytest.raises(WSAuthError):
+        asyncio.run(run(foreign_booth, "conf"))
+    websocket.close.assert_awaited_with(code=4003)
+
+    # The legacy "{event_slug}-{language}" form is covered too.
+    with pytest.raises(WSAuthError):
+        asyncio.run(run("conf-private-english", "conf"))
+
+    # The event that actually owns the booth is still admitted.
+    asyncio.run(run(foreign_booth, "conf-private"))
+    # So is the ordinary single-word case,
+    asyncio.run(run("conf-3-en", "conf"))
+    # and the legacy form for its own event.
+    asyncio.run(run("event-a-english", "event-a"))
+
+
+def test_cookie_fallback_is_scope_checked_when_no_booth_access_token(monkeypatch):
+    """With booth_access_token unset, a cookie for one booth must not authorize another.
+
+    settings.booth_access_token defaults to empty, so this fallback is live in a
+    default deployment; skipping scope validation there let a role-bearing cookie
+    for booth A reach resolve_booth_role on booth B.
+    """
+    import asyncio
+    from unittest.mock import AsyncMock, patch
+
+    from portal.auth import WSAuthError, resolve_ws_auth
+    from portal.config import settings
+
+    monkeypatch.setattr(settings, "booth_access_token", "")
+
+    websocket = AsyncMock()
+    websocket.query_params = {}
+    websocket.headers = {}
+
+    foreign_payload = {
+        "role": "interpreter",
+        "event_slug": "event-a",
+        "language_code": "en",
+        "room_id": 1,
+    }
+
+    with patch("portal.auth.get_booth_session", return_value=foreign_payload):
+        with pytest.raises(WSAuthError):
+            asyncio.run(resolve_ws_auth(websocket, "event-b-1-en"))
+        websocket.close.assert_awaited_with(code=4003)
+
+        # The booth the cookie is actually scoped to still works.
+        websocket.reset_mock()
+        assert asyncio.run(resolve_ws_auth(websocket, "event-a-1-en")) == foreign_payload
+
+
+def test_room_scoped_token_is_rejected_on_a_roomless_legacy_channel():
+    """A room-scoped participant token must not carry its role onto a roomless channel.
+
+    Legacy '{event_slug}-{language}' ids name no room, so the token's room claim
+    cannot be verified against the channel; granting the role there would widen it.
+    """
+    import asyncio
+    from unittest.mock import AsyncMock
+
+    from portal.auth import WSAuthError, _validate_participant_scope
+
+    async def check(booth_id, payload):
+        websocket = AsyncMock()
+        await _validate_participant_scope(websocket, booth_id, payload, credential="cookie")
+
+    room_scoped = {"event_slug": "event-a", "language_code": "en", "room_id": 5}
+    roomless = {"event_slug": "event-a", "language_code": "en"}
+
+    # Room-scoped token on a channel with no room: refused.
+    with pytest.raises(WSAuthError):
+        asyncio.run(check("event-a-en", room_scoped))
+
+    # A token with no room claim is still accepted on the legacy channel.
+    asyncio.run(check("event-a-en", roomless))
+
+    # And the canonical form still checks the room properly.
+    asyncio.run(check("event-a-5-en", room_scoped))
+    with pytest.raises(WSAuthError):
+        asyncio.run(check("event-a-1-en", room_scoped))
