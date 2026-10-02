@@ -314,6 +314,156 @@ async def authorize_post(
     redirect_url = urllib.parse.urlunparse(parsed_redirect._replace(query=redirect_query))
     return RedirectResponse(url=redirect_url, status_code=303)
 
+async def _handle_authorization_code_grant(
+    db: AsyncSession,
+    client: OAuthClient,
+    code: str | None,
+    redirect_uri: str | None,
+    code_verifier: str | None,
+) -> dict | JSONResponse:
+    if not code or not redirect_uri or not code_verifier:
+        return JSONResponse(status_code=400, content={"error": "invalid_request"})
+
+    code_hash = hash_token(code)
+    code_result = await db.execute(
+        select(OAuthAuthorizationCode).where(OAuthAuthorizationCode.code_hash == code_hash)
+    )
+    auth_code = code_result.scalars().first()
+
+    if (
+        not auth_code
+        or auth_code.used
+        or auth_code.expires_at.replace(tzinfo=timezone.utc) < datetime.now(timezone.utc)
+    ):
+        return JSONResponse(status_code=400, content={"error": "invalid_grant"})
+
+    if auth_code.client_id != client.id or auth_code.redirect_uri != redirect_uri:
+        return JSONResponse(status_code=400, content={"error": "invalid_grant"})
+
+    if not verify_pkce(code_verifier, auth_code.code_challenge, auth_code.code_challenge_method):
+        return JSONResponse(
+            status_code=400, content={"error": "invalid_grant", "error_description": "PKCE verification failed"}
+        )
+
+    # Mark code as used
+    auth_code.used = True
+
+    # Issue tokens
+    access_token_raw = generate_token()
+    refresh_token_raw = generate_token()
+
+    token_record = OAuthToken(
+        client_id=client.id,
+        user_id=auth_code.user_id,
+        event_id=auth_code.event_id,
+        scopes=auth_code.scopes,
+        access_token_hash=hash_token(access_token_raw),
+        refresh_token_hash=hash_token(refresh_token_raw),
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+    )
+    db.add(token_record)
+    db.add(
+        OAuthAuditLog(
+            token_id=token_record.id,
+            client_id=client.id,
+            event_id=auth_code.event_id,
+            action="token_exchange_code",
+            request_path="/oauth/token",
+            status_code=200,
+        )
+    )
+    await db.flush()
+
+    return {
+        "access_token": access_token_raw,
+        "token_type": "Bearer",
+        "expires_in": 3600,
+        "refresh_token": refresh_token_raw,
+        "scope": " ".join(auth_code.scopes),
+    }
+
+
+async def _handle_refresh_token_grant(
+    db: AsyncSession,
+    client: OAuthClient,
+    refresh_token: str | None,
+) -> dict | JSONResponse:
+    if not refresh_token:
+        return JSONResponse(status_code=400, content={"error": "invalid_request"})
+
+    refresh_hash = hash_token(refresh_token)
+    token_result = await db.execute(
+        select(OAuthToken)
+        .options(selectinload(OAuthToken.client), selectinload(OAuthToken.event))
+        .where(OAuthToken.refresh_token_hash == refresh_hash)
+    )
+    token_record = token_result.scalars().first()
+
+    if not token_record or token_record.client_id != client.id:
+        return JSONResponse(status_code=400, content={"error": "invalid_grant"})
+
+    if token_record.revoked:
+        # Refresh token reuse detected! Revoke the entire family
+        await db.execute(
+            update(OAuthToken)
+            .where(OAuthToken.client_id == client.id)
+            .where(OAuthToken.user_id == token_record.user_id)
+            .where(OAuthToken.event_id == token_record.event_id)
+            .values(revoked=True)
+        )
+        db.add(
+            OAuthAuditLog(
+                client_id=client.id,
+                event_id=token_record.event_id,
+                action="token_reuse_detected",
+                request_path="/oauth/token",
+                status_code=400,
+            )
+        )
+        await db.flush()
+        return JSONResponse(
+            status_code=400, content={"error": "invalid_grant", "error_description": "Token reuse detected"}
+        )
+
+    # Revoke the old token
+    token_record.revoked = True
+
+    # Issue new token pair
+    new_access_token_raw = generate_token()
+    new_refresh_token_raw = generate_token()
+
+    new_token_record = OAuthToken(
+        client_id=client.id,
+        user_id=token_record.user_id,
+        event_id=token_record.event_id,
+        scopes=token_record.scopes,  # Can be narrowed down, but keep same for now
+        access_token_hash=hash_token(new_access_token_raw),
+        refresh_token_hash=hash_token(new_refresh_token_raw),
+        parent_token_id=token_record.id,
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+    )
+    db.add(new_token_record)
+    db.add(
+        OAuthAuditLog(
+            token_id=new_token_record.id,
+            client_id=client.id,
+            event_id=token_record.event_id,
+            action="token_exchange_refresh",
+            request_path="/oauth/token",
+            status_code=200,
+        )
+    )
+    await db.flush()
+
+    return {
+        "access_token": new_access_token_raw,
+        "token_type": "Bearer",
+        "expires_in": 3600,
+        "refresh_token": new_refresh_token_raw,
+        "scope": " ".join(token_record.scopes),
+    }
+
+
 @router.post("/oauth/token", response_class=JSONResponse)
 async def token_exchange(
     request: Request,
@@ -340,142 +490,10 @@ async def token_exchange(
             return JSONResponse(status_code=401, content={"error": "invalid_client"})
 
     if grant_type == "authorization_code":
-        if not code or not redirect_uri or not code_verifier:
-            return JSONResponse(status_code=400, content={"error": "invalid_request"})
-
-        code_hash = hash_token(code)
-        code_result = await db.execute(
-            select(OAuthAuthorizationCode).where(OAuthAuthorizationCode.code_hash == code_hash)
-        )
-        auth_code = code_result.scalars().first()
-
-        if (
-            not auth_code
-            or auth_code.used
-            or auth_code.expires_at.replace(tzinfo=timezone.utc) < datetime.now(timezone.utc)
-        ):
-            return JSONResponse(status_code=400, content={"error": "invalid_grant"})
-
-        if auth_code.client_id != client.id or auth_code.redirect_uri != redirect_uri:
-            return JSONResponse(status_code=400, content={"error": "invalid_grant"})
-
-        if not verify_pkce(code_verifier, auth_code.code_challenge, auth_code.code_challenge_method):
-            return JSONResponse(
-                status_code=400, content={"error": "invalid_grant", "error_description": "PKCE verification failed"}
-            )
-
-        # Mark code as used
-        auth_code.used = True
-
-        # Issue tokens
-        access_token_raw = generate_token()
-        refresh_token_raw = generate_token()
-
-        token_record = OAuthToken(
-            client_id=client.id,
-            user_id=auth_code.user_id,
-            event_id=auth_code.event_id,
-            scopes=auth_code.scopes,
-            access_token_hash=hash_token(access_token_raw),
-            refresh_token_hash=hash_token(refresh_token_raw),
-            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
-        )
-        db.add(token_record)
-        db.add(
-            OAuthAuditLog(
-                token_id=token_record.id,
-                client_id=client.id,
-                event_id=auth_code.event_id,
-                action="token_exchange_code",
-                request_path="/oauth/token",
-                status_code=200,
-            )
-        )
-        await db.flush()
-
-        return {
-            "access_token": access_token_raw,
-            "token_type": "Bearer",
-            "expires_in": 3600,
-            "refresh_token": refresh_token_raw,
-            "scope": " ".join(auth_code.scopes),
-        }
+        return await _handle_authorization_code_grant(db, client, code, redirect_uri, code_verifier)
 
     elif grant_type == "refresh_token":
-        if not refresh_token:
-            return JSONResponse(status_code=400, content={"error": "invalid_request"})
-
-        refresh_hash = hash_token(refresh_token)
-        token_result = await db.execute(
-            select(OAuthToken)
-            .options(selectinload(OAuthToken.client), selectinload(OAuthToken.event))
-            .where(OAuthToken.refresh_token_hash == refresh_hash)
-        )
-        token_record = token_result.scalars().first()
-
-        if not token_record or token_record.client_id != client.id:
-            return JSONResponse(status_code=400, content={"error": "invalid_grant"})
-
-        if token_record.revoked:
-            # Refresh token reuse detected! Revoke the entire family
-            await db.execute(
-                update(OAuthToken)
-                .where(OAuthToken.client_id == client.id)
-                .where(OAuthToken.user_id == token_record.user_id)
-                .where(OAuthToken.event_id == token_record.event_id)
-                .values(revoked=True)
-            )
-            db.add(
-                OAuthAuditLog(
-                    client_id=client.id,
-                    event_id=token_record.event_id,
-                    action="token_reuse_detected",
-                    request_path="/oauth/token",
-                    status_code=400,
-                )
-            )
-            await db.flush()
-            return JSONResponse(
-                status_code=400, content={"error": "invalid_grant", "error_description": "Token reuse detected"}
-            )
-
-        # Revoke the old token
-        token_record.revoked = True
-
-        # Issue new token pair
-        new_access_token_raw = generate_token()
-        new_refresh_token_raw = generate_token()
-
-        new_token_record = OAuthToken(
-            client_id=client.id,
-            user_id=token_record.user_id,
-            event_id=token_record.event_id,
-            scopes=token_record.scopes,  # Can be narrowed down, but keep same for now
-            access_token_hash=hash_token(new_access_token_raw),
-            refresh_token_hash=hash_token(new_refresh_token_raw),
-            parent_token_id=token_record.id,
-            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
-        )
-        db.add(new_token_record)
-        db.add(
-            OAuthAuditLog(
-                token_id=new_token_record.id,
-                client_id=client.id,
-                event_id=token_record.event_id,
-                action="token_exchange_refresh",
-                request_path="/oauth/token",
-                status_code=200,
-            )
-        )
-        await db.flush()
-
-        return {
-            "access_token": new_access_token_raw,
-            "token_type": "Bearer",
-            "expires_in": 3600,
-            "refresh_token": new_refresh_token_raw,
-            "scope": " ".join(token_record.scopes),
-        }
+        return await _handle_refresh_token_grant(db, client, refresh_token)
 
     return JSONResponse(status_code=400, content={"error": "unsupported_grant_type"})
 
