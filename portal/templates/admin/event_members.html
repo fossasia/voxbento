@@ -87,7 +87,8 @@
               action="/admin/events/{{ event.id }}/members/{{ m.id }}/delete"
               class="inline-form"
               data-confirm="Remove {{ u.display_name }} from this event?">
-          <button type="submit" class="btn btn-sm btn-danger">Remove</button>
+          <button type="submit" class="btn btn-sm btn-danger" title="Remove this member from the event"
+                  aria-label="Remove this member from the event">Remove</button>
         </form>
       </td>
     </tr>

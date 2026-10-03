@@ -710,7 +710,8 @@ document.addEventListener('DOMContentLoaded', function() {
                 action="/admin/events/{{ event.id }}/rooms/{{ room.id }}/members/{{ m.id }}/delete"
                 class="inline-form"
                 data-confirm="Remove {{ u.display_name }} from this room?">
-            <button type="submit" class="btn btn-sm btn-danger">Remove</button>
+            <button type="submit" class="btn btn-sm btn-danger" title="Remove this member from the room"
+                    aria-label="Remove this member from the room">Remove</button>
           </form>
         </td>
       </tr>

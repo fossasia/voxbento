@@ -532,7 +532,8 @@
                 action="/admin/events/{{ event.id }}/rooms/{{ room.id }}/booths/{{ booth.id }}/members/{{ m.id }}/delete"
                 class="inline-form"
                 data-confirm="Remove {{ u.display_name }} from this booth?">
-            <button type="submit" class="btn btn-sm btn-danger">Remove</button>
+            <button type="submit" class="btn btn-sm btn-danger" title="Remove this member from the booth"
+                    aria-label="Remove this member from the booth">Remove</button>
           </form>
         </td>
       </tr>
@@ -623,7 +624,8 @@
                 action="/admin/events/{{ event.id }}/rooms/{{ room.id }}/booths/{{ booth.id }}/tokens/{{ tok.token }}/revoke"
                 class="inline-form"
                 data-confirm="Revoke this token? It cannot be used to join after revocation.">
-            <button type="submit" class="btn btn-sm btn-danger">Revoke</button>
+            <button type="submit" class="btn btn-sm btn-danger" title="Revoke this token so it can no longer be used to join"
+                    aria-label="Revoke this token so it can no longer be used to join">Revoke</button>
           </form>
           {% else %}
           <span class="muted">—</span>
