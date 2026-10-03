@@ -47,7 +47,7 @@ async def _verify_token_rbac(db: AsyncSession, token: OAuthToken, event: Event, 
     from portal.models import User
 
     user = await db.get(User, token.user_id)
-    if user and getattr(user, "is_super_admin", False):
+    if user and (getattr(user, "is_admin", False) or getattr(user, "is_super_admin", False)):
         return
 
     # Check Event Owner
@@ -76,16 +76,55 @@ async def _verify_token_rbac(db: AsyncSession, token: OAuthToken, event: Event, 
     raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User lost RBAC access to this resource")
 
 
-@router.get("/events/{event_slug}")
+class EventResponse(BaseModel):
+    id: int = Field(description="Internal database ID.")
+    slug: str = Field(description="URL-safe unique event identifier.")
+    display_name: str = Field(description="Human-readable event name.")
+    owner_id: int | None = Field(
+        default=None,
+        description=(
+            "User ID of the event owner resolved from EventMembership "
+            "(role='event_owner'). None if no owner membership exists. "
+            "If multiple event_owner rows exist, the lowest user_id is returned."
+        ),
+    )
+    created_at: str = Field(description="ISO-8601 UTC creation timestamp.")
+
+
+@router.get("/events/{event_slug}", response_model=EventResponse)
 async def get_event(
     event_slug: str,
     db: AsyncSession = Depends(get_db_session),
     token: OAuthToken = Depends(require_oauth_scope("events:read")),
 ):
-    result = await db.execute(select(Event).where(Event.slug == event_slug, Event.deleted_at.is_(None)))
-    event = result.scalars().first()
-    if not event:
+    """Retrieve event details by slug.
+
+    Resolves `owner_id` in a single query via a correlated scalar subquery
+    against `EventMembership` (role='event_owner'). If no owner exists,
+    `owner_id` is None. If multiple owners exist, the lowest `user_id` is returned.
+    """
+    owner_subq = (
+        select(EventMembership.user_id)
+        .where(
+            EventMembership.event_id == Event.id,
+            EventMembership.role == "event_owner",
+        )
+        .order_by(EventMembership.user_id)
+        .limit(1)
+        .correlate(Event)
+        .scalar_subquery()
+    )
+
+    result = await db.execute(
+        select(Event, owner_subq.label("owner_id")).where(
+            Event.slug == event_slug,
+            Event.deleted_at.is_(None),
+        )
+    )
+    row = result.first()
+    if not row:
         raise HTTPException(status_code=404, detail="Event not found")
+    event, owner_id = row
 
     await _verify_token_rbac(db, token, event)
 
@@ -93,7 +132,7 @@ async def get_event(
         "id": event.id,
         "slug": event.slug,
         "display_name": event.display_name,
-        "owner_id": event.owner_id,
+        "owner_id": owner_id,
         "created_at": event.created_at.isoformat(),
     }
 
