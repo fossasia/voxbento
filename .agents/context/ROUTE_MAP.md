@@ -89,7 +89,7 @@ All admin routes require `admin_token` cookie (or `user_token` with `is_admin=Tr
 | GET | `/admin/events/{event_id}/members/` | `admin/event_members.html` | EventMembership list |
 | POST | `/admin/events/{event_id}/members/` | — | Upserts EventMembership by email + role |
 | POST | `/admin/events/{event_id}/members/{membership_id}/delete` | — | Removes EventMembership |
-| GET | `/admin/users/` | `admin/user_list.html` | — |
+| GET | `/admin/users/` | `admin/user_list.html` | Paginated; `sort_by`/`sort_order` query params, defaults to `created_at` desc (newest first) |
 | GET | `/admin/users/{user_id}/` | `admin/user_detail.html` | User + event admin assignments |
 | POST | `/admin/users/{user_id}/toggle-active` | — | Flips `is_active` |
 | POST | `/admin/users/{user_id}/delete` | — | Deletes user |
