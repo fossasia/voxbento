@@ -996,6 +996,29 @@ code { font-family: var(--font-mono); font-size: 0.85em; background: var(--color
 .wizard-card .wizard-room-group { margin-top: 18px; }
 .wizard-card .wizard-room-label { font-weight: 600; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 6px; }
 
+/* ── AI interpretation settings ─────────────────────────────────────────── */
+.ai-interpretation-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; margin-top: 16px; }
+.token-form .ai-interpretation-textarea {
+  width: 100%; min-height: 112px; padding: 10px 12px; box-sizing: border-box; resize: vertical;
+  border: 1px solid var(--color-border-strong); border-radius: 10px; background: var(--color-surface);
+  color: var(--color-text); font: inherit; line-height: 1.5;
+}
+.token-form .ai-interpretation-textarea:focus { outline: none; border-color: var(--color-primary); box-shadow: 0 0 0 3px var(--color-primary-subtle); }
+.ai-interpretation-note { margin-top: 12px; }
+.ai-vocabulary-toggle { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
+.ai-vocabulary-card { margin-bottom: 2rem; }
+.ai-vocabulary-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 16px; }
+.ai-vocabulary-header h3 { margin: 0 0 4px; }
+.ai-vocabulary-upload { display: grid; grid-template-columns: minmax(260px, 1fr) minmax(180px, 240px) auto; gap: 16px; align-items: end; padding: 16px; border: 1px dashed var(--color-border-strong); border-radius: 10px; background: var(--color-surface-2); }
+.ai-vocabulary-upload .form-group { margin-bottom: 0; }
+.ai-vocabulary-file input { display: block; margin-top: 8px; max-width: 100%; }
+.ai-vocabulary-alert { margin-bottom: 12px; }
+.ai-vocabulary-table-wrap { overflow-x: auto; margin-top: 18px; }
+.ai-vocabulary-table { min-width: 720px; }
+.ai-vocabulary-table td small { display: block; color: var(--color-text-secondary); margin-top: 3px; }
+.ai-vocabulary-clear { margin-top: 12px; text-align: right; }
+.ai-vocabulary-empty { color: var(--color-text-secondary); margin-top: 16px; }
+
 /* ── Mini list (added items in wizard) ───────────────────────────────────── */
 .mini-list { list-style: none; display: flex; flex-direction: column; gap: 8px; margin: 8px 0 0; padding: 0; }
 .mini-list li { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 14px; background: var(--color-surface-2); border: 1px solid var(--color-border); border-radius: 10px; font-size: 0.9rem; }
@@ -1003,4 +1026,7 @@ code { font-family: var(--font-mono); font-size: 0.85em; background: var(--color
 @media (max-width: 640px) {
   .step-label { display: none; }
   .wizard-card { padding: 22px; }
+  .ai-interpretation-grid { grid-template-columns: 1fr; }
+  .ai-vocabulary-header { align-items: stretch; flex-direction: column; }
+  .ai-vocabulary-upload { grid-template-columns: 1fr; align-items: stretch; }
 }
