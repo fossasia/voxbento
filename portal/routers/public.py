@@ -20,6 +20,7 @@ from portal.database import (
     list_booth_memberships_for_user,
     list_events,
     list_memberships_for_user,
+    list_room_memberships_for_user,
 )
 from portal.email_sender import send_demo_request_email
 from portal.globals import _JS_CACHE_BUST, booths
@@ -35,6 +36,7 @@ router = APIRouter()
 async def home(request: Request):
     current_user = await get_current_user(request)
     my_booths = []
+    management_home = "/admin/" if current_user and current_user.get("is_admin") else "/account"
 
     try:
         async with get_session() as session:
@@ -46,6 +48,12 @@ async def home(request: Request):
                 uid = int(current_user["sub"])
                 ems = await list_memberships_for_user(session, uid)
                 user_event_roles = {em.event_id: em.role for em in ems}
+                room_memberships = await list_room_memberships_for_user(session, uid)
+                if not current_user.get("is_admin"):
+                    if any(em.role == "event_owner" for em in ems):
+                        management_home = "/workspace/"
+                    elif any(rm.role == "room_coordinator" for rm in room_memberships):
+                        management_home = "/mission-control/"
 
                 bms = await list_booth_memberships_for_user(session, uid)
                 user_booth_roles = {bm.booth_id: bm.role for bm in bms}
@@ -118,6 +126,7 @@ async def home(request: Request):
         context={
             "events": event_data,
             "current_user": current_user,
+            "management_home": management_home,
             "my_booths": my_booths,
             "js_version": _JS_CACHE_BUST,
         },

@@ -794,12 +794,12 @@ class TestAPIKeyCRUD:
             c.cookies.set("user_token", token)
 
             # Initially empty
-            res = await c.get(f"/admin/api/events/{event_id}/api-keys")
+            res = await c.get(f"/workspace/api/events/{event_id}/api-keys")
             assert res.status_code == 200
             assert res.json() == []
 
             # Create API key
-            res = await c.post(f"/admin/api/events/{event_id}/api-keys", json={"name": "Integration Key"})
+            res = await c.post(f"/workspace/api/events/{event_id}/api-keys", json={"name": "Integration Key"})
             assert res.status_code == 200
             data = res.json()
             assert data["name"] == "Integration Key"
@@ -809,17 +809,17 @@ class TestAPIKeyCRUD:
             key_id = data["id"]
 
             # Prevent duplicate name
-            res_dup = await c.post(f"/admin/api/events/{event_id}/api-keys", json={"name": "Integration Key"})
+            res_dup = await c.post(f"/workspace/api/events/{event_id}/api-keys", json={"name": "Integration Key"})
             assert res_dup.status_code == 400
             assert "already exists" in res_dup.json()["detail"]
 
             # Prevent blank name
-            res_blank = await c.post(f"/admin/api/events/{event_id}/api-keys", json={"name": "   "})
+            res_blank = await c.post(f"/workspace/api/events/{event_id}/api-keys", json={"name": "   "})
             assert res_blank.status_code == 400
             assert "cannot be blank" in res_blank.json()["detail"]
 
             # List keys (should contain 1)
-            res = await c.get(f"/admin/api/events/{event_id}/api-keys")
+            res = await c.get(f"/workspace/api/events/{event_id}/api-keys")
             assert res.status_code == 200
             keys = res.json()
             assert len(keys) == 1
@@ -828,16 +828,18 @@ class TestAPIKeyCRUD:
             assert "raw_key" not in keys[0]
 
             # Revoke key
-            res_del = await c.delete(f"/admin/api/events/{event_id}/api-keys/{key_id}")
+            res_del = await c.delete(f"/workspace/api/events/{event_id}/api-keys/{key_id}")
             assert res_del.status_code == 200
 
             # List keys (should be empty again)
-            res = await c.get(f"/admin/api/events/{event_id}/api-keys")
+            res = await c.get(f"/workspace/api/events/{event_id}/api-keys")
             assert res.status_code == 200
             assert res.json() == []
 
             # Duplicate name is now allowed since the old one is revoked
-            res_remake = await c.post(f"/admin/api/events/{event_id}/api-keys", json={"name": "Integration Key"})
+            res_remake = await c.post(
+                f"/workspace/api/events/{event_id}/api-keys", json={"name": "Integration Key"}
+            )
             assert res_remake.status_code == 200
             assert res_remake.json()["name"] == "Integration Key"
 

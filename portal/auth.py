@@ -272,6 +272,12 @@ async def get_admin_flags(request: Request, event_id: int | None = None, room_id
                             return flags
                         memberships = await list_memberships_for_user(db_session, int(payload["sub"]))
                         rms = await list_room_memberships_for_user(db_session, int(payload["sub"]))
+                        if event_id is None and room_id is None:
+                            if any((m.role == "event_owner" for m in memberships)):
+                                flags["is_event_owner"] = True
+                                flags["is_room_coordinator"] = True
+                            if any((rm.role == "room_coordinator" for rm in rms)):
+                                flags["is_room_coordinator"] = True
                         if event_id is not None:
                             if any((m.event_id == event_id and m.role == "event_owner" for m in memberships)):
                                 flags["is_event_owner"] = True
