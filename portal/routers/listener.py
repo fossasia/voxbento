@@ -169,6 +169,9 @@ async def listen_event_page(request: Request, event_slug: str, code: str | None 
             "rooms_json": json.dumps(rooms_data),
             "booths_json": json.dumps(booths_data),
             "js_version": _JS_CACHE_BUST,
+            # Same canonical-base-URL pattern as email.py / admin.py invite links, without the
+            # join code so sharing the link doesn't hand out access to the event.
+            "share_url": f"{settings.public_base_url}/listener/{ev.slug}",
         },
     )
     if code and code == ev.listener_join_code:
