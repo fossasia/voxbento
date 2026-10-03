@@ -12,6 +12,7 @@
 
     {% if rooms %}
     <form method="post" action="/admin/events/{{ event.id }}/setup/booths">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <div class="field-row field-row--end">
         <div class="field field--flush">
           <label for="room_id">Room</label>

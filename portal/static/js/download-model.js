@@ -40,7 +40,11 @@ export function initLocalModelDownloader() {
           
           const transModel = document.getElementById('floor_translation_model').value || 'nllb-200-distilled-600M';
           await fetch('/admin/models/trigger_download', {
-            method: 'POST', headers: {'Content-Type': 'application/json'},
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-CSRF-Token': document.querySelector('meta[name="csrf-token"]').content
+            },
             body: JSON.stringify({model: transModel})
           });
           
@@ -110,7 +114,12 @@ export function initLocalModelDownloader() {
         
         try {
           await fetch(actionUrl, { method: 'POST', body: formData, redirect: 'follow' });
-          await fetch('/admin/models/supertonic/trigger_download', { method: 'POST' });
+          await fetch('/admin/models/supertonic/trigger_download', {
+            method: 'POST',
+            headers: {
+              'X-CSRF-Token': document.querySelector('meta[name="csrf-token"]').content
+            }
+       });
           
           document.getElementById('supertonic_download_progress_container').style.display = 'flex';
           
