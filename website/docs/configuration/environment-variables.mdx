@@ -55,6 +55,14 @@ Voxbento uses SQLite by default for zero-configuration local development. For an
 | --- | --- | --- |
 | `DATABASE_URL` | `sqlite+aiosqlite:///./interpretation.db` | Database connection string. For production PostgreSQL, use the format: `postgresql+asyncpg://user:pass@host:5432/dbname`. Database migrations run automatically on startup — no manual steps needed when using Docker Compose. |
 
+## Transcription Variables
+
+These variables control the transcription worker pool.
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `MAX_TRANSCRIPTION_WORKERS` | `10` | Maximum number of concurrent transcription booths. Raise this on larger deployments to allow more simultaneous interpreted rooms — each worker consumes CPU and, for hosted providers, paid API quota. Requests beyond the cap are rejected with HTTP 429. |
+
 ## Jitsi Variables
 
 Voxbento embeds a Jitsi Meet instance so interpreters can monitor the conference floor. These variables configure how the portal connects to and displays Jitsi.
