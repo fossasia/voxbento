@@ -5,29 +5,99 @@
 
 import { initLocalModelDownloader } from './download-model.js';
 
-function copyToClipboard(targetId) {
+/**
+ * Shows a short-lived toast and announces it via the aria-live region in
+ * admin/base.html, so both sighted and assistive-tech users get the same
+ * feedback.
+ */
+function showToast(message, kind) {
+  const container = document.getElementById('toast-container');
+  if (!container) return;
+  const toast = document.createElement('div');
+  toast.className = `toast toast--${kind}`;
+  toast.textContent = message;
+  container.appendChild(toast);
+  setTimeout(() => { toast.remove(); }, 3000);
+}
+
+/**
+ * Copies text via navigator.clipboard where available (secure contexts only),
+ * falling back to a hidden textarea + execCommand('copy') otherwise.
+ * @throws {Error} when neither copy method is available or succeeds.
+ */
+async function copyText(text) {
+  if (navigator.clipboard) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return;
+    } catch (error) {
+      // navigator.clipboard can exist but still reject (e.g. a permissions-policy
+      // block), so fall through to the execCommand path below instead of giving up.
+      console.error('navigator.clipboard.writeText rejected, trying execCommand fallback', error);
+    }
+  }
+  // navigator.clipboard is undefined outside secure contexts (plain http on a LAN host).
+  // execCommand is deprecated but still the only synchronous fallback for that case.
+  const textarea = document.createElement('textarea');
+  textarea.value = text;
+  textarea.style.position = 'fixed';
+  textarea.style.opacity = '0';
+  document.body.appendChild(textarea);
+  textarea.focus();
+  textarea.select();
+  let copied = false;
+  try {
+    copied = document.execCommand('copy');
+  } finally {
+    textarea.remove();
+  }
+  if (!copied) {
+    throw new Error('execCommand("copy") did not succeed');
+  }
+}
+
+// Per-button original label and pending reset timer, so repeated clicks on the
+// same Copy button restore the true original label instead of whatever
+// transient text ("Copied!") happened to be showing at the time of the click.
+const copyOriginalLabels = new WeakMap();
+const copyResetTimers = new WeakMap();
+
+async function copyToClipboard(targetId, btn) {
   const el = document.getElementById(targetId);
   if (!el) return;
-  const text = el.textContent.trim();
+  if (!copyOriginalLabels.has(btn)) {
+    copyOriginalLabels.set(btn, btn.textContent);
+  }
+  const orig = copyOriginalLabels.get(btn);
+  clearTimeout(copyResetTimers.get(btn));
+
+  const text = (el instanceof HTMLInputElement ? el.value : el.textContent).trim();
   const fullUrl = text.startsWith('/') ? window.location.origin + text : text;
-  navigator.clipboard.writeText(fullUrl).then(() => {
-    const btn = el.nextElementSibling;
-    if (btn) {
-      const orig = btn.textContent;
-      btn.textContent = 'Copied!';
-      setTimeout(() => { btn.textContent = orig; }, 1500);
+  try {
+    await copyText(fullUrl);
+  } catch (error) {
+    console.error(`Failed to copy #${targetId} to the clipboard`, error);
+    // Select the source field so the admin can copy manually as a last resort.
+    if (el instanceof HTMLInputElement) {
+      el.select();
     }
-  });
+    showToast('Could not copy the link. Select the text and copy it manually.', 'error');
+    return;
+  }
+  btn.textContent = 'Copied!';
+  copyResetTimers.set(btn, setTimeout(() => { btn.textContent = orig; }, 1500));
+  showToast('Link copied to clipboard.', 'success');
 }
 
 document.addEventListener('DOMContentLoaded', () => {
   document.querySelectorAll('.btn-copy[data-copy-target]').forEach((btn) => {
     btn.addEventListener('click', () => {
-      copyToClipboard(btn.dataset.copyTarget);
+      copyToClipboard(btn.dataset.copyTarget, btn);
     });
   });
   initCustomModal();
   initLocalModelDownloader();
+  initAsyncSave();
 });
 
 const FUNNY_WARNINGS = [
@@ -40,6 +110,68 @@ const FUNNY_WARNINGS = [
   "Deleting this is like dropping your ice cream. Tragic.",
   "Just double checking. My anxiety acts up around delete buttons."
 ];
+
+function initAsyncSave() {
+  document.querySelectorAll('form').forEach(form => {
+    const submitBtn = form.querySelector('button[type="submit"]');
+    if (submitBtn && submitBtn.textContent.trim() === 'Save Settings') {
+      if (form.dataset.asyncSaveInitialized) return;
+      form.dataset.asyncSaveInitialized = 'true';
+      form.addEventListener('submit', async (e) => {
+        if (form.hasAttribute('data-confirm')) return; 
+        
+        e.preventDefault();
+        
+        const originalText = submitBtn.textContent;
+        const originalWidth = submitBtn.offsetWidth;
+        
+        if (originalWidth > 0) {
+          submitBtn.style.minWidth = originalWidth + 'px';
+        }
+        
+        submitBtn.disabled = true;
+        submitBtn.textContent = 'Saving...';
+        
+        try {
+          const formData = new FormData(form);
+          const params = new URLSearchParams();
+          for (const [key, value] of formData.entries()) {
+             params.append(key, value);
+          }
+          
+          const response = await fetch(form.action || window.location.href, {
+            method: form.method || 'POST',
+            body: params,
+            headers: {
+              'Content-Type': 'application/x-www-form-urlencoded'
+            },
+            redirect: 'follow'
+          });
+          
+          const isLoginRedirect = response.redirected && response.url.includes('/login');
+          if (response.ok && !isLoginRedirect) {
+            submitBtn.textContent = 'Saved ✓';
+            submitBtn.classList.remove('btn-primary');
+            submitBtn.classList.add('btn-success');
+            
+            setTimeout(() => {
+              window.location.reload();
+            }, 600);
+          } else {
+             submitBtn.disabled = false;
+             submitBtn.textContent = originalText;
+             alert('Failed to save settings.');
+          }
+        } catch (err) {
+          submitBtn.disabled = false;
+          submitBtn.textContent = originalText;
+          console.error('Save failed:', err);
+          alert('Failed to save settings. Check console for details.');
+        }
+      });
+    }
+  });
+}
 
 function initCustomModal() {
   const modalOverlay = document.getElementById('custom-confirm-modal');
