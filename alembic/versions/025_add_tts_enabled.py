@@ -6,6 +6,8 @@ Create Date: 2026-09-08 21:46:15.773928
 
 """
 
+from __future__ import annotations
+
 from typing import Sequence, Union
 
 import sqlalchemy as sa
