@@ -284,10 +284,16 @@ class TestEventCRUD:
     async def test_delete_event_database_error(self, admin_cookie, seed_event, monkeypatch):
         from sqlalchemy.exc import SQLAlchemyError
 
+        from portal.database import delete_event as real_delete_event
+
         event, _, _ = seed_event
 
         async def mock_delete_event(session, event_id):
-            raise SQLAlchemyError("Simulated DB failure")
+            async def fail_flush():
+                raise SQLAlchemyError("Simulated DB failure")
+
+            monkeypatch.setattr(session, "flush", fail_flush)
+            return await real_delete_event(session, event_id)
 
         monkeypatch.setattr("portal.routers.admin.delete_event", mock_delete_event)
 
@@ -307,6 +313,50 @@ class TestEventCRUD:
         assert b"Failed to delete event" in resp.content
         assert b"The event was not deleted." in resp.content
         assert b"testcon" in resp.content
+
+    @pytest.mark.anyio
+    async def test_delete_event_rejects_a_room_coordinator(self, seed_event):
+        """require_admin admits a room_coordinator, but deleting an event requires an event owner."""
+        from portal.auth import create_user_token
+        from portal.database import create_room, create_user, get_event_by_id, get_session
+        from portal.models import RoomMembership
+
+        event, _, _ = seed_event
+        async with get_session() as s:
+            side = await create_room(s, event_id=event.id, display_name="Side Room")
+            carol = await create_user(s, email="carol@example.com", display_name="Carol")
+            s.add(RoomMembership(user_id=carol.id, room_id=side.id, role="room_coordinator"))
+            carol_id = carol.id
+
+        cookie = {"user_token": create_user_token(user_id=carol_id, email="carol@example.com")}
+        async with _client() as c:
+            allowed = await c.get(f"/admin/events/{event.id}/rooms/{side.id}/", cookies=cookie)
+            resp = await c.post(f"/admin/events/{event.id}/delete", cookies=cookie, follow_redirects=False)
+        assert allowed.status_code == 200, "coordinator should be able to view their room"
+        assert resp.status_code == 403
+
+        async with get_session() as s:
+            assert await get_event_by_id(s, event.id) is not None
+
+    @pytest.mark.anyio
+    async def test_delete_event_allows_an_event_owner(self, seed_event):
+        """require_event_owner must admit the event's own owner."""
+        from portal.auth import create_user_token
+        from portal.database import create_user, get_event_by_id, get_session
+        from portal.models import EventMembership
+
+        event, _, _ = seed_event
+        async with get_session() as s:
+            owner = await create_user(s, email="owner@example.com", display_name="Owner")
+            s.add(EventMembership(user_id=owner.id, event_id=event.id, role="event_owner"))
+            owner_id = owner.id
+
+        cookie = {"user_token": create_user_token(user_id=owner_id, email="owner@example.com")}
+        async with _client() as c:
+            resp = await c.post(f"/admin/events/{event.id}/delete", cookies=cookie, follow_redirects=False)
+        assert resp.status_code == 303
+        async with get_session() as s:
+            assert await get_event_by_id(s, event.id) is None
 
 
 # ---------------------------------------------------------------------------
