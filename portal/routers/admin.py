@@ -1509,11 +1509,11 @@ async def admin_edit_booth(request: Request, event_id: int, room_id: int, booth_
             if language_code_raw:
                 try:
                     booth.language_code = validate_language_code(language_code_raw)
-                except ValueError:
-                    pass
+                except ValueError as e:
+                    raise HTTPException(status_code=400, detail=str(e))
         await session.flush()
     return safe_redirect(
-        url=str(request.url_for("admin_booth_detail", event_id=event_id, room_id=room_id, booth_id=booth_id)),
+        url=f"/admin/events/{event_id}/rooms/{room_id}/booths/{booth_id}/",
         status_code=status.HTTP_303_SEE_OTHER,
     )
 
@@ -1599,9 +1599,9 @@ async def admin_users(
     limit: int = 50,
     search: str | None = None,
     sort_by: str = "created_at",
-    sort_order: str = "asc",
+    sort_order: str = "desc",
 ):
-    """List all registered users (super admin only)."""
+    """List all registered users (super admin only), newest first by default."""
     offset = (page - 1) * limit
     async with get_session() as session:
         total_users = await count_users(session, search=search)

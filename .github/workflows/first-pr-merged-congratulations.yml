@@ -1,0 +1,24 @@
+name: First PR Merged Congratulations
+
+on:
+  pull_request_target:
+    types: [closed]
+
+permissions:
+  pull-requests: write
+
+jobs:
+  congratulate:
+    name: Congratulate first-time contributors
+    if: github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    steps:
+      - name: Congratulate on first merged PR
+        uses: plbstl/first-contribution@5e84b16ee0cef8f8a87cb7a2cf247b187c228879 # v4.3.1
+        with:
+          pr-merged-msg: |
+            🎉 Congratulations @{fc-author} on getting your first VoxBento pull request merged!
+
+            Thank you for taking the time to contribute to VoxBento and help make open-source, real-time interpretation better. We really appreciate it! 💜
+
+            Welcome to the contributor community — we hope to see you around for your next contribution. 🚀
