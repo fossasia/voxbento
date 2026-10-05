@@ -52,7 +52,9 @@ All three run `resolve_ws_auth()` (`portal/auth.py`): a JWT offered as a `bearer
 subprotocol or `?token=`, otherwise the `admin_token` / `user_token` / `session_token` cookie.
 Every credential is scoped to the booth it opens — a listener token to its own event slug, an
 invite token to its event, room and language, and a registered-user cookie to the events the user
-holds an event, room or booth membership in. Admins are exempt.
+holds an event, room or booth membership in. Admins are exempt. Any other signed token fails
+closed: a role without that scope, or a cookie with no user ID. Only when `BOOTH_ACCESS_TOKEN` is
+unset is a connection with no credential at all still accepted.
 
 | Path | Auth | Protocol |
 |---|---|---|

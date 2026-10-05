@@ -62,6 +62,8 @@ async def test_a_member_reaches_only_their_own_events_booths(seeded_db):
 
     # A different event is not, even though the user is a member somewhere.
     assert not await user_event_authorized(member_id, "other-event-1-fr")
+    assert not await user_event_authorized(member_id, "other-event-1-ai-fr")
+    assert not await user_event_authorized(member_id, "other-event-1-floor")
 
 
 @pytest.mark.anyio

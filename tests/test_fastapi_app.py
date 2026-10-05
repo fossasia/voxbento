@@ -1934,7 +1934,7 @@ def test_ws_tts_authentication(monkeypatch):
         pass
 
 
-def _ws_close_code(url: str, cookies: dict | None = None) -> int | None:
+def _ws_close_code(url: str, cookies: dict | None = None, subprotocols: list[str] | None = None) -> int | None:
     """Connect to *url* and return the server's close code, or None if it accepted.
 
     Never reads from the socket: an accepted connection would block forever,
@@ -1943,7 +1943,7 @@ def _ws_close_code(url: str, cookies: dict | None = None) -> int | None:
     from fastapi.websockets import WebSocketDisconnect
 
     try:
-        with client.websocket_connect(url, cookies=cookies or {}):
+        with client.websocket_connect(url, cookies=cookies or {}, subprotocols=subprotocols):
             return None
     except WebSocketDisconnect as exc:
         return exc.code
@@ -2065,3 +2065,106 @@ def test_user_cookie_reaches_a_booth_only_when_its_event_authorizes_it(monkeypat
     # An admin user still reaches every booth without a membership row.
     monkeypatch.setattr(auth, "user_event_authorized", _deny)
     assert _ws_close_code("/ws/tts/test-event-1-ai-fr", cookies=_admin_user_cookie()) is None
+
+
+def _signed_token(claims: dict) -> str:
+    """Sign *claims* with the portal's own secret, as if the portal had issued them."""
+    from datetime import datetime, timedelta, timezone
+
+    import jwt
+
+    from portal.config import settings
+
+    now = datetime.now(timezone.utc)
+    return jwt.encode(
+        {**claims, "iat": now, "exp": now + timedelta(minutes=5)},
+        settings.effective_jwt_secret,
+        algorithm="HS256",
+    )
+
+
+# Validly signed sessions that name no event, no booth and no usable user. None
+# of them may reach a booth, whatever the membership lookup would say.
+_UNSCOPED_SESSIONS = [
+    pytest.param({}, id="no-claims"),
+    pytest.param({"email": "user@test.com", "is_admin": False}, id="missing-sub"),
+    pytest.param({"sub": "", "email": "user@test.com", "is_admin": False}, id="empty-sub"),
+    pytest.param({"sub": "7", "role": "interpreter"}, id="role-without-scope"),
+    pytest.param({"sub": "7", "role": "interpreter", "event_slug": "test-event"}, id="role-without-language"),
+    pytest.param({"sub": "7", "role": "listener"}, id="listener-without-event"),
+]
+
+
+@pytest.mark.parametrize("access_token", ["secret-test-token", ""])
+@pytest.mark.parametrize("claims", _UNSCOPED_SESSIONS)
+def test_session_cookies_without_a_usable_identity_fail_closed(monkeypatch, access_token, claims):
+    """Only admin claims, a scoped invite or a member's user_token may pass the cookie check.
+
+    The membership lookup is stubbed to allow everything, so a pass here could
+    only come from the token shape itself being trusted.
+    """
+    import portal.auth as auth
+    from portal.config import settings
+
+    monkeypatch.setattr(settings, "booth_access_token", access_token)
+
+    async def _allow(user_id, booth_id):
+        return True
+
+    monkeypatch.setattr(auth, "user_event_authorized", _allow)
+
+    cookies = {"user_token": _signed_token(claims)}
+    for route in ("/ws/tts/test-event-1-ai-fr", "/ws/captions/test-event-1-fr"):
+        assert _ws_close_code(route, cookies=cookies) == 4003, f"{route} accepted {claims}"
+
+
+@pytest.mark.parametrize("access_token", ["secret-test-token", ""])
+def test_a_role_token_without_booth_scope_is_refused(monkeypatch, access_token):
+    """Every role the portal issues carries its scope; a bare role is not trusted everywhere."""
+    from portal.config import settings
+
+    monkeypatch.setattr(settings, "booth_access_token", access_token)
+
+    for claims in (
+        {"sub": "7", "role": "interpreter"},
+        {"sub": "7", "role": "interpreter", "event_slug": "test-event"},
+        {"sub": "7", "role": "listener"},
+    ):
+        token = _signed_token(claims)
+        for route in ("/ws/tts/test-event-1-ai-fr", "/ws/captions/test-event-1-fr"):
+            assert _ws_close_code(f"{route}?token={token}") == 4003, f"{route} accepted {claims}"
+
+
+@pytest.mark.parametrize("access_token", ["secret-test-token", ""])
+def test_credentials_for_one_event_cannot_subscribe_to_another_events_tts(monkeypatch, access_token):
+    """Every credential scoped to test-event is refused on other-event's AI booth, and still works on its own."""
+    import portal.auth as auth
+    from portal.auth import create_listener_token
+    from portal.booth_identity import booth_id_event_slug
+    from portal.config import settings
+
+    monkeypatch.setattr(settings, "booth_access_token", access_token)
+
+    # Stand-in for a user whose only membership is in test-event. The lookup
+    # itself is checked against real rows in test_ws_event_authorization.py.
+    async def _member_of_test_event(user_id, booth_id):
+        return booth_id_event_slug(booth_id) == "test-event"
+
+    monkeypatch.setattr(auth, "user_event_authorized", _member_of_test_event)
+
+    own, other = "/ws/tts/test-event-1-ai-fr", "/ws/tts/other-event-1-ai-fr"
+    listener = create_listener_token(event_slug="test-event")
+    interpreter = _interpreter_cookie(event_slug="test-event", language_code="fr")
+
+    assert _ws_close_code(f"{other}?token={listener}") == 4003
+    assert _ws_close_code(other, subprotocols=[f"bearer.{listener}"]) == 4003
+    assert _ws_close_code(f"{other}?token={interpreter['session_token']}") == 4003
+    if access_token:
+        # Open mode accepts a connection with no credential at all, so it never
+        # enforced an invite cookie's scope; with an access token set, it does.
+        assert _ws_close_code(other, cookies=interpreter) == 4003
+    assert _ws_close_code(other, cookies=_user_cookie()) == 4003
+
+    # The same listener token and member session do open their own event's AI booth.
+    assert _ws_close_code(f"{own}?token={listener}") is None
+    assert _ws_close_code(own, cookies=_user_cookie()) is None

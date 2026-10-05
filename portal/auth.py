@@ -512,22 +512,25 @@ async def user_event_authorized(user_id: str | int, booth_id: str) -> bool:
     return False
 
 
-async def _require_event_authorization(websocket: WebSocket, payload: dict, booth_id: str) -> None:
-    """Close *websocket* when an unscoped registered-user session may not open *booth_id*.
+def _carries_invite_scope(payload: dict) -> bool:
+    """Whether *payload* is an invite-link session, scoped to one event and language."""
+    return bool(payload.get("role") and payload.get("event_slug") and payload.get("language_code"))
 
-    Invite-link tokens are scoped by their own claims and admins are allowed
-    everywhere, so both are left alone. What remains is a plain ``user_token``,
-    which names a user but no event: it is accepted only for an event the user
-    belongs to.
+
+async def _require_event_authorization(websocket: WebSocket, payload: dict, booth_id: str) -> None:
+    """Close *websocket* unless *payload* is a registered user who belongs to the booth's event.
+
+    Admins and scoped invite tokens are dealt with before this point, so the
+    only shape left that may pass is a plain ``user_token``: a ``sub`` and no
+    ``role``, accepted only for an event the user belongs to. Anything else
+    fails closed: a ``role`` without the scope that would bound it, or a
+    missing ``sub``.
     """
-    if payload.get("is_admin") or payload.get("admin") or payload.get("role"):
-        return
-    if not payload.get("sub"):
-        return
-    if await user_event_authorized(payload["sub"], booth_id):
+    sub = payload.get("sub")
+    if not payload.get("role") and sub and await user_event_authorized(sub, booth_id):
         return
     await websocket.close(code=4003)
-    raise WSAuthError("User session is not a member of the event that owns this booth.")
+    raise WSAuthError("Session is not authorized for the event that owns this booth.")
 
 
 async def resolve_ws_auth(websocket: WebSocket, booth_id: str) -> dict:
@@ -572,13 +575,24 @@ async def resolve_ws_auth(websocket: WebSocket, booth_id: str) -> dict:
                 raise WSAuthError("Participant token scope does not match booth_id.")
             return payload
 
-        if payload.get("role") or payload.get("is_admin") or payload.get("admin"):
-            return payload
+        if payload.get("role"):
+            # Every role this portal issues carries the scope checked above; a
+            # role without it is refused rather than trusted for every booth.
+            await websocket.close(code=4003)
+            raise WSAuthError("Role token carries no booth scope.")
 
     if not settings.booth_access_token:
+        # Open mode needs no credential at all, and passes admin and invite
+        # sessions through without enforcing their scope, as it always has.
         session_payload = get_booth_session(websocket) or {}
-        if session_payload:
-            await _require_event_authorization(websocket, session_payload, booth_id)
+        if (
+            not session_payload
+            or session_payload.get("is_admin")
+            or session_payload.get("admin")
+            or _carries_invite_scope(session_payload)
+        ):
+            return session_payload
+        await _require_event_authorization(websocket, session_payload, booth_id)
         return session_payload
 
     # Origin Check for Cookie fallback
