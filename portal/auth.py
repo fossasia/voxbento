@@ -787,6 +787,15 @@ async def _validate_participant_scope(
     except ValueError:
         await _reject_ws_auth(websocket, 4003, "Invalid booth_id format.")
 
+    token_event = payload.get("event_slug")
+    token_lang = payload.get("language_code")
+    if not token_event or not token_lang:
+        await _reject_ws_auth(
+            websocket,
+            4003,
+            f"Participant {credential} is missing event or language scope.",
+        )
+
     token_room = payload.get("room_id")
     if actual_room is None and token_room is not None:
         # A roomless legacy channel cannot be checked against the token's room, so a
@@ -797,8 +806,8 @@ async def _validate_participant_scope(
             f"Participant {credential} is room-scoped; booth_id carries no room.",
         )
     if (
-        payload["event_slug"] != actual_event
-        or payload["language_code"] != actual_lang
+        token_event != actual_event
+        or token_lang != actual_lang
         or (token_room is not None and str(token_room) != str(actual_room))
     ):
         await _reject_ws_auth(
@@ -819,18 +828,17 @@ async def _validate_ws_payload_scope(
     if payload.get("is_admin") or payload.get("admin"):
         return
 
-    token_event = payload.get("event_slug", "")
     if payload.get("role") == "listener":
         await _validate_listener_scope(
             websocket,
             booth_id,
-            token_event,
+            payload.get("event_slug", ""),
             credential=credential,
             allow_path_id=allow_listener_path_id,
         )
         return
 
-    if token_event and payload.get("language_code", ""):
+    if payload.get("role") or (payload.get("event_slug") and payload.get("language_code")):
         await _validate_participant_scope(
             websocket,
             booth_id,
