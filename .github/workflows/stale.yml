@@ -42,4 +42,4 @@ jobs:
 
           # --- SAFETY EXCLUSIONS ---
           # Never touch PRs that have these specific labels attached
-          exempt-pr-labels: 'pinned,security,confirmed,in-progress'
+          exempt-pr-labels: 'pinned,security,confirmed,in-progress,wontfix'
