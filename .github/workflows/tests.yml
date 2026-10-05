@@ -122,7 +122,7 @@ jobs:
             [ "$code" = "$expected" ] || { echo "FAIL: expected $expected"; return 1; }
           }
           HELPERS
-          
+
       # ── Build all images ────────────────────────────────────
       - name: Build portal image
         run: docker compose build portal
@@ -237,7 +237,6 @@ jobs:
 
           # Users list renders
           code=$(curl -s -o /dev/null -w '%{http_code}' -b "admin_token=${ADMIN_COOKIE}" "${BASE}/admin/users/")
-          echo "GET /admin/users/ → $code"
           echo "GET /admin/users/ → $code"
           [ "$code" = "200" ] || { echo "FAIL"; exit 1; }
 
