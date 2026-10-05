@@ -1949,9 +1949,9 @@ def test_delete_booth_routes_differentiated():
 
         client.post("/api/events/route-test/booths", json={"language_code": "en", "room_id": 1, "language": "English"})
 
-        # External route
+        # External route (original path shape but with string ID)
         res2 = client.delete(
-            "/api/events/route-test/eventyay-rooms/test-eventyay-123/booths/en",
+            "/api/events/route-test/rooms/test-eventyay-123/booths/en",
             headers={"Authorization": "Bearer " + token},
         )
         assert res2.status_code == 204
@@ -1960,4 +1960,89 @@ def test_delete_booth_routes_differentiated():
             os.environ.pop("BOOTH_ACCESS_TOKEN", None)
         else:
             os.environ["BOOTH_ACCESS_TOKEN"] = prev_env
+        settings.booth_access_token = prev_setting
+
+
+def test_check_scope_security_fixes():
+    """Verify that participant tokens with missing event_slug are rejected,
+    while global tokens without event_slug are allowed."""
+    import datetime
+
+    import jwt
+
+    from portal.config import settings
+
+    now = datetime.datetime.now(datetime.timezone.utc)
+
+    # 1. Scoped token with missing event_slug -> must be rejected
+    malformed_participant_payload = {
+        "sub": "user123",
+        "role": "interpreter",
+        "iat": now,
+        "exp": now + datetime.timedelta(seconds=3600),
+    }
+    bad_participant_jwt = jwt.encode(malformed_participant_payload, settings.effective_jwt_secret, algorithm="HS256")
+
+    # 2. Scoped token with DIFFERENT event_slug -> must be rejected
+    wrong_event_participant_payload = {
+        "sub": "user123",
+        "role": "interpreter",
+        "event_slug": "wrong-event",
+        "iat": now,
+        "exp": now + datetime.timedelta(seconds=3600),
+    }
+    wrong_participant_jwt = jwt.encode(
+        wrong_event_participant_payload, settings.effective_jwt_secret, algorithm="HS256"
+    )
+
+    # 3. Scoped token with CORRECT event_slug -> allowed
+    correct_participant_payload = {
+        "sub": "user123",
+        "role": "interpreter",
+        "event_slug": "route-test",
+        "iat": now,
+        "exp": now + datetime.timedelta(seconds=3600),
+    }
+    correct_participant_jwt = jwt.encode(correct_participant_payload, settings.effective_jwt_secret, algorithm="HS256")
+
+    # 4. Global token WITHOUT event_slug -> allowed
+    global_payload = {
+        "admin": True,
+        "iat": now,
+        "exp": now + datetime.timedelta(seconds=3600),
+    }
+    global_jwt = jwt.encode(global_payload, settings.effective_jwt_secret, algorithm="HS256")
+
+    prev_setting = settings.booth_access_token
+    settings.booth_access_token = "test-booth-token"
+
+    try:
+        # Create event and booth to test against using a global token
+        client.post(
+            "/api/events/route-test/booths",
+            json={"language_code": "fr", "room_id": 1, "language": "French"},
+            headers={"Authorization": f"Bearer {global_jwt}"},
+        )
+
+        # Test 1: Missing event_slug -> Rejected
+        res1 = client.get("/api/events/route-test/booths", headers={"Authorization": f"Bearer {bad_participant_jwt}"})
+        assert res1.status_code == 403
+        assert "missing event scope" in res1.json()["detail"].lower()
+
+        # Test 2: Different event_slug -> Rejected
+        res2 = client.get("/api/events/route-test/booths", headers={"Authorization": f"Bearer {wrong_participant_jwt}"})
+        assert res2.status_code == 403
+        assert "event scope mismatch" in res2.json()["detail"].lower()
+
+        # Test 3: Correct event_slug -> Allowed
+        res3 = client.get(
+            "/api/events/route-test/booths", headers={"Authorization": f"Bearer {correct_participant_jwt}"}
+        )
+        assert res3.status_code == 200
+
+        # Test 4: Global token without event_slug -> Allowed
+        res4 = client.get("/api/events/route-test/booths", headers={"Authorization": f"Bearer {global_jwt}"})
+        assert res4.status_code == 200
+
+    finally:
         settings.booth_access_token = prev_setting

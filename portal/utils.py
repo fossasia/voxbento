@@ -129,8 +129,11 @@ def _require_access(
                 status_code=status.HTTP_403_FORBIDDEN, detail="Listener tokens cannot be used for this API."
             )
         token_event = payload.get("event_slug")
-        if expected_event_slug and token_event:
-            if token_event != expected_event_slug:
+        is_global = payload.get("admin") or payload.get("user") or payload.get("is_admin")
+        if expected_event_slug:
+            if not is_global and not token_event:
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Token missing event scope")
+            if token_event and token_event != expected_event_slug:
                 raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Token event scope mismatch")
 
     if credentials is not None:

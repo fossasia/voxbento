@@ -63,7 +63,9 @@ async def provision_listener_token(
         return {"token": token}
 
 
-@router.delete("/events/{event_slug}/rooms/{room_id}/booths/{language_code}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/events/{event_slug}/rooms/{room_id:int}/booths/{language_code}", status_code=status.HTTP_204_NO_CONTENT
+)
 async def delete_booth_by_language(
     request: Request,
     event_slug: str,
@@ -211,7 +213,7 @@ async def create_event_booth(
 
 
 @router.delete(
-    "/events/{event_slug}/eventyay-rooms/{eventyay_room_id}/booths/{language_code}",
+    "/events/{event_slug}/rooms/{eventyay_room_id}/booths/{language_code}",
     status_code=status.HTTP_204_NO_CONTENT,
 )
 async def delete_event_booth(
