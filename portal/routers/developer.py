@@ -116,12 +116,15 @@ async def create_oauth_client(
     raw_secret = f"secret_{secrets.token_urlsafe(32)}"
     secret_hash = hashlib.sha256(raw_secret.encode()).hexdigest()
 
+    from portal.routers.oauth import VALID_SCOPES
+
     client = OAuthClient(
         developer_account_id=account.id,
         client_id=raw_client_id,
         client_secret_hash=secret_hash,
         name=app_name,
         redirect_uris=uris,
+        scopes_requested=list(VALID_SCOPES.keys()),
     )
     db.add(client)
     await db.flush()
