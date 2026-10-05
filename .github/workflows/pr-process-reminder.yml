@@ -29,18 +29,29 @@ jobs:
       pull-requests: write
     steps:
       - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
 
       - uses: actions/github-script@v9
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
             if (context.eventName === 'workflow_dispatch') {
-              const prNumber = Number(context.payload.inputs.pr_number);
+              const rawPrNumber = context.payload.inputs.pr_number;
+              const prNumber = Number(rawPrNumber);
+              if (!Number.isSafeInteger(prNumber) || prNumber < 1) {
+                core.setFailed('pr_number must be a positive integer.');
+                return;
+              }
               const { data } = await github.rest.pulls.get({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 pull_number: prNumber,
               });
+              if (data.state !== 'open' || data.merged_at || !['dev', 'main'].includes(data.base.ref)) {
+                core.info('Skipping reminder: only open, unmerged PRs targeting dev or main are eligible.');
+                return;
+              }
               context.payload.pull_request = {
                 number: prNumber,
                 state: data.state,
