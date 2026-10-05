@@ -71,6 +71,15 @@ async def seed_event():
 # ---------------------------------------------------------------------------
 
 
+def resolve_relay_attr(html: str) -> str:
+    """The relay WHEP URL the interpreter page hands the browser."""
+    import re
+
+    m = re.search(r"data-relay-whep-url='([^']*)'", html)
+    assert m, "the relay attribute is not in the page at all, so a match proves nothing"
+    return m.group(1)
+
+
 def _client():
     from httpx import ASGITransport, AsyncClient
 
@@ -327,6 +336,55 @@ class TestEventCRUD:
         async with _client() as c:
             resp = await c.get("/admin/events/", cookies=admin_cookie)
         assert b"testcon" not in resp.content
+
+    @pytest.mark.anyio
+    async def test_delete_event_rejects_a_room_coordinator(self, admin_cookie, seed_event):
+        """require_admin admits a room_coordinator for the whole event, and deleting one
+        now destroys transcripts and OAuth grant state. Match the API-key routes and
+        require an event owner."""
+        from portal.auth import create_user_token
+        from portal.database import create_room, create_user, get_session
+        from portal.models import RoomMembership
+
+        event, room, _ = seed_event
+        async with get_session() as s:
+            side = await create_room(s, event_id=event.id, display_name="Side Room")
+            carol = await create_user(s, email="carol@example.com", display_name="Carol")
+            s.add(RoomMembership(user_id=carol.id, room_id=side.id, role="room_coordinator"))
+            carol_id = carol.id
+
+        cookie = {"user_token": create_user_token(user_id=carol_id, email="carol@example.com")}
+        async with _client() as c:
+            # she really is a coordinator: her own room's page is allowed
+            allowed = await c.get(f"/admin/events/{event.id}/rooms/{side.id}/", cookies=cookie)
+            resp = await c.post(f"/admin/events/{event.id}/delete", cookies=cookie, follow_redirects=False)
+        assert allowed.status_code == 200, "fixture is wrong; she is not a coordinator"
+        assert resp.status_code == 403
+
+        from portal.database import get_event_by_id
+
+        async with get_session() as s:
+            assert await get_event_by_id(s, event.id) is not None
+
+    @pytest.mark.anyio
+    async def test_delete_event_allows_an_event_owner(self, seed_event):
+        """The tightened guard must still admit the event's own owner."""
+        from portal.auth import create_user_token
+        from portal.database import create_user, get_event_by_id, get_session
+        from portal.models import EventMembership
+
+        event, _, _ = seed_event
+        async with get_session() as s:
+            owner = await create_user(s, email="owner@example.com", display_name="Owner")
+            s.add(EventMembership(user_id=owner.id, event_id=event.id, role="event_owner"))
+            owner_id = owner.id
+
+        cookie = {"user_token": create_user_token(user_id=owner_id, email="owner@example.com")}
+        async with _client() as c:
+            resp = await c.post(f"/admin/events/{event.id}/delete", cookies=cookie, follow_redirects=False)
+        assert resp.status_code == 303
+        async with get_session() as s:
+            assert await get_event_by_id(s, event.id) is None
 
     @pytest.mark.anyio
     async def test_event_not_found(self, admin_cookie):
@@ -754,6 +812,108 @@ class TestBoothCRUD:
                 follow_redirects=False,
             )
         assert resp.status_code == 303
+
+    @pytest.mark.anyio
+    async def test_delete_relay_booth_clears_the_rooms_pointer(self, admin_cookie, seed_event):
+        """The room page shows Relay Booth as None after the delete; the row must agree."""
+        from portal.database import get_room_by_id, get_session
+
+        event, room, booth = seed_event
+        async with _client() as c:
+            resp = await c.post(
+                f"/admin/events/{event.id}/rooms/{room.id}/edit",
+                data={"form_section": "relay", "relay_booth_id": str(booth.id)},
+                cookies=admin_cookie,
+                follow_redirects=False,
+            )
+            assert resp.status_code == 303
+        async with get_session() as s:
+            assert (await get_room_by_id(s, room.id)).relay_booth_id == booth.id
+
+        async with _client() as c:
+            resp = await c.post(
+                f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/delete",
+                cookies=admin_cookie,
+                follow_redirects=False,
+            )
+        assert resp.status_code == 303
+        async with get_session() as s:
+            assert (await get_room_by_id(s, room.id)).relay_booth_id is None
+
+    @pytest.mark.anyio
+    async def test_deleted_relay_booth_is_not_resurrected_by_a_reused_id(self, admin_cookie, seed_event):
+        """A new booth reusing the deleted booth's rowid must not inherit the relay slot.
+
+        Without the fix the interpreter is handed the new booth's WHEP URL, which can
+        be another room in another language, while the room page still shows None.
+        """
+        from portal.auth import create_participant_token
+        from portal.database import (
+            create_booth,
+            create_room,
+            get_room_by_id,
+            get_session,
+            list_booths_for_room,
+        )
+
+        # seed_event's booth is where the interpreter sits, so the relay booth is created
+        # after it and holds the highest booth id. Deleting the highest id is what frees it
+        # for reuse; deleting a lower one leaves max() untouched and proves nothing.
+        event, room, own = seed_event
+        async with get_session() as s:
+            relay_booth = await create_booth(
+                s, event_id=event.id, room_id=room.id, language_code="es", language_name="Spanish"
+            )
+            other_room = await create_room(s, event_id=event.id, display_name="Hall B")
+            own_id, other_room_id, relay_id = own.id, other_room.id, relay_booth.id
+        assert relay_id > own_id
+
+        async with _client() as c:
+            await c.post(
+                f"/admin/events/{event.id}/rooms/{room.id}/edit",
+                data={"form_section": "relay", "relay_booth_id": str(relay_id)},
+                cookies=admin_cookie,
+                follow_redirects=False,
+            )
+        session_cookie = {
+            "session_token": create_participant_token(
+                booth_id=own_id,
+                role="interpreter",
+                event_slug=event.slug,
+                room_id=room.id,
+                language_code="en",
+            )
+        }
+        async with _client() as c:
+            page = await c.get(f"/interpreter/{event.slug}/{room.id}/en", cookies=session_cookie)
+        assert resolve_relay_attr(page.text) != "", "relay was never configured, so nothing is proven"
+
+        async with _client() as c:
+            resp = await c.post(
+                f"/admin/events/{event.id}/rooms/{room.id}/booths/{relay_id}/delete",
+                cookies=admin_cookie,
+                follow_redirects=False,
+            )
+            assert resp.status_code == 303
+            # a booth added to the other room can take the freed rowid
+            await c.post(
+                f"/admin/events/{event.id}/rooms/{other_room_id}/booths/",
+                data={"language_code": "fr", "language_name": "French"},
+                cookies=admin_cookie,
+                follow_redirects=False,
+            )
+        async with get_session() as s:
+            new_booth = (await list_booths_for_room(s, other_room_id))[0]
+            assert (await get_room_by_id(s, room.id)).relay_booth_id is None
+        # without this the replacement never occupies the freed id and the stale-pointer
+        # path is not exercised at all
+        assert new_booth.id == relay_id, f"no rowid reuse: {new_booth.id} != {relay_id}"
+
+        async with _client() as c:
+            page = await c.get(f"/interpreter/{event.slug}/{room.id}/en", cookies=session_cookie)
+        after = resolve_relay_attr(page.text)
+        assert f"/{other_room_id}/{new_booth.language_code}/" not in after, after
+        assert not after.startswith("http"), f"still handed a relay stream: {after}"
 
     @pytest.mark.anyio
     async def test_booth_not_found(self, admin_cookie, seed_event):

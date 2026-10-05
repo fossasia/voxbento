@@ -165,13 +165,13 @@ function formatIndentedEntry(text) {
 
 function formatCompletedAgentsSection(completedAgents) {
   const lines = [`**✅ Completed (${completedAgents.length})**`, ''];
-  for (const agent of completedAgents) lines.push(formatIndentedEntry(`**${agent.label}** (`@${agent.login}`) — ${agent.kind}`), '');
+  for (const agent of completedAgents) lines.push(formatIndentedEntry(`**${agent.label}** (@${agent.login}) — ${agent.kind}`), '');
   return lines.join('\n').trimEnd();
 }
 
 function formatExcludedAgentsSection(excludedAgents) {
   const lines = ['**ℹ️ Does not count toward the checklist**', ''];
-  for (const agent of excludedAgents) lines.push(formatIndentedEntry(`**${agent.label}** (`@${agent.login}`) — ${agent.kind}`), '');
+  for (const agent of excludedAgents) lines.push(formatIndentedEntry(`**${agent.label}** (@${agent.login}) — ${agent.kind}`), '');
   return lines.join('\n').trimEnd();
 }
 
@@ -318,7 +318,7 @@ function formatFailedAgentsCollapsible(failedAgents) {
   const lines = ['<details>', `<summary>❌ ${failedAgents.length} failed or rate-limited AI ${failedAgents.length === 1 ? 'reviewer' : 'reviewers'}</summary>`, '', '>', ''];
   failedAgents.forEach((agent, index) => {
     if (index > 0) lines.push('>', '');
-    lines.push(`> **${agent.label}** (`@${agent.login}`)`, '>', `> ${agent.reason}`, '');
+    lines.push(`> **${agent.label}** (@${agent.login})`, '>', `> ${agent.reason}`, '');
   });
   lines.push('</details>');
   return lines.join('\n');
