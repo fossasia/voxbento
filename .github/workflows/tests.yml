@@ -65,8 +65,10 @@ jobs:
   # ── 2. Docker build + full-stack smoke test ──────────────────
   docker-smoke:
     runs-on: ubuntu-latest
-    needs: unit-tests
+    needs: unit-tests          # only build images if unit tests pass
 
+    # All host-facing URLs derived from CI_HOST. Change this single value
+    # if the runner network setup ever differs.
     env:
       CI_HOST: localhost
       PORTAL_PORT: 8000
@@ -89,6 +91,10 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4
 
+      # ── Shared helpers ──────────────────────────────────────
+      # wait_for_url  URL  LABEL  [MAX_ATTEMPTS]  [ACCEPT_CODES]
+      #   Polls URL until it returns one of ACCEPT_CODES (default: any
+      #   non-000 response). Fails after MAX_ATTEMPTS * 3 seconds.
       - name: Define CI helper functions
         run: |
           cat > /tmp/ci-helpers.sh << 'HELPERS'
@@ -116,16 +122,19 @@ jobs:
             [ "$code" = "$expected" ] || { echo "FAIL: expected $expected"; return 1; }
           }
           HELPERS
-
+          
+      # ── Build all images ────────────────────────────────────
       - name: Build portal image
         run: docker compose build portal
 
+      # ── Start the full stack ────────────────────────────────
       - name: Start all services
         run: docker compose up -d
 
       - name: Show running containers
         run: docker compose ps
 
+      # ── Wait for health ─────────────────────────────────────
       - name: Wait for portal to be healthy
         run: |
           echo "Waiting for portal healthcheck..."
@@ -145,10 +154,11 @@ jobs:
       - name: Wait for MediaMTX and Jitsi
         run: |
           source /tmp/ci-helpers.sh
-          wait_for_url "http://${CI_HOST}:${WEBRTC_PORT}/" "MediaMTX WebRTC" 20
+          wait_for_url "http://${CI_HOST}:${WEBRTC_PORT}/"                "MediaMTX WebRTC"      20
           wait_for_url "http://${CI_HOST}:${MEDIAMTX_API_PORT}/v3/paths/list" "MediaMTX Control API" 20
-          wait_for_url "http://${CI_HOST}:${JITSI_HTTP_PORT}/" "Jitsi web" 30 "200,301,302"
+          wait_for_url "http://${CI_HOST}:${JITSI_HTTP_PORT}/"            "Jitsi web"            30 "200,301,302"
 
+      # ── Smoke tests — hit every endpoint ────────────────────
       - name: Portal health endpoint
         run: |
           resp=$(curl -sf "http://${CI_HOST}:${PORTAL_PORT}/healthz")
@@ -158,7 +168,10 @@ jobs:
       - name: Portal page endpoints
         run: |
           source /tmp/ci-helpers.sh
-          assert_http "http://${CI_HOST}:${PORTAL_PORT}/interpreter/ci-event/1/en" "GET /interpreter/ci-event/1/en (no auth → 303)" "303"
+          # Booth pages now require auth — unauthenticated requests redirect to /login
+          assert_http "http://${CI_HOST}:${PORTAL_PORT}/interpreter/ci-event/1/en" \
+                      "GET /interpreter/ci-event/1/en (no auth → 303)" "303"
+
 
       - name: Portal ingest-status API
         run: |
@@ -176,46 +189,59 @@ jobs:
         run: |
           source /tmp/ci-helpers.sh
           assert_http "http://${CI_HOST}:${PORTAL_PORT}/static/js/interpreter-booth.js" "interpreter-booth.js"
-          assert_http "http://${CI_HOST}:${PORTAL_PORT}/static/js/whep-listener.js" "whep-listener.js"
-          assert_http "http://${CI_HOST}:${PORTAL_PORT}/static/js/admin.js" "admin.js"
-          assert_http "http://${CI_HOST}:${PORTAL_PORT}/static/css/admin.css" "admin.css"
+          assert_http "http://${CI_HOST}:${PORTAL_PORT}/static/js/whep-listener.js"     "whep-listener.js"
+          assert_http "http://${CI_HOST}:${PORTAL_PORT}/static/js/admin.js"             "admin.js"
+          assert_http "http://${CI_HOST}:${PORTAL_PORT}/static/css/admin.css"           "admin.css"
 
+      # ── Auth & admin panel smoke tests ──────────────────────
       - name: Home page, login, register render
         run: |
           source /tmp/ci-helpers.sh
-          assert_http "http://${CI_HOST}:${PORTAL_PORT}/" "GET /"
-          assert_http "http://${CI_HOST}:${PORTAL_PORT}/login" "GET /login"
+          assert_http "http://${CI_HOST}:${PORTAL_PORT}/"         "GET /"
+          assert_http "http://${CI_HOST}:${PORTAL_PORT}/login"    "GET /login"
           assert_http "http://${CI_HOST}:${PORTAL_PORT}/register" "GET /register"
 
       - name: Admin panel login and CRUD smoke test
         run: |
           BASE="http://${CI_HOST}:${PORTAL_PORT}"
+
+          # Admin login page renders
           code=$(curl -s -o /dev/null -w '%{http_code}' "${BASE}/admin/login")
           echo "GET /admin/login → $code"
           [ "$code" = "200" ] || { echo "FAIL"; exit 1; }
 
+          # Admin login with correct password → redirect + cookie
           resp=$(curl -s -D - -o /dev/null -X POST "${BASE}/admin/login" -d "password=ci-admin-pass")
           echo "$resp" | head -5
           echo "$resp" | grep -qi "set-cookie.*admin_token" || { echo "FAIL: no admin_token cookie"; exit 1; }
+
+          # Extract the admin_token cookie
           ADMIN_COOKIE=$(echo "$resp" | grep -i 'set-cookie.*admin_token' | sed 's/.*admin_token=\([^;]*\).*/\1/')
           echo "Admin token: ${ADMIN_COOKIE:0:20}..."
 
+          # Dashboard loads
           code=$(curl -s -o /dev/null -w '%{http_code}' -b "admin_token=${ADMIN_COOKIE}" "${BASE}/admin/")
           echo "GET /admin/ → $code"
           [ "$code" = "200" ] || { echo "FAIL"; exit 1; }
 
-          code=$(curl -s -o /dev/null -w '%{http_code}' -X POST -b "admin_token=${ADMIN_COOKIE}" -d "slug=ci-smoke&display_name=CI+Smoke+Test" "${BASE}/admin/events/")
+          # Create event
+          code=$(curl -s -o /dev/null -w '%{http_code}' -X POST -b "admin_token=${ADMIN_COOKIE}" \
+            -d "slug=ci-smoke&display_name=CI+Smoke+Test" "${BASE}/admin/events/")
           echo "POST /admin/events/ → $code"
           [ "$code" = "303" ] || { echo "FAIL"; exit 1; }
 
+          # Events list renders
           code=$(curl -s -o /dev/null -w '%{http_code}' -b "admin_token=${ADMIN_COOKIE}" "${BASE}/admin/events/")
           echo "GET /admin/events/ → $code"
           [ "$code" = "200" ] || { echo "FAIL"; exit 1; }
 
+          # Users list renders
           code=$(curl -s -o /dev/null -w '%{http_code}' -b "admin_token=${ADMIN_COOKIE}" "${BASE}/admin/users/")
+          echo "GET /admin/users/ → $code"
           echo "GET /admin/users/ → $code"
           [ "$code" = "200" ] || { echo "FAIL"; exit 1; }
 
+          # Admin without cookie → 403
           code=$(curl -s -o /dev/null -w '%{http_code}' "${BASE}/admin/")
           echo "GET /admin/ (no cookie) → $code"
           [ "$code" = "403" ] || { echo "FAIL: expected 403"; exit 1; }
@@ -223,10 +249,14 @@ jobs:
       - name: User registration and login smoke test
         run: |
           BASE="http://${CI_HOST}:${PORTAL_PORT}"
-          resp=$(curl -s -o /dev/null -w '%{http_code}' -X POST "${BASE}/register" -d "email=ci-test@example.com&display_name=CI+User&password=securepass123&password_confirm=securepass123")
+
+          # Register a new user
+          resp=$(curl -s -o /dev/null -w '%{http_code}' -X POST "${BASE}/register" \
+            -d "email=ci-test@example.com&display_name=CI+User&password=securepass123&password_confirm=securepass123")
           echo "POST /register → $resp"
           [ "$resp" = "200" ] || { echo "FAIL: expected 200 after register"; exit 1; }
 
+          # Manually verify the user's email since we can't click the magic link in CI
           docker exec $(docker compose ps -q portal) uv run python -c "
           import asyncio
           from portal.database import get_session, update_user, get_user_by_email
@@ -237,27 +267,40 @@ jobs:
           asyncio.run(verify())
           "
 
-          resp=$(curl -s -D - -o /dev/null -X POST "${BASE}/login" -d "email=ci-test@example.com&password=securepass123")
+          # Login with the registered user
+          resp=$(curl -s -D - -o /dev/null -X POST "${BASE}/login" \
+            -d "email=ci-test@example.com&password=securepass123")
           echo "$resp" | head -5
           echo "$resp" | grep -qi "set-cookie.*user_token" || { echo "FAIL: no user_token after login"; exit 1; }
 
+          # Extract user token and check account page
           USER_COOKIE=$(echo "$resp" | grep -i 'set-cookie.*user_token' | sed 's/.*user_token=\([^;]*\).*/\1/')
           code=$(curl -s -o /dev/null -w '%{http_code}' -b "user_token=${USER_COOKIE}" "${BASE}/account")
           echo "GET /account → $code"
           [ "$code" = "200" ] || { echo "FAIL"; exit 1; }
 
-          code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "${BASE}/login" -d "email=ci-test@example.com&password=wrong")
+          # Login with wrong password → 403
+          code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "${BASE}/login" \
+            -d "email=ci-test@example.com&password=wrong")
           echo "POST /login (wrong pw) → $code"
           [ "$code" = "403" ] || { echo "FAIL: expected 403"; exit 1; }
 
+          # Account without cookie → redirect to login
           code=$(curl -s -o /dev/null -w '%{http_code}' "${BASE}/account")
           echo "GET /account (no cookie) → $code"
           [ "$code" = "303" ] || { echo "FAIL: expected 303 redirect"; exit 1; }
 
-          code=$(curl -s -o /dev/null -w '%{http_code}' -b "user_token=${USER_COOKIE}" "${BASE}/interpreter/ci-smoke/1/en")
+
+
+          # With a valid user_token but no event membership → 403 on interpreter page
+          code=$(curl -s -o /dev/null -w '%{http_code}' -b "user_token=${USER_COOKIE}" \
+            "${BASE}/interpreter/ci-smoke/1/en")
           echo "GET /interpreter/ci-smoke/1/en (user, no membership) → $code"
           [ "$code" = "403" ] || { echo "FAIL: expected 403 without membership"; exit 1; }
 
+
+
+      # ── Collect logs on failure ─────────────────────────────
       - name: Dump logs on failure
         if: failure()
         run: docker compose logs --tail=100
