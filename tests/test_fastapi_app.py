@@ -1999,3 +1999,44 @@ def test_room_scoped_token_is_rejected_on_a_roomless_legacy_channel():
     asyncio.run(check("event-a-5-en", room_scoped))
     with pytest.raises(WSAuthError):
         asyncio.run(check("event-a-1-en", room_scoped))
+
+
+def test_role_bearing_token_without_scope_is_rejected():
+    """A signed participant token missing event/language must fail closed, not pass."""
+    import asyncio
+    from unittest.mock import AsyncMock
+
+    from portal.auth import WSAuthError, _validate_ws_payload_scope
+
+    async def check(payload):
+        websocket = AsyncMock()
+        await _validate_ws_payload_scope(
+            websocket, "event-a-1-en", payload, credential="token", allow_listener_path_id=True
+        )
+
+    with pytest.raises(WSAuthError):
+        asyncio.run(check({"role": "interpreter"}))
+    with pytest.raises(WSAuthError):
+        asyncio.run(check({"role": "interpreter", "event_slug": "event-a"}))
+    with pytest.raises(WSAuthError):
+        asyncio.run(check({"role": "interpreter", "language_code": "en"}))
+
+
+def test_participant_token_with_malformed_room_or_language_is_rejected():
+    """Malformed room/language values must not match a real booth channel."""
+    import asyncio
+    from unittest.mock import AsyncMock
+
+    from portal.auth import WSAuthError, _validate_participant_scope
+
+    async def check(payload):
+        websocket = AsyncMock()
+        await _validate_participant_scope(websocket, "event-a-1-en", payload, credential="token")
+
+    with pytest.raises(WSAuthError):
+        asyncio.run(check({"event_slug": "event-a", "language_code": "en", "room_id": "not-a-room"}))
+    with pytest.raises(WSAuthError):
+        asyncio.run(check({"event_slug": "event-a", "language_code": "xx", "room_id": 1}))
+
+    # The correctly scoped token is still accepted.
+    asyncio.run(check({"event_slug": "event-a", "language_code": "en", "room_id": 1}))
