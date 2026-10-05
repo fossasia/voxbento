@@ -853,7 +853,7 @@ def test_ws_broadcast_unlock_authorized_user_can_toggle():
 def test_ws_broadcast_unlock_interpreter_rejected():
     """Interpreter session cannot toggle broadcast lock."""
     client.post("/api/events/broadcastdeny/booths", json={"language_code": "en", "room_id": 1, "language": "English"})
-    booth = "broadcastdeny-en"
+    booth = "broadcastdeny-1-en"
     channel = "broadcastdeny/en"
 
     with client.websocket_connect(
@@ -2159,11 +2159,10 @@ def test_credentials_for_one_event_cannot_subscribe_to_another_events_tts(monkey
     assert _ws_close_code(f"{other}?token={listener}") == 4003
     assert _ws_close_code(other, subprotocols=[f"bearer.{listener}"]) == 4003
     assert _ws_close_code(f"{other}?token={interpreter['session_token']}") == 4003
-    if access_token:
-        # Open mode accepts a connection with no credential at all, so it never
-        # enforced an invite cookie's scope; with an access token set, it does.
-        assert _ws_close_code(other, cookies=interpreter) == 4003
+    assert _ws_close_code(other, cookies=interpreter) == 4003
     assert _ws_close_code(other, cookies=_user_cookie()) == 4003
+    # Nor does an invite carry its interpreter role into another event's booth.
+    assert _ws_close_code("/ws/booth/other-event-1-fr", cookies=interpreter) == 4003
 
     # The same listener token and member session do open their own event's AI booth.
     assert _ws_close_code(f"{own}?token={listener}") is None

@@ -512,11 +512,6 @@ async def user_event_authorized(user_id: str | int, booth_id: str) -> bool:
     return False
 
 
-def _carries_invite_scope(payload: dict) -> bool:
-    """Whether *payload* is an invite-link session, scoped to one event and language."""
-    return bool(payload.get("role") and payload.get("event_slug") and payload.get("language_code"))
-
-
 async def _require_event_authorization(websocket: WebSocket, payload: dict, booth_id: str) -> None:
     """Close *websocket* unless *payload* is a registered user who belongs to the booth's event.
 
@@ -531,6 +526,42 @@ async def _require_event_authorization(websocket: WebSocket, payload: dict, boot
         return
     await websocket.close(code=4003)
     raise WSAuthError("Session is not authorized for the event that owns this booth.")
+
+
+async def _authorize_session_cookie(websocket: WebSocket, payload: dict, booth_id: str) -> dict:
+    """Return the session cookie *payload* if it may open *booth_id*, else close *websocket*."""
+    if payload.get("is_admin") or payload.get("admin"):
+        return payload
+
+    token_event = payload.get("event_slug", "")
+    if payload.get("role") == "listener":
+        if not listener_scope_matches(token_event, booth_id):
+            await websocket.close(code=4003)
+            raise WSAuthError("Listener cookie event_slug does not match booth_id.")
+        return payload
+
+    token_lang = payload.get("language_code", "")
+    token_room = payload.get("room_id")
+    if token_event and token_lang:
+        from portal.booth_identity import parse_booth_id
+
+        try:
+            actual_event, actual_room, actual_lang = parse_booth_id(booth_id)
+        except ValueError:
+            await websocket.close(code=4003)
+            raise WSAuthError("Invalid booth_id format.")
+
+        if (
+            token_event != actual_event
+            or token_lang != actual_lang
+            or (token_room is not None and str(token_room) != str(actual_room))
+        ):
+            await websocket.close(code=4003)
+            raise WSAuthError("Participant cookie scope does not match booth_id.")
+        return payload
+
+    await _require_event_authorization(websocket, payload, booth_id)
+    return payload
 
 
 async def resolve_ws_auth(websocket: WebSocket, booth_id: str) -> dict:
@@ -582,18 +613,13 @@ async def resolve_ws_auth(websocket: WebSocket, booth_id: str) -> dict:
             raise WSAuthError("Role token carries no booth scope.")
 
     if not settings.booth_access_token:
-        # Open mode needs no credential at all, and passes admin and invite
-        # sessions through without enforcing their scope, as it always has.
-        session_payload = get_booth_session(websocket) or {}
-        if (
-            not session_payload
-            or session_payload.get("is_admin")
-            or session_payload.get("admin")
-            or _carries_invite_scope(session_payload)
-        ):
-            return session_payload
-        await _require_event_authorization(websocket, session_payload, booth_id)
-        return session_payload
+        # Open mode needs no credential at all, but one that is presented
+        # must still match the booth, or an invite for one event would carry
+        # its role into another event's booths.
+        session_payload = get_booth_session(websocket)
+        if not session_payload:
+            return {}
+        return await _authorize_session_cookie(websocket, session_payload, booth_id)
 
     # Origin Check for Cookie fallback
     origin = websocket.headers.get("origin")
@@ -614,39 +640,7 @@ async def resolve_ws_auth(websocket: WebSocket, booth_id: str) -> dict:
         await websocket.close(code=4001)
         raise WSAuthError("Missing WebSocket token and session cookie.")
 
-    # Check Cookie Scope
-    if payload.get("is_admin") or payload.get("admin"):
-        return payload
-
-    token_event = payload.get("event_slug", "")
-    if payload.get("role") == "listener":
-        if not listener_scope_matches(token_event, booth_id):
-            await websocket.close(code=4003)
-            raise WSAuthError("Listener cookie event_slug does not match booth_id.")
-        return payload
-
-    token_lang = payload.get("language_code", "")
-    token_room = payload.get("room_id")
-    if token_event and token_lang:
-        from portal.booth_identity import parse_booth_id
-
-        try:
-            actual_event, actual_room, actual_lang = parse_booth_id(booth_id)
-        except ValueError:
-            await websocket.close(code=4003)
-            raise WSAuthError("Invalid booth_id format.")
-
-        if (
-            token_event != actual_event
-            or token_lang != actual_lang
-            or (token_room is not None and str(token_room) != str(actual_room))
-        ):
-            await websocket.close(code=4003)
-            raise WSAuthError("Participant cookie scope does not match booth_id.")
-        return payload
-
-    await _require_event_authorization(websocket, payload, booth_id)
-    return payload
+    return await _authorize_session_cookie(websocket, payload, booth_id)
 
 
 async def resolve_booth_role(payload: dict | None, booth_id: str | None = None) -> str | None:
