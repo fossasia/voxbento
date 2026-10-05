@@ -23,12 +23,11 @@ depends_on: Union[str, Sequence[str], None] = None
 
 def upgrade() -> None:
     """Upgrade schema."""
-    op.add_column(
-        "room_translation_languages",
-        sa.Column("tts_enabled", sa.Boolean(), server_default="0", nullable=False),
-    )
+    with op.batch_alter_table("room_translation_languages") as batch_op:
+        batch_op.add_column(sa.Column("tts_enabled", sa.Boolean(), server_default="0", nullable=False))
 
 
 def downgrade() -> None:
     """Downgrade schema."""
-    op.drop_column("room_translation_languages", "tts_enabled")
+    with op.batch_alter_table("room_translation_languages") as batch_op:
+        batch_op.drop_column("tts_enabled")
