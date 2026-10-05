@@ -1955,6 +1955,13 @@ def test_delete_booth_routes_differentiated():
             headers={"Authorization": "Bearer " + token},
         )
         assert res2.status_code == 204
+
+        # Verify booth was removed from registry
+        res3 = client.get(
+            "/api/events/route-test/booths", headers={"Authorization": "Bearer " + token}
+        )
+        assert res3.status_code == 200
+        assert not any(b.get("language_code") == "en" for b in res3.json()["booths"])
     finally:
         if prev_env is None:
             os.environ.pop("BOOTH_ACCESS_TOKEN", None)
@@ -2013,6 +2020,26 @@ def test_check_scope_security_fixes():
     }
     global_jwt = jwt.encode(global_payload, settings.effective_jwt_secret, algorithm="HS256")
 
+    # 5. Ordinary user token WITHOUT event_slug -> must be rejected (no membership)
+    ordinary_user_payload = {
+        "sub": "999", # User without membership
+        "user": True,
+        "is_admin": False,
+        "iat": now,
+        "exp": now + datetime.timedelta(seconds=3600),
+    }
+    ordinary_user_jwt = jwt.encode(ordinary_user_payload, settings.effective_jwt_secret, algorithm="HS256")
+
+    # 6. Ordinary user token WITHOUT event_slug but WITH membership -> must be allowed
+    owner_payload = {
+        "sub": "1", # User with membership (we'll insert this)
+        "user": True,
+        "is_admin": False,
+        "iat": now,
+        "exp": now + datetime.timedelta(seconds=3600),
+    }
+    owner_jwt = jwt.encode(owner_payload, settings.effective_jwt_secret, algorithm="HS256")
+
     prev_setting = settings.booth_access_token
     settings.booth_access_token = "test-booth-token"
 
@@ -2023,6 +2050,22 @@ def test_check_scope_security_fixes():
             json={"language_code": "fr", "room_id": 1, "language": "French"},
             headers={"Authorization": f"Bearer {global_jwt}"},
         )
+
+        # Assign event ownership to user 1
+        import anyio
+        from sqlalchemy import select
+
+        from portal.database import Event, EventMembership, User, get_session
+        async def _add_membership():
+            async with get_session() as session:
+                ev = await session.scalar(select(Event).where(Event.slug == "route-test"))
+                user = await session.scalar(select(User).where(User.id == 1))
+                if not user:
+                    user = User(id=1, email="test@example.com", display_name="Test")
+                    session.add(user)
+                session.add(EventMembership(event_id=ev.id, user_id=1, role="event_owner"))
+                await session.commit()
+        anyio.run(_add_membership)
 
         # Test 1: Missing event_slug -> Rejected
         res1 = client.get("/api/events/route-test/booths", headers={"Authorization": f"Bearer {bad_participant_jwt}"})
@@ -2043,6 +2086,15 @@ def test_check_scope_security_fixes():
         # Test 4: Global token without event_slug -> Allowed
         res4 = client.get("/api/events/route-test/booths", headers={"Authorization": f"Bearer {global_jwt}"})
         assert res4.status_code == 200
+
+        # Test 5: Ordinary user without membership -> Rejected
+        res5 = client.get("/api/events/route-test/booths", headers={"Authorization": f"Bearer {ordinary_user_jwt}"})
+        assert res5.status_code == 403
+        assert "not a member" in res5.json()["detail"].lower()
+
+        # Test 6: Ordinary user WITH membership -> Allowed
+        res6 = client.get("/api/events/route-test/booths", headers={"Authorization": f"Bearer {owner_jwt}"})
+        assert res6.status_code == 200
 
     finally:
         settings.booth_access_token = prev_setting

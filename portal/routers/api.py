@@ -75,7 +75,7 @@ async def delete_booth_by_language(
     credentials: HTTPAuthorizationCredentials | None = Depends(security),
 ):
     """Delete a booth from an event."""
-    _require_access(request, credentials, token, expected_event_slug=event_slug)
+    await _require_access(request, credentials, token, expected_event_slug=event_slug)
 
     booth_id = make_booth_id(event_slug, room_id, language_code)
     await stop_transcription_worker(booth_id)
@@ -108,7 +108,7 @@ async def create_event_booth(
     Returns the booth state including derived booth_id, MediaMTX path,
     WHIP URL, and WHEP URL.
     """
-    _require_access(request, credentials, token, expected_event_slug=event_slug)
+    await _require_access(request, credentials, token, expected_event_slug=event_slug)
 
     async with get_session() as session:
         # Get or Create Event
@@ -225,7 +225,7 @@ async def delete_event_booth(
     credentials: HTTPAuthorizationCredentials | None = Depends(security),
 ):
     """Delete a booth provisioned via API."""
-    _require_access(request, credentials, token, expected_event_slug=event_slug)
+    await _require_access(request, credentials, token, expected_event_slug=event_slug)
 
     async with get_session() as session:
         # Find the event
@@ -254,6 +254,9 @@ async def delete_event_booth(
             await session.delete(booth)
             await session.flush()
 
+    # Remove from in memory state
+    await booths.remove_booth(event_slug, room.id, language_code)
+
 
 @router.get("/events/{event_slug}/booths")
 async def list_event_booths(
@@ -264,7 +267,7 @@ async def list_event_booths(
 ) -> dict:
     """List all booths for an event."""
     try:
-        _require_access(request, credentials, token, expected_event_slug=event_slug)
+        await _require_access(request, credentials, token, expected_event_slug=event_slug)
     except HTTPException as orig_exc:
         # Fallback to checking API Key
         async with get_session() as session:
@@ -322,7 +325,7 @@ async def event_booth_state(
     credentials: HTTPAuthorizationCredentials | None = Depends(security),
 ) -> dict:
     """Event-scoped booth state — never auto-creates a booth."""
-    _require_access(request, credentials, token, expected_event_slug=event_slug)
+    await _require_access(request, credentials, token, expected_event_slug=event_slug)
 
     if room_id is None:
         async with get_session() as session:
@@ -358,7 +361,7 @@ async def event_booth_whip_url(
     credentials: HTTPAuthorizationCredentials | None = Depends(security),
 ) -> dict:
     """Event-scoped WHIP URL — validates event ownership before returning."""
-    _require_access(request, credentials, token, expected_event_slug=event_slug)
+    await _require_access(request, credentials, token, expected_event_slug=event_slug)
 
     if room_id is None:
         async with get_session() as session:
@@ -398,7 +401,7 @@ async def api_transcription_start(
     token: str = Query(""),
     credentials: HTTPAuthorizationCredentials | None = Depends(security),
 ):
-    _require_access(request, credentials, token, expected_event_slug=event_slug)
+    await _require_access(request, credentials, token, expected_event_slug=event_slug)
     booth_id = make_booth_id(event_slug, room_id, language_code)
     async with get_session() as session:
         stmt = (
@@ -455,7 +458,7 @@ async def api_transcription_stop(
     token: str = Query(""),
     credentials: HTTPAuthorizationCredentials | None = Depends(security),
 ):
-    _require_access(request, credentials, token, expected_event_slug=event_slug)
+    await _require_access(request, credentials, token, expected_event_slug=event_slug)
     booth_id = make_booth_id(event_slug, room_id, language_code)
     await stop_transcription_worker(booth_id)
     return {"status": "stopped"}
