@@ -855,7 +855,7 @@ def _update_room_translation(session: AsyncSession, room: Room, values: RoomEdit
     room.floor_translation_model = values.floor_translation_model
 
     existing_languages = {language.language_code: language for language in room.translation_languages}
-    requested_codes = set(values.floor_translation_languages)
+    requested_codes = {code.strip() for code in values.floor_translation_languages if code and code.strip()}
     for code, language in existing_languages.items():
         language.enabled = code in requested_codes
     for code in requested_codes - existing_languages.keys():

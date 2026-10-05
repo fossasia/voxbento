@@ -555,6 +555,81 @@ class TestRoomCRUD:
         assert response.status_code == 400
 
     @pytest.mark.anyio
+    async def test_edit_room_full_legacy_form_rejects_invalid_relay(self, admin_cookie, seed_event):
+        """A legacy all-sections save (no form_section) still validates the relay id."""
+        event, room, _ = seed_event
+
+        async with _client() as c:
+            response = await c.post(
+                f"/admin/events/{event.id}/rooms/{room.id}/edit",
+                cookies=admin_cookie,
+                data={"display_name": "Hall", "relay_booth_id": "not-an-id"},
+                follow_redirects=False,
+            )
+        assert response.status_code == 400
+
+    @pytest.mark.anyio
+    async def test_edit_room_relay_section_clears_on_none_or_empty(self, admin_cookie, seed_event):
+        """`none` and empty relay values both clear the relay booth."""
+        from portal.database import get_room_by_id, get_session
+
+        event, room, booth = seed_event
+        for value in ("none", ""):
+            async with get_session() as session:
+                stored = await get_room_by_id(session, room.id)
+                stored.relay_booth_id = booth.id
+                await session.flush()
+
+            async with _client() as c:
+                response = await c.post(
+                    f"/admin/events/{event.id}/rooms/{room.id}/edit",
+                    cookies=admin_cookie,
+                    data={"form_section": "relay", "relay_booth_id": value},
+                    follow_redirects=False,
+                )
+            assert response.status_code == 303
+            async with get_session() as session:
+                updated = await get_room_by_id(session, room.id)
+                assert updated.relay_booth_id is None
+
+    @pytest.mark.anyio
+    async def test_edit_room_translation_section_skips_blank_and_keeps_disabled(self, admin_cookie, seed_event):
+        """Blank codes are skipped; an existing enabled language is disabled when dropped."""
+        from portal.database import get_room_by_id, get_session
+        from portal.models import RoomTranslationLanguage
+
+        event, room, _ = seed_event
+        async with get_session() as session:
+            session.add(
+                RoomTranslationLanguage(
+                    room_id=room.id, language_code="fr", language_name="French", enabled=True
+                )
+            )
+            await session.flush()
+
+        async with _client() as c:
+            response = await c.post(
+                f"/admin/events/{event.id}/rooms/{room.id}/edit",
+                cookies=admin_cookie,
+                data={
+                    "form_section": "translation",
+                    "floor_translation_enabled": "on",
+                    "floor_translation_provider": "local",
+                    "floor_translation_model": "nllb",
+                    "floor_translation_languages": ["de", "", "  "],
+                },
+                follow_redirects=False,
+            )
+        assert response.status_code == 303
+
+        async with get_session() as session:
+            updated = await get_room_by_id(session, room.id)
+            languages = {language.language_code: language for language in updated.translation_languages}
+            assert "" not in languages
+            assert languages["fr"].enabled is False
+            assert languages["de"].enabled is True
+
+    @pytest.mark.anyio
     async def test_edit_room_transcription_section_preserves_other_settings(self, admin_cookie, seed_event):
         from portal.database import get_room_by_id, get_session
 
