@@ -242,8 +242,9 @@ async def admin_login_page(request: Request):
 @router.post("/admin/login")
 async def admin_login_submit(request: Request):
     form = await request.form()
-    password = form.get("password", "")
-    if not settings.admin_password or password != settings.admin_password:
+    password = form.get("password", "").strip()
+    admin_password = (settings.admin_password or "").strip()
+    if not admin_password or password != admin_password:
         return templates.TemplateResponse(
             request=request,
             name="admin/login.html",
@@ -676,18 +677,22 @@ async def admin_delete_event(request: Request, event_id: int):
 
 
 @router.get("/admin/events/{event_id}/rooms/", dependencies=[Depends(require_admin)])
-async def admin_room_list(request: Request, event_id: int):
+async def admin_room_list(request: Request, event_id: int, search: str | None = Query(None)):
+    search_q = (search or "").strip()
+    search_val = search_q if search_q else None
     async with get_session() as session:
         event = await get_event_by_id(session, event_id)
         if event is None:
             raise HTTPException(status_code=404, detail="Event not found.")
-        rooms = await list_rooms_for_event(session, event_id)
+        rooms = await list_rooms_for_event(session, event_id, search=search_val)
         room_data = []
         for room in rooms:
             room_booths = await list_booths_for_room(session, room.id)
             room_data.append({"room": room, "booth_count": len(room_booths)})
     return templates.TemplateResponse(
-        request=request, name="admin/room_list.html", context={"event": event, "room_data": room_data}
+        request=request,
+        name="admin/room_list.html",
+        context={"event": event, "room_data": room_data, "search": search_val or ""},
     )
 
 
@@ -923,6 +928,8 @@ async def api_start_floor_transcription(room_id: int):
         room = await get_room_by_id(session, room_id)
         if not room or not room.floor_transcription_enabled:
             raise HTTPException(status_code=400, detail="Floor transcription not enabled or invalid room")
+        if room.floor_transcription_provider == "none":
+            raise HTTPException(status_code=400, detail="Cannot start transcription with 'none' provider")
         event = await get_event_by_id(session, room.event_id)
         if not event:
             raise HTTPException(status_code=400, detail="Event not found")
@@ -1353,11 +1360,11 @@ async def admin_edit_booth(request: Request, event_id: int, room_id: int, booth_
             if language_code_raw:
                 try:
                     booth.language_code = validate_language_code(language_code_raw)
-                except ValueError:
-                    pass
+                except ValueError as e:
+                    raise HTTPException(status_code=400, detail=str(e))
         await session.flush()
     return safe_redirect(
-        url=str(request.url_for("admin_booth_detail", event_id=event_id, room_id=room_id, booth_id=booth_id)),
+        url=f"/admin/events/{event_id}/rooms/{room_id}/booths/{booth_id}/",
         status_code=status.HTTP_303_SEE_OTHER,
     )
 
@@ -1443,9 +1450,9 @@ async def admin_users(
     limit: int = 50,
     search: str | None = None,
     sort_by: str = "created_at",
-    sort_order: str = "asc",
+    sort_order: str = "desc",
 ):
-    """List all registered users (super admin only)."""
+    """List all registered users (super admin only), newest first by default."""
     offset = (page - 1) * limit
     async with get_session() as session:
         total_users = await count_users(session, search=search)
@@ -1458,7 +1465,9 @@ async def admin_users(
         name="admin/user_list.html",
         context={
             "users": users,
+            "total_users": total_users,
             "page": page,
+            "limit": limit,
             "total_pages": total_pages,
             "search": search,
             "sort_by": sort_by,

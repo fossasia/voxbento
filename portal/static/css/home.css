@@ -196,6 +196,9 @@
 
 .solution-card-front {
   color: white;
+  /* Firefox ignores backface-visibility on this face without its own transform,
+     because the back face comes first in the markup, and shows it mirrored. */
+  transform: rotateY(0deg);
 }
 
 .solution-card-front .front-content {
@@ -372,3 +375,54 @@
   clip-path: polygon(0 0, 100% 0, 100% 100%, 0 100%);
   background: #ffffff;
 }
+
+/* Demo waveform bars (home.html demo section). Per-bar height and timing
+   were previously inline style="" attributes. */
+.demo-wave > div {
+  animation-name: demoWave;
+  animation-timing-function: ease-in-out;
+  animation-iteration-count: infinite;
+  animation-direction: alternate;
+}
+
+.demo-wave--loading-phone > div:nth-child(1) { height: 10px; animation-duration: 0.5s; }
+.demo-wave--loading-phone > div:nth-child(2) { height: 18px; animation-duration: 0.6s; animation-delay: 0.1s; }
+.demo-wave--loading-phone > div:nth-child(3) { height: 24px; animation-duration: 0.55s; animation-delay: 0.2s; }
+.demo-wave--loading-phone > div:nth-child(4) { height: 14px; animation-duration: 0.7s; animation-delay: 0.3s; }
+.demo-wave--loading-phone > div:nth-child(5) { height: 20px; animation-duration: 0.5s; animation-delay: 0.4s; }
+
+.demo-wave--loading-laptop > div:nth-child(1) { height: 14px; animation-duration: 0.5s; }
+.demo-wave--loading-laptop > div:nth-child(2) { height: 22px; animation-duration: 0.6s; animation-delay: 0.05s; }
+.demo-wave--loading-laptop > div:nth-child(3) { height: 18px; animation-duration: 0.55s; animation-delay: 0.1s; }
+.demo-wave--loading-laptop > div:nth-child(4) { height: 28px; animation-duration: 0.7s; animation-delay: 0.15s; }
+.demo-wave--loading-laptop > div:nth-child(5) { height: 12px; animation-duration: 0.5s; animation-delay: 0.2s; }
+.demo-wave--loading-laptop > div:nth-child(6) { height: 20px; animation-duration: 0.65s; animation-delay: 0.25s; }
+.demo-wave--loading-laptop > div:nth-child(7) { height: 30px; animation-duration: 0.6s; animation-delay: 0.3s; }
+.demo-wave--loading-laptop > div:nth-child(8) { height: 16px; animation-duration: 0.5s; animation-delay: 0.35s; }
+.demo-wave--loading-laptop > div:nth-child(9) { height: 24px; animation-duration: 0.7s; animation-delay: 0.4s; }
+.demo-wave--loading-laptop > div:nth-child(10) { height: 10px; animation-duration: 0.55s; animation-delay: 0.45s; }
+.demo-wave--loading-laptop > div:nth-child(11) { height: 26px; animation-duration: 0.6s; animation-delay: 0.5s; }
+
+.demo-wave--phone > div:nth-child(1) { height: 8px; animation-duration: 0.5s; }
+.demo-wave--phone > div:nth-child(2) { height: 16px; animation-duration: 0.6s; animation-delay: 0.08s; }
+.demo-wave--phone > div:nth-child(3) { height: 20px; animation-duration: 0.55s; animation-delay: 0.16s; }
+.demo-wave--phone > div:nth-child(4) { height: 12px; animation-duration: 0.7s; animation-delay: 0.24s; }
+.demo-wave--phone > div:nth-child(5) { height: 18px; animation-duration: 0.6s; animation-delay: 0.32s; }
+
+.demo-wave--laptop > div:nth-child(1) { height: 10px; animation-duration: 0.5s; }
+.demo-wave--laptop > div:nth-child(2) { height: 24px; animation-duration: 0.6s; animation-delay: 0.04s; }
+.demo-wave--laptop > div:nth-child(3) { height: 18px; animation-duration: 0.55s; animation-delay: 0.08s; }
+.demo-wave--laptop > div:nth-child(4) { height: 32px; animation-duration: 0.7s; animation-delay: 0.12s; }
+.demo-wave--laptop > div:nth-child(5) { height: 14px; animation-duration: 0.5s; animation-delay: 0.16s; }
+.demo-wave--laptop > div:nth-child(6) { height: 22px; animation-duration: 0.65s; animation-delay: 0.2s; }
+.demo-wave--laptop > div:nth-child(7) { height: 36px; animation-duration: 0.6s; animation-delay: 0.24s; }
+.demo-wave--laptop > div:nth-child(8) { height: 16px; animation-duration: 0.5s; animation-delay: 0.28s; }
+.demo-wave--laptop > div:nth-child(9) { height: 28px; animation-duration: 0.7s; animation-delay: 0.32s; }
+.demo-wave--laptop > div:nth-child(10) { height: 12px; animation-duration: 0.55s; animation-delay: 0.36s; }
+.demo-wave--laptop > div:nth-child(11) { height: 30px; animation-duration: 0.6s; animation-delay: 0.4s; }
+.demo-wave--laptop > div:nth-child(12) { height: 20px; animation-duration: 0.5s; animation-delay: 0.44s; }
+.demo-wave--laptop > div:nth-child(13) { height: 26px; animation-duration: 0.7s; animation-delay: 0.48s; }
+
+/* Phone mockup screen aspect ratio */
+.demo-phone-screen { aspect-ratio: 9 / 19; }
+

@@ -58,10 +58,10 @@ async def home(request: Request):
                             "membership": bm,
                             "booth_id": bid,
                             "is_live": is_live,
-                            "event_name": bm.booth.event.display_name,
-                            "room_name": bm.booth.room.display_name,
+                            "event_name": bm.booth.event.display_name if bm.booth.event else "Unknown Event",
+                            "room_name": bm.booth.room.display_name if bm.booth.room else "Unknown Room",
                             "language_name": bm.booth.language_name,
-                            "event_slug": bm.booth.event.slug,
+                            "event_slug": bm.booth.event.slug if bm.booth.event else "",
                             "language_code": bm.booth.language_code,
                         }
                     )
@@ -90,7 +90,7 @@ async def home(request: Request):
 
                     if b.room_id not in rooms_dict:
                         rooms_dict[b.room_id] = {
-                            "room_name": b.room.display_name,
+                            "room_name": b.room.display_name if b.room else "Unknown Room",
                             "booths": [],
                         }
                     rooms_dict[b.room_id]["booths"].append(
@@ -110,6 +110,7 @@ async def home(request: Request):
     except Exception as _exc:
         logging.getLogger(__name__).warning("home() DB error: %s", _exc, exc_info=True)
         event_data = []
+        my_booths = []
 
     return templates.TemplateResponse(
         request=request,

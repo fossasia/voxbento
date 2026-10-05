@@ -12,7 +12,7 @@
 | GET | `/` | open | `home.html` | Lists events + booth statuses; personalised if logged in |
 | GET | `/healthz` | open | — | JSON: `{ok, server, mediamtx_ok}` |
 | GET | `/register` | open | `register.html` | Redirects to `/account` if already logged in |
-| POST | `/register` | open | `register.html` | Creates user, sets `user_token` cookie → `/account` |
+| POST | `/register` | open | `register.html` | Creates user, sets `user_token` cookie → `/account`; if `password` is set, `password_confirm` must match (422 otherwise) |
 | GET | `/login` | open | `login.html` | Redirects to `/account` or `?next=` if logged in |
 | POST | `/login` | open | `login.html` | Verifies bcrypt, sets `user_token` cookie |
 | GET | `/logout` | open | — | Deletes `user_token` cookie → `/` |
@@ -72,7 +72,7 @@ All admin routes require `admin_token` cookie (or `user_token` with `is_admin=Tr
 | GET | `/admin/events/{event_id}/api-settings/` | `admin/api_settings.html` | View encrypted API keys |
 | POST | `/admin/events/{event_id}/api-settings` | — | Update transcription API keys (Fernet-encrypted) |
 | POST | `/admin/events/{event_id}/delete` | — | Cascade-deletes event |
-| GET | `/admin/events/{event_id}/rooms/` | `admin/room_list.html` | — |
+| GET | `/admin/events/{event_id}/rooms/` | `admin/room_list.html` | Supports optional `search` query parameter to filter rooms server-side against `Room.display_name` (case-insensitive `ilike` match with SQL wildcard escaping for `%`, `_`, and `\\`). |
 | POST | `/admin/events/{event_id}/rooms/` | — | Creates room; auto-generates Jitsi URL |
 | GET | `/admin/events/{event_id}/rooms/{room_id}/` | `admin/room_detail.html` | Room + booths |
 | POST | `/admin/events/{event_id}/rooms/{room_id}/edit` | — | Updates jitsi_url + relay_booth_id |
@@ -89,7 +89,7 @@ All admin routes require `admin_token` cookie (or `user_token` with `is_admin=Tr
 | GET | `/admin/events/{event_id}/members/` | `admin/event_members.html` | EventMembership list |
 | POST | `/admin/events/{event_id}/members/` | — | Upserts EventMembership by email + role |
 | POST | `/admin/events/{event_id}/members/{membership_id}/delete` | — | Removes EventMembership |
-| GET | `/admin/users/` | `admin/user_list.html` | — |
+| GET | `/admin/users/` | `admin/user_list.html` | Paginated; `sort_by`/`sort_order` query params, defaults to `created_at` desc (newest first) |
 | GET | `/admin/users/{user_id}/` | `admin/user_detail.html` | User + event admin assignments |
 | POST | `/admin/users/{user_id}/toggle-active` | — | Flips `is_active` |
 | POST | `/admin/users/{user_id}/delete` | — | Deletes user |

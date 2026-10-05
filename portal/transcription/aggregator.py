@@ -63,8 +63,6 @@ class CaptionAggregator:
         else:
             state.current_utterance = text.strip()
 
-        state.current_word_count = len(state.current_utterance.split())
-
         import re
 
         has_finalized = False
@@ -162,10 +160,3 @@ class CaptionAggregator:
             await self.handle_final(booth_id, state.current_utterance)
         else:
             await self.broadcast_callback(booth_id, {"type": "caption", "status": "clear", "text": ""})
-
-    def get_metrics(self, booth_id: str) -> dict:
-        state = self._get_state(booth_id)
-        return {
-            "current_word_count": state.current_word_count,
-            "open_duration": time.time() - state.utterance_start_time if state.utterance_start_time else 0.0,
-        }

@@ -127,7 +127,7 @@ class LocalProvider(TranscriptionProvider):
             audio_data,
             beam_size=5,
             vad_filter=True,
-            language=language_code,
+            language=language_code if language_code else None,
             word_timestamps=True,
             compression_ratio_threshold=2.4,
             no_speech_threshold=0.6,

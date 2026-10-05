@@ -116,14 +116,25 @@ class TranslationWorker:
                     # Target == Source: bypass translation/TTS entirely. It was already broadcast instantly
                     # on the base room. We just need to mark it done for anyone who might have connected
                     # specifically to the source-language target websocket.
-                    tasks.append(
-                        tts_manager.broadcast_bundle(
-                            room.id, lang.language_code, booth_id_str, b"", uuid_segment_id, seq, text, text, None
+                    async def _broadcast_source(r_id, l_code, b_id_str, u_seg_id, sq, txt, t_booth_id):
+                        from portal.websockets.manager import listener_manager
+                        await tts_manager.broadcast_bundle(
+                            r_id, l_code, b_id_str, b"", u_seg_id, sq, txt, txt, None
                         )
+                        if t_booth_id:
+                            await listener_manager.broadcast(t_booth_id, {"type": "translated_caption", "status": "final", "text": txt})
+
+                    target_booth_id = f"{event.slug}-{room.id}-{lang.language_code}"
+                    tasks.append(
+                        _broadcast_source(room.id, lang.language_code, booth_id_str, uuid_segment_id, seq, text, target_booth_id)
                     )
                 else:
                     # Lazy translation: only translate if someone is actually listening!
-                    if not tts_manager.has_listeners(room.id, lang.language_code, booth_id_str):
+                    target_booth_id = f"{event.slug}-{room.id}-{lang.language_code}"
+                    from portal.websockets.manager import listener_manager
+                    has_tts = tts_manager.has_listeners(room.id, lang.language_code, booth_id_str)
+                    has_text = listener_manager.has_listeners(target_booth_id)
+                    if not has_tts and not has_text:
                         continue
 
                     tasks.append(
@@ -141,6 +152,7 @@ class TranslationWorker:
                             booth_id_str,
                             uuid_segment_id,
                             seq,
+                            target_booth_id,
                         )
                     )
 
@@ -166,6 +178,7 @@ class TranslationWorker:
         booth_id_str: str,
         uuid_segment_id: str,
         seq: int,
+        target_booth_id: str | None = None,
     ):
         from portal.websockets.manager import tts_manager
 
@@ -233,6 +246,9 @@ class TranslationWorker:
                 await tts_manager.broadcast_bundle(
                     room.id, lang_code, booth_id_str, b"", uuid_segment_id, seq, text, translated_text, None
                 )
+                if target_booth_id:
+                    from portal.websockets.manager import listener_manager
+                    await listener_manager.broadcast(target_booth_id, {"type": "translated_caption", "status": "final", "text": translated_text})
 
             # Decrement queue early so slow TTS doesn't cause new incoming segments to be dropped
             LANGUAGE_QUEUES[lang_code] -= 1
@@ -261,7 +277,7 @@ class TranslationWorker:
             )
 
         except Exception as e:
-            logger.error(f"[{booth_id_str}] Translation failed for {lang_code}: {e}")
+            logger.error(f"[{booth_id_str}] Translation failed for {lang_code}: {e} (api_key is None? {api_key is None})")
             await tts_manager.broadcast_bundle(
                 room.id, lang_code, booth_id_str, b"", uuid_segment_id, seq, text, "", "pipeline_failed"
             )

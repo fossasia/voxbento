@@ -42,6 +42,7 @@ NLLB_LANGUAGE_MAP: Dict[str, str] = {
     "Afrikaans": "afr_Latn",
     "Akan": "aka_Latn",
     "Amharic": "amh_Ethi",
+    "Arabic": "arb_Arab",
     "Assamese": "asm_Beng",
     "Bashkir": "bak_Cyrl",
     "Bambara": "bam_Latn",

@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from portal.config import settings
 from portal.database import get_db_session
+from portal.roles import _ROLE_RANK
 
 logger = logging.getLogger(__name__)
 
@@ -85,18 +86,6 @@ def create_embed_token(*, event_slug: str) -> str:
 
 def decode_token(token: str) -> dict:
     return jwt.decode(token, settings.effective_jwt_secret, algorithms=["HS256"])
-
-
-def verify_bearer(credentials: HTTPAuthorizationCredentials | None) -> None:
-    """Raise HTTP 401 if auth is required and credentials are missing or invalid."""
-    if not settings.booth_access_token:
-        return
-    if credentials is None:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Missing auth token.")
-    try:
-        decode_token(credentials.credentials)
-    except jwt.InvalidTokenError as exc:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=f"Invalid token: {exc}")
 
 
 class WSAuthError(Exception):
@@ -400,9 +389,6 @@ async def require_user(request: Request) -> dict:
     return user
 
 
-_ROLE_RANK: dict[str, int] = {"interpreter": 1, "room_coordinator": 2, "event_owner": 3, "super_admin": 4}
-
-
 def get_booth_session(request: Request | WebSocket) -> dict | None:
     """Return decoded JWT payload from either user_token (registered user) or session_token (invite link).
 
@@ -536,7 +522,6 @@ async def resolve_booth_role(payload: dict | None, booth_id: str | None = None) 
     """
     if payload is None:
         return None
-    from portal.roles import _ROLE_RANK
 
     roles = []
     if "role" in payload:
@@ -620,11 +605,14 @@ def require_oauth_scope(required_scope: str):
         from datetime import datetime, timezone
 
         from sqlalchemy import select
+        from sqlalchemy.orm import joinedload
 
         from portal.models import OAuthToken
 
         token_hash = hashlib.sha256(token.credentials.encode()).hexdigest()
-        result = await db.execute(select(OAuthToken).where(OAuthToken.access_token_hash == token_hash))
+        result = await db.execute(
+            select(OAuthToken).options(joinedload(OAuthToken.client)).where(OAuthToken.access_token_hash == token_hash)
+        )
         oauth_token = result.scalars().first()
 
         if not oauth_token:
@@ -632,6 +620,9 @@ def require_oauth_scope(required_scope: str):
 
         if oauth_token.revoked:
             raise HTTPException(status_code=401, detail="Token revoked")
+
+        if not oauth_token.client or oauth_token.client.status != "active":
+            raise HTTPException(status_code=401, detail="Client is not active")
 
         # SQLAlchemy with SQLite might return naive datetimes for expires_at
         expires_at_aware = (

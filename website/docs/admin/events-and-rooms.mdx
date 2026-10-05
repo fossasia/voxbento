@@ -75,6 +75,15 @@ Type the room name into the **Add Room** form — for example, `Main Stage` or `
 
 Click **Add Room**. Voxbento automatically generates a Jitsi Meet URL for the room based on your configured `JITSI_DOMAIN`.
 
+## Searching Rooms
+
+On the event rooms page (`/admin/events/{event_id}/rooms/`), administrators can search and filter rooms by name:
+
+- **Server-side filtering:** The search query is matched server-side against the room's display name (`Room.display_name`).
+- **Case-insensitive matching:** Search terms match regardless of uppercase or lowercase input.
+- **Literal character matching:** Special characters, including SQL wildcards (`%`, `_`) and backslashes (`\`), are escaped so they match literally.
+- **Empty state & clear:** If no rooms match the query, a search-specific empty state message is displayed with a link to clear the search filter.
+
 ## Editing a Room
 
 After creation you can update a room's Jitsi URL or set its relay booth ID. This is useful if you need to point the room at a different Jitsi conference or configure audio relay between booths.

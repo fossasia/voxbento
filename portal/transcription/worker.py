@@ -104,13 +104,16 @@ class TranscriptionWorkerSession:
 
                 self.state = State.RUNNING
                 await _wh_worker.enqueue_webhook(
-                    "booth.transcription.started", {"booth_id": self.booth_id, "session_id": self.session_id}
+                    "booth.transcription.started", {"booth_id": self.booth_id, "session_id": self.session_id, "event_slug": self.event_slug}
                 )
 
                 # The context manager entirely encapsulates ffmpeg process lifecycle and cleanup.
                 async with FfmpegProcess(self.rtsp_url, self.sample_rate, self.booth_id) as process:
                     try:
                         actual_language = self.transcription_language or self.language_code
+                        if actual_language == "floor":
+                            actual_language = ""
+
                         from portal.transcription.providers.base import AudioIngester, StreamingProvider
 
                         if isinstance(self.provider, StreamingProvider):
@@ -166,7 +169,7 @@ class TranscriptionWorkerSession:
         finally:
             self.state = State.STOPPED
             await _wh_worker.enqueue_webhook(
-                "booth.transcription.stopped", {"booth_id": self.booth_id, "session_id": self.session_id}
+                "booth.transcription.stopped", {"booth_id": self.booth_id, "session_id": self.session_id, "event_slug": self.event_slug}
             )
             if self.provider_name == "local":
                 from portal.transcription.providers.local import decrement_model_ref
