@@ -199,6 +199,9 @@ async def require_event_owner(request: Request) -> None:
     Checks for a valid ``admin_token`` cookie containing a JWT with
     ``admin=True`` claim. Also accepts a valid ``user_token`` with
     ``is_admin=True``, or if the user is an event_owner for the specified event.
+    Routes without an ``event_id`` are general workspace entry points and accept
+    a user who owns at least one event; event-scoped routes require ownership of
+    that specific event.
     Returns None on success; raises HTTP 403 on failure.
     """
     event_id_str = request.path_params.get("event_id")

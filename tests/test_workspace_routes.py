@@ -22,6 +22,7 @@ from portal.database import (
     set_event_membership,
     set_room_membership,
 )
+from portal.workspace_routing import legacy_admin_to_workspace_path, workspace_to_admin_path
 
 os.environ["BOOTH_ACCESS_TOKEN"] = ""
 os.environ["ADMIN_PASSWORD"] = "test-admin-pass"
@@ -37,6 +38,55 @@ async def setup_db():
 
 def client():
     return AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
+
+
+@pytest.mark.parametrize(
+    ("workspace_path", "handler_path"),
+    [
+        ("/workspace", "/admin"),
+        ("/workspace/events", "/admin/events"),
+        ("/workspace/setup", "/admin/setup"),
+        ("/workspace/api/events/1/api-keys", "/admin/api/events/1/api-keys"),
+        ("/workspace/models/trigger_download", "/admin/models/trigger_download"),
+        ("/workspace/models/download_progress", "/admin/models/download_progress"),
+        (
+            "/workspace/models/supertonic/trigger_download",
+            "/admin/models/supertonic/trigger_download",
+        ),
+        (
+            "/workspace/models/supertonic/download_progress",
+            "/admin/models/supertonic/download_progress",
+        ),
+        (
+            "/api/workspace/events/1/rooms/2/transcripts/en",
+            "/api/admin/events/1/rooms/2/transcripts/en",
+        ),
+        ("/api/workspace/providers/translation/models", "/api/admin/providers/translation/models"),
+    ],
+)
+@pytest.mark.anyio
+async def test_workspace_route_inventory_maps_only_known_route_families(workspace_path, handler_path):
+    assert workspace_to_admin_path(workspace_path) == handler_path
+    assert legacy_admin_to_workspace_path(handler_path) == workspace_path
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/workspace/eventspoof",
+        "/workspace/events/1/not-a-route",
+        "/workspace/setup/unknown",
+        "/workspace/api/events/1/not-a-route",
+        "/workspace/models",
+        "/workspace/models/future-route",
+        "/workspace/models/supertonic/future-route",
+        "/api/workspace/events/1/not-a-route",
+        "/api/workspace/providers/future-route",
+    ],
+)
+@pytest.mark.anyio
+async def test_workspace_route_inventory_rejects_unknown_and_deep_paths(path):
+    assert workspace_to_admin_path(path) is None
 
 
 @pytest.fixture
@@ -66,8 +116,8 @@ async def test_event_owner_manages_event_from_workspace_namespace(organizer):
 
     assert response.status_code == 200
     assert "Shared Event" in response.text
-    assert f'/workspace/events/{organizer["event_id"]}/rooms/' in response.text
-    assert f'/admin/events/{organizer["event_id"]}/rooms/' not in response.text
+    assert f"/workspace/events/{organizer['event_id']}/rooms/" in response.text
+    assert f"/admin/events/{organizer['event_id']}/rooms/" not in response.text
 
 
 @pytest.mark.anyio
@@ -80,9 +130,7 @@ async def test_legacy_admin_event_url_redirects_owner_and_preserves_query(organi
         )
 
     assert response.status_code == 307
-    assert response.headers["location"] == (
-        f"/workspace/events/{organizer['event_id']}/rooms/?search=main%20hall"
-    )
+    assert response.headers["location"] == (f"/workspace/events/{organizer['event_id']}/rooms/?search=main%20hall")
 
 
 @pytest.mark.anyio
@@ -109,8 +157,8 @@ async def test_super_admin_retains_admin_namespace(organizer):
         )
 
     assert response.status_code == 200
-    assert f'/admin/events/{organizer["event_id"]}/rooms/' in response.text
-    assert f'/workspace/events/{organizer["event_id"]}/rooms/' not in response.text
+    assert f"/admin/events/{organizer['event_id']}/rooms/" in response.text
+    assert f"/workspace/events/{organizer['event_id']}/rooms/" not in response.text
 
 
 @pytest.mark.anyio
@@ -184,6 +232,36 @@ async def test_unrelated_user_cannot_access_workspace_event(organizer):
         response = await http.get(
             f"/workspace/events/{organizer['event_id']}/",
             cookies=outsider_cookie,
+        )
+
+    assert response.status_code == 403
+
+
+@pytest.mark.anyio
+async def test_event_owner_can_access_general_workspace_routes(organizer):
+    async with client() as http:
+        dashboard = await http.get(
+            "/workspace/",
+            cookies=organizer["cookies"],
+            follow_redirects=False,
+        )
+        setup = await http.get("/workspace/setup", cookies=organizer["cookies"])
+
+    assert dashboard.status_code == 303
+    assert dashboard.headers["location"] == f"/workspace/events/{organizer['event_id']}/"
+    assert setup.status_code == 200
+
+
+@pytest.mark.anyio
+async def test_event_owner_cannot_manage_an_event_they_do_not_own(organizer):
+    async with get_session() as session:
+        other_event = await create_event(session, slug="other-event", display_name="Other Event")
+        other_event_id = other_event.id
+
+    async with client() as http:
+        response = await http.get(
+            f"/workspace/events/{other_event_id}/",
+            cookies=organizer["cookies"],
         )
 
     assert response.status_code == 403

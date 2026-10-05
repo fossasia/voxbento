@@ -15,35 +15,54 @@ from portal.utils import safe_redirect
 WORKSPACE_PREFIX = "/workspace"
 ADMIN_PREFIX = "/admin"
 _EVENT_PATH_RE = re.compile(r"^/(?:api/)?admin(?:/api)?/events/(?P<event_id>\d+)(?:/|$)")
+_WORKSPACE_ROUTE_PATTERNS = (
+    re.compile(r"/workspace/?"),
+    re.compile(r"/workspace/events/?"),
+    re.compile(r"/workspace/setup/?"),
+    re.compile(r"/workspace/events/\d+/?"),
+    re.compile(r"/workspace/events/\d+/(?:setup/(?:rooms|booths|invite)|regenerate_join_code|api-settings|delete)/?"),
+    re.compile(r"/workspace/events/\d+/(?:rooms|members)/?"),
+    re.compile(r"/workspace/events/\d+/members/\d+/(?:invite|delete)/?"),
+    re.compile(r"/workspace/events/\d+/rooms/\d+(?:/(?:transcripts|edit|delete))?/?"),
+    re.compile(r"/workspace/events/\d+/rooms/\d+/members(?:/\d+/(?:invite|delete))?/?"),
+    re.compile(r"/workspace/events/\d+/rooms/\d+/booths/?"),
+    re.compile(
+        r"/workspace/events/\d+/rooms/\d+/booths/\d+"
+        r"(?:/(?:edit|delete|translation-settings|transcription-settings))?/?"
+    ),
+    re.compile(
+        r"/workspace/events/\d+/rooms/\d+/booths/\d+/members"
+        r"(?:/\d+/(?:invite|delete))?/?"
+    ),
+    re.compile(r"/workspace/events/\d+/rooms/\d+/booths/\d+/tokens(?:/\d+/revoke)?/?"),
+    re.compile(r"/workspace/api/events/\d+/api-keys(?:/\d+)?/?"),
+    re.compile(r"/workspace/models/(?:trigger_download|download_progress)"),
+    re.compile(r"/workspace/models/supertonic/(?:trigger_download|download_progress)"),
+    re.compile(r"/api/workspace/events/\d+/rooms/\d+/transcripts/[^/]+"),
+    re.compile(r"/api/workspace/providers/translation/models"),
+)
 
 
 def workspace_to_admin_path(path: str) -> str | None:
-    """Map a public organizer workspace path to its shared admin handler path."""
-    if path in {WORKSPACE_PREFIX, f"{WORKSPACE_PREFIX}/"}:
-        return path.replace(WORKSPACE_PREFIX, ADMIN_PREFIX, 1)
-    if path.startswith(
-        (
-            "/workspace/events",
-            "/workspace/setup",
-            "/workspace/api/events",
-            "/workspace/models/",
-        )
-    ):
+    """Map an allowlisted organizer workspace path to its shared handler path."""
+    if not any(pattern.fullmatch(path) for pattern in _WORKSPACE_ROUTE_PATTERNS):
+        return None
+    if path.startswith(f"{WORKSPACE_PREFIX}/") or path == WORKSPACE_PREFIX:
         return f"{ADMIN_PREFIX}{path[len(WORKSPACE_PREFIX) :]}"
-    if path.startswith(("/api/workspace/events/", "/api/workspace/providers/")):
+    if path.startswith("/api/workspace/"):
         return f"/api/admin{path[len('/api/workspace') :]}"
     return None
 
 
 def legacy_admin_to_workspace_path(path: str) -> str | None:
     """Return the organizer equivalent of a legacy management path."""
-    if path in {ADMIN_PREFIX, f"{ADMIN_PREFIX}/"}:
-        return path.replace(ADMIN_PREFIX, WORKSPACE_PREFIX, 1)
-    if path.startswith(("/admin/events", "/admin/setup", "/admin/api/events/", "/admin/models/")):
-        return path.replace(ADMIN_PREFIX, WORKSPACE_PREFIX, 1)
-    if path.startswith(("/api/admin/events/", "/api/admin/providers/")):
-        return path.replace("/api/admin", "/api/workspace", 1)
-    return None
+    if path == ADMIN_PREFIX or path.startswith(f"{ADMIN_PREFIX}/"):
+        workspace_path = f"{WORKSPACE_PREFIX}{path[len(ADMIN_PREFIX) :]}"
+    elif path.startswith("/api/admin/"):
+        workspace_path = f"/api/workspace{path[len('/api/admin') :]}"
+    else:
+        return None
+    return workspace_path if workspace_to_admin_path(workspace_path) == path else None
 
 
 async def should_redirect_organizer(request: Request) -> bool:
