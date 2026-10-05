@@ -606,11 +606,14 @@ def require_oauth_scope(required_scope: str):
         from datetime import datetime, timezone
 
         from sqlalchemy import select
+        from sqlalchemy.orm import joinedload
 
         from portal.models import OAuthToken
 
         token_hash = hashlib.sha256(token.credentials.encode()).hexdigest()
-        result = await db.execute(select(OAuthToken).where(OAuthToken.access_token_hash == token_hash))
+        result = await db.execute(
+            select(OAuthToken).options(joinedload(OAuthToken.client)).where(OAuthToken.access_token_hash == token_hash)
+        )
         oauth_token = result.scalars().first()
 
         if not oauth_token:
@@ -618,6 +621,9 @@ def require_oauth_scope(required_scope: str):
 
         if oauth_token.revoked:
             raise HTTPException(status_code=401, detail="Token revoked")
+
+        if not oauth_token.client or oauth_token.client.status != "active":
+            raise HTTPException(status_code=401, detail="Client is not active")
 
         # SQLAlchemy with SQLite might return naive datetimes for expires_at
         expires_at_aware = (
