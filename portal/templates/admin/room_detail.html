@@ -251,7 +251,7 @@
       </div>
       <div class="form-group form-group--grow" id="tts_voice_group">
         <label for="floor_tts_voice">TTS Voice</label>
-        <select id="floor_tts_voice" name="floor_tts_voice" class="input" data-current-voice="{{ room.floor_tts_voice or '' }}">
+        <select id="floor_tts_voice" name="floor_tts_voice" class="input" data-current-voice="{{ room.floor_tts_voice or '' }}" data-voices='{{ tts_voice_options | tojson }}'>
           <option value="">(Model will pick best voice)</option>
         </select>
         <p class="form-help form-help--spaced">Leave empty to let the provider pick a voice for each language. A Deepgram voice is only used for the language it speaks.</p>
@@ -348,45 +348,6 @@
     transProviderSelect.addEventListener('change', loadTranslationModels);
     if (transProviderSelect.value) {
       loadTranslationModels();
-    }
-
-    // TTS provider → reload its voices + provider help text
-    const ttsVoices = {{ tts_voice_options | tojson }};
-
-    const ttsProviderSelect = document.getElementById('floor_tts_provider');
-    const ttsVoiceSelect = document.getElementById('floor_tts_voice');
-    const ttsHelpDeepgram = document.getElementById('tts_provider_help_deepgram');
-    const ttsHelpSupertonic = document.getElementById('tts_provider_help_supertonic');
-
-    function updateTtsVoices() {
-      const provider = ttsProviderSelect.value;
-      const currentVoice = ttsVoiceSelect.getAttribute('data-current-voice') || '';
-      
-      if (provider === 'deepgram') {
-        ttsHelpDeepgram.style.display = 'block';
-        ttsHelpSupertonic.style.display = 'none';
-      } else {
-        ttsHelpDeepgram.style.display = 'none';
-        ttsHelpSupertonic.style.display = 'block';
-      }
-
-      ttsVoiceSelect.innerHTML = '<option value="">(Model will pick best voice)</option>';
-      const options = ttsVoices[provider] || [];
-      
-      options.forEach(opt => {
-        const optionEl = document.createElement('option');
-        optionEl.value = opt.id;
-        optionEl.textContent = opt.name;
-        if (opt.id === currentVoice) {
-          optionEl.selected = true;
-        }
-        ttsVoiceSelect.appendChild(optionEl);
-      });
-    }
-
-    if (ttsProviderSelect) {
-      ttsProviderSelect.addEventListener('change', updateTtsVoices);
-      updateTtsVoices();
     }
 
     // Language tag picker
