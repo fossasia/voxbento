@@ -49,11 +49,14 @@ VALID_SCOPES = {
     "webhooks:manage": "Manage webhook subscriptions",
 }
 
+
 def generate_token() -> str:
     return secrets.token_urlsafe(32)
 
+
 def hash_token(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
+
 
 def verify_pkce(code_verifier: str, code_challenge: str, method: str) -> bool:
     if method == "S256":
@@ -62,7 +65,10 @@ def verify_pkce(code_verifier: str, code_challenge: str, method: str) -> bool:
         return encoded == code_challenge
     return False
 
-async def get_effective_scopes(db: AsyncSession, user: dict, event_id: int, requested_scopes: list[str], assume_owner: bool = False) -> list[str]:
+
+async def get_effective_scopes(
+    db: AsyncSession, user: dict, event_id: int, requested_scopes: list[str], client: OAuthClient
+) -> list[str]:
     # Check if user has EventMembership
     result = await db.execute(
         select(EventMembership).where(EventMembership.user_id == int(user["sub"]), EventMembership.event_id == event_id)
@@ -73,14 +79,15 @@ async def get_effective_scopes(db: AsyncSession, user: dict, event_id: int, requ
     # simplified for now: if they have any role in the event, we grant scopes they requested
     # that map to their role.
     # Accept "owner" as a synonym for "event_owner" (e.g. roles synced from Eventyay)
-    is_event_admin = assume_owner or (event_membership and event_membership.role in ("event_owner", "super_admin", "owner"))
+    is_event_admin = event_membership and event_membership.role in ("event_owner", "super_admin", "owner")
     is_room_coordinator = event_membership and event_membership.role == "room_coordinator"
 
     # In a full implementation, we would narrow this down per-room.
     # For MVP, if they are event_owner, they get all they asked for.
     # If they are room_coordinator, they get room/booth level scopes.
+    # Confidential clients are trusted to manage permissions (e.g. for ownerless events or multi-organizer auth)
     allowed = set()
-    if is_event_admin:
+    if is_event_admin or client.is_confidential:
         allowed = set(VALID_SCOPES.keys())
     elif is_room_coordinator:
         allowed = {
@@ -94,8 +101,9 @@ async def get_effective_scopes(db: AsyncSession, user: dict, event_id: int, requ
             "listeners:provision",
         }
 
-    # Intersection
-    return list(set(requested_scopes) & allowed)
+    # Intersection with user's allowed scopes AND the client's registered scopes
+    return list(set(requested_scopes) & allowed & set(client.scopes_requested))
+
 
 @router.get("/oauth/authorize", include_in_schema=False)
 async def authorize_get(
@@ -143,6 +151,7 @@ async def authorize_get(
     if not evt:
         # Auto-provision a stub event for OAuth flow
         from sqlalchemy.exc import IntegrityError
+
         try:
             async with db.begin_nested():
                 evt = Event(slug=event, display_name=event)
@@ -154,19 +163,9 @@ async def authorize_get(
             if not evt:
                 raise HTTPException(status_code=500, detail="Failed to create or fetch event.")
 
-    # Give the authorizing user ownership if the event has no owner yet
-    owner_result = await db.execute(
-        select(EventMembership).where(
-            EventMembership.event_id == evt.id,
-            EventMembership.role.in_(["event_owner", "super_admin", "owner"])
-        )
-    )
-    has_owner = owner_result.scalars().first() is not None
-
-
     # 3. Calculate Scopes
     requested_scopes = scope.split(" ") if scope else []
-    effective_scopes = await get_effective_scopes(db, user, evt.id, requested_scopes, assume_owner=not has_owner)
+    effective_scopes = await get_effective_scopes(db, user, evt.id, requested_scopes, client=client)
 
     if not effective_scopes:
         raise HTTPException(
@@ -191,6 +190,7 @@ async def authorize_get(
             "scope_string": " ".join(effective_scopes),
         },
     )
+
 
 @router.post("/oauth/authorize", include_in_schema=False)
 async def authorize_post(
@@ -224,43 +224,13 @@ async def authorize_post(
         error_url = urllib.parse.urlunparse(parsed_redirect._replace(query=error_query))
         return RedirectResponse(url=error_url, status_code=303)
 
-    # Ensure event exists and lock it for ownership assignment
-    locked_event_result = await db.execute(
-        select(Event).with_for_update().where(Event.id == event_id)
-    )
-    locked_event = locked_event_result.scalars().first()
-    if not locked_event:
+    # Ensure event exists
+    event_result = await db.execute(select(Event).where(Event.id == event_id))
+    if not event_result.scalars().first():
         raise HTTPException(status_code=404, detail="Event not found.")
 
-    owner_result = await db.execute(
-        select(EventMembership).where(
-            EventMembership.event_id == event_id,
-            EventMembership.role.in_(["event_owner", "super_admin", "owner"])
-        )
-    )
-    has_owner = owner_result.scalars().first() is not None
-
-    if not has_owner:
-        from sqlalchemy.exc import IntegrityError
-        try:
-            async with db.begin_nested():
-                membership_result = await db.execute(
-                    select(EventMembership).where(
-                        EventMembership.user_id == int(user["sub"]), EventMembership.event_id == event_id
-                    )
-                )
-                membership = membership_result.scalars().first()
-                if membership:
-                    membership.role = "event_owner"
-                else:
-                    membership = EventMembership(user_id=int(user["sub"]), event_id=event_id, role="event_owner")
-                    db.add(membership)
-                await db.flush()
-        except IntegrityError:
-            pass
-
     # Re-validate scopes live
-    effective_scopes = await get_effective_scopes(db, user, event_id, scope.split(" "))
+    effective_scopes = await get_effective_scopes(db, user, event_id, scope.split(" "), client=client)
     if not effective_scopes:
         raise HTTPException(status_code=403, detail="Forbidden")
 
@@ -314,6 +284,7 @@ async def authorize_post(
     redirect_url = urllib.parse.urlunparse(parsed_redirect._replace(query=redirect_query))
     return RedirectResponse(url=redirect_url, status_code=303)
 
+
 @router.post("/oauth/token", response_class=JSONResponse)
 async def token_exchange(
     request: Request,
@@ -344,6 +315,8 @@ async def token_exchange(
             return JSONResponse(status_code=400, content={"error": "invalid_request"})
 
         code_hash = hash_token(code)
+
+        # Fetch the details of the claimed code
         code_result = await db.execute(
             select(OAuthAuthorizationCode).where(OAuthAuthorizationCode.code_hash == code_hash)
         )
@@ -364,12 +337,51 @@ async def token_exchange(
                 status_code=400, content={"error": "invalid_grant", "error_description": "PKCE verification failed"}
             )
 
-        # Mark code as used
-        auth_code.used = True
+        # Atomically claim the authorization code
+        update_result = await db.execute(
+            update(OAuthAuthorizationCode)
+            .where(
+                OAuthAuthorizationCode.code_hash == code_hash,
+                OAuthAuthorizationCode.used.is_(False),
+            )
+            .values(used=True)
+        )
+        if update_result.rowcount == 0:
+            return JSONResponse(status_code=400, content={"error": "invalid_grant"})
 
         # Issue tokens
         access_token_raw = generate_token()
         refresh_token_raw = generate_token()
+
+        if client.is_confidential:
+            from sqlalchemy.exc import IntegrityError
+
+            try:
+                async with db.begin_nested():
+                    membership_result = await db.execute(
+                        select(EventMembership).where(
+                            EventMembership.user_id == auth_code.user_id, EventMembership.event_id == auth_code.event_id
+                        )
+                    )
+                    membership = membership_result.scalars().first()
+                    if membership:
+                        if membership.role not in ("event_owner", "super_admin", "owner"):
+                            membership.role = "event_owner"
+                    else:
+                        membership = EventMembership(
+                            user_id=auth_code.user_id, event_id=auth_code.event_id, role="event_owner"
+                        )
+                        db.add(membership)
+                    await db.flush()
+            except IntegrityError:
+                membership_result = await db.execute(
+                    select(EventMembership).where(
+                        EventMembership.user_id == auth_code.user_id, EventMembership.event_id == auth_code.event_id
+                    )
+                )
+                membership = membership_result.scalars().first()
+                if membership and membership.role not in ("event_owner", "super_admin", "owner"):
+                    membership.role = "event_owner"
 
         token_record = OAuthToken(
             client_id=client.id,
@@ -478,6 +490,7 @@ async def token_exchange(
         }
 
     return JSONResponse(status_code=400, content={"error": "unsupported_grant_type"})
+
 
 @router.post("/oauth/revoke")
 async def revoke_token(

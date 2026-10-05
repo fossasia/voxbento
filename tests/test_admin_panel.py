@@ -364,6 +364,65 @@ class TestRoomCRUD:
         assert b"Main Hall" in resp.content
 
     @pytest.mark.anyio
+    async def test_room_list_search(self, admin_cookie, seed_event):
+        event, _, _ = seed_event
+        # Create an additional room to test search filtering
+        async with _client() as c:
+            await c.post(
+                f"/admin/events/{event.id}/rooms/",
+                data={"display_name": "Workshop Room"},
+                cookies=admin_cookie,
+                follow_redirects=False,
+            )
+
+        # Search for "Workshop" -> should return "Workshop Room" link and hide "Main Hall" link
+        async with _client() as c:
+            resp = await c.get(f"/admin/events/{event.id}/rooms/?search=workshop", cookies=admin_cookie)
+        assert resp.status_code == 200
+        assert b">Workshop Room</a>" in resp.content
+        assert b">Main Hall</a>" not in resp.content
+
+        # Search for non-existent room -> empty state message
+        async with _client() as c:
+            resp = await c.get(f"/admin/events/{event.id}/rooms/?search=NonExistent", cookies=admin_cookie)
+        assert resp.status_code == 200
+        assert b"No rooms match search" in resp.content
+
+        # Searching for literal "%" or "_" when no room names contain them should return empty match, not all rooms
+        async with _client() as c:
+            resp = await c.get(f"/admin/events/{event.id}/rooms/?search=%25", cookies=admin_cookie)
+        assert resp.status_code == 200
+        assert b"No rooms match search" in resp.content
+
+        async with _client() as c:
+            resp = await c.get(f"/admin/events/{event.id}/rooms/?search=_", cookies=admin_cookie)
+        assert resp.status_code == 200
+        assert b"No rooms match search" in resp.content
+
+        # Create a room with display_name containing a literal backslash
+        async with _client() as c:
+            await c.post(
+                f"/admin/events/{event.id}/rooms/",
+                data={"display_name": "Backslash \\ Room"},
+                cookies=admin_cookie,
+                follow_redirects=False,
+            )
+
+        # Search using the URL-encoded backslash
+        async with _client() as c:
+            resp = await c.get(f"/admin/events/{event.id}/rooms/?search=%5C", cookies=admin_cookie)
+        assert resp.status_code == 200
+        assert b">Backslash \\ Room</a>" in resp.content
+
+        # Whitespace-only search query should be ignored and render all rooms without active search state
+        async with _client() as c:
+            resp = await c.get(f"/admin/events/{event.id}/rooms/?search=%20%20", cookies=admin_cookie)
+        assert resp.status_code == 200
+        assert b">Main Hall</a>" in resp.content
+        assert b">Workshop Room</a>" in resp.content
+        assert b"No rooms match search" not in resp.content
+
+    @pytest.mark.anyio
     async def test_create_room(self, admin_cookie, seed_event):
         event, _, _ = seed_event
         async with _client() as c:
@@ -1026,6 +1085,86 @@ async def test_admin_list_pages_have_no_inline_styles(path, admin_cookie, seed_e
     assert not re.search(rb"\sstyle\s*=", resp.content, re.IGNORECASE)
 
 
+async def _seed_users_with_join_dates():
+    from portal.database import create_user, get_session
+
+    base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    async with get_session() as s:
+        for i, email in enumerate(["oldest@example.com", "middle@example.com", "newest@example.com"]):
+            user = await create_user(s, email=email, display_name=email.split("@")[0])
+            user.created_at = base + timedelta(days=i)
+        await s.flush()
+
+
+@pytest.mark.anyio
+async def test_user_list_defaults_to_newest_first(admin_cookie):
+    import re
+
+    await _seed_users_with_join_dates()
+
+    async with _client() as c:
+        resp = await c.get("/admin/users/", cookies=admin_cookie)
+
+    assert resp.status_code == 200
+    body = resp.text
+    assert body.index("newest@example.com") < body.index("middle@example.com") < body.index("oldest@example.com")
+    # Joined header shows the descending indicator and toggles to ascending on click.
+    assert re.search(r'<a href="\?sort_by=created_at&sort_order=asc[^"]*" class="sort-link">', body)
+    assert re.search(r'Joined\s*<span class="sort-indicator">▼</span>', body)
+
+
+@pytest.mark.anyio
+async def test_user_list_explicit_ascending_sort_still_works(admin_cookie):
+    import re
+
+    await _seed_users_with_join_dates()
+
+    async with _client() as c:
+        resp = await c.get("/admin/users/?sort_by=created_at&sort_order=asc", cookies=admin_cookie)
+
+    assert resp.status_code == 200
+    body = resp.text
+    assert body.index("oldest@example.com") < body.index("middle@example.com") < body.index("newest@example.com")
+    # Header flips to the ascending indicator and the next click goes back to descending.
+    assert re.search(r'Joined\s*<span class="sort-indicator">▲</span>', body)
+    assert re.search(r'<a href="\?sort_by=created_at&sort_order=desc[^"]*" class="sort-link">', body)
+
+
+@pytest.mark.anyio
+async def test_user_list_only_marks_the_active_sort_column(admin_cookie):
+    import re
+
+    await _seed_users_with_join_dates()
+
+    async with _client() as c:
+        resp = await c.get("/admin/users/", cookies=admin_cookie)
+
+    assert resp.status_code == 200
+    active = re.findall(r'<span class="sort-indicator">[▲▼]</span>', resp.text)
+    assert active == ['<span class="sort-indicator">▼</span>']
+
+
+@pytest.mark.anyio
+async def test_user_list_orders_same_join_time_by_newest_id(admin_cookie):
+    from portal.database import create_user, get_session
+
+    same_moment = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    emails = ["tie-a@example.com", "tie-b@example.com", "tie-c@example.com"]
+    async with get_session() as s:
+        for email in emails:
+            user = await create_user(s, email=email, display_name=email.split("@")[0])
+            user.created_at = same_moment
+        await s.flush()
+
+    async with _client() as c:
+        resp = await c.get("/admin/users/", cookies=admin_cookie)
+
+    assert resp.status_code == 200
+    body = resp.text
+    # Created in a-b-c order, so ids ascend a-b-c; newest-first means c-b-a.
+    assert body.index("tie-c@example.com") < body.index("tie-b@example.com") < body.index("tie-a@example.com")
+
+
 @pytest.mark.anyio
 async def test_user_list_badge_shows_total_across_pages(admin_cookie):
     from portal.database import create_user, get_session
@@ -1079,12 +1218,45 @@ async def test_setup_wizard_pages_have_no_inline_styles(path, admin_cookie, seed
 
 
 @pytest.mark.anyio
+async def test_event_detail_listener_link_has_copy_button(admin_cookie, seed_event):
+    from portal.database import get_session
+
+    event, _, _ = seed_event
+    async with get_session() as s:
+        db_event = await s.get(type(event), event.id)
+        db_event.listener_join_code = "ROOM42"
+
+    async with _client() as c:
+        resp = await c.get(f"/admin/events/{event.id}/", cookies=admin_cookie)
+
+    assert resp.status_code == 200
+    assert 'id="listener-link"' in resp.text
+    assert 'data-copy-target="listener-link"' in resp.text
+
+
+@pytest.mark.anyio
+async def test_admin_pages_have_a_toast_live_region(admin_cookie, seed_event):
+    """The copy-to-clipboard success/failure feedback in admin.js needs the
+    aria-live toast container from admin/base.html on every admin page."""
+    event, _, _ = seed_event
+
+    async with _client() as c:
+        resp = await c.get(f"/admin/events/{event.id}/", cookies=admin_cookie)
+
+    assert resp.status_code == 200
+    assert 'id="toast-container"' in resp.text
+    assert 'aria-live="polite"' in resp.text
+
+
+@pytest.mark.anyio
 @pytest.mark.parametrize(
     "path",
     [
         "/admin/events/{event}/",
         "/admin/events/{event}/members/",
         "/admin/events/{event}/rooms/{room}/booths/{booth}/",
+        "/admin/events/{event}/rooms/{room}/",
+        "/admin/events/{event}/rooms/{room}/transcripts/",
         "/admin/users/{user}/",
     ],
 )

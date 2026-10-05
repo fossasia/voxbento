@@ -28,7 +28,7 @@ from portal.models import (
 )
 from portal.rate_limit import auth_rate_limiter
 from portal.transcription.constants import ProviderEnum
-from portal.transcription.worker import start_transcription_worker, stop_transcription_worker
+from portal.transcription.worker import active_workers, start_transcription_worker, stop_transcription_worker
 from portal.utils import public_ws_url
 
 logger = logging.getLogger(__name__)
@@ -39,7 +39,12 @@ router = APIRouter(prefix="/api/v1")
 async def _verify_token_rbac(db: AsyncSession, token: OAuthToken, event: Event, room_id: int | None = None) -> None:
     """Ensure the OAuth token is valid for this event, AND the underlying user still has RBAC permissions."""
     if token.event_id != event.id:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Token not authorized for this event")
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event not found")
+
+    # Confidential clients manage their own RBAC
+    client = await db.get(OAuthClient, token.client_id)
+    if client and client.is_confidential and client.status == "active":
+        return
 
     # Check if user is super admin or event owner
     from portal.models import User
@@ -249,7 +254,14 @@ class RoomUpsert(BaseModel):
     translation_provider: str | None = Field(None, max_length=50)
     translation_model: str | None = Field(None, max_length=100)
 
-    @field_validator('transcription_provider', 'transcription_model', 'source_language', 'translation_provider', 'translation_model', mode='before')
+    @field_validator(
+        "transcription_provider",
+        "transcription_model",
+        "source_language",
+        "translation_provider",
+        "translation_model",
+        mode="before",
+    )
     @classmethod
     def empty_str_to_none(cls, v):
         if v == "":
@@ -296,6 +308,7 @@ def _apply_floor_settings(room, payload_dict: dict):
     if "translation_model" in payload_dict:
         room.floor_translation_model = payload_dict["translation_model"]
 
+
 @router.put("/events/{event_slug}/rooms/{eventyay_room_id}")
 async def upsert_room(
     event_slug: str,
@@ -331,18 +344,17 @@ async def upsert_room(
             raise HTTPException(status_code=400, detail="name is required to create a new room")
 
         from sqlalchemy.exc import IntegrityError
+
         try:
             async with db.begin_nested():
-                room = Room(
-                    event_id=event.id,
-                    eventyay_room_id=eventyay_room_id,
-                    display_name=payload_dict["name"]
-                )
+                room = Room(event_id=event.id, eventyay_room_id=eventyay_room_id, display_name=payload_dict["name"])
                 _apply_floor_settings(room, payload_dict)
                 db.add(room)
                 await db.flush()
         except IntegrityError:
-            room_res = await db.execute(select(Room).where(Room.event_id == event.id, Room.eventyay_room_id == eventyay_room_id))
+            room_res = await db.execute(
+                select(Room).where(Room.event_id == event.id, Room.eventyay_room_id == eventyay_room_id)
+            )
             room = room_res.scalars().first()
             if not room:
                 raise HTTPException(status_code=500, detail="Failed to upsert room")
@@ -410,6 +422,7 @@ async def upsert_room(
 
         # Create Missing Booths & Languages
         from sqlalchemy.exc import IntegrityError
+
         for code in wanted_langs:
             if code not in existing_langs:
                 try:
@@ -709,7 +722,7 @@ async def stop_transcription(
 
     await _verify_token_rbac(db, token, event, room_id)
 
-    booth_id = make_booth_id(event_slug, language_code)
+    booth_id = make_booth_id(event_slug, room_id, language_code)
     await stop_transcription_worker(booth_id)
     return {"status": "stopped", "booth_id": booth_id}
 
@@ -734,11 +747,12 @@ async def get_transcription_status(
 
     statuses = {}
     for b in booths_list:
-        bid = make_booth_id(event_slug, b.language_code)
-        booth = booths.get(bid)
+        bid = make_booth_id(event_slug, room_id, b.language_code)
         statuses[b.language_code] = {
-            "is_active": bool(booth),
-            "transcription_running": bool(booth and getattr(booth, "transcription_task", None)),
+            "is_active": booths.get_booth_sync(bid) is not None,
+            # Running transcription is tracked by the worker registry, not on the
+            # in-memory Booth, which has no transcription_task attribute.
+            "transcription_running": bid in active_workers,
         }
 
     return {"room_id": room_id, "statuses": statuses}
@@ -783,8 +797,6 @@ async def provision_listener_token(
     return {"listener_token": t}
 
 
-
-
 class EventAPIKeysUpdate(BaseModel):
     openai_api_key: str | None = None
     deepgram_api_key: str | None = None
@@ -826,15 +838,23 @@ async def update_event_api_keys(
     if payload.nvidia_api_key is not None:
         event.encrypted_nvidia_api_key = encrypt_val(payload.nvidia_api_key) if payload.nvidia_api_key else None
     if payload.elevenlabs_api_key is not None:
-        event.encrypted_elevenlabs_api_key = encrypt_val(payload.elevenlabs_api_key) if payload.elevenlabs_api_key else None
+        event.encrypted_elevenlabs_api_key = (
+            encrypt_val(payload.elevenlabs_api_key) if payload.elevenlabs_api_key else None
+        )
     if payload.translation_openai_api_key is not None:
-        event.encrypted_translation_openai_api_key = encrypt_val(payload.translation_openai_api_key) if payload.translation_openai_api_key else None
+        event.encrypted_translation_openai_api_key = (
+            encrypt_val(payload.translation_openai_api_key) if payload.translation_openai_api_key else None
+        )
     if payload.openrouter_api_key is not None:
-        event.encrypted_openrouter_api_key = encrypt_val(payload.openrouter_api_key) if payload.openrouter_api_key else None
+        event.encrypted_openrouter_api_key = (
+            encrypt_val(payload.openrouter_api_key) if payload.openrouter_api_key else None
+        )
     if payload.gemini_api_key is not None:
         event.encrypted_gemini_api_key = encrypt_val(payload.gemini_api_key) if payload.gemini_api_key else None
     if payload.anthropic_api_key is not None:
-        event.encrypted_anthropic_api_key = encrypt_val(payload.anthropic_api_key) if payload.anthropic_api_key else None
+        event.encrypted_anthropic_api_key = (
+            encrypt_val(payload.anthropic_api_key) if payload.anthropic_api_key else None
+        )
     if payload.groq_api_key is not None:
         event.encrypted_groq_api_key = encrypt_val(payload.groq_api_key) if payload.groq_api_key else None
 
