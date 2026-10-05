@@ -258,6 +258,12 @@ async def test_room_coordinator_navigation_uses_mission_control(organizer):
             display_name="Navigation Room",
         )
         user = await create_user(session, email="nav-coordinator@example.com", display_name="Navigation Coordinator")
+        await set_event_membership(
+            session,
+            user_id=user.id,
+            event_id=organizer["event_id"],
+            role="room_coordinator",
+        )
         await set_room_membership(session, user_id=user.id, room_id=room.id, role="room_coordinator")
         coordinator_cookies = {"user_token": create_user_token(user_id=user.id, email=user.email)}
 
@@ -270,6 +276,8 @@ async def test_room_coordinator_navigation_uses_mission_control(organizer):
     assert 'href="/workspace/"' not in home.text
     assert account.status_code == 200
     assert 'href="/mission-control/">Mission Control</a>' in account.text
+    assert 'href="/mission-control/shared-event/"' in account.text
+    assert f'href="/workspace/events/{organizer["event_id"]}/"' not in account.text
 
 
 @pytest.mark.anyio

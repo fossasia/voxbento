@@ -409,11 +409,24 @@ async def account_page(request: Request):
         booth_memberships = await list_booth_memberships_for_user(session, user.id)
 
     unified_memberships = []
+    coordinated_event_slugs = {
+        m.room.event_id: m.room.event.slug
+        for m in room_memberships
+        if m.role == "room_coordinator" and m.room and m.room.event
+    }
     for m in event_memberships:
+        if m.event is None:
+            link = "#"
+        elif m.role == "event_owner":
+            link = f"/workspace/events/{m.event.id}/"
+        elif m.event_id in coordinated_event_slugs:
+            link = f"/mission-control/{coordinated_event_slugs[m.event_id]}/"
+        else:
+            link = "#"
         unified_memberships.append(
             {
                 "context": m.event.display_name if m.event else "—",
-                "link": f"/workspace/events/{m.event.id}/" if m.event else "#",
+                "link": link,
                 "type": "Event",
                 "role": m.role,
                 "created_at": m.created_at,

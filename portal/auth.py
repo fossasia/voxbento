@@ -95,12 +95,16 @@ class WSAuthError(Exception):
 
 
 async def require_admin(request: Request) -> None:
-    """FastAPI dependency that guards admin routes.
+    """FastAPI dependency that guards shared management routes.
 
-    Checks for a valid ``admin_token`` cookie containing a JWT with
-    ``admin=True`` claim. Also accepts a valid ``user_token`` with
-    ``is_admin=True``. Returns None on success; raises HTTP 403 on failure.
+    Workspace requests use the event-owner policy. Legacy admin paths retain
+    their existing scoped event-owner and room-coordinator compatibility.
+    Returns None on success; raises HTTP 403 on failure.
     """
+    if getattr(request.state, "is_workspace", False):
+        await require_event_owner(request)
+        return
+
     event_id_str = request.path_params.get("event_id")
     event_id = int(event_id_str) if event_id_str and event_id_str.isdigit() else None
     room_id_str = request.path_params.get("room_id")
