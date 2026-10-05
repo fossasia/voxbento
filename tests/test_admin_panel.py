@@ -381,7 +381,10 @@ class TestEventCRUD:
 
         cookie = {"user_token": create_user_token(user_id=owner_id, email="owner@example.com")}
         async with _client() as c:
-            resp = await c.post(f"/admin/events/{event.id}/delete", cookies=cookie, follow_redirects=False)
+            legacy = await c.post(f"/admin/events/{event.id}/delete", cookies=cookie, follow_redirects=False)
+            assert legacy.status_code == 307
+            assert legacy.headers["location"] == f"/workspace/events/{event.id}/delete"
+            resp = await c.post(legacy.headers["location"], cookies=cookie, follow_redirects=False)
         assert resp.status_code == 303
         async with get_session() as s:
             assert await get_event_by_id(s, event.id) is None
