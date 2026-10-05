@@ -16,8 +16,10 @@ jobs:
 
     steps:
       - name: Close Inactive PRs and Issues
-        uses: actions/stale@v9
+        # Pin actions/stale v9.0.0 to its verified commit instead of a mutable tag.
+        uses: actions/stale@28ca1036281a5e5922ead5184a1bbf96e5fc984e
         with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
           # --- TIMING CONFIGURATION ---
           # Days of inactivity before adding a "stale" label (2 weeks)
           days-before-stale: 14
