@@ -32,6 +32,8 @@ class Settings(BaseSettings):
     mediamtx_api_base: str = "http://localhost:9997"
     mediamtx_rtsp_base: str = "rtsp://mediamtx:8554"
     floor_bot_base: str = "http://floor-bot:8080"
+    # Ray Serve port since by default it uses 8000 port which is used by FastAPI
+    ray_serve_base: str = "http://localhost:8001"
 
     @property
     def effective_jitsi_base_url(self) -> str:
