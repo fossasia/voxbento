@@ -1,309 +1,95 @@
-name: CI
+name: CI Failure Comic Relief
 
 on:
-  push:
-    branches:
-      - main
-      - dev
-      - "feature/**"
-
-  pull_request:
-    branches:
-      - main
-      - dev
-
-  workflow_dispatch:
-
-# Cancel superseded runs on the same PR / branch
-concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  workflow_run:
+    # Keep these names in sync with the workflow display names in .github/workflows.
+    workflows: ["CI", "Code Quality (Lint & Format)"]
+    types: [completed]
 
 permissions:
-  contents: read
+  pull-requests: write
+  issues: write
 
-# ────────────────────────────────────────────────────────────────
 jobs:
-
-  # ── 1. Unit tests + lint (fast, no Docker) ───────────────────
-  unit-tests:
+  post-meme:
+    # Only comment for failed runs associated with a PR, and never for forked
+    # workflow runs where this workflow's token may not have permission.
+    if: >-
+      ${{ github.event.workflow_run.conclusion == 'failure' &&
+          github.event.workflow_run.event == 'pull_request' &&
+          github.event.workflow_run.pull_requests[0] != null }}
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        python-version: ["3.13"]
-
-    env:
-      API_KEY_ENCRYPTION_KEY: "ci-test-encryption-key-must-be-32-chars-long"
-
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v7
-
-      - name: Install uv
-        uses: astral-sh/setup-uv@v7
-
-      - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v7
+      - name: Find PR linked to the failed run
+        id: get-pr
+        uses: actions/github-script@v7
         with:
-          python-version: ${{ matrix.python-version }}
+          script: |
+            const run = context.payload.workflow_run;
+            const prs = run.pull_requests ?? [];
+            if (prs.length === 0) {
+              core.setOutput('pr_number', '');
+              return;
+            }
 
-      - name: Sync dependencies (including dev)
-        run: uv sync --all-groups
+            // Resolve the PR from the workflow-run payload; never interpolate
+            // an untrusted PR number into JavaScript source.
+            core.setOutput('pr_number', String(prs[0].number));
 
-      - name: Lint (ruff)
-        run: uv run ruff check .
+      - name: Post an encouraging build-failure comment
+        if: steps.get-pr.outputs.pr_number != ''
+        uses: actions/github-script@v7
+        env:
+          PR_NUMBER: ${{ steps.get-pr.outputs.pr_number }}
+          RUN_URL: ${{ github.event.workflow_run.html_url }}
+          RUN_NAME: ${{ github.event.workflow_run.name }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        with:
+          script: |
+            const prNumber = Number(process.env.PR_NUMBER);
+            if (!Number.isSafeInteger(prNumber) || prNumber <= 0) {
+              core.setFailed('Invalid pull request number.');
+              return;
+            }
 
-      - name: Validate JS syntax
-        run: |
-          node --check portal/static/js/interpreter-booth.js
-          node --check portal/static/js/whep-listener.js
-          node --check portal/static/js/admin.js
+            const { owner, repo } = context.repo;
+            const memes = [
+              'https://media.giphy.com/media/9Y5BbDSkSTiY8/giphy.gif',
+              'https://media.giphy.com/media/NTur7XlVDUdqM/giphy.gif',
+              'https://media.giphy.com/media/3o7TKSjRrfIPjeiVyM/giphy.gif',
+              'https://media.giphy.com/media/26ufdipQqU2lhNA4g/giphy.gif',
+            ];
+            const meme = memes[Math.floor(Math.random() * memes.length)];
+            const marker = `<!-- ci-failure-comic-relief:${process.env.HEAD_SHA} -->`;
 
-      - name: Run unit tests
-        run: uv run pytest tests/ -v
+            // Avoid posting duplicate comments if workflow_run is re-delivered.
+            const { data: comments } = await github.rest.issues.listComments({
+              owner,
+              repo,
+              issue_number: prNumber,
+              per_page: 100,
+            });
+            if (comments.some((comment) => comment.body?.includes(marker))) {
+              core.info('A comic-relief comment already exists for this commit.');
+              return;
+            }
 
-  # ── 2. Docker build + full-stack smoke test ──────────────────
-  docker-smoke:
-    runs-on: ubuntu-latest
-    needs: unit-tests          # only build images if unit tests pass
+            const body = [
+              '### 🚨 The CI pipeline tripped over a cable',
+              '',
+              'Breathe. Bugs are just unexpected features waiting to be tamed. Check the failed run, fix what broke, and push again. You’ve got this! 💪',
+              '',
+              `**Workflow:** ${process.env.RUN_NAME}`,
+              `**Run:** [Open the failed logs](${process.env.RUN_URL})`,
+              '',
+              `![Debugging encouragement](${meme})`,
+              '',
+              marker,
+            ].join('\n');
 
-    # All host-facing URLs derived from CI_HOST. Change this single value
-    # if the runner network setup ever differs.
-    env:
-      CI_HOST: localhost
-      PORTAL_PORT: 8000
-      WEBRTC_PORT: 8889
-      MEDIAMTX_API_PORT: 9997
-      JITSI_HTTP_PORT: 8080
-      SECRET_KEY: ci-test-secret-key-not-for-production
-      BOOTH_ACCESS_TOKEN: ci-test-token
-      DOCKER_HOST_ADDRESS: 127.0.0.1
-      JITSI_DOMAIN: localhost:8080
-      MEDIAMTX_WHIP_BASE: http://localhost:8889
-      MEDIAMTX_API_BASE: http://mediamtx:9997
-      ADMIN_PASSWORD: ci-admin-pass
-      API_KEY_ENCRYPTION_KEY: "ci-test-encryption-key-must-be-32-chars-long"
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v7
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v4
-
-      # ── Shared helpers ──────────────────────────────────────
-      # wait_for_url  URL  LABEL  [MAX_ATTEMPTS]  [ACCEPT_CODES]
-      #   Polls URL until it returns one of ACCEPT_CODES (default: any
-      #   non-000 response). Fails after MAX_ATTEMPTS * 3 seconds.
-      - name: Define CI helper functions
-        run: |
-          cat > /tmp/ci-helpers.sh << 'HELPERS'
-          wait_for_url() {
-            local url="$1" label="$2" max="${3:-20}" accept="${4:-any}"
-            echo "Waiting for $label ($url)..."
-            for i in $(seq 1 "$max"); do
-              code=$(curl -s -o /dev/null -w '%{http_code}' "$url" 2>/dev/null || echo "000")
-              if [ "$accept" = "any" ]; then
-                [ "$code" != "000" ] && { echo "$label is up (HTTP $code)!"; return 0; }
-              else
-                echo "$accept" | tr ',' '\n' | grep -qx "$code" && { echo "$label is up (HTTP $code)!"; return 0; }
-              fi
-              echo "  attempt $i/$max: HTTP $code"
-              sleep 3
-            done
-            echo "ERROR: $label did not respond within $(( max * 3 ))s"
-            return 1
-          }
-
-          assert_http() {
-            local url="$1" label="$2" expected="${3:-200}"
-            code=$(curl -s -o /dev/null -w '%{http_code}' "$url")
-            echo "$label → HTTP $code"
-            [ "$code" = "$expected" ] || { echo "FAIL: expected $expected"; return 1; }
-          }
-          HELPERS
-
-      # ── Build all images ────────────────────────────────────
-      - name: Build portal image
-        run: docker compose build portal
-
-      # ── Start the full stack ────────────────────────────────
-      - name: Start all services
-        run: docker compose up -d
-
-      - name: Show running containers
-        run: docker compose ps
-
-      # ── Wait for health ─────────────────────────────────────
-      - name: Wait for portal to be healthy
-        run: |
-          echo "Waiting for portal healthcheck..."
-          for i in $(seq 1 30); do
-            health=$(docker inspect --format='{{.State.Health.Status}}' "$(docker compose ps -q portal)" 2>/dev/null || echo "missing")
-            echo "  attempt $i: $health"
-            if [ "$health" = "healthy" ]; then
-              echo "Portal is healthy!"
-              exit 0
-            fi
-            sleep 3
-          done
-          echo "ERROR: Portal did not become healthy within 90 seconds"
-          docker compose logs portal
-          exit 1
-
-      - name: Wait for MediaMTX and Jitsi
-        run: |
-          source /tmp/ci-helpers.sh
-          wait_for_url "http://${CI_HOST}:${WEBRTC_PORT}/"                "MediaMTX WebRTC"      20
-          wait_for_url "http://${CI_HOST}:${MEDIAMTX_API_PORT}/v3/paths/list" "MediaMTX Control API" 20
-          wait_for_url "http://${CI_HOST}:${JITSI_HTTP_PORT}/"            "Jitsi web"            30 "200,301,302"
-
-      # ── Smoke tests — hit every endpoint ────────────────────
-      - name: Portal health endpoint
-        run: |
-          resp=$(curl -sf "http://${CI_HOST}:${PORTAL_PORT}/healthz")
-          echo "$resp"
-          echo "$resp" | python3 -c "import sys,json; d=json.load(sys.stdin); assert d['ok'], 'healthz not ok'"
-
-      - name: Portal page endpoints
-        run: |
-          source /tmp/ci-helpers.sh
-          # Booth pages now require auth — unauthenticated requests redirect to /login
-          assert_http "http://${CI_HOST}:${PORTAL_PORT}/interpreter/ci-event/1/en" \
-                      "GET /interpreter/ci-event/1/en (no auth → 303)" "303"
-
-
-      - name: Portal ingest-status API
-        run: |
-          resp=$(curl -sf "http://${CI_HOST}:${PORTAL_PORT}/api/interpreter/status/ci-booth-audio")
-          echo "$resp"
-          echo "$resp" | python3 -c "import sys,json; d=json.load(sys.stdin); assert d['channel_id']=='ci-booth-audio'; assert 'reachable' in d"
-
-      - name: MediaMTX Control API lists paths
-        run: |
-          resp=$(curl -sf "http://${CI_HOST}:${MEDIAMTX_API_PORT}/v3/paths/list")
-          echo "$resp"
-          echo "$resp" | python3 -c "import sys,json; json.load(sys.stdin)"
-
-      - name: Static JS files are served
-        run: |
-          source /tmp/ci-helpers.sh
-          assert_http "http://${CI_HOST}:${PORTAL_PORT}/static/js/interpreter-booth.js" "interpreter-booth.js"
-          assert_http "http://${CI_HOST}:${PORTAL_PORT}/static/js/whep-listener.js"     "whep-listener.js"
-          assert_http "http://${CI_HOST}:${PORTAL_PORT}/static/js/admin.js"             "admin.js"
-          assert_http "http://${CI_HOST}:${PORTAL_PORT}/static/css/admin.css"           "admin.css"
-
-      # ── Auth & admin panel smoke tests ──────────────────────
-      - name: Home page, login, register render
-        run: |
-          source /tmp/ci-helpers.sh
-          assert_http "http://${CI_HOST}:${PORTAL_PORT}/"         "GET /"
-          assert_http "http://${CI_HOST}:${PORTAL_PORT}/login"    "GET /login"
-          assert_http "http://${CI_HOST}:${PORTAL_PORT}/register" "GET /register"
-
-      - name: Admin panel login and CRUD smoke test
-        run: |
-          BASE="http://${CI_HOST}:${PORTAL_PORT}"
-
-          # Admin login page renders
-          code=$(curl -s -o /dev/null -w '%{http_code}' "${BASE}/admin/login")
-          echo "GET /admin/login → $code"
-          [ "$code" = "200" ] || { echo "FAIL"; exit 1; }
-
-          # Admin login with correct password → redirect + cookie
-          resp=$(curl -s -D - -o /dev/null -X POST "${BASE}/admin/login" -d "password=ci-admin-pass")
-          echo "$resp" | head -5
-          echo "$resp" | grep -qi "set-cookie.*admin_token" || { echo "FAIL: no admin_token cookie"; exit 1; }
-
-          # Extract the admin_token cookie
-          ADMIN_COOKIE=$(echo "$resp" | grep -i 'set-cookie.*admin_token' | sed 's/.*admin_token=\([^;]*\).*/\1/')
-          echo "Admin token: ${ADMIN_COOKIE:0:20}..."
-
-          # Dashboard loads
-          code=$(curl -s -o /dev/null -w '%{http_code}' -b "admin_token=${ADMIN_COOKIE}" "${BASE}/admin/")
-          echo "GET /admin/ → $code"
-          [ "$code" = "200" ] || { echo "FAIL"; exit 1; }
-
-          # Create event
-          code=$(curl -s -o /dev/null -w '%{http_code}' -X POST -b "admin_token=${ADMIN_COOKIE}" \
-            -d "slug=ci-smoke&display_name=CI+Smoke+Test" "${BASE}/admin/events/")
-          echo "POST /admin/events/ → $code"
-          [ "$code" = "303" ] || { echo "FAIL"; exit 1; }
-
-          # Events list renders
-          code=$(curl -s -o /dev/null -w '%{http_code}' -b "admin_token=${ADMIN_COOKIE}" "${BASE}/admin/events/")
-          echo "GET /admin/events/ → $code"
-          [ "$code" = "200" ] || { echo "FAIL"; exit 1; }
-
-          # Users list renders
-          code=$(curl -s -o /dev/null -w '%{http_code}' -b "admin_token=${ADMIN_COOKIE}" "${BASE}/admin/users/")
-          echo "GET /admin/users/ → $code"
-          [ "$code" = "200" ] || { echo "FAIL"; exit 1; }
-
-          # Admin without cookie → 403
-          code=$(curl -s -o /dev/null -w '%{http_code}' "${BASE}/admin/")
-          echo "GET /admin/ (no cookie) → $code"
-          [ "$code" = "403" ] || { echo "FAIL: expected 403"; exit 1; }
-
-      - name: User registration and login smoke test
-        run: |
-          BASE="http://${CI_HOST}:${PORTAL_PORT}"
-
-          # Register a new user
-          resp=$(curl -s -o /dev/null -w '%{http_code}' -X POST "${BASE}/register" \
-            -d "email=ci-test@example.com&display_name=CI+User&password=securepass123&password_confirm=securepass123")
-          echo "POST /register → $resp"
-          [ "$resp" = "200" ] || { echo "FAIL: expected 200 after register"; exit 1; }
-
-          # Manually verify the user's email since we can't click the magic link in CI
-          docker exec $(docker compose ps -q portal) uv run python -c "
-          import asyncio
-          from portal.database import get_session, update_user, get_user_by_email
-          async def verify():
-              async with get_session() as s:
-                  u = await get_user_by_email(s, 'ci-test@example.com')
-                  await update_user(s, u.id, email_verified=True)
-          asyncio.run(verify())
-          "
-
-          # Login with the registered user
-          resp=$(curl -s -D - -o /dev/null -X POST "${BASE}/login" \
-            -d "email=ci-test@example.com&password=securepass123")
-          echo "$resp" | head -5
-          echo "$resp" | grep -qi "set-cookie.*user_token" || { echo "FAIL: no user_token after login"; exit 1; }
-
-          # Extract user token and check account page
-          USER_COOKIE=$(echo "$resp" | grep -i 'set-cookie.*user_token' | sed 's/.*user_token=\([^;]*\).*/\1/')
-          code=$(curl -s -o /dev/null -w '%{http_code}' -b "user_token=${USER_COOKIE}" "${BASE}/account")
-          echo "GET /account → $code"
-          [ "$code" = "200" ] || { echo "FAIL"; exit 1; }
-
-          # Login with wrong password → 403
-          code=$(curl -s -o /dev/null -w '%{http_code}' -X POST "${BASE}/login" \
-            -d "email=ci-test@example.com&password=wrong")
-          echo "POST /login (wrong pw) → $code"
-          [ "$code" = "403" ] || { echo "FAIL: expected 403"; exit 1; }
-
-          # Account without cookie → redirect to login
-          code=$(curl -s -o /dev/null -w '%{http_code}' "${BASE}/account")
-          echo "GET /account (no cookie) → $code"
-          [ "$code" = "303" ] || { echo "FAIL: expected 303 redirect"; exit 1; }
-
-
-
-          # With a valid user_token but no event membership → 403 on interpreter page
-          code=$(curl -s -o /dev/null -w '%{http_code}' -b "user_token=${USER_COOKIE}" \
-            "${BASE}/interpreter/ci-smoke/1/en")
-          echo "GET /interpreter/ci-smoke/1/en (user, no membership) → $code"
-          [ "$code" = "403" ] || { echo "FAIL: expected 403 without membership"; exit 1; }
-
-
-
-      # ── Collect logs on failure ─────────────────────────────
-      - name: Dump logs on failure
-        if: failure()
-        run: docker compose logs --tail=100
-
-      - name: Tear down
-        if: always()
-        run: docker compose down -v
+            await github.rest.issues.createComment({
+              owner,
+              repo,
+              issue_number: prNumber,
+              body,
+            });
