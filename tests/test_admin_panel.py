@@ -1450,3 +1450,43 @@ async def test_admin_detail_pages_have_no_inline_styles(path, admin_cookie, seed
     # The API key modals keep style="display: none", which admin.js toggles.
     body = resp.content.replace(b'style="display: none;"', b"")
     assert not re.search(rb"\sstyle\s*=", body, re.IGNORECASE)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("seed_accounts", [False, True], ids=["empty", "all-statuses"])
+async def test_developer_accounts_page_has_no_inline_styles(seed_accounts):
+    import re
+
+    from portal.auth import create_user_token, hash_password
+    from portal.database import create_user, get_session
+    from portal.models import DeveloperAccount
+
+    async with get_session() as s:
+        admin = await create_user(
+            s, email="super@test.com", display_name="Super", password_hash=hash_password("securepass123")
+        )
+        admin.is_admin = True
+        if seed_accounts:
+            for status in ("pending", "approved", "suspended", "rejected"):
+                applicant = await create_user(
+                    s,
+                    email=f"{status}@test.com",
+                    display_name=status,
+                    password_hash=hash_password("securepass123"),
+                )
+                s.add(DeveloperAccount(user_id=applicant.id, status=status, organization_name=f"{status} org"))
+        await s.commit()
+        admin_id, admin_email = admin.id, admin.email
+
+    cookie = {"user_token": create_user_token(user_id=admin_id, email=admin_email, is_admin=True)}
+    async with _client() as c:
+        resp = await c.get("/admin/developer-accounts", cookies=cookie)
+
+    assert resp.status_code == 200
+    if seed_accounts:
+        # Every status branch rendered, so the assertion below covers all of them.
+        for label in (b"Approve", b"Reject", b"Suspend", b"Restore"):
+            assert label in resp.content
+    else:
+        assert b"No developer applications" in resp.content
+    assert not re.search(rb"\sstyle\s*=", resp.content, re.IGNORECASE)
