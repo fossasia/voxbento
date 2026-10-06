@@ -26,6 +26,8 @@ var audioEl = document.getElementById("audio-player");
 var statusEl = document.getElementById("status");
 var captionsBox = document.getElementById("live-captions");
 var captionsWs = null;
+var captionsRetryTimer = null;
+var captionsRetryDelayMs = 1000;
 
 var ttsWs = null;
 var audioCtx = null;
@@ -115,9 +117,15 @@ function stopCurrentStream() {
     audioScheduler = null;
   }
 
+  if (captionsRetryTimer) {
+    clearTimeout(captionsRetryTimer);
+    captionsRetryTimer = null;
+  }
+  captionsRetryDelayMs = 1000;
   if (captionsWs) {
-    captionsWs.close();
+    var closingWs = captionsWs;
     captionsWs = null;
+    closingWs.close();
   }
   showAudioPlayer(false);
   audioEl.muted = false;
@@ -281,10 +289,27 @@ function startWhepAndCaptions(whepUrl, boothId, audioDelayMs) {
 function openCaptionsWs(boothId) {
   if (!boothId) return;
   var wsProto = window.location.protocol === "https:" ? "wss:" : "ws:";
-  captionsWs = new WebSocket(
+  var ws = new WebSocket(
     wsProto + "//" + window.location.host + "/ws/captions/" + boothId,
   );
-  captionsWs.onmessage = handleCaptionsMessage;
+  captionsWs = ws;
+  ws.onmessage = handleCaptionsMessage;
+  ws.onopen = function () {
+    captionsRetryDelayMs = 1000;
+  };
+  ws.onclose = function (event) {
+    // stopCurrentStream() clears captionsWs before closing it, so this only
+    // reconnects sockets that dropped on their own. The server resends the
+    // booth status on connect, so a pending stream still starts. 4001/4003
+    // are auth rejections, which retrying won't fix.
+    if (captionsWs !== ws || event.code === 4001 || event.code === 4003) return;
+    captionsWs = null;
+    captionsRetryTimer = setTimeout(function () {
+      captionsRetryTimer = null;
+      openCaptionsWs(boothId);
+    }, captionsRetryDelayMs);
+    captionsRetryDelayMs = Math.min(captionsRetryDelayMs * 2, 15000);
+  };
 }
 
 function renderItem(data) {
