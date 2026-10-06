@@ -66,10 +66,10 @@ echo "ADMIN_PASSWORD=$(openssl rand -hex 16)" >> .env
 # Required for API key encryption: set your encryption key (must be 32 characters or longer)
 echo "API_KEY_ENCRYPTION_KEY=$(openssl rand -hex 32)" >> .env
 
-# Required for Jitsi video: set your machine's LAN IP
+# Required for Jitsi video: set the IP JVB advertises to browsers
 # macOS:  ipconfig getifaddr en0
 # Linux:  hostname -I | awk '{print $1}'
-echo 'DOCKER_HOST_ADDRESS=192.168.1.x' >> .env
+echo 'JVB_ADVERTISE_IPS=192.168.1.x' >> .env
 
 docker compose up --build
 ```

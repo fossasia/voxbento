@@ -19,6 +19,12 @@ Here is how audio travels from the speaker on stage to a listener's headphones, 
 The presenter or speaker joins a self-hosted Jitsi Meet session. This session carries the event's floor audio — the source language that interpreters listen to and translate.
 
     Voxbento embeds the relevant Jitsi session as an iframe directly inside each interpreter's booth page. The interpreter monitors floor audio and video from within the same browser tab where they will broadcast their translation, which keeps the workflow contained and the latency low.
+
+The bundled Jitsi `stable-11248` services run rootless with read-only container
+filesystems. Persistent web and Prosody state is isolated in writable storage
+volumes, while runtime data lives in temporary filesystems. The browser-facing
+ports remain `8080`/`8443`, even though the hardened web container listens on
+unprivileged ports `8000`/`8443` internally.
   ### Interpreter audio: mic capture and WebRTC publish
 
 When the interpreter clicks **Go Live**, the browser calls `navigator.mediaDevices.getUserMedia` to capture microphone input. Before the audio leaves the browser, the browser's built-in DSP stack applies:
