@@ -29,6 +29,17 @@ def is_retryable_transcription_error(exc: BaseException) -> bool:
     return False
 
 
+def _drain_queue_to_eof(queue: asyncio.Queue) -> bool:
+    saw_eof = False
+    while not queue.empty():
+        try:
+            if queue.get_nowait() is None:
+                saw_eof = True
+        except asyncio.QueueEmpty:
+            break
+    return saw_eof
+
+
 def pcm_to_wav(pcm_data: bytes, sample_rate: int = 16000) -> bytes:
     buf = io.BytesIO()
     with wave.open(buf, "wb") as wf:
@@ -147,14 +158,7 @@ class TranscriptionProvider:
 
                 if booth_state.consecutive_drops > 3:
                     logger.error(f"[{booth_id}] Overload Protection triggered. Pausing inference for 10s.")
-                    stream_ended = False
-                    while not queue.empty():
-                        try:
-                            if queue.get_nowait() is None:
-                                stream_ended = True
-                        except asyncio.QueueEmpty:
-                            break
-                    if stream_ended:
+                    if _drain_queue_to_eof(queue):
                         queue.put_nowait(None)
                     await broadcast_callback(booth_id, "[Server overloaded - transcription temporarily paused]")
                     await asyncio.sleep(10)

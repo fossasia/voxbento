@@ -377,3 +377,84 @@ async def test_elevenlabs_auth_error_after_the_session_starts_is_reported():
 
     assert excinfo.value.error_code == "auth_failed"
     assert excinfo.value.provider == "elevenlabs"
+
+
+def _ws_invalid_status(status_code: int):
+    from websockets.datastructures import Headers
+    from websockets.exceptions import InvalidStatus
+    from websockets.http11 import Response
+
+    return InvalidStatus(Response(status_code, "", Headers()))
+
+
+@pytest.mark.anyio
+async def test_deepgram_handshake_401_is_reported():
+    from portal.transcription.providers.deepgram import DeepgramProvider
+
+    process = MagicMock()
+    process.returncode = None
+
+    for status in (401, 403):
+        def raise_handshake(*args, _status=status, **kwargs):
+            raise _ws_invalid_status(_status)
+
+        with patch("websockets.connect", side_effect=raise_handshake):
+            with pytest.raises(TranscriptionAuthError) as excinfo:
+                await DeepgramProvider().run_stream(
+                    process, "en", "nova-2", ProviderConfig(api_key="bad"), AsyncMock(), "booth-1"
+                )
+        assert excinfo.value.error_code == "auth_failed"
+        assert excinfo.value.provider == "deepgram"
+
+
+@pytest.mark.anyio
+async def test_deepgram_non_auth_failure_follows_retry_policy():
+    from portal.transcription.providers.deepgram import DeepgramProvider
+
+    process = MagicMock()
+    process.returncode = None
+    attempts = 0
+
+    def raise_conn(*args, **kwargs):
+        nonlocal attempts
+        attempts += 1
+        raise ConnectionError("network down")
+
+    with patch("websockets.connect", side_effect=raise_conn):
+        with patch("portal.transcription.providers.base.asyncio.sleep", new=AsyncMock()):
+            await asyncio.wait_for(
+                DeepgramProvider().run_stream(
+                    process, "en", "nova-2", ProviderConfig(api_key="good"), AsyncMock(), "booth-1"
+                ),
+                timeout=2,
+            )
+
+    assert attempts == 5
+
+
+@pytest.mark.anyio
+async def test_drain_queue_to_eof_preserves_sentinel_behind_audio():
+    from portal.transcription.providers.base import _drain_queue_to_eof
+
+    queue: asyncio.Queue = asyncio.Queue()
+    queue.put_nowait(b"audio-1")
+    queue.put_nowait(b"audio-2")
+    queue.put_nowait(None)
+    queue.put_nowait(b"audio-3")
+    assert _drain_queue_to_eof(queue) is True
+    assert queue.empty()
+
+    other: asyncio.Queue = asyncio.Queue()
+    other.put_nowait(b"audio")
+    assert _drain_queue_to_eof(other) is False
+
+
+@pytest.mark.anyio
+async def test_auth_error_detail_is_bounded():
+    from portal.transcription.errors import MAX_DETAIL_CHARS
+
+    raw = "boom\n" + ("x" * 5000)
+    err = TranscriptionAuthError("elevenlabs", raw)
+    assert "\n" not in err.detail
+    assert len(err.detail) <= MAX_DETAIL_CHARS + 1
+    assert str(err) == err.detail
