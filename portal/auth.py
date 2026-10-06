@@ -241,6 +241,7 @@ def create_admin_token() -> str:
     payload = {"admin": True, "iat": now, "exp": now + timedelta(seconds=settings.jwt_expiry_seconds)}
     return jwt.encode(payload, settings.effective_jwt_secret, algorithm="HS256")
 
+
 def _grant_all_admin_flags(flags: dict[str, bool]) -> None:
     flags.update(
         is_super_admin=True,
@@ -249,11 +250,18 @@ def _grant_all_admin_flags(flags: dict[str, bool]) -> None:
     )
 
 
-def _is_room_coordinator_for_event(rms, event_id: int) -> bool:
+def _is_room_coordinator(
+    rms,
+    event_id: int | None = None,
+    room_id: int | None = None,
+) -> bool:
     return any(
-        rm.room.event_id == event_id and rm.role == "room_coordinator"
+        rm.role == "room_coordinator"
+        and (room_id is None or rm.room_id == room_id)
+        and (event_id is None or rm.room.event_id == event_id)
         for rm in rms
     )
+
 
 async def get_admin_flags(request: Request, event_id: int | None = None, room_id: int | None = None) -> dict[str, bool]:
     """Return boolean RBAC flags for admin templates.
@@ -286,14 +294,16 @@ async def get_admin_flags(request: Request, event_id: int | None = None, room_id
                             return flags
                         memberships = await list_memberships_for_user(db_session, int(payload["sub"]))
                         rms = await list_room_memberships_for_user(db_session, int(payload["sub"]))
-                        if event_id is not None and any((m.event_id == event_id and m.role == "event_owner" for m in memberships)):
-                                flags["is_event_owner"] = True
-                                flags["is_room_coordinator"] = True
-                        if room_id is not None and any((rm.room_id == room_id and rm.role == "room_coordinator" for rm in rms)):
-                                flags["is_room_coordinator"] = True
-                        if not flags["is_event_owner"] and event_id is not None:
-                            if _is_room_coordinator_for_event(rms, event_id):
-                                flags["is_room_coordinator"] = True
+                        is_event_owner = event_id is not None and any(
+                            m.event_id == event_id and m.role == "event_owner" for m in memberships
+                        )
+                        is_room_coordinator = _is_room_coordinator(
+                            rms,
+                            event_id=event_id,
+                            room_id=room_id,
+                        )
+                        flags["is_event_owner"] = is_event_owner
+                        flags["is_room_coordinator"] = is_event_owner or is_room_coordinator
         except jwt.InvalidTokenError:
             pass
     admin_cookie = request.cookies.get("admin_token", "")

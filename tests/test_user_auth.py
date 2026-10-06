@@ -44,12 +44,14 @@ def _client():
 
     return AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
 
+
 def _make_request(cookies: dict[str, str]):
     from unittest.mock import MagicMock
 
     request = MagicMock()
     request.cookies = cookies
     return request
+
 
 async def _create_test_user(email="test@example.com", display_name="Test User", password="securepass123"):
     from portal.database import create_user, get_session
@@ -440,6 +442,7 @@ class TestHomePageAuthLinks:
         assert resp.status_code == 200
         assert b"Logout" in resp.content
 
+
 @pytest.mark.anyio
 async def test_get_admin_flags_superuser_from_user_token(setup_db):
 
@@ -480,78 +483,125 @@ async def test_get_admin_flags_event_owner(setup_db):
     user = await _create_test_user()
 
     async with get_session() as session:
-        event = await create_event(
+        owned_event = await create_event(
             session,
-            display_name="Test Event",
-            slug="test-event",
+            display_name="Owned Event",
+            slug="owned-event",
+        )
+        other_event = await create_event(
+            session,
+            display_name="Other Event",
+            slug="other-event",
         )
         await set_event_membership(
             session,
             user_id=user.id,
-            event_id=event.id,
+            event_id=owned_event.id,
             role="event_owner",
         )
 
     token = create_user_token(user_id=user.id, email=user.email)
     request = _make_request({"user_token": token})
 
-    flags = await get_admin_flags(request, event_id=event.id)
-
-    assert flags == {
+    owned_flags = await get_admin_flags(request, event_id=owned_event.id)
+    assert owned_flags == {
         "is_super_admin": False,
         "is_event_owner": True,
         "is_room_coordinator": True,
     }
 
+    other_flags = await get_admin_flags(request, event_id=other_event.id)
+    assert other_flags == {
+        "is_super_admin": False,
+        "is_event_owner": False,
+        "is_room_coordinator": False,
+    }
+
 
 @pytest.mark.anyio
 async def test_get_admin_flags_room_coordinator(setup_db):
-    from portal.database import create_event, create_room, get_session, set_room_membership
+    from portal.database import (
+        create_event,
+        create_room,
+        get_session,
+        set_room_membership,
+    )
 
     user = await _create_test_user()
 
     async with get_session() as session:
-        event = await create_event(
+        event_a = await create_event(
             session,
-            display_name="Test Event",
-            slug="test-event",
+            display_name="Event A",
+            slug="event-a",
         )
-        room = await create_room(
+        event_b = await create_event(
             session,
-            event_id=event.id,
-            display_name="Room 1",
+            display_name="Event B",
+            slug="event-b",
+        )
+        room_a = await create_room(
+            session,
+            event_id=event_a.id,
+            display_name="Room A",
+        )
+        room_b = await create_room(
+            session,
+            event_id=event_b.id,
+            display_name="Room B",
         )
         await set_room_membership(
             session,
             user_id=user.id,
-            room_id=room.id,
+            room_id=room_a.id,
             role="room_coordinator",
         )
 
     token = create_user_token(user_id=user.id, email=user.email)
     request = _make_request({"user_token": token})
 
-    flags = await get_admin_flags(request, room_id=room.id)
-
-    assert flags == {
-        "is_super_admin": False,
-        "is_event_owner": False,
-        "is_room_coordinator": True,
-    }
-    flags = await get_admin_flags(request, room_id=room.id)
-
-    assert flags == {
+    # Coordinator's own room.
+    room_flags = await get_admin_flags(request, room_id=room_a.id)
+    assert room_flags == {
         "is_super_admin": False,
         "is_event_owner": False,
         "is_room_coordinator": True,
     }
 
-    event_flags = await get_admin_flags(request, event_id=event.id)
-
+    # Coordinator's event.
+    event_flags = await get_admin_flags(request, event_id=event_a.id)
     assert event_flags == {
         "is_super_admin": False,
         "is_event_owner": False,
         "is_room_coordinator": True,
+    }
+
+    # A different room must not grant coordinator access.
+    other_room_flags = await get_admin_flags(request, room_id=room_b.id)
+    assert other_room_flags == {
+        "is_super_admin": False,
+        "is_event_owner": False,
+        "is_room_coordinator": False,
+    }
+
+    # An unrelated event must not grant coordinator access.
+    other_event_flags = await get_admin_flags(request, event_id=event_b.id)
+    assert other_event_flags == {
+        "is_super_admin": False,
+        "is_event_owner": False,
+        "is_room_coordinator": False,
+    }
+
+    # A room from Event B combined with Event A must not grant access.
+    mismatched_scope_flags = await get_admin_flags(
+        request,
+        event_id=event_a.id,
+        room_id=room_b.id,
+    )
+    assert mismatched_scope_flags == {
+        "is_super_admin": False,
+        "is_event_owner": False,
+        "is_room_coordinator": False,
     }
 
 
