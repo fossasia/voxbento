@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import struct
@@ -67,12 +68,23 @@ def listener_booth_state(state: dict) -> dict:
     return {key: state.get(key) for key in _LISTENER_STATE_KEYS}
 
 
+def _current_listener_state(booth_id: str, fallback: dict | None = None) -> dict | None:
+    """Listener-safe status read from the registry now, or from ``fallback`` if the booth is gone."""
+    booth = booths.get_booth_sync(booth_id)
+    if booth is not None:
+        return listener_booth_state(booth.as_public_dict())
+    return listener_booth_state(fallback) if fallback is not None else None
+
+
 class ListenerConnectionManager:
     def __init__(self) -> None:
         self._rooms: dict[str, set[WebSocket]] = {}
         # Last listener state sent per booth, so updates that only touch
         # interpreter-side fields (mic, chat, handoff) don't fan out to every listener.
         self._last_state: dict[str, dict] = {}
+        # Serializes status sends per booth. Combined with reading the registry
+        # inside the lock, overlapping updates can't deliver an older status last.
+        self._state_locks: dict[str, asyncio.Lock] = {}
 
     def add(self, ws: WebSocket, booth_id: str) -> None:
         self._rooms.setdefault(booth_id, set()).add(ws)
@@ -99,14 +111,26 @@ class ListenerConnectionManager:
             self.remove(ws, booth_id)
 
     async def broadcast_booth_state(self, booth_id: str, state: dict) -> None:
-        """Send listeners the booth's live/locked status if it changed since the last send."""
-        if not self.has_listeners(booth_id):
-            return
-        listener_state = listener_booth_state(state)
-        if self._last_state.get(booth_id) == listener_state:
-            return
-        self._last_state[booth_id] = listener_state
-        await self.broadcast(booth_id, {"type": "booth:state", "state": listener_state})
+        """Send listeners the booth's live/locked status if it changed since the last send.
+
+        ``state`` is only used if the booth has left the registry; otherwise the
+        newest status is read under the booth's lock.
+        """
+        async with self._state_locks.setdefault(booth_id, asyncio.Lock()):
+            if not self.has_listeners(booth_id):
+                return
+            listener_state = _current_listener_state(booth_id, state)
+            if self._last_state.get(booth_id) == listener_state:
+                return
+            self._last_state[booth_id] = listener_state
+            await self.broadcast(booth_id, {"type": "booth:state", "state": listener_state})
+
+    async def send_booth_state(self, ws: WebSocket, booth_id: str) -> None:
+        """Send one newly connected listener the booth's current status, if the booth exists."""
+        async with self._state_locks.setdefault(booth_id, asyncio.Lock()):
+            listener_state = _current_listener_state(booth_id)
+            if listener_state is not None:
+                await ws.send_text(json.dumps({"type": "booth:state", "state": listener_state}))
 
 
 logger = logging.getLogger(__name__)

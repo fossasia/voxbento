@@ -915,6 +915,37 @@ def test_ws_listener_state_excludes_booth_internals():
     assert "booth-only note" not in raw
 
 
+class _RecordingWebSocket:
+    def __init__(self) -> None:
+        self.sent: list[str] = []
+
+    async def send_text(self, text: str) -> None:
+        self.sent.append(text)
+
+
+@pytest.mark.anyio
+async def test_listener_status_uses_newest_booth_state():
+    """A broadcast that finishes late must not hand listeners an older status."""
+    from portal.globals import booths
+    from portal.websockets.manager import broadcast_booth_state, listener_manager
+
+    booth = "golive-1-it"
+    _participant, stale = await booths.join_participant(
+        booth_id=booth, display_name="Eve", role="interpreter", language="Italian", channel_id=f"{booth}-audio"
+    )
+    await booths.set_broadcast_unlocked(booth, True, "Italian", f"{booth}-audio")
+
+    ws = _RecordingWebSocket()
+    listener_manager.add(ws, booth)
+    try:
+        assert stale["broadcast_unlocked"] is False
+        await broadcast_booth_state(booth, stale)
+    finally:
+        listener_manager.remove(ws, booth)
+
+    assert json.loads(ws.sent[-1])["state"]["broadcast_unlocked"] is True
+
+
 def test_ws_initiate_handoff_active_interpreter_sets_offered_state():
     """Active interpreter initiating handoff sets handoff_state='offered'."""
     booth = "handoff-offered"
