@@ -915,6 +915,26 @@ def test_ws_listener_state_excludes_booth_internals():
     assert "booth-only note" not in raw
 
 
+def test_ws_captions_rejection_is_a_close_code_not_a_failed_handshake():
+    """Rejected listeners must see 4001/4003 so the page knows not to retry.
+
+    Closing before accept fails the handshake (HTTP 403), which browsers report as 1006.
+    """
+    from starlette.websockets import WebSocketDisconnect
+
+    from portal.config import settings
+
+    settings.booth_access_token = "test-booth-token"
+    try:
+        with client.websocket_connect("/ws/captions/golive-1-pt") as ws:
+            with pytest.raises(WebSocketDisconnect) as exc_info:
+                ws.receive_text()
+    finally:
+        settings.booth_access_token = ""
+
+    assert exc_info.value.code == 4001
+
+
 class _RecordingWebSocket:
     def __init__(self) -> None:
         self.sent: list[str] = []
