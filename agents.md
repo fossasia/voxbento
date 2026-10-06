@@ -55,7 +55,7 @@ VoxBento is a production-grade **browser-first interpretation booth console** fo
 - Attendees receive sub-second audio via WHEP from MediaMTX.
 - All coordination (booth state, roles, chat, handoff) flows through FastAPI WebSockets.
 
-**Stack:** FastAPI (ASGI/uvicorn) + MediaMTX (WHIP/WHEP/RTSP) + self-hosted Jitsi Meet (stable-9823).
+**Stack:** FastAPI (ASGI/uvicorn) + MediaMTX (WHIP/WHEP/RTSP) + self-hosted Jitsi Meet (stable-11248).
 **No** Flask, Socket.IO, aiortc.
 
 ---
@@ -215,7 +215,7 @@ Manual browser check:
 
 - Python runtime: `3.13.x` (enforced in `pyproject.toml`)
 - `uv.lock` is the source of truth for all Python dependencies.
-- Docker images: `bluenviron/mediamtx:1`, `jitsi/*:stable-9823`
+- Docker images: `bluenviron/mediamtx:1`, `ghcr.io/jitsi/*:stable-11248`
 
 ---
 

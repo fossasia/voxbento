@@ -32,7 +32,7 @@ uv run alembic upgrade head
 | `MEDIAMTX_WHIP_BASE` | Browser-reachable HTTPS URL (e.g. `https://media.example.com:8889`) |
 | `JITSI_DOMAIN` | Hostname of self-hosted Jitsi |
 | `JITSI_BASE_URL` | Full HTTPS URL of Jitsi |
-| `DOCKER_HOST_ADDRESS` | Host LAN/public IP for JVB ICE candidates |
+| `JVB_ADVERTISE_IPS` | Host LAN/public IP for JVB ICE candidates |
 | `JVB_AUTH_PASSWORD` | Change from `changeme` |
 | `JICOFO_AUTH_PASSWORD` | Change from `changeme` |
 
