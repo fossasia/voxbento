@@ -24,6 +24,7 @@ from portal.auth import (
     get_current_user,
     require_admin,
     require_event_owner,
+    require_room_event_access,
     require_super_admin,
     require_user,
 )
@@ -962,7 +963,7 @@ async def admin_delete_api_key(request: Request, event_id: int, key_id: int):
         return {"success": True}
 
 
-@router.post("/api/rooms/{room_id}/floor-transcription/start", dependencies=[Depends(require_admin)])
+@router.post("/api/rooms/{room_id}/floor-transcription/start", dependencies=[Depends(require_room_event_access)])
 async def api_start_floor_transcription(room_id: int):
     async with get_session() as session:
         room = await get_room_by_id(session, room_id)
@@ -1005,7 +1006,7 @@ async def api_start_floor_transcription(room_id: int):
         resp.raise_for_status()
     except Exception as e:
         logger.error(f"Failed to start floor-bot: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to start floor bot: {e}")
+        raise HTTPException(status_code=502, detail="Bot service connection failed or access was revoked upstream.")
     try:
         api_key = get_api_key(event, ProviderEnum(room.floor_transcription_provider))
         config = ProviderConfig(api_key=api_key)
@@ -1028,7 +1029,7 @@ async def api_start_floor_transcription(room_id: int):
     return {"status": "started"}
 
 
-@router.post("/api/rooms/{room_id}/floor-transcription/stop", dependencies=[Depends(require_admin)])
+@router.post("/api/rooms/{room_id}/floor-transcription/stop", dependencies=[Depends(require_room_event_access)])
 async def api_stop_floor_transcription(room_id: int):
     async with get_session() as session:
         room = await get_room_by_id(session, room_id)
@@ -1049,7 +1050,7 @@ async def api_stop_floor_transcription(room_id: int):
     return {"status": "stopped"}
 
 
-@router.get("/api/rooms/{room_id}/floor-transcription/status", dependencies=[Depends(require_admin)])
+@router.get("/api/rooms/{room_id}/floor-transcription/status", dependencies=[Depends(require_room_event_access)])
 async def api_floor_transcription_status(room_id: int):
     async with get_session() as session:
         room = await get_room_by_id(session, room_id)
