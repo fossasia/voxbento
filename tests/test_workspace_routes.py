@@ -380,3 +380,36 @@ async def test_workspace_event_list_omits_coordinator_only_events(organizer):
     assert response.status_code == 200
     assert "Shared Event" in response.text
     assert "Coordinator Only Event" not in response.text
+
+
+@pytest.mark.anyio
+async def test_regular_user_navigation_omits_management_dashboard():
+    async with get_session() as session:
+        user = await create_user(session, email="regular@example.com", display_name="Regular User")
+        regular_cookies = {"user_token": create_user_token(user_id=user.id, email=user.email)}
+
+    async with client() as http:
+        home = await http.get("/", cookies=regular_cookies)
+        account = await http.get("/account", cookies=regular_cookies)
+
+    assert home.status_code == 200
+    assert 'href="/workspace/"' not in home.text
+    assert 'href="/admin/"' not in home.text
+    assert 'href="/mission-control/"' not in home.text
+    assert '<span class="max-sm:hidden">Dashboard</span>' not in home.text
+    assert 'href="/account"' in home.text
+    assert account.status_code == 200
+    nav_html = account.text.split('<nav class="header-nav">')[1].split("</nav>")[0]
+    assert nav_html.count("My Account") == 1
+
+
+@pytest.mark.anyio
+async def test_admin_token_navigation_points_to_admin():
+    admin_cookies = {"admin_token": create_admin_token()}
+
+    async with client() as http:
+        home = await http.get("/", cookies=admin_cookies)
+
+    assert home.status_code == 200
+    assert 'href="/admin/"' in home.text
+    assert '<span class="max-sm:hidden">Dashboard</span>' in home.text

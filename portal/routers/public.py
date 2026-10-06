@@ -12,7 +12,7 @@ from fastapi.responses import PlainTextResponse, Response
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 
-from portal.auth import get_current_user
+from portal.auth import get_admin_flags, get_current_user
 from portal.booth_identity import make_booth_id
 from portal.database import (
     get_session,
@@ -35,6 +35,10 @@ router = APIRouter()
 @router.get("/")
 async def home(request: Request):
     current_user = await get_current_user(request)
+    admin_flags = await get_admin_flags(request)
+    if not current_user and admin_flags.get("is_super_admin"):
+        current_user = {"email": "admin", "display_name": "Admin", "is_admin": True}
+
     my_booths = []
     management_home = "/admin/" if current_user and current_user.get("is_admin") else "/account"
 
@@ -44,7 +48,7 @@ async def home(request: Request):
 
             user_event_roles = {}
             user_booth_roles = {}
-            if current_user:
+            if current_user and current_user.get("sub"):
                 uid = int(current_user["sub"])
                 ems = await list_memberships_for_user(session, uid)
                 user_event_roles = {em.event_id: em.role for em in ems}

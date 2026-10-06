@@ -105,7 +105,6 @@ Legacy organizer requests to allowlisted event-management paths under `/admin/`,
 | Module | Owns |
 |---|---|
 | `portal/routers/public.py` | Home page, health check, registration |
-| `portal/routers/auth.py` | Login, logout, invite token validation |
 | `portal/routers/auth.py` | Login, logout, invite-token validation, and user profile page |
 | `portal/routers/interpreter.py` | Booth UI route |
 | `portal/routers/listener.py` | WHEP listener UI route |
