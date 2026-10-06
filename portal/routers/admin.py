@@ -658,7 +658,7 @@ async def admin_event_api_settings_post(
     return safe_redirect(url=f"/admin/events/{event_id}/api-settings/", status_code=status.HTTP_303_SEE_OTHER)
 
 
-@router.post("/admin/events/{event_id}/delete", dependencies=[Depends(require_admin)])
+@router.post("/admin/events/{event_id}/delete", dependencies=[Depends(require_event_owner)])
 async def admin_delete_event(request: Request, event_id: int):
     async with get_session() as session:
         await delete_event(session, event_id)
@@ -666,18 +666,22 @@ async def admin_delete_event(request: Request, event_id: int):
 
 
 @router.get("/admin/events/{event_id}/rooms/", dependencies=[Depends(require_admin)])
-async def admin_room_list(request: Request, event_id: int):
+async def admin_room_list(request: Request, event_id: int, search: str | None = Query(None)):
+    search_q = (search or "").strip()
+    search_val = search_q if search_q else None
     async with get_session() as session:
         event = await get_event_by_id(session, event_id)
         if event is None:
             raise HTTPException(status_code=404, detail="Event not found.")
-        rooms = await list_rooms_for_event(session, event_id)
+        rooms = await list_rooms_for_event(session, event_id, search=search_val)
         room_data = []
         for room in rooms:
             room_booths = await list_booths_for_room(session, room.id)
             room_data.append({"room": room, "booth_count": len(room_booths)})
     return templates.TemplateResponse(
-        request=request, name="admin/room_list.html", context={"event": event, "room_data": room_data}
+        request=request,
+        name="admin/room_list.html",
+        context={"event": event, "room_data": room_data, "search": search_val or ""},
     )
 
 
@@ -1346,11 +1350,11 @@ async def admin_edit_booth(request: Request, event_id: int, room_id: int, booth_
             if language_code_raw:
                 try:
                     booth.language_code = validate_language_code(language_code_raw)
-                except ValueError:
-                    pass
+                except ValueError as e:
+                    raise HTTPException(status_code=400, detail=str(e))
         await session.flush()
     return safe_redirect(
-        url=str(request.url_for("admin_booth_detail", event_id=event_id, room_id=room_id, booth_id=booth_id)),
+        url=f"/admin/events/{event_id}/rooms/{room_id}/booths/{booth_id}/",
         status_code=status.HTTP_303_SEE_OTHER,
     )
 
@@ -1436,9 +1440,9 @@ async def admin_users(
     limit: int = 50,
     search: str | None = None,
     sort_by: str = "created_at",
-    sort_order: str = "asc",
+    sort_order: str = "desc",
 ):
-    """List all registered users (super admin only)."""
+    """List all registered users (super admin only), newest first by default."""
     offset = (page - 1) * limit
     async with get_session() as session:
         total_users = await count_users(session, search=search)
