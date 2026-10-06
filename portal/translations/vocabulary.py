@@ -71,6 +71,25 @@ class VocabularyRowError(ValueError):
     pass
 
 
+class VocabularyScopeError(ValueError):
+    pass
+
+
+async def validate_vocabulary_scope(
+    session: AsyncSession, event_id: int, room_id: int | None = None, booth_id: int | None = None
+) -> None:
+    from portal.models import DBBooth, Room
+
+    if room_id is not None:
+        room = await session.get(Room, room_id)
+        if room is None or room.event_id != event_id:
+            raise VocabularyScopeError("Room does not belong to this event.")
+    if booth_id is not None:
+        booth = await session.get(DBBooth, booth_id)
+        if booth is None or booth.event_id != event_id or (room_id is not None and booth.room_id != room_id):
+            raise VocabularyScopeError("Booth does not belong to this room/event.")
+
+
 def _required_text(row: dict[str, str], key: str) -> str:
     value = (row.get(key) or "").strip()
     if not value:

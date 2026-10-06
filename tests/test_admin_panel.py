@@ -612,6 +612,53 @@ class TestRoomCRUD:
         assert "us,de,uns" in export.text
 
     @pytest.mark.anyio
+    async def test_room_vocabulary_upload_rejects_cross_event_room(self, admin_cookie, seed_event):
+        """A room belonging to a different event must not accept this event's vocabulary."""
+        from portal.database import create_event, create_room, get_session
+
+        event, _, _ = seed_event
+        async with get_session() as s:
+            other_event = await create_event(s, slug="othercon", display_name="OtherCon")
+            other_room = await create_room(s, event_id=other_event.id, display_name="Other Hall")
+
+        async with _client() as c:
+            upload = await c.post(
+                f"/admin/events/{event.id}/rooms/{other_room.id}/ai-vocabulary/upload",
+                data={"import_mode": "append"},
+                files={
+                    "vocabulary_file": (
+                        "x.csv",
+                        "source_term,target_language,target_term\nVoxbento,all,Voxbento\n",
+                        "text/csv",
+                    )
+                },
+                cookies=admin_cookie,
+                follow_redirects=False,
+            )
+        assert upload.status_code == 404
+
+    @pytest.mark.anyio
+    async def test_validate_vocabulary_scope_enforces_hierarchy(self, seed_event):
+        """The scope validator rejects a booth that belongs to another room/event."""
+        from portal.database import create_booth, create_event, create_room, get_session
+        from portal.translations.vocabulary import VocabularyScopeError, validate_vocabulary_scope
+
+        event, room, booth = seed_event
+        async with get_session() as s:
+            other_event = await create_event(s, slug="othercon2", display_name="OtherCon2")
+            other_room = await create_room(s, event_id=other_event.id, display_name="Other Hall")
+            other_booth = await create_booth(
+                s, event_id=other_event.id, room_id=other_room.id, language_code="fr", language_name="French"
+            )
+
+        async with get_session() as s:
+            await validate_vocabulary_scope(s, event.id, room_id=room.id, booth_id=booth.id)
+            with pytest.raises(VocabularyScopeError):
+                await validate_vocabulary_scope(s, event.id, room_id=other_room.id)
+            with pytest.raises(VocabularyScopeError):
+                await validate_vocabulary_scope(s, event.id, room_id=room.id, booth_id=other_booth.id)
+
+    @pytest.mark.anyio
     async def test_room_vocabulary_upload_reports_invalid_rows(self, admin_cookie, seed_event):
         event, room, _ = seed_event
         csv_content = "source_term,target_language,target_term,match_type\nBad,de,Term,regex\n"

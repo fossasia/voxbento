@@ -91,8 +91,10 @@ from portal.transcription.worker import start_transcription_worker, stop_transcr
 from portal.translations.constants import TRANSLATION_MODELS, TranslationProviderEnum
 from portal.translations.vocabulary import (
     VocabularyOverlapIndex,
+    VocabularyScopeError,
     parse_vocabulary_csv,
     serialize_vocabulary_csv,
+    validate_vocabulary_scope,
 )
 from portal.utils import _check_mediamtx, _make_jitsi_url, safe_redirect
 from portal.websockets.manager import broadcast_transcription
@@ -892,9 +894,10 @@ async def admin_upload_ai_vocabulary(request: Request, event_id: int, room_id: i
     imported = 0
     languages: set[str] = set()
     async with get_session() as session:
-        room = await get_room_by_id(session, room_id)
-        if room is None or room.event_id != event_id:
-            raise HTTPException(status_code=404, detail="Room not found.")
+        try:
+            await validate_vocabulary_scope(session, event_id, room_id=room_id)
+        except VocabularyScopeError as exc:
+            raise HTTPException(status_code=404, detail="Room not found.") from exc
         existing_entries = list(
             await session.scalars(
                 select(AIVocabularyEntry).where(
