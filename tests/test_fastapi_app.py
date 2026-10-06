@@ -853,6 +853,68 @@ def test_ws_broadcast_unlock_interpreter_rejected():
     assert "Only Room Coordinators" in msg["message"]
 
 
+_LISTENER_STATE_KEYS = {"booth_id", "event_slug", "room_id", "language_code", "broadcast_unlocked", "ingest_status"}
+
+
+def test_ws_listener_notified_when_booth_goes_live():
+    """A listener who connected before go-live is told when the booth goes live."""
+    booth = "golive-1-fr"
+    with client.websocket_connect(f"/ws/captions/{booth}", cookies=_ws_auth()) as listener:
+        with client.websocket_connect(f"/ws/booth/{booth}", cookies=_ws_auth()) as ws:
+            _ws_join(ws, "Eve", "interpreter", "French", f"{booth}-audio")
+            before = json.loads(listener.receive_text())
+
+            ws.send_text(json.dumps({"type": "booth:update-state", "mic_active": True, "ingest_connected": True}))
+            ws.receive_text()
+            live = json.loads(listener.receive_text())
+
+    assert before["type"] == "booth:state"
+    assert before["state"]["ingest_status"] == "disconnected"
+    assert live["type"] == "booth:state"
+    assert live["state"]["ingest_status"] == "connected"
+    assert set(live["state"]) == _LISTENER_STATE_KEYS
+
+
+def test_ws_captions_sends_current_state_on_connect():
+    """A listener who connects to an already live booth gets its status immediately."""
+    booth = "golive-1-de"
+    with client.websocket_connect(f"/ws/booth/{booth}", cookies=_ws_auth()) as ws:
+        _ws_join(ws, "Eve", "interpreter", "German", f"{booth}-audio")
+        ws.send_text(json.dumps({"type": "booth:update-state", "mic_active": True, "ingest_connected": True}))
+        ws.receive_text()
+
+        with client.websocket_connect(f"/ws/captions/{booth}", cookies=_ws_auth()) as listener:
+            msg = json.loads(listener.receive_text())
+
+    assert msg["type"] == "booth:state"
+    assert msg["state"]["ingest_status"] == "connected"
+    assert set(msg["state"]) == _LISTENER_STATE_KEYS
+
+
+def test_ws_listener_state_excludes_booth_internals():
+    """Listeners only get live/lock changes, never booth chat or participants."""
+    booth = "golive-1-es"
+    with client.websocket_connect(f"/ws/captions/{booth}", cookies=_ws_auth()) as listener:
+        with client.websocket_connect(f"/ws/booth/{booth}", cookies=_ws_auth()) as ws:
+            _ws_join(ws, "Coord", "room_coordinator", "Spanish", f"{booth}-audio")
+            listener.receive_text()  # status after join
+
+            # Chat changes only interpreter-side state, so listeners get nothing.
+            ws.send_text(json.dumps({"type": "booth:chat", "body": "booth-only note"}))
+            ws.receive_text()  # booth:chat
+            ws.receive_text()  # booth:state
+
+            ws.send_text(json.dumps({"type": "booth:set-broadcast-unlocked", "unlocked": True}))
+            ws.receive_text()
+            raw = listener.receive_text()
+
+    msg = json.loads(raw)
+    assert msg["type"] == "booth:state"
+    assert msg["state"]["broadcast_unlocked"] is True
+    assert set(msg["state"]) == _LISTENER_STATE_KEYS
+    assert "booth-only note" not in raw
+
+
 def test_ws_initiate_handoff_active_interpreter_sets_offered_state():
     """Active interpreter initiating handoff sets handoff_state='offered'."""
     booth = "handoff-offered"

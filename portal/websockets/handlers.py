@@ -18,6 +18,8 @@ from portal.websockets.manager import (
     _handle_set_active,
     _handle_set_broadcast_unlocked,
     _handle_update_state,
+    broadcast_booth_state,
+    listener_booth_state,
     listener_manager,
     manager,
     tts_manager,
@@ -99,7 +101,7 @@ async def ws_booth(websocket: WebSocket, booth_id: str) -> None:
                 session.language,
                 session.channel_id,
             )
-            await manager.broadcast(session.booth_id, {"type": "booth:state", "state": state})
+            await broadcast_booth_state(session.booth_id, state)
 
 
 @router.websocket("/ws/captions/{booth_id}")
@@ -112,6 +114,12 @@ async def ws_captions(websocket: WebSocket, booth_id: str) -> None:
     await websocket.accept()
     listener_manager.add(websocket, booth_id)
     try:
+        # Tell a newly connected listener whether the booth is already live, so
+        # it doesn't have to wait for the next state change to start playback.
+        booth = booths.get_booth_sync(booth_id)
+        if booth is not None:
+            state = listener_booth_state(booth.as_public_dict())
+            await websocket.send_text(json.dumps({"type": "booth:state", "state": state}))
         while True:
             await websocket.receive_text()
     except WebSocketDisconnect:

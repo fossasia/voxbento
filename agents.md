@@ -161,7 +161,7 @@ Validation: `portal/booth_identity.py` — slug: `^[a-z0-9]+(?:-[a-z0-9]+)*$`; l
 
 Server → Client: `booth:joined`, `booth:state`, `booth:chat`, `booth:error`
 
-Caption feed: `/ws/captions/{booth_id}` (no auth) — receives `caption` + `booth:state` messages.
+Caption feed: `/ws/captions/{booth_id}` (no auth) receives `caption` + `booth:state` messages. Its `booth:state` carries only `booth_id`, `event_slug`, `room_id`, `language_code`, `broadcast_unlocked` and `ingest_status` (never participants or booth chat), is sent once on connect if the booth exists, and again whenever one of those fields changes.
 
 ---
 
