@@ -113,6 +113,10 @@ class TestValidateLanguageCode:
         for code in ("en", "fr", "de", "es", "zh", "ja", "ar", "hi", "pt", "ru"):
             assert validate_language_code(code) == code
 
+    def test_validate_language_code_floor(self):
+        assert validate_language_code("floor") == "floor"
+        assert validate_language_code("FLOOR") == "floor"
+
 
 # ── validate_instance ─────────────────────────────────────────────────────────
 
@@ -242,6 +246,19 @@ class TestParseBoothId:
     def test_empty_string_raises(self):
         with pytest.raises(ValueError):
             parse_booth_id("")
+
+    def test_invalid_format_raises(self):
+        with pytest.raises(ValueError, match="Booth ID must follow the format"):
+            parse_booth_id("pycon2026-1")  # missing language code, actually len(parts) == 2
+        with pytest.raises(ValueError, match="Booth ID must follow the format"):
+            parse_booth_id("pycon2026")  # single part
+        with pytest.raises(ValueError, match="Invalid booth ID format"):
+            from unittest.mock import patch
+
+            # We cannot mock `re.Pattern.match` directly, so let's mock `_BOOTH_ID_RE` itself
+            with patch("portal.booth_identity._BOOTH_ID_RE") as mock_re:
+                mock_re.match.return_value = True
+                parse_booth_id("invalid-format")
 
     def test_three_letter_code_rejected(self):
         with pytest.raises(ValueError):

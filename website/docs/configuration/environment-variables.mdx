@@ -41,10 +41,10 @@ These variables tell Voxbento where MediaMTX is running and how attendee browser
 | Variable | Default | Description |
 | --- | --- | --- |
 | `MEDIAMTX_WHIP_BASE` | `http://localhost:8889` | The browser-facing base URL for WHIP ingest and WHEP playback. This URL must be reachable from attendee browsers — not just from inside Docker. In production, set this to your public domain with `https://`. |
-| `DOCKER_HOST_ADDRESS` | _(none)_ | Your server's public IP address. Required for WebRTC ICE candidates to be advertised correctly to browsers outside the local network. Without this, WebRTC connections will fail for anyone not on the same machine. |
+| `JVB_ADVERTISE_IPS` | _(none)_ | Comma-separated IP addresses that Jitsi Videobridge advertises as ICE candidates. For a single-server deployment, set the public or reachable LAN IP. |
 
 :::tip
-To find your public IP on Linux, run `hostname -I | awk '{print $1}'`. On macOS, run `ipconfig getifaddr en0`. Set the result as `DOCKER_HOST_ADDRESS` in your `.env` file.
+To find your public IP on Linux, run `hostname -I | awk '{print $1}'`. On macOS, run `ipconfig getifaddr en0`. Set the result as `JVB_ADVERTISE_IPS` in your `.env` file.
 :::
 
 ## Database Variables
@@ -72,10 +72,10 @@ These variables configure how Voxbento talks to MediaMTX and other local Docker 
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `MEDIAMTX_INTERNAL_BASE` | _(none)_ | Internal URL for Python→MediaMTX communication. |
 | `MEDIAMTX_API_BASE` | `http://localhost:9997` | MediaMTX Control API URL. |
 | `MEDIAMTX_RTSP_BASE` | `rtsp://mediamtx:8554` | Internal RTSP URL for floor audio transcription. |
 | `FLOOR_BOT_BASE` | `http://floor-bot:8080` | URL for the floor-bot container. |
+| `JITSI_INTERNAL_BASE` | `https://jitsi-web:8443` in Compose | Internal HTTPS URL used by the floor bot. Jitsi `stable-11146` and newer listen on the unprivileged container port `8443`. |
 
 ## Jitsi Internal Auth Variables
 

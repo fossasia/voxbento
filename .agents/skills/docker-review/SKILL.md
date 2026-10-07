@@ -16,18 +16,20 @@ description: Use this skill to review, debug, or modify VoxBento's Docker config
 docker-compose.yml
   ├── portal           → FastAPI app (built from Dockerfile)
   ├── mediamtx         → bluenviron/mediamtx:1
-  ├── jitsi-web        → jitsi/web:stable-9823
-  ├── jitsi-prosody    → jitsi/prosody:stable-9823
-  ├── jitsi-jicofo     → jitsi/jicofo:stable-9823
-  └── jitsi-jvb        → jitsi/jvb:stable-9823
+  ├── jitsi-web        → ghcr.io/jitsi/web:stable-11248
+  ├── jitsi-prosody    → ghcr.io/jitsi/prosody:stable-11248
+  ├── jitsi-jicofo     → ghcr.io/jitsi/jicofo:stable-11248
+  └── jitsi-jvb        → ghcr.io/jitsi/jvb:stable-11248
 
 volumes:
   portal-data         → SQLite DB persistence
-  jitsi-web-config
-  jitsi-prosody-config
-  jitsi-prosody-plugins
-  jitsi-jicofo-config
-  jitsi-jvb-config
+  jitsi-web-config-rootless
+  jitsi-web-storage-rootless
+  jitsi-prosody-config-rootless
+  jitsi-prosody-plugins-rootless
+  jitsi-prosody-storage-rootless
+  jitsi-jicofo-config-rootless
+  jitsi-jvb-config-rootless
 ```
 
 ---
@@ -84,10 +86,11 @@ Key settings in `mediamtx.yml`:
 
 ## Jitsi Stack
 
-- **web:** HTTPS port 8443, HTTP port 8080. `BOSH_RELATIVE: "true"` ensures relative paths work without SSL.
+- **web:** Host ports 8443/8080 map to rootless container ports 8443/8000. `BOSH_RELATIVE: "true"` ensures relative paths work behind Caddy.
 - **prosody:** XMPP server. `JVB_AUTH_PASSWORD` and `JICOFO_AUTH_PASSWORD` must be set in production.
 - **jicofo:** Conference focus component.
-- **jvb:** Jitsi Video Bridge. `DOCKER_HOST_ADDRESS` must be set to LAN IP on macOS; hostname -I on Linux.
+- **jvb:** Jitsi Video Bridge. `JVB_ADVERTISE_IPS` must be set to the reachable LAN/public IP.
+- **hardening:** All four Jitsi containers run rootless with read-only filesystems and writable `/run`/`/tmp` tmpfs mounts.
 
 ---
 
@@ -96,7 +99,6 @@ Key settings in `mediamtx.yml`:
 - Services communicate by Docker service name: `mediamtx`, `jitsi-prosody`, etc.
 - **`MEDIAMTX_WHIP_BASE`** must be the browser-reachable URL (e.g. `https://voxbento.example.com:8889`), not the Docker internal URL. Browsers make WebRTC connections directly to MediaMTX.
 - **`MEDIAMTX_API_BASE`** uses Docker internal: `http://mediamtx:9997`.
-- **`MEDIAMTX_INTERNAL_BASE`**: `http://mediamtx:8888` — for portal health checks.
 
 ---
 
@@ -105,7 +107,7 @@ Key settings in `mediamtx.yml`:
 | Issue | Cause | Fix |
 |---|---|---|
 | `connection refused` on WHIP | `MEDIAMTX_WHIP_BASE` is Docker-internal URL | Set to public host/IP |
-| Jitsi join fails | `DOCKER_HOST_ADDRESS` not set for JVB | Set to host LAN IP |
+| Jitsi join fails | `JVB_ADVERTISE_IPS` not set for JVB | Set to the reachable host IP |
 | DB lost after restart | `portal-data` volume not mounted | Check volume mount in docker-compose |
 | Migration error on start | Previous migration state mismatch | Run `uv run alembic downgrade base` then `upgrade head` |
 | `API_KEY_ENCRYPTION_KEY` error | Key not set or is default | Set to 32+ char random string |
@@ -121,7 +123,7 @@ Key settings in `mediamtx.yml`:
 - [ ] `DATABASE_URL` set to PostgreSQL.
 - [ ] `MEDIAMTX_WHIP_BASE` set to HTTPS public URL.
 - [ ] `JITSI_DOMAIN` and `JITSI_BASE_URL` set.
-- [ ] `DOCKER_HOST_ADDRESS` set (for JVB ICE candidates).
+- [ ] `JVB_ADVERTISE_IPS` set (for JVB ICE candidates).
 - [ ] `JVB_AUTH_PASSWORD` and `JICOFO_AUTH_PASSWORD` changed from default `changeme`.
 - [ ] Remove `.:/app` source mount (use image with baked-in code).
 - [ ] Remove `--reload` from uvicorn command.

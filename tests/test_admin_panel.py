@@ -71,6 +71,15 @@ async def seed_event():
 # ---------------------------------------------------------------------------
 
 
+def resolve_relay_attr(html: str) -> str:
+    """The relay WHEP URL the interpreter page hands the browser."""
+    import re
+
+    m = re.search(r"data-relay-whep-url='([^']*)'", html)
+    assert m, "the relay attribute is not in the page at all, so a match proves nothing"
+    return m.group(1)
+
+
 def _client():
     from httpx import ASGITransport, AsyncClient
 
@@ -243,6 +252,15 @@ class TestEventCRUD:
         assert b"testcon" in resp.content
 
     @pytest.mark.anyio
+    async def test_event_list_shows_readable_created_date(self, admin_cookie, seed_event):
+        event, _, _ = seed_event
+        async with _client() as c:
+            resp = await c.get("/admin/events/", cookies=admin_cookie)
+        assert resp.status_code == 200
+        assert event.created_at.strftime("%b %d, %Y, %H:%M").encode() in resp.content
+        assert event.created_at.strftime("%Y-%m-%d").encode() not in resp.content
+
+    @pytest.mark.anyio
     async def test_create_event(self, admin_cookie):
         async with _client() as c:
             resp = await c.post(
@@ -320,6 +338,58 @@ class TestEventCRUD:
         assert b"testcon" not in resp.content
 
     @pytest.mark.anyio
+    async def test_delete_event_rejects_a_room_coordinator(self, admin_cookie, seed_event):
+        """require_admin admits a room_coordinator for the whole event, and deleting one
+        now destroys transcripts and OAuth grant state. Match the API-key routes and
+        require an event owner."""
+        from portal.auth import create_user_token
+        from portal.database import create_room, create_user, get_session
+        from portal.models import RoomMembership
+
+        event, room, _ = seed_event
+        async with get_session() as s:
+            side = await create_room(s, event_id=event.id, display_name="Side Room")
+            carol = await create_user(s, email="carol@example.com", display_name="Carol")
+            s.add(RoomMembership(user_id=carol.id, room_id=side.id, role="room_coordinator"))
+            carol_id = carol.id
+
+        cookie = {"user_token": create_user_token(user_id=carol_id, email="carol@example.com")}
+        async with _client() as c:
+            # she really is a coordinator: her own room's page is allowed
+            allowed = await c.get(f"/admin/events/{event.id}/rooms/{side.id}/", cookies=cookie)
+            resp = await c.post(f"/admin/events/{event.id}/delete", cookies=cookie, follow_redirects=False)
+        assert allowed.status_code == 200, "fixture is wrong; she is not a coordinator"
+        assert resp.status_code == 403
+
+        from portal.database import get_event_by_id
+
+        async with get_session() as s:
+            assert await get_event_by_id(s, event.id) is not None
+
+    @pytest.mark.anyio
+    async def test_delete_event_allows_an_event_owner(self, seed_event):
+        """The tightened guard must still admit the event's own owner."""
+        from portal.auth import create_user_token
+        from portal.database import create_user, get_event_by_id, get_session
+        from portal.models import EventMembership
+
+        event, _, _ = seed_event
+        async with get_session() as s:
+            owner = await create_user(s, email="owner@example.com", display_name="Owner")
+            s.add(EventMembership(user_id=owner.id, event_id=event.id, role="event_owner"))
+            owner_id = owner.id
+
+        cookie = {"user_token": create_user_token(user_id=owner_id, email="owner@example.com")}
+        async with _client() as c:
+            legacy = await c.post(f"/admin/events/{event.id}/delete", cookies=cookie, follow_redirects=False)
+            assert legacy.status_code == 307
+            assert legacy.headers["location"] == f"/workspace/events/{event.id}/delete"
+            resp = await c.post(legacy.headers["location"], cookies=cookie, follow_redirects=False)
+        assert resp.status_code == 303
+        async with get_session() as s:
+            assert await get_event_by_id(s, event.id) is None
+
+    @pytest.mark.anyio
     async def test_event_not_found(self, admin_cookie):
         async with _client() as c:
             resp = await c.get("/admin/events/99999/", cookies=admin_cookie)
@@ -331,6 +401,20 @@ class TestEventCRUD:
 # ---------------------------------------------------------------------------
 
 
+class TestBreadcrumbs:
+    @pytest.mark.anyio
+    @pytest.mark.parametrize("path", ["/admin/events/", "/admin/users/"])
+    async def test_breadcrumb_marks_current_page_and_uses_slash_separator(self, admin_cookie, path):
+        async with _client() as c:
+            resp = await c.get(path, cookies=admin_cookie)
+        assert resp.status_code == 200
+        start = resp.text.index('<nav class="breadcrumb">')
+        nav = resp.text[start : resp.text.index("</nav>", start)]
+        assert 'class="breadcrumb-current" aria-current="page"' in nav
+        assert "›" not in nav
+        assert "<span>/</span>" in nav
+
+
 class TestRoomCRUD:
     @pytest.mark.anyio
     async def test_room_list(self, admin_cookie, seed_event):
@@ -339,6 +423,65 @@ class TestRoomCRUD:
             resp = await c.get(f"/admin/events/{event.id}/rooms/", cookies=admin_cookie)
         assert resp.status_code == 200
         assert b"Main Hall" in resp.content
+
+    @pytest.mark.anyio
+    async def test_room_list_search(self, admin_cookie, seed_event):
+        event, _, _ = seed_event
+        # Create an additional room to test search filtering
+        async with _client() as c:
+            await c.post(
+                f"/admin/events/{event.id}/rooms/",
+                data={"display_name": "Workshop Room"},
+                cookies=admin_cookie,
+                follow_redirects=False,
+            )
+
+        # Search for "Workshop" -> should return "Workshop Room" link and hide "Main Hall" link
+        async with _client() as c:
+            resp = await c.get(f"/admin/events/{event.id}/rooms/?search=workshop", cookies=admin_cookie)
+        assert resp.status_code == 200
+        assert b">Workshop Room</a>" in resp.content
+        assert b">Main Hall</a>" not in resp.content
+
+        # Search for non-existent room -> empty state message
+        async with _client() as c:
+            resp = await c.get(f"/admin/events/{event.id}/rooms/?search=NonExistent", cookies=admin_cookie)
+        assert resp.status_code == 200
+        assert b"No rooms match search" in resp.content
+
+        # Searching for literal "%" or "_" when no room names contain them should return empty match, not all rooms
+        async with _client() as c:
+            resp = await c.get(f"/admin/events/{event.id}/rooms/?search=%25", cookies=admin_cookie)
+        assert resp.status_code == 200
+        assert b"No rooms match search" in resp.content
+
+        async with _client() as c:
+            resp = await c.get(f"/admin/events/{event.id}/rooms/?search=_", cookies=admin_cookie)
+        assert resp.status_code == 200
+        assert b"No rooms match search" in resp.content
+
+        # Create a room with display_name containing a literal backslash
+        async with _client() as c:
+            await c.post(
+                f"/admin/events/{event.id}/rooms/",
+                data={"display_name": "Backslash \\ Room"},
+                cookies=admin_cookie,
+                follow_redirects=False,
+            )
+
+        # Search using the URL-encoded backslash
+        async with _client() as c:
+            resp = await c.get(f"/admin/events/{event.id}/rooms/?search=%5C", cookies=admin_cookie)
+        assert resp.status_code == 200
+        assert b">Backslash \\ Room</a>" in resp.content
+
+        # Whitespace-only search query should be ignored and render all rooms without active search state
+        async with _client() as c:
+            resp = await c.get(f"/admin/events/{event.id}/rooms/?search=%20%20", cookies=admin_cookie)
+        assert resp.status_code == 200
+        assert b">Main Hall</a>" in resp.content
+        assert b">Workshop Room</a>" in resp.content
+        assert b"No rooms match search" not in resp.content
 
     @pytest.mark.anyio
     async def test_create_room(self, admin_cookie, seed_event):
@@ -578,6 +721,108 @@ class TestBoothCRUD:
         assert resp.status_code == 303
 
     @pytest.mark.anyio
+    async def test_delete_relay_booth_clears_the_rooms_pointer(self, admin_cookie, seed_event):
+        """The room page shows Relay Booth as None after the delete; the row must agree."""
+        from portal.database import get_room_by_id, get_session
+
+        event, room, booth = seed_event
+        async with _client() as c:
+            resp = await c.post(
+                f"/admin/events/{event.id}/rooms/{room.id}/edit",
+                data={"form_section": "relay", "relay_booth_id": str(booth.id)},
+                cookies=admin_cookie,
+                follow_redirects=False,
+            )
+            assert resp.status_code == 303
+        async with get_session() as s:
+            assert (await get_room_by_id(s, room.id)).relay_booth_id == booth.id
+
+        async with _client() as c:
+            resp = await c.post(
+                f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/delete",
+                cookies=admin_cookie,
+                follow_redirects=False,
+            )
+        assert resp.status_code == 303
+        async with get_session() as s:
+            assert (await get_room_by_id(s, room.id)).relay_booth_id is None
+
+    @pytest.mark.anyio
+    async def test_deleted_relay_booth_is_not_resurrected_by_a_reused_id(self, admin_cookie, seed_event):
+        """A new booth reusing the deleted booth's rowid must not inherit the relay slot.
+
+        Without the fix the interpreter is handed the new booth's WHEP URL, which can
+        be another room in another language, while the room page still shows None.
+        """
+        from portal.auth import create_participant_token
+        from portal.database import (
+            create_booth,
+            create_room,
+            get_room_by_id,
+            get_session,
+            list_booths_for_room,
+        )
+
+        # seed_event's booth is where the interpreter sits, so the relay booth is created
+        # after it and holds the highest booth id. Deleting the highest id is what frees it
+        # for reuse; deleting a lower one leaves max() untouched and proves nothing.
+        event, room, own = seed_event
+        async with get_session() as s:
+            relay_booth = await create_booth(
+                s, event_id=event.id, room_id=room.id, language_code="es", language_name="Spanish"
+            )
+            other_room = await create_room(s, event_id=event.id, display_name="Hall B")
+            own_id, other_room_id, relay_id = own.id, other_room.id, relay_booth.id
+        assert relay_id > own_id
+
+        async with _client() as c:
+            await c.post(
+                f"/admin/events/{event.id}/rooms/{room.id}/edit",
+                data={"form_section": "relay", "relay_booth_id": str(relay_id)},
+                cookies=admin_cookie,
+                follow_redirects=False,
+            )
+        session_cookie = {
+            "session_token": create_participant_token(
+                booth_id=own_id,
+                role="interpreter",
+                event_slug=event.slug,
+                room_id=room.id,
+                language_code="en",
+            )
+        }
+        async with _client() as c:
+            page = await c.get(f"/interpreter/{event.slug}/{room.id}/en", cookies=session_cookie)
+        assert resolve_relay_attr(page.text) != "", "relay was never configured, so nothing is proven"
+
+        async with _client() as c:
+            resp = await c.post(
+                f"/admin/events/{event.id}/rooms/{room.id}/booths/{relay_id}/delete",
+                cookies=admin_cookie,
+                follow_redirects=False,
+            )
+            assert resp.status_code == 303
+            # a booth added to the other room can take the freed rowid
+            await c.post(
+                f"/admin/events/{event.id}/rooms/{other_room_id}/booths/",
+                data={"language_code": "fr", "language_name": "French"},
+                cookies=admin_cookie,
+                follow_redirects=False,
+            )
+        async with get_session() as s:
+            new_booth = (await list_booths_for_room(s, other_room_id))[0]
+            assert (await get_room_by_id(s, room.id)).relay_booth_id is None
+        # without this the replacement never occupies the freed id and the stale-pointer
+        # path is not exercised at all
+        assert new_booth.id == relay_id, f"no rowid reuse: {new_booth.id} != {relay_id}"
+
+        async with _client() as c:
+            page = await c.get(f"/interpreter/{event.slug}/{room.id}/en", cookies=session_cookie)
+        after = resolve_relay_attr(page.text)
+        assert f"/{other_room_id}/{new_booth.language_code}/" not in after, after
+        assert not after.startswith("http"), f"still handed a relay stream: {after}"
+
+    @pytest.mark.anyio
     async def test_booth_not_found(self, admin_cookie, seed_event):
         event, room, _ = seed_event
         async with _client() as c:
@@ -712,12 +957,12 @@ class TestAPIKeyCRUD:
             c.cookies.set("user_token", token)
 
             # Initially empty
-            res = await c.get(f"/admin/api/events/{event_id}/api-keys")
+            res = await c.get(f"/workspace/api/events/{event_id}/api-keys")
             assert res.status_code == 200
             assert res.json() == []
 
             # Create API key
-            res = await c.post(f"/admin/api/events/{event_id}/api-keys", json={"name": "Integration Key"})
+            res = await c.post(f"/workspace/api/events/{event_id}/api-keys", json={"name": "Integration Key"})
             assert res.status_code == 200
             data = res.json()
             assert data["name"] == "Integration Key"
@@ -727,17 +972,17 @@ class TestAPIKeyCRUD:
             key_id = data["id"]
 
             # Prevent duplicate name
-            res_dup = await c.post(f"/admin/api/events/{event_id}/api-keys", json={"name": "Integration Key"})
+            res_dup = await c.post(f"/workspace/api/events/{event_id}/api-keys", json={"name": "Integration Key"})
             assert res_dup.status_code == 400
             assert "already exists" in res_dup.json()["detail"]
 
             # Prevent blank name
-            res_blank = await c.post(f"/admin/api/events/{event_id}/api-keys", json={"name": "   "})
+            res_blank = await c.post(f"/workspace/api/events/{event_id}/api-keys", json={"name": "   "})
             assert res_blank.status_code == 400
             assert "cannot be blank" in res_blank.json()["detail"]
 
             # List keys (should contain 1)
-            res = await c.get(f"/admin/api/events/{event_id}/api-keys")
+            res = await c.get(f"/workspace/api/events/{event_id}/api-keys")
             assert res.status_code == 200
             keys = res.json()
             assert len(keys) == 1
@@ -746,16 +991,18 @@ class TestAPIKeyCRUD:
             assert "raw_key" not in keys[0]
 
             # Revoke key
-            res_del = await c.delete(f"/admin/api/events/{event_id}/api-keys/{key_id}")
+            res_del = await c.delete(f"/workspace/api/events/{event_id}/api-keys/{key_id}")
             assert res_del.status_code == 200
 
             # List keys (should be empty again)
-            res = await c.get(f"/admin/api/events/{event_id}/api-keys")
+            res = await c.get(f"/workspace/api/events/{event_id}/api-keys")
             assert res.status_code == 200
             assert res.json() == []
 
             # Duplicate name is now allowed since the old one is revoked
-            res_remake = await c.post(f"/admin/api/events/{event_id}/api-keys", json={"name": "Integration Key"})
+            res_remake = await c.post(
+                f"/workspace/api/events/{event_id}/api-keys", json={"name": "Integration Key"}
+            )
             assert res_remake.status_code == 200
             assert res_remake.json()["name"] == "Integration Key"
 
@@ -999,4 +1246,247 @@ async def test_admin_list_pages_have_no_inline_styles(path, admin_cookie, seed_e
         resp = await c.get(path.format(event=event.id, room=room.id), cookies=admin_cookie)
 
     assert resp.status_code == 200
+    assert not re.search(rb"\sstyle\s*=", resp.content, re.IGNORECASE)
+
+
+async def _seed_users_with_join_dates():
+    from portal.database import create_user, get_session
+
+    base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    async with get_session() as s:
+        for i, email in enumerate(["oldest@example.com", "middle@example.com", "newest@example.com"]):
+            user = await create_user(s, email=email, display_name=email.split("@")[0])
+            user.created_at = base + timedelta(days=i)
+        await s.flush()
+
+
+@pytest.mark.anyio
+async def test_user_list_defaults_to_newest_first(admin_cookie):
+    import re
+
+    await _seed_users_with_join_dates()
+
+    async with _client() as c:
+        resp = await c.get("/admin/users/", cookies=admin_cookie)
+
+    assert resp.status_code == 200
+    body = resp.text
+    assert body.index("newest@example.com") < body.index("middle@example.com") < body.index("oldest@example.com")
+    # Joined header shows the descending indicator and toggles to ascending on click.
+    assert re.search(r'<a href="\?sort_by=created_at&sort_order=asc[^"]*" class="sort-link">', body)
+    assert re.search(r'Joined\s*<span class="sort-indicator">▼</span>', body)
+
+
+@pytest.mark.anyio
+async def test_user_list_explicit_ascending_sort_still_works(admin_cookie):
+    import re
+
+    await _seed_users_with_join_dates()
+
+    async with _client() as c:
+        resp = await c.get("/admin/users/?sort_by=created_at&sort_order=asc", cookies=admin_cookie)
+
+    assert resp.status_code == 200
+    body = resp.text
+    assert body.index("oldest@example.com") < body.index("middle@example.com") < body.index("newest@example.com")
+    # Header flips to the ascending indicator and the next click goes back to descending.
+    assert re.search(r'Joined\s*<span class="sort-indicator">▲</span>', body)
+    assert re.search(r'<a href="\?sort_by=created_at&sort_order=desc[^"]*" class="sort-link">', body)
+
+
+@pytest.mark.anyio
+async def test_user_list_only_marks_the_active_sort_column(admin_cookie):
+    import re
+
+    await _seed_users_with_join_dates()
+
+    async with _client() as c:
+        resp = await c.get("/admin/users/", cookies=admin_cookie)
+
+    assert resp.status_code == 200
+    active = re.findall(r'<span class="sort-indicator">[▲▼]</span>', resp.text)
+    assert active == ['<span class="sort-indicator">▼</span>']
+
+
+@pytest.mark.anyio
+async def test_user_list_orders_same_join_time_by_newest_id(admin_cookie):
+    from portal.database import create_user, get_session
+
+    same_moment = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    emails = ["tie-a@example.com", "tie-b@example.com", "tie-c@example.com"]
+    async with get_session() as s:
+        for email in emails:
+            user = await create_user(s, email=email, display_name=email.split("@")[0])
+            user.created_at = same_moment
+        await s.flush()
+
+    async with _client() as c:
+        resp = await c.get("/admin/users/", cookies=admin_cookie)
+
+    assert resp.status_code == 200
+    body = resp.text
+    # Created in a-b-c order, so ids ascend a-b-c; newest-first means c-b-a.
+    assert body.index("tie-c@example.com") < body.index("tie-b@example.com") < body.index("tie-a@example.com")
+
+
+@pytest.mark.anyio
+async def test_user_list_badge_shows_total_across_pages(admin_cookie):
+    from portal.database import create_user, get_session
+
+    async with get_session() as s:
+        for i in range(3):
+            await create_user(s, email=f"user{i}@example.com", display_name=f"User {i}")
+
+    async with _client() as c:
+        resp = await c.get("/admin/users/?limit=2", cookies=admin_cookie)
+
+    assert resp.status_code == 200
+    assert '<span class="badge">Total: 3 users</span>' in resp.text
+    assert "displayed" not in resp.text
+
+
+@pytest.mark.anyio
+async def test_user_list_badge_uses_singular_for_one_user(admin_cookie):
+    from portal.database import create_user, get_session
+
+    async with get_session() as s:
+        await create_user(s, email="solo@example.com", display_name="Solo")
+
+    async with _client() as c:
+        resp = await c.get("/admin/users/", cookies=admin_cookie)
+
+    assert resp.status_code == 200
+    assert '<span class="badge">Total: 1 user</span>' in resp.text
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/admin/setup",
+        "/admin/events/{event}/setup/rooms",
+        "/admin/events/{event}/setup/booths",
+        "/admin/events/{event}/setup/invite",
+    ],
+)
+async def test_setup_wizard_pages_have_no_inline_styles(path, admin_cookie, seed_event):
+    import re
+
+    event, _, _ = seed_event
+
+    async with _client() as c:
+        resp = await c.get(path.format(event=event.id), cookies=admin_cookie)
+
+    assert resp.status_code == 200
+    assert not re.search(rb"\sstyle\s*=", resp.content, re.IGNORECASE)
+
+
+@pytest.mark.anyio
+async def test_event_detail_listener_link_has_copy_button(admin_cookie, seed_event):
+    from portal.database import get_session
+
+    event, _, _ = seed_event
+    async with get_session() as s:
+        db_event = await s.get(type(event), event.id)
+        db_event.listener_join_code = "ROOM42"
+
+    async with _client() as c:
+        resp = await c.get(f"/admin/events/{event.id}/", cookies=admin_cookie)
+
+    assert resp.status_code == 200
+    assert 'id="listener-link"' in resp.text
+    assert 'data-copy-target="listener-link"' in resp.text
+
+
+@pytest.mark.anyio
+async def test_admin_pages_have_a_toast_live_region(admin_cookie, seed_event):
+    """The copy-to-clipboard success/failure feedback in admin.js needs the
+    aria-live toast container from admin/base.html on every admin page."""
+    event, _, _ = seed_event
+
+    async with _client() as c:
+        resp = await c.get(f"/admin/events/{event.id}/", cookies=admin_cookie)
+
+    assert resp.status_code == 200
+    assert 'id="toast-container"' in resp.text
+    assert 'aria-live="polite"' in resp.text
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/admin/events/{event}/",
+        "/admin/events/{event}/members/",
+        "/admin/events/{event}/rooms/{room}/booths/{booth}/",
+        "/admin/events/{event}/rooms/{room}/",
+        "/admin/events/{event}/rooms/{room}/transcripts/",
+        "/admin/users/{user}/",
+    ],
+)
+async def test_admin_detail_pages_have_no_inline_styles(path, admin_cookie, seed_event):
+    import re
+
+    from portal.auth import hash_password
+    from portal.database import create_user, get_session
+
+    event, room, booth = seed_event
+    async with get_session() as s:
+        user = await create_user(
+            s,
+            email="detail@test.com",
+            display_name="Detail User",
+            password_hash=hash_password("securepass123"),
+            email_verified=True,
+        )
+
+    async with _client() as c:
+        resp = await c.get(
+            path.format(event=event.id, room=room.id, booth=booth.id, user=user.id),
+            cookies=admin_cookie,
+        )
+
+    assert resp.status_code == 200
+    # The API key modals keep style="display: none", which admin.js toggles.
+    body = resp.content.replace(b'style="display: none;"', b"")
+    assert not re.search(rb"\sstyle\s*=", body, re.IGNORECASE)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("seed_accounts", [False, True], ids=["empty", "all-statuses"])
+async def test_developer_accounts_page_has_no_inline_styles(seed_accounts):
+    import re
+
+    from portal.auth import create_user_token, hash_password
+    from portal.database import create_user, get_session
+    from portal.models import DeveloperAccount
+
+    async with get_session() as s:
+        admin = await create_user(
+            s, email="super@test.com", display_name="Super", password_hash=hash_password("securepass123")
+        )
+        admin.is_admin = True
+        if seed_accounts:
+            for status in ("pending", "approved", "suspended", "rejected"):
+                applicant = await create_user(
+                    s,
+                    email=f"{status}@test.com",
+                    display_name=status,
+                    password_hash=hash_password("securepass123"),
+                )
+                s.add(DeveloperAccount(user_id=applicant.id, status=status, organization_name=f"{status} org"))
+        await s.commit()
+        admin_id, admin_email = admin.id, admin.email
+
+    cookie = {"user_token": create_user_token(user_id=admin_id, email=admin_email, is_admin=True)}
+    async with _client() as c:
+        resp = await c.get("/admin/developer-accounts", cookies=cookie)
+
+    assert resp.status_code == 200
+    if seed_accounts:
+        # Every status branch rendered, so the assertion below covers all of them.
+        for label in (b"Approve", b"Reject", b"Suspend", b"Restore"):
+            assert label in resp.content
+    else:
+        assert b"No developer applications" in resp.content
     assert not re.search(rb"\sstyle\s*=", resp.content, re.IGNORECASE)

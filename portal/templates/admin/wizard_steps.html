@@ -4,8 +4,8 @@
   {% for num, label in steps %}
   <div class="step {{ 'is-done' if num < step else ('is-active' if num == step else '') }}">
     {% if num < step and event %}
-      {% set target = '/admin/setup' if num == 1 else ('/admin/events/' ~ event.id ~ '/setup/' ~ (['rooms','booths','invite'][num-2])) %}
-      <a class="step-bubble" href="{{ target }}" style="text-decoration:none;" aria-label="Go to {{ label }}">✓</a>
+      {% set target = management_prefix ~ '/setup' if num == 1 else (management_prefix ~ '/events/' ~ event.id ~ '/setup/' ~ (['rooms','booths','invite'][num-2])) %}
+      <a class="step-bubble" href="{{ target }}" aria-label="Go to {{ label }}">✓</a>
     {% else %}
       <span class="step-bubble">{{ num }}</span>
     {% endif %}

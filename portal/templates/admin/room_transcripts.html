@@ -3,12 +3,12 @@
 
 {% block breadcrumb %}
 <nav class="breadcrumb">
-  <a href="/admin/">Dashboard</a> <span>/</span>
-  <a href="/admin/events/">Events</a> <span>/</span>
-  <a href="/admin/events/{{ event.id }}/">{{ event.display_name }}</a> <span>/</span>
-  <a href="/admin/events/{{ event.id }}/rooms/">Rooms</a> <span>/</span>
-  <a href="/admin/events/{{ event.id }}/rooms/{{ room.id }}/">{{ room.display_name }}</a> <span>/</span>
-  <span>Transcripts</span>
+  <a href="{{ management_prefix }}/">Dashboard</a> <span>/</span>
+  <a href="{{ management_prefix }}/events/">Events</a> <span>/</span>
+  <a href="{{ management_prefix }}/events/{{ event.id }}/">{{ event.display_name }}</a> <span>/</span>
+  <a href="{{ management_prefix }}/events/{{ event.id }}/rooms/">Rooms</a> <span>/</span>
+  <a href="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/">{{ room.display_name }}</a> <span>/</span>
+  <span class="breadcrumb-current" aria-current="page">Transcripts</span>
 </nav>
 {% endblock %}
 
@@ -21,8 +21,8 @@
 </div>
 
 <div class="section-card">
-  <div class="form-row" style="margin-bottom: 1rem;">
-    <div class="form-group" style="flex: 1;">
+  <div class="form-row form-row--spaced">
+    <div class="form-group form-group--grow">
       <label for="transcript_lang_select">Select Transcript Channel</label>
       <select id="transcript_lang_select" class="input">
         <option value="">-- Select Channel --</option>
@@ -41,14 +41,14 @@
         {% endfor %}
       </select>
     </div>
-    <div class="form-group form-group-btn" style="align-self: flex-end;">
+    <div class="form-group form-group-btn form-group--align-end">
       <button type="button" class="btn btn-primary" id="refresh-transcripts-btn" onclick="fetchTranscripts()">Refresh</button>
       <a href="#" id="download-csv-btn" class="btn btn-outline" style="display: none;">Download CSV</a>
     </div>
   </div>
 
-  <div id="transcript-viewer-container" style="background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 6px; padding: 1rem; max-height: 600px; overflow-y: auto;">
-    <p class="muted" style="text-align: center; margin-top: 2rem;">Select a channel above to view its transcripts.</p>
+  <div id="transcript-viewer-container" class="transcript-viewer">
+    <p class="muted transcript-placeholder">Select a channel above to view its transcripts.</p>
   </div>
 </div>
 
@@ -62,7 +62,7 @@
     if (currentLanguageCode) {
       fetchTranscripts();
     } else {
-      document.getElementById('transcript-viewer-container').innerHTML = '<p class="muted" style="text-align: center; margin-top: 2rem;">Select a channel above to view its transcripts.</p>';
+      document.getElementById('transcript-viewer-container').innerHTML = '<p class="muted transcript-placeholder">Select a channel above to view its transcripts.</p>';
       document.getElementById('download-csv-btn').style.display = 'none';
     }
   });
@@ -71,7 +71,7 @@
     if (!currentLanguageCode) return;
     
     const container = document.getElementById('transcript-viewer-container');
-    container.innerHTML = '<p class="muted" style="text-align: center; margin-top: 2rem;">Loading...</p>';
+    container.innerHTML = '<p class="muted transcript-placeholder">Loading...</p>';
     
     try {
       const res = await fetch(`/api/admin/events/${eventId}/rooms/${roomId}/transcripts/${currentLanguageCode}`);
@@ -79,12 +79,12 @@
       
       const data = await res.json();
       if (data.length === 0) {
-        container.innerHTML = '<p class="muted" style="text-align: center; margin-top: 2rem;">No transcripts recorded for this channel yet.</p>';
+        container.innerHTML = '<p class="muted transcript-placeholder">No transcripts recorded for this channel yet.</p>';
         document.getElementById('download-csv-btn').style.display = 'none';
         return;
       }
       
-      let html = '<table class="data-table" style="margin: 0; width: 100%;"><thead><tr><th style="width: 150px;">Time</th><th>Text</th></tr></thead><tbody>';
+      let html = '<table class="data-table transcript-table"><thead><tr><th class="transcript-time-col">Time</th><th>Text</th></tr></thead><tbody>';
       let csvContent = "Time,Text\n";
       
       data.forEach(row => {
@@ -113,7 +113,7 @@
       container.scrollTop = container.scrollHeight;
       
     } catch (e) {
-      container.innerHTML = `<p class="danger-text" style="text-align: center; margin-top: 2rem;">Error: ${e.message}</p>`;
+      container.innerHTML = `<p class="danger-text transcript-placeholder">Error: ${e.message}</p>`;
     }
   }
 </script>

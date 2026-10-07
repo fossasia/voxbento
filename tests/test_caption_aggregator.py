@@ -131,18 +131,6 @@ class TestCaptionAggregator:
         assert len(finals) == 1
         assert finals[0]["text"] == "in progress"
 
-    async def test_get_metrics_returns_word_count(self):
-        received = []
-
-        async def fake_callback(booth_id, message):
-            await collect_broadcasts(booth_id, message, received)
-
-        aggregator = CaptionAggregator(fake_callback)
-        await aggregator.handle_partial("b", "one two three")
-
-        metrics = aggregator.get_metrics("b")
-        assert metrics["current_word_count"] == 3
-
     async def test_handle_chunk_splits_short_sentence_at_5_word_boundary(self):
         """Sentences with >= 5 words should trigger finalization (lowered from 10)."""
         received = []

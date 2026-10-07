@@ -13,7 +13,7 @@
 
     {% if error %}<div class="alert alert-danger">{{ error }}</div>{% endif %}
 
-    <form method="post" action="/admin/setup">
+    <form method="post" action="{{ management_prefix }}/setup">
       <div class="field">
         <label for="display_name">Event name</label>
         <input type="text" id="display_name" name="display_name" placeholder="e.g. PyCon 2026"
@@ -21,10 +21,10 @@
         <span class="hint">This is what interpreters and listeners will see.</span>
       </div>
 
-      <details class="create-panel" style="box-shadow:none;" {% if slug %}open{% endif %}>
+      <details class="create-panel" {% if slug %}open{% endif %}>
         <summary>Advanced — customise the URL slug</summary>
         <div class="create-body">
-          <div class="field" style="margin-bottom:0;">
+          <div class="field field--flush">
             <label for="slug">URL slug</label>
             <input type="text" id="slug" name="slug" placeholder="auto-generated from the name"
                    value="{{ slug|default('', true) }}" pattern="^[a-z0-9]+(-[a-z0-9]+)*$" />
@@ -34,7 +34,7 @@
       </details>
 
       <div class="wizard-actions">
-        <a href="/admin/" class="btn">Cancel</a>
+        <a href="{{ management_prefix }}/" class="btn">Cancel</a>
         <button type="submit" class="btn btn-primary btn-lg">Continue &rarr;</button>
       </div>
     </form>
