@@ -29,6 +29,24 @@
   </div>
 </details>
 
+<div class="search-bar">
+  <form method="get" action="/admin/events/" class="search-form">
+    <label for="admin-event-search" class="search-label">Search events by name or slug</label>
+    <input id="admin-event-search" type="text" name="search" value="{{ search or '' }}" placeholder="Search events by name or slug..." aria-label="Search events by name or slug" class="search-input">
+    <button type="submit" class="btn btn-primary">Search</button>
+    {% if search %}
+      <a href="/admin/events/" class="btn">Clear</a>
+    {% endif %}
+  </form>
+</div>
+
+{% if total_events and requested_page != page %}
+<div class="form-card-hint" role="status">
+  Page {{ requested_page }} is out of range. Showing page {{ page }}.
+  <a href="?page={{ page }}{% if search %}&amp;search={{ search|urlencode }}{% endif %}">View page {{ page }}</a>
+</div>
+{% endif %}
+
 {% if events %}
 <table class="data-table">
   <thead>
@@ -59,10 +77,15 @@
   {% include 'admin/pagination.html' %}
 {% else %}
 <div class="empty-state">
+  {% if search %}
+  <h2>No events match search</h2>
+  <p>Try another event name or slug.</p>
+  {% else %}
   <div class="empty-state-icon">🎧</div>
   <h2 class="empty-state-title">No events yet</h2>
   <p class="empty-state-text">Create your first event in a few guided steps.</p>
   <a href="/admin/setup" class="btn btn-primary btn-lg">Create your first event &rarr;</a>
+  {% endif %}
 </div>
 {% endif %}
 {% endblock %}
