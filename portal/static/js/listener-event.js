@@ -26,6 +26,8 @@ var audioEl = document.getElementById("audio-player");
 var statusEl = document.getElementById("status");
 var captionsBox = document.getElementById("live-captions");
 var captionsWs = null;
+var captionsRetryTimer = null;
+var captionsRetryDelayMs = 1000;
 
 var ttsWs = null;
 var audioCtx = null;
@@ -72,6 +74,7 @@ var pendingWhepUrl = null; // WHEP URL to start once live
 var pendingAudioDelayMs = 0;
 var pendingTtsLang = null; // TTS language to start once live
 var pendingRoomId = null;
+var lastBroadcastUnlocked = null; // last broadcast_unlocked seen for the selected booth
 var segmentStore = Object.create(null);
 var expectedSeq = 1;
 var isSegmentPlaying = false;
@@ -93,6 +96,7 @@ function stopCurrentStream() {
   currentAudioDelayMs = 0;
   pendingTtsLang = null;
   pendingRoomId = null;
+  lastBroadcastUnlocked = null;
   currentRoomId = null;
   currentSourceType = null;
 
@@ -113,9 +117,15 @@ function stopCurrentStream() {
     audioScheduler = null;
   }
 
+  if (captionsRetryTimer) {
+    clearTimeout(captionsRetryTimer);
+    captionsRetryTimer = null;
+  }
+  captionsRetryDelayMs = 1000;
   if (captionsWs) {
-    captionsWs.close();
+    var closingWs = captionsWs;
     captionsWs = null;
+    closingWs.close();
   }
   showAudioPlayer(false);
   audioEl.muted = false;
@@ -279,10 +289,27 @@ function startWhepAndCaptions(whepUrl, boothId, audioDelayMs) {
 function openCaptionsWs(boothId) {
   if (!boothId) return;
   var wsProto = window.location.protocol === "https:" ? "wss:" : "ws:";
-  captionsWs = new WebSocket(
+  var ws = new WebSocket(
     wsProto + "//" + window.location.host + "/ws/captions/" + boothId,
   );
-  captionsWs.onmessage = handleCaptionsMessage;
+  captionsWs = ws;
+  ws.onmessage = handleCaptionsMessage;
+  ws.onopen = function () {
+    captionsRetryDelayMs = 1000;
+  };
+  ws.onclose = function (event) {
+    // stopCurrentStream() clears captionsWs before closing it, so this only
+    // reconnects sockets that dropped on their own. The server resends the
+    // booth status on connect, so a pending stream still starts. 4001/4003
+    // are auth rejections, which retrying won't fix.
+    if (captionsWs !== ws || event.code === 4001 || event.code === 4003) return;
+    captionsWs = null;
+    captionsRetryTimer = setTimeout(function () {
+      captionsRetryTimer = null;
+      openCaptionsWs(boothId);
+    }, captionsRetryDelayMs);
+    captionsRetryDelayMs = Math.min(captionsRetryDelayMs * 2, 15000);
+  };
 }
 
 function renderItem(data) {
@@ -556,7 +583,11 @@ function handleCaptionsMessage(event) {
     if (data.type === "booth:state") {
       var bstate = data.state || {};
       // If we were waiting for the broadcast to go live, start WHEP or TTS now.
-      if (bstate.ingest_status === "connected") {
+      // A locked booth stays silent for listeners even if ingest reports connected.
+      if (
+        bstate.ingest_status === "connected" &&
+        bstate.broadcast_unlocked === true
+      ) {
         if (pendingWhepUrl) {
           var url = pendingWhepUrl;
           var delayMs = pendingAudioDelayMs;
@@ -577,10 +608,12 @@ function handleCaptionsMessage(event) {
           setStatus("Live (TTS Audio)", "live");
         }
       }
-      // If broadcast was locked, tear down (floor booths are never locked this way).
-      if (bstate.broadcast_unlocked === false) {
-        WhepListener.stop();
-        showAudioPlayer(false);
+      // Booths start locked, so only tear down when the organizers lock a
+      // booth that was unlocked (floor booths are never locked this way).
+      var wasUnlocked = lastBroadcastUnlocked === true;
+      lastBroadcastUnlocked = bstate.broadcast_unlocked;
+      if (wasUnlocked && bstate.broadcast_unlocked === false) {
+        stopCurrentStream();
         setStatus("Broadcast is currently locked by the organizers.", "error");
         roomSelect.value = "";
         languageSelect.innerHTML =
@@ -894,27 +927,14 @@ languageSelect.addEventListener("change", function () {
         // Floor audio has no WHIP ingest — start WHEP immediately.
         startWhepAndCaptions(whepUrl, null, selectedAudioDelayMs);
       } else {
-        // Check booth live status before starting WHEP to avoid phantom timer.
-        fetch("/api/events/" + eventSlug + "/booths/" + languageCode + "/state?room_id=" + roomId)
-          .then(function (r) {
-            return r.ok ? r.json() : null;
-          })
-          .then(function (bstate) {
-            if (bstate && bstate.ingest_status === "connected") {
-              startWhepAndCaptions(whepUrl, null, selectedAudioDelayMs);
-            } else {
-              // Not live yet — wait for booth:state via WS
-              pendingWhepUrl = whepUrl;
-              pendingAudioDelayMs = selectedAudioDelayMs;
-              pendingBoothId = boothId;
-              setStatus("Broadcast not live yet — waiting...", "waiting");
-              showAudioPlayer(false);
-            }
-          })
-          .catch(function () {
-            // Can't determine state — start anyway
-            startWhepAndCaptions(whepUrl, null, selectedAudioDelayMs);
-          });
+        // Wait for the booth to be live before starting WHEP. The captions
+        // socket sends the booth's current status when it connects and again
+        // whenever it changes, and handleCaptionsMessage starts playback.
+        pendingWhepUrl = whepUrl;
+        pendingAudioDelayMs = selectedAudioDelayMs;
+        pendingBoothId = boothId;
+        setStatus("Broadcast not live yet — waiting...", "waiting");
+        showAudioPlayer(false);
       }
     } else {
       startWhepAndCaptions(whepUrl, null, selectedAudioDelayMs);
