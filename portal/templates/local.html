@@ -179,7 +179,10 @@
                                 <span>💡</span> First time opening on macOS?
                             </div>
                             <p class="leading-tight text-[11px] text-gray-700 font-sans">
-                                Right-click <strong>Voxa.app</strong> in Applications and choose <strong>Open</strong>, or install via Homebrew:
+                                Right-click <strong>Voxa.app</strong> in Applications and choose <strong>Open</strong> (or click <em>Open Anyway</em> in <strong>System Settings → Privacy & Security</strong>).
+                            </p>
+                            <p class="leading-tight text-[11px] text-gray-700 font-sans">
+                                Alternatively, install via Homebrew:
                             </p>
                             <div class="bg-[#0d0f10] text-emerald-400 p-1.5 rounded text-[10px] select-all flex items-center justify-between font-mono">
                                 <code>brew install --cask voxa</code>
@@ -488,6 +491,11 @@
             const btnLabelEl = document.getElementById('primary-btn-label');
             const osDetailsEl = document.getElementById('detected-os-details');
             const primaryBtn = document.getElementById('primary-download-btn');
+            const macNoteEl = document.getElementById('macos-first-run-note');
+
+            if (macNoteEl && !isMac) {
+                macNoteEl.style.display = 'none';
+            }
 
             if (osIconEl) osIconEl.textContent = detected.icon;
             if (osNameEl) osNameEl.textContent = detected.name;
