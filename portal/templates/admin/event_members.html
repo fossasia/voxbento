@@ -81,7 +81,7 @@
       <td class="actions-cell">
         <form method="post"
               action="/admin/events/{{ event.id }}/members/{{ m.id }}/invite"
-               class="inline-form form-inline-spaced">
+              class="inline-form form-inline-spaced">
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
           <button type="submit" class="btn btn-sm btn-outline btn-invite">✉️ Invite</button>
         </form>
