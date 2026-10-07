@@ -96,6 +96,32 @@ code { font-family: var(--font-mono); font-size: 0.85em; background: var(--color
 .nav-logout { color: var(--color-danger) !important; }
 .nav-logout:hover { background: #fef2f2 !important; }
 
+/* Hamburger trigger — hidden until the nav collapses (see Responsive section) */
+.header-nav-toggle {
+  display: none;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  width: 40px;
+  height: 40px;
+  flex-shrink: 0;
+  margin-left: auto;
+  padding: 0;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  color: var(--color-text);
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+.header-nav-toggle:hover { background: var(--color-surface-2); border-color: var(--color-border-strong); }
+.header-nav-toggle:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 2px; }
+.header-nav-toggle-bar { display: block; width: 18px; height: 2px; flex: 0 0 auto; border-radius: 2px; background: currentColor; transition: transform 0.2s ease, opacity 0.15s ease; }
+.header-nav-toggle[aria-expanded='true'] .header-nav-toggle-bar:nth-child(1) { transform: translateY(6px) rotate(45deg); }
+.header-nav-toggle[aria-expanded='true'] .header-nav-toggle-bar:nth-child(2) { opacity: 0; }
+.header-nav-toggle[aria-expanded='true'] .header-nav-toggle-bar:nth-child(3) { transform: translateY(-6px) rotate(-45deg); }
+
 /* ── Breadcrumb ──────────────────────────────────────────────────────────── */
 
 .breadcrumb {
@@ -526,6 +552,40 @@ code { font-family: var(--font-mono); font-size: 0.85em; background: var(--color
 
 /* ── Responsive ──────────────────────────────────────────────────────────── */
 
+/*
+ * Collapsed (hamburger) header.
+ *
+ * The full nav needs roughly 1170px at its widest — a super-admin sees ten
+ * items — so anything below `.admin-main`'s 1200px cap is guaranteed to wrap
+ * onto a second row. Collapse at that same boundary so the header never grows
+ * past one row of content.
+ */
+@media (max-width: 1200px) {
+  .has-js-nav.admin-header, .has-js-nav.portal-home-header { flex-wrap: nowrap; }
+  .has-js-nav .header-left, .has-js-nav.admin-header > .brand, .has-js-nav.portal-home-header > .brand { min-width: 0; }
+  .has-js-nav .header-badge { flex-shrink: 0; }
+  .has-js-nav .header-nav-toggle { display: inline-flex; }
+
+  .has-js-nav .header-nav {
+    display: none;
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 4px;
+    padding: 10px 16px 16px;
+    background: var(--color-surface);
+    border-bottom: 1px solid var(--color-border);
+    box-shadow: var(--shadow-md);
+    max-height: calc(100vh - 100%);
+    overflow-y: auto;
+  }
+  .has-js-nav .header-nav.is-open { display: flex; }
+  .has-js-nav .header-nav a, .has-js-nav .header-nav a.btn-sm { width: 100%; text-align: center; padding: 10px 12px; }
+}
+
 @media (max-width: 768px) {
   .admin-header, .portal-home-header { padding: 12px 16px; }
   .admin-main, .home-main { padding: 16px; }
@@ -533,7 +593,6 @@ code { font-family: var(--font-mono); font-size: 0.85em; background: var(--color
   .detail-grid { grid-template-columns: 1fr; }
   .inline-form { flex-direction: column; align-items: stretch; }
   .inline-form input { min-width: 100%; }
-  .header-nav { gap: 12px; }
   .hero h1 { font-size: 1.5rem; }
   
   /* Make tables horizontally scrollable to prevent squishing */
@@ -557,7 +616,7 @@ code { font-family: var(--font-mono); font-size: 0.85em; background: var(--color
 
 @media (max-width: 480px) {
   .role-cards { grid-template-columns: 1fr; }
-  .header-nav { gap: 8px; font-size: 0.75rem; }
+  .header-nav { gap: 2px; padding: 8px 12px 12px; }
 }
 
 /* ── Account page ─────────────────────────────────────────────────────────── */

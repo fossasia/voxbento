@@ -376,6 +376,57 @@ body:has(.login-page) .portal-footer {
 .alert-error { background: #fef2f2; color: var(--color-danger); border: 1px solid #fecaca; padding: 10px 14px; border-radius: var(--radius-sm); font-size: 0.875rem; margin-bottom: 8px; }
 .error-list { margin: 0; padding-left: 18px; text-align: left; }
 
+
+/* ── Hamburger toggle button (hidden on wide viewports) ─────────────────── */
+
+.header-nav-toggle {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 4px;
+  width: 36px;
+  height: 36px;
+  padding: 4px;
+  border: 1px solid var(--color-border, #e5e7eb);
+  border-radius: var(--radius-sm, 4px);
+  background: transparent;
+  cursor: pointer;
+  color: inherit;
+  flex-shrink: 0;
+}
+.header-nav-toggle:hover { background: rgba(0, 0, 0, 0.05); }
+.header-nav-toggle:focus-visible { outline: 2px solid var(--color-primary, #2563eb); outline-offset: 2px; }
+.header-nav-toggle-bar { display: block; width: 18px; height: 2px; flex: 0 0 auto; border-radius: 2px; background: currentColor; transition: transform 0.2s ease, opacity 0.15s ease; }
+.header-nav-toggle[aria-expanded='true'] .header-nav-toggle-bar:nth-child(1) { transform: translateY(6px) rotate(45deg); }
+.header-nav-toggle[aria-expanded='true'] .header-nav-toggle-bar:nth-child(2) { opacity: 0; }
+.header-nav-toggle[aria-expanded='true'] .header-nav-toggle-bar:nth-child(3) { transform: translateY(-6px) rotate(-45deg); }
+
+@media (max-width: 1200px) {
+  .has-js-nav.portal-home-header { flex-wrap: nowrap; }
+  .has-js-nav .header-nav-toggle { display: inline-flex; }
+
+  .has-js-nav .header-nav {
+    display: none;
+    position: absolute;
+    top: 100%;
+    left: 0;
+    right: 0;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 4px;
+    padding: 10px 16px 16px;
+    background: var(--color-surface, #ffffff);
+    border-bottom: 1px solid var(--color-border, #e5e7eb);
+    box-shadow: var(--shadow-md, 0 4px 12px rgba(0, 0, 0, 0.1));
+    max-height: calc(100vh - 100%);
+    overflow-y: auto;
+    z-index: 99;
+  }
+  .has-js-nav .header-nav.is-open { display: flex; }
+  .has-js-nav .header-nav a { width: 100%; text-align: center; padding: 10px 12px; }
+}
+
 @media (max-width: 768px) {
   .portal-home-header { padding: 12px 16px; }
   .admin-main { padding: 16px; }

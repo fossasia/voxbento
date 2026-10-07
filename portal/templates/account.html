@@ -12,12 +12,23 @@
     <img src="{{ url_for('static', path='img/app_icon.png') }}" alt="VoxBento Icon" class="account-brand-icon" />
     <span class="account-brand-name">VoxBento</span>
   </a>
-  <nav class="header-nav">
+  <nav class="header-nav" id="account-header-nav">
     <a href="/account">My Account</a>
     <a href="/developer">Developer API</a>
     <a href="/admin/">Admin Panel</a>
     <a href="/logout">Logout</a>
   </nav>
+  <button
+    type="button"
+    class="header-nav-toggle"
+    aria-expanded="false"
+    aria-controls="account-header-nav"
+    aria-label="Toggle navigation menu"
+  >
+    <span class="header-nav-toggle-bar"></span>
+    <span class="header-nav-toggle-bar"></span>
+    <span class="header-nav-toggle-bar"></span>
+  </button>
 </header>
 
 <main class="admin-main account-main">
@@ -237,4 +248,5 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 });
 </script>
+<script type="module" src="{{ url_for('static', path='js/nav-toggle.js') }}"></script>
 {% endblock %}
