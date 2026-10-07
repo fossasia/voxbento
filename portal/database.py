@@ -192,12 +192,18 @@ async def delete_event(session: AsyncSession, event_id: int) -> bool:
     ev = await get_event_by_id(session, event_id)
     if ev is None:
         return False
-    # Break the circular FK cycle: rooms.relay_booth_id → booths.id ↔ booths.room_id → rooms.id
-    # assign the relationship, not the column, so an already-loaded relay_booth is
-    # cleared too and the unit of work no longer sees the Room ↔ DBBooth dependency
-    result = await session.execute(select(Room).where(Room.event_id == event_id))
-    for room in result.scalars().all():
+    # Break the rooms.relay_booth_id -> booths.id <-> booths.room_id -> rooms.id cycle.
+    # Scope by booth, not by the room's event: admin_edit_room assigns relay_booth_id
+    # straight from the form, so a room in another event can point at one of these booths.
+    # Assign the relationship, not the column. The unit of work builds its delete graph
+    # from mapper state, so a Room still in the identity map keeps the stale edge and
+    # raises CircularDependencyError no matter what the row now says.
+    booth_ids = select(DBBooth.id).where(DBBooth.event_id == event_id)
+    relaying = await session.execute(select(Room).where(Room.relay_booth_id.in_(booth_ids)))
+    for room in relaying.scalars().all():
         room.relay_booth = None
+    await session.flush()
+
     await session.delete(ev)
     await session.flush()
     return True
@@ -262,15 +268,21 @@ async def delete_room(session: AsyncSession, room_id: int) -> bool:
     if room is None:
         return False
     # Break the circular FK cycle: rooms.relay_booth_id → booths.id ↔ booths.room_id → rooms.id
-    # null out relay_booth_id to remove the back-reference
-    room.relay_booth_id = None
+    # Assign the relationship, not the column, so a Room already in the identity map
+    # drops the edge too. Other rooms can relay from this room's booths, so clear those
+    # as well or they point at booths that are about to go.
+    room.relay_booth = None
     await session.flush()
     # delete all booths belonging to this room explicitly
     from sqlalchemy import delete as sa_delete
     from sqlalchemy import select as sa_select
 
-    # First delete booth memberships and tokens to avoid orphans since SQLite FKs are OFF
+    # First delete booth memberships and tokens
     booth_ids = sa_select(DBBooth.id).where(DBBooth.room_id == room_id)
+    relaying = await session.execute(select(Room).where(Room.relay_booth_id.in_(booth_ids)))
+    for other in relaying.scalars().all():
+        other.relay_booth = None
+    await session.flush()
     await session.execute(sa_delete(BoothMembership).where(BoothMembership.booth_id.in_(booth_ids)))
     await session.execute(sa_delete(InviteToken).where(InviteToken.booth_id.in_(booth_ids)))
     await session.execute(sa_delete(DBBooth).where(DBBooth.room_id == room_id))
@@ -390,6 +402,15 @@ async def delete_booth(session: AsyncSession, booth_id: int) -> bool:
     booth = await get_booth_by_id(session, booth_id)
     if booth is None:
         return False
+    # rooms.relay_booth_id declares ondelete="SET NULL" and SQLite runs with FKs ON, so
+    # the database clears the row itself. Clear it here too, and assign the relationship
+    # rather than the column: a Room already loaded in this session otherwise keeps
+    # resolving relay_booth to the booth just deleted, and a read later in the same
+    # request would build a relay URL from it.
+    result = await session.execute(select(Room).where(Room.relay_booth_id == booth_id))
+    for room in result.scalars().all():
+        room.relay_booth = None
+    await session.flush()
     await session.delete(booth)
     await session.flush()
     return True

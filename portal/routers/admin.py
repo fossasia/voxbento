@@ -24,6 +24,7 @@ from portal.auth import (
     get_current_user,
     require_admin,
     require_event_owner,
+    require_room_event_access,
     require_super_admin,
     require_user,
 )
@@ -90,10 +91,14 @@ from portal.transcription.worker import start_transcription_worker, stop_transcr
 from portal.translations.constants import TRANSLATION_MODELS, TranslationProviderEnum
 from portal.utils import _check_mediamtx, _make_jitsi_url, safe_redirect
 from portal.websockets.manager import broadcast_transcription
+from portal.workspace_routing import management_template_context, management_url
 
 _BASE_DIR = Path(__file__).resolve().parent.parent
 
-templates = Jinja2Templates(directory=str(_BASE_DIR / "templates"))
+templates = Jinja2Templates(
+    directory=str(_BASE_DIR / "templates"),
+    context_processors=[management_template_context],
+)
 
 
 async def _send_admin_invite(session, user: User, role_name: str, context_name: str, target_url: str):
@@ -134,6 +139,29 @@ def _slugify(text: str) -> str:
     """Derive a URL-safe event slug from free text."""
     slug = re.sub(r"[^a-z0-9]+", "-", text.strip().lower())
     return slug.strip("-")
+
+
+async def _management_event_ids(request: Request, user_id: int | None) -> set[int] | None:
+    """Return events appropriate to the active management namespace."""
+    is_super_admin, allowed_event_ids = await get_accessible_event_ids(request, user_id=user_id)
+    if not getattr(request.state, "is_workspace", False) or is_super_admin or user_id is None:
+        return allowed_event_ids
+
+    async with get_session() as session:
+        memberships = await list_memberships_for_user(session, user_id)
+    return {membership.event_id for membership in memberships if membership.role == "event_owner"}
+
+
+async def _assign_creator_as_event_owner(request: Request, session: AsyncSession, event_id: int) -> None:
+    """Keep a newly created event reachable from its creator's workspace."""
+    current_user = await get_current_user(request)
+    if current_user and current_user.get("sub"):
+        await set_event_membership(
+            session,
+            user_id=int(current_user["sub"]),
+            event_id=event_id,
+            role="event_owner",
+        )
 
 
 @router.get("/mission-control/")
@@ -271,7 +299,7 @@ async def admin_dashboard(request: Request, page: int = 1):
     admin_flags = await get_admin_flags(request)
     user = await get_current_user(request)
     user_id = int(user["sub"]) if user and user.get("sub") else None
-    _, allowed_event_ids = await get_accessible_event_ids(request, user_id=user_id)
+    allowed_event_ids = await _management_event_ids(request, user_id)
     limit = 20
     offset = (page - 1) * limit
     async with get_session() as session:
@@ -279,7 +307,10 @@ async def admin_dashboard(request: Request, page: int = 1):
         events = await list_events(session, limit=limit, offset=offset, allowed_event_ids=allowed_event_ids)
         if not admin_flags.get("is_super_admin") and user:
             if len(events) == 1 and total_events == 1:
-                return safe_redirect(url=f"/admin/events/{events[0].id}/", status_code=status.HTTP_303_SEE_OTHER)
+                return safe_redirect(
+                    url=management_url(request, f"events/{events[0].id}/"),
+                    status_code=status.HTTP_303_SEE_OTHER,
+                )
         event_ids = [ev.id for ev in events]
         booths_by_event = await list_all_booths_for_events(session, event_ids)
         event_data = []
@@ -319,7 +350,7 @@ async def admin_event_list(request: Request, page: int = 1):
     admin_flags = await get_admin_flags(request)
     user = await get_current_user(request)
     user_id = int(user["sub"]) if user and user.get("sub") else None
-    _, allowed_event_ids = await get_accessible_event_ids(request, user_id=user_id)
+    allowed_event_ids = await _management_event_ids(request, user_id)
     limit = 20
     offset = (page - 1) * limit
     async with get_session() as session:
@@ -339,13 +370,14 @@ async def admin_create_event(request: Request):
     slug = form.get("slug", "").strip()
     display_name = form.get("display_name", "").strip()
     if not slug or not display_name:
-        return safe_redirect(url="/admin/events/", status_code=status.HTTP_303_SEE_OTHER)
+        return safe_redirect(url=management_url(request, "events/"), status_code=status.HTTP_303_SEE_OTHER)
     try:
         async with get_session() as session:
-            await create_event(session, slug=slug, display_name=display_name)
+            event = await create_event(session, slug=slug, display_name=display_name)
+            await _assign_creator_as_event_owner(request, session, event.id)
     except Exception:
-        return safe_redirect(url="/admin/events/", status_code=status.HTTP_303_SEE_OTHER)
-    return safe_redirect(url="/admin/events/", status_code=status.HTTP_303_SEE_OTHER)
+        return safe_redirect(url=management_url(request, "events/"), status_code=status.HTTP_303_SEE_OTHER)
+    return safe_redirect(url=management_url(request, "events/"), status_code=status.HTTP_303_SEE_OTHER)
 
 
 # ---------------------------------------------------------------------------
@@ -398,8 +430,12 @@ async def admin_setup_create_event(request: Request):
                 status_code=status.HTTP_400_BAD_REQUEST,
             )
         event = await create_event(session, slug=slug, display_name=display_name)
+        await _assign_creator_as_event_owner(request, session, event.id)
         event_id = event.id
-    return safe_redirect(url=f"/admin/events/{event_id}/setup/rooms", status_code=status.HTTP_303_SEE_OTHER)
+    return safe_redirect(
+        url=management_url(request, f"events/{event_id}/setup/rooms"),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
 
 
 @router.get("/admin/events/{event_id}/setup/rooms", dependencies=[Depends(require_admin)])
@@ -428,7 +464,10 @@ async def admin_setup_add_room(request: Request, event_id: int):
                 room_id_str = f"Voxbento-{ev.slug}-{clean_name}"
                 jitsi_url = _make_jitsi_url(settings.effective_jitsi_base_url, room_id_str)
             await create_room(session, event_id=event_id, display_name=display_name, jitsi_url=jitsi_url)
-    return safe_redirect(url=f"/admin/events/{event_id}/setup/rooms", status_code=status.HTTP_303_SEE_OTHER)
+    return safe_redirect(
+        url=management_url(request, f"events/{event_id}/setup/rooms"),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
 
 
 @router.get("/admin/events/{event_id}/setup/booths", dependencies=[Depends(require_admin)])
@@ -475,7 +514,7 @@ async def admin_setup_add_booth(request: Request, event_id: int):
         except Exception as e:
             logger.warning(f"Error creating booth in setup wizard: {e}")
 
-    redirect_url = f"/admin/events/{event_id}/setup/booths"
+    redirect_url = management_url(request, f"events/{event_id}/setup/booths")
     if room_id_str:
         redirect_url += f"?room_id={room_id_str}"
 
@@ -521,7 +560,7 @@ async def admin_setup_add_invite(request: Request, event_id: int):
                 await set_event_membership(session, user_id=user.id, event_id=event_id, role=role)
             except ValueError:
                 return safe_redirect(
-                    url=f"/admin/events/{event_id}/setup/invite?error=invalid_role",
+                    url=management_url(request, f"events/{event_id}/setup/invite?error=invalid_role"),
                     status_code=status.HTTP_303_SEE_OTHER,
                 )
             event = await get_event_by_id(session, event_id)
@@ -531,7 +570,8 @@ async def admin_setup_add_invite(request: Request, event_id: int):
                 except Exception as e:
                     logger.warning(f"Failed to send setup invite email to {email}: {e}")
     return safe_redirect(
-        url=f"/admin/events/{event_id}/setup/invite?success=invite_sent", status_code=status.HTTP_303_SEE_OTHER
+        url=management_url(request, f"events/{event_id}/setup/invite?success=invite_sent"),
+        status_code=status.HTTP_303_SEE_OTHER,
     )
 
 
@@ -543,7 +583,7 @@ async def admin_regenerate_join_code(request: Request, event_id: int):
             raise HTTPException(status_code=404, detail="Event not found.")
         event.listener_join_code = "".join((secrets.choice("ABCDEFGHJKLMNPQRSTUVWXYZ23456789") for _ in range(6)))
         await session.flush()
-    return safe_redirect(url=f"/admin/events/{event_id}/", status_code=status.HTTP_303_SEE_OTHER)
+    return safe_redirect(url=management_url(request, f"events/{event_id}/"), status_code=status.HTTP_303_SEE_OTHER)
 
 
 @router.get("/admin/events/{event_id}/", dependencies=[Depends(require_admin)])
@@ -655,14 +695,17 @@ async def admin_event_api_settings_post(
         except (ValueError, RuntimeError) as e:
             raise HTTPException(status_code=400, detail=f"API Key encryption failed: {e}")
         await session.flush()
-    return safe_redirect(url=f"/admin/events/{event_id}/api-settings/", status_code=status.HTTP_303_SEE_OTHER)
+    return safe_redirect(
+        url=management_url(request, f"events/{event_id}/api-settings/"),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
 
 
-@router.post("/admin/events/{event_id}/delete", dependencies=[Depends(require_admin)])
+@router.post("/admin/events/{event_id}/delete", dependencies=[Depends(require_event_owner)])
 async def admin_delete_event(request: Request, event_id: int):
     async with get_session() as session:
         await delete_event(session, event_id)
-    return safe_redirect(url="/admin/events/", status_code=status.HTTP_303_SEE_OTHER)
+    return safe_redirect(url=management_url(request, "events/"), status_code=status.HTTP_303_SEE_OTHER)
 
 
 @router.get("/admin/events/{event_id}/rooms/", dependencies=[Depends(require_admin)])
@@ -690,7 +733,10 @@ async def admin_create_room(request: Request, event_id: int):
     form = await request.form()
     display_name = form.get("display_name", "").strip()
     if not display_name:
-        return safe_redirect(url=f"/admin/events/{event_id}/rooms/", status_code=status.HTTP_303_SEE_OTHER)
+        return safe_redirect(
+            url=management_url(request, f"events/{event_id}/rooms/"),
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
     async with get_session() as session:
         ev = await get_event_by_id(session, event_id)
         jitsi_url = None
@@ -699,7 +745,9 @@ async def admin_create_room(request: Request, event_id: int):
             room_id_str = f"Voxbento-{ev.slug}-{clean_name}"
             jitsi_url = _make_jitsi_url(settings.effective_jitsi_base_url, room_id_str)
         await create_room(session, event_id=event_id, display_name=display_name, jitsi_url=jitsi_url)
-    return safe_redirect(url=f"/admin/events/{event_id}/rooms/", status_code=status.HTTP_303_SEE_OTHER)
+    return safe_redirect(
+        url=management_url(request, f"events/{event_id}/rooms/"), status_code=status.HTTP_303_SEE_OTHER
+    )
 
 
 @router.get("/admin/events/{event_id}/rooms/{room_id}/", dependencies=[Depends(require_admin)])
@@ -831,7 +879,10 @@ async def admin_edit_room(request: Request, event_id: int, room_id: int):
                 room.floor_tts_provider = floor_tts_provider
                 room.floor_tts_voice = floor_tts_voice
             await session.flush()
-    return safe_redirect(url=f"/admin/events/{event_id}/rooms/{room_id}/", status_code=status.HTTP_303_SEE_OTHER)
+    return safe_redirect(
+        url=management_url(request, f"events/{event_id}/rooms/{room_id}/"),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
 
 
 @router.get("/api/admin/providers/translation/models", dependencies=[Depends(require_admin)])
@@ -912,7 +963,7 @@ async def admin_delete_api_key(request: Request, event_id: int, key_id: int):
         return {"success": True}
 
 
-@router.post("/api/rooms/{room_id}/floor-transcription/start", dependencies=[Depends(require_admin)])
+@router.post("/api/rooms/{room_id}/floor-transcription/start", dependencies=[Depends(require_room_event_access)])
 async def api_start_floor_transcription(room_id: int):
     async with get_session() as session:
         room = await get_room_by_id(session, room_id)
@@ -955,7 +1006,7 @@ async def api_start_floor_transcription(room_id: int):
         resp.raise_for_status()
     except Exception as e:
         logger.error(f"Failed to start floor-bot: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to start floor bot: {e}")
+        raise HTTPException(status_code=502, detail="Bot service connection failed or access was revoked upstream.")
     try:
         api_key = get_api_key(event, ProviderEnum(room.floor_transcription_provider))
         config = ProviderConfig(api_key=api_key)
@@ -978,7 +1029,7 @@ async def api_start_floor_transcription(room_id: int):
     return {"status": "started"}
 
 
-@router.post("/api/rooms/{room_id}/floor-transcription/stop", dependencies=[Depends(require_admin)])
+@router.post("/api/rooms/{room_id}/floor-transcription/stop", dependencies=[Depends(require_room_event_access)])
 async def api_stop_floor_transcription(room_id: int):
     async with get_session() as session:
         room = await get_room_by_id(session, room_id)
@@ -999,7 +1050,7 @@ async def api_stop_floor_transcription(room_id: int):
     return {"status": "stopped"}
 
 
-@router.get("/api/rooms/{room_id}/floor-transcription/status", dependencies=[Depends(require_admin)])
+@router.get("/api/rooms/{room_id}/floor-transcription/status", dependencies=[Depends(require_room_event_access)])
 async def api_floor_transcription_status(room_id: int):
     async with get_session() as session:
         room = await get_room_by_id(session, room_id)
@@ -1033,7 +1084,9 @@ async def api_floor_transcription_status(room_id: int):
 async def admin_delete_room(request: Request, event_id: int, room_id: int):
     async with get_session() as session:
         await delete_room(session, room_id)
-    return safe_redirect(url=f"/admin/events/{event_id}/rooms/", status_code=status.HTTP_303_SEE_OTHER)
+    return safe_redirect(
+        url=management_url(request, f"events/{event_id}/rooms/"), status_code=status.HTTP_303_SEE_OTHER
+    )
 
 
 @router.get("/admin/events/{event_id}/rooms/{room_id}/booths/", dependencies=[Depends(require_admin)])
@@ -1067,7 +1120,8 @@ async def admin_create_booth(request: Request, event_id: int, room_id: int):
     language_name = form.get("language_name", "").strip()
     if not language_code or not language_name:
         return safe_redirect(
-            url=f"/admin/events/{event_id}/rooms/{room_id}/booths/", status_code=status.HTTP_303_SEE_OTHER
+            url=management_url(request, f"events/{event_id}/rooms/{room_id}/booths/"),
+            status_code=status.HTTP_303_SEE_OTHER,
         )
     try:
         async with get_session() as session:
@@ -1076,7 +1130,10 @@ async def admin_create_booth(request: Request, event_id: int, room_id: int):
             )
     except Exception as e:
         logger.warning(f"Error creating booth: {e}")
-    return safe_redirect(url=f"/admin/events/{event_id}/rooms/{room_id}/booths/", status_code=status.HTTP_303_SEE_OTHER)
+    return safe_redirect(
+        url=management_url(request, f"events/{event_id}/rooms/{room_id}/booths/"),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
 
 
 @router.get("/admin/events/{event_id}/rooms/{room_id}/booths/{booth_id}/", dependencies=[Depends(require_admin)])
@@ -1160,7 +1217,7 @@ async def admin_add_room_member(request: Request, event_id: int, room_id: int):
                         )
                 except ValueError:
                     return safe_redirect(
-                        url=f"/admin/events/{event_id}/rooms/{room_id}/?error=invalid_role",
+                        url=management_url(request, f"events/{event_id}/rooms/{room_id}/?error=invalid_role"),
                         status_code=status.HTTP_303_SEE_OTHER,
                     )
             else:
@@ -1169,7 +1226,10 @@ async def admin_add_room_member(request: Request, event_id: int, room_id: int):
                     if m.user_id == uid:
                         await remove_room_membership(session, m.id)
                         break
-    return safe_redirect(url=f"/admin/events/{event_id}/rooms/{room_id}/", status_code=status.HTTP_303_SEE_OTHER)
+    return safe_redirect(
+        url=management_url(request, f"events/{event_id}/rooms/{room_id}/"),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
 
 
 @router.post(
@@ -1190,7 +1250,8 @@ async def admin_invite_room_member(request: Request, event_id: int, room_id: int
                     )
                 break
     return safe_redirect(
-        url=f"/admin/events/{event_id}/rooms/{room_id}/?success=invite_sent", status_code=status.HTTP_303_SEE_OTHER
+        url=management_url(request, f"events/{event_id}/rooms/{room_id}/?success=invite_sent"),
+        status_code=status.HTTP_303_SEE_OTHER,
     )
 
 
@@ -1200,7 +1261,10 @@ async def admin_invite_room_member(request: Request, event_id: int, room_id: int
 async def admin_remove_room_member(request: Request, event_id: int, room_id: int, membership_id: int):
     async with get_session() as session:
         await remove_room_membership(session, membership_id)
-    return safe_redirect(url=f"/admin/events/{event_id}/rooms/{room_id}/", status_code=status.HTTP_303_SEE_OTHER)
+    return safe_redirect(
+        url=management_url(request, f"events/{event_id}/rooms/{room_id}/"),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
 
 
 @router.post(
@@ -1231,7 +1295,10 @@ async def admin_add_booth_member(request: Request, event_id: int, room_id: int, 
                         )
                 except ValueError:
                     return safe_redirect(
-                        url=f"/admin/events/{event_id}/rooms/{room_id}/booths/{booth_id}/?error=invalid_role",
+                        url=management_url(
+                            request,
+                            f"events/{event_id}/rooms/{room_id}/booths/{booth_id}/?error=invalid_role",
+                        ),
                         status_code=status.HTTP_303_SEE_OTHER,
                     )
             else:
@@ -1241,7 +1308,8 @@ async def admin_add_booth_member(request: Request, event_id: int, room_id: int, 
                         await remove_booth_membership(session, m.id)
                         break
     return safe_redirect(
-        url=f"/admin/events/{event_id}/rooms/{room_id}/booths/{booth_id}/", status_code=status.HTTP_303_SEE_OTHER
+        url=management_url(request, f"events/{event_id}/rooms/{room_id}/booths/{booth_id}/"),
+        status_code=status.HTTP_303_SEE_OTHER,
     )
 
 
@@ -1264,7 +1332,10 @@ async def admin_invite_booth_member(request: Request, event_id: int, room_id: in
                     )
                 break
     return safe_redirect(
-        url=f"/admin/events/{event_id}/rooms/{room_id}/booths/{booth_id}/?success=invite_sent",
+        url=management_url(
+            request,
+            f"events/{event_id}/rooms/{room_id}/booths/{booth_id}/?success=invite_sent",
+        ),
         status_code=status.HTTP_303_SEE_OTHER,
     )
 
@@ -1277,7 +1348,8 @@ async def admin_remove_booth_member(request: Request, event_id: int, room_id: in
     async with get_session() as session:
         await remove_booth_membership(session, membership_id)
     return safe_redirect(
-        url=f"/admin/events/{event_id}/rooms/{room_id}/booths/{booth_id}/", status_code=status.HTTP_303_SEE_OTHER
+        url=management_url(request, f"events/{event_id}/rooms/{room_id}/booths/{booth_id}/"),
+        status_code=status.HTTP_303_SEE_OTHER,
     )
 
 
@@ -1285,7 +1357,10 @@ async def admin_remove_booth_member(request: Request, event_id: int, room_id: in
 async def admin_delete_booth(request: Request, event_id: int, room_id: int, booth_id: int):
     async with get_session() as session:
         await delete_booth(session, booth_id)
-    return safe_redirect(url=f"/admin/events/{event_id}/rooms/{room_id}/booths/", status_code=status.HTTP_303_SEE_OTHER)
+    return safe_redirect(
+        url=management_url(request, f"events/{event_id}/rooms/{room_id}/booths/"),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
 
 
 @router.post(
@@ -1333,7 +1408,8 @@ async def admin_booth_translation_settings(
                 lang_model.enabled = False
         await session.flush()
     return safe_redirect(
-        url=f"/admin/events/{event_id}/rooms/{room_id}/booths/{booth_id}/", status_code=status.HTTP_303_SEE_OTHER
+        url=management_url(request, f"events/{event_id}/rooms/{room_id}/booths/{booth_id}/"),
+        status_code=status.HTTP_303_SEE_OTHER,
     )
 
 
@@ -1354,7 +1430,7 @@ async def admin_edit_booth(request: Request, event_id: int, room_id: int, booth_
                     raise HTTPException(status_code=400, detail=str(e))
         await session.flush()
     return safe_redirect(
-        url=f"/admin/events/{event_id}/rooms/{room_id}/booths/{booth_id}/",
+        url=management_url(request, f"events/{event_id}/rooms/{room_id}/booths/{booth_id}/"),
         status_code=status.HTTP_303_SEE_OTHER,
     )
 
@@ -1429,7 +1505,8 @@ async def admin_transcription_settings(
                     room_id=db_booth.room_id,
                 )
     return safe_redirect(
-        url=f"/admin/events/{event_id}/rooms/{room_id}/booths/{booth_id}/", status_code=status.HTTP_303_SEE_OTHER
+        url=management_url(request, f"events/{event_id}/rooms/{room_id}/booths/{booth_id}/"),
+        status_code=status.HTTP_303_SEE_OTHER,
     )
 
 
@@ -1574,7 +1651,7 @@ async def admin_add_event_member(request: Request, event_id: int):
                         await _send_admin_invite(session, user, role, f"event {event.display_name}", target_url)
                 except ValueError:
                     return safe_redirect(
-                        url=f"/admin/events/{event_id}/members/?error=invalid_role",
+                        url=management_url(request, f"events/{event_id}/members/?error=invalid_role"),
                         status_code=status.HTTP_303_SEE_OTHER,
                     )
             else:
@@ -1583,7 +1660,9 @@ async def admin_add_event_member(request: Request, event_id: int):
                     if m.user_id == uid:
                         await remove_event_membership(session, m.id)
                         break
-    return safe_redirect(url=f"/admin/events/{event_id}/members/", status_code=status.HTTP_303_SEE_OTHER)
+    return safe_redirect(
+        url=management_url(request, f"events/{event_id}/members/"), status_code=status.HTTP_303_SEE_OTHER
+    )
 
 
 @router.post("/admin/events/{event_id}/members/{membership_id}/invite", dependencies=[Depends(require_admin)])
@@ -1599,7 +1678,8 @@ async def admin_invite_event_member(request: Request, event_id: int, membership_
                     await _send_admin_invite(session, user, m.role, f"event {event.display_name}", target_url)
                 break
     return safe_redirect(
-        url=f"/admin/events/{event_id}/members/?success=invite_sent", status_code=status.HTTP_303_SEE_OTHER
+        url=management_url(request, f"events/{event_id}/members/?success=invite_sent"),
+        status_code=status.HTTP_303_SEE_OTHER,
     )
 
 
@@ -1607,7 +1687,9 @@ async def admin_invite_event_member(request: Request, event_id: int, membership_
 async def admin_remove_event_member(request: Request, event_id: int, membership_id: int):
     async with get_session() as session:
         await remove_event_membership(session, membership_id)
-    return safe_redirect(url=f"/admin/events/{event_id}/members/", status_code=status.HTTP_303_SEE_OTHER)
+    return safe_redirect(
+        url=management_url(request, f"events/{event_id}/members/"), status_code=status.HTTP_303_SEE_OTHER
+    )
 
 
 @router.post(
@@ -1628,7 +1710,8 @@ async def admin_create_token(request: Request, event_id: int, room_id: int, boot
         async with get_session() as session:
             await create_invite_token(session, booth_id=booth_id, role=role, label=label, expires_at=expires_at)
     return safe_redirect(
-        url=f"/admin/events/{event_id}/rooms/{room_id}/booths/{booth_id}/", status_code=status.HTTP_303_SEE_OTHER
+        url=management_url(request, f"events/{event_id}/rooms/{room_id}/booths/{booth_id}/"),
+        status_code=status.HTTP_303_SEE_OTHER,
     )
 
 
@@ -1640,7 +1723,8 @@ async def admin_revoke_token(request: Request, event_id: int, room_id: int, boot
     async with get_session() as session:
         await revoke_invite_token(session, token_id)
     return safe_redirect(
-        url=f"/admin/events/{event_id}/rooms/{room_id}/booths/{booth_id}/", status_code=status.HTTP_303_SEE_OTHER
+        url=management_url(request, f"events/{event_id}/rooms/{room_id}/booths/{booth_id}/"),
+        status_code=status.HTTP_303_SEE_OTHER,
     )
 
 

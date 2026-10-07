@@ -5,7 +5,7 @@ import logging
 import struct
 from dataclasses import dataclass
 
-from fastapi import WebSocket
+from fastapi import WebSocket, WebSocketDisconnect
 
 import portal.webhooks.worker as _wh_worker
 from portal.auth import can_perform_role
@@ -50,7 +50,7 @@ class ConnectionManager:
         for ws in list(self._rooms.get(booth_id, set())):
             try:
                 await ws.send_text(payload)
-            except (RuntimeError, OSError):
+            except (WebSocketDisconnect, RuntimeError, OSError):
                 dead.append(ws)
         for ws in dead:
             self.remove(ws)
