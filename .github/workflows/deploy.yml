@@ -91,5 +91,23 @@ jobs:
               sleep 3
             done
 
+            # The rootless Jitsi layout uses new volumes. Remove the five
+            # pre-rootless generated-config volumes once no container uses them.
+            echo "--- cleaning up legacy Jitsi volumes ---"
+            for legacy_jitsi_volume in \
+              voxbento_jitsi-web-config \
+              voxbento_jitsi-prosody-config \
+              voxbento_jitsi-prosody-plugins \
+              voxbento_jitsi-jicofo-config \
+              voxbento_jitsi-jvb-config; do
+              if docker volume inspect "$legacy_jitsi_volume" >/dev/null 2>&1; then
+                if docker volume rm "$legacy_jitsi_volume"; then
+                  echo "Removed $legacy_jitsi_volume"
+                else
+                  echo "WARNING: Could not remove $legacy_jitsi_volume; it may still be in use"
+                fi
+              fi
+            done
+
             echo "=== Deploy complete: $(date) ==="
             docker compose ps

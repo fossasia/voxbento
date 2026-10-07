@@ -66,10 +66,10 @@ echo "ADMIN_PASSWORD=$(openssl rand -hex 16)" >> .env
 # Required for API key encryption: set your encryption key (must be 32 characters or longer)
 echo "API_KEY_ENCRYPTION_KEY=$(openssl rand -hex 32)" >> .env
 
-# Required for Jitsi video: set your machine's LAN IP
+# Required for Jitsi video: set the IP JVB advertises to browsers
 # macOS:  ipconfig getifaddr en0
 # Linux:  hostname -I | awk '{print $1}'
-echo 'DOCKER_HOST_ADDRESS=192.168.1.x' >> .env
+echo 'JVB_ADVERTISE_IPS=192.168.1.x' >> .env
 
 docker compose up --build
 ```
@@ -92,3 +92,13 @@ NVIDIA Riva support is now an optional dependency to reduce the default installa
 ```bash
 uv pip install -e .[nvidia]
 ```
+
+---
+
+## VoxBento Local (Desktop App)
+
+VoxBento Local is our sovereign, 100% on-device AI meeting intelligence and interpretation desktop console available for macOS (Apple Silicon & Intel), Windows, and Linux.
+
+- **Download**: Visit [`/local`](https://voxbento.org/local) for platform-detected desktop packages (.dmg, .exe, .deb, .AppImage).
+- **Source Code & Releases**: Built at [github.com/ArnavBallinCode/voxa](https://github.com/ArnavBallinCode/voxa).
+- **Air-Gapped & Sovereign**: Whisper live transcription and Qwen 3.5 structured meeting minutes run completely on-device via Apple Metal and NVIDIA CUDA acceleration.

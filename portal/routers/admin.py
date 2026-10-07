@@ -24,6 +24,7 @@ from portal.auth import (
     get_current_user,
     require_admin,
     require_event_owner,
+    require_room_event_access,
     require_super_admin,
     require_user,
 )
@@ -658,7 +659,7 @@ async def admin_event_api_settings_post(
     return safe_redirect(url=f"/admin/events/{event_id}/api-settings/", status_code=status.HTTP_303_SEE_OTHER)
 
 
-@router.post("/admin/events/{event_id}/delete", dependencies=[Depends(require_admin)])
+@router.post("/admin/events/{event_id}/delete", dependencies=[Depends(require_event_owner)])
 async def admin_delete_event(request: Request, event_id: int):
     async with get_session() as session:
         await delete_event(session, event_id)
@@ -912,7 +913,7 @@ async def admin_delete_api_key(request: Request, event_id: int, key_id: int):
         return {"success": True}
 
 
-@router.post("/api/rooms/{room_id}/floor-transcription/start", dependencies=[Depends(require_admin)])
+@router.post("/api/rooms/{room_id}/floor-transcription/start", dependencies=[Depends(require_room_event_access)])
 async def api_start_floor_transcription(room_id: int):
     async with get_session() as session:
         room = await get_room_by_id(session, room_id)
@@ -955,7 +956,7 @@ async def api_start_floor_transcription(room_id: int):
         resp.raise_for_status()
     except Exception as e:
         logger.error(f"Failed to start floor-bot: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to start floor bot: {e}")
+        raise HTTPException(status_code=502, detail="Bot service connection failed or access was revoked upstream.")
     try:
         api_key = get_api_key(event, ProviderEnum(room.floor_transcription_provider))
         config = ProviderConfig(api_key=api_key)
@@ -978,7 +979,7 @@ async def api_start_floor_transcription(room_id: int):
     return {"status": "started"}
 
 
-@router.post("/api/rooms/{room_id}/floor-transcription/stop", dependencies=[Depends(require_admin)])
+@router.post("/api/rooms/{room_id}/floor-transcription/stop", dependencies=[Depends(require_room_event_access)])
 async def api_stop_floor_transcription(room_id: int):
     async with get_session() as session:
         room = await get_room_by_id(session, room_id)
@@ -999,7 +1000,7 @@ async def api_stop_floor_transcription(room_id: int):
     return {"status": "stopped"}
 
 
-@router.get("/api/rooms/{room_id}/floor-transcription/status", dependencies=[Depends(require_admin)])
+@router.get("/api/rooms/{room_id}/floor-transcription/status", dependencies=[Depends(require_room_event_access)])
 async def api_floor_transcription_status(room_id: int):
     async with get_session() as session:
         room = await get_room_by_id(session, room_id)
@@ -1440,9 +1441,9 @@ async def admin_users(
     limit: int = 50,
     search: str | None = None,
     sort_by: str = "created_at",
-    sort_order: str = "asc",
+    sort_order: str = "desc",
 ):
-    """List all registered users (super admin only)."""
+    """List all registered users (super admin only), newest first by default."""
     offset = (page - 1) * limit
     async with get_session() as session:
         total_users = await count_users(session, search=search)
