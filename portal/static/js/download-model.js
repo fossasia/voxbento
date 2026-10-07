@@ -1,6 +1,7 @@
 export function initLocalModelDownloader() {
   const transForm = document.getElementById('floor_translation_form');
   const ttsForm = document.getElementById('floor_tts_form');
+  const managementPrefix = document.body.dataset.managementPrefix || '/admin';
 
   // --- NLLB Downloader (Translation Form) ---
   if (transForm) {
@@ -12,7 +13,7 @@ export function initLocalModelDownloader() {
         e.preventDefault();
         let needsNllb = false;
         try {
-          const res = await fetch(`/admin/models/download_progress?model=${encodeURIComponent(transModel)}`);
+          const res = await fetch(`${managementPrefix}/models/download_progress?model=${encodeURIComponent(transModel)}`);
           if (res.ok) {
             const data = await res.json();
             if (data.status !== 'completed') needsNllb = true;
@@ -47,7 +48,7 @@ export function initLocalModelDownloader() {
           }
 
           const transModel = document.getElementById('floor_translation_model').value || 'nllb-200-distilled-600M';
-          const downloadResponse = await fetch('/admin/models/trigger_download', {
+          const downloadResponse = await fetch(`${managementPrefix()}/models/trigger_download`, {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
@@ -58,11 +59,10 @@ export function initLocalModelDownloader() {
           if (!downloadResponse.ok) {
             throw new Error('Failed to trigger translation model download');
           }
-          
           document.getElementById('nllb_download_progress_container').style.display = 'flex';
           
           const interval = setInterval(async () => {
-            const res = await fetch(`/admin/models/download_progress?model=${encodeURIComponent(transModel)}`);
+            const res = await fetch(`${managementPrefix}/models/download_progress?model=${encodeURIComponent(transModel)}`);
             if (res.ok) {
               const data = await res.json();
               if (data.status === 'downloading' || data.n > 0) {
@@ -100,7 +100,7 @@ export function initLocalModelDownloader() {
         e.preventDefault();
         let needsSupertonic = false;
         try {
-          const res = await fetch('/admin/models/supertonic/download_progress');
+          const res = await fetch(`${managementPrefix}/models/supertonic/download_progress`);
           if (res.ok) {
             const data = await res.json();
             if (data.status !== 'completed') needsSupertonic = true;
@@ -128,26 +128,27 @@ export function initLocalModelDownloader() {
             method: 'POST',
             body: formData,
             redirect: 'follow'
-          });
+        });
 
         if (!settingsResponse.ok) {
           throw new Error('Failed to save Supertonic settings');
         }
 
-        const downloadResponse = await fetch('/admin/models/supertonic/trigger_download', {
-            method: 'POST',
-            headers: {
-              'X-CSRF-Token': document.querySelector('meta[name="csrf-token"]').content
-            }
-        });
-          if (!downloadResponse.ok) {
-            throw new Error('Failed to trigger Supertonic model download');
+        const downloadResponse = await fetch(`${managementPrefix}/models/supertonic/trigger_download`, {
+          method: 'POST',
+          headers: {
+            'X-CSRF-Token': document.querySelector('meta[name="csrf-token"]').content
           }
+        });
+
+        if (!downloadResponse.ok) {
+          throw new Error('Failed to trigger Supertonic model download');
+        }
           
           document.getElementById('supertonic_download_progress_container').style.display = 'flex';
           
           const interval = setInterval(async () => {
-            const res = await fetch('/admin/models/supertonic/download_progress');
+            const res = await fetch(`${managementPrefix}/models/supertonic/download_progress`);
             if (res.ok) {
               const data = await res.json();
               if (data.status === 'downloading' || data.n > 0) {

@@ -3,9 +3,9 @@
 
 {% block breadcrumb %}
 <nav class="breadcrumb">
-  <a href="/admin/">Dashboard</a> <span>/</span>
-  <a href="/admin/events/">Events</a> <span>/</span>
-  <a href="/admin/events/{{ event.id }}/">{{ event.display_name }}</a> <span>/</span>
+  <a href="{{ management_prefix }}/">Dashboard</a> <span>/</span>
+  <a href="{{ management_prefix }}/events/">Events</a> <span>/</span>
+  <a href="{{ management_prefix }}/events/{{ event.id }}/">{{ event.display_name }}</a> <span>/</span>
   <span class="breadcrumb-current" aria-current="page">Rooms</span>
 </nav>
 {% endblock %}
@@ -21,7 +21,7 @@
 <div class="form-card">
   <h3>Add a room</h3>
   <p class="form-card-hint">Rooms are the spaces at your event (e.g. “Main Hall”). Each room can host multiple language booths.</p>
-  <form method="post" action="/admin/events/{{ event.id }}/rooms/" class="inline-form">
+   <form method="post" action="{{ management_prefix }}/events/{{ event.id }}/rooms/" class="inline-form">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <input type="text" name="display_name" placeholder="Room name (e.g. Main Hall)" required class="input-grow" />
     <button type="submit" class="btn btn-primary">Add room</button>
@@ -29,11 +29,11 @@
 </div>
 
 <div class="search-bar">
-  <form method="get" action="/admin/events/{{ event.id }}/rooms/" class="search-form">
+  <form method="get" action="{{ management_prefix }}/events/{{ event.id }}/rooms/" class="search-form">
     <input type="text" name="search" value="{{ search or '' }}" placeholder="Search rooms by name..." aria-label="Search rooms by name" class="search-input">
     <button type="submit" class="btn btn-primary">Search</button>
     {% if search %}
-      <a href="/admin/events/{{ event.id }}/rooms/" class="btn">Clear</a>
+      <a href="{{ management_prefix }}/events/{{ event.id }}/rooms/" class="btn">Clear</a>
     {% endif %}
   </form>
 </div>
@@ -51,13 +51,13 @@
   <tbody>
     {% for rd in room_data %}
     <tr>
-      <td><a href="/admin/events/{{ event.id }}/rooms/{{ rd.room.id }}/">{{ rd.room.display_name }}</a></td>
+      <td><a href="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ rd.room.id }}/">{{ rd.room.display_name }}</a></td>
       <td>{{ rd.booth_count }}</td>
       <td>{{ rd.room.created_at.strftime('%b %d, %Y, %H:%M') if rd.room.created_at else '—' }}</td>
       <td>
-        <a href="/admin/events/{{ event.id }}/rooms/{{ rd.room.id }}/" class="btn btn-sm">View</a>
-        <a href="/admin/events/{{ event.id }}/rooms/{{ rd.room.id }}/booths/" class="btn btn-sm">Booths</a>
-        <form method="post" action="/admin/events/{{ event.id }}/rooms/{{ rd.room.id }}/delete" class="inline-delete"
+        <a href="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ rd.room.id }}/" class="btn btn-sm">View</a>
+        <a href="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ rd.room.id }}/booths/" class="btn btn-sm">Booths</a>
+        <form method="post" action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ rd.room.id }}/delete" class="inline-delete"
               data-confirm="Delete room '{{ rd.room.display_name }}'? This will remove all booths in this room.">
               <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
           <button type="submit" class="btn btn-sm btn-danger">Delete</button>
@@ -71,7 +71,7 @@
 <div class="empty-state" role="status" aria-live="polite">
   <div class="empty-state-icon empty-state-icon--sm">🏛️</div>
   {% if search %}
-    <p>No rooms match search "{{ search }}". <a href="/admin/events/{{ event.id }}/rooms/">Clear search</a></p>
+    <p>No rooms match search "{{ search }}". <a href="{{ management_prefix }}/events/{{ event.id }}/rooms/">Clear search</a></p>
   {% else %}
     <p>No rooms yet. Add one above to get started.</p>
   {% endif %}

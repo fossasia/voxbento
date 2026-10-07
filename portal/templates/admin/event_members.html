@@ -4,9 +4,9 @@
 
 {% block breadcrumb %}
 <nav class="breadcrumb">
-  <a href="/admin/">Dashboard</a> <span>/</span>
-  <a href="/admin/events/">Events</a> <span>/</span>
-  <a href="/admin/events/{{ event.id }}/">{{ event.display_name }}</a> <span>/</span>
+  <a href="{{ management_prefix }}/">Dashboard</a> <span>/</span>
+  <a href="{{ management_prefix }}/events/">Events</a> <span>/</span>
+  <a href="{{ management_prefix }}/events/{{ event.id }}/">{{ event.display_name }}</a> <span>/</span>
   <span class="breadcrumb-current" aria-current="page">Members</span>
 </nav>
 {% endblock %}
@@ -33,7 +33,7 @@
     <h2>Assign Event Owner</h2>
   </div>
   <div class="card-body">
-    <form method="post" action="/admin/events/{{ event.id }}/members/" class="token-form">
+    <form method="post" action="{{ management_prefix }}/events/{{ event.id }}/members/" class="token-form">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <div class="form-row">
         <div class="form-group form-group--wide">
@@ -80,13 +80,13 @@
       <td><span class="badge badge-role badge-event_owner">event_owner</span></td>
       <td class="actions-cell">
         <form method="post"
-              action="/admin/events/{{ event.id }}/members/{{ m.id }}/invite"
+              action="{{ management_prefix }}/events/{{ event.id }}/members/{{ m.id }}/invite"
               class="inline-form form-inline-spaced">
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
           <button type="submit" class="btn btn-sm btn-outline btn-invite">✉️ Invite</button>
         </form>
         <form method="post"
-              action="/admin/events/{{ event.id }}/members/{{ m.id }}/delete"
+              action="{{ management_prefix }}/events/{{ event.id }}/members/{{ m.id }}/delete"
               class="inline-form"
               data-confirm="Remove {{ u.display_name }} from this event?">
               <input type="hidden" name="csrf_token" value="{{ csrf_token }}">

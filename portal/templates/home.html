@@ -73,11 +73,15 @@
                 <a href="/register" class="brutal-btn brutal-btn-outline brutal-btn-nav !px-2.5 sm:!px-3 !py-1 sm:!py-1.5 md:!px-4 md:!py-2 !hidden sm:!inline-flex whitespace-nowrap">Register</a>
                 {% else %}
                 <a href="/developer" class="brutal-btn brutal-btn-outline brutal-btn-nav !hidden xl:!inline-flex !px-2.5 !py-1.5 md:!px-4 md:!py-2 whitespace-nowrap">Developer</a>
+                {% if management_home != "/account" %}
                 <a href="/account" class="brutal-btn brutal-btn-outline brutal-btn-nav !hidden lg:!inline-flex !px-2.5 !py-1.5 md:!px-4 md:!py-2 whitespace-nowrap">Account</a>
-                <a href="/admin/events/" class="brutal-btn brutal-btn-primary brutal-btn-nav !px-2.5 sm:!px-3 !py-1 sm:!py-1.5 md:!px-4 md:!py-2 whitespace-nowrap">
+                <a href="{{ management_home }}" class="brutal-btn brutal-btn-primary brutal-btn-nav !px-2.5 sm:!px-3 !py-1 sm:!py-1.5 md:!px-4 md:!py-2 whitespace-nowrap">
                     <span class="max-sm:hidden">Dashboard</span>
                     <span class="sm:hidden">Dash</span>
                 </a>
+                {% else %}
+                <a href="/account" class="brutal-btn brutal-btn-primary brutal-btn-nav !px-2.5 sm:!px-3 !py-1 sm:!py-1.5 md:!px-4 md:!py-2 whitespace-nowrap">Account</a>
+                {% endif %}
                 <a href="/logout" class="brutal-btn brutal-btn-outline brutal-btn-nav !px-2 sm:!px-2.5 !py-1 sm:!py-1.5 md:!px-3 md:!py-2 whitespace-nowrap">
                     <span class="max-sm:hidden">Logout</span>
                     <span class="sm:hidden">Exit</span>
@@ -150,7 +154,7 @@
                     single platform.
                 </p>
                 <div class="flex flex-col sm:flex-row items-center gap-4 justify-center lg:justify-start">
-                    <a href="{% if current_user %}/admin/events/{% else %}/register{% endif %}"
+                    <a href="{% if current_user %}{{ management_home }}{% else %}/register{% endif %}"
                         class="brutal-btn brutal-btn-primary w-full sm:w-auto text-center">
                         Start Hosting Free
                     </a>
@@ -243,7 +247,7 @@
 
         <!-- Dynamic User/Event Dashboard Injections -->
         {% if my_booths or events %}
-        <section class="max-w-7xl mx-auto px-6 py-16 mb-24 relative z-20">
+        <section id="live-dashboard" class="max-w-7xl mx-auto px-6 py-16 mb-24 relative z-20">
             <div class="mb-12 border-b-2 border-[#0d0f10] pb-6 flex items-end justify-between">
                 <div>
                     <h2 class="text-3xl font-extrabold text-[#0d0f10] tracking-tight">Live Dashboard</h2>
@@ -988,7 +992,7 @@
             <p class="text-white opacity-90 text-xl mb-12 max-w-2xl mx-auto font-bold">Launch multilingual events in
                 minutes with VoxBento. No complex setups, no hardware.</p>
             <div class="flex flex-col sm:flex-row justify-center gap-6">
-                <a href="{% if current_user %}/admin/events/{% else %}/register{% endif %}"
+                <a href="{% if current_user %}{{ management_home }}{% else %}/register{% endif %}"
                     class="brutal-btn bg-white text-[#0d0f10] hover:bg-slate-100 w-full sm:w-auto text-lg py-5 px-10">Get
                     Started Now</a>
             </div>

@@ -13,7 +13,7 @@
 
     {% if error %}<div class="alert alert-danger">{{ error }}</div>{% endif %}
 
-    <form method="post" action="/admin/setup">
+    <form method="post" action="{{ management_prefix }}/setup">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <div class="field">
         <label for="display_name">Event name</label>
@@ -35,7 +35,7 @@
       </details>
 
       <div class="wizard-actions">
-        <a href="/admin/" class="btn">Cancel</a>
+        <a href="{{ management_prefix }}/" class="btn">Cancel</a>
         <button type="submit" class="btn btn-primary btn-lg">Continue &rarr;</button>
       </div>
     </form>

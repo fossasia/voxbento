@@ -27,6 +27,7 @@ from portal.routers.oauth import router as oauth_router
 from portal.routers.public import router as public_router
 from portal.routers.webhooks import router as webhooks_router
 from portal.websockets.handlers import router as ws_router
+from portal.workspace_routing import WorkspaceRoutingMiddleware
 
 "FastAPI entry point — sole backend for the Voxbento.\n\nStart with:\n    uvicorn fastapi_app:app --host 0.0.0.0 --port 8000 --reload\n"
 
@@ -129,6 +130,7 @@ class AdminCSRFMiddleware(BaseHTTPMiddleware):
 
 app = FastAPI(title="Voxbento", version="1.0.0", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
 app.add_middleware(AdminCSRFMiddleware)
+app.add_middleware(WorkspaceRoutingMiddleware)
 
 
 @app.get("/docs", include_in_schema=False)

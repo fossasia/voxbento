@@ -3,7 +3,7 @@
 
 {% block breadcrumb %}
 <nav class="breadcrumb">
-  <a href="/admin/">Dashboard</a> <span>/</span> <span class="breadcrumb-current" aria-current="page">Events</span>
+  <a href="{{ management_prefix }}/">Dashboard</a> <span>/</span> <span class="breadcrumb-current" aria-current="page">Events</span>
 </nav>
 {% endblock %}
 
@@ -13,16 +13,15 @@
     <h1>Events</h1>
     <p class="text-secondary">Everything you host lives here.</p>
   </div>
-  <a href="/admin/setup" class="btn btn-primary">+ New event</a>
+  <a href="{{ management_prefix }}/setup" class="btn btn-primary">+ New event</a>
 </div>
 
 <details class="create-panel">
   <summary>Quick create (advanced)</summary>
   <div class="create-body">
-    <p class="text-secondary create-hint">Prefer a guided walkthrough? Use <a href="/admin/setup">New event</a> instead.</p>
-    <form method="post" action="/admin/events/" class="inline-form">
+    <p class="text-secondary create-hint">Prefer a guided walkthrough? Use <a href="{{ management_prefix }}/setup">New event</a> instead.</p>
+    <form method="post" action="{{ management_prefix }}/events/" class="inline-form">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-      <input type="text" name="slug" placeholder="event-slug" required pattern="^[a-z0-9]+(-[a-z0-9]+)*$" title="Lowercase letters, numbers, hyphens only" />
       <input type="text" name="display_name" placeholder="Display Name" required />
       <button type="submit" class="btn btn-primary">Create</button>
       <button type="button" class="btn btn-outline" onclick="this.closest('details').removeAttribute('open'); return false;">Cancel</button>
@@ -43,12 +42,12 @@
   <tbody>
     {% for ev in events %}
     <tr>
-      <td><a href="/admin/events/{{ ev.id }}/">{{ ev.display_name }}</a></td>
+      <td><a href="{{ management_prefix }}/events/{{ ev.id }}/">{{ ev.display_name }}</a></td>
       <td><code>{{ ev.slug }}</code></td>
       <td>{{ ev.created_at.strftime('%b %d, %Y, %H:%M') if ev.created_at else '—' }}</td>
       <td>
-        <a href="/admin/events/{{ ev.id }}/" class="btn btn-sm">View</a>
-        <form method="post" action="/admin/events/{{ ev.id }}/delete" class="inline-delete"
+        <a href="{{ management_prefix }}/events/{{ ev.id }}/" class="btn btn-sm">View</a>
+        <form method="post" action="{{ management_prefix }}/events/{{ ev.id }}/delete" class="inline-delete"
               data-confirm="Delete event '{{ ev.display_name }}'? This will remove all rooms, booths, and tokens.">
           <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
           <button type="submit" class="btn btn-sm btn-danger">Delete</button>
@@ -64,7 +63,7 @@
   <div class="empty-state-icon">🎧</div>
   <h2 class="empty-state-title">No events yet</h2>
   <p class="empty-state-text">Create your first event in a few guided steps.</p>
-  <a href="/admin/setup" class="btn btn-primary btn-lg">Create your first event &rarr;</a>
+  <a href="{{ management_prefix }}/setup" class="btn btn-primary btn-lg">Create your first event &rarr;</a>
 </div>
 {% endif %}
 {% endblock %}
