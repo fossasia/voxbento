@@ -46,12 +46,15 @@ To access the admin panel, set `ADMIN_PASSWORD` explicitly in `.env` during setu
 
 ## 2. Testing Your Changes
 
-Before opening a PR, ensure that the linter and test suite pass.
+Before opening a PR, ensure that the linter and test suite pass. We provide a `Makefile` to simplify these commands.
 
 ```bash
+# Install dependencies
+make install
+
 # Run Python linter and formatter
-uv run ruff check .
-uv run ruff format .
+make lint
+make format
 
 # Run Javascript syntax checks
 node --check portal/static/js/interpreter-booth.js
@@ -59,7 +62,7 @@ node --check portal/static/js/whep-listener.js
 node --check portal/static/js/admin.js
 
 # Run the Pytest suite
-uv run pytest tests/ -v
+make test
 ```
 
 CI runs the checks above (except `uv run ruff format .`), and also runs a separate Docker build and full-stack smoke test. Your PR will be blocked if any of these CI checks fail.

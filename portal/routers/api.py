@@ -1,4 +1,5 @@
 from __future__ import annotations
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -100,7 +101,7 @@ async def create_event_booth(
     body: CreateBoothRequest,
     token: str = Query(""),
     credentials: HTTPAuthorizationCredentials | None = Depends(security),
-) -> dict:
+) -> dict[str, Any]:
     """Create a booth for an event.
 
     Returns the booth state including derived booth_id, MediaMTX path,
@@ -257,7 +258,7 @@ async def list_event_booths(
     event_slug: str,
     token: str = Query(""),
     credentials: HTTPAuthorizationCredentials | None = Depends(security),
-) -> dict:
+) -> dict[str, Any]:
     """List all booths for an event."""
     try:
         _require_access(request, credentials, token)
@@ -315,7 +316,7 @@ async def event_booth_state(
     room_id: int | None = Query(None),
     token: str = Query(""),
     credentials: HTTPAuthorizationCredentials | None = Depends(security),
-) -> dict:
+) -> dict[str, Any]:
     """Event-scoped booth state — never auto-creates a booth."""
     _require_access(request, credentials, token)
 
@@ -351,7 +352,7 @@ async def event_booth_whip_url(
     room_id: int | None = Query(None),
     token: str = Query(""),
     credentials: HTTPAuthorizationCredentials | None = Depends(security),
-) -> dict:
+) -> dict[str, Any]:
     """Event-scoped WHIP URL — validates event ownership before returning."""
     _require_access(request, credentials, token)
 
@@ -379,7 +380,7 @@ async def event_booth_whip_url(
 
 
 @router.get("/interpreter/status/{channel_id:path}")
-async def ingest_status_api(channel_id: str) -> dict:
+async def ingest_status_api(channel_id: str) -> dict[str, Any]:
     """Returns MediaMTX reachability — used by the frontend preflight check."""
     return {"channel_id": channel_id, "state": "mediamtx", "reachable": await _check_mediamtx()}
 

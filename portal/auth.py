@@ -4,6 +4,7 @@ import hashlib
 import logging
 import uuid
 from datetime import datetime, timedelta, timezone
+from typing import Any, Callable
 
 import bcrypt
 import jwt
@@ -84,7 +85,7 @@ def create_embed_token(*, event_slug: str) -> str:
     return jwt.encode(payload, settings.effective_jwt_secret, algorithm="HS256")
 
 
-def decode_token(token: str) -> dict:
+def decode_token(token: str) -> dict[str, Any]:
     return jwt.decode(token, settings.effective_jwt_secret, algorithms=["HS256"])
 
 
@@ -359,7 +360,7 @@ def create_user_token(*, user_id: int, email: str, display_name: str = "", is_ad
     return jwt.encode(payload, settings.effective_jwt_secret, algorithm="HS256")
 
 
-async def get_current_user(request: Request) -> dict | None:
+async def get_current_user(request: Request) -> dict[str, Any] | None:
     """Extract current user from user_token cookie. Returns None if not logged in."""
     cookie = request.cookies.get("user_token", "")
     if not cookie:
@@ -424,7 +425,7 @@ async def get_accessible_event_ids(request: Request, *, user_id: int | None) -> 
     return (False, allowed_event_ids)
 
 
-async def require_user(request: Request) -> dict:
+async def require_user(request: Request) -> dict[str, Any]:
     """FastAPI dependency that requires a logged-in user.
 
     Returns the JWT payload dict with user_id, email, and is_admin.
@@ -436,7 +437,7 @@ async def require_user(request: Request) -> dict:
     return user
 
 
-def get_booth_session(request: Request | WebSocket) -> dict | None:
+def get_booth_session(request: Request | WebSocket) -> dict[str, Any] | None:
     """Return decoded JWT payload from either user_token (registered user) or session_token (invite link).
 
     Registered-user tokens (user_token) are checked FIRST so that a logged-in
@@ -457,7 +458,7 @@ def get_booth_session(request: Request | WebSocket) -> dict | None:
     return None
 
 
-async def resolve_ws_auth(websocket: WebSocket, booth_id: str) -> dict:
+async def resolve_ws_auth(websocket: WebSocket, booth_id: str) -> dict[str, Any]:
     """Resolves authentication for a WebSocket connection"""
 
     token = websocket.query_params.get("token", "")
@@ -559,7 +560,7 @@ async def resolve_ws_auth(websocket: WebSocket, booth_id: str) -> dict:
     return payload
 
 
-async def resolve_booth_role(payload: dict | None, booth_id: str | None = None) -> str | None:
+async def resolve_booth_role(payload: dict[str, Any] | None, booth_id: str | None = None) -> str | None:
     """Extract the role claim from a booth session payload.
 
     - Invite tokens carry a ``role`` claim directly.
@@ -640,7 +641,7 @@ def can_perform_role(granted_role: str | None, requested_role: str) -> bool:
 oauth2_bearer = HTTPBearer(auto_error=False)
 
 
-def require_oauth_scope(required_scope: str):
+def require_oauth_scope(required_scope: str) -> Callable:
     async def dependency(
         request: Request,
         db: AsyncSession = Depends(get_db_session),
