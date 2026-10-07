@@ -44,42 +44,75 @@
     <!-- Premium Navbar -->
     <header class="fixed top-0 w-full z-50 bg-[#eef2f6] border-b-[3px] border-[#0d0f10] transition-all duration-300" id="navbar">
         <div class="max-w-7xl mx-auto px-4 md:px-6 h-16 flex items-center justify-between gap-3 sm:gap-6">
-            <a href="/" class="flex items-center gap-2 md:gap-3 flex-shrink-0">
-                <img src="{{ url_for('static', path='img/app_icon.png') }}" alt="VoxBento Icon" class="w-7 h-7 md:w-8 md:h-8 brutal-border rounded shadow-none">
-                <span class="text-lg md:text-[1.35rem] font-black tracking-tight text-[#0d0f10] whitespace-nowrap">VoxBento</span>
-            </a>
-            <nav class="hidden lg:flex items-center gap-5 xl:gap-8 text-xs xl:text-sm font-bold text-[#0d0f10] whitespace-nowrap flex-shrink-0">
-                <a href="#solutions"
-                    class="hover:text-brand-600 transition-colors uppercase tracking-wider whitespace-nowrap">Solutions</a>
-                <a href="#interactive-demo"
-                    class="hover:text-brand-600 transition-colors uppercase tracking-wider whitespace-nowrap">Demo</a>
-                <a href="#open-source" class="hover:text-brand-600 transition-colors uppercase tracking-wider whitespace-nowrap">Open Source</a>
-                <a href="/local" class="hover:text-brand-600 transition-colors uppercase tracking-wider inline-flex items-center gap-1.5 whitespace-nowrap">
-                    <span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse flex-shrink-0"></span>
-                    <span>Local App</span>
+            <div class="flex items-center gap-4 lg:gap-8 xl:gap-10 min-w-0">
+                <a href="/" class="flex items-center gap-2 md:gap-3 flex-shrink-0">
+                    <img src="{{ url_for('static', path='img/app_icon.png') }}" alt="VoxBento Icon" class="w-7 h-7 md:w-8 md:h-8 brutal-border rounded shadow-none">
+                    <span class="text-lg md:text-[1.35rem] font-black tracking-tight text-[#0d0f10] whitespace-nowrap">VoxBento</span>
                 </a>
-            </nav>
+                <nav class="hidden md:flex items-center gap-3 lg:gap-6 xl:gap-8 text-xs xl:text-sm font-bold text-[#0d0f10] whitespace-nowrap flex-shrink-0">
+                    <a href="#solutions"
+                        class="hover:text-brand-600 transition-colors uppercase tracking-wider whitespace-nowrap">Solutions</a>
+                    <a href="#interactive-demo"
+                        class="hover:text-brand-600 transition-colors uppercase tracking-wider whitespace-nowrap">Demo</a>
+                    <a href="#open-source" class="hover:text-brand-600 transition-colors uppercase tracking-wider whitespace-nowrap">Open Source</a>
+                    <a href="/local" class="hover:text-brand-600 transition-colors uppercase tracking-wider inline-flex items-center gap-1.5 whitespace-nowrap">
+                        <span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse flex-shrink-0"></span>
+                        <span>Local App</span>
+                    </a>
+                </nav>
+            </div>
             <div class="flex items-center gap-1.5 sm:gap-2.5 md:gap-3 text-[10px] sm:text-xs md:text-sm font-bold flex-shrink-0">
-                <button onclick="openDemoModal()" class="brutal-btn brutal-btn-secondary brutal-btn-nav !bg-[#fbbf24] !border-[#0d0f10] hover:!bg-[#f59e0b] !px-2.5 sm:!px-3 !py-1 sm:!py-1.5 md:!px-4 md:!py-2 rounded-full whitespace-nowrap hidden sm:inline-flex">
+                {% if not current_user %}
+                <button onclick="openDemoModal()" class="brutal-btn brutal-btn-secondary brutal-btn-nav !bg-[#fbbf24] !border-[#0d0f10] hover:!bg-[#f59e0b] !px-2.5 sm:!px-3 !py-1 sm:!py-1.5 md:!px-4 md:!py-2 rounded-full whitespace-nowrap !hidden lg:!inline-flex">
                     <span>Request a demo</span>
                 </button>
-                {% if current_user %}
-                <a href="/developer" class="brutal-btn brutal-btn-outline brutal-btn-nav hidden xl:inline-flex !px-2.5 !py-1.5 md:!px-4 md:!py-2 whitespace-nowrap">Developer</a>
-                <a href="/account" class="brutal-btn brutal-btn-outline brutal-btn-nav hidden md:inline-flex !px-2.5 !py-1.5 md:!px-4 md:!py-2 whitespace-nowrap">Account</a>
-                <a href="/admin/events/" class="brutal-btn brutal-btn-primary brutal-btn-nav !px-2.5 sm:!px-3 !py-1 sm:!py-1.5 md:!px-4 md:!py-2 whitespace-nowrap">
-                    <span class="max-sm:hidden">Dashboard</span>
-                    <span class="sm:hidden">Dash</span>
-                </a>
-                <a href="/logout" class="brutal-btn brutal-btn-outline brutal-btn-nav !px-2 sm:!px-2.5 !py-1 sm:!py-1.5 md:!px-3 md:!py-2 whitespace-nowrap">
-                    <span class="max-sm:hidden">Logout</span>
-                    <span class="sm:hidden">Exit</span>
-                </a>
-                {% else %}
                 <a href="/login" class="brutal-btn brutal-btn-primary brutal-btn-nav !px-2.5 sm:!px-3 !py-1 sm:!py-1.5 md:!px-4 md:!py-2 whitespace-nowrap">
                     <span class="max-sm:hidden">Sign In</span>
                     <span class="sm:hidden">Login</span>
                 </a>
-                <a href="/register" class="brutal-btn brutal-btn-outline brutal-btn-nav !px-2.5 sm:!px-3 !py-1 sm:!py-1.5 md:!px-4 md:!py-2 hidden sm:inline-flex whitespace-nowrap">Register</a>
+                <a href="/register" class="brutal-btn brutal-btn-outline brutal-btn-nav !px-2.5 sm:!px-3 !py-1 sm:!py-1.5 md:!px-4 md:!py-2 !hidden sm:!inline-flex whitespace-nowrap">Register</a>
+                {% else %}
+                <a href="/developer" class="brutal-btn brutal-btn-outline brutal-btn-nav !hidden xl:!inline-flex !px-2.5 !py-1.5 md:!px-4 md:!py-2 whitespace-nowrap">Developer</a>
+                {% if management_home != "/account" %}
+                <a href="/account" class="brutal-btn brutal-btn-outline brutal-btn-nav !hidden lg:!inline-flex !px-2.5 !py-1.5 md:!px-4 md:!py-2 whitespace-nowrap">Account</a>
+                <a href="{{ management_home }}" class="brutal-btn brutal-btn-primary brutal-btn-nav !px-2.5 sm:!px-3 !py-1 sm:!py-1.5 md:!px-4 md:!py-2 whitespace-nowrap">
+                    <span class="max-sm:hidden">Dashboard</span>
+                    <span class="sm:hidden">Dash</span>
+                </a>
+                {% else %}
+                <a href="/account" class="brutal-btn brutal-btn-primary brutal-btn-nav !px-2.5 sm:!px-3 !py-1 sm:!py-1.5 md:!px-4 md:!py-2 whitespace-nowrap">Account</a>
+                {% endif %}
+                <a href="/logout" class="brutal-btn brutal-btn-outline brutal-btn-nav !px-2 sm:!px-2.5 !py-1 sm:!py-1.5 md:!px-3 md:!py-2 whitespace-nowrap">
+                    <span class="max-sm:hidden">Logout</span>
+                    <span class="sm:hidden">Exit</span>
+                </a>
+                {% endif %}
+                <button id="mobile-menu-btn" type="button" class="md:!hidden brutal-btn brutal-btn-outline !p-1.5 sm:!p-2 !inline-flex items-center justify-center text-[#0d0f10]" aria-label="Toggle navigation menu" aria-expanded="false">
+                    <svg id="menu-icon-open" class="w-4 h-4 sm:w-5 sm:h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M4 6h16M4 12h16M4 18h16"></path></svg>
+                    <svg id="menu-icon-close" class="w-4 h-4 sm:w-5 sm:h-5 !hidden" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12"></path></svg>
+                </button>
+            </div>
+        </div>
+        <!-- Mobile Dropdown Menu -->
+        <div id="mobile-menu" class="hidden md:hidden border-t-[3px] border-[#0d0f10] bg-[#eef2f6] px-5 py-4 space-y-3 font-bold text-xs sm:text-sm shadow-[0_4px_0_#0d0f10]">
+            <div class="flex flex-col space-y-2">
+                <a href="#solutions" class="mobile-nav-link hover:text-brand-600 transition-colors uppercase tracking-wider py-1">Solutions</a>
+                <a href="#interactive-demo" class="mobile-nav-link hover:text-brand-600 transition-colors uppercase tracking-wider py-1">Demo</a>
+                <a href="#open-source" class="mobile-nav-link hover:text-brand-600 transition-colors uppercase tracking-wider py-1">Open Source</a>
+                <a href="/local" class="mobile-nav-link hover:text-brand-600 transition-colors uppercase tracking-wider inline-flex items-center gap-1.5 py-1">
+                    <span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                    <span>Local App</span>
+                </a>
+            </div>
+            <div class="pt-2 border-t-2 border-zinc-300 flex flex-col gap-2">
+                {% if current_user %}
+                <a href="/account" class="brutal-btn brutal-btn-outline text-center py-2 text-xs uppercase tracking-wider font-bold">Account</a>
+                <a href="/developer" class="brutal-btn brutal-btn-outline text-center py-2 text-xs uppercase tracking-wider font-bold">Developer</a>
+                {% else %}
+                <button onclick="openDemoModal(); closeMobileMenu();" class="brutal-btn brutal-btn-secondary !bg-[#fbbf24] !border-[#0d0f10] text-center py-2 text-xs uppercase tracking-wider font-bold">
+                    Request a demo
+                </button>
+                <a href="/register" class="brutal-btn brutal-btn-outline text-center py-2 text-xs uppercase tracking-wider font-bold">Register</a>
                 {% endif %}
             </div>
         </div>
@@ -121,7 +154,7 @@
                     single platform.
                 </p>
                 <div class="flex flex-col sm:flex-row items-center gap-4 justify-center lg:justify-start">
-                    <a href="{% if current_user %}/admin/events/{% else %}/register{% endif %}"
+                    <a href="{% if current_user %}{{ management_home }}{% else %}/register{% endif %}"
                         class="brutal-btn brutal-btn-primary w-full sm:w-auto text-center">
                         Start Hosting Free
                     </a>
@@ -214,7 +247,7 @@
 
         <!-- Dynamic User/Event Dashboard Injections -->
         {% if my_booths or events %}
-        <section class="max-w-7xl mx-auto px-6 py-16 mb-24 relative z-20">
+        <section id="live-dashboard" class="max-w-7xl mx-auto px-6 py-16 mb-24 relative z-20">
             <div class="mb-12 border-b-2 border-[#0d0f10] pb-6 flex items-end justify-between">
                 <div>
                     <h2 class="text-3xl font-extrabold text-[#0d0f10] tracking-tight">Live Dashboard</h2>
@@ -959,7 +992,7 @@
             <p class="text-white opacity-90 text-xl mb-12 max-w-2xl mx-auto font-bold">Launch multilingual events in
                 minutes with VoxBento. No complex setups, no hardware.</p>
             <div class="flex flex-col sm:flex-row justify-center gap-6">
-                <a href="{% if current_user %}/admin/events/{% else %}/register{% endif %}"
+                <a href="{% if current_user %}{{ management_home }}{% else %}/register{% endif %}"
                     class="brutal-btn bg-white text-[#0d0f10] hover:bg-slate-100 w-full sm:w-auto text-lg py-5 px-10">Get
                     Started Now</a>
             </div>
@@ -1267,6 +1300,34 @@
                     spinner.classList.add('hidden');
                 }
             }
+        });
+
+        // Mobile Menu toggle
+        const menuBtn = document.getElementById('mobile-menu-btn');
+        const mobileMenu = document.getElementById('mobile-menu');
+        const iconOpen = document.getElementById('menu-icon-open');
+        const iconClose = document.getElementById('menu-icon-close');
+
+        function toggleMobileMenu() {
+            if (!menuBtn || !mobileMenu) return;
+            const isExpanded = menuBtn.getAttribute('aria-expanded') === 'true';
+            menuBtn.setAttribute('aria-expanded', !isExpanded);
+            mobileMenu.classList.toggle('hidden');
+            iconOpen?.classList.toggle('hidden');
+            iconClose?.classList.toggle('hidden');
+        }
+
+        function closeMobileMenu() {
+            if (!menuBtn || !mobileMenu) return;
+            menuBtn.setAttribute('aria-expanded', 'false');
+            mobileMenu.classList.add('hidden');
+            iconOpen?.classList.remove('hidden');
+            iconClose?.classList.add('hidden');
+        }
+
+        menuBtn?.addEventListener('click', toggleMobileMenu);
+        document.querySelectorAll('.mobile-nav-link').forEach(link => {
+            link.addEventListener('click', closeMobileMenu);
         });
     </script>
 </body>

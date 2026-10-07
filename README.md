@@ -7,7 +7,16 @@ Voxbento is a real-time interpretation platform for live events. It provides a b
 Interpreters stream live audio via WebRTC/WHIP → MediaMTX → WHEP (WebRTC playback).
 Booth coordination (who is active, relay handoff, chat) runs over WebSocket.
 
-Rooms can optionally add a listener-side audio synchronization delay for WHEP playback. The default is `0` ms, which keeps the existing low-latency HTML audio path unchanged. Organizers can set values such as `1000`, `2000`, `5000`, or `8000` ms when a room's livestream video, captions, embedded player, or other external media is delayed and translated audio needs to line up with it. The delay is applied in the listener browser only; MediaMTX, WHIP, WHEP, and RTP packets are not changed. Within the admin console, organizers can manage and search rooms by name within each event using server-side, case-insensitive filtering.
+Rooms can optionally add a listener-side audio synchronization delay for WHEP playback. The default is `0` ms, which keeps the existing low-latency HTML audio path unchanged. Organizers can set values such as `1000`, `2000`, `5000`, or `8000` ms when a room's livestream video, captions, embedded player, or other external media is delayed and translated audio needs to line up with it. The delay is applied in the listener browser only; MediaMTX, WHIP, WHEP, and RTP packets are not changed. Within the organizer workspace, organizers can manage and search rooms by name within each event using server-side, case-insensitive filtering.
+
+## Management dashboards
+
+- Event owners manage event configuration at `/workspace/`.
+- Room coordinators use `/mission-control/`, which limits them to their assigned rooms.
+- System administrators use `/admin/` for instance-wide administration.
+- Existing organizer bookmarks under `/admin/events/...` redirect to the matching `/workspace/events/...` URL. HTTP methods and query strings are preserved, so old forms and filtered room-list bookmarks continue to work.
+
+The workspace and admin surfaces share the same management implementation and authorization checks. This URL separation does not change OAuth authorization, token refresh, reconnect, or disconnect behavior for Eventyay integrations.
 
 ---
 
