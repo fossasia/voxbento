@@ -1,201 +1,154 @@
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from portal.transcription.providers.base import AudioFrame, ChunkedProvider, ContinuousProvider, ProviderConfig
+from portal.transcription.providers.base import ProviderConfig, TranscriptionProvider
+
+# TranscriptionProvider.run_stream reads 3 s of 16 kHz 16-bit mono PCM per chunk.
+CHUNK_SIZE = 16000 * 2 * 3
+
+OVERLOAD_MESSAGE = "[Server overloaded - transcription temporarily paused]"
+FAILURE_MESSAGE = "[Transcription provider failed. Check logs.]"
 
 
-class MockAggregator:
-    def __init__(self):
+def make_chunk(tag: int, size: int = CHUNK_SIZE) -> bytes:
+    return bytes([tag]) * size
+
+
+class PacedStdout:
+    """Hands out one chunk per read and sleeps first, so inference keeps up and nothing is dropped."""
+
+    def __init__(self, chunks):
+        self._chunks = list(chunks)
+
+    async def readexactly(self, n):
+        await asyncio.sleep(0.01)
+        if not self._chunks:
+            raise asyncio.IncompleteReadError(b"", n)
+        chunk = self._chunks.pop(0)
+        if len(chunk) < n:
+            raise asyncio.IncompleteReadError(chunk, n)
+        return chunk
+
+
+def burst_stdout(chunks) -> asyncio.StreamReader:
+    """All audio is already buffered, so the reader outruns inference."""
+    reader = asyncio.StreamReader()
+    for chunk in chunks:
+        reader.feed_data(chunk)
+    reader.feed_eof()
+    return reader
+
+
+def fake_process(stdout):
+    return SimpleNamespace(stdout=stdout, returncode=None)
+
+
+class RecordingProvider(TranscriptionProvider):
+    """Uses the shared run_stream and records what reaches process_chunk."""
+
+    def __init__(self, results=None):
         self.chunks = []
-        self.clears = []
-        self.system_messages = []
+        self.booth_state = None
+        self._results = list(results or [])
 
-    async def handle_chunk(self, booth_id, text):
-        self.chunks.append(text)
-
-    async def handle_clear(self, booth_id):
-        self.clears.append(booth_id)
-
-    async def broadcast_callback(self, booth_id, msg):
-        self.system_messages.append(msg)
-
-
-async def mock_audio_generator(frames):
-    for f in frames:
-        yield f
-        await asyncio.sleep(0.001)
+    async def process_chunk(self, chunk, language_code, model_variant, config, booth_state=None):
+        self.chunks.append(chunk)
+        self.booth_state = booth_state
+        result = self._results.pop(0) if self._results else ""
+        if isinstance(result, Exception):
+            raise result
+        return result
 
 
-class DummyContinuousProvider(ContinuousProvider):
-    def __init__(self, should_fail=False, max_retries_fail=False, fail_delay=0.0):
-        super().__init__()
-        self.connected_count = 0
-        self.should_fail = should_fail
-        self.max_retries_fail = max_retries_fail
-        self.fail_delay = fail_delay
-        self.received_frames = []
-
-    async def connect_and_stream(self):
-        self.connected_count += 1
-        if self.should_fail:
-            self.should_fail = False
-            if self.fail_delay:
-                await asyncio.sleep(self.fail_delay)
-            raise Exception("Simulated disconnect")
-        if self.max_retries_fail:
-            raise Exception("Simulated permanent failure")
-
-        while True:
-            frame = await self.queue.get()
-            if frame is None:
-                break
-            self.received_frames.append(frame)
+def system_messages(broadcast):
+    return [c.args[1] for c in broadcast.await_args_list if isinstance(c.args[1], str)]
 
 
-class DummyChunkedProvider(ChunkedProvider):
-    def __init__(self, processing_delay=0.0):
-        super().__init__()
-        self.processed_blocks = []
-        self.processing_delay = processing_delay
-
-    async def process_block(
-        self, audio_bytes: bytes, start_timestamp: float, language_code: str, model_variant: str, config: ProviderConfig
-    ) -> str:
-        if self.processing_delay > 0:
-            await asyncio.sleep(self.processing_delay)
-        self.processed_blocks.append((audio_bytes, start_timestamp))
-        return f"transcribed {len(audio_bytes)} bytes"
-
-
-@pytest.mark.anyio
-async def test_chunked_provider_exact_block_size_and_flush():
-    provider = DummyChunkedProvider()
-    aggregator = MockAggregator()
-
-    gaps = []
-
-    async def notify_gap(start, end):
-        gaps.append((start, end))
-
-    frames = []
-    for i in range(25):
-        frames.append(AudioFrame(data=b"a" * 4096, start_timestamp=i * 0.128, duration=0.128, seq=i))
-
-    await provider.process_stream(
-        mock_audio_generator(frames), aggregator, notify_gap, "en", "test", ProviderConfig(None), "booth1"
+async def run(provider, stdout, broadcast):
+    await asyncio.wait_for(
+        provider.run_stream(fake_process(stdout), "en", "base", ProviderConfig(None), broadcast, "booth1"),
+        timeout=5,
     )
 
-    assert len(provider.processed_blocks) == 2
-    b1_bytes, b1_ts = provider.processed_blocks[0]
-    assert len(b1_bytes) == 24 * 4096
-    assert b1_ts == 0.0
 
-    b2_bytes, b2_ts = provider.processed_blocks[1]
-    assert len(b2_bytes) == 1 * 4096
-    assert b2_ts == 24 * 0.128
-    assert len(gaps) == 0
+@pytest.mark.anyio
+async def test_run_stream_processes_every_chunk_and_flushes_partial_on_eof():
+    provider = RecordingProvider()
+    broadcast = AsyncMock()
+    partial = make_chunk(3, size=1000)
+    chunks = [make_chunk(1), make_chunk(2), partial]
+
+    await run(provider, PacedStdout(chunks), broadcast)
+
+    assert provider.chunks == chunks
+    assert provider.booth_state.booth_id == "booth1"
+    assert provider.booth_state.chunks_dropped_total == 0
+    assert system_messages(broadcast) == []
 
 
 @pytest.mark.anyio
-async def test_continuous_provider_reconnect_and_gap():
-    # should_fail triggers a failure on first connection attempt,
-    # causing it to back off and buffer frames
-    provider = DummyContinuousProvider(should_fail=True, fail_delay=0.1)
-    aggregator = MockAggregator()
+async def test_run_stream_forwards_transcripts_to_captions():
+    provider = RecordingProvider(results=["hello world"])
+    broadcast = AsyncMock()
 
-    gaps = []
+    await run(provider, PacedStdout([make_chunk(1)]), broadcast)
 
-    async def notify_gap(start, end):
-        gaps.append((start, end))
-
-    async def infinite_mock_generator():
-        # Produce exactly 15 seconds of audio overall
-        # 15s / 0.128s = 118 frames
-        for i in range(118):
-            yield AudioFrame(data=b"a" * 4096, start_timestamp=i * 0.128, duration=0.128, seq=i)
-            await asyncio.sleep(0.001)
-
-        # Wait until it connects a second time before sending EOF
-        while provider.connected_count < 2:
-            await asyncio.sleep(0.01)
-
-    await provider.process_stream(
-        infinite_mock_generator(), aggregator, notify_gap, "en", "test", ProviderConfig(None), "booth1"
-    )
-
-    assert provider.connected_count == 2
-    assert len(gaps) == 1
-
-    gap_start, gap_end = gaps[0]
-    assert gap_start == 0.0
-    # We pushed ~15s of audio, max queue is 10s. So roughly 5s should be dropped.
-    assert 4.5 < gap_end < 5.5
+    captions = [c.args[1] for c in broadcast.await_args_list if isinstance(c.args[1], dict)]
+    assert any("hello world" in caption.get("text", "") for caption in captions)
 
 
 @pytest.mark.anyio
-async def test_continuous_provider_terminal_error():
-    provider = DummyContinuousProvider(max_retries_fail=True)
-    aggregator = MockAggregator()
+async def test_run_stream_drops_oldest_chunk_when_inference_lags():
+    provider = RecordingProvider()
+    broadcast = AsyncMock()
+    chunks = [make_chunk(i) for i in range(4)]
 
-    gaps = []
+    await run(provider, burst_stdout(chunks), broadcast)
 
-    async def notify_gap(start, end):
-        gaps.append((start, end))
-
-    async def infinite_mock_generator():
-        seq = 0
-        while True:
-            yield AudioFrame(data=b"a" * 4096, start_timestamp=seq * 0.128, duration=0.128, seq=seq)
-            seq += 1
-            await asyncio.sleep(0.001)
-
-    # Speed up sleep for test
-    original_sleep = asyncio.sleep
-
-    async def fast_sleep(t):
-        await original_sleep(0.001)
-
-    asyncio.sleep = fast_sleep
-
-    try:
-        await provider.process_stream(
-            infinite_mock_generator(), aggregator, notify_gap, "en", "test", ProviderConfig(None), "booth1"
-        )
-    finally:
-        asyncio.sleep = original_sleep
-
-    assert provider.connected_count == 6  # initial + 5 retries
-    assert len(aggregator.system_messages) == 1
-    assert "transcription failed" in aggregator.system_messages[0]
+    # The queue holds two chunks, so the two oldest are dropped and the newest survive.
+    assert provider.chunks == chunks[2:]
+    assert provider.booth_state.chunks_dropped_total == 2
+    assert OVERLOAD_MESSAGE not in system_messages(broadcast)
 
 
 @pytest.mark.anyio
-async def test_chunked_provider_overload_drops_oldest():
-    # Make processing extremely slow so it backs up
-    provider = DummyChunkedProvider(processing_delay=0.2)
-    aggregator = MockAggregator()
+async def test_run_stream_pauses_inference_on_sustained_overload():
+    provider = RecordingProvider()
+    broadcast = AsyncMock()
+    chunks = [make_chunk(i) for i in range(6)]
 
-    gaps = []
+    with patch("portal.transcription.providers.base.asyncio.sleep", new=AsyncMock()) as sleep:
+        await run(provider, burst_stdout(chunks), broadcast)
 
-    async def notify_gap(start, end):
-        gaps.append((start, end))
+    # More than three drops in a row: the backlog is discarded and inference pauses for 10 s.
+    assert provider.chunks == []
+    assert system_messages(broadcast) == [OVERLOAD_MESSAGE]
+    sleep.assert_awaited_once_with(10)
 
-    # Push 15 seconds of audio extremely fast
-    # 15 / 0.128 = 118 frames
-    # That's 5 blocks. Max pending blocks is 3. So it should drop at least 1-2 blocks.
-    frames = []
-    for i in range(118):
-        frames.append(AudioFrame(data=b"a" * 4096, start_timestamp=i * 0.128, duration=0.128, seq=i))
 
-    await provider.process_stream(
-        mock_audio_generator(frames), aggregator, notify_gap, "en", "test", ProviderConfig(None), "booth1"
-    )
+@pytest.mark.anyio
+async def test_run_stream_stops_after_three_consecutive_provider_errors():
+    provider = RecordingProvider(results=[RuntimeError("boom")] * 5)
+    broadcast = AsyncMock()
 
-    assert len(gaps) > 0
-    # Block 1 (0.0) is instantly popped and begins processing.
-    # Block 2 (3.072), Block 3 (6.144), and Block 4 (9.216) fill the queue.
-    # When Block 5 is assembled, Block 2 is dropped.
-    assert gaps[0][0] == 3.072
+    await run(provider, PacedStdout([make_chunk(i) for i in range(5)]), broadcast)
+
+    assert len(provider.chunks) == 3
+    assert system_messages(broadcast) == [FAILURE_MESSAGE]
+
+
+@pytest.mark.anyio
+async def test_run_stream_success_resets_provider_error_count():
+    boom = RuntimeError("boom")
+    provider = RecordingProvider(results=[boom, boom, "", boom, boom])
+    broadcast = AsyncMock()
+
+    await run(provider, PacedStdout([make_chunk(i) for i in range(5)]), broadcast)
+
+    assert len(provider.chunks) == 5
+    assert FAILURE_MESSAGE not in system_messages(broadcast)
