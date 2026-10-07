@@ -149,17 +149,17 @@
                     translation, speech-to-text, captions, subtitles, dubbing, and accessibility services — all from a
                     single platform.
                 </p>
-                <div class="flex flex-col sm:flex-row items-center gap-4 justify-center lg:justify-start">
+                <div class="flex flex-col sm:flex-row flex-wrap lg:flex-nowrap items-center gap-3 justify-center lg:justify-start">
                     <a href="{% if current_user %}/admin/events/{% else %}/register{% endif %}"
-                        class="brutal-btn brutal-btn-primary w-full sm:w-auto text-center">
-                        Start Hosting Free
+                        class="brutal-btn brutal-btn-primary w-full sm:w-auto text-center whitespace-nowrap">
+                        Start Free
                     </a>
-                    <a href="/local" class="brutal-btn brutal-btn-secondary w-full sm:w-auto text-center flex items-center justify-center gap-2 !bg-[#fbbf24] !text-[#0d0f10]">
+                    <a href="/local" class="brutal-btn brutal-btn-secondary w-full sm:w-auto text-center flex items-center justify-center gap-2 !bg-[#fbbf24] !text-[#0d0f10] whitespace-nowrap">
                         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
-                        Download Desktop App
+                        Desktop App
                     </a>
-                    <a href="#interactive-demo" class="brutal-btn brutal-btn-outline w-full sm:w-auto text-center">
-                        View Interactive Demo
+                    <a href="#interactive-demo" class="brutal-btn brutal-btn-outline w-full sm:w-auto text-center whitespace-nowrap">
+                        Live Demo
                     </a>
                 </div>
             </div>

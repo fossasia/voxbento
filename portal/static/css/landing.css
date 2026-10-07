@@ -256,7 +256,7 @@
   color: var(--color-muted);
 }
 
-.hidden { display: none !important; }
+.hidden { display: none; }
 
 .mt-sm { margin-top: 0.5rem; }
 .mt-lg { margin-top: 1.5rem; }
