@@ -26,7 +26,7 @@ updates:
     commit-message:
       prefix: "ci"
 
-  # Docker images (MediaMTX, Jitsi, Python base image)
+  # Dockerfiles in the repository root (portal Python base image)
   - package-ecosystem: "docker"
     directory: "/"
     schedule:
@@ -37,3 +37,34 @@ updates:
       - "docker"
     commit-message:
       prefix: "deps(docker)"
+
+  # Docker Compose images (MediaMTX and the lockstep Jitsi stack)
+  - package-ecosystem: "docker-compose"
+    directory: "/"
+    schedule:
+      interval: "daily"
+    target-branch: "dev"
+    labels:
+      - "dependencies"
+      - "docker"
+    groups:
+      jitsi:
+        patterns:
+          - "ghcr.io/jitsi/web"
+          - "ghcr.io/jitsi/prosody"
+          - "ghcr.io/jitsi/jicofo"
+          - "ghcr.io/jitsi/jvb"
+    commit-message:
+      prefix: "deps(compose)"
+
+  # The floor bot has its own nested Dockerfile and Playwright base image.
+  - package-ecosystem: "docker"
+    directory: "/floor-bot"
+    schedule:
+      interval: "daily"
+    target-branch: "dev"
+    labels:
+      - "dependencies"
+      - "docker"
+    commit-message:
+      prefix: "deps(floor-bot)"
