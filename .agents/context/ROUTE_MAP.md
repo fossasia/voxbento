@@ -10,6 +10,7 @@
 | Method | Path | Auth | Template | Notes |
 |---|---|---|---|---|
 | GET | `/` | open | `home.html` | Lists events + booth statuses; personalised if logged in |
+| GET | `/local` | open | `local.html` | VoxBento Local desktop console download page with client OS detection & release links |
 | GET | `/healthz` | open | — | JSON: `{ok, server, mediamtx_ok}` |
 | GET | `/register` | open | `register.html` | Redirects to `/account` if already logged in |
 | POST | `/register` | open | `register.html` | Creates user, sets `user_token` cookie → `/account`; if `password` is set, `password_confirm` must match (422 otherwise) |

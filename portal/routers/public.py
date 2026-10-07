@@ -137,6 +137,25 @@ async def home(request: Request):
     )
 
 
+@router.get("/local")
+@router.get("/local/")
+async def voxbento_local(request: Request):
+    current_user = await get_current_user(request)
+    management_home = "/admin/" if current_user and current_user.get("is_admin") else "/account"
+    return templates.TemplateResponse(
+        request=request,
+        name="local.html",
+        context={
+            "current_user": current_user,
+            "management_home": management_home,
+            "js_version": _JS_CACHE_BUST,
+            "github_repo_url": "https://github.com/ArnavBallinCode/voxa",
+            "github_releases_url": "https://github.com/ArnavBallinCode/voxa/releases",
+            "github_latest_release_url": "https://github.com/ArnavBallinCode/voxa/releases/latest",
+        },
+    )
+
+
 @router.get("/research")
 @router.get("/research/")
 async def research_index(request: Request):
