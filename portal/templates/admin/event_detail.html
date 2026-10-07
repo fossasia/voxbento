@@ -3,8 +3,8 @@
 
 {% block breadcrumb %}
 <nav class="breadcrumb">
-  <a href="/admin/">Dashboard</a> <span>/</span>
-  <a href="/admin/events/">Events</a> <span>/</span>
+  <a href="{{ management_prefix }}/">Dashboard</a> <span>/</span>
+  <a href="{{ management_prefix }}/events/">Events</a> <span>/</span>
   <span class="breadcrumb-current" aria-current="page">{{ event.display_name }}</span>
 </nav>
 {% endblock %}
@@ -28,24 +28,24 @@
 
 <!-- Quick actions -->
 <div class="tile-grid tile-grid--spaced">
-  <a href="/admin/events/{{ event.id }}/rooms/" class="tile">
+  <a href="{{ management_prefix }}/events/{{ event.id }}/rooms/" class="tile">
     <span class="tile-icon">🏛️</span>
     <span class="tile-title">Rooms &amp; booths</span>
     <span class="tile-desc">{{ rooms|length }} room{{ 's' if rooms|length != 1 else '' }} · {{ booths|length }} booth{{ 's' if booths|length != 1 else '' }}</span>
   </a>
   {% if is_event_owner %}
-  <a href="/admin/events/{{ event.id }}/members/" class="tile">
+  <a href="{{ management_prefix }}/events/{{ event.id }}/members/" class="tile">
     <span class="tile-icon">👥</span>
     <span class="tile-title">Team &amp; roles</span>
     <span class="tile-desc">Invite owners and coordinators</span>
   </a>
-  <a href="/admin/events/{{ event.id }}/api-settings/" class="tile">
+  <a href="{{ management_prefix }}/events/{{ event.id }}/api-settings/" class="tile">
     <span class="tile-icon">🔑</span>
     <span class="tile-title">API keys</span>
     <span class="tile-desc">Transcription &amp; translation providers</span>
   </a>
   {% endif %}
-  <a href="/admin/events/{{ event.id }}/setup/rooms" class="tile">
+  <a href="{{ management_prefix }}/events/{{ event.id }}/setup/rooms" class="tile">
     <span class="tile-icon">🧭</span>
     <span class="tile-title">Guided setup</span>
     <span class="tile-desc">Resume the step-by-step wizard</span>
@@ -58,7 +58,7 @@
   <div class="section-header">
     <h2>Listener access</h2>
     {% if event.listener_join_code %}
-    <form method="post" action="/admin/events/{{ event.id }}/regenerate_join_code/" data-confirm="Regenerate join code? This will invalidate the previous code.">
+    <form method="post" action="{{ management_prefix }}/events/{{ event.id }}/regenerate_join_code/" data-confirm="Regenerate join code? This will invalidate the previous code.">
       <button type="submit" class="btn btn-sm btn-outline">Regenerate</button>
     </form>
     {% endif %}
@@ -75,7 +75,7 @@
   </div>
   {% else %}
   <p class="muted hint--spaced">No join code yet. Generate one to let listeners in.</p>
-  <form method="post" action="/admin/events/{{ event.id }}/regenerate_join_code/">
+  <form method="post" action="{{ management_prefix }}/events/{{ event.id }}/regenerate_join_code/">
     <button type="submit" class="btn btn-sm btn-primary">Generate join code</button>
   </form>
   {% endif %}
@@ -163,19 +163,19 @@
     <div class="section-header">
       <h2>Rooms ({{ rooms|length }})</h2>
       {% if is_event_owner %}
-      <a href="/admin/events/{{ event.id }}/rooms/" class="btn btn-sm">Manage rooms</a>
+      <a href="{{ management_prefix }}/events/{{ event.id }}/rooms/" class="btn btn-sm">Manage rooms</a>
       {% endif %}
     </div>
     {% if rooms %}
     <ul class="item-list">
       {% for room in rooms %}
       <li>
-        <a href="/admin/events/{{ event.id }}/rooms/{{ room.id }}/">{{ room.display_name }}</a>
+        <a href="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/">{{ room.display_name }}</a>
       </li>
       {% endfor %}
     </ul>
     {% else %}
-    <p class="muted">No rooms yet. <a href="/admin/events/{{ event.id }}/setup/rooms">Add one</a>.</p>
+    <p class="muted">No rooms yet. <a href="{{ management_prefix }}/events/{{ event.id }}/setup/rooms">Add one</a>.</p>
     {% endif %}
   </div>
 
@@ -213,14 +213,14 @@
             </a>
           </td>
           <td>
-            <a href="/admin/events/{{ event.id }}/rooms/{{ bs.db.room_id }}/booths/{{ bs.db.id }}/" class="btn btn-sm">View</a>
+            <a href="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ bs.db.room_id }}/booths/{{ bs.db.id }}/" class="btn btn-sm">View</a>
           </td>
         </tr>
         {% endfor %}
       </tbody>
     </table>
     {% else %}
-    <p class="muted">No booths configured. <a href="/admin/events/{{ event.id }}/setup/booths">Add booths</a>.</p>
+    <p class="muted">No booths configured. <a href="{{ management_prefix }}/events/{{ event.id }}/setup/booths">Add booths</a>.</p>
     {% endif %}
   </div>
 </div>
@@ -228,7 +228,7 @@
 {% if is_event_owner %}
 <div class="danger-zone">
   <h3>Danger Zone</h3>
-  <form method="post" action="/admin/events/{{ event.id }}/delete" class="inline-delete"
+  <form method="post" action="{{ management_prefix }}/events/{{ event.id }}/delete" class="inline-delete"
         data-confirm="Delete '{{ event.display_name }}'? This permanently removes all rooms, booths, and invite tokens.">
     <button type="submit" class="btn btn-danger">Delete Event</button>
     <span class="danger-text">This action cannot be undone.</span>

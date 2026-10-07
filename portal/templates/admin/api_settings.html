@@ -3,9 +3,9 @@
 
 {% block breadcrumb %}
 <nav class="breadcrumb">
-  <a href="/admin/">Dashboard</a> <span>/</span>
-  <a href="/admin/events/">Events</a> <span>/</span>
-  <a href="/admin/events/{{ event.id }}/">{{ event.display_name }}</a> <span>/</span>
+  <a href="{{ management_prefix }}/">Dashboard</a> <span>/</span>
+  <a href="{{ management_prefix }}/events/">Events</a> <span>/</span>
+  <a href="{{ management_prefix }}/events/{{ event.id }}/">{{ event.display_name }}</a> <span>/</span>
   <span class="breadcrumb-current" aria-current="page">API Settings</span>
 </nav>
 {% endblock %}
@@ -26,7 +26,7 @@
     Configure third-party transcription provider API keys for this event. These keys are securely stored and can be selected by individual booths to power live interpretation without heavily relying on your local server's CPU/RAM.
   </p>
 
-  <form method="post" action="/admin/events/{{ event.id }}/api-settings" class="card-form" style="max-width: 600px;">
+  <form method="post" action="{{ management_prefix }}/events/{{ event.id }}/api-settings" class="card-form" style="max-width: 600px;">
     
     <div class="form-group checkbox-group" style="padding: 15px; background: #f8f9fa; border: 1px solid #e2e8f0; border-radius: 6px; margin-bottom: 20px;">
       <label style="font-weight: 600; display: flex; align-items: center; gap: 8px; margin: 0; cursor: pointer;">
@@ -144,7 +144,7 @@
 
     <div class="form-actions" style="margin-top: 20px; padding-top: 20px; border-top: 1px solid #e5e7eb; display: flex; align-items: center;">
       <button type="submit" class="btn btn-primary" style="padding: 10px 20px; font-size: 14px;">Save API Settings</button>
-      <a href="/admin/events/{{ event.id }}/" class="btn" style="background: white; border: 1px solid #d1d5db; color: #374151; margin-left: 12px; padding: 10px 20px; font-size: 14px;">Cancel</a>
+      <a href="{{ management_prefix }}/events/{{ event.id }}/" class="btn" style="background: white; border: 1px solid #d1d5db; color: #374151; margin-left: 12px; padding: 10px 20px; font-size: 14px;">Cancel</a>
     </div>
   </form>
 </div>
