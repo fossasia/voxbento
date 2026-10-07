@@ -1,4 +1,4 @@
-FROM mcr.microsoft.com/playwright/python:v1.63.0-jammy
+FROM mcr.microsoft.com/playwright/python:v1.40.0-jammy
 
 # Install system dependencies (pulseaudio/ffmpeg)
 RUN apt-get update && apt-get install -y \
