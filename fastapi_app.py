@@ -111,18 +111,17 @@ class _UvicornTokenRedactor(logging.Filter):
 class AdminCSRFMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         if request.url.path.startswith("/admin/"):
-            csrf_token = get_admin_csrf_token(request)
             response = await call_next(request)
 
-            if "admin_csrf" not in request.cookies:
+            if response.status_code < 400 and "admin_csrf" not in request.cookies:
+                csrf_token = get_admin_csrf_token(request)
                 response.set_cookie(
                     "admin_csrf",
                     csrf_token,
                     httponly=True,
                     samesite="lax",
-                    secure=True,
+                    secure=request.url.scheme == "https",
                 )
-
             return response
 
         return await call_next(request)

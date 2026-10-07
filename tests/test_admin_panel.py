@@ -18,7 +18,7 @@ os.environ["ADMIN_PASSWORD"] = "test-admin-pass"
 from datetime import datetime, timedelta, timezone
 
 import pytest
-
+from fastapi.routing import APIRoute
 from portal.auth import create_admin_token, decode_token
 from portal.config import settings
 
@@ -82,8 +82,8 @@ def _client():
 async def _admin_csrf(c, cookies):
     resp = await c.get("/admin/events/", cookies=cookies)
     assert resp.status_code == 200
-    csrf_token = resp.cookies.get("admin_csrf")
-    c.cookies.set("admin_csrf", csrf_token)
+    csrf_token = c.cookies.get("admin_csrf") or resp.cookies.get("admin_csrf")
+    assert csrf_token
     return csrf_token
 
 
@@ -122,6 +122,23 @@ class TestAdminLogin:
             )
         assert resp.status_code == 403
         assert b"Invalid password" in resp.content
+    
+    @pytest.mark.anyio
+    async def test_login_rotates_admin_csrf_token(self):
+        async with _client() as c:
+            c.cookies.set("admin_csrf", "old-csrf-token")
+
+            resp = await c.post(
+                "/admin/login",
+                data={"password": "test-admin-pass"},
+                follow_redirects=False,
+            )
+
+            assert resp.status_code == 303
+
+            set_cookie = resp.headers.get("set-cookie", "")
+            assert "admin_csrf=" in set_cookie
+            assert "admin_csrf=old-csrf-token" not in set_cookie
 
     @pytest.mark.anyio
     async def test_login_strips_surrounding_whitespace(self):
@@ -278,6 +295,32 @@ class TestEventCRUD:
         async with _client() as c:
             resp = await c.get("/admin/events/", cookies=admin_cookie)
         assert b"NewCon 2026" in resp.content
+    
+    @pytest.mark.anyio
+    async def test_create_event_rejects_missing_or_invalid_csrf(self, admin_cookie):
+        async with _client() as c:
+            missing_csrf = await c.post(
+                "/admin/events/",
+                cookies=admin_cookie,
+                data={
+                    "slug": "missing-csrf",
+                    "display_name": "Missing CSRF",
+                },
+                follow_redirects=False,
+            )
+            assert missing_csrf.status_code == 403
+
+            invalid_csrf = await c.post(
+                "/admin/events/",
+                cookies=admin_cookie,
+                data={
+                    "slug": "invalid-csrf",
+                    "display_name": "Invalid CSRF",
+                    "csrf_token": "invalid-token",
+                },
+                follow_redirects=False,
+            )
+            assert invalid_csrf.status_code == 403
 
     @pytest.mark.anyio
     async def test_event_detail(self, admin_cookie, seed_event):
@@ -773,6 +816,13 @@ class TestAPIKeyCRUD:
             )
             assert res_no_csrf.status_code == 403
 
+            res_invalid_csrf = await c.post(
+                f"/admin/api/events/{event_id}/api-keys",
+                json={"name": "Invalid CSRF"},
+                headers={"X-CSRF-Token": "invalid-token"},
+            )
+            assert res_invalid_csrf.status_code == 403
+
             # Create API key
             res = await c.post(
                 f"/admin/api/events/{event_id}/api-keys",
@@ -1199,3 +1249,25 @@ async def test_admin_detail_pages_have_no_inline_styles(path, admin_cookie, seed
     # The API key modals keep style="display: none", which admin.js toggles.
     body = resp.content.replace(b'style="display: none;"', b"")
     assert not re.search(rb"\sstyle\s*=", body, re.IGNORECASE)
+
+@pytest.mark.anyio
+async def test_all_state_changing_admin_routes_require_csrf():
+    from fastapi_app import app
+    from portal.auth import require_admin_csrf
+
+    state_changing_methods = {"POST", "PUT", "PATCH", "DELETE"}
+
+    for route in app.routes:
+        if not isinstance(route, APIRoute):
+            continue
+        if not route.path.startswith("/admin/"):
+            continue
+        if not route.methods & state_changing_methods:
+            continue
+        if route.path == "/admin/login":
+            continue
+
+        assert any(
+            dependency.call is require_admin_csrf
+            for dependency in route.dependant.dependencies
+        ), f"Missing CSRF protection: {route.methods} {route.path}"

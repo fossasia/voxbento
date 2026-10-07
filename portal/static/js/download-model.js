@@ -36,10 +36,18 @@ export function initLocalModelDownloader() {
         const actionUrl = transForm.getAttribute('action');
         
         try {
-          await fetch(actionUrl, { method: 'POST', body: formData, redirect: 'follow' });
-          
+          const settingsResponse = await fetch(actionUrl, {
+            method: 'POST',
+            body: formData,
+            redirect: 'follow'
+          });
+
+          if (!settingsResponse.ok) {
+            throw new Error('Failed to save translation settings');
+          }
+
           const transModel = document.getElementById('floor_translation_model').value || 'nllb-200-distilled-600M';
-          await fetch('/admin/models/trigger_download', {
+          const downloadResponse = await fetch('/admin/models/trigger_download', {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
@@ -47,6 +55,9 @@ export function initLocalModelDownloader() {
             },
             body: JSON.stringify({model: transModel})
           });
+          if (!downloadResponse.ok) {
+            throw new Error('Failed to trigger translation model download');
+          }
           
           document.getElementById('nllb_download_progress_container').style.display = 'flex';
           
@@ -113,13 +124,25 @@ export function initLocalModelDownloader() {
         const actionUrl = ttsForm.getAttribute('action');
         
         try {
-          await fetch(actionUrl, { method: 'POST', body: formData, redirect: 'follow' });
-          await fetch('/admin/models/supertonic/trigger_download', {
+          const settingsResponse = await fetch(actionUrl, {
+            method: 'POST',
+            body: formData,
+            redirect: 'follow'
+          });
+
+        if (!settingsResponse.ok) {
+          throw new Error('Failed to save Supertonic settings');
+        }
+
+        const downloadResponse = await fetch('/admin/models/supertonic/trigger_download', {
             method: 'POST',
             headers: {
               'X-CSRF-Token': document.querySelector('meta[name="csrf-token"]').content
             }
-       });
+        });
+          if (!downloadResponse.ok) {
+            throw new Error('Failed to trigger Supertonic model download');
+          }
           
           document.getElementById('supertonic_download_progress_container').style.display = 'flex';
           

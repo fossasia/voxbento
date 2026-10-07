@@ -261,9 +261,19 @@ async def admin_login_submit(request: Request):
             status_code=status.HTTP_403_FORBIDDEN,
         )
     token = create_admin_token()
+    csrf_token = secrets.token_hex(32)
+
     response = safe_redirect(url="/admin/", status_code=status.HTTP_303_SEE_OTHER)
     response.set_cookie(
         key="admin_token", value=token, httponly=True, samesite="lax", max_age=settings.jwt_expiry_seconds
+    )
+    response.set_cookie(
+        key="admin_csrf",
+        value=csrf_token,
+        httponly=True,
+        samesite="lax",
+        secure=request.url.scheme == "https",
+        max_age=settings.jwt_expiry_seconds,
     )
     return response
 
@@ -272,6 +282,7 @@ async def admin_login_submit(request: Request):
 async def admin_logout():
     response = safe_redirect(url="/admin/login", status_code=status.HTTP_303_SEE_OTHER)
     response.delete_cookie("admin_token")
+    response.delete_cookie("admin_csrf")
     response.delete_cookie("user_token")
     response.delete_cookie("session_token")
     return response
