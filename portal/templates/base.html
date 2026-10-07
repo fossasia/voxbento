@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>{% block title %}Voxbento Interpreter Booth{% endblock %}</title>
     <link rel="icon" type="image/x-icon" href="{{ url_for('static', path='img/favicon.ico') }}" />
+    <link rel="stylesheet" href="{{ url_for('static', path='css/fonts.css') }}" />
     <link rel="stylesheet" href="{{ url_for('static', path='css/interpreter.css') }}?v=5" />
     {% block head %}{% endblock %}
   </head>
@@ -16,6 +17,7 @@
         <div class="footer-inner">
             <div>&copy; 2026 VoxBento.</div>
             <div class="footer-links">
+                <a href="/local">VoxBento Local</a>
                 <a href="/research">Research & Benchmarks</a>
                 <a href="/llms.txt">LLM Index</a>
                 <a href="/developer">Developers</a>

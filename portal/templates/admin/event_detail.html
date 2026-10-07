@@ -3,8 +3,8 @@
 
 {% block breadcrumb %}
 <nav class="breadcrumb">
-  <a href="/admin/">Dashboard</a> <span>/</span>
-  <a href="/admin/events/">Events</a> <span>/</span>
+  <a href="{{ management_prefix }}/">Dashboard</a> <span>/</span>
+  <a href="{{ management_prefix }}/events/">Events</a> <span>/</span>
   <span class="breadcrumb-current" aria-current="page">{{ event.display_name }}</span>
 </nav>
 {% endblock %}
@@ -13,7 +13,7 @@
 <div class="page-header">
   <div>
     <h1>{{ event.display_name }}</h1>
-    <div class="header-meta" style="margin-top:6px;">
+    <div class="header-meta header-meta--spaced">
       <span class="badge badge-slug">{{ event.slug }}</span>
       <span class="meta-text">Created {{ event.created_at.strftime('%b %d, %Y') if event.created_at else '—' }}</span>
       {% if live_count > 0 %}
@@ -27,25 +27,25 @@
 </div>
 
 <!-- Quick actions -->
-<div class="tile-grid" style="margin-bottom:28px;">
-  <a href="/admin/events/{{ event.id }}/rooms/" class="tile">
+<div class="tile-grid tile-grid--spaced">
+  <a href="{{ management_prefix }}/events/{{ event.id }}/rooms/" class="tile">
     <span class="tile-icon">🏛️</span>
     <span class="tile-title">Rooms &amp; booths</span>
     <span class="tile-desc">{{ rooms|length }} room{{ 's' if rooms|length != 1 else '' }} · {{ booths|length }} booth{{ 's' if booths|length != 1 else '' }}</span>
   </a>
   {% if is_event_owner %}
-  <a href="/admin/events/{{ event.id }}/members/" class="tile">
+  <a href="{{ management_prefix }}/events/{{ event.id }}/members/" class="tile">
     <span class="tile-icon">👥</span>
     <span class="tile-title">Team &amp; roles</span>
     <span class="tile-desc">Invite owners and coordinators</span>
   </a>
-  <a href="/admin/events/{{ event.id }}/api-settings/" class="tile">
+  <a href="{{ management_prefix }}/events/{{ event.id }}/api-settings/" class="tile">
     <span class="tile-icon">🔑</span>
     <span class="tile-title">API keys</span>
     <span class="tile-desc">Transcription &amp; translation providers</span>
   </a>
   {% endif %}
-  <a href="/admin/events/{{ event.id }}/setup/rooms" class="tile">
+  <a href="{{ management_prefix }}/events/{{ event.id }}/setup/rooms" class="tile">
     <span class="tile-icon">🧭</span>
     <span class="tile-title">Guided setup</span>
     <span class="tile-desc">Resume the step-by-step wizard</span>
@@ -54,39 +54,40 @@
 
 {% if is_event_owner %}
 <!-- Listener Access -->
-<div class="section-card" style="margin-bottom:20px;">
+<div class="section-card section-card--spaced">
   <div class="section-header">
     <h2>Listener access</h2>
     {% if event.listener_join_code %}
-    <form method="post" action="/admin/events/{{ event.id }}/regenerate_join_code/" data-confirm="Regenerate join code? This will invalidate the previous code.">
+    <form method="post" action="{{ management_prefix }}/events/{{ event.id }}/regenerate_join_code/" data-confirm="Regenerate join code? This will invalidate the previous code.">
       <button type="submit" class="btn btn-sm btn-outline">Regenerate</button>
     </form>
     {% endif %}
   </div>
   {% if event.listener_join_code %}
-  <div style="display:flex; gap:16px; align-items:center; flex-wrap:wrap;">
+  <div class="event-share-row">
     <span class="join-code">{{ event.listener_join_code }}</span>
-    <div class="copy-field" style="flex:1; min-width:260px;">
-      <input type="text" readonly aria-label="Listener link"
+    <div class="copy-field event-share-field">
+      <input type="text" readonly aria-label="Listener link" id="listener-link"
              value="/listener/{{ event.slug }}?code={{ event.listener_join_code }}" onclick="this.select()" />
+      <button type="button" class="btn btn-sm btn-copy" data-copy-target="listener-link">Copy</button>
       <a href="/listener/{{ event.slug }}?code={{ event.listener_join_code }}" target="_blank" class="btn btn-sm">Open ↗</a>
     </div>
   </div>
   {% else %}
-  <p class="muted" style="margin-bottom:12px;">No join code yet. Generate one to let listeners in.</p>
-  <form method="post" action="/admin/events/{{ event.id }}/regenerate_join_code/">
+  <p class="muted hint--spaced">No join code yet. Generate one to let listeners in.</p>
+  <form method="post" action="{{ management_prefix }}/events/{{ event.id }}/regenerate_join_code/">
     <button type="submit" class="btn btn-sm btn-primary">Generate join code</button>
   </form>
   {% endif %}
 </div>
 
 <!-- API & Integrations-->
-<div class="section-card" style="margin-bottom:20px;" id="api-keys-section" data-event-id="{{ event.id }}">
+<div class="section-card section-card--spaced" id="api-keys-section" data-event-id="{{ event.id }}">
   <div class="section-header">
     <h2>Integrations</h2>
     <button type="button" class="btn btn-sm btn-primary" onclick="window.adminAPIKeys.showCreateModal()">Generate API Key</button>
   </div>
-  <p class="muted" style="margin-bottom:12px;">Generate API keys to embed VoxBento into third party platforms.</p>
+  <p class="muted hint--spaced">Generate API keys to embed VoxBento into third party platforms.</p>
   
   <div id="api-keys-container">
     <!-- Loaded via JS -->
@@ -96,9 +97,9 @@
 
 <!-- API Key Create Modal -->
 <div id="api-key-modal" class="custom-modal-overlay" style="display: none;">
-  <div class="custom-modal" style="max-width: 400px;">
-    <div class="custom-modal-header" style="margin-bottom: 1rem;">
-      <h3 style="margin: 0; font-size: 1.25rem;">Generate API Key</h3>
+  <div class="custom-modal custom-modal--sm">
+    <div class="custom-modal-header">
+      <h3 class="custom-modal-title">Generate API Key</h3>
     </div>
     <div class="custom-modal-body">
       <form id="api-key-form">
@@ -106,7 +107,7 @@
           <label for="api-key-name">Key Name</label>
           <input type="text" id="api-key-name" placeholder="e.g. My Integration" required />
         </div>
-        <div class="custom-modal-footer" style="margin-top: 16px; display: flex; gap: 1rem; justify-content: flex-end;">
+        <div class="custom-modal-footer custom-modal-footer--spaced">
           <button type="button" class="btn btn-outline" onclick="window.adminAPIKeys.closeModal('api-key-modal')">Cancel</button>
           <button type="submit" class="btn btn-primary">Generate</button>
         </div>
@@ -117,21 +118,21 @@
 
 <!-- API Key Success Modal -->
 <div id="api-key-success-modal" class="custom-modal-overlay" style="display: none;">
-  <div class="custom-modal" style="max-width: 500px;">
-    <div class="custom-modal-header" style="margin-bottom: 1rem;">
-      <h3 style="margin: 0; font-size: 1.25rem;">API Key Generated</h3>
+  <div class="custom-modal custom-modal--md">
+    <div class="custom-modal-header">
+      <h3 class="custom-modal-title">API Key Generated</h3>
     </div>
     <div class="custom-modal-body">
-      <div class="alert alert-warning" style="margin: 12px 0;">
+      <div class="alert alert-warning alert--spaced">
         <strong>Important:</strong> Copy this key now. For security reasons, you will not be able to see it again!
       </div>
-      <div style="display: flex; gap: 8px; margin-bottom: 16px;">
-        <div class="field" style="flex: 1; margin-bottom: 0;">
-          <input type="text" id="api-key-raw-value" readonly onclick="this.select()" style="width: 100%; box-sizing: border-box;" />
+      <div class="custom-modal-key-row">
+        <div class="field field--grow">
+          <input type="text" id="api-key-raw-value" readonly onclick="this.select()" class="custom-modal-key-input" />
         </div>
-        <button type="button" class="btn btn-outline" id="api-key-copy-btn" onclick="window.adminAPIKeys.copyKey()" style="height: fit-content; align-self: flex-end;">Copy</button>
+        <button type="button" class="btn btn-outline custom-modal-copy-btn" id="api-key-copy-btn" onclick="window.adminAPIKeys.copyKey()">Copy</button>
       </div>
-      <div class="custom-modal-footer" style="display: flex; gap: 1rem; justify-content: flex-end;">
+      <div class="custom-modal-footer">
         <button type="button" class="btn btn-primary" onclick="window.adminAPIKeys.closeModal('api-key-success-modal')">Done</button>
       </div>
     </div>
@@ -140,14 +141,14 @@
 
 <!-- API Key Revoke Modal -->
 <div id="api-key-revoke-modal" class="custom-modal-overlay" style="display: none;">
-  <div class="custom-modal" style="max-width: 400px;">
-    <div class="custom-modal-header" style="margin-bottom: 1rem;">
-      <h3 style="margin: 0; font-size: 1.25rem; color: #cf222e;">Revoke API Key</h3>
+  <div class="custom-modal custom-modal--sm">
+    <div class="custom-modal-header">
+      <h3 class="custom-modal-title custom-modal-title--danger">Revoke API Key</h3>
     </div>
     <div class="custom-modal-body">
       <p id="api-key-revoke-message">Are you sure you want to revoke this API key? Any integrations using it will instantly break.</p>
-      <p id="api-key-revoke-funny" style="font-style: italic; color: #6b7280; font-size: 0.9rem; margin-top: 12px; margin-bottom: 0;"></p>
-      <div class="custom-modal-footer" style="margin-top: 16px; display: flex; gap: 1rem; justify-content: flex-end;">
+      <p id="api-key-revoke-funny" class="custom-modal-note"></p>
+      <div class="custom-modal-footer custom-modal-footer--spaced">
         <button type="button" class="btn btn-outline" onclick="window.adminAPIKeys.closeModal('api-key-revoke-modal')">Cancel</button>
         <button type="button" class="btn btn-danger" id="api-key-revoke-confirm-btn">Revoke</button>
       </div>
@@ -162,19 +163,19 @@
     <div class="section-header">
       <h2>Rooms ({{ rooms|length }})</h2>
       {% if is_event_owner %}
-      <a href="/admin/events/{{ event.id }}/rooms/" class="btn btn-sm">Manage rooms</a>
+      <a href="{{ management_prefix }}/events/{{ event.id }}/rooms/" class="btn btn-sm">Manage rooms</a>
       {% endif %}
     </div>
     {% if rooms %}
     <ul class="item-list">
       {% for room in rooms %}
       <li>
-        <a href="/admin/events/{{ event.id }}/rooms/{{ room.id }}/">{{ room.display_name }}</a>
+        <a href="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/">{{ room.display_name }}</a>
       </li>
       {% endfor %}
     </ul>
     {% else %}
-    <p class="muted">No rooms yet. <a href="/admin/events/{{ event.id }}/setup/rooms">Add one</a>.</p>
+    <p class="muted">No rooms yet. <a href="{{ management_prefix }}/events/{{ event.id }}/setup/rooms">Add one</a>.</p>
     {% endif %}
   </div>
 
@@ -212,14 +213,14 @@
             </a>
           </td>
           <td>
-            <a href="/admin/events/{{ event.id }}/rooms/{{ bs.db.room_id }}/booths/{{ bs.db.id }}/" class="btn btn-sm">View</a>
+            <a href="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ bs.db.room_id }}/booths/{{ bs.db.id }}/" class="btn btn-sm">View</a>
           </td>
         </tr>
         {% endfor %}
       </tbody>
     </table>
     {% else %}
-    <p class="muted">No booths configured. <a href="/admin/events/{{ event.id }}/setup/booths">Add booths</a>.</p>
+    <p class="muted">No booths configured. <a href="{{ management_prefix }}/events/{{ event.id }}/setup/booths">Add booths</a>.</p>
     {% endif %}
   </div>
 </div>
@@ -227,7 +228,7 @@
 {% if is_event_owner %}
 <div class="danger-zone">
   <h3>Danger Zone</h3>
-  <form method="post" action="/admin/events/{{ event.id }}/delete" class="inline-delete"
+  <form method="post" action="{{ management_prefix }}/events/{{ event.id }}/delete" class="inline-delete"
         data-confirm="Delete '{{ event.display_name }}'? This permanently removes all rooms, booths, and invite tokens.">
     <button type="submit" class="btn btn-danger">Delete Event</button>
     <span class="danger-text">This action cannot be undone.</span>

@@ -89,6 +89,7 @@ uv run alembic revision --autogenerate -m "describe your change"
 # 3. Apply it to the running Docker container
 docker compose exec portal uv run alembic upgrade head
 ```
+
 Always commit the generated migration files in `alembic/versions/`. Do **not** commit your local `.db` files.
 
 ---
@@ -100,6 +101,7 @@ Always commit the generated migration files in `alembic/versions/`. Do **not** c
 3. Keep your commits atomic and focused.
 4. Make sure you don't use inline scripts in HTML templates (strict CSP is enforced).
 5. Do not use jQuery or external UI frameworks.
-6. Push your branch and open a PR against `main`.
+6. Push your branch and open a PR against `dev`.
+7. **Keep no more than 3 PRs open at a time when possible.** Limiting the number of concurrent PRs helps maintainers and reviewers focus on each change and provide thorough, timely reviews. Before opening another PR, try to get one of your existing PRs merged or otherwise closed.
 
 Thank you for contributing!
