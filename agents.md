@@ -55,7 +55,7 @@ VoxBento is a production-grade **browser-first interpretation booth console** fo
 - Attendees receive sub-second audio via WHEP from MediaMTX.
 - All coordination (booth state, roles, chat, handoff) flows through FastAPI WebSockets.
 
-**Stack:** FastAPI (ASGI/uvicorn) + MediaMTX (WHIP/WHEP/RTSP) + self-hosted Jitsi Meet (stable-9823).
+**Stack:** FastAPI (ASGI/uvicorn) + MediaMTX (WHIP/WHEP/RTSP) + self-hosted Jitsi Meet (stable-11248).
 **No** Flask, Socket.IO, aiortc.
 
 ---
@@ -66,6 +66,7 @@ VoxBento is a production-grade **browser-first interpretation booth console** fo
 |---|---|
 | `fastapi_app.py` | Application lifespan, router aggregation, global exception handlers |
 | `portal/routers/` | All HTTP routes (pages, admin, REST API), Jinja2 template rendering |
+| `portal/workspace_routing.py` | `/workspace` handler mapping, legacy organizer redirects, management URL/template namespace helpers |
 | `portal/websockets/` | WebSocket connection manager, message handlers (`_handle_join`, etc.) |
 | `portal/booth_state.py` | In-memory `BoothRegistry`, `Booth`, `Participant`, handoff policy, chat history |
 | `portal/auth.py` | JWT create/decode, bcrypt password, `require_admin`, `require_user`, `resolve_booth_role`, `can_perform_role` |
@@ -99,6 +100,7 @@ VoxBento is a production-grade **browser-first interpretation booth console** fo
 9. **`portal.*` imports for all new Python code.**
 10. **Role is never trusted from client data.** WS handler reads `Session.granted_role` (derived from cookies at connect time).
 11. **No open redirects.** All redirects use `safe_redirect()` which validates path starts with `/` and has no netloc.
+12. **Management namespaces reflect privilege.** Event owners use `/workspace/*`; room coordinators use the room-scoped `/mission-control/*` surface. `/admin/*` is reserved for super-admin use, apart from legacy room-scoped coordinator handlers retained for compatibility. Legacy event-owner URLs redirect without changing OAuth routes or token behavior.
 
 ---
 
@@ -213,7 +215,7 @@ Manual browser check:
 
 - Python runtime: `3.13.x` (enforced in `pyproject.toml`)
 - `uv.lock` is the source of truth for all Python dependencies.
-- Docker images: `bluenviron/mediamtx:1`, `jitsi/*:stable-9823`
+- Docker images: `bluenviron/mediamtx:1`, `ghcr.io/jitsi/*:stable-11248`
 
 ---
 

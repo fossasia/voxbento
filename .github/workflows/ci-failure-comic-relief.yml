@@ -1,0 +1,88 @@
+name: CI Failure Comic Relief
+
+on:
+  workflow_run:
+    # These must match the `name:` values of the workflows to monitor.
+    workflows: ["CI", "Code Quality (Lint & Format)"]
+    types: [completed]
+
+permissions:
+  pull-requests: write
+  issues: write
+
+jobs:
+  post-meme:
+    if: >-
+      ${{ github.event.workflow_run.conclusion == 'failure' &&
+          github.event.workflow_run.event == 'pull_request' &&
+          github.event.workflow_run.pull_requests[0] != null }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Find PR linked to the failed run
+        id: get-pr
+        uses: actions/github-script@v9
+        with:
+          script: |
+            const prs = context.payload.workflow_run.pull_requests ?? [];
+            if (prs.length === 0) {
+              core.setOutput('pr_number', '');
+              return;
+            }
+            core.setOutput('pr_number', String(prs[0].number));
+
+      - name: Post an encouraging build-failure comment
+        if: steps.get-pr.outputs.pr_number != ''
+        uses: actions/github-script@v9
+        env:
+          PR_NUMBER: ${{ steps.get-pr.outputs.pr_number }}
+          RUN_URL: ${{ github.event.workflow_run.html_url }}
+          RUN_NAME: ${{ github.event.workflow_run.name }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        with:
+          script: |
+            const prNumber = Number(process.env.PR_NUMBER);
+            if (!Number.isSafeInteger(prNumber) || prNumber <= 0) {
+              core.setFailed('Invalid pull request number.');
+              return;
+            }
+
+            const { owner, repo } = context.repo;
+            const memes = [
+              'https://media.giphy.com/media/9Y5BbDSkSTiY8/giphy.gif',
+              'https://media.giphy.com/media/NTur7XlVDUdqM/giphy.gif',
+              'https://media.giphy.com/media/3o7TKSjRrfIPjeiVyM/giphy.gif',
+              'https://media.giphy.com/media/26ufdipQqU2lhNA4g/giphy.gif',
+            ];
+            const meme = memes[Math.floor(Math.random() * memes.length)];
+            const marker = `<!-- ci-failure-comic-relief:${process.env.HEAD_SHA} -->`;
+
+            const { data: comments } = await github.rest.issues.listComments({
+              owner,
+              repo,
+              issue_number: prNumber,
+              per_page: 100,
+            });
+            if (comments.some((comment) => comment.body?.includes(marker))) {
+              core.info('A comic-relief comment already exists for this commit.');
+              return;
+            }
+
+            const body = [
+              '### 🚨 The CI pipeline tripped over a cable',
+              '',
+              'Breathe. Bugs are just unexpected features waiting to be tamed. Check the failed run, fix what broke, and push again. You’ve got this! 💪',
+              '',
+              `**Workflow:** ${process.env.RUN_NAME}`,
+              `**Run:** [Open the failed logs](${process.env.RUN_URL})`,
+              '',
+              `![Debugging encouragement](${meme})`,
+              '',
+              marker,
+            ].join('\n');
+
+            await github.rest.issues.createComment({
+              owner,
+              repo,
+              issue_number: prNumber,
+              body,
+            });
