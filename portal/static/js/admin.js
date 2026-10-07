@@ -5,6 +5,10 @@
 
 import { initLocalModelDownloader } from './download-model.js';
 
+function managementPrefix() {
+  return document.body.dataset.managementPrefix || '/admin';
+}
+
 /**
  * Shows a short-lived toast and announces it via the aria-live region in
  * admin/base.html, so both sighted and assistive-tech users get the same
@@ -97,6 +101,7 @@ document.addEventListener('DOMContentLoaded', () => {
   });
   initCustomModal();
   initLocalModelDownloader();
+  initAsyncSave();
 });
 
 const FUNNY_WARNINGS = [
@@ -109,6 +114,68 @@ const FUNNY_WARNINGS = [
   "Deleting this is like dropping your ice cream. Tragic.",
   "Just double checking. My anxiety acts up around delete buttons."
 ];
+
+function initAsyncSave() {
+  document.querySelectorAll('form').forEach(form => {
+    const submitBtn = form.querySelector('button[type="submit"]');
+    if (submitBtn && submitBtn.textContent.trim() === 'Save Settings') {
+      if (form.dataset.asyncSaveInitialized) return;
+      form.dataset.asyncSaveInitialized = 'true';
+      form.addEventListener('submit', async (e) => {
+        if (form.hasAttribute('data-confirm')) return; 
+        
+        e.preventDefault();
+        
+        const originalText = submitBtn.textContent;
+        const originalWidth = submitBtn.offsetWidth;
+        
+        if (originalWidth > 0) {
+          submitBtn.style.minWidth = originalWidth + 'px';
+        }
+        
+        submitBtn.disabled = true;
+        submitBtn.textContent = 'Saving...';
+        
+        try {
+          const formData = new FormData(form);
+          const params = new URLSearchParams();
+          for (const [key, value] of formData.entries()) {
+             params.append(key, value);
+          }
+          
+          const response = await fetch(form.action || window.location.href, {
+            method: form.method || 'POST',
+            body: params,
+            headers: {
+              'Content-Type': 'application/x-www-form-urlencoded'
+            },
+            redirect: 'follow'
+          });
+          
+          const isLoginRedirect = response.redirected && response.url.includes('/login');
+          if (response.ok && !isLoginRedirect) {
+            submitBtn.textContent = 'Saved ✓';
+            submitBtn.classList.remove('btn-primary');
+            submitBtn.classList.add('btn-success');
+            
+            setTimeout(() => {
+              window.location.reload();
+            }, 600);
+          } else {
+             submitBtn.disabled = false;
+             submitBtn.textContent = originalText;
+             alert('Failed to save settings.');
+          }
+        } catch (err) {
+          submitBtn.disabled = false;
+          submitBtn.textContent = originalText;
+          console.error('Save failed:', err);
+          alert('Failed to save settings. Check console for details.');
+        }
+      });
+    }
+  });
+}
 
 function initCustomModal() {
   const modalOverlay = document.getElementById('custom-confirm-modal');
@@ -201,7 +268,7 @@ window.adminAPIKeys = {
     if (!container || !this.eventId) return;
 
     try {
-      const res = await fetch(`/admin/api/events/${this.eventId}/api-keys`);
+      const res = await fetch(`${managementPrefix()}/api/events/${this.eventId}/api-keys`);
       if (!res.ok) throw new Error('Failed to load keys');
       const keys = await res.json();
       
@@ -279,7 +346,7 @@ window.adminAPIKeys = {
     
     try {
       btn.disabled = true;
-      const res = await fetch(`/admin/api/events/${this.eventId}/api-keys`, {
+      const res = await fetch(`${managementPrefix()}/api/events/${this.eventId}/api-keys`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: nameInput })
@@ -353,7 +420,7 @@ window.adminAPIKeys = {
     if (!this.revokeKeyId) return;
     
     try {
-      const res = await fetch(`/admin/api/events/${this.eventId}/api-keys/${this.revokeKeyId}`, {
+      const res = await fetch(`${managementPrefix()}/api/events/${this.eventId}/api-keys/${this.revokeKeyId}`, {
         method: 'DELETE'
       });
       if (!res.ok) throw new Error('Failed to revoke');
