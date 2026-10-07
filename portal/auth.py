@@ -68,7 +68,7 @@ def create_embed_token(*, event_slug: str) -> str:
 
     Identical claim shape to create_listener_token (role='listener', event_slug)
     so it passes both the embed route's claim checks and the /ws/captions
-    WebSocket auth's booth_id.startswith(event_slug + '-') check.
+    WebSocket auth's event-slug check (see listener_scope_matches).
     Uses a shorter expiry (embed_token_expiry_seconds, default 30 min) because
     the token is visible in the iframe src= attribute in the third party's HTML.
     """
@@ -437,10 +437,164 @@ def get_booth_session(request: Request | WebSocket) -> dict | None:
     return None
 
 
+_WS_BEARER_PREFIX = "bearer."
+
+
+def ws_bearer_subprotocol(websocket: WebSocket) -> str | None:
+    """Return the ``bearer.<token>`` subprotocol *websocket* offered, if any.
+
+    Handlers echo this back in ``websocket.accept(subprotocol=...)``: a browser
+    closes the connection unless the server selects one of the subprotocols it
+    offered.
+    """
+    for proto in websocket.scope.get("subprotocols") or []:
+        if proto.startswith(_WS_BEARER_PREFIX) and len(proto) > len(_WS_BEARER_PREFIX):
+            return proto
+    return None
+
+
+def ws_credential(websocket: WebSocket) -> str:
+    """Return the bearer token *websocket* presented, or an empty string.
+
+    Browsers cannot set an ``Authorization`` header on a WebSocket, so the
+    listener page offers the token as a ``bearer.<token>`` subprotocol, which
+    keeps it out of the request line that proxy and load-balancer access logs
+    record. The ``?token=`` query parameter is still accepted for the embed
+    player and for API clients that cannot negotiate a subprotocol.
+    """
+    proto = ws_bearer_subprotocol(websocket)
+    if proto:
+        return proto[len(_WS_BEARER_PREFIX) :]
+    return websocket.query_params.get("token", "")
+
+
+def listener_scope_matches(token_event: str, booth_id: str) -> bool:
+    """Whether a listener scoped to *token_event* may open *booth_id*.
+
+    The event slug is compared in full. A prefix test would let a token for
+    ``demo`` open booths owned by ``demo-other``, because one event slug can
+    extend another.
+    """
+    from portal.booth_identity import booth_id_event_slug
+
+    wanted = token_event.strip().lower()
+    if not wanted:
+        return False
+    try:
+        return booth_id_event_slug(booth_id) == wanted
+    except ValueError:
+        # MediaMTX-style "{event_slug}/{room_id}/{language_code}" paths are not
+        # booth IDs; compare their first segment exactly rather than by prefix.
+        head, sep, _ = booth_id.strip().lower().partition("/")
+        return bool(sep) and head == wanted
+
+
+async def user_event_authorized(user_id: str | int, booth_id: str) -> bool:
+    """Whether the registered user *user_id* is a member of the event owning *booth_id*.
+
+    A ``user_token`` carries no event or booth scope, so a booth connection is
+    authorized against the user's stored memberships instead. A membership of
+    the event, of one of its rooms, or of one of its booths all count. Fails
+    closed: an unparseable booth ID, an unknown event, or a database error
+    returns False.
+    """
+    from sqlalchemy import select
+
+    from portal.booth_identity import booth_id_event_slug
+    from portal.database import get_session
+    from portal.models import BoothMembership, DBBooth, Event, EventMembership, Room, RoomMembership
+
+    try:
+        event_slug = booth_id_event_slug(booth_id)
+        uid = int(user_id)
+    except (TypeError, ValueError):
+        return False
+
+    try:
+        async with get_session() as db_session:
+            event_id = (
+                await db_session.scalars(select(Event.id).where(Event.slug == event_slug, Event.deleted_at.is_(None)))
+            ).first()
+            if event_id is None:
+                return False
+
+            queries = (
+                select(EventMembership.id).where(
+                    EventMembership.user_id == uid,
+                    EventMembership.event_id == event_id,
+                ),
+                select(RoomMembership.id)
+                .join(Room, RoomMembership.room_id == Room.id)
+                .where(RoomMembership.user_id == uid, Room.event_id == event_id),
+                select(BoothMembership.id)
+                .join(DBBooth, BoothMembership.booth_id == DBBooth.id)
+                .where(BoothMembership.user_id == uid, DBBooth.event_id == event_id),
+            )
+            for stmt in queries:
+                if (await db_session.scalars(stmt.limit(1))).first() is not None:
+                    return True
+    except Exception:
+        logger.exception("Failed to check event membership for a WebSocket session")
+        return False
+    return False
+
+
+async def _require_event_authorization(websocket: WebSocket, payload: dict, booth_id: str) -> None:
+    """Close *websocket* unless *payload* is a registered user who belongs to the booth's event.
+
+    Admins and scoped invite tokens are dealt with before this point, so the
+    only shape left that may pass is a plain ``user_token``: a ``sub`` and no
+    ``role``, accepted only for an event the user belongs to. Anything else
+    fails closed: a ``role`` without the scope that would bound it, or a
+    missing ``sub``.
+    """
+    sub = payload.get("sub")
+    if not payload.get("role") and sub and await user_event_authorized(sub, booth_id):
+        return
+    await websocket.close(code=4003)
+    raise WSAuthError("Session is not authorized for the event that owns this booth.")
+
+
+async def _authorize_session_cookie(websocket: WebSocket, payload: dict, booth_id: str) -> dict:
+    """Return the session cookie *payload* if it may open *booth_id*, else close *websocket*."""
+    if payload.get("is_admin") or payload.get("admin"):
+        return payload
+
+    token_event = payload.get("event_slug", "")
+    if payload.get("role") == "listener":
+        if not listener_scope_matches(token_event, booth_id):
+            await websocket.close(code=4003)
+            raise WSAuthError("Listener cookie event_slug does not match booth_id.")
+        return payload
+
+    token_lang = payload.get("language_code", "")
+    token_room = payload.get("room_id")
+    if token_event and token_lang:
+        from portal.booth_identity import parse_booth_id
+
+        try:
+            actual_event, actual_room, actual_lang = parse_booth_id(booth_id)
+        except ValueError:
+            await websocket.close(code=4003)
+            raise WSAuthError("Invalid booth_id format.")
+
+        if (
+            token_event != actual_event
+            or token_lang != actual_lang
+            or (token_room is not None and str(token_room) != str(actual_room))
+        ):
+            await websocket.close(code=4003)
+            raise WSAuthError("Participant cookie scope does not match booth_id.")
+        return payload
+
+    await _require_event_authorization(websocket, payload, booth_id)
+    return payload
+
+
 async def resolve_ws_auth(websocket: WebSocket, booth_id: str) -> dict:
     """Resolves authentication for a WebSocket connection"""
 
-    token = websocket.query_params.get("token", "")
+    token = ws_credential(websocket)
     if token:
         try:
             payload = decode_token(token)
@@ -454,9 +608,7 @@ async def resolve_ws_auth(websocket: WebSocket, booth_id: str) -> dict:
 
         token_event = payload.get("event_slug", "")
         if payload.get("role") == "listener":
-            if not token_event or not (
-                booth_id.startswith(f"{token_event}-") or booth_id.startswith(f"{token_event}/")
-            ):
+            if not listener_scope_matches(token_event, booth_id):
                 await websocket.close(code=4003)
                 raise WSAuthError("Listener token event_slug does not match booth_id.")
             return payload
@@ -481,11 +633,20 @@ async def resolve_ws_auth(websocket: WebSocket, booth_id: str) -> dict:
                 raise WSAuthError("Participant token scope does not match booth_id.")
             return payload
 
-        if payload.get("role") or payload.get("is_admin") or payload.get("admin"):
-            return payload
+        if payload.get("role"):
+            # Every role this portal issues carries the scope checked above; a
+            # role without it is refused rather than trusted for every booth.
+            await websocket.close(code=4003)
+            raise WSAuthError("Role token carries no booth scope.")
 
     if not settings.booth_access_token:
-        return get_booth_session(websocket) or {}
+        # Open mode needs no credential at all, but one that is presented
+        # must still match the booth, or an invite for one event would carry
+        # its role into another event's booths.
+        session_payload = get_booth_session(websocket)
+        if not session_payload:
+            return {}
+        return await _authorize_session_cookie(websocket, session_payload, booth_id)
 
     # Origin Check for Cookie fallback
     origin = websocket.headers.get("origin")
@@ -506,37 +667,7 @@ async def resolve_ws_auth(websocket: WebSocket, booth_id: str) -> dict:
         await websocket.close(code=4001)
         raise WSAuthError("Missing WebSocket token and session cookie.")
 
-    # Check Cookie Scope
-    if payload.get("is_admin") or payload.get("admin"):
-        return payload
-
-    token_event = payload.get("event_slug", "")
-    if payload.get("role") == "listener":
-        if not token_event or not booth_id.startswith(f"{token_event}-"):
-            await websocket.close(code=4003)
-            raise WSAuthError("Listener cookie event_slug does not match booth_id.")
-        return payload
-
-    token_lang = payload.get("language_code", "")
-    token_room = payload.get("room_id")
-    if token_event and token_lang:
-        from portal.booth_identity import parse_booth_id
-
-        try:
-            actual_event, actual_room, actual_lang = parse_booth_id(booth_id)
-        except ValueError:
-            await websocket.close(code=4003)
-            raise WSAuthError("Invalid booth_id format.")
-
-        if (
-            token_event != actual_event
-            or token_lang != actual_lang
-            or (token_room is not None and str(token_room) != str(actual_room))
-        ):
-            await websocket.close(code=4003)
-            raise WSAuthError("Participant cookie scope does not match booth_id.")
-
-    return payload
+    return await _authorize_session_cookie(websocket, payload, booth_id)
 
 
 async def resolve_booth_role(payload: dict | None, booth_id: str | None = None) -> str | None:

@@ -20,13 +20,11 @@ async def test_tts_binary_framing():
     manager = TTSConnectionManager()
     ws = MockWebSocket()
 
-    manager.add(ws, 1, "es", "floor_1")
+    manager.add(ws, "evt-1-ai-es")
 
     # Send seq 1 bundle
     await manager.broadcast_bundle(
-        room_id=1,
-        language_code="es",
-        booth_id="floor_1",
+        target_booth_id="evt-1-ai-es",
         audio_bytes=b"fakeaudio",
         segment_id="1234-uuid",
         seq=1,
@@ -64,13 +62,11 @@ async def test_tts_manager_does_not_buffer():
     manager = TTSConnectionManager()
     ws = MockWebSocket()
 
-    manager.add(ws, 1, "es", "floor_1")
+    manager.add(ws, "evt-1-ai-es")
 
     # Send seq 2
     await manager.broadcast_bundle(
-        room_id=1,
-        language_code="es",
-        booth_id="floor_1",
+        target_booth_id="evt-1-ai-es",
         audio_bytes=b"audio2",
         segment_id="uuid-2",
         seq=2,

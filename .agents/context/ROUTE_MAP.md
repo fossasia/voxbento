@@ -49,11 +49,19 @@
 
 ## WebSocket Endpoints
 
+All three run `resolve_ws_auth()` (`portal/auth.py`): a JWT offered as a `bearer.<token>`
+subprotocol or `?token=`, otherwise the `admin_token` / `user_token` / `session_token` cookie.
+Every credential is scoped to the booth it opens — a listener token to its own event slug, an
+invite token to its event, room and language, and a registered-user cookie to the events the user
+holds an event, room or booth membership in. Admins are exempt. Any other signed token fails
+closed: a role without that scope, or a cookie with no user ID. Only when `BOOTH_ACCESS_TOKEN` is
+unset is a connection with no credential at all still accepted.
+
 | Path | Auth | Protocol |
 |---|---|---|
-| `/ws/booth/{booth_id}` | optional JWT via `?token=` + cookies (`session_token` or `user_token`) | See WebSocket Protocol in `REPOSITORY_CONTEXT.md` |
-| `/ws/captions/{booth_id}` | open (no auth) | Receives `booth:state`, `caption` messages; listener captions feed |
-| `/ws/tts/{room_id}` | open (no auth) | Receives raw PCM 16-bit 24kHz binary audio for synthesized translated speech |
+| `/ws/booth/{booth_id}` | scoped JWT or cookie; listener tokens rejected outright | See WebSocket Protocol in `REPOSITORY_CONTEXT.md` |
+| `/ws/captions/{booth_id}` | scoped JWT or cookie | Receives `booth:state`, `caption` messages; listener captions feed |
+| `/ws/tts/{booth_id}` | scoped JWT or cookie (same rules as `/ws/captions`) | Receives raw PCM 16-bit 24kHz binary audio for synthesized translated speech |
 
 ---
 

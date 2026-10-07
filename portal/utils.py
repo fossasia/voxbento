@@ -34,6 +34,18 @@ def _make_jitsi_url(base_url: str, room: str) -> str:
     return f"{base_url.rstrip('/')}/{room.lstrip('/')}"
 
 
+def public_ws_url(path: str) -> str:
+    """Absolute WebSocket URL for *path* on the public base URL.
+
+    The scheme follows ``PUBLIC_BASE_URL``: the secure WebSocket scheme for an
+    HTTPS portal, and the plaintext one only when the portal itself is served
+    over plain HTTP, as it is in local development.
+    """
+    parsed = urlparse(settings.public_base_url)
+    scheme = "ws" if parsed.scheme == "http" else "wss"
+    return f"{scheme}://{parsed.netloc}{parsed.path.rstrip('/')}/{path.lstrip('/')}"
+
+
 # Cache for MediaMTX health check — avoids redundant HTTP calls on every page
 # load. The health check is called from three endpoints (healthz, admin dashboard,
 # interpreter status). A short TTL prevents stampeding the Control API while

@@ -1,0 +1,33 @@
+"""add tts_enabled to room translation languages
+
+Revision ID: 025
+Revises: 024
+Create Date: 2026-09-08 21:46:15.773928
+
+"""
+
+from __future__ import annotations
+
+from typing import Sequence, Union
+
+import sqlalchemy as sa
+
+from alembic import op
+
+# revision identifiers, used by Alembic.
+revision: str = "025"
+down_revision: Union[str, Sequence[str], None] = "024"
+branch_labels: Union[str, Sequence[str], None] = None
+depends_on: Union[str, Sequence[str], None] = None
+
+
+def upgrade() -> None:
+    """Upgrade schema."""
+    with op.batch_alter_table("room_translation_languages") as batch_op:
+        batch_op.add_column(sa.Column("tts_enabled", sa.Boolean(), server_default="0", nullable=False))
+
+
+def downgrade() -> None:
+    """Downgrade schema."""
+    with op.batch_alter_table("room_translation_languages") as batch_op:
+        batch_op.drop_column("tts_enabled")

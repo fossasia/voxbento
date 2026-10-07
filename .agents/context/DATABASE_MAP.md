@@ -206,6 +206,7 @@ Unique index on `(segment_id, language_code)`.
 | `language_code` | String(20) | ISO 639-1 target language |
 | `language_name` | String(100) | Human readable |
 | `enabled` | Boolean | Default True |
+| `tts_enabled` | Boolean | `room_translation_languages` only. Default False; the language is also spoken by TTS as an AI booth |
 
 Tracks which languages the translation worker should generate for a given room or booth.
 
@@ -232,6 +233,7 @@ Tracks which languages the translation worker should generate for a given room o
 | 015 | `015_add_floor_tts_enabled.py` | `rooms.floor_tts_enabled` |
 | 016 | `016_add_room_audio_delay.py` | `rooms.audio_delay_ms` |
 | 017 | `017_add_tts_provider_fields.py` | `rooms.floor_tts_provider`, `rooms.floor_tts_voice` |
+| 025 | `025_add_tts_enabled.py` | `room_translation_languages.tts_enabled` |
 
 Run migrations: `uv run alembic upgrade head`
 

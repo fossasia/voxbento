@@ -239,7 +239,7 @@
       </div>
     </div>
 
-    <div class="form-row">
+    <div class="form-row form-row--top">
       <div class="form-group form-group--grow">
         <label for="floor_tts_provider">TTS Provider</label>
         <select id="floor_tts_provider" name="floor_tts_provider" class="input">
@@ -250,14 +250,27 @@
         <p class="form-help form-help--spaced" id="tts_provider_help_supertonic" style="display: none;">Supertonic runs locally with no API key. 31 languages supported; unknown languages use a language-agnostic fallback. The model (~400MB) downloads on first use.</p>
       </div>
       <div class="form-group form-group--grow" id="tts_voice_group">
-        <label for="floor_tts_voice">Supertonic Voice</label>
-        <select id="floor_tts_voice" name="floor_tts_voice" class="input">
-          {% set current_voice = room.floor_tts_voice or 'M1' %}
-          {% for v in ['M1', 'M2', 'M3', 'M4', 'M5', 'F1', 'F2', 'F3', 'F4', 'F5'] %}
-          <option value="{{ v }}" {% if current_voice == v %}selected{% endif %}>{{ v }}</option>
-          {% endfor %}
+        <label for="floor_tts_voice">TTS Voice</label>
+        <select id="floor_tts_voice" name="floor_tts_voice" class="input" data-current-voice="{{ room.floor_tts_voice or '' }}" data-voices='{{ tts_voice_options | tojson }}'>
+          <option value="">(Model will pick best voice)</option>
         </select>
-        <p class="form-help form-help--spaced">M1–M5 (male) and F1–F5 (female) preset voices.</p>
+        <p class="form-help form-help--spaced">Leave empty to let the provider pick a voice for each language. A Deepgram voice is only used for the language it speaks.</p>
+      </div>
+    </div>
+
+    <div class="form-row">
+      <div class="form-group form-group--grow">
+        <label>TTS Target Languages</label>
+        <div class="lang-picker" id="lp_floor_tts" aria-label="TTS Target languages picker">
+          <div class="lang-picker-tags" id="lp_floor_tts_tags"></div>
+          <div class="lang-picker-search-wrap">
+            <input type="text" class="lang-picker-input" id="lp_floor_tts_search"
+                   placeholder="Search and add a language…" autocomplete="off">
+            <ul class="lang-picker-dropdown" id="lp_floor_tts_dropdown" hidden></ul>
+          </div>
+        </div>
+        <div id="lp_floor_tts_hidden"></div>
+        <p class="form-help form-help--spaced">Select which translated languages should be synthesized into AI speech. Languages served by a human booth in this room, and the floor language, are hidden.</p>
       </div>
       <div class="form-group form-group-btn form-group--action">
         <button type="submit" class="btn btn-primary">Save Settings</button>
@@ -335,24 +348,6 @@
     transProviderSelect.addEventListener('change', loadTranslationModels);
     if (transProviderSelect.value) {
       loadTranslationModels();
-    }
-
-    // TTS provider → toggle Supertonic voice picker + provider help text
-    const ttsProviderSelect = document.getElementById('floor_tts_provider');
-    if (ttsProviderSelect) {
-      const ttsVoiceGroup = document.getElementById('tts_voice_group');
-      const helpDeepgram = document.getElementById('tts_provider_help_deepgram');
-      const helpSupertonic = document.getElementById('tts_provider_help_supertonic');
-
-      function syncTtsProvider() {
-        const isSupertonic = ttsProviderSelect.value === 'supertonic';
-        if (ttsVoiceGroup) ttsVoiceGroup.style.display = isSupertonic ? '' : 'none';
-        if (helpDeepgram) helpDeepgram.style.display = isSupertonic ? 'none' : '';
-        if (helpSupertonic) helpSupertonic.style.display = isSupertonic ? '' : 'none';
-      }
-
-      ttsProviderSelect.addEventListener('change', syncTtsProvider);
-      syncTtsProvider();
     }
 
     // Language tag picker
@@ -460,6 +455,16 @@
       searchId: 'lp_floor_translation_search',
       dropdownId: 'lp_floor_translation_dropdown',
       hiddenId: 'lp_floor_translation_hidden',
+    });
+    
+    initLangPicker({
+      allLanguages: {{ tts_available_languages_dataset | tojson }},
+      selectedCodes: {{ enabled_tts_language_codes | tojson }},
+      inputName: 'floor_tts_languages',
+      tagsId: 'lp_floor_tts_tags',
+      searchId: 'lp_floor_tts_search',
+      dropdownId: 'lp_floor_tts_dropdown',
+      hiddenId: 'lp_floor_tts_hidden',
     });
   });
 

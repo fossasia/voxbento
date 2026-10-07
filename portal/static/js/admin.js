@@ -4,6 +4,7 @@
  */
 
 import { initLocalModelDownloader } from './download-model.js';
+import { initTtsVoicePicker } from './tts-voice-picker.js';
 
 /**
  * Shows a short-lived toast and announces it via the aria-live region in
@@ -98,6 +99,7 @@ document.addEventListener('DOMContentLoaded', () => {
   initCustomModal();
   initLocalModelDownloader();
   initAsyncSave();
+  initTtsVoicePicker();
 });
 
 const FUNNY_WARNINGS = [

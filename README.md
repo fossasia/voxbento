@@ -9,6 +9,8 @@ Booth coordination (who is active, relay handoff, chat) runs over WebSocket.
 
 Rooms can optionally add a listener-side audio synchronization delay for WHEP playback. The default is `0` ms, which keeps the existing low-latency HTML audio path unchanged. Organizers can set values such as `1000`, `2000`, `5000`, or `8000` ms when a room's livestream video, captions, embedded player, or other external media is delayed and translated audio needs to line up with it. The delay is applied in the listener browser only; MediaMTX, WHIP, WHEP, and RTP packets are not changed. Within the admin console, organizers can manage and search rooms by name within each event using server-side, case-insensitive filtering.
 
+Rooms can also offer AI-voiced languages next to human interpreters. In a room's settings, enable floor transcription, translation and TTS, pick a TTS provider (Deepgram Aura or self-hosted Supertonic), and choose the TTS target languages. Each one becomes an AI booth that listeners can pick on the listener page; languages that already have a human booth, and the floor language, are left out. Eventyay can set the same thing through room sync by sending `ai_languages` next to `target_languages` in `PUT /api/v1/events/{slug}/rooms/{id}`.
+
 ---
 
 ## How it works
