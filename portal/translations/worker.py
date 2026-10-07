@@ -11,11 +11,15 @@ from portal.translations.providers.anthropic import AnthropicProvider
 from portal.translations.providers.gemini import GeminiProvider
 from portal.translations.providers.local import LocalProvider
 from portal.translations.providers.openai import OpenAIProvider
+from portal.translations.vocabulary import resolve_vocabulary_entries
 
 LANGUAGE_SEMAPHORES: dict[str, asyncio.Semaphore] = {}
 LANGUAGE_QUEUES: dict[str, int] = {}
 
 logger = logging.getLogger(__name__)
+
+#: The glossary is optional context, so its lookup must never eat into the inference budget.
+VOCABULARY_LOOKUP_TIMEOUT = 2.0
 
 openai_provider = OpenAIProvider()
 
@@ -146,6 +150,7 @@ class TranslationWorker:
                             api_key,
                             lang.language_code,
                             lang.language_name,
+                            source_lang_code,
                             source_lang_name,
                             segment_id,
                             text,
@@ -153,6 +158,7 @@ class TranslationWorker:
                             uuid_segment_id,
                             seq,
                             target_booth_id,
+                            segment.booth_id,
                         )
                     )
 
@@ -172,6 +178,7 @@ class TranslationWorker:
         api_key: str,
         lang_code: str,
         lang_name: str,
+        source_lang_code: str | None,
         source_lang_name: str,
         segment_id: int,
         text: str,
@@ -179,6 +186,7 @@ class TranslationWorker:
         uuid_segment_id: str,
         seq: int,
         target_booth_id: str | None = None,
+        source_booth_id: int | None = None,
     ):
         from portal.websockets.manager import tts_manager
 
@@ -193,6 +201,28 @@ class TranslationWorker:
             return
 
         LANGUAGE_QUEUES[lang_code] += 1
+
+        # Resolved before taking an inference slot: the glossary is optional context, and a slow
+        # lookup must not occupy one of the two per-language slots while other rooms wait.
+        vocabulary_entries = []
+        if room.floor_ai_vocabulary_enabled:
+            try:
+                async with asyncio.timeout(VOCABULARY_LOOKUP_TIMEOUT):
+                    async with get_session() as vocabulary_session:
+                        vocabulary_entries = await resolve_vocabulary_entries(
+                            vocabulary_session,
+                            event_id=event.id,
+                            room_id=room.id,
+                            booth_id=source_booth_id,
+                            target_language=lang_code,
+                            transcript_text=text,
+                        )
+            except (Exception, asyncio.TimeoutError) as e:
+                logger.warning(
+                    f"[{booth_id_str}] Vocabulary lookup failed for {lang_code}: {e!r}. "
+                    "Translating without glossary entries."
+                )
+                vocabulary_entries = []
 
         try:
             queue_decremented = False
@@ -213,7 +243,20 @@ class TranslationWorker:
                             pass
 
                     translated_text = await asyncio.wait_for(
-                        self._call_llm(provider, model, api_key, text, lang_name, source_lang_name), timeout=timeout_val
+                        self._call_llm(
+                            provider,
+                            model,
+                            api_key,
+                            text,
+                            lang_name,
+                            source_lang_name,
+                            target_lang_code=lang_code,
+                            source_language_code=source_lang_code,
+                            persona=room.floor_ai_interpreter_persona,
+                            style=room.floor_ai_interpretation_style,
+                            vocabulary_entries=vocabulary_entries,
+                        ),
+                        timeout=timeout_val,
                     )
                 except asyncio.TimeoutError:
                     if provider == "local" and timeout_val == 0.1:
@@ -293,6 +336,12 @@ class TranslationWorker:
         text: str,
         target_lang_name: str,
         source_lang_name: str = "English",
+        *,
+        target_lang_code: str = "",
+        source_language_code: str | None = None,
+        persona: str | None = None,
+        style: str | None = None,
+        vocabulary_entries: list | None = None,
     ) -> str | None:
         provider_instance = PROVIDERS.get(provider)
         if not provider_instance:
@@ -303,10 +352,13 @@ class TranslationWorker:
             provider_name=provider,
             text=text,
             target_lang_name=target_lang_name,
-            target_lang_code="",  # Not explicitly passed from current DB schema
+            target_lang_code=target_lang_code,
             source_lang_name=source_lang_name,
             model=model,
             api_key=api_key,
+            persona=persona,
+            style=style,
+            vocabulary_entries=vocabulary_entries or (),
         )
         if not translated:
             logger.warning(f"Provider {provider} returned empty translation for text: '{text}'")
