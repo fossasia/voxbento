@@ -3,12 +3,12 @@
 
 {% block breadcrumb %}
 <nav class="breadcrumb">
-  <a href="/admin/">Dashboard</a> <span>/</span>
-  <a href="/admin/events/">Events</a> <span>/</span>
-  <a href="/admin/events/{{ event.id }}/">{{ event.display_name }}</a> <span>/</span>
-  <a href="/admin/events/{{ event.id }}/rooms/">Rooms</a> <span>/</span>
-  <a href="/admin/events/{{ event.id }}/rooms/{{ room.id }}/">{{ room.display_name }}</a> <span>/</span>
-  <a href="/admin/events/{{ event.id }}/rooms/{{ room.id }}/booths/">Booths</a> <span>/</span>
+  <a href="{{ management_prefix }}/">Dashboard</a> <span>/</span>
+  <a href="{{ management_prefix }}/events/">Events</a> <span>/</span>
+  <a href="{{ management_prefix }}/events/{{ event.id }}/">{{ event.display_name }}</a> <span>/</span>
+  <a href="{{ management_prefix }}/events/{{ event.id }}/rooms/">Rooms</a> <span>/</span>
+  <a href="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/">{{ room.display_name }}</a> <span>/</span>
+  <a href="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/booths/">Booths</a> <span>/</span>
   <span class="breadcrumb-current" aria-current="page">{{ booth.language_name }}</span>
 </nav>
 {% endblock %}
@@ -92,7 +92,7 @@
 </div>
 
 <!-- Booth Settings Form -->
-<form method="post" action="{{ url_for('admin_edit_booth', event_id=event.id, room_id=room.id, booth_id=booth.id) }}" class="token-form">
+<form method="post" action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/booths/{{ booth.id }}/edit" class="token-form">
   <div class="token-form-card token-form-card--spaced">
     <h3>Booth Settings</h3>
     <div class="form-row">
@@ -112,14 +112,14 @@
 </form>
 
 <!-- Transcription Settings Form -->
-<form method="post" action="/admin/events/{{ event.id }}/rooms/{{ room.id }}/booths/{{ booth.id }}/transcription-settings" class="token-form">
+<form method="post" action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/booths/{{ booth.id }}/transcription-settings" class="token-form">
   <div class="token-form-card token-form-card--spaced">
     <div class="transcripts-head">
       <div>
         <h3>Stored Transcripts</h3>
         <p class="form-help form-help--tight">View and download past transcripts and translations generated for this booth.</p>
       </div>
-      <a href="/admin/events/{{ event.id }}/rooms/{{ room.id }}/transcripts/" class="btn btn-primary">View Transcripts</a>
+      <a href="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/transcripts/" class="btn btn-primary">View Transcripts</a>
     </div>
   </div>
 
@@ -178,7 +178,7 @@
 </form>
 
 <!-- Translation Settings Form -->
-<form method="post" action="/admin/events/{{ event.id }}/rooms/{{ room.id }}/booths/{{ booth.id }}/translation-settings" class="token-form">
+<form method="post" action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/booths/{{ booth.id }}/translation-settings" class="token-form">
   <div class="token-form-card token-form-card--spaced">
     <h3>Translation Settings</h3>
     <div class="form-row">
@@ -471,7 +471,7 @@
   <!-- Assign Member Form -->
   <div class="token-form-card token-form-card--spaced-sm">
     <h3>Assign Member</h3>
-    <form method="post" action="/admin/events/{{ event.id }}/rooms/{{ room.id }}/booths/{{ booth.id }}/members/" class="token-form">
+    <form method="post" action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/booths/{{ booth.id }}/members/" class="token-form">
       <div class="form-row">
         <div class="form-group">
           <label for="member_email">User Email</label>
@@ -524,12 +524,12 @@
         </td>
         <td class="actions-cell">
           <form method="post"
-                action="/admin/events/{{ event.id }}/rooms/{{ room.id }}/booths/{{ booth.id }}/members/{{ m.id }}/invite"
+                action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/booths/{{ booth.id }}/members/{{ m.id }}/invite"
                 class="inline-form form-inline-spaced">
             <button type="submit" class="btn btn-sm btn-outline btn-invite">✉️ Invite</button>
           </form>
           <form method="post"
-                action="/admin/events/{{ event.id }}/rooms/{{ room.id }}/booths/{{ booth.id }}/members/{{ m.id }}/delete"
+                action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/booths/{{ booth.id }}/members/{{ m.id }}/delete"
                 class="inline-form"
                 data-confirm="Remove {{ u.display_name }} from this booth?">
             <button type="submit" class="btn btn-sm btn-danger" title="Remove this member from the booth"
@@ -556,7 +556,7 @@
   <!-- Token Generation Form -->
   <div class="token-form-card">
     <h3>Generate New Token</h3>
-    <form method="post" action="/admin/events/{{ event.id }}/rooms/{{ room.id }}/booths/{{ booth.id }}/tokens/" class="token-form">
+    <form method="post" action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/booths/{{ booth.id }}/tokens/" class="token-form">
       <div class="form-row">
         <div class="form-group">
           <label for="role">Role</label>
@@ -621,7 +621,7 @@
         <td>
           {% if not tok.is_used and not tok.is_expired %}
           <form method="post"
-                action="/admin/events/{{ event.id }}/rooms/{{ room.id }}/booths/{{ booth.id }}/tokens/{{ tok.token }}/revoke"
+                action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/booths/{{ booth.id }}/tokens/{{ tok.token }}/revoke"
                 class="inline-form"
                 data-confirm="Revoke this token? It cannot be used to join after revocation.">
             <button type="submit" class="btn btn-sm btn-danger" title="Revoke this token so it can no longer be used to join"
@@ -644,7 +644,7 @@
 
 <div class="danger-zone">
   <h3>Danger Zone</h3>
-  <form method="post" action="/admin/events/{{ event.id }}/rooms/{{ room.id }}/booths/{{ booth.id }}/delete"
+  <form method="post" action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/booths/{{ booth.id }}/delete"
         class="inline-delete"
         data-confirm="Delete the {{ booth.language_name }} booth? All invite tokens will be removed.">
     <button type="submit" class="btn btn-danger">Delete Booth</button>

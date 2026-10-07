@@ -3,10 +3,10 @@
 
 {% block breadcrumb %}
 <nav class="breadcrumb">
-  <a href="/admin/">Dashboard</a> <span>/</span>
-  <a href="/admin/events/">Events</a> <span>/</span>
-  <a href="/admin/events/{{ event.id }}/">{{ event.display_name }}</a> <span>/</span>
-  <a href="/admin/events/{{ event.id }}/rooms/">Rooms</a> <span>/</span>
+  <a href="{{ management_prefix }}/">Dashboard</a> <span>/</span>
+  <a href="{{ management_prefix }}/events/">Events</a> <span>/</span>
+  <a href="{{ management_prefix }}/events/{{ event.id }}/">{{ event.display_name }}</a> <span>/</span>
+  <a href="{{ management_prefix }}/events/{{ event.id }}/rooms/">Rooms</a> <span>/</span>
   <span class="breadcrumb-current" aria-current="page">{{ room.display_name }}</span>
 </nav>
 {% endblock %}
@@ -23,7 +23,7 @@
 <!-- Room Settings Form -->
 {% if is_event_owner %}
 
-  <form method="post" action="/admin/events/{{ event.id }}/rooms/{{ room.id }}/edit" class="token-form">
+  <form method="post" action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/edit" class="token-form">
   <input type="hidden" name="form_section" value="general">
   <div class="token-form-card token-form-card--spaced-sm">
     <h3>Room Settings</h3>
@@ -49,7 +49,7 @@
   </div>
 </form>
 
-<form method="post" action="/admin/events/{{ event.id }}/rooms/{{ room.id }}/edit" class="token-form">
+<form method="post" action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/edit" class="token-form">
   <input type="hidden" name="form_section" value="relay">
   <div class="token-form-card token-form-card--spaced">
     <h3>Relay Settings</h3>
@@ -77,11 +77,11 @@
         <h3>Stored Transcripts</h3>
         <p class="form-help form-help--tight">View and download past transcripts and translations generated for this room.</p>
       </div>
-      <a href="/admin/events/{{ event.id }}/rooms/{{ room.id }}/transcripts/" class="btn btn-primary">View Transcripts</a>
+      <a href="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/transcripts/" class="btn btn-primary">View Transcripts</a>
     </div>
   </div>
 
-<form method="post" action="/admin/events/{{ event.id }}/rooms/{{ room.id }}/edit" class="token-form">
+<form method="post" action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/edit" class="token-form">
   <input type="hidden" name="form_section" value="transcription">
   <div class="token-form-card token-form-card--spaced">
     <div class="card-head card-head--spaced">
@@ -147,7 +147,7 @@
   </div>
 </form>
 
-<form id="floor_translation_form" method="post" action="/admin/events/{{ event.id }}/rooms/{{ room.id }}/edit" class="token-form">
+<form id="floor_translation_form" method="post" action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/edit" class="token-form">
   <input type="hidden" name="form_section" value="translation">
   <div class="token-form-card token-form-card--spaced">
     <div class="card-head card-head--spaced">
@@ -215,7 +215,7 @@
   </div>
 </form>
 
-<form method="post" action="/admin/events/{{ event.id }}/rooms/{{ room.id }}/edit" class="token-form" id="floor_tts_form">
+<form method="post" action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/edit" class="token-form" id="floor_tts_form">
   <input type="hidden" name="form_section" value="tts">
   <div class="token-form-card token-form-card--spaced">
     <div class="card-head card-head--spaced">
@@ -585,7 +585,7 @@ document.addEventListener('DOMContentLoaded', function() {
 <div class="section-card section-card--spaced-lg">
   <div class="section-header">
     <h2>Interpretation Booths ({{ booths|length }})</h2>
-    <a href="/admin/events/{{ event.id }}/rooms/{{ room.id }}/booths/" class="btn btn-sm btn-primary">Manage Booths</a>
+    <a href="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/booths/" class="btn btn-sm btn-primary">Manage Booths</a>
   </div>
 
   {% if booths %}
@@ -623,14 +623,14 @@ document.addEventListener('DOMContentLoaded', function() {
           </a>
         </td>
         <td>
-          <a href="/admin/events/{{ event.id }}/rooms/{{ room.id }}/booths/{{ bs.db.id }}/" class="btn btn-sm">View</a>
+          <a href="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/booths/{{ bs.db.id }}/" class="btn btn-sm">View</a>
         </td>
       </tr>
       {% endfor %}
     </tbody>
   </table>
   {% else %}
-  <p class="muted">No booths in this room. <a href="/admin/events/{{ event.id }}/rooms/{{ room.id }}/booths/">Add booths</a>.</p>
+  <p class="muted">No booths in this room. <a href="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/booths/">Add booths</a>.</p>
   {% endif %}
 </div>
 
@@ -654,7 +654,7 @@ document.addEventListener('DOMContentLoaded', function() {
   <!-- Assign Member Form -->
   <div class="token-form-card token-form-card--spaced-sm">
     <h3>Assign Coordinator</h3>
-    <form method="post" action="/admin/events/{{ event.id }}/rooms/{{ room.id }}/members/" class="token-form">
+    <form method="post" action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/members/" class="token-form">
       <div class="form-row">
         <div class="form-group">
           <label for="member_email">User Email</label>
@@ -702,12 +702,12 @@ document.addEventListener('DOMContentLoaded', function() {
         </td>
         <td class="actions-cell">
           <form method="post"
-                action="/admin/events/{{ event.id }}/rooms/{{ room.id }}/members/{{ m.id }}/invite"
+                action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/members/{{ m.id }}/invite"
                 class="inline-form form-inline-spaced">
             <button type="submit" class="btn btn-sm btn-outline btn-invite">✉️ Invite</button>
           </form>
           <form method="post"
-                action="/admin/events/{{ event.id }}/rooms/{{ room.id }}/members/{{ m.id }}/delete"
+                action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/members/{{ m.id }}/delete"
                 class="inline-form"
                 data-confirm="Remove {{ u.display_name }} from this room?">
             <button type="submit" class="btn btn-sm btn-danger" title="Remove this member from the room"
@@ -728,7 +728,7 @@ document.addEventListener('DOMContentLoaded', function() {
 {% if is_event_owner %}
 <div class="danger-zone">
   <h3>Danger Zone</h3>
-  <form method="post" action="/admin/events/{{ event.id }}/rooms/{{ room.id }}/delete" class="inline-delete"
+  <form method="post" action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/delete" class="inline-delete"
         data-confirm="Delete room '{{ room.display_name }}'? All booths in this room will be removed.">
     <button type="submit" class="btn btn-danger">Delete Room</button>
     <span class="danger-text">This removes all booths and their invite tokens.</span>
