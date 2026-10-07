@@ -30,7 +30,7 @@ description: Use this skill to evaluate whether VoxBento is ready for production
 - [ ] Database is backed up (automated snapshots).
 - [ ] `portal-data` volume is NOT used (SQLite), or DB is external PostgreSQL.
 - [ ] `MEDIAMTX_WHIP_BASE` is the public HTTPS URL, not `localhost`.
-- [ ] `DOCKER_HOST_ADDRESS` is set to host's public/LAN IP (required for JVB ICE candidates).
+- [ ] `JVB_ADVERTISE_IPS` is set to the host's reachable public/LAN IP (required for JVB ICE candidates).
 - [ ] MediaMTX UDP ICE port (8189) is open and reachable from browser clients.
 - [ ] JVB UDP port (10000) is open for Jitsi media.
 

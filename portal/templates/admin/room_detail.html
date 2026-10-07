@@ -3,10 +3,10 @@
 
 {% block breadcrumb %}
 <nav class="breadcrumb">
-  <a href="/admin/">Dashboard</a> <span>/</span>
-  <a href="/admin/events/">Events</a> <span>/</span>
-  <a href="/admin/events/{{ event.id }}/">{{ event.display_name }}</a> <span>/</span>
-  <a href="/admin/events/{{ event.id }}/rooms/">Rooms</a> <span>/</span>
+  <a href="{{ management_prefix }}/">Dashboard</a> <span>/</span>
+  <a href="{{ management_prefix }}/events/">Events</a> <span>/</span>
+  <a href="{{ management_prefix }}/events/{{ event.id }}/">{{ event.display_name }}</a> <span>/</span>
+  <a href="{{ management_prefix }}/events/{{ event.id }}/rooms/">Rooms</a> <span>/</span>
   <span class="breadcrumb-current" aria-current="page">{{ room.display_name }}</span>
 </nav>
 {% endblock %}
@@ -23,38 +23,38 @@
 <!-- Room Settings Form -->
 {% if is_event_owner %}
 
-  <form method="post" action="/admin/events/{{ event.id }}/rooms/{{ room.id }}/edit" class="token-form">
+  <form method="post" action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/edit" class="token-form">
   <input type="hidden" name="form_section" value="general">
-  <div class="token-form-card" style="margin-bottom: 1.5rem;">
+  <div class="token-form-card token-form-card--spaced-sm">
     <h3>Room Settings</h3>
     <div class="form-row">
-      <div class="form-group" style="flex: 1;">
+      <div class="form-group form-group--grow">
         <label for="display_name">Room Name</label>
         <input type="text" id="display_name" name="display_name" class="input" value="{{ room.display_name }}" required>
       </div>
-      <div class="form-group" style="flex: 2;">
+      <div class="form-group form-group--wide">
         <label for="jitsi_url">Jitsi Room URL (Floor Audio Source)</label>
         <input type="url" id="jitsi_url" name="jitsi_url" class="input" value="{{ room.jitsi_url or fallback_jitsi_url }}" placeholder="e.g. https://jitsi.voxbento.com/Room-Event-TrackA">
       </div>
-      <div class="form-group" style="flex: 1;">
+      <div class="form-group form-group--grow">
         <label for="audio_delay_ms">Audio Synchronization Delay (ms)</label>
         <input type="number" id="audio_delay_ms" name="audio_delay_ms" class="input" value="{{ room.audio_delay_ms }}" min="0" max="10000" step="1">
       </div>
-      <div class="form-group form-group-btn" style="flex: 0; align-self: flex-end;">
+      <div class="form-group form-group-btn form-group--action">
         <button type="submit" class="btn btn-primary">Save Settings</button>
       </div>
     </div>
-    <p class="form-help" style="margin-top: 0.5rem; font-size: 0.85rem; color: #666;">Interpreters in all booths for this room will automatically join this Jitsi URL for floor monitoring.</p>
-    <p class="form-help" style="margin-top: 0.25rem; font-size: 0.85rem; color: #666;">Applies a listener-side delay to all audio sources in this room. Use this when livestream video, captions, or external media are delayed and need audio synchronization.</p>
+    <p class="form-help form-help--spaced">Interpreters in all booths for this room will automatically join this Jitsi URL for floor monitoring.</p>
+    <p class="form-help form-help--tight">Applies a listener-side delay to all audio sources in this room. Use this when livestream video, captions, or external media are delayed and need audio synchronization.</p>
   </div>
 </form>
 
-<form method="post" action="/admin/events/{{ event.id }}/rooms/{{ room.id }}/edit" class="token-form">
+<form method="post" action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/edit" class="token-form">
   <input type="hidden" name="form_section" value="relay">
-  <div class="token-form-card" style="margin-bottom: 2rem;">
+  <div class="token-form-card token-form-card--spaced">
     <h3>Relay Settings</h3>
     <div class="form-row">
-      <div class="form-group" style="flex: 1;">
+      <div class="form-group form-group--grow">
         <label for="relay_booth_id">Relay Booth</label>
         <select id="relay_booth_id" name="relay_booth_id" class="input">
           <option value="none">-- None --</option>
@@ -67,40 +67,40 @@
         <button type="submit" class="btn btn-primary">Save Settings</button>
       </div>
     </div>
-    <p class="form-help" style="margin-top: 0.5rem; font-size: 0.85rem; color: #666;">Designate a booth to act as the relay source for interpreters in other booths.</p>
+    <p class="form-help form-help--spaced">Designate a booth to act as the relay source for interpreters in other booths.</p>
   </div>
 </form>
 
-  <div class="token-form-card" style="margin-bottom: 2rem;">
-    <div style="display: flex; justify-content: space-between; align-items: center;">
+  <div class="token-form-card token-form-card--spaced">
+    <div class="card-head">
       <div>
-        <h3 style="margin: 0;">Stored Transcripts</h3>
-        <p class="form-help" style="margin-top: 0.25rem; font-size: 0.85rem; color: #666;">View and download past transcripts and translations generated for this room.</p>
+        <h3>Stored Transcripts</h3>
+        <p class="form-help form-help--tight">View and download past transcripts and translations generated for this room.</p>
       </div>
-      <a href="/admin/events/{{ event.id }}/rooms/{{ room.id }}/transcripts/" class="btn btn-primary">View Transcripts</a>
+      <a href="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/transcripts/" class="btn btn-primary">View Transcripts</a>
     </div>
   </div>
 
-<form method="post" action="/admin/events/{{ event.id }}/rooms/{{ room.id }}/edit" class="token-form">
+<form method="post" action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/edit" class="token-form">
   <input type="hidden" name="form_section" value="transcription">
-  <div class="token-form-card" style="margin-bottom: 2rem;">
-    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
-      <h3 style="margin: 0;">Floor Audio Transcription</h3>
-      <div style="display: flex; gap: 0.5rem; align-items: center;">
+  <div class="token-form-card token-form-card--spaced">
+    <div class="card-head card-head--spaced">
+      <h3>Floor Audio Transcription</h3>
+      <div class="card-head-actions">
         {% if room.floor_transcription_enabled %}
-          <span id="bot-status-pill" data-room-id="{{ room.id }}" style="display: inline-flex; align-items: center; gap: 0.4rem; font-size: 0.8rem; font-weight: 600; padding: 0.25rem 0.6rem; border-radius: 999px; background: #eee; color: #666;">
-            <span id="bot-status-dot" style="width: 8px; height: 8px; border-radius: 50%; background: #999;"></span>
+          <span id="bot-status-pill" class="status-pill" data-room-id="{{ room.id }}">
+            <span id="bot-status-dot" class="status-dot"></span>
             <span id="bot-status-text">Checking…</span>
           </span>
           <button type="button" class="btn btn-sm btn-outline" id="start-bot-btn" onclick="startFloorTranscription({{ room.id }})">Start Bot</button>
-          <button type="button" class="btn btn-sm btn-outline" style="border-color: #dc3545; color: #dc3545;" id="stop-bot-btn" onclick="stopFloorTranscription({{ room.id }})">Stop Bot</button>
+          <button type="button" class="btn btn-sm btn-outline btn-stop" id="stop-bot-btn" onclick="stopFloorTranscription({{ room.id }})">Stop Bot</button>
         {% endif %}
       </div>
     </div>
     
     <div class="form-row">
-      <div class="form-group" style="flex: 1;">
-        <label class="checkbox-label" style="display: flex; align-items: center; gap: 0.5rem;">
+      <div class="form-group form-group--grow">
+        <label class="checkbox-label">
           <input type="checkbox" name="floor_transcription_enabled" id="floor_transcription_enabled" {% if room.floor_transcription_enabled %}checked{% endif %}>
           Enable AI Transcription for Floor Audio
         </label>
@@ -108,11 +108,11 @@
     </div>
     
     <div class="form-row">
-      <div class="form-group" style="flex: 1;">
+      <div class="form-group form-group--grow">
         <label for="floor_language_code">Floor Language Code</label>
         <input type="text" id="floor_language_code" name="floor_language_code" value="{{ room.floor_language_code or '' }}" placeholder="e.g. en, fr, de" class="input">
       </div>
-      <div class="form-group" style="flex: 1;">
+      <div class="form-group form-group--grow">
         <label for="floor_transcription_provider">Provider</label>
         <select id="floor_transcription_provider" name="floor_transcription_provider" class="input">
           <option value="none" {% if room.floor_transcription_provider == 'none' %}selected{% endif %}>-- None --</option>
@@ -123,7 +123,7 @@
           <option value="elevenlabs" {% if room.floor_transcription_provider == 'elevenlabs' %}selected{% endif %}>ElevenLabs</option>
         </select>
       </div>
-      <div class="form-group" style="flex: 1;">
+      <div class="form-group form-group--grow">
         <label for="floor_transcription_model">Model</label>
         <select id="floor_transcription_model" name="floor_transcription_model" class="input">
           <option value="none" data-provider="none" {% if room.floor_transcription_model == 'none' %}selected{% endif %}>-- None --</option>
@@ -139,40 +139,40 @@
           <option value="scribe_v2_realtime" data-provider="elevenlabs" {% if room.floor_transcription_model == 'scribe_v2_realtime' or room.floor_transcription_model == 'scribe_v2' %}selected{% endif %}>ElevenLabs: scribe_v2_realtime (Streaming)</option>
         </select>
       </div>
-      <div class="form-group form-group-btn" style="flex: 0; align-self: flex-end;">
+      <div class="form-group form-group-btn form-group--action">
         <button type="submit" class="btn btn-primary">Save Settings</button>
       </div>
     </div>
-    <p class="form-help" style="margin-top: 0.5rem; font-size: 0.85rem; color: #666;">If enabled, listeners can select "Floor Audio" to see captions of the original floor audio. Use the Start/Stop buttons after saving to control the bot.</p>
+    <p class="form-help form-help--spaced">If enabled, listeners can select "Floor Audio" to see captions of the original floor audio. Use the Start/Stop buttons after saving to control the bot.</p>
   </div>
 </form>
 
-<form id="floor_translation_form" method="post" action="/admin/events/{{ event.id }}/rooms/{{ room.id }}/edit" class="token-form">
+<form id="floor_translation_form" method="post" action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/edit" class="token-form">
   <input type="hidden" name="form_section" value="translation">
-  <div class="token-form-card" style="margin-bottom: 2rem;">
-    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
-      <h3 style="margin: 0;">Floor Audio Translation</h3>
-      <div id="nllb_download_progress_container" style="display: none; align-items: center; gap: 0.75rem;">
-        <span id="nllb_download_speed" style="font-size: 0.8rem; color: #666;">-- MB/s</span>
-        <div style="width: 100px; height: 8px; background: #eee; border-radius: 4px; overflow: hidden; position: relative;">
-          <div id="nllb_download_bar" style="position: absolute; top: 0; left: 0; height: 100%; width: 0%; background: #0056b3; transition: width 0.3s ease;"></div>
+  <div class="token-form-card token-form-card--spaced">
+    <div class="card-head card-head--spaced">
+      <h3>Floor Audio Translation</h3>
+      <div id="nllb_download_progress_container" class="download-progress" style="display: none;">
+        <span id="nllb_download_speed" class="download-speed">-- MB/s</span>
+        <div class="progress-track">
+          <div id="nllb_download_bar" class="progress-fill"></div>
         </div>
-        <span id="nllb_download_percent" style="font-size: 0.85rem; font-weight: 600; color: #0056b3; min-width: 40px;">0%</span>
+        <span id="nllb_download_percent" class="download-percent">0%</span>
       </div>
     </div>
     
     <div class="form-row">
-      <div class="form-group" style="flex: 1;">
-        <label class="checkbox-label" style="display: flex; align-items: center; gap: 0.5rem;">
+      <div class="form-group form-group--grow">
+        <label class="checkbox-label">
           <input type="checkbox" name="floor_translation_enabled" id="floor_translation_enabled" {% if room.floor_translation_enabled %}checked{% endif %}>
           Enable Real-Time LLM Translation for Floor Audio
         </label>
-        <p class="form-help" style="margin-top: 0.5rem; font-size: 0.85rem; color: #666;">This requires Floor Audio Transcription to be enabled, as translations are generated from the canonical transcript.</p>
+        <p class="form-help form-help--spaced">This requires Floor Audio Transcription to be enabled, as translations are generated from the canonical transcript.</p>
       </div>
     </div>
     
     <div class="form-row">
-      <div class="form-group" style="flex: 1;">
+      <div class="form-group form-group--grow">
         <label for="floor_translation_provider">Translation Provider</label>
         <select id="floor_translation_provider" name="floor_translation_provider" class="input">
           <option value="none" {% if room.floor_translation_provider == 'none' or not room.floor_translation_provider %}selected{% endif %}>-- None --</option>
@@ -185,7 +185,7 @@
           <option value="local" {% if room.floor_translation_provider == 'local' %}selected{% endif %}>Local LLM</option>
         </select>
       </div>
-      <div class="form-group" style="flex: 1;">
+      <div class="form-group form-group--grow">
         <label for="floor_translation_model">Translation Model</label>
         <select id="floor_translation_model" name="floor_translation_model" class="input">
           <option value="none" data-provider="none" {% if room.floor_translation_model == 'none' or not room.floor_translation_model %}selected{% endif %}>-- None --</option>
@@ -195,7 +195,7 @@
     </div>
 
     <div class="form-row">
-      <div class="form-group" style="flex: 1;">
+      <div class="form-group form-group--grow">
         <label>Target Languages</label>
         <div class="lang-picker" id="lp_floor_translation" aria-label="Target languages picker">
           <div class="lang-picker-tags" id="lp_floor_translation_tags"></div>
@@ -206,50 +206,50 @@
           </div>
         </div>
         <div id="lp_floor_translation_hidden"></div>
-        <p class="form-help" style="margin-top: 0.5rem; font-size: 0.85rem; color: #666;">The translation worker will generate a translation for every selected language simultaneously.</p>
+        <p class="form-help form-help--spaced">The translation worker will generate a translation for every selected language simultaneously.</p>
       </div>
-      <div class="form-group form-group-btn" style="flex: 0; align-self: flex-end;">
+      <div class="form-group form-group-btn form-group--action">
         <button type="submit" class="btn btn-primary">Save Settings</button>
       </div>
     </div>
   </div>
 </form>
 
-<form method="post" action="/admin/events/{{ event.id }}/rooms/{{ room.id }}/edit" class="token-form" id="floor_tts_form">
+<form method="post" action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/edit" class="token-form" id="floor_tts_form">
   <input type="hidden" name="form_section" value="tts">
-  <div class="token-form-card" style="margin-bottom: 2rem;">
-    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
-      <h3 style="margin: 0;">Floor Audio TTS (Direct Push)</h3>
-      <div id="supertonic_download_progress_container" style="display: none; align-items: center; gap: 0.75rem;">
-        <span id="supertonic_download_speed" style="font-size: 0.8rem; color: #666;">-- MB/s</span>
-        <div style="width: 100px; height: 8px; background: #eee; border-radius: 4px; overflow: hidden; position: relative;">
-          <div id="supertonic_download_bar" style="position: absolute; top: 0; left: 0; height: 100%; width: 0%; background: #0056b3; transition: width 0.3s ease;"></div>
+  <div class="token-form-card token-form-card--spaced">
+    <div class="card-head card-head--spaced">
+      <h3>Floor Audio TTS (Direct Push)</h3>
+      <div id="supertonic_download_progress_container" class="download-progress" style="display: none;">
+        <span id="supertonic_download_speed" class="download-speed">-- MB/s</span>
+        <div class="progress-track">
+          <div id="supertonic_download_bar" class="progress-fill"></div>
         </div>
-        <span id="supertonic_download_percent" style="font-size: 0.85rem; font-weight: 600; color: #0056b3; min-width: 40px;">0%</span>
+        <span id="supertonic_download_percent" class="download-percent">0%</span>
       </div>
     </div>
     
     <div class="form-row">
-      <div class="form-group" style="flex: 1;">
-        <label class="checkbox-label" style="display: flex; align-items: center; gap: 0.5rem;">
+      <div class="form-group form-group--grow">
+        <label class="checkbox-label">
           <input type="checkbox" name="floor_tts_enabled" id="floor_tts_enabled" {% if room.floor_tts_enabled %}checked{% endif %}>
           Enable TTS for translated floor audio
         </label>
-        <p class="form-help" style="margin-top: 0.5rem; font-size: 0.85rem; color: #666;">This requires Floor Audio Translation to be enabled. Translated text is synthesized to speech and pushed directly to listeners via WebSockets.</p>
+        <p class="form-help form-help--spaced">This requires Floor Audio Translation to be enabled. Translated text is synthesized to speech and pushed directly to listeners via WebSockets.</p>
       </div>
     </div>
 
     <div class="form-row">
-      <div class="form-group" style="flex: 1;">
+      <div class="form-group form-group--grow">
         <label for="floor_tts_provider">TTS Provider</label>
         <select id="floor_tts_provider" name="floor_tts_provider" class="input">
           <option value="deepgram" {% if (room.floor_tts_provider or 'deepgram') == 'deepgram' %}selected{% endif %}>Deepgram Aura (Cloud)</option>
           <option value="supertonic" {% if room.floor_tts_provider == 'supertonic' %}selected{% endif %}>Supertonic (Self-Hosted)</option>
         </select>
-        <p class="form-help" id="tts_provider_help_deepgram" style="margin-top: 0.5rem; font-size: 0.85rem; color: #666;"><strong>Supported Deepgram languages:</strong> English (en), Spanish (es), Dutch (nl), French (fr), German (de), Italian (it), Japanese (ja). Other languages fall back to an English voice.</p>
-        <p class="form-help" id="tts_provider_help_supertonic" style="margin-top: 0.5rem; font-size: 0.85rem; color: #666; display: none;">Supertonic runs locally with no API key. 31 languages supported; unknown languages use a language-agnostic fallback. The model (~400MB) downloads on first use.</p>
+        <p class="form-help form-help--spaced" id="tts_provider_help_deepgram"><strong>Supported Deepgram languages:</strong> English (en), Spanish (es), Dutch (nl), French (fr), German (de), Italian (it), Japanese (ja). Other languages fall back to an English voice.</p>
+        <p class="form-help form-help--spaced" id="tts_provider_help_supertonic" style="display: none;">Supertonic runs locally with no API key. 31 languages supported; unknown languages use a language-agnostic fallback. The model (~400MB) downloads on first use.</p>
       </div>
-      <div class="form-group" id="tts_voice_group" style="flex: 1;">
+      <div class="form-group form-group--grow" id="tts_voice_group">
         <label for="floor_tts_voice">Supertonic Voice</label>
         <select id="floor_tts_voice" name="floor_tts_voice" class="input">
           {% set current_voice = room.floor_tts_voice or 'M1' %}
@@ -257,9 +257,9 @@
           <option value="{{ v }}" {% if current_voice == v %}selected{% endif %}>{{ v }}</option>
           {% endfor %}
         </select>
-        <p class="form-help" style="margin-top: 0.5rem; font-size: 0.85rem; color: #666;">M1–M5 (male) and F1–F5 (female) preset voices.</p>
+        <p class="form-help form-help--spaced">M1–M5 (male) and F1–F5 (female) preset voices.</p>
       </div>
-      <div class="form-group form-group-btn" style="flex: 0; align-self: flex-end;">
+      <div class="form-group form-group-btn form-group--action">
         <button type="submit" class="btn btn-primary">Save Settings</button>
       </div>
     </div>
@@ -582,10 +582,10 @@ document.addEventListener('DOMContentLoaded', function() {
 
 
 <!-- Interpretation Schedule Table (replaces manual spreadsheet) -->
-<div class="section-card" style="margin-bottom: 2rem;">
+<div class="section-card section-card--spaced-lg">
   <div class="section-header">
     <h2>Interpretation Booths ({{ booths|length }})</h2>
-    <a href="/admin/events/{{ event.id }}/rooms/{{ room.id }}/booths/" class="btn btn-sm btn-primary">Manage Booths</a>
+    <a href="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/booths/" class="btn btn-sm btn-primary">Manage Booths</a>
   </div>
 
   {% if booths %}
@@ -623,38 +623,38 @@ document.addEventListener('DOMContentLoaded', function() {
           </a>
         </td>
         <td>
-          <a href="/admin/events/{{ event.id }}/rooms/{{ room.id }}/booths/{{ bs.db.id }}/" class="btn btn-sm">View</a>
+          <a href="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/booths/{{ bs.db.id }}/" class="btn btn-sm">View</a>
         </td>
       </tr>
       {% endfor %}
     </tbody>
   </table>
   {% else %}
-  <p class="muted">No booths in this room. <a href="/admin/events/{{ event.id }}/rooms/{{ room.id }}/booths/">Add booths</a>.</p>
+  <p class="muted">No booths in this room. <a href="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/booths/">Add booths</a>.</p>
   {% endif %}
 </div>
 
 <!-- Assigned Members -->
-<div class="section-card" style="margin-bottom: 2rem;">
+<div class="section-card section-card--spaced-lg">
   <div class="section-header">
     <h2>Assigned Room Coordinators</h2>
   </div>
   
   {% if request.query_params.get('error') == 'user_not_found' %}
-  <div class="alert alert-danger" style="margin-bottom: 1rem; color: #d32f2f; background-color: #fde0e0; padding: 10px; border-radius: 4px;">
+  <div class="alert alert-danger alert-flash">
     <strong>Error:</strong> User with that email address was not found. They must register first.
   </div>
   {% endif %}
   {% if request.query_params.get('error') == 'invalid_role' %}
-  <div class="alert alert-danger" style="margin-bottom: 1rem; color: #d32f2f; background-color: #fde0e0; padding: 10px; border-radius: 4px;">
+  <div class="alert alert-danger alert-flash">
     <strong>Error:</strong> Invalid role selected. Only room_coordinator is allowed.
   </div>
   {% endif %}
 
   <!-- Assign Member Form -->
-  <div class="token-form-card" style="margin-bottom: 1.5rem;">
+  <div class="token-form-card token-form-card--spaced-sm">
     <h3>Assign Coordinator</h3>
-    <form method="post" action="/admin/events/{{ event.id }}/rooms/{{ room.id }}/members/" class="token-form">
+    <form method="post" action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/members/" class="token-form">
       <div class="form-row">
         <div class="form-group">
           <label for="member_email">User Email</label>
@@ -702,13 +702,12 @@ document.addEventListener('DOMContentLoaded', function() {
         </td>
         <td class="actions-cell">
           <form method="post"
-                action="/admin/events/{{ event.id }}/rooms/{{ room.id }}/members/{{ m.id }}/invite"
-                class="inline-form"
-                style="margin-right: 8px;">
-            <button type="submit" class="btn btn-sm btn-outline" style="border: 2px solid #000; background: #fff; color: #000; border-radius: 4px; box-shadow: 2px 2px 0px #000; padding: 4px 12px; font-weight: bold;">✉️ Invite</button>
+                action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/members/{{ m.id }}/invite"
+                class="inline-form form-inline-spaced">
+            <button type="submit" class="btn btn-sm btn-outline btn-invite">✉️ Invite</button>
           </form>
           <form method="post"
-                action="/admin/events/{{ event.id }}/rooms/{{ room.id }}/members/{{ m.id }}/delete"
+                action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/members/{{ m.id }}/delete"
                 class="inline-form"
                 data-confirm="Remove {{ u.display_name }} from this room?">
             <button type="submit" class="btn btn-sm btn-danger">Remove</button>
@@ -728,7 +727,7 @@ document.addEventListener('DOMContentLoaded', function() {
 {% if is_event_owner %}
 <div class="danger-zone">
   <h3>Danger Zone</h3>
-  <form method="post" action="/admin/events/{{ event.id }}/rooms/{{ room.id }}/delete" class="inline-delete"
+  <form method="post" action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/delete" class="inline-delete"
         data-confirm="Delete room '{{ room.display_name }}'? All booths in this room will be removed.">
     <button type="submit" class="btn btn-danger">Delete Room</button>
     <span class="danger-text">This removes all booths and their invite tokens.</span>
@@ -736,50 +735,50 @@ document.addEventListener('DOMContentLoaded', function() {
 </div>
 {% endif %}
 
-<div id="nllb_download_modal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 9999; align-items: center; justify-content: center;">
-  <div style="background: white; padding: 2rem; border-radius: 8px; max-width: 400px; text-align: center; box-shadow: 0 4px 12px rgba(0,0,0,0.15);">
-    <h3 style="margin-top: 0;">Local Offline Model Selected</h3>
-    <p style="color: #666; margin-bottom: 1.5rem;">You selected a local offline model. It will take time to load the model. Do you want to continue?</p>
-    <div style="display: flex; gap: 1rem; justify-content: center;">
+<div id="nllb_download_modal" class="model-modal-overlay" style="display: none;">
+  <div class="model-modal">
+    <h3>Local Offline Model Selected</h3>
+    <p>You selected a local offline model. It will take time to load the model. Do you want to continue?</p>
+    <div class="model-modal-actions">
       <button type="button" class="btn btn-secondary" id="nllb_cancel_btn">Cancel</button>
       <button type="button" class="btn btn-primary" id="nllb_proceed_btn">Proceed</button>
     </div>
   </div>
 </div>
 
-<div id="nllb_success_modal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 9999; align-items: center; justify-content: center;">
-  <div style="background: white; padding: 2.5rem 2rem; border-radius: 12px; max-width: 400px; text-align: center; box-shadow: 0 8px 24px rgba(0,0,0,0.2);">
-    <div style="width: 48px; height: 48px; border-radius: 50%; background: #e6f4ea; color: #1e8e3e; display: flex; align-items: center; justify-content: center; font-size: 24px; margin: 0 auto 1rem auto;">
+<div id="nllb_success_modal" class="model-modal-overlay" style="display: none;">
+  <div class="model-modal model-modal--success">
+    <div class="model-modal-icon">
       ✓
     </div>
-    <h3 style="margin-top: 0; color: #1e8e3e;">Model Ready</h3>
-    <p style="color: #5f6368; margin-bottom: 1.5rem; line-height: 1.5;">The local translation model is fully loaded and ready to use. Your real-time translations will now process entirely on this device.</p>
-    <div style="display: flex; justify-content: center;">
-      <button type="button" class="btn btn-primary" id="nllb_success_got_it_btn" style="padding: 0.5rem 2rem; border-radius: 6px;">Got it</button>
+    <h3>Model Ready</h3>
+    <p>The local translation model is fully loaded and ready to use. Your real-time translations will now process entirely on this device.</p>
+    <div class="model-modal-actions">
+      <button type="button" class="btn btn-primary btn-modal-dismiss" id="nllb_success_got_it_btn">Got it</button>
     </div>
   </div>
 </div>
 
-<div id="supertonic_download_modal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 9999; align-items: center; justify-content: center;">
-  <div style="background: white; padding: 2rem; border-radius: 8px; max-width: 400px; text-align: center; box-shadow: 0 4px 12px rgba(0,0,0,0.15);">
-    <h3 style="margin-top: 0;">Supertonic TTS Selected</h3>
-    <p style="color: #666; margin-bottom: 1.5rem;">You selected the local Supertonic TTS provider. It will take some time to download the ~400MB model on its first use. Do you want to continue?</p>
-    <div style="display: flex; gap: 1rem; justify-content: center;">
+<div id="supertonic_download_modal" class="model-modal-overlay" style="display: none;">
+  <div class="model-modal">
+    <h3>Supertonic TTS Selected</h3>
+    <p>You selected the local Supertonic TTS provider. It will take some time to download the ~400MB model on its first use. Do you want to continue?</p>
+    <div class="model-modal-actions">
       <button type="button" class="btn btn-secondary" id="supertonic_cancel_btn">Cancel</button>
       <button type="button" class="btn btn-primary" id="supertonic_proceed_btn">Proceed</button>
     </div>
   </div>
 </div>
 
-<div id="supertonic_success_modal" style="display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 9999; align-items: center; justify-content: center;">
-  <div style="background: white; padding: 2.5rem 2rem; border-radius: 12px; max-width: 400px; text-align: center; box-shadow: 0 8px 24px rgba(0,0,0,0.2);">
-    <div style="width: 48px; height: 48px; border-radius: 50%; background: #e6f4ea; color: #1e8e3e; display: flex; align-items: center; justify-content: center; font-size: 24px; margin: 0 auto 1rem auto;">
+<div id="supertonic_success_modal" class="model-modal-overlay" style="display: none;">
+  <div class="model-modal model-modal--success">
+    <div class="model-modal-icon">
       ✓
     </div>
-    <h3 style="margin-top: 0; color: #1e8e3e;">Supertonic Ready</h3>
-    <p style="color: #5f6368; margin-bottom: 1.5rem; line-height: 1.5;">The Supertonic TTS model is fully loaded and ready to use. Your text-to-speech audio will now process entirely on this device.</p>
-    <div style="display: flex; justify-content: center;">
-      <button type="button" class="btn btn-primary" id="supertonic_success_got_it_btn" style="padding: 0.5rem 2rem; border-radius: 6px;">Got it</button>
+    <h3>Supertonic Ready</h3>
+    <p>The Supertonic TTS model is fully loaded and ready to use. Your text-to-speech audio will now process entirely on this device.</p>
+    <div class="model-modal-actions">
+      <button type="button" class="btn btn-primary btn-modal-dismiss" id="supertonic_success_got_it_btn">Got it</button>
     </div>
   </div>
 </div>

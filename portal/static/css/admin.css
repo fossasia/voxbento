@@ -791,6 +791,96 @@ code { font-family: var(--font-mono); font-size: 0.85em; background: var(--color
 .alert-info { background: var(--color-primary-subtle); color: var(--color-primary-active); border-color: var(--color-primary-border); }
 .alert-warning { background: #fffbeb; color: #92400e; border-color: #fde68a; }
 
+/* ── Admin detail pages ─────────────────────────────────────────────────────
+   Classes for the styles that used to sit in style attributes on the event,
+   members, booth and user detail templates. Declared after .alert-danger so
+   .alert-flash wins, exactly as the inline styles did. */
+
+.alert-flash { margin-bottom: 1rem; color: #d32f2f; background-color: #fde0e0; padding: 10px; border-radius: 4px; }
+.alert--spaced { margin: 12px 0; }
+
+.section-card--spaced { margin-bottom: 20px; }
+.section-card--spaced-lg { margin-bottom: 2rem; }
+.token-form-card--spaced { margin-bottom: 2rem; }
+.token-form-card--spaced-sm { margin-bottom: 1.5rem; }
+.card--spaced { margin-bottom: 2rem; }
+.tile-grid--spaced { margin-bottom: 28px; }
+.header-meta--spaced { margin-top: 6px; }
+.section-spaced-lg { margin-top: 3rem; }
+.hint--spaced { margin-bottom: 12px; }
+.hint--spaced-lg { margin-bottom: 1rem; }
+
+.token-form .form-group--grow { flex: 1; }
+.token-form .form-group--wide { flex: 2; }
+.token-form .form-group--action { flex: 0; align-self: flex-end; }
+.form-help--spaced { margin-top: 0.5rem; font-size: 0.85rem; color: #666; }
+.form-help--tight { margin-top: 0.25rem; font-size: 0.85rem; color: #666; }
+.token-form .checkbox-label { display: flex; align-items: center; gap: 0.5rem; cursor: pointer; }
+.form-inline-spaced { margin-right: 8px; }
+.token-form input.input-readonly { background-color: #f5f5f5; }
+.btn-invite,
+.btn-invite:hover { border: 2px solid #000; background: #fff; color: #000; border-radius: 4px; box-shadow: 2px 2px 0px #000; padding: 4px 12px; font-weight: bold; }
+
+.event-share-row { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; }
+.event-share-field { flex: 1; min-width: 260px; }
+.transcripts-head { display: flex; justify-content: space-between; align-items: center; }
+.transcripts-head h3 { margin: 0; }
+
+.custom-modal--sm { max-width: 400px; }
+.custom-modal--md { max-width: 500px; }
+.custom-modal-title { margin: 0; font-size: 1.25rem; }
+.custom-modal-title--danger { color: #cf222e; }
+.custom-modal-footer--spaced { margin-top: 16px; }
+.custom-modal-key-row { display: flex; gap: 8px; margin-bottom: 16px; }
+.custom-modal-key-row .field--grow { flex: 1; margin-bottom: 0; }
+.custom-modal-key-input { width: 100%; box-sizing: border-box; }
+.custom-modal-copy-btn { height: fit-content; align-self: flex-end; }
+.custom-modal-note { font-style: italic; color: #6b7280; font-size: 0.9rem; margin-top: 12px; margin-bottom: 0; }
+
+.user-facts { width: 100%; border-radius: 8px; }
+.user-facts td.user-facts-label { font-weight: 500; }
+.user-facts td.user-facts-label--wide { width: 200px; }
+
+/* ── Admin room pages ───────────────────────────────────────────────────────
+   Classes for the styles that used to sit in style attributes on the room
+   detail and room transcripts templates. Elements whose display is toggled
+   from JavaScript keep their display value inline. */
+
+.card-head { display: flex; justify-content: space-between; align-items: center; }
+.card-head h3 { margin: 0; }
+.card-head--spaced { margin-bottom: 1rem; }
+.card-head-actions { display: flex; gap: 0.5rem; align-items: center; }
+
+.status-pill { display: inline-flex; align-items: center; gap: 0.4rem; font-size: 0.8rem; font-weight: 600; padding: 0.25rem 0.6rem; border-radius: 999px; background: #eee; color: #666; }
+.status-dot { width: 8px; height: 8px; border-radius: 50%; background: #999; }
+.btn-outline.btn-stop,
+.btn-outline.btn-stop:hover { border-color: #dc3545; color: #dc3545; }
+
+.download-progress { align-items: center; gap: 0.75rem; }
+.download-speed { font-size: 0.8rem; color: #666; }
+.download-percent { font-size: 0.85rem; font-weight: 600; color: #0056b3; min-width: 40px; }
+.progress-track { width: 100px; height: 8px; background: #eee; border-radius: 4px; overflow: hidden; position: relative; }
+.progress-fill { position: absolute; top: 0; left: 0; height: 100%; width: 0%; background: #0056b3; transition: width 0.3s ease; }
+
+.model-modal-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 9999; align-items: center; justify-content: center; }
+.model-modal { background: white; padding: 2rem; border-radius: 8px; max-width: 400px; text-align: center; box-shadow: 0 4px 12px rgba(0,0,0,0.15); }
+.model-modal h3 { margin-top: 0; }
+.model-modal p { color: #666; margin-bottom: 1.5rem; }
+.model-modal-actions { display: flex; gap: 1rem; justify-content: center; }
+.model-modal--success { padding: 2.5rem 2rem; border-radius: 12px; box-shadow: 0 8px 24px rgba(0,0,0,0.2); }
+.model-modal--success h3 { color: #1e8e3e; }
+.model-modal--success p { color: #5f6368; line-height: 1.5; }
+.model-modal-icon { width: 48px; height: 48px; border-radius: 50%; background: #e6f4ea; color: #1e8e3e; display: flex; align-items: center; justify-content: center; font-size: 24px; margin: 0 auto 1rem auto; }
+.btn.btn-modal-dismiss { padding: 0.5rem 2rem; border-radius: 6px; }
+
+.form-row--spaced { margin-bottom: 1rem; }
+.form-row--spaced .form-group--grow { flex: 1; }
+.form-group--align-end { align-self: flex-end; }
+.transcript-viewer { background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 6px; padding: 1rem; max-height: 600px; overflow-y: auto; }
+.transcript-placeholder { text-align: center; margin-top: 2rem; }
+.transcript-table { margin: 0; width: 100%; }
+.transcript-table th.transcript-time-col { width: 150px; }
+
 /* ── Badges (extra) ──────────────────────────────────────────────────────── */
 .badge-event_owner { background: #ede9fe; color: #5b21b6; }
 
@@ -862,6 +952,14 @@ code { font-family: var(--font-mono); font-size: 0.85em; background: var(--color
 /* ── Copy field ──────────────────────────────────────────────────────────── */
 .copy-field { display: flex; align-items: stretch; gap: 8px; }
 .copy-field input { flex: 1; min-height: 40px; padding: 8px 12px; border: 1px solid var(--color-border-strong); border-radius: 10px; font-family: var(--font-mono); font-size: 0.85rem; background: var(--color-surface-2); color: var(--color-text); }
+.copy-field .btn-copy { height: auto; min-width: 72px; }
+
+/* ── Toasts ───────────────────────────────────────────────────────────────── */
+.toast-container { position: fixed; bottom: 20px; right: 20px; display: flex; flex-direction: column; gap: 8px; z-index: 1000; }
+.toast { padding: 10px 16px; border-radius: 10px; font-size: 0.9rem; font-weight: 600; box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15); background: var(--color-surface-2); color: var(--color-text); border: 1px solid var(--color-border-strong); animation: toast-in 0.15s ease-out; }
+.toast--success { background: var(--color-primary-subtle); border-color: var(--color-primary-border); color: var(--color-primary-active); }
+.toast--error { background: #fde2e2; border-color: var(--color-danger); color: var(--color-danger); }
+@keyframes toast-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
 
 /* ── Join code display ───────────────────────────────────────────────────── */
 .join-code { font-family: var(--font-mono); font-size: 1.6rem; font-weight: 700; letter-spacing: 0.35em; color: var(--color-primary-active); background: var(--color-primary-subtle); border: 1px dashed var(--color-primary-border); border-radius: 12px; padding: 12px 20px; display: inline-block; }
@@ -906,3 +1004,41 @@ code { font-family: var(--font-mono); font-size: 0.85em; background: var(--color
   .step-label { display: none; }
   .wizard-card { padding: 22px; }
 }
+
+/* ── Admin developer accounts page ──────────────────────────────────────────
+   Classes for the styles that used to sit in style attributes on
+   admin/developer_accounts.html. Scoped under .page-header / .data-table so
+   they win over the generic .page-header h1 and .data-table th/td rules. */
+.page-header.dev-accounts-header { margin-bottom: 2rem; border-bottom: 1px solid var(--color-border); padding-bottom: 1.5rem; }
+.page-header .dev-accounts-title { font-size: 2rem; font-weight: 800; letter-spacing: -0.02em; color: var(--color-text); }
+.page-header .dev-accounts-subtitle { font-size: 1.05rem; color: var(--color-text-secondary); margin-top: 0.25rem; }
+
+.dev-accounts-card { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 12px; overflow: hidden; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05); }
+.data-table.dev-accounts-table { border: none; margin: 0; }
+.dev-accounts-table thead { background: #f8fafc; }
+.data-table.dev-accounts-table thead th { padding: 16px 24px; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; color: #64748b; border-bottom: 1px solid var(--color-border); }
+.data-table.dev-accounts-table thead th.dev-accounts-col-actions { text-align: right; }
+.dev-accounts-table .dev-accounts-row { border-bottom: 1px solid var(--color-border); }
+.data-table.dev-accounts-table td { padding: 16px 24px; border: none; }
+.data-table.dev-accounts-table td.dev-accounts-cell-email { font-weight: 500; }
+.data-table.dev-accounts-table td.dev-accounts-cell-muted { color: var(--color-text-secondary); }
+.data-table.dev-accounts-table td.dev-accounts-cell-date { font-variant-numeric: tabular-nums; color: var(--color-text-secondary); }
+.data-table.dev-accounts-table td.dev-accounts-cell-actions { text-align: right; white-space: nowrap; }
+
+.dev-accounts-status { padding: 4px 10px; border-radius: 9999px; font-size: 0.75rem; font-weight: 600; text-transform: capitalize; }
+.dev-accounts-status--approved { background: #ecfdf5; color: #059669; border: 1px solid #a7f3d0; }
+.dev-accounts-status--pending { background: #fffbeb; color: #d97706; border: 1px solid #fde68a; }
+.dev-accounts-status--inactive { background: #fef2f2; color: #dc2626; border: 1px solid #fecaca; }
+
+.dev-accounts-form { display: inline; }
+.dev-accounts-form + .dev-accounts-form { margin-left: 8px; }
+.dev-accounts-btn { padding: 6px 14px; border-radius: 6px; font-size: 0.85rem; font-weight: 600; cursor: pointer; }
+.dev-accounts-btn--approve { background: #3b82f6; color: white; border: none; box-shadow: 0 1px 2px rgba(59, 130, 246, 0.3); }
+.dev-accounts-btn--reject { background: #ef4444; color: white; border: none; box-shadow: 0 1px 2px rgba(239, 68, 68, 0.3); }
+.dev-accounts-btn--suspend { background: white; color: #ef4444; border: 1px solid #fca5a5; transition: all 0.2s; }
+.dev-accounts-btn--restore { background: white; color: #3b82f6; border: 1px solid #93c5fd; transition: all 0.2s; }
+
+.data-table.dev-accounts-table td.dev-accounts-empty { text-align: center; padding: 48px 24px; color: var(--color-text-secondary); }
+.dev-accounts-empty-icon { width: 48px; height: 48px; color: #cbd5e1; margin: 0 auto 1rem auto; display: block; }
+.dev-accounts-empty-title { margin: 0; font-size: 1.05rem; font-weight: 500; color: var(--color-text); }
+.dev-accounts-empty-text { margin: 4px 0 0 0; font-size: 0.95rem; }

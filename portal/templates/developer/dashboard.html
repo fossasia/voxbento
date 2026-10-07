@@ -4,141 +4,9 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Developer Dashboard — VoxBento</title>
+    <link rel="stylesheet" href="{{ url_for('static', path='css/fonts.css') }}" />
     <link rel="stylesheet" href="{{ url_for('static', path='css/admin.css') }}" />
-    <style>
-      .create-panel { max-width: 600px; margin-top: 1rem; }
-      .app-list { margin-top: 2rem; }
-      
-      /* Sexy Copy Wrapper */
-      .copy-wrapper {
-        position: relative;
-        display: inline-flex;
-        align-items: center;
-        gap: 12px;
-        padding: 6px 10px;
-        background: var(--color-surface, #ffffff);
-        border: 1px solid var(--color-border-strong, #cbd5e1);
-        border-radius: 8px;
-        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-        font-size: 0.85rem;
-        color: var(--color-text, #1e293b);
-        cursor: pointer;
-        transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-      }
-
-      .copy-wrapper:hover {
-        background: #f8fafc;
-        border-color: #94a3b8;
-        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -1px rgba(0, 0, 0, 0.03);
-        transform: translateY(-1px);
-      }
-
-      .copy-wrapper:active {
-        transform: translateY(0);
-        box-shadow: none;
-      }
-
-      .copy-text {
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-      }
-
-      .copy-icon-container {
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        color: #94a3b8;
-        transition: all 0.2s ease;
-      }
-
-      .copy-wrapper:hover .copy-icon-container {
-        color: var(--color-primary, #3b82f6);
-      }
-
-      .copy-wrapper.copied {
-        border-color: #10b981;
-        background: #ecfdf5;
-        color: #065f46;
-      }
-
-      .copy-wrapper.copied .copy-icon-container {
-        color: #10b981;
-      }
-
-      .copy-tooltip {
-        position: absolute;
-        top: -34px;
-        left: 50%;
-        transform: translateX(-50%) translateY(8px) scale(0.95);
-        background: #1e293b;
-        color: white;
-        padding: 5px 10px;
-        border-radius: 6px;
-        font-size: 0.75rem;
-        font-family: system-ui, -apple-system, sans-serif;
-        font-weight: 500;
-        opacity: 0;
-        visibility: hidden;
-        transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-        pointer-events: none;
-        white-space: nowrap;
-        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
-        z-index: 10;
-      }
-
-      .copy-tooltip::after {
-        content: '';
-        position: absolute;
-        bottom: -4px;
-        left: 50%;
-        transform: translateX(-50%);
-        border-width: 4px 4px 0;
-        border-style: solid;
-        border-color: #1e293b transparent transparent transparent;
-      }
-
-      .copy-wrapper:hover .copy-tooltip {
-        opacity: 1;
-        visibility: visible;
-        transform: translateX(-50%) translateY(0) scale(1);
-      }
-
-      .copy-wrapper.copied .copy-tooltip {
-        opacity: 1;
-        visibility: visible;
-        transform: translateX(-50%) translateY(0) scale(1);
-        background: #10b981;
-      }
-
-      .copy-wrapper.copied .copy-tooltip::after {
-        border-color: #10b981 transparent transparent transparent;
-      }
-
-      /* Specific styling for the modal secrets */
-      .secret-box.copy-wrapper {
-        width: 100%;
-        justify-content: space-between;
-        padding: 12px 16px;
-        font-size: 0.95rem;
-        margin: 8px 0;
-      }
-
-      .secret-box-danger.copy-wrapper {
-        background: #fffbeb;
-        border-color: #fde047;
-      }
-
-      .secret-box-danger.copy-wrapper:hover {
-        background: #fef3c7;
-        border-color: #facc15;
-      }
-
-      .secret-box-danger.copy-wrapper.copied {
-        background: #ecfdf5;
-        border-color: #10b981;
-      }
-    </style>
+    <link rel="stylesheet" href="{{ url_for('static', path='css/developer.css') }}" />
   </head>
   <body>
     <header class="admin-header">
@@ -153,111 +21,111 @@
       </nav>
     </header>
 
-    <main class="admin-main" style="max-width: 1000px; padding: 40px 24px;">
-      <div style="margin-bottom: 3rem; border-bottom: 1px solid var(--color-border); padding-bottom: 2rem;">
-        <h1 style="font-size: 2.25rem; font-weight: 800; letter-spacing: -0.025em; color: var(--color-text); margin-bottom: 0.5rem;">Developer Dashboard</h1>
-        <p style="font-size: 1.1rem; color: var(--color-text-secondary);">Manage your API integrations and OAuth clients.</p>
+    <main class="admin-main dev-main">
+      <div class="dev-page-header">
+        <h1 class="dev-page-title">Developer Dashboard</h1>
+        <p class="dev-page-subtitle">Manage your API integrations and OAuth clients.</p>
       </div>
       
       {% if not account %}
-      <div class="create-panel" style="max-width: 600px; margin: 0 auto; box-shadow: 0 10px 25px -5px rgba(0,0,0,0.1); border-radius: 12px; overflow: hidden; border: 1px solid var(--color-border);">
-        <div style="background: var(--color-surface-2); padding: 24px 32px; border-bottom: 1px solid var(--color-border);">
-          <h3 style="font-size: 1.25rem; font-weight: 700; margin-bottom: 0.5rem;">Apply for Developer Access</h3>
-          <p style="color: var(--color-text-secondary); font-size: 0.95rem;">You need an approved Developer Account to create OAuth clients for VoxBento.</p>
+      <div class="create-panel">
+        <div class="dev-panel-head">
+          <h3 class="dev-panel-title">Apply for Developer Access</h3>
+          <p class="dev-panel-desc">You need an approved Developer Account to create OAuth clients for VoxBento.</p>
         </div>
-        <div style="padding: 32px;">
+        <div class="dev-panel-body">
           <form method="POST" action="/api/developer/apply">
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <div class="field">
-              <label for="organization_name" style="font-weight: 600; margin-bottom: 0.5rem; display: block;">Organization / Project Name</label>
-              <input type="text" id="organization_name" name="organization_name" required autofocus placeholder="e.g. Eventyay Interpretation Plugin" style="width: 100%; padding: 12px; border-radius: 8px; border: 1px solid var(--color-border);" />
-              <span class="hint" style="display: block; margin-top: 0.5rem; font-size: 0.85rem;">What is the name of the app or organization requesting access?</span>
+              <label for="organization_name" class="dev-label">Organization / Project Name</label>
+              <input type="text" id="organization_name" name="organization_name" required autofocus placeholder="e.g. Eventyay Interpretation Plugin" class="dev-input" />
+              <span class="hint dev-hint">What is the name of the app or organization requesting access?</span>
             </div>
-            <div class="form-actions" style="margin-top: 2rem;">
-              <button type="submit" class="btn btn-primary" style="width: 100%; padding: 12px; font-weight: 600; border-radius: 8px;">Submit Application</button>
+            <div class="form-actions dev-form-actions">
+              <button type="submit" class="btn btn-primary dev-btn-block">Submit Application</button>
             </div>
           </form>
         </div>
       </div>
       
       {% elif account.status == 'pending' %}
-      <div style="background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 12px; padding: 24px; display: flex; gap: 16px; align-items: flex-start;">
-        <svg style="width: 24px; height: 24px; color: #3b82f6; flex-shrink: 0; margin-top: 2px;" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+      <div class="dev-notice dev-notice--info">
+        <svg class="dev-notice-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
         <div>
-          <h3 style="font-size: 1.1rem; font-weight: 700; color: #1e40af; margin-bottom: 0.25rem;">Application Pending</h3>
-          <p style="color: #1e3a8a; font-size: 0.95rem; line-height: 1.5;">Your application for <strong>{{ account.organization_name }}</strong> is currently being reviewed by an administrator. Please check back later.</p>
+          <h3 class="dev-notice-title">Application Pending</h3>
+          <p class="dev-notice-text">Your application for <strong>{{ account.organization_name }}</strong> is currently being reviewed by an administrator. Please check back later.</p>
         </div>
       </div>
       
       {% elif account.status == 'rejected' %}
-      <div style="background: #fef2f2; border: 1px solid #fecaca; border-radius: 12px; padding: 24px; display: flex; gap: 16px; align-items: flex-start;">
-        <svg style="width: 24px; height: 24px; color: #ef4444; flex-shrink: 0; margin-top: 2px;" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>
+      <div class="dev-notice dev-notice--danger">
+        <svg class="dev-notice-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>
         <div>
-          <h3 style="font-size: 1.1rem; font-weight: 700; color: #991b1b; margin-bottom: 0.25rem;">Application Rejected</h3>
-          <p style="color: #7f1d1d; font-size: 0.95rem; line-height: 1.5;">Your developer application for <strong>{{ account.organization_name }}</strong> was rejected. Please contact an administrator if you believe this is a mistake.</p>
+          <h3 class="dev-notice-title">Application Rejected</h3>
+          <p class="dev-notice-text">Your developer application for <strong>{{ account.organization_name }}</strong> was rejected. Please contact an administrator if you believe this is a mistake.</p>
         </div>
       </div>
       
       {% elif account.status == 'suspended' %}
-      <div style="background: #fef2f2; border: 1px solid #fecaca; border-radius: 12px; padding: 24px; display: flex; gap: 16px; align-items: flex-start;">
-        <svg style="width: 24px; height: 24px; color: #ef4444; flex-shrink: 0; margin-top: 2px;" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>
+      <div class="dev-notice dev-notice--danger">
+        <svg class="dev-notice-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>
         <div>
-          <h3 style="font-size: 1.1rem; font-weight: 700; color: #991b1b; margin-bottom: 0.25rem;">Account Suspended</h3>
-          <p style="color: #7f1d1d; font-size: 0.95rem; line-height: 1.5;">Your developer account is currently suspended. All OAuth clients are disabled.</p>
+          <h3 class="dev-notice-title">Account Suspended</h3>
+          <p class="dev-notice-text">Your developer account is currently suspended. All OAuth clients are disabled.</p>
         </div>
       </div>
       
       {% elif account.status == 'approved' %}
-      <div style="background: #ecfdf5; border: 1px solid #a7f3d0; border-radius: 12px; padding: 24px; display: flex; gap: 16px; align-items: flex-start; margin-bottom: 3rem;">
-        <svg style="width: 24px; height: 24px; color: #10b981; flex-shrink: 0; margin-top: 2px;" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+      <div class="dev-notice dev-notice--success dev-notice--approved">
+        <svg class="dev-notice-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
         <div>
-          <h3 style="font-size: 1.1rem; font-weight: 700; color: #065f46; margin-bottom: 0.25rem;">Approved Developer Account</h3>
-          <p style="color: #064e3b; font-size: 0.95rem; line-height: 1.5;">Welcome! You can now create OAuth clients for <strong>{{ account.organization_name }}</strong>.</p>
+          <h3 class="dev-notice-title">Approved Developer Account</h3>
+          <p class="dev-notice-text">Welcome! You can now create OAuth clients for <strong>{{ account.organization_name }}</strong>.</p>
         </div>
       </div>
       
       <div>
-        <div style="display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 1.5rem;">
+        <div class="dev-section-head">
           <div>
-            <h2 style="font-size: 1.5rem; font-weight: 700; color: var(--color-text);">Your Apps</h2>
-            <p style="color: var(--color-text-secondary); font-size: 0.95rem; margin-top: 0.25rem;">OAuth clients associated with your developer account.</p>
+            <h2 class="dev-section-title">Your Apps</h2>
+            <p class="dev-section-desc">OAuth clients associated with your developer account.</p>
           </div>
-          <button class="btn btn-primary" id="btn-create-app" style="padding: 10px 20px; font-weight: 600; border-radius: 8px; box-shadow: 0 4px 6px -1px rgba(59, 130, 246, 0.3);">+ Create New App</button>
+          <button class="btn btn-primary dev-btn-create" id="btn-create-app">+ Create New App</button>
         </div>
         
         {% if clients %}
-        <div style="background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 12px; overflow: hidden; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);">
-          <table class="data-table" style="border: none; margin: 0;">
-            <thead style="background: #f8fafc;">
+        <div class="dev-table-card">
+          <table class="data-table dev-table">
+            <thead>
               <tr>
-                <th style="padding: 16px 24px; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; color: #64748b; border-bottom: 1px solid var(--color-border);">Name</th>
-                <th style="padding: 16px 24px; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; color: #64748b; border-bottom: 1px solid var(--color-border);">Client ID</th>
-                <th style="padding: 16px 24px; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; color: #64748b; border-bottom: 1px solid var(--color-border); width: 120px;">Status</th>
+                <th class="dev-th">Name</th>
+                <th class="dev-th">Client ID</th>
+                <th class="dev-th dev-th--narrow">Status</th>
               </tr>
             </thead>
             <tbody>
               {% for client in clients %}
-              <tr style="border-bottom: 1px solid var(--color-border);">
-                <td style="padding: 20px 24px; border: none;">
-                  <strong style="font-size: 1rem; color: var(--color-text);">{{ client.name }}</strong>
+              <tr class="dev-row">
+                <td class="dev-td">
+                  <strong class="dev-client-name">{{ client.name }}</strong>
                 </td>
-                <td style="padding: 20px 24px; border: none;">
+                <td class="dev-td">
                   <div class="copy-wrapper" onclick="copyToClipboard(this, '{{ client.client_id }}')">
-                    <span class="copy-text" style="font-size: 0.9rem;">{{ client.client_id }}</span>
+                    <span class="copy-text">{{ client.client_id }}</span>
                     <div class="copy-icon-container">
                       <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon-copy"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
-                      <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon-check" style="display:none;"><polyline points="20 6 9 17 4 12"></polyline></svg>
+                      <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon-check"><polyline points="20 6 9 17 4 12"></polyline></svg>
                     </div>
                     <span class="copy-tooltip">Copy to clipboard</span>
                   </div>
                 </td>
-                <td style="padding: 20px 24px; border: none;">
-                  <span class="status-badge status-{{ client.status }}" style="padding: 6px 12px; border-radius: 9999px; font-size: 0.75rem; font-weight: 600;">{{ client.status }}</span>
+                <td class="dev-td">
+                  <span class="status-badge dev-badge status-{{ client.status }}">{{ client.status }}</span>
                 </td>
-                <td style="padding: 20px 24px; border: none; text-align: right;">
-                  <form method="POST" action="/api/developer/clients/{{ client.client_id }}/delete" onsubmit="return confirm('Are you sure you want to delete this app? This will break any integrations using it.');" style="display:inline;">
+                <td class="dev-td dev-td--right">
+                  <form method="POST" action="/api/developer/clients/{{ client.client_id }}/delete" onsubmit="return confirm('Are you sure you want to delete this app? This will break any integrations using it.');" class="dev-inline-form">
                     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-                    <button type="submit" class="btn btn-outline" style="color: #ef4444; border-color: #ef4444; padding: 4px 8px; font-size: 0.8rem;">Delete</button>
+                    <button type="submit" class="btn btn-outline dev-btn-delete">Delete</button>
                   </form>
                 </td>
               </tr>
@@ -266,49 +134,49 @@
           </table>
         </div>
         {% else %}
-        <div style="margin-top: 1rem; text-align: center; padding: 4rem 2rem; background: var(--color-surface); border: 1px dashed var(--color-border-strong); border-radius: 12px;">
-          <svg style="width: 48px; height: 48px; color: #cbd5e1; margin: 0 auto 1rem auto;" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"></path></svg>
-          <h3 style="font-size: 1.1rem; font-weight: 600; color: var(--color-text); margin-bottom: 0.5rem;">No apps yet</h3>
-          <p style="color: var(--color-text-secondary); font-size: 0.95rem; max-width: 400px; margin: 0 auto;">You haven't created any OAuth clients. Click the button above to get started.</p>
+        <div class="dev-empty">
+          <svg class="dev-empty-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"></path></svg>
+          <h3 class="dev-empty-title">No apps yet</h3>
+          <p class="dev-empty-text">You haven't created any OAuth clients. Click the button above to get started.</p>
         </div>
         {% endif %}
       </div>
 
-      <div style="margin-top: 4rem;">
-        <div style="display: flex; justify-content: space-between; align-items: flex-end; margin-bottom: 1.5rem;">
+      <div class="dev-section--spaced">
+        <div class="dev-section-head">
           <div>
-            <h2 style="font-size: 1.5rem; font-weight: 700; color: var(--color-text);">Your Webhooks</h2>
-            <p style="color: var(--color-text-secondary); font-size: 0.95rem; margin-top: 0.25rem;">Active webhook subscriptions across your clients.</p>
+            <h2 class="dev-section-title">Your Webhooks</h2>
+            <p class="dev-section-desc">Active webhook subscriptions across your clients.</p>
           </div>
         </div>
         
         {% if webhooks %}
-        <div style="background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 12px; overflow: hidden; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);">
-          <table class="data-table" style="border: none; margin: 0;">
-            <thead style="background: #f8fafc;">
+        <div class="dev-table-card">
+          <table class="data-table dev-table">
+            <thead>
               <tr>
-                <th style="padding: 16px 24px; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; color: #64748b; border-bottom: 1px solid var(--color-border);">Target URL</th>
-                <th style="padding: 16px 24px; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; color: #64748b; border-bottom: 1px solid var(--color-border);">Status</th>
-                <th style="padding: 16px 24px; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; color: #64748b; border-bottom: 1px solid var(--color-border); width: 120px;"></th>
+                <th class="dev-th">Target URL</th>
+                <th class="dev-th">Status</th>
+                <th class="dev-th dev-th--narrow"></th>
               </tr>
             </thead>
             <tbody>
               {% for webhook in webhooks %}
-              <tr style="border-bottom: 1px solid var(--color-border);">
-                <td style="padding: 20px 24px; border: none; word-break: break-all;">
-                  <strong style="font-size: 0.9rem; color: var(--color-text);">{{ webhook.target_url }}</strong>
+              <tr class="dev-row">
+                <td class="dev-td dev-td--wrap">
+                  <strong class="dev-webhook-url">{{ webhook.target_url }}</strong>
                 </td>
-                <td style="padding: 20px 24px; border: none;">
+                <td class="dev-td">
                   {% if webhook.is_active %}
-                    <span class="status-badge status-active" style="padding: 6px 12px; border-radius: 9999px; font-size: 0.75rem; font-weight: 600; background: #ecfdf5; color: #065f46;">Active</span>
+                    <span class="status-badge dev-badge dev-badge--active status-active">Active</span>
                   {% else %}
-                    <span class="status-badge" style="padding: 6px 12px; border-radius: 9999px; font-size: 0.75rem; font-weight: 600; background: #fef2f2; color: #991b1b;">Disabled</span>
+                    <span class="status-badge dev-badge dev-badge--disabled">Disabled</span>
                   {% endif %}
                 </td>
-                <td style="padding: 20px 24px; border: none; text-align: right;">
-                  <form method="POST" action="/api/developer/webhooks/{{ webhook.id }}/delete" onsubmit="return confirm('Are you sure you want to delete this webhook subscription?');" style="display:inline;">
+                <td class="dev-td dev-td--right">
+                  <form method="POST" action="/api/developer/webhooks/{{ webhook.id }}/delete" onsubmit="return confirm('Are you sure you want to delete this webhook subscription?');" class="dev-inline-form">
                     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-                    <button type="submit" class="btn btn-outline" style="color: #ef4444; border-color: #ef4444; padding: 4px 8px; font-size: 0.8rem;">Delete</button>
+                    <button type="submit" class="btn btn-outline dev-btn-delete">Delete</button>
                   </form>
                 </td>
               </tr>
@@ -317,9 +185,9 @@
           </table>
         </div>
         {% else %}
-        <div style="margin-top: 1rem; text-align: center; padding: 4rem 2rem; background: var(--color-surface); border: 1px dashed var(--color-border-strong); border-radius: 12px;">
-          <h3 style="font-size: 1.1rem; font-weight: 600; color: var(--color-text); margin-bottom: 0.5rem;">No webhooks</h3>
-          <p style="color: var(--color-text-secondary); font-size: 0.95rem; max-width: 400px; margin: 0 auto;">No webhook subscriptions have been created yet.</p>
+        <div class="dev-empty">
+          <h3 class="dev-empty-title">No webhooks</h3>
+          <p class="dev-empty-text">No webhook subscriptions have been created yet.</p>
         </div>
         {% endif %}
       </div>
@@ -339,7 +207,7 @@
               <label for="app_name">App Name</label>
               <input type="text" id="app_name" name="app_name" required placeholder="e.g. Eventyay Plugin" />
             </div>
-            <div class="field" style="margin-top: 1rem;">
+            <div class="field dev-field--spaced">
               <label for="redirect_uris">Authorized Redirect URIs</label>
               <input type="text" id="redirect_uris" name="redirect_uris" required placeholder="e.g. https://eventyay.com/callback" />
               <span class="hint">Comma-separated list of strict exact-match redirect URLs.</span>
@@ -356,34 +224,34 @@
     {% if new_client %}
     <!-- New Secret Modal -->
     <div id="modal-new-secret" class="custom-modal-overlay active">
-      <div class="custom-modal" style="max-width: 500px;">
+      <div class="custom-modal dev-modal--narrow">
         <div class="custom-modal-header">
           <span class="brand-text brand-text--modal">App Created Successfully</span>
         </div>
         <div class="custom-modal-body">
           <p>Your new OAuth Client <strong>{{ new_client.name }}</strong> has been created.</p>
-          <div style="margin-top: 1rem;">
-            <label style="font-size: 0.8rem; color: var(--color-text-secondary); font-weight: 500;">Client ID</label>
+          <div class="dev-secret-group">
+            <label class="dev-secret-label">Client ID</label>
             <div class="secret-box copy-wrapper" onclick="copyToClipboard(this, '{{ new_client.client_id }}')">
               <span class="copy-text">{{ new_client.client_id }}</span>
               <div class="copy-icon-container">
                 <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon-copy"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
-                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon-check" style="display:none;"><polyline points="20 6 9 17 4 12"></polyline></svg>
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon-check"><polyline points="20 6 9 17 4 12"></polyline></svg>
               </div>
               <span class="copy-tooltip">Copy to clipboard</span>
             </div>
           </div>
-          <div style="margin-top: 1rem;">
-            <label style="font-size: 0.8rem; color: var(--color-text-secondary); font-weight: 500;">Client Secret</label>
+          <div class="dev-secret-group">
+            <label class="dev-secret-label">Client Secret</label>
             <div class="secret-box secret-box-danger copy-wrapper" onclick="copyToClipboard(this, '{{ new_secret }}')">
               <span class="copy-text">{{ new_secret }}</span>
               <div class="copy-icon-container">
                 <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon-copy"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
-                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon-check" style="display:none;"><polyline points="20 6 9 17 4 12"></polyline></svg>
+                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon-check"><polyline points="20 6 9 17 4 12"></polyline></svg>
               </div>
               <span class="copy-tooltip">Copy to clipboard</span>
             </div>
-            <p class="hint" style="color: #b45309; font-weight: 500;">Please copy this secret and store it securely. You will not be able to see it again!</p>
+            <p class="hint dev-hint--warn">Please copy this secret and store it securely. You will not be able to see it again!</p>
           </div>
         </div>
         <div class="custom-modal-footer">
@@ -408,14 +276,8 @@
           await navigator.clipboard.writeText(text);
           element.classList.add('copied');
           
-          const iconCopy = element.querySelector('.icon-copy');
-          const iconCheck = element.querySelector('.icon-check');
           const tooltip = element.querySelector('.copy-tooltip');
-          
-          if (iconCopy && iconCheck) {
-            iconCopy.style.display = 'none';
-            iconCheck.style.display = 'block';
-          }
+
           if (tooltip) {
             tooltip.textContent = 'Copied!';
             tooltip.classList.add('copied-tooltip');
@@ -423,10 +285,7 @@
           
           setTimeout(() => {
             element.classList.remove('copied');
-            if (iconCopy && iconCheck) {
-              iconCopy.style.display = 'block';
-              iconCheck.style.display = 'none';
-            }
+
             if (tooltip) {
               tooltip.textContent = 'Copy to clipboard';
               tooltip.classList.remove('copied-tooltip');
