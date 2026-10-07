@@ -15,6 +15,7 @@ from httpx import ASGITransport, AsyncClient
 
 from fastapi_app import app
 from portal.auth import create_user_token
+from portal.config import settings
 from portal.crypto import encrypt_val
 from portal.database import configure, dispose, get_session, init_db
 from portal.models import DBBooth, Event, Room
@@ -185,11 +186,12 @@ async def seed_data():
 
 
 @pytest.mark.anyio
-async def test_high_concurrency_isolation_and_capacity_limits():
+async def test_high_concurrency_isolation_and_capacity_limits(monkeypatch):
     """
     Spawns 16 concurrent POST requests to start transcription booths across 3 events.
     """
     booths = await seed_data()
+    monkeypatch.setattr(settings, "max_transcription_workers", 12)
 
     # Ensure fresh state
     for p in mock_providers.values():
@@ -215,19 +217,27 @@ async def test_high_concurrency_isolation_and_capacity_limits():
     status_codes = [r.status_code for r in responses]
 
     # 16 total booths were fired (6 OpenAI, 6 NVIDIA, 4 Local).
-    # MAX_TOTAL_WORKERS = 10, so exactly 6 requests must hit 429 Too Many Requests.
-    assert status_codes.count(429) == 6, "Exactly 6 booths should be rate-limited."
-    assert status_codes.count(200) == 10, "Exactly 10 booths should succeed."
+    # The configured worker limit is 12, so exactly 4 requests must hit 429 Too Many Requests.
+    assert status_codes.count(429) == 4, "Exactly 4 booths should be rate-limited."
+    assert status_codes.count(200) == 12, "Exactly 12 booths should succeed."
+    rate_limited = [response for response in responses if response.status_code == 429]
+    assert all(
+        response.json()["detail"]
+        == "System at maximum capacity (12 concurrent transcription booths)."
+        for response in rate_limited
+    )
 
     # Give the background tasks a tiny fraction of a second to spin up and populate the provider logs
     await asyncio.sleep(0.1)
 
     # 1. Verify Global Locking limits worked
-    assert len(active_workers) == 10
+    assert len(active_workers) == 12
 
     # 2. Verify API Key Cross-Contamination did not occur
     openai_provider = mock_providers["openai"]
     nvidia_provider = mock_providers["nvidia"]
+    assert openai_provider.received_configs
+    assert nvidia_provider.received_configs
 
     for config in openai_provider.received_configs:
         assert config["booth_id"].startswith("event-alpha")
@@ -240,7 +250,7 @@ async def test_high_concurrency_isolation_and_capacity_limits():
     # 3. Simulate Concurrent Shutdown
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         stop_tasks = []
-        # Try to stop all 16 booths (the 2 rate-limited ones should just gracefully do nothing)
+        # Try to stop all 16 booths (the 4 rate-limited ones should just gracefully do nothing)
         for slug, room_id, lang, booth_id, provider in booths:
             stop_tasks.append(
                 client.post(f"/api/events/{slug}/rooms/{room_id}/booths/{lang}/transcription/stop", cookies=cookies)
