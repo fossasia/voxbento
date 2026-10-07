@@ -12,7 +12,7 @@ from fastapi.responses import PlainTextResponse, Response
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 
-from portal.auth import get_current_user
+from portal.auth import get_admin_flags, get_current_user
 from portal.booth_identity import make_booth_id
 from portal.database import (
     get_session,
@@ -20,6 +20,7 @@ from portal.database import (
     list_booth_memberships_for_user,
     list_events,
     list_memberships_for_user,
+    list_room_memberships_for_user,
 )
 from portal.email_sender import send_demo_request_email
 from portal.globals import _JS_CACHE_BUST, booths
@@ -34,7 +35,12 @@ router = APIRouter()
 @router.get("/")
 async def home(request: Request):
     current_user = await get_current_user(request)
+    admin_flags = await get_admin_flags(request)
+    if not current_user and admin_flags.get("is_super_admin"):
+        current_user = {"email": "admin", "display_name": "Admin", "is_admin": True}
+
     my_booths = []
+    management_home = "/admin/" if current_user and current_user.get("is_admin") else "/account"
 
     try:
         async with get_session() as session:
@@ -42,10 +48,16 @@ async def home(request: Request):
 
             user_event_roles = {}
             user_booth_roles = {}
-            if current_user:
+            if current_user and current_user.get("sub"):
                 uid = int(current_user["sub"])
                 ems = await list_memberships_for_user(session, uid)
                 user_event_roles = {em.event_id: em.role for em in ems}
+                room_memberships = await list_room_memberships_for_user(session, uid)
+                if not current_user.get("is_admin"):
+                    if any(em.role == "event_owner" for em in ems):
+                        management_home = "/workspace/"
+                    elif any(rm.role == "room_coordinator" for rm in room_memberships):
+                        management_home = "/mission-control/"
 
                 bms = await list_booth_memberships_for_user(session, uid)
                 user_booth_roles = {bm.booth_id: bm.role for bm in bms}
@@ -118,8 +130,28 @@ async def home(request: Request):
         context={
             "events": event_data,
             "current_user": current_user,
+            "management_home": management_home,
             "my_booths": my_booths,
             "js_version": _JS_CACHE_BUST,
+        },
+    )
+
+
+@router.get("/local")
+@router.get("/local/")
+async def voxbento_local(request: Request):
+    current_user = await get_current_user(request)
+    management_home = "/admin/" if current_user and current_user.get("is_admin") else "/account"
+    return templates.TemplateResponse(
+        request=request,
+        name="local.html",
+        context={
+            "current_user": current_user,
+            "management_home": management_home,
+            "js_version": _JS_CACHE_BUST,
+            "github_repo_url": "https://github.com/ArnavBallinCode/voxa",
+            "github_releases_url": "https://github.com/ArnavBallinCode/voxa/releases",
+            "github_latest_release_url": "https://github.com/ArnavBallinCode/voxa/releases/latest",
         },
     )
 

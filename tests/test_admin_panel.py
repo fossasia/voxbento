@@ -434,7 +434,10 @@ class TestEventCRUD:
 
         cookie = {"user_token": create_user_token(user_id=owner_id, email="owner@example.com")}
         async with _client() as c:
-            resp = await c.post(f"/admin/events/{event.id}/delete", cookies=cookie, follow_redirects=False)
+            legacy = await c.post(f"/admin/events/{event.id}/delete", cookies=cookie, follow_redirects=False)
+            assert legacy.status_code == 307
+            assert legacy.headers["location"] == f"/workspace/events/{event.id}/delete"
+            resp = await c.post(legacy.headers["location"], cookies=cookie, follow_redirects=False)
         assert resp.status_code == 303
         async with get_session() as s:
             assert await get_event_by_id(s, event.id) is None
@@ -1007,12 +1010,12 @@ class TestAPIKeyCRUD:
             c.cookies.set("user_token", token)
 
             # Initially empty
-            res = await c.get(f"/admin/api/events/{event_id}/api-keys")
+            res = await c.get(f"/workspace/api/events/{event_id}/api-keys")
             assert res.status_code == 200
             assert res.json() == []
 
             # Create API key
-            res = await c.post(f"/admin/api/events/{event_id}/api-keys", json={"name": "Integration Key"})
+            res = await c.post(f"/workspace/api/events/{event_id}/api-keys", json={"name": "Integration Key"})
             assert res.status_code == 200
             data = res.json()
             assert data["name"] == "Integration Key"
@@ -1022,17 +1025,17 @@ class TestAPIKeyCRUD:
             key_id = data["id"]
 
             # Prevent duplicate name
-            res_dup = await c.post(f"/admin/api/events/{event_id}/api-keys", json={"name": "Integration Key"})
+            res_dup = await c.post(f"/workspace/api/events/{event_id}/api-keys", json={"name": "Integration Key"})
             assert res_dup.status_code == 400
             assert "already exists" in res_dup.json()["detail"]
 
             # Prevent blank name
-            res_blank = await c.post(f"/admin/api/events/{event_id}/api-keys", json={"name": "   "})
+            res_blank = await c.post(f"/workspace/api/events/{event_id}/api-keys", json={"name": "   "})
             assert res_blank.status_code == 400
             assert "cannot be blank" in res_blank.json()["detail"]
 
             # List keys (should contain 1)
-            res = await c.get(f"/admin/api/events/{event_id}/api-keys")
+            res = await c.get(f"/workspace/api/events/{event_id}/api-keys")
             assert res.status_code == 200
             keys = res.json()
             assert len(keys) == 1
@@ -1041,16 +1044,18 @@ class TestAPIKeyCRUD:
             assert "raw_key" not in keys[0]
 
             # Revoke key
-            res_del = await c.delete(f"/admin/api/events/{event_id}/api-keys/{key_id}")
+            res_del = await c.delete(f"/workspace/api/events/{event_id}/api-keys/{key_id}")
             assert res_del.status_code == 200
 
             # List keys (should be empty again)
-            res = await c.get(f"/admin/api/events/{event_id}/api-keys")
+            res = await c.get(f"/workspace/api/events/{event_id}/api-keys")
             assert res.status_code == 200
             assert res.json() == []
 
             # Duplicate name is now allowed since the old one is revoked
-            res_remake = await c.post(f"/admin/api/events/{event_id}/api-keys", json={"name": "Integration Key"})
+            res_remake = await c.post(
+                f"/workspace/api/events/{event_id}/api-keys", json={"name": "Integration Key"}
+            )
             assert res_remake.status_code == 200
             assert res_remake.json()["name"] == "Integration Key"
 
@@ -1498,3 +1503,43 @@ async def test_admin_detail_pages_have_no_inline_styles(path, admin_cookie, seed
     # The API key modals keep style="display: none", which admin.js toggles.
     body = resp.content.replace(b'style="display: none;"', b"")
     assert not re.search(rb"\sstyle\s*=", body, re.IGNORECASE)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("seed_accounts", [False, True], ids=["empty", "all-statuses"])
+async def test_developer_accounts_page_has_no_inline_styles(seed_accounts):
+    import re
+
+    from portal.auth import create_user_token, hash_password
+    from portal.database import create_user, get_session
+    from portal.models import DeveloperAccount
+
+    async with get_session() as s:
+        admin = await create_user(
+            s, email="super@test.com", display_name="Super", password_hash=hash_password("securepass123")
+        )
+        admin.is_admin = True
+        if seed_accounts:
+            for status in ("pending", "approved", "suspended", "rejected"):
+                applicant = await create_user(
+                    s,
+                    email=f"{status}@test.com",
+                    display_name=status,
+                    password_hash=hash_password("securepass123"),
+                )
+                s.add(DeveloperAccount(user_id=applicant.id, status=status, organization_name=f"{status} org"))
+        await s.commit()
+        admin_id, admin_email = admin.id, admin.email
+
+    cookie = {"user_token": create_user_token(user_id=admin_id, email=admin_email, is_admin=True)}
+    async with _client() as c:
+        resp = await c.get("/admin/developer-accounts", cookies=cookie)
+
+    assert resp.status_code == 200
+    if seed_accounts:
+        # Every status branch rendered, so the assertion below covers all of them.
+        for label in (b"Approve", b"Reject", b"Suspend", b"Restore"):
+            assert label in resp.content
+    else:
+        assert b"No developer applications" in resp.content
+    assert not re.search(rb"\sstyle\s*=", resp.content, re.IGNORECASE)

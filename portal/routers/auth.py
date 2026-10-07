@@ -409,11 +409,24 @@ async def account_page(request: Request):
         booth_memberships = await list_booth_memberships_for_user(session, user.id)
 
     unified_memberships = []
+    coordinated_event_slugs = {
+        m.room.event_id: m.room.event.slug
+        for m in room_memberships
+        if m.role == "room_coordinator" and m.room and m.room.event
+    }
     for m in event_memberships:
+        if m.event is None:
+            link = "#"
+        elif m.role == "event_owner":
+            link = f"/workspace/events/{m.event.id}/"
+        elif m.event_id in coordinated_event_slugs:
+            link = f"/mission-control/{coordinated_event_slugs[m.event_id]}/"
+        else:
+            link = "#"
         unified_memberships.append(
             {
                 "context": m.event.display_name if m.event else "—",
-                "link": f"/admin/events/{m.event.id}/" if m.event else "#",
+                "link": link,
                 "type": "Event",
                 "role": m.role,
                 "created_at": m.created_at,
@@ -442,8 +455,28 @@ async def account_page(request: Request):
 
     unified_memberships.sort(key=lambda x: x["created_at"] or datetime.min.replace(tzinfo=timezone.utc))
 
+    if user.is_admin:
+        management_home = "/admin/"
+        management_label = "Admin Panel"
+    elif any(m.role == "event_owner" for m in event_memberships):
+        management_home = "/workspace/"
+        management_label = "Organizer Workspace"
+    elif any(m.role == "room_coordinator" for m in room_memberships):
+        management_home = "/mission-control/"
+        management_label = "Mission Control"
+    else:
+        management_home = "/account"
+        management_label = "My Account"
+
     return templates.TemplateResponse(
-        request=request, name="account.html", context={"user": user, "memberships": unified_memberships}
+        request=request,
+        name="account.html",
+        context={
+            "user": user,
+            "memberships": unified_memberships,
+            "management_home": management_home,
+            "management_label": management_label,
+        },
     )
 
 
