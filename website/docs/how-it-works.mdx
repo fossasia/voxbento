@@ -19,6 +19,12 @@ Here is how audio travels from the speaker on stage to a listener's headphones, 
 The presenter or speaker joins a self-hosted Jitsi Meet session. This session carries the event's floor audio — the source language that interpreters listen to and translate.
 
     Voxbento embeds the relevant Jitsi session as an iframe directly inside each interpreter's booth page. The interpreter monitors floor audio and video from within the same browser tab where they will broadcast their translation, which keeps the workflow contained and the latency low.
+
+The bundled Jitsi `stable-11248` services run rootless with read-only container
+filesystems. Persistent web and Prosody state is isolated in writable storage
+volumes, while runtime data lives in temporary filesystems. The browser-facing
+ports remain `8080`/`8443`, even though the hardened web container listens on
+unprivileged ports `8000`/`8443` internally.
   ### Interpreter audio: mic capture and WebRTC publish
 
 When the interpreter clicks **Go Live**, the browser calls `navigator.mediaDevices.getUserMedia` to capture microphone input. Before the audio leaves the browser, the browser's built-in DSP stack applies:
@@ -62,6 +68,18 @@ You do not need to configure the fallback manually. The listener page tries WHEP
 :::
 
 Rooms can also define an optional listener-side audio synchronization delay. This is useful when attendees are watching delayed livestream video, delayed captions, embedded conference players, or external media while listening to Voxbento audio. For example, use `1000` ms for a one-second caption delay, `2000` ms for a lightly delayed player, `5000` ms for a typical embedded stream, or `8000` ms for a platform with a larger broadcast buffer. When the room delay is `0` ms, listener playback uses the same direct WHEP-to-HTML-audio path as normal and adds no Web Audio graph or extra latency.
+
+In the organizer workspace, room management includes server-side search to quickly filter rooms by name within an event using case-insensitive matching against the room display name, displaying a clearable empty state when no rooms match the query.
+
+## Organizer and System Administration Routes
+
+Event management and system administration use separate public URL namespaces:
+
+- `/workspace/...` is the event workspace for `event_owner` users. It contains event, room, booth, membership, transcription, translation, and event API-key management scoped by the existing role checks.
+- `/mission-control/...` is the room-scoped operational surface for `room_coordinator` users.
+- `/admin/...` is reserved for `super_admin` users and contains system-wide views such as user and developer-account management.
+
+Both namespaces use the same underlying management handlers, so the route split does not duplicate event-management behavior. Existing organizer bookmarks under `/admin/events/...` receive a temporary redirect to the corresponding workspace URL with their query string and HTTP method preserved. The OAuth routes remain under `/oauth/...`; shared-organizer authorization and token lifecycle behavior are therefore unchanged.
 
 ## The Transcription & Translation Pipeline
 

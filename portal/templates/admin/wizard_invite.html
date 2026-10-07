@@ -14,7 +14,7 @@
     {% if error == 'invalid_role' %}<div class="alert alert-danger">That role isn't valid.</div>{% endif %}
 
     <h3 class="wizard-section-title">Event owners</h3>
-    <form method="post" action="/admin/events/{{ event.id }}/setup/invite">
+    <form method="post" action="{{ management_prefix }}/events/{{ event.id }}/setup/invite">
       <div class="field-row field-row--end">
         <div class="field field--flush">
           <label for="email">Email address</label>
@@ -43,15 +43,16 @@
     <div class="wizard-share-row">
       <span class="join-code">{{ event.listener_join_code }}</span>
       <div class="copy-field wizard-share-field">
-        <input type="text" readonly aria-label="Listener link"
+        <input type="text" readonly aria-label="Listener link" id="wizard-listener-link"
                value="{{ public_base_url }}/listener/{{ event.slug }}?code={{ event.listener_join_code }}"
                onclick="this.select()" />
+        <button type="button" class="btn btn-sm btn-copy" data-copy-target="wizard-listener-link">Copy</button>
       </div>
     </div>
 
     <div class="wizard-actions">
-      <a href="/admin/events/{{ event.id }}/setup/booths" class="btn">&larr; Back</a>
-      <a href="/admin/events/{{ event.id }}/" class="btn btn-primary btn-lg">Finish setup ✓</a>
+      <a href="{{ management_prefix }}/events/{{ event.id }}/setup/booths" class="btn">&larr; Back</a>
+      <a href="{{ management_prefix }}/events/{{ event.id }}/" class="btn btn-primary btn-lg">Finish setup ✓</a>
     </div>
   </div>
 </div>

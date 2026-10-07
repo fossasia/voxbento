@@ -43,41 +43,76 @@
 
     <!-- Premium Navbar -->
     <header class="fixed top-0 w-full z-50 bg-[#eef2f6] border-b-[3px] border-[#0d0f10] transition-all duration-300" id="navbar">
-        <div class="max-w-7xl mx-auto px-4 md:px-6 h-16 flex items-center justify-between">
-            <a href="/" class="flex items-center gap-2 md:gap-3 flex-shrink-0">
-                <img src="{{ url_for('static', path='img/app_icon.png') }}" alt="VoxBento Icon" class="w-7 h-7 md:w-8 md:h-8 brutal-border rounded shadow-none">
-                <span class="text-lg md:text-[1.35rem] font-black tracking-tight text-[#0d0f10]">VoxBento</span>
-            </a>
-            <nav class="flex max-md:hidden items-center gap-8 text-sm font-bold text-[#0d0f10]">
-                <a href="#solutions"
-                    class="hover:text-brand-600 transition-colors uppercase tracking-wider">Solutions</a>
-                <a href="#interactive-demo"
-                    class="hover:text-brand-600 transition-colors uppercase tracking-wider">Demo</a>
-                <a href="#open-source" class="hover:text-brand-600 transition-colors uppercase tracking-wider">Open
-                    Source</a>
-            </nav>
-            <div class="flex items-center gap-1.5 sm:gap-3 md:gap-4 text-[10px] sm:text-xs md:text-sm font-bold flex-shrink-0">
-                <button onclick="openDemoModal()" class="brutal-btn brutal-btn-secondary brutal-btn-nav !bg-[#fbbf24] !border-[#0d0f10] hover:!bg-[#f59e0b] !px-2 sm:!px-2.5 !py-1 sm:!py-1.5 md:!px-5 md:!py-2 rounded-full whitespace-nowrap">
-                    <span class="max-sm:hidden">Request a demo</span>
-                    <span class="sm:hidden">Demo</span>
+        <div class="max-w-7xl mx-auto px-4 md:px-6 h-16 flex items-center justify-between gap-3 sm:gap-6">
+            <div class="flex items-center gap-4 lg:gap-8 xl:gap-10 min-w-0">
+                <a href="/" class="flex items-center gap-2 md:gap-3 flex-shrink-0">
+                    <img src="{{ url_for('static', path='img/app_icon.png') }}" alt="VoxBento Icon" class="w-7 h-7 md:w-8 md:h-8 brutal-border rounded shadow-none">
+                    <span class="text-lg md:text-[1.35rem] font-black tracking-tight text-[#0d0f10] whitespace-nowrap">VoxBento</span>
+                </a>
+                <nav class="hidden md:flex items-center gap-3 lg:gap-6 xl:gap-8 text-xs xl:text-sm font-bold text-[#0d0f10] whitespace-nowrap flex-shrink-0">
+                    <a href="#solutions"
+                        class="hover:text-brand-600 transition-colors uppercase tracking-wider whitespace-nowrap">Solutions</a>
+                    <a href="#interactive-demo"
+                        class="hover:text-brand-600 transition-colors uppercase tracking-wider whitespace-nowrap">Demo</a>
+                    <a href="#open-source" class="hover:text-brand-600 transition-colors uppercase tracking-wider whitespace-nowrap">Open Source</a>
+                    <a href="/local" class="hover:text-brand-600 transition-colors uppercase tracking-wider inline-flex items-center gap-1.5 whitespace-nowrap">
+                        <span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse flex-shrink-0"></span>
+                        <span>Local App</span>
+                    </a>
+                </nav>
+            </div>
+            <div class="flex items-center gap-1.5 sm:gap-2.5 md:gap-3 text-[10px] sm:text-xs md:text-sm font-bold flex-shrink-0">
+                {% if not current_user %}
+                <button onclick="openDemoModal()" class="brutal-btn brutal-btn-secondary brutal-btn-nav !bg-[#fbbf24] !border-[#0d0f10] hover:!bg-[#f59e0b] !px-2.5 sm:!px-3 !py-1 sm:!py-1.5 md:!px-4 md:!py-2 rounded-full whitespace-nowrap !hidden lg:!inline-flex">
+                    <span>Request a demo</span>
                 </button>
-                {% if current_user %}
-                <a href="/developer" class="brutal-btn brutal-btn-outline brutal-btn-nav max-md:hidden !px-2.5 !py-1.5 md:!px-5 md:!py-2 whitespace-nowrap">Developer</a>
-                <a href="/account" class="brutal-btn brutal-btn-outline brutal-btn-nav !px-2 sm:!px-2.5 !py-1 sm:!py-1.5 md:!px-5 md:!py-2 max-sm:hidden whitespace-nowrap">Account</a>
-                <a href="/admin/events/" class="brutal-btn brutal-btn-primary brutal-btn-nav !px-2 sm:!px-2.5 !py-1 sm:!py-1.5 md:!px-5 md:!py-2 whitespace-nowrap">
-                    <span class="max-sm:hidden">Dashboard</span>
-                    <span class="sm:hidden">Dash</span>
-                </a>
-                <a href="/logout" class="brutal-btn brutal-btn-outline brutal-btn-nav !px-2 sm:!px-2.5 !py-1 sm:!py-1.5 md:!px-5 md:!py-2 whitespace-nowrap">
-                    <span class="max-sm:hidden">Logout</span>
-                    <span class="sm:hidden">Exit</span>
-                </a>
-                {% else %}
-                <a href="/login" class="brutal-btn brutal-btn-primary brutal-btn-nav !px-2 sm:!px-2.5 !py-1 sm:!py-1.5 md:!px-5 md:!py-2 whitespace-nowrap">
+                <a href="/login" class="brutal-btn brutal-btn-primary brutal-btn-nav !px-2.5 sm:!px-3 !py-1 sm:!py-1.5 md:!px-4 md:!py-2 whitespace-nowrap">
                     <span class="max-sm:hidden">Sign In</span>
                     <span class="sm:hidden">Login</span>
                 </a>
-                <a href="/register" class="brutal-btn brutal-btn-outline brutal-btn-nav !px-2 sm:!px-2.5 !py-1 sm:!py-1.5 md:!px-5 md:!py-2 max-sm:hidden whitespace-nowrap">Register</a>
+                <a href="/register" class="brutal-btn brutal-btn-outline brutal-btn-nav !px-2.5 sm:!px-3 !py-1 sm:!py-1.5 md:!px-4 md:!py-2 !hidden sm:!inline-flex whitespace-nowrap">Register</a>
+                {% else %}
+                <a href="/developer" class="brutal-btn brutal-btn-outline brutal-btn-nav !hidden xl:!inline-flex !px-2.5 !py-1.5 md:!px-4 md:!py-2 whitespace-nowrap">Developer</a>
+                {% if management_home != "/account" %}
+                <a href="/account" class="brutal-btn brutal-btn-outline brutal-btn-nav !hidden lg:!inline-flex !px-2.5 !py-1.5 md:!px-4 md:!py-2 whitespace-nowrap">Account</a>
+                <a href="{{ management_home }}" class="brutal-btn brutal-btn-primary brutal-btn-nav !px-2.5 sm:!px-3 !py-1 sm:!py-1.5 md:!px-4 md:!py-2 whitespace-nowrap">
+                    <span class="max-sm:hidden">Dashboard</span>
+                    <span class="sm:hidden">Dash</span>
+                </a>
+                {% else %}
+                <a href="/account" class="brutal-btn brutal-btn-primary brutal-btn-nav !px-2.5 sm:!px-3 !py-1 sm:!py-1.5 md:!px-4 md:!py-2 whitespace-nowrap">Account</a>
+                {% endif %}
+                <a href="/logout" class="brutal-btn brutal-btn-outline brutal-btn-nav !px-2 sm:!px-2.5 !py-1 sm:!py-1.5 md:!px-3 md:!py-2 whitespace-nowrap">
+                    <span class="max-sm:hidden">Logout</span>
+                    <span class="sm:hidden">Exit</span>
+                </a>
+                {% endif %}
+                <button id="mobile-menu-btn" type="button" class="md:!hidden brutal-btn brutal-btn-outline !p-1.5 sm:!p-2 !inline-flex items-center justify-center text-[#0d0f10]" aria-label="Toggle navigation menu" aria-expanded="false">
+                    <svg id="menu-icon-open" class="w-4 h-4 sm:w-5 sm:h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M4 6h16M4 12h16M4 18h16"></path></svg>
+                    <svg id="menu-icon-close" class="w-4 h-4 sm:w-5 sm:h-5 !hidden" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12"></path></svg>
+                </button>
+            </div>
+        </div>
+        <!-- Mobile Dropdown Menu -->
+        <div id="mobile-menu" class="hidden md:hidden border-t-[3px] border-[#0d0f10] bg-[#eef2f6] px-5 py-4 space-y-3 font-bold text-xs sm:text-sm shadow-[0_4px_0_#0d0f10]">
+            <div class="flex flex-col space-y-2">
+                <a href="#solutions" class="mobile-nav-link hover:text-brand-600 transition-colors uppercase tracking-wider py-1">Solutions</a>
+                <a href="#interactive-demo" class="mobile-nav-link hover:text-brand-600 transition-colors uppercase tracking-wider py-1">Demo</a>
+                <a href="#open-source" class="mobile-nav-link hover:text-brand-600 transition-colors uppercase tracking-wider py-1">Open Source</a>
+                <a href="/local" class="mobile-nav-link hover:text-brand-600 transition-colors uppercase tracking-wider inline-flex items-center gap-1.5 py-1">
+                    <span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                    <span>Local App</span>
+                </a>
+            </div>
+            <div class="pt-2 border-t-2 border-zinc-300 flex flex-col gap-2">
+                {% if current_user %}
+                <a href="/account" class="brutal-btn brutal-btn-outline text-center py-2 text-xs uppercase tracking-wider font-bold">Account</a>
+                <a href="/developer" class="brutal-btn brutal-btn-outline text-center py-2 text-xs uppercase tracking-wider font-bold">Developer</a>
+                {% else %}
+                <button onclick="openDemoModal(); closeMobileMenu();" class="brutal-btn brutal-btn-secondary !bg-[#fbbf24] !border-[#0d0f10] text-center py-2 text-xs uppercase tracking-wider font-bold">
+                    Request a demo
+                </button>
+                <a href="/register" class="brutal-btn brutal-btn-outline text-center py-2 text-xs uppercase tracking-wider font-bold">Register</a>
                 {% endif %}
             </div>
         </div>
@@ -90,6 +125,11 @@
             class="relative max-w-7xl mx-auto px-6 pt-12 pb-24 lg:pt-20 lg:pb-32 flex flex-col lg:flex-row items-center gap-12 animate-fade-in-up">
             <!-- Left Text -->
             <div class="flex-1 text-center lg:text-left z-10">
+                <div class="mb-6 inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full border-2 border-[#0d0f10] bg-white shadow-[2px_2px_0px_#0d0f10] text-xs font-bold text-[#0d0f10]">
+                    <span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                    <span>NEW: VoxBento Local for macOS, Windows & Linux</span>
+                    <a href="/local" class="text-brand-600 hover:underline flex items-center gap-0.5 font-extrabold ml-1">Download &rarr;</a>
+                </div>
                 <h1
                     class="text-[2.75rem] md:text-6xl lg:text-7xl font-extrabold tracking-tight text-[#0d0f10] mb-8 leading-[1.1] flex flex-col items-center lg:items-start text-center lg:text-left w-full">
                     <div class="relative w-full text-[#2563eb]">
@@ -114,9 +154,13 @@
                     single platform.
                 </p>
                 <div class="flex flex-col sm:flex-row items-center gap-4 justify-center lg:justify-start">
-                    <a href="{% if current_user %}/admin/events/{% else %}/register{% endif %}"
+                    <a href="{% if current_user %}{{ management_home }}{% else %}/register{% endif %}"
                         class="brutal-btn brutal-btn-primary w-full sm:w-auto text-center">
                         Start Hosting Free
+                    </a>
+                    <a href="/local" class="brutal-btn brutal-btn-secondary w-full sm:w-auto text-center flex items-center justify-center gap-2 !bg-[#fbbf24] !text-[#0d0f10]">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
+                        Download Desktop App
                     </a>
                     <a href="#interactive-demo" class="brutal-btn brutal-btn-outline w-full sm:w-auto text-center">
                         View Interactive Demo
@@ -203,7 +247,7 @@
 
         <!-- Dynamic User/Event Dashboard Injections -->
         {% if my_booths or events %}
-        <section class="max-w-7xl mx-auto px-6 py-16 mb-24 relative z-20">
+        <section id="live-dashboard" class="max-w-7xl mx-auto px-6 py-16 mb-24 relative z-20">
             <div class="mb-12 border-b-2 border-[#0d0f10] pb-6 flex items-end justify-between">
                 <div>
                     <h2 class="text-3xl font-extrabold text-[#0d0f10] tracking-tight">Live Dashboard</h2>
@@ -617,24 +661,18 @@
                         <div class="md:hidden relative mx-auto w-full max-w-[280px] sm:max-w-[320px]">
                             <div
                                 class="bg-slate-900 rounded-[2.5rem] p-2 shadow-2xl border-[8px] border-slate-800 flex flex-col">
-                                <div class="bg-slate-800 w-full rounded-[1.5rem] overflow-hidden"
-                                    style="aspect-ratio:9/19;">
+                                <div class="bg-slate-800 w-full rounded-[1.5rem] overflow-hidden demo-phone-screen">
                                     <div class="w-full h-full flex flex-col items-center justify-center gap-3">
-                                        <div class="flex items-end gap-1 h-8">
-                                            <div class="w-1.5 bg-brand-500 rounded-full"
-                                                style="height:10px;animation:demoWave 0.5s ease-in-out infinite alternate;">
+                                        <div class="flex items-end gap-1 h-8 demo-wave demo-wave--loading-phone">
+                                            <div class="w-1.5 bg-brand-500 rounded-full">
                                             </div>
-                                            <div class="w-1.5 bg-brand-500 rounded-full"
-                                                style="height:18px;animation:demoWave 0.6s ease-in-out infinite alternate;animation-delay:0.1s;">
+                                            <div class="w-1.5 bg-brand-500 rounded-full">
                                             </div>
-                                            <div class="w-1.5 bg-brand-500 rounded-full"
-                                                style="height:24px;animation:demoWave 0.55s ease-in-out infinite alternate;animation-delay:0.2s;">
+                                            <div class="w-1.5 bg-brand-500 rounded-full">
                                             </div>
-                                            <div class="w-1.5 bg-brand-500 rounded-full"
-                                                style="height:14px;animation:demoWave 0.7s ease-in-out infinite alternate;animation-delay:0.3s;">
+                                            <div class="w-1.5 bg-brand-500 rounded-full">
                                             </div>
-                                            <div class="w-1.5 bg-brand-500 rounded-full"
-                                                style="height:20px;animation:demoWave 0.5s ease-in-out infinite alternate;animation-delay:0.4s;">
+                                            <div class="w-1.5 bg-brand-500 rounded-full">
                                             </div>
                                         </div>
                                         <p class="text-white/50 text-xs font-medium px-4 text-center">Generating
@@ -653,39 +691,28 @@
                                 class="bg-black rounded-[1.5rem] p-3 pb-4 shadow-2xl ring-1 ring-white/20 flex flex-col">
                                 <div
                                     class="bg-slate-800 w-full aspect-video rounded-xl flex flex-col items-center justify-center gap-4">
-                                    <div class="flex items-end gap-1 h-10">
-                                        <div class="w-1.5 bg-brand-500 rounded-full"
-                                            style="height:14px;animation:demoWave 0.5s ease-in-out infinite alternate;">
+                                    <div class="flex items-end gap-1 h-10 demo-wave demo-wave--loading-laptop">
+                                        <div class="w-1.5 bg-brand-500 rounded-full">
                                         </div>
-                                        <div class="w-1.5 bg-brand-500 rounded-full"
-                                            style="height:22px;animation:demoWave 0.6s ease-in-out infinite alternate;animation-delay:0.05s;">
+                                        <div class="w-1.5 bg-brand-500 rounded-full">
                                         </div>
-                                        <div class="w-1.5 bg-brand-500 rounded-full"
-                                            style="height:18px;animation:demoWave 0.55s ease-in-out infinite alternate;animation-delay:0.1s;">
+                                        <div class="w-1.5 bg-brand-500 rounded-full">
                                         </div>
-                                        <div class="w-1.5 bg-brand-500 rounded-full"
-                                            style="height:28px;animation:demoWave 0.7s ease-in-out infinite alternate;animation-delay:0.15s;">
+                                        <div class="w-1.5 bg-brand-500 rounded-full">
                                         </div>
-                                        <div class="w-1.5 bg-brand-500 rounded-full"
-                                            style="height:12px;animation:demoWave 0.5s ease-in-out infinite alternate;animation-delay:0.2s;">
+                                        <div class="w-1.5 bg-brand-500 rounded-full">
                                         </div>
-                                        <div class="w-1.5 bg-brand-500 rounded-full"
-                                            style="height:20px;animation:demoWave 0.65s ease-in-out infinite alternate;animation-delay:0.25s;">
+                                        <div class="w-1.5 bg-brand-500 rounded-full">
                                         </div>
-                                        <div class="w-1.5 bg-brand-500 rounded-full"
-                                            style="height:30px;animation:demoWave 0.6s ease-in-out infinite alternate;animation-delay:0.3s;">
+                                        <div class="w-1.5 bg-brand-500 rounded-full">
                                         </div>
-                                        <div class="w-1.5 bg-brand-500 rounded-full"
-                                            style="height:16px;animation:demoWave 0.5s ease-in-out infinite alternate;animation-delay:0.35s;">
+                                        <div class="w-1.5 bg-brand-500 rounded-full">
                                         </div>
-                                        <div class="w-1.5 bg-brand-500 rounded-full"
-                                            style="height:24px;animation:demoWave 0.7s ease-in-out infinite alternate;animation-delay:0.4s;">
+                                        <div class="w-1.5 bg-brand-500 rounded-full">
                                         </div>
-                                        <div class="w-1.5 bg-brand-500 rounded-full"
-                                            style="height:10px;animation:demoWave 0.55s ease-in-out infinite alternate;animation-delay:0.45s;">
+                                        <div class="w-1.5 bg-brand-500 rounded-full">
                                         </div>
-                                        <div class="w-1.5 bg-brand-500 rounded-full"
-                                            style="height:26px;animation:demoWave 0.6s ease-in-out infinite alternate;animation-delay:0.5s;">
+                                        <div class="w-1.5 bg-brand-500 rounded-full">
                                         </div>
                                     </div>
                                     <p class="text-white/60 text-sm font-medium">Generating demo audio&hellip;</p>
@@ -725,8 +752,7 @@
                                     class="absolute top-0 left-1/2 -translate-x-1/2 w-32 h-6 bg-slate-800 rounded-b-xl z-20 flex justify-center items-end pb-1.5">
                                     <div class="w-12 h-1 bg-slate-900 rounded-full"></div>
                                 </div>
-                                <div class="bg-black w-full rounded-[1.5rem] relative overflow-hidden flex flex-col border border-white/5"
-                                    style="aspect-ratio:9/19;">
+                                <div class="bg-black w-full rounded-[1.5rem] relative overflow-hidden flex flex-col border border-white/5 demo-phone-screen">
                                     <img src="https://images.unsplash.com/photo-1540575467063-178a50c2df87?q=80&w=800&auto=format&fit=crop"
                                         class="absolute inset-0 w-full h-full object-cover opacity-30" alt="">
                                     <div class="absolute top-4 left-4 z-20">
@@ -737,21 +763,16 @@
                                     </div>
                                     <div id="demo-waveform-mobile"
                                         class="absolute inset-0 flex items-center justify-center z-10 pointer-events-none opacity-0 transition-opacity duration-500">
-                                        <div class="flex items-end gap-1 h-8">
-                                            <div class="w-1 bg-brand-500 rounded-full"
-                                                style="height:8px;animation:demoWave 0.5s ease-in-out infinite alternate;">
+                                        <div class="flex items-end gap-1 h-8 demo-wave demo-wave--phone">
+                                            <div class="w-1 bg-brand-500 rounded-full">
                                             </div>
-                                            <div class="w-1 bg-brand-500 rounded-full"
-                                                style="height:16px;animation:demoWave 0.6s ease-in-out infinite alternate;animation-delay:0.08s;">
+                                            <div class="w-1 bg-brand-500 rounded-full">
                                             </div>
-                                            <div class="w-1 bg-brand-500 rounded-full"
-                                                style="height:20px;animation:demoWave 0.55s ease-in-out infinite alternate;animation-delay:0.16s;">
+                                            <div class="w-1 bg-brand-500 rounded-full">
                                             </div>
-                                            <div class="w-1 bg-brand-500 rounded-full"
-                                                style="height:12px;animation:demoWave 0.7s ease-in-out infinite alternate;animation-delay:0.24s;">
+                                            <div class="w-1 bg-brand-500 rounded-full">
                                             </div>
-                                            <div class="w-1 bg-brand-500 rounded-full"
-                                                style="height:18px;animation:demoWave 0.6s ease-in-out infinite alternate;animation-delay:0.32s;">
+                                            <div class="w-1 bg-brand-500 rounded-full">
                                             </div>
                                         </div>
                                     </div>
@@ -816,45 +837,32 @@
                                     <!-- Waveform -->
                                     <div id="demo-waveform"
                                         class="absolute inset-0 flex items-center justify-center z-10 pointer-events-none opacity-0 transition-opacity duration-500">
-                                        <div class="flex items-end gap-1 h-12">
-                                            <div class="w-1.5 bg-brand-500 rounded-full"
-                                                style="height:10px;animation:demoWave 0.5s ease-in-out infinite alternate;">
+                                        <div class="flex items-end gap-1 h-12 demo-wave demo-wave--laptop">
+                                            <div class="w-1.5 bg-brand-500 rounded-full">
                                             </div>
-                                            <div class="w-1.5 bg-brand-500 rounded-full"
-                                                style="height:24px;animation:demoWave 0.6s ease-in-out infinite alternate;animation-delay:0.04s;">
+                                            <div class="w-1.5 bg-brand-500 rounded-full">
                                             </div>
-                                            <div class="w-1.5 bg-brand-500 rounded-full"
-                                                style="height:18px;animation:demoWave 0.55s ease-in-out infinite alternate;animation-delay:0.08s;">
+                                            <div class="w-1.5 bg-brand-500 rounded-full">
                                             </div>
-                                            <div class="w-1.5 bg-brand-500 rounded-full"
-                                                style="height:32px;animation:demoWave 0.7s ease-in-out infinite alternate;animation-delay:0.12s;">
+                                            <div class="w-1.5 bg-brand-500 rounded-full">
                                             </div>
-                                            <div class="w-1.5 bg-brand-500 rounded-full"
-                                                style="height:14px;animation:demoWave 0.5s ease-in-out infinite alternate;animation-delay:0.16s;">
+                                            <div class="w-1.5 bg-brand-500 rounded-full">
                                             </div>
-                                            <div class="w-1.5 bg-brand-500 rounded-full"
-                                                style="height:22px;animation:demoWave 0.65s ease-in-out infinite alternate;animation-delay:0.2s;">
+                                            <div class="w-1.5 bg-brand-500 rounded-full">
                                             </div>
-                                            <div class="w-1.5 bg-brand-500 rounded-full"
-                                                style="height:36px;animation:demoWave 0.6s ease-in-out infinite alternate;animation-delay:0.24s;">
+                                            <div class="w-1.5 bg-brand-500 rounded-full">
                                             </div>
-                                            <div class="w-1.5 bg-brand-500 rounded-full"
-                                                style="height:16px;animation:demoWave 0.5s ease-in-out infinite alternate;animation-delay:0.28s;">
+                                            <div class="w-1.5 bg-brand-500 rounded-full">
                                             </div>
-                                            <div class="w-1.5 bg-brand-500 rounded-full"
-                                                style="height:28px;animation:demoWave 0.7s ease-in-out infinite alternate;animation-delay:0.32s;">
+                                            <div class="w-1.5 bg-brand-500 rounded-full">
                                             </div>
-                                            <div class="w-1.5 bg-brand-500 rounded-full"
-                                                style="height:12px;animation:demoWave 0.55s ease-in-out infinite alternate;animation-delay:0.36s;">
+                                            <div class="w-1.5 bg-brand-500 rounded-full">
                                             </div>
-                                            <div class="w-1.5 bg-brand-500 rounded-full"
-                                                style="height:30px;animation:demoWave 0.6s ease-in-out infinite alternate;animation-delay:0.4s;">
+                                            <div class="w-1.5 bg-brand-500 rounded-full">
                                             </div>
-                                            <div class="w-1.5 bg-brand-500 rounded-full"
-                                                style="height:20px;animation:demoWave 0.5s ease-in-out infinite alternate;animation-delay:0.44s;">
+                                            <div class="w-1.5 bg-brand-500 rounded-full">
                                             </div>
-                                            <div class="w-1.5 bg-brand-500 rounded-full"
-                                                style="height:26px;animation:demoWave 0.7s ease-in-out infinite alternate;animation-delay:0.48s;">
+                                            <div class="w-1.5 bg-brand-500 rounded-full">
                                             </div>
                                         </div>
                                     </div>
@@ -984,7 +992,7 @@
             <p class="text-white opacity-90 text-xl mb-12 max-w-2xl mx-auto font-bold">Launch multilingual events in
                 minutes with VoxBento. No complex setups, no hardware.</p>
             <div class="flex flex-col sm:flex-row justify-center gap-6">
-                <a href="{% if current_user %}/admin/events/{% else %}/register{% endif %}"
+                <a href="{% if current_user %}{{ management_home }}{% else %}/register{% endif %}"
                     class="brutal-btn bg-white text-[#0d0f10] hover:bg-slate-100 w-full sm:w-auto text-lg py-5 px-10">Get
                     Started Now</a>
             </div>
@@ -1017,6 +1025,9 @@
                 <div>
                     <h3 class="text-[#0d0f10] font-extrabold mb-4 text-sm uppercase tracking-wider">Product</h3>
                     <ul class="space-y-3 text-sm opacity-80">
+                        <li><a href="/local"
+                                class="hover:text-[#2563eb] transition-colors underline decoration-2 underline-offset-2 flex items-center gap-1.5"><span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>VoxBento Local (Desktop)</a>
+                        </li>
                         <li><a href="#solutions"
                                 class="hover:text-[#2563eb] transition-colors underline decoration-2 underline-offset-2">Solutions</a>
                         </li>
@@ -1289,6 +1300,34 @@
                     spinner.classList.add('hidden');
                 }
             }
+        });
+
+        // Mobile Menu toggle
+        const menuBtn = document.getElementById('mobile-menu-btn');
+        const mobileMenu = document.getElementById('mobile-menu');
+        const iconOpen = document.getElementById('menu-icon-open');
+        const iconClose = document.getElementById('menu-icon-close');
+
+        function toggleMobileMenu() {
+            if (!menuBtn || !mobileMenu) return;
+            const isExpanded = menuBtn.getAttribute('aria-expanded') === 'true';
+            menuBtn.setAttribute('aria-expanded', !isExpanded);
+            mobileMenu.classList.toggle('hidden');
+            iconOpen?.classList.toggle('hidden');
+            iconClose?.classList.toggle('hidden');
+        }
+
+        function closeMobileMenu() {
+            if (!menuBtn || !mobileMenu) return;
+            menuBtn.setAttribute('aria-expanded', 'false');
+            mobileMenu.classList.add('hidden');
+            iconOpen?.classList.remove('hidden');
+            iconClose?.classList.add('hidden');
+        }
+
+        menuBtn?.addEventListener('click', toggleMobileMenu);
+        document.querySelectorAll('.mobile-nav-link').forEach(link => {
+            link.addEventListener('click', closeMobileMenu);
         });
     </script>
 </body>

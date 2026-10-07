@@ -1,32 +1,32 @@
-<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Admin Login — Voxbento</title>
-    <link rel="icon" type="image/x-icon" href="{{ url_for('static', path='img/favicon.ico') }}" />
-    <link rel="stylesheet" href="{{ url_for('static', path='css/fonts.css') }}" />
-    <link rel="stylesheet" href="{{ url_for('static', path='css/admin.css') }}" />
-  </head>
-  <body>
-    <div class="login-page">
-      <div class="login-card">
-        <div class="login-brand">
-          <img src="{{ url_for('static', path='img/wordmark.png') }}" alt="Voxbento" class="brand-text brand-logo-lg" />
-          <span class="login-subtitle">Interpretation Portal — Admin</span>
-        </div>
-        {% if error %}
-        <div class="alert alert-error">{{ error }}</div>
-        {% endif %}
-        <form method="post" action="/admin/login" class="login-form">
-          <label for="password">Admin Password</label>
-          <input type="password" id="password" name="password" placeholder="Enter admin password" required autofocus />
-          <button type="submit" class="btn btn-primary">Sign In</button>
-        </form>
-        <div class="login-footer">
-          <a href="/">← Back to Portal Home</a>
-        </div>
-      </div>
+{% extends "base.html" %}
+
+{% block title %}Admin Login - Voxbento{% endblock %}
+
+{% block head %}
+<link rel="stylesheet" href="{{ url_for('static', path='css/auth.css') }}" />
+{% endblock %}
+
+{% block content %}
+<div class="login-page">
+  <div class="login-card">
+    <div class="login-brand">
+      <img src="{{ url_for('static', path='img/wordmark.png') }}" alt="Voxbento" class="brand-text brand-logo-lg" />
+      <span class="login-subtitle">Admin sign in</span>
     </div>
-  </body>
-</html>
+
+    {% if error %}
+    <div class="alert alert-error">{{ error }}</div>
+    {% endif %}
+
+    <form method="post" action="/admin/login" class="login-form">
+      <label for="password">Admin Password</label>
+      <input type="password" id="password" name="password" placeholder="Enter admin password" required autofocus />
+      <button type="submit" class="btn btn-primary">Sign In</button>
+    </form>
+
+    <div class="login-footer">
+      <a href="/">← Back to Portal Home</a>
+    </div>
+  </div>
+</div>
+{% endblock %}
