@@ -130,6 +130,7 @@ body:has(.login-page) .portal-footer {
   background-color: #eef2f6; /* soft gray-blue */
   padding: 20px;
   box-sizing: border-box;
+  min-width: 0; /* flex item: default min-width:auto lets the inputs' intrinsic width push the page past the screen */
 }
 .login-card {
   width: 100%;
