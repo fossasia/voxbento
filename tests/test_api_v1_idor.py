@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import os
 import hashlib
+import os
 from datetime import datetime, timedelta, timezone
 
 os.environ["BOOTH_ACCESS_TOKEN"] = ""
@@ -27,14 +27,15 @@ async def setup_db():
 
 def _client():
     from httpx import ASGITransport, AsyncClient
+
     from fastapi_app import app
     return AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
 
 @pytest.fixture
 async def seed_data():
-    from portal.database import create_booth, create_event, create_room, get_session, create_user
-    from portal.models import OAuthClient, OAuthToken, DeveloperAccount
     from portal.auth import hash_password
+    from portal.database import create_booth, create_event, create_room, create_user, get_session
+    from portal.models import DeveloperAccount, OAuthClient, OAuthToken
 
     async with get_session() as s:
         user = await create_user(s, email="test@example.com", display_name="Test", password_hash=hash_password("pw"))
@@ -43,7 +44,7 @@ async def seed_data():
         event_a = await create_event(s, slug="event-a", display_name="Event A")
         room_a = await create_room(s, event_id=event_a.id, display_name="Room A")
         booth_a = await create_booth(s, event_id=event_a.id, room_id=room_a.id, language_code="en", language_name="English")
-        
+
         # event B
         event_b = await create_event(s, slug="event-b", display_name="Event B")
         room_b = await create_room(s, event_id=event_b.id, display_name="Room B")
@@ -52,7 +53,7 @@ async def seed_data():
         dev = DeveloperAccount(user_id=user.id)
         s.add(dev)
         await s.flush()
-        
+
         client = OAuthClient(
             developer_account_id=dev.id,
             name="App",
@@ -61,10 +62,10 @@ async def seed_data():
         )
         s.add(client)
         await s.flush()
-        
+
         token_str = "secret_token_a"
         token_hash = hashlib.sha256(token_str.encode()).hexdigest()
-        
+
         token = OAuthToken(
             client_id=client.id,
             user_id=user.id,
@@ -94,7 +95,7 @@ class TestApiV1IDOR:
 
         assert resp.status_code == 404
         assert resp.json()["detail"] == "Room not found"
-        
+
     @pytest.mark.anyio
     async def test_booth_cross_tenant_returns_404(self, seed_data):
         event_a, room_a, booth_a, event_b, room_b, booth_b, token_a = seed_data
