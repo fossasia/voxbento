@@ -91,8 +91,8 @@ def _client():
     return AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
 
 
-async def _admin_csrf(c, cookies):
-    resp = await c.get("/admin/events/", cookies=cookies)
+async def _admin_csrf(c, cookies, path="/admin/events/"):
+    resp = await c.get(path, cookies=cookies)
     assert resp.status_code == 200
     csrf_token = c.cookies.get("admin_csrf") or resp.cookies.get("admin_csrf")
     assert csrf_token
@@ -524,7 +524,7 @@ class TestEventCRUD:
             assert legacy.status_code == 307
             assert legacy.headers["location"] == f"/workspace/events/{event.id}/delete"
 
-            csrf_token = await _admin_csrf(c, cookie)
+            csrf_token = await _admin_csrf(c, cookie, "/workspace/events/")
             resp = await c.post(
                 legacy.headers["location"],
                 cookies=cookie,
@@ -576,9 +576,10 @@ class TestRoomCRUD:
         event, _, _ = seed_event
         # Create an additional room to test search filtering
         async with _client() as c:
+            csrf_token = await _admin_csrf(c, admin_cookie)
             await c.post(
                 f"/admin/events/{event.id}/rooms/",
-                data={"display_name": "Workshop Room"},
+                data={"display_name": "Workshop Room", "csrf_token": csrf_token},
                 cookies=admin_cookie,
                 follow_redirects=False,
             )
@@ -609,9 +610,10 @@ class TestRoomCRUD:
 
         # Create a room with display_name containing a literal backslash
         async with _client() as c:
+            csrf_token = await _admin_csrf(c, admin_cookie)
             await c.post(
                 f"/admin/events/{event.id}/rooms/",
-                data={"display_name": "Backslash \\ Room"},
+                data={"display_name": "Backslash \\ Room", "csrf_token": csrf_token},
                 cookies=admin_cookie,
                 follow_redirects=False,
             )
@@ -1241,9 +1243,9 @@ class TestAPIKeyCRUD:
 
             # Initially empty
             res = await c.get(f"/workspace/api/events/{event_id}/api-keys")
-            assert res.status_code == 200
+            assert res.status_code == 200, res.headers.get("location")
             assert res.json() == []
-            csrf_token = await _admin_csrf(c, {"user_token": token})
+            csrf_token = await _admin_csrf(c, {"user_token": token}, "/workspace/events/")
 
             res_no_csrf = await c.post(
                 f"/workspace/api/events/{event_id}/api-keys",
@@ -1279,7 +1281,7 @@ class TestAPIKeyCRUD:
                 headers={"X-CSRF-Token": csrf_token},
             )
             assert res_dup.status_code == 400
-            assert "already exists" in res_dup.json()
+            assert "already exists" in res_dup.json()["detail"]
 
             # Prevent blank name
             res_blank = await c.post(
