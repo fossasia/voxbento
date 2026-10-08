@@ -113,18 +113,18 @@ class TestTranscriptionProviders:
 
         mock_client = MagicMock()
         mock_client.is_closed = False
-        
+
         # Two 500 responses, then a success
         mock_error_resp = MagicMock()
         mock_error_resp.status_code = 500
         mock_error_resp.raise_for_status.side_effect = httpx.HTTPStatusError(
             "500 Internal Server Error", request=MagicMock(), response=mock_error_resp
         )
-        
+
         mock_success_resp = MagicMock()
         mock_success_resp.status_code = 200
         mock_success_resp.json.return_value = {"text": "Hello"}
-        
+
         mock_client.post = AsyncMock(side_effect=[mock_error_resp, mock_error_resp, mock_success_resp])
 
         pg.shared_http_client = mock_client

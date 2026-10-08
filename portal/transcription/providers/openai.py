@@ -2,7 +2,6 @@ import asyncio
 import json
 import logging
 
-import httpx
 from tenacity import AsyncRetrying, retry_if_exception, stop_after_attempt, wait_exponential
 
 from portal.globals import get_http_client
