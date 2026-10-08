@@ -26,7 +26,7 @@ class MockAggregator:
 async def mock_audio_generator(frames):
     for f in frames:
         yield f
-        await asyncio.sleep(0.001)
+        await asyncio.sleep(0)
 
 
 class DummyContinuousProvider(ContinuousProvider):
@@ -116,7 +116,7 @@ async def test_continuous_provider_reconnect_and_gap():
         # 15s / 0.128s = 118 frames
         for i in range(118):
             yield AudioFrame(data=b"a" * 4096, start_timestamp=i * 0.128, duration=0.128, seq=i)
-            await asyncio.sleep(0.001)
+            await asyncio.sleep(0)
 
         # Wait until it connects a second time before sending EOF
         while provider.connected_count < 2:
@@ -150,7 +150,7 @@ async def test_continuous_provider_terminal_error():
         while True:
             yield AudioFrame(data=b"a" * 4096, start_timestamp=seq * 0.128, duration=0.128, seq=seq)
             seq += 1
-            await asyncio.sleep(0.001)
+            await asyncio.sleep(0)
 
     # Speed up sleep for test
     original_sleep = asyncio.sleep
