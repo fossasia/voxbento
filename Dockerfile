@@ -23,4 +23,4 @@ RUN uv sync --no-dev --frozen --extra supertonic
 EXPOSE 8000
 
 # Run Alembic migrations then start uvicorn.
-CMD ["sh", "-c", "uv run alembic upgrade head && uv run uvicorn fastapi_app:app --host 0.0.0.0 --port 8000"]
+CMD ["sh", "-c", "uv run alembic upgrade head && uv run uvicorn fastapi_app:app --host 0.0.0.0 --port 8000 --forwarded-allow-ips \"${FORWARDED_ALLOW_IPS:-127.0.0.1,172.28.0.1}\""]

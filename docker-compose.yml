@@ -32,6 +32,8 @@ services:
 
       # MediaMTX Control API (Docker internal) — creates alwaysAvailable paths
       MEDIAMTX_API_BASE: "http://mediamtx:9997"
+      # Trusted proxy boundary (Caddy via Docker bridge gateway + localhost)
+      FORWARDED_ALLOW_IPS: "${FORWARDED_ALLOW_IPS:-127.0.0.1,172.28.0.1}"
       # Database — SQLite stored on a Docker volume for persistence.
       # Override with a PostgreSQL URL for production deployments:
       #   DATABASE_URL=postgresql+asyncpg://user:pass@db:5432/interpretation
@@ -50,7 +52,7 @@ services:
     restart: unless-stopped
     # In production, --reload is omitted to prevent high CPU usage and extra processes.
     # Alembic migration runs first to ensure the database schema is current.
-    command: ["sh", "-c", "uv run alembic upgrade head && uv run uvicorn fastapi_app:app --host 0.0.0.0 --port 8000"]
+    command: ["sh", "-c", "uv run alembic upgrade head && uv run uvicorn fastapi_app:app --host 0.0.0.0 --port 8000 --forwarded-allow-ips \"$${FORWARDED_ALLOW_IPS:-127.0.0.1,172.28.0.1}\""]
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz', timeout=3)"]
       interval: 10s
@@ -206,3 +208,12 @@ volumes:
   jitsi-prosody-storage-rootless:
   jitsi-jicofo-config-rootless:
   jitsi-jvb-config-rootless:
+
+networks:
+  default:
+    name: voxbento_default
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.28.0.0/16
+          gateway: 172.28.0.1

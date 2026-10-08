@@ -189,3 +189,33 @@ MediaMTX is configured to allow only one publisher per stream path at a time. Ev
 
 </TabItem>
 </Tabs>
+
+## Authentication & Abuse Prevention
+
+Voxbento protects sensitive authentication and registration routes against brute-force attacks and credential stuffing with a combined rate-limiting policy implemented via SlowAPI:
+
+### Rate-Limited Routes
+
+- `POST /register`: Throttled by client IP (`RATE_LIMIT_REGISTER`, default `5/minute`) to prevent automated account creation.
+- `POST /login`: Protected by a dual-layer combined policy:
+  1. **IP-Level Rate Limiting**: Throttled by client IP (`RATE_LIMIT_LOGIN`, default `10/minute`) to protect against high-volume brute-force attempts from a single source.
+  2. **Account-Level Rate Limiting**: Throttled per account identifier (`RATE_LIMIT_LOGIN_ACCOUNT`, default `5/minute`). Account identifiers are normalized (whitespace stripped, lowercased) and hashed with HMAC-SHA256 using the application secret key before keying. This ensures privacy (raw email addresses are never stored in rate-limit keys or exposed in memory dumps) while mitigating distributed attacks across multiple IP addresses.
+- `POST /admin/login`: Throttled by client IP (`RATE_LIMIT_ADMIN_LOGIN`, default `5/minute`) to guard administrator access.
+
+### Response Semantics & Headers
+
+When an endpoint exceeds its configured quota, Voxbento returns an HTTP 429 (Too Many Requests) response with standard RFC-compliant rate limit headers:
+- `Retry-After`: Non-negative integer seconds remaining until the rate-limit window resets.
+- `X-RateLimit-Limit`: Maximum requests permitted within the current window.
+- `X-RateLimit-Remaining`: Remaining request quota in the active window (`0` when rate-limited).
+- `X-RateLimit-Reset`: Deterministic absolute Unix epoch timestamp when the current window resets.
+
+Browser clients sending an `Accept: text/html` header receive a rendered error template (`429.html`), while API or AJAX clients receive a structured JSON error response (`{"detail": "Too many requests. Please try again later."}`). Rate limiting can be disabled across all auth routes by setting `RATE_LIMIT_ENABLED=false` (e.g. for testing or local development).
+
+### Reverse Proxy & Client IP Propagation
+
+In production deployments fronted by Caddy:
+- Host Caddy terminates TLS and forwards the client's actual remote address via the `X-Forwarded-For` header.
+- The bundled Docker Compose deployment assigns a deterministic bridge network (`172.28.0.0/16`) with gateway `172.28.0.1`.
+- Uvicorn's `ProxyHeadersMiddleware` is configured with `--forwarded-allow-ips "127.0.0.1,172.28.0.1"` (`FORWARDED_ALLOW_IPS`), trusting forwarded headers strictly from the Docker gateway (Caddy proxy) and loopback.
+- Direct external requests reaching published port 8000 cannot spoof `X-Forwarded-For` because their peer address is rejected by the trusted-proxy boundary.

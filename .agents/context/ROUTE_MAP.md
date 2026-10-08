@@ -13,9 +13,9 @@
 | GET | `/local` | open | `local.html` | VoxBento Local desktop console download page with client OS detection & release links |
 | GET | `/healthz` | open | — | JSON: `{ok, server, mediamtx_ok}` |
 | GET | `/register` | open | `register.html` | Redirects to `/account` if already logged in |
-| POST | `/register` | open | `register.html` | Creates user, sets `user_token` cookie → `/account`; if `password` is set, `password_confirm` must match (422 otherwise) |
+| POST | `/register` | open | `register.html` | Creates user, sets `user_token` cookie → `/account`; if `password` is set, `password_confirm` must match (422 otherwise); rate-limited by IP (`RATE_LIMIT_REGISTER`, default 5/min) |
 | GET | `/login` | open | `login.html` | Redirects to `/account` or `?next=` if logged in |
-| POST | `/login` | open | `login.html` | Verifies bcrypt, sets `user_token` cookie |
+| POST | `/login` | open | `login.html` | Verifies bcrypt, sets `user_token` cookie; protected by combined IP (`RATE_LIMIT_LOGIN`, default 10/min) + normalized HMAC-hashed account (`RATE_LIMIT_LOGIN_ACCOUNT`, default 5/min) rate limiting |
 | GET | `/logout` | open | — | Deletes `user_token` cookie → `/` |
 | GET | `/account` | user | `account.html` | Shows profile + event memberships |
 | GET | `/join/{token}` | open | — | Validates invite token, sets `session_token` → booth or listener |
@@ -66,7 +66,7 @@ Legacy organizer requests to allowlisted event-management paths under `/admin/`,
 | Method | Path | Template | Notes |
 |---|---|---|---|
 | GET | `/admin/login` | `admin/login.html` | Redirects to `/admin/` if already admin |
-| POST | `/admin/login` | — | Sets `admin_token` cookie → `/admin/` |
+| POST | `/admin/login` | — | Sets `admin_token` cookie → `/admin/`; rate-limited by IP (`RATE_LIMIT_ADMIN_LOGIN`, default 5/min) |
 | GET | `/admin/logout` | — | Deletes `admin_token` → `/admin/login` |
 | GET | `/admin/` or `/workspace/` | `admin/dashboard.html` | System-wide events for super admins; accessible events for organizers |
 | GET | `/admin/events/` | `admin/event_list.html` | — |
@@ -115,3 +115,24 @@ Legacy organizer requests to allowlisted event-management paths under `/admin/`,
 | `portal/websockets/manager.py` | `ws_booth` and `ws_captions` endpoints |
 | `portal/websockets/handlers.py` | Specific `_handle_*` logic for WS messages |
 | `fastapi_app.py` | Application lifespan, router include aggregation |
+
+---
+
+## Rate Limiting & Proxy Topology
+
+Authentication routes are protected by SlowAPI in-memory rate limiting against credential-stuffing and brute-force abuse:
+
+| Route | Keys | Default Limit | Setting |
+|---|---|---|---|
+| `POST /register` | Client IP | 5/minute | `RATE_LIMIT_REGISTER` |
+| `POST /login` | Client IP + Normalized Account HMAC | 10/minute (IP), 5/minute (Account) | `RATE_LIMIT_LOGIN`, `RATE_LIMIT_LOGIN_ACCOUNT` |
+| `POST /admin/login` | Client IP | 5/minute | `RATE_LIMIT_ADMIN_LOGIN` |
+
+### 429 Responses & Headers
+- **HTML Form requests**: Return HTTP 429 rendering the error template (`429.html`) with an error message and a `Retry-After: <seconds>` response header.
+- **JSON requests**: Return HTTP 429 with `{ "detail": "Too many requests. Please try again later." }` and `Retry-After: <seconds>`.
+
+### Reverse Proxy & Client IP Propagation
+- Client IP resolution relies on `request.client.host`.
+- When deployed behind a reverse proxy (bundled Caddy on the host forwarding to Docker port 8000), Uvicorn's `ProxyHeadersMiddleware` requires `--forwarded-allow-ips` to trust the Docker bridge gateway (`172.28.0.1`) and localhost (`127.0.0.1`).
+- Setting `--forwarded-allow-ips="*"` is strictly prohibited to prevent attackers connecting directly to published port 8000 from spoofing `X-Forwarded-For`.

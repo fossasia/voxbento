@@ -5,6 +5,8 @@ import time
 from threading import Lock
 from typing import Dict, Tuple
 
+from portal.config import settings
+
 # Simple in-memory rate limiter for auth endpoints.
 # Format: { "action:identifier": [timestamp1, timestamp2, ...] }
 _rates: dict[str, list[float]] = {}
@@ -16,7 +18,11 @@ def check_rate_limit(action: str, identifier: str, max_requests: int, window_sec
 
     Returns True if allowed, False if rate limited.
     """
-    key = f"{action}:{identifier}"
+    if not settings.rate_limit_enabled:
+        return True
+
+    norm_identifier = identifier.strip().lower()
+    key = f"{action}:{norm_identifier}"
     now = time.time()
     cutoff = now - window_seconds
 
