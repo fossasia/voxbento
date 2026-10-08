@@ -1004,3 +1004,68 @@ code { font-family: var(--font-mono); font-size: 0.85em; background: var(--color
   .step-label { display: none; }
   .wizard-card { padding: 22px; }
 }
+
+/* ── Admin developer accounts page ──────────────────────────────────────────
+   Classes for the styles that used to sit in style attributes on
+   admin/developer_accounts.html. Scoped under .page-header / .data-table so
+   they win over the generic .page-header h1 and .data-table th/td rules. */
+.page-header.dev-accounts-header { margin-bottom: 2rem; border-bottom: 1px solid var(--color-border); padding-bottom: 1.5rem; }
+.page-header .dev-accounts-title { font-size: 2rem; font-weight: 800; letter-spacing: -0.02em; color: var(--color-text); }
+.page-header .dev-accounts-subtitle { font-size: 1.05rem; color: var(--color-text-secondary); margin-top: 0.25rem; }
+
+.dev-accounts-card { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 12px; overflow: hidden; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05); }
+.data-table.dev-accounts-table { border: none; margin: 0; }
+.dev-accounts-table thead { background: #f8fafc; }
+.data-table.dev-accounts-table thead th { padding: 16px 24px; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; color: #64748b; border-bottom: 1px solid var(--color-border); }
+.data-table.dev-accounts-table thead th.dev-accounts-col-actions { text-align: right; }
+.dev-accounts-table .dev-accounts-row { border-bottom: 1px solid var(--color-border); }
+.data-table.dev-accounts-table td { padding: 16px 24px; border: none; }
+.data-table.dev-accounts-table td.dev-accounts-cell-email { font-weight: 500; }
+.data-table.dev-accounts-table td.dev-accounts-cell-muted { color: var(--color-text-secondary); }
+.data-table.dev-accounts-table td.dev-accounts-cell-date { font-variant-numeric: tabular-nums; color: var(--color-text-secondary); }
+.data-table.dev-accounts-table td.dev-accounts-cell-actions { text-align: right; white-space: nowrap; }
+
+.dev-accounts-status { padding: 4px 10px; border-radius: 9999px; font-size: 0.75rem; font-weight: 600; text-transform: capitalize; }
+.dev-accounts-status--approved { background: #ecfdf5; color: #059669; border: 1px solid #a7f3d0; }
+.dev-accounts-status--pending { background: #fffbeb; color: #d97706; border: 1px solid #fde68a; }
+.dev-accounts-status--inactive { background: #fef2f2; color: #dc2626; border: 1px solid #fecaca; }
+
+.dev-accounts-form { display: inline; }
+.dev-accounts-form + .dev-accounts-form { margin-left: 8px; }
+.dev-accounts-btn { padding: 6px 14px; border-radius: 6px; font-size: 0.85rem; font-weight: 600; cursor: pointer; }
+.dev-accounts-btn--approve { background: #3b82f6; color: white; border: none; box-shadow: 0 1px 2px rgba(59, 130, 246, 0.3); }
+.dev-accounts-btn--reject { background: #ef4444; color: white; border: none; box-shadow: 0 1px 2px rgba(239, 68, 68, 0.3); }
+.dev-accounts-btn--suspend { background: white; color: #ef4444; border: 1px solid #fca5a5; transition: all 0.2s; }
+.dev-accounts-btn--restore { background: white; color: #3b82f6; border: 1px solid #93c5fd; transition: all 0.2s; }
+
+.data-table.dev-accounts-table td.dev-accounts-empty { text-align: center; padding: 48px 24px; color: var(--color-text-secondary); }
+.dev-accounts-empty-icon { width: 48px; height: 48px; color: #cbd5e1; margin: 0 auto 1rem auto; display: block; }
+.dev-accounts-empty-title { margin: 0; font-size: 1.05rem; font-weight: 500; color: var(--color-text); }
+.dev-accounts-empty-text { margin: 4px 0 0 0; font-size: 0.95rem; }
+
+/* ── Admin API settings page ───────────────────────────────────────────────
+   Classes for the styles that used to sit in style attributes on
+   admin/api_settings.html. Compound selectors so they win over the generic
+   .btn, .btn:hover, .section-header and .muted rules, as the inline
+   styles did. */
+.muted.api-settings-intro { margin-bottom: 20px; }
+.card-form.api-settings-form { max-width: 600px; }
+
+.form-group.api-settings-toggle { padding: 15px; background: #f8f9fa; border: 1px solid #e2e8f0; border-radius: 6px; margin-bottom: 20px; }
+.api-settings-toggle-label { font-weight: 600; display: flex; align-items: center; gap: 8px; margin: 0; cursor: pointer; }
+.api-settings-toggle-label input { width: auto; }
+.form-help.api-settings-toggle-help { margin-top: 8px; margin-bottom: 0; }
+
+.form-group.api-key-field { margin-bottom: 24px; }
+.form-group.api-key-field--last { margin-bottom: 30px; }
+.api-key-label { display: block; font-weight: 600; margin-bottom: 8px; color: #374151; }
+.input.api-key-input { width: 100%; padding: 10px 12px; border: 1px solid #d1d5db; border-radius: 6px; box-sizing: border-box; font-family: monospace; font-size: 14px; }
+.api-key-meta { margin-top: 6px; display: flex; align-items: center; justify-content: space-between; }
+.form-help.api-key-help { font-size: 0.85rem; color: #6b7280; margin: 0; }
+.api-key-clear { font-size: 0.85rem; color: #ef4444; display: flex; align-items: center; gap: 4px; cursor: pointer; }
+
+.section-header.api-settings-divider { margin-top: 40px; padding-top: 30px; border-top: 1px solid #e5e7eb; }
+
+.form-actions.api-settings-actions { margin-top: 20px; padding-top: 20px; border-top: 1px solid #e5e7eb; display: flex; align-items: center; }
+.btn.api-settings-save { padding: 10px 20px; font-size: 14px; }
+.btn.api-settings-cancel { background: white; border: 1px solid #d1d5db; color: #374151; margin-left: 12px; padding: 10px 20px; font-size: 14px; }

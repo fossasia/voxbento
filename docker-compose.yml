@@ -24,7 +24,8 @@ services:
       DEFAULT_JITSI_ROOM: "${DEFAULT_JITSI_ROOM:-eventyay-stage-room}"
       JITSI_DOMAIN: "${JITSI_DOMAIN:-jitsi.voxbento.com}"
       JITSI_BASE_URL: "${JITSI_BASE_URL:-http://${JITSI_DOMAIN:-localhost:8080}}"
-      JITSI_INTERNAL_BASE: "https://jitsi-web:443"
+      # Jitsi stable-11146+ serves HTTPS on the unprivileged container port 8443.
+      JITSI_INTERNAL_BASE: "https://jitsi-web:8443"
       # Browser-facing URLs — must be reachable from the user's machine
       MEDIAMTX_WHIP_BASE: "${MEDIAMTX_WHIP_BASE:-http://localhost:8889}"
       FLOOR_BOT_BASE: "http://floor-bot:8080"
@@ -92,10 +93,14 @@ services:
   #   10000/udp → JVB media traffic
 
   jitsi-web:
-    image: jitsi/web:stable-9823
+    image: ghcr.io/jitsi/web:stable-11248
+    read_only: true
+    tmpfs:
+      - /run:size=16M,uid=1000,gid=1000,mode=1750,exec
+      - /tmp:size=16M,uid=1000,gid=1000,mode=1777,noexec
     ports:
-      - "${JITSI_WEB_PORT:-8443}:443"
-      - "${JITSI_WEB_HTTP_PORT:-8080}:80"
+      - "${JITSI_WEB_PORT:-8443}:8443"
+      - "${JITSI_WEB_HTTP_PORT:-8080}:8000"
     environment:
       ENABLE_AUTH: "0"
       ENABLE_GUESTS: "1"
@@ -111,13 +116,18 @@ services:
       XMPP_BOSH_URL_BASE: http://jitsi-prosody:5280
       XMPP_MUC_DOMAIN: muc.meet.jitsi
     volumes:
-      - jitsi-web-config:/config
+      - jitsi-web-config-rootless:/config
+      - jitsi-web-storage-rootless:/storage
     depends_on:
       - jitsi-prosody
     restart: unless-stopped
 
   jitsi-prosody:
-    image: jitsi/prosody:stable-9823
+    image: ghcr.io/jitsi/prosody:stable-11248
+    read_only: true
+    tmpfs:
+      - /run:size=16M,uid=1000,gid=1000,mode=1750,exec
+      - /tmp:size=16M,uid=1000,gid=1000,mode=1777,noexec
     environment:
       XMPP_DOMAIN: meet.jitsi
       XMPP_AUTH_DOMAIN: auth.meet.jitsi
@@ -130,12 +140,17 @@ services:
       PROSODY_LOG_LEVEL: "warn"
       TZ: "${TZ:-UTC}"
     volumes:
-      - jitsi-prosody-config:/config
-      - jitsi-prosody-plugins:/prosody-plugins-custom
+      - jitsi-prosody-config-rootless:/config
+      - jitsi-prosody-plugins-rootless:/prosody-plugins-custom
+      - jitsi-prosody-storage-rootless:/var/lib/prosody
     restart: unless-stopped
 
   jitsi-jicofo:
-    image: jitsi/jicofo:stable-9823
+    image: ghcr.io/jitsi/jicofo:stable-11248
+    read_only: true
+    tmpfs:
+      - /run:size=32M,uid=1000,gid=1000,mode=1750,exec
+      - /tmp:size=16M,uid=1000,gid=1000,mode=1777,noexec
     environment:
       XMPP_DOMAIN: meet.jitsi
       XMPP_AUTH_DOMAIN: auth.meet.jitsi
@@ -147,13 +162,17 @@ services:
       JICOFO_LOG_LEVEL: "WARNING"
       TZ: "${TZ:-UTC}"
     volumes:
-      - jitsi-jicofo-config:/config
+      - jitsi-jicofo-config-rootless:/config
     depends_on:
       - jitsi-prosody
     restart: unless-stopped
 
   jitsi-jvb:
-    image: jitsi/jvb:stable-9823
+    image: ghcr.io/jitsi/jvb:stable-11248
+    read_only: true
+    tmpfs:
+      - /run:size=32M,uid=1000,gid=1000,mode=1750,exec
+      - /tmp:size=16M,uid=1000,gid=1000,mode=1777,noexec
     ports:
       - "${JVB_PORT:-10000}:10000/udp"
     environment:
@@ -165,15 +184,14 @@ services:
       JVB_AUTH_PASSWORD: "${JVB_AUTH_PASSWORD:-changeme}"
       JVB_PORT: "10000"
       JVB_STUN_SERVERS: "stun.l.google.com:19302"
-      # DOCKER_HOST_ADDRESS tells JVB what IP to advertise in ICE candidates.
+      # JVB_ADVERTISE_IPS tells JVB what IP to advertise in ICE candidates.
       # On macOS: set to your LAN IP (e.g. 192.168.1.x) — run: ipconfig getifaddr en0
       # On Linux: set to your host IP — run: hostname -I | awk '{print $1}'
-      DOCKER_HOST_ADDRESS: "${DOCKER_HOST_ADDRESS:-}"
-      ENABLE_COLIBRI_WEBSOCKET: "true"
+      JVB_ADVERTISE_IPS: "${JVB_ADVERTISE_IPS:-}"
       JVB_LOG_LEVEL: "WARNING"
       TZ: "${TZ:-UTC}"
     volumes:
-      - jitsi-jvb-config:/config
+      - jitsi-jvb-config-rootless:/config
     depends_on:
       - jitsi-prosody
     restart: unless-stopped
@@ -181,8 +199,10 @@ services:
 volumes:
   portal-data:
   supertonic-cache:
-  jitsi-web-config:
-  jitsi-prosody-config:
-  jitsi-prosody-plugins:
-  jitsi-jicofo-config:
-  jitsi-jvb-config:
+  jitsi-web-config-rootless:
+  jitsi-web-storage-rootless:
+  jitsi-prosody-config-rootless:
+  jitsi-prosody-plugins-rootless:
+  jitsi-prosody-storage-rootless:
+  jitsi-jicofo-config-rootless:
+  jitsi-jvb-config-rootless:
