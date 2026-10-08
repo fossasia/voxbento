@@ -68,8 +68,8 @@
 
 **Files to change:**
 1. `portal/config.py` — `Settings.effective_jwt_secret` (property)
-2. `portal/auth.py` — `create_token`, `create_participant_token`, `create_user_token`, `create_admin_token`, `decode_token`
-3. All cookie names: `session_token`, `user_token`, `admin_token` — search across `portal/routers/`
+2. `portal/auth.py` — `create_token`, `create_participant_token`, `create_user_token`, `decode_token`
+3. All cookie names: `session_token`, `user_token` — search across `portal/routers/`
 4. `portal/static/js/interpreter-booth.js` — `?token=` query param for WS if legacy token auth is changed
 
 ---

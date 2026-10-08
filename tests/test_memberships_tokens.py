@@ -15,13 +15,12 @@ from __future__ import annotations
 import os
 
 os.environ["BOOTH_ACCESS_TOKEN"] = ""
-os.environ["ADMIN_PASSWORD"] = "test-admin-pass"
 
 from datetime import timedelta
 
 import pytest
 
-from portal.auth import create_admin_token, create_user_token, hash_password
+from portal.auth import create_user_token, hash_password
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -39,8 +38,18 @@ async def setup_db():
 
 
 @pytest.fixture
-def admin_cookie():
-    return {"admin_token": create_admin_token()}
+async def admin_cookie():
+    from portal.database import create_user, get_session
+
+    async with get_session() as s:
+        user = await create_user(
+            s,
+            email="admin@example.com",
+            display_name="Admin",
+            password_hash=hash_password("test-admin-pass"),
+            is_admin=True,
+        )
+    return {"user_token": create_user_token(user_id=user.id, email=user.email, is_admin=True)}
 
 
 def _client():
@@ -705,8 +714,10 @@ class TestEndToEndAdminWorkflow:
 
         async with get_session() as s:
             memberships = await list_memberships_for_event(s, event.id)
-        assert len(memberships) == 1
-        assert memberships[0].role == "event_owner"
+        assert len(memberships) == 2  # Creator (admin) + Alice
+        alice_memberships = [m for m in memberships if m.user_id == alice.id]
+        assert len(alice_memberships) == 1
+        assert alice_memberships[0].role == "event_owner"
 
         # 6. Generate invite token for the booth
         async with _client() as c:
@@ -760,14 +771,14 @@ class TestEndToEndAdminWorkflow:
         # 10. Remove membership
         async with get_session() as s:
             memberships = await list_memberships_for_event(s, event.id)
-        mid = memberships[0].id
+        alice_mid = [m.id for m in memberships if m.user_id == alice.id][0]
         async with _client() as c:
             resp = await c.post(
-                f"/admin/events/{event.id}/members/{mid}/delete",
+                f"/admin/events/{event.id}/members/{alice_mid}/delete",
                 cookies=admin_cookie,
                 follow_redirects=False,
             )
         assert resp.status_code == 303
         async with get_session() as s:
             memberships = await list_memberships_for_event(s, event.id)
-        assert len(memberships) == 0
+        assert not any(m.user_id == alice.id for m in memberships)

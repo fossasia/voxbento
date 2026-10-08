@@ -13,17 +13,12 @@ from __future__ import annotations
 import os
 
 os.environ["BOOTH_ACCESS_TOKEN"] = ""
-os.environ["ADMIN_PASSWORD"] = "test-admin-pass"
 
 from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from portal.auth import create_admin_token, decode_token
-from portal.config import settings
-
-settings.admin_password = "test-admin-pass"
-
+from portal.auth import create_user_token, decode_token, hash_password
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -42,10 +37,30 @@ async def setup_db():
 
 
 @pytest.fixture
-def admin_cookie():
-    """Return a dict with the admin_token cookie for authenticated requests."""
-    token = create_admin_token()
-    return {"admin_token": token}
+async def seeded_admin():
+    """Create a real, active site administrator in the database."""
+    from portal.database import create_user, get_session
+
+    async with get_session() as s:
+        user = await create_user(
+            s,
+            email="admin@example.com",
+            display_name="Admin",
+            password_hash=hash_password("test-admin-pass"),
+            is_admin=True,
+        )
+    return user
+
+
+@pytest.fixture
+async def admin_cookie(seeded_admin):
+    """Return a dict with the user_token cookie for authenticated admin requests.
+
+    Authorization is checked against the database, so the token must belong to a
+    real administrator row rather than a phantom id.
+    """
+    token = create_user_token(user_id=seeded_admin.id, email="admin@example.com", is_admin=True)
+    return {"user_token": token}
 
 
 @pytest.fixture
@@ -100,54 +115,241 @@ class TestAdminLogin:
             resp = await c.get("/admin/login")
         assert resp.status_code == 200
         assert b"Admin" in resp.content
+        assert b'name="email"' in resp.content
+        assert b'name="password"' in resp.content
 
     @pytest.mark.anyio
-    async def test_login_with_correct_password(self):
+    async def test_login_with_correct_credentials(self, setup_db):
+        from portal.database import create_user, get_session
+
+        async with get_session() as s:
+            user = await create_user(
+                s,
+                email="admin@example.com",
+                display_name="Admin",
+                password_hash=hash_password("test-admin-pass"),
+                is_admin=True,
+            )
+
         async with _client() as c:
             resp = await c.post(
                 "/admin/login",
-                data={"password": "test-admin-pass"},
+                data={"email": "admin@example.com", "password": "test-admin-pass"},
                 follow_redirects=False,
             )
         assert resp.status_code == 303
         assert resp.headers["location"] == "/admin/"
-        assert "admin_token" in resp.headers.get("set-cookie", "")
+        assert "user_token" in resp.headers.get("set-cookie", "")
+        cookie_val = resp.cookies.get("user_token")
+        payload = decode_token(cookie_val)
+        assert payload["sub"] == str(user.id)
+        assert payload["is_admin"] is True
 
     @pytest.mark.anyio
-    async def test_login_with_wrong_password(self):
+    async def test_login_with_wrong_password(self, setup_db):
+        from portal.database import create_user, get_session
+
+        async with get_session() as s:
+            await create_user(
+                s,
+                email="admin@example.com",
+                display_name="Admin",
+                password_hash=hash_password("test-admin-pass"),
+                is_admin=True,
+            )
+
         async with _client() as c:
             resp = await c.post(
                 "/admin/login",
-                data={"password": "wrong"},
+                data={"email": "admin@example.com", "password": "wrong"},
                 follow_redirects=False,
             )
         assert resp.status_code == 403
-        assert b"Invalid password" in resp.content
+        assert b"Invalid email or password" in resp.content
 
     @pytest.mark.anyio
-    async def test_login_strips_surrounding_whitespace(self):
+    async def test_login_with_non_admin_user_rejected(self, setup_db):
+        from portal.database import create_user, get_session
+
+        async with get_session() as s:
+            await create_user(
+                s,
+                email="regular@example.com",
+                display_name="Regular",
+                password_hash=hash_password("test-admin-pass"),
+                is_admin=False,
+            )
+
         async with _client() as c:
             resp = await c.post(
                 "/admin/login",
-                data={"password": " test-admin-pass\n"},
+                data={"email": "regular@example.com", "password": "test-admin-pass"},
                 follow_redirects=False,
             )
-        assert resp.status_code == 303
-        assert resp.headers["location"] == "/admin/"
+        assert resp.status_code == 403
+        assert b"Admin privileges required" in resp.content
 
     @pytest.mark.anyio
-    async def test_login_rejects_empty_password_when_admin_password_is_whitespace_only(self):
-        settings.admin_password = "   "
-        try:
-            async with _client() as c:
-                resp = await c.post(
-                    "/admin/login",
-                    data={"password": ""},
-                    follow_redirects=False,
-                )
+    async def test_login_rejects_empty_credentials(self):
+        async with _client() as c:
+            resp = await c.post(
+                "/admin/login",
+                data={"email": "", "password": ""},
+                follow_redirects=False,
+            )
+        assert resp.status_code == 403
+
+    @pytest.mark.anyio
+    async def test_login_fails_closed_when_legacy_password_is_set(self, monkeypatch, setup_db):
+        """A removed shared secret must never regain access through the environment."""
+        monkeypatch.setenv("ADMIN_PASSWORD", "legacy-shared-secret")
+
+        async with _client() as c:
+            resp = await c.post(
+                "/admin/login",
+                data={"email": "admin@example.com", "password": "legacy-shared-secret"},
+                follow_redirects=False,
+            )
+
+        assert resp.status_code == 403
+        assert "user_token" not in resp.headers.get("set-cookie", "")
+
+    @pytest.mark.anyio
+    async def test_login_rejects_inactive_admin(self, setup_db):
+        """An administrator whose account has been deactivated cannot sign in."""
+        from portal.database import create_user, get_session, update_user_active
+
+        async with get_session() as s:
+            user = await create_user(
+                s,
+                email="inactive-admin@example.com",
+                display_name="Inactive Admin",
+                password_hash=hash_password("test-admin-pass"),
+                is_admin=True,
+            )
+            await update_user_active(s, user.id, is_active=False)
+
+        async with _client() as c:
+            resp = await c.post(
+                "/admin/login",
+                data={"email": "inactive-admin@example.com", "password": "test-admin-pass"},
+                follow_redirects=False,
+            )
+        assert resp.status_code == 403
+        assert "user_token" not in resp.headers.get("set-cookie", "")
+
+    @pytest.mark.anyio
+    async def test_login_when_no_active_admin_account_exists(self, setup_db):
+        """When the database has no active administrators, login fails closed safely."""
+        async with _client() as c:
+            get_resp = await c.get("/admin/login")
+            assert get_resp.status_code == 200
+            assert b'name="email"' in get_resp.content
+
+            resp = await c.post(
+                "/admin/login",
+                data={"email": "nobody@example.com", "password": "any-password"},
+                follow_redirects=False,
+            )
             assert resp.status_code == 403
-        finally:
-            settings.admin_password = "test-admin-pass"
+            assert "user_token" not in resp.headers.get("set-cookie", "")
+
+    @pytest.mark.anyio
+    async def test_documented_break_glass_recovery_procedure(self, setup_db):
+        """Verify the documented break-glass recovery SQL procedure promotes an account safely."""
+        from sqlalchemy import text
+
+        from portal.database import create_user, get_session
+
+        async with get_session() as s:
+            await create_user(
+                s,
+                email="operator@example.com",
+                display_name="Operator",
+                password_hash=hash_password("operator-pass"),
+                is_admin=False,
+            )
+
+        async with _client() as c:
+            # 1. Before recovery, regular user cannot access admin login
+            denied_login = await c.post(
+                "/admin/login",
+                data={"email": "operator@example.com", "password": "operator-pass"},
+                follow_redirects=False,
+            )
+            assert denied_login.status_code == 403
+
+            # 2. Execute documented break-glass recovery SQL from docs/admin-password-removal-migration.md
+            async with get_session() as s:
+                await s.execute(text("UPDATE users SET is_admin = 1 WHERE email = 'operator@example.com'"))
+                await s.commit()
+
+            # 3. After running the recovery SQL, user signs in successfully immediately
+            allowed_login = await c.post(
+                "/admin/login",
+                data={"email": "operator@example.com", "password": "operator-pass"},
+                follow_redirects=False,
+            )
+            assert allowed_login.status_code == 303
+            assert allowed_login.headers["location"] == "/admin/"
+            cookie_header = allowed_login.headers.get("set-cookie", "")
+            assert "user_token" in cookie_header
+
+            # 4. Promoted user can now access the admin panel
+            token_val = None
+            for cookie_part in cookie_header.split(";"):
+                part = cookie_part.strip()
+                if part.startswith("user_token="):
+                    token_val = part.split("=", 1)[1]
+                    break
+            assert token_val is not None
+            dashboard = await c.get("/admin/", cookies={"user_token": token_val})
+            assert dashboard.status_code == 200
+
+    @pytest.mark.anyio
+    async def test_login_preserves_password_whitespace(self, setup_db):
+        """Passwords are compared verbatim; they must not be stripped."""
+        from portal.database import create_user, get_session
+
+        async with get_session() as s:
+            await create_user(
+                s,
+                email="spacey-admin@example.com",
+                display_name="Spacey Admin",
+                password_hash=hash_password(" padded-pass "),
+                is_admin=True,
+            )
+
+        async with _client() as c:
+            stripped = await c.post(
+                "/admin/login",
+                data={"email": "spacey-admin@example.com", "password": "padded-pass"},
+                follow_redirects=False,
+            )
+            verbatim = await c.post(
+                "/admin/login",
+                data={"email": "spacey-admin@example.com", "password": " padded-pass "},
+                follow_redirects=False,
+            )
+
+        # The trimmed password must not match a credential whose spaces are real.
+        assert stripped.status_code == 403
+        # The exact credential still signs in.
+        assert verbatim.status_code == 303
+        assert verbatim.headers["location"] == "/admin/"
+        assert "user_token" in verbatim.headers.get("set-cookie", "")
+
+    @pytest.mark.anyio
+    async def test_logout_clears_current_and_legacy_cookies(self):
+        """Logout must clear both the new user_token and the legacy admin_token."""
+        async with _client() as c:
+            resp = await c.get("/admin/logout", follow_redirects=False)
+
+        assert resp.status_code == 303
+        cleared = {header.split("=", 1)[0].strip().lower() for header in resp.headers.get_list("set-cookie")}
+        assert "user_token" in cleared
+        assert "admin_token" in cleared
+        assert "session_token" in cleared
 
     @pytest.mark.anyio
     async def test_logout_clears_cookie(self):
@@ -155,6 +357,126 @@ class TestAdminLogin:
             resp = await c.get("/admin/logout", follow_redirects=False)
         assert resp.status_code == 303
         assert resp.headers["location"] == "/admin/login"
+
+
+class TestStaleAdminToken:
+    """Authorization must follow current database state, not the token's claims.
+
+    A ``user_token`` lives for ``jwt_expiry_seconds`` (24h by default), so if the
+    ``is_admin`` claim alone were trusted, demoting, deactivating, or deleting an
+    administrator would not revoke their access until the token expired.
+    """
+
+    @staticmethod
+    async def _make_admin(email="stale-admin@example.com"):
+        from portal.database import create_user, get_session
+
+        async with get_session() as s:
+            user = await create_user(
+                s,
+                email=email,
+                display_name="Stale Admin",
+                password_hash=hash_password("test-admin-pass"),
+                is_admin=True,
+            )
+        return user
+
+    @pytest.mark.anyio
+    async def test_active_admin_token_allowed(self, setup_db):
+        """Baseline: an active admin with a valid token can reach the dashboard."""
+        user = await self._make_admin()
+        cookie = {"user_token": create_user_token(user_id=user.id, email=user.email, is_admin=True)}
+
+        async with _client() as c:
+            resp = await c.get("/admin/", cookies=cookie)
+        assert resp.status_code == 200
+
+    @pytest.mark.anyio
+    async def test_demoted_admin_token_denied(self, setup_db):
+        """A token issued while admin, then demoted in the DB, must be denied."""
+        user = await self._make_admin()
+        cookie = {"user_token": create_user_token(user_id=user.id, email=user.email, is_admin=True)}
+
+        from sqlalchemy import update as sa_update
+
+        from portal.database import get_session
+        from portal.models import User
+
+        async with get_session() as s:
+            await s.execute(sa_update(User).where(User.id == user.id).values(is_admin=False))
+
+        async with _client() as c:
+            resp = await c.get("/admin/", cookies=cookie)
+        assert resp.status_code == 403
+
+    @pytest.mark.anyio
+    async def test_deactivated_admin_token_denied(self, setup_db):
+        """A token issued while admin, then deactivated in the DB, must be denied."""
+        user = await self._make_admin()
+        cookie = {"user_token": create_user_token(user_id=user.id, email=user.email, is_admin=True)}
+
+        from portal.database import get_session, update_user_active
+
+        async with get_session() as s:
+            await update_user_active(s, user.id, is_active=False)
+
+        async with _client() as c:
+            resp = await c.get("/admin/", cookies=cookie)
+        assert resp.status_code == 403
+
+    @pytest.mark.anyio
+    async def test_deleted_admin_token_denied(self, setup_db):
+        """A token for an administrator who no longer exists must be denied."""
+        user = await self._make_admin()
+        cookie = {"user_token": create_user_token(user_id=user.id, email=user.email, is_admin=True)}
+
+        from portal.database import delete_user, get_session
+
+        async with get_session() as s:
+            await delete_user(s, user.id)
+
+        async with _client() as c:
+            resp = await c.get("/admin/", cookies=cookie)
+        assert resp.status_code == 403
+
+    @pytest.mark.anyio
+    async def test_demoted_admin_token_denied_on_super_admin_route(self, setup_db):
+        """Super-admin-only routes (e.g. /admin/users/) also honour the demotion."""
+        user = await self._make_admin()
+        cookie = {"user_token": create_user_token(user_id=user.id, email=user.email, is_admin=True)}
+
+        from sqlalchemy import update as sa_update
+
+        from portal.database import get_session
+        from portal.models import User
+
+        async with get_session() as s:
+            await s.execute(sa_update(User).where(User.id == user.id).values(is_admin=False))
+
+        async with _client() as c:
+            resp = await c.get("/admin/users/", cookies=cookie)
+        assert resp.status_code == 403
+
+    @pytest.mark.anyio
+    async def test_event_owner_denied_on_super_admin_route(self, seed_event):
+        """A normal event owner cannot reach super-admin-only routes (e.g. /admin/users/)."""
+        event, _, _ = seed_event
+        from portal.database import create_user, get_session, set_event_membership
+
+        async with get_session() as s:
+            user = await create_user(
+                s,
+                email="event-owner-only@example.com",
+                display_name="Event Owner Only",
+                password_hash=hash_password("owner-pass"),
+                is_admin=False,
+            )
+            await set_event_membership(s, user_id=user.id, event_id=event.id, role="event_owner")
+
+        cookie = {"user_token": create_user_token(user_id=user.id, email=user.email, is_admin=False)}
+        async with _client() as c:
+            resp = await c.get("/admin/users/", cookies=cookie)
+        assert resp.status_code == 403
 
 
 # ---------------------------------------------------------------------------
@@ -184,8 +506,69 @@ class TestRequireAdmin:
     @pytest.mark.anyio
     async def test_invalid_cookie_rejected(self):
         async with _client() as c:
-            resp = await c.get("/admin/", cookies={"admin_token": "garbage"})
+            resp = await c.get("/admin/", cookies={"user_token": "garbage"})
         assert resp.status_code == 403
+
+    @pytest.mark.anyio
+    async def test_room_only_route_allowed_for_event_owner(self, seed_event):
+        """An event owner is authorized for room-only routes within their event."""
+        event, room, _ = seed_event
+        from portal.database import create_user, get_session, set_event_membership
+
+        async with get_session() as s:
+            user = await create_user(
+                s,
+                email="owner@example.com",
+                display_name="Event Owner",
+                password_hash=hash_password("owner-pass"),
+            )
+            await set_event_membership(s, user_id=user.id, event_id=event.id, role="event_owner")
+
+        cookie = {"user_token": create_user_token(user_id=user.id, email=user.email, is_admin=False)}
+        async with _client() as c:
+            resp = await c.get(f"/api/rooms/{room.id}/floor-transcription/status", cookies=cookie)
+        assert resp.status_code == 200
+
+    @pytest.mark.anyio
+    async def test_room_only_route_denied_for_other_event_owner(self, seed_event):
+        """An event owner of a different event is denied on room-only routes."""
+        _, room, _ = seed_event
+        from portal.database import create_event, create_user, get_session, set_event_membership
+
+        async with get_session() as s:
+            other_event = await create_event(s, slug="othercon", display_name="OtherCon")
+            user = await create_user(
+                s,
+                email="other-owner@example.com",
+                display_name="Other Owner",
+                password_hash=hash_password("owner-pass"),
+            )
+            await set_event_membership(s, user_id=user.id, event_id=other_event.id, role="event_owner")
+
+        cookie = {"user_token": create_user_token(user_id=user.id, email=user.email, is_admin=False)}
+        async with _client() as c:
+            resp = await c.get(f"/api/rooms/{room.id}/floor-transcription/status", cookies=cookie)
+        assert resp.status_code == 403
+
+    @pytest.mark.anyio
+    async def test_room_only_route_allowed_for_room_coordinator(self, seed_event):
+        """A room coordinator is authorized for room-only routes for their room."""
+        _, room, _ = seed_event
+        from portal.database import create_user, get_session, set_room_membership
+
+        async with get_session() as s:
+            user = await create_user(
+                s,
+                email="coord@example.com",
+                display_name="Room Coord",
+                password_hash=hash_password("coord-pass"),
+            )
+            await set_room_membership(s, user_id=user.id, room_id=room.id, role="room_coordinator")
+
+        cookie = {"user_token": create_user_token(user_id=user.id, email=user.email, is_admin=False)}
+        async with _client() as c:
+            resp = await c.get(f"/api/rooms/{room.id}/floor-transcription/status", cookies=cookie)
+        assert resp.status_code == 200
 
 
 # ---------------------------------------------------------------------------
@@ -840,16 +1223,17 @@ class TestBoothCRUD:
 
 class TestAdminToken:
     @pytest.mark.anyio
-    async def test_create_admin_token_has_admin_claim(self, setup_db):
-        token = create_admin_token()
+    async def test_create_user_token_has_admin_claim(self, setup_db):
+        token = create_user_token(user_id=1, email="admin@example.com", is_admin=True)
         payload = decode_token(token)
-        assert payload["admin"] is True
+        assert payload["is_admin"] is True
+        assert payload["user"] is True
         assert "exp" in payload
         assert "iat" in payload
 
     @pytest.mark.anyio
-    async def test_admin_token_is_valid_jwt(self, setup_db):
-        token = create_admin_token()
+    async def test_admin_user_token_is_valid_jwt(self, setup_db):
+        token = create_user_token(user_id=1, email="admin@example.com", is_admin=True)
         payload = decode_token(token)
         assert isinstance(payload, dict)
 
@@ -1341,7 +1725,8 @@ async def test_user_list_badge_shows_total_across_pages(admin_cookie):
         resp = await c.get("/admin/users/?limit=2", cookies=admin_cookie)
 
     assert resp.status_code == 200
-    assert '<span class="badge">Total: 3 users</span>' in resp.text
+    # 3 seeded users plus the fixture's own administrator row.
+    assert '<span class="badge">Total: 4 users</span>' in resp.text
     assert "displayed" not in resp.text
 
 
@@ -1356,7 +1741,8 @@ async def test_user_list_badge_uses_singular_for_one_user(admin_cookie):
         resp = await c.get("/admin/users/", cookies=admin_cookie)
 
     assert resp.status_code == 200
-    assert '<span class="badge">Total: 1 user</span>' in resp.text
+    # The fixture's administrator row plus the one seeded user: plural "users".
+    assert '<span class="badge">Total: 2 users</span>' in resp.text
 
 
 @pytest.mark.anyio

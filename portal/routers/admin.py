@@ -18,7 +18,7 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from portal.auth import (
-    create_admin_token,
+    create_user_token,
     get_accessible_event_ids,
     get_admin_flags,
     get_current_user,
@@ -27,6 +27,7 @@ from portal.auth import (
     require_room_event_access,
     require_super_admin,
     require_user,
+    verify_password,
 )
 from portal.booth_identity import make_booth_id, make_mediamtx_path, validate_event_slug, validate_language_code
 from portal.config import settings
@@ -260,27 +261,77 @@ async def mission_control_grid(request: Request, event_slug: str, user=Depends(r
 @router.get("/admin/login")
 async def admin_login_page(request: Request):
     user = await get_current_user(request)
-    if user and user.get("is_admin"):
-        return safe_redirect(url="/admin/", status_code=status.HTTP_303_SEE_OTHER)
+    if user:
+        if user.get("is_admin"):
+            return safe_redirect(url="/admin/", status_code=status.HTTP_303_SEE_OTHER)
+        user_id = int(user["sub"]) if user.get("sub") else None
+        if user_id:
+            async with get_session() as session:
+                memberships = await list_memberships_for_user(session, user_id)
+                room_memberships = await list_room_memberships_for_user(session, user_id)
+                if any(m.role == "event_owner" for m in memberships) or any(
+                    rm.role == "room_coordinator" for rm in room_memberships
+                ):
+                    return safe_redirect(url="/admin/", status_code=status.HTTP_303_SEE_OTHER)
     return templates.TemplateResponse(request=request, name="admin/login.html", context={})
 
 
 @router.post("/admin/login")
 async def admin_login_submit(request: Request):
     form = await request.form()
-    password = form.get("password", "").strip()
-    admin_password = (settings.admin_password or "").strip()
-    if not admin_password or password != admin_password:
+    email = (form.get("email", "") or "").strip().lower()
+    # Passwords are compared verbatim: never strip them. Leading/trailing
+    # whitespace may be part of the stored credential (matches /login).
+    password = form.get("password", "") or ""
+
+    if not email or not password:
         return templates.TemplateResponse(
             request=request,
             name="admin/login.html",
-            context={"error": "Invalid password."},
+            context={"error": "Invalid email or password.", "email": email},
             status_code=status.HTTP_403_FORBIDDEN,
         )
-    token = create_admin_token()
+
+    async with get_session() as session:
+        user = await get_user_by_email(session, email)
+        if (
+            user is None
+            or not user.is_active
+            or not user.password_hash
+            or not verify_password(password, user.password_hash)
+        ):
+            return templates.TemplateResponse(
+                request=request,
+                name="admin/login.html",
+                context={"error": "Invalid email or password.", "email": email},
+                status_code=status.HTTP_403_FORBIDDEN,
+            )
+
+        has_admin_access = user.is_admin
+        if not has_admin_access:
+            memberships = await list_memberships_for_user(session, user.id)
+            room_memberships = await list_room_memberships_for_user(session, user.id)
+            has_admin_access = any(m.role == "event_owner" for m in memberships) or any(
+                rm.role == "room_coordinator" for rm in room_memberships
+            )
+
+        if not has_admin_access:
+            return templates.TemplateResponse(
+                request=request,
+                name="admin/login.html",
+                context={"error": "Access denied. Admin privileges required.", "email": email},
+                status_code=status.HTTP_403_FORBIDDEN,
+            )
+
+    token = create_user_token(
+        user_id=user.id,
+        email=user.email,
+        display_name=user.display_name,
+        is_admin=user.is_admin,
+    )
     response = safe_redirect(url="/admin/", status_code=status.HTTP_303_SEE_OTHER)
     response.set_cookie(
-        key="admin_token", value=token, httponly=True, samesite="lax", max_age=settings.jwt_expiry_seconds
+        key="user_token", value=token, httponly=True, samesite="lax", max_age=settings.jwt_expiry_seconds
     )
     return response
 

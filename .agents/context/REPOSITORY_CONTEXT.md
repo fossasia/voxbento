@@ -100,7 +100,7 @@ Enforced at: `portal/websockets/handlers.py` (WS `_handle_join`), `portal/router
 |---|---|---|---|
 | Participant (invite) | `session_token` | booth_id, role, event_slug, language_code | `create_participant_token()` — `/join/{token}` |
 | User (registered) | `user_token` | sub (user_id), email, display_name, is_admin, user=True | `create_user_token()` — POST /login |
-| Admin | `admin_token` | admin=True | `create_admin_token()` — POST /admin/login |
+| Admin | `user_token` | `sub`, `email`, `is_admin`, `user=True` | `create_user_token()` — POST `/admin/login` |
 
 All JWT: HS256, secret = `settings.effective_jwt_secret` (falls back to `secret_key`), expiry = `jwt_expiry_seconds` (default 86400).
 

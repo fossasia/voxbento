@@ -8,7 +8,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from fastapi_app import app
-from portal.auth import create_admin_token, create_user_token
+from portal.auth import create_user_token
 from portal.database import (
     configure,
     create_event,
@@ -25,7 +25,6 @@ from portal.database import (
 from portal.workspace_routing import legacy_admin_to_workspace_path, workspace_to_admin_path
 
 os.environ["BOOTH_ACCESS_TOKEN"] = ""
-os.environ["ADMIN_PASSWORD"] = "test-admin-pass"
 
 
 @pytest.fixture(autouse=True)
@@ -149,10 +148,19 @@ async def test_workspace_form_submission_stays_in_workspace_namespace(organizer)
 
 @pytest.mark.anyio
 async def test_super_admin_retains_admin_namespace(organizer):
+    async with get_session() as s:
+        admin_user = await create_user(
+            s,
+            email="superadmin@test.com",
+            display_name="Super Admin",
+            password_hash="hash",
+            is_admin=True,
+        )
+    cookies = {"user_token": create_user_token(user_id=admin_user.id, email=admin_user.email, is_admin=True)}
     async with client() as http:
         response = await http.get(
             f"/admin/events/{organizer['event_id']}/",
-            cookies={"admin_token": create_admin_token()},
+            cookies=cookies,
             follow_redirects=False,
         )
 
@@ -405,10 +413,18 @@ async def test_regular_user_navigation_omits_management_dashboard():
 
 @pytest.mark.anyio
 async def test_admin_token_navigation_points_to_admin():
-    admin_cookies = {"admin_token": create_admin_token()}
+    async with get_session() as s:
+        admin_user = await create_user(
+            s,
+            email="nav_superadmin@test.com",
+            display_name="Super Admin",
+            password_hash="hash",
+            is_admin=True,
+        )
+    cookies = {"user_token": create_user_token(user_id=admin_user.id, email=admin_user.email, is_admin=True)}
 
     async with client() as http:
-        home = await http.get("/", cookies=admin_cookies)
+        home = await http.get("/", cookies=cookies)
 
     assert home.status_code == 200
     assert 'href="/admin/"' in home.text

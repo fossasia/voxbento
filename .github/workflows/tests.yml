@@ -81,7 +81,6 @@ jobs:
       JITSI_DOMAIN: localhost:8080
       MEDIAMTX_WHIP_BASE: http://localhost:8889
       MEDIAMTX_API_BASE: http://mediamtx:9997
-      ADMIN_PASSWORD: ci-admin-pass
       API_KEY_ENCRYPTION_KEY: "ci-test-encryption-key-must-be-32-chars-long"
 
     steps:
@@ -213,33 +212,56 @@ jobs:
           echo "GET /admin/login → $code"
           [ "$code" = "200" ] || { echo "FAIL"; exit 1; }
 
-          # Admin login with correct password → redirect + cookie
-          resp=$(curl -s -D - -o /dev/null -X POST "${BASE}/admin/login" -d "password=ci-admin-pass")
-          echo "$resp" | head -5
-          echo "$resp" | grep -qi "set-cookie.*admin_token" || { echo "FAIL: no admin_token cookie"; exit 1; }
+          # Bootstrap a per-user administrator for this isolated smoke-test DB.
+          docker compose exec -T portal uv run python - <<'PY'
+          import asyncio
 
-          # Extract the admin_token cookie
-          ADMIN_COOKIE=$(echo "$resp" | grep -i 'set-cookie.*admin_token' | sed 's/.*admin_token=\([^;]*\).*/\1/')
-          echo "Admin token: ${ADMIN_COOKIE:0:20}..."
+          from portal.auth import hash_password
+          from portal.database import create_user, get_session
+
+
+          async def bootstrap() -> None:
+              async with get_session() as session:
+                  await create_user(
+                      session,
+                      email="ci-admin@example.com",
+                      display_name="CI Admin",
+                      password_hash=hash_password("ci-admin-pass"),
+                      is_admin=True,
+                  )
+
+
+          asyncio.run(bootstrap())
+          PY
+
+          # Admin login with account credentials → redirect + user_token cookie
+          resp=$(curl -s -D - -o /dev/null -X POST "${BASE}/admin/login" \
+            -d "email=ci-admin%40example.com&password=ci-admin-pass")
+          echo "$resp" | head -5
+          echo "$resp" | grep -qi "set-cookie.*user_token" || { echo "FAIL: no user_token cookie"; exit 1; }
+
+          # Extract the user_token cookie
+          ADMIN_COOKIE=$(echo "$resp" | grep -i 'set-cookie.*user_token' | sed 's/.*user_token=\([^;]*\).*/\1/')
+          echo "Admin user token: ${ADMIN_COOKIE:0:20}..."
 
           # Dashboard loads
-          code=$(curl -s -o /dev/null -w '%{http_code}' -b "admin_token=${ADMIN_COOKIE}" "${BASE}/admin/")
+          code=$(curl -s -o /dev/null -w '%{http_code}' -b "user_token=${ADMIN_COOKIE}" "${BASE}/admin/")
           echo "GET /admin/ → $code"
           [ "$code" = "200" ] || { echo "FAIL"; exit 1; }
 
           # Create event
-          code=$(curl -s -o /dev/null -w '%{http_code}' -X POST -b "admin_token=${ADMIN_COOKIE}" \
+          code=$(curl -s -o /dev/null -w '%{http_code}' -X POST -b "user_token=${ADMIN_COOKIE}" \
             -d "slug=ci-smoke&display_name=CI+Smoke+Test" "${BASE}/admin/events/")
           echo "POST /admin/events/ → $code"
           [ "$code" = "303" ] || { echo "FAIL"; exit 1; }
 
           # Events list renders
-          code=$(curl -s -o /dev/null -w '%{http_code}' -b "admin_token=${ADMIN_COOKIE}" "${BASE}/admin/events/")
+          code=$(curl -s -o /dev/null -w '%{http_code}' -b "user_token=${ADMIN_COOKIE}" "${BASE}/admin/events/")
           echo "GET /admin/events/ → $code"
           [ "$code" = "200" ] || { echo "FAIL"; exit 1; }
 
           # Users list renders
-          code=$(curl -s -o /dev/null -w '%{http_code}' -b "admin_token=${ADMIN_COOKIE}" "${BASE}/admin/users/")
+          code=$(curl -s -o /dev/null -w '%{http_code}' -b "user_token=${ADMIN_COOKIE}" "${BASE}/admin/users/")
           echo "GET /admin/users/ → $code"
           [ "$code" = "200" ] || { echo "FAIL"; exit 1; }
 

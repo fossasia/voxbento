@@ -20,7 +20,7 @@ description: Use this skill to analyse, audit, or modify HTTP and WebSocket rout
 | `/join/*` | Invite redemption | None (token in path) |
 | `/register`, `/login`, `/logout`, `/account` | User auth | None / `user_token` |
 | `/api/*` | REST API | Optional Bearer JWT or `?token=` |
-| `/admin/*` | Admin panel | `admin_token` or `user_token` with `is_admin` |
+| `/admin/*` | Admin panel | `user_token` with `is_admin` or appropriate scoped membership |
 | `/ws/booth/*` | WebSocket coordination | Cookies + optional `?token=` |
 | `/ws/captions/*` | Caption WebSocket | None |
 | `/static/*` | Static assets | None |
@@ -42,7 +42,7 @@ granted_role = await resolve_booth_role(payload, booth_id)
 ```python
 @app.get('/admin/...', dependencies=[Depends(require_admin)])
 ```
-`require_admin` checks `user_token` (is_admin=True or event_admin membership) then falls back to `admin_token`.
+`require_admin` checks `user_token` for `is_admin=True` or the appropriate scoped membership.
 
 ### API routes (optional auth)
 ```python

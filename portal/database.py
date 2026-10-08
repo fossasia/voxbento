@@ -65,6 +65,7 @@ def _get_engine():
 
         if settings.database_url.startswith("sqlite"):
             from sqlalchemy import event
+
             @event.listens_for(_engine.sync_engine, "connect")
             def set_sqlite_pragma(dbapi_connection, connection_record):
                 cursor = dbapi_connection.cursor()
@@ -93,6 +94,7 @@ def configure(url: str, *, echo: bool = False) -> None:
 
     if url.startswith("sqlite"):
         from sqlalchemy import event
+
         @event.listens_for(_engine.sync_engine, "connect")
         def set_sqlite_pragma(dbapi_connection, connection_record):
             cursor = dbapi_connection.cursor()
@@ -488,12 +490,16 @@ async def create_user(
     display_name: str,
     password_hash: str | None = None,
     email_verified: bool = False,
+    is_admin: bool = False,
+    is_active: bool = True,
 ) -> User:
     user = User(
         email=email.strip().lower(),
         display_name=display_name.strip(),
         password_hash=password_hash,
         email_verified=email_verified,
+        is_admin=is_admin,
+        is_active=is_active,
     )
     session.add(user)
     await session.flush()
@@ -506,6 +512,8 @@ async def update_user(
     *,
     password_hash: str | None = None,
     email_verified: bool | None = None,
+    is_admin: bool | None = None,
+    is_active: bool | None = None,
 ) -> User | None:
     user = await get_user_by_id(session, user_id)
     if user:
@@ -513,6 +521,10 @@ async def update_user(
             user.password_hash = password_hash
         if email_verified is not None:
             user.email_verified = email_verified
+        if is_admin is not None:
+            user.is_admin = is_admin
+        if is_active is not None:
+            user.is_active = is_active
         await session.flush()
     return user
 

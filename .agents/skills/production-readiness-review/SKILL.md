@@ -14,7 +14,7 @@ description: Use this skill to evaluate whether VoxBento is ready for production
 
 - [ ] `SECRET_KEY` ≠ `change-me` (raises no error but is insecure).
 - [ ] `API_KEY_ENCRYPTION_KEY` is set and ≥32 chars (raises `RuntimeError` if default).
-- [ ] `ADMIN_PASSWORD` is set (empty = admin login disabled — decide deliberately).
+- [ ] At least two active administrator accounts can log in with separate credentials.
 - [ ] `DEBUG=false` in production settings (`portal/config.py` `debug: bool`).
 - [ ] TLS termination configured (Caddy via `Caddyfile` or nginx).
 - [ ] `Strict-Transport-Security` header set by reverse proxy.
@@ -72,7 +72,7 @@ Manual browser check:
 | In-memory booth state lost on restart | Active sessions dropped on deploy | Not fixed — deploy in low-traffic window |
 | No rate limiting on /login | Brute-force risk | Not fixed |
 | No CSRF on admin forms | Low risk with lax cookies | Not fixed |
-| Single shared `ADMIN_PASSWORD` | Weaker than per-user admin | Partially mitigated by `is_admin` user flag |
+| Loss of all administrator accounts | Administrative access is unavailable | Maintain two administrators and follow `docs/admin-password-removal-migration.md` for controlled recovery |
 | `_created_paths` cache not invalidated on MTX restart | WHIP may fail | Mitigated by PATCH fallback |
 
 ---

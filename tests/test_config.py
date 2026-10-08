@@ -17,3 +17,11 @@ def test_effective_jitsi_internal_base_fallback():
 def test_effective_jitsi_internal_base_override():
     s = Settings(jitsi_internal_base="http://internal.jitsi", jitsi_base_url="http://jitsi.local")
     assert s.effective_jitsi_internal_base == "http://internal.jitsi"
+
+
+def test_legacy_admin_password_environment_variable_is_ignored(monkeypatch):
+    monkeypatch.setenv("ADMIN_PASSWORD", "legacy-shared-secret")
+
+    settings = Settings(_env_file=None)
+
+    assert "admin_password" not in type(settings).model_fields

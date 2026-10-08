@@ -1,7 +1,7 @@
 # VoxBento — Route Map
 
 > All HTTP and WebSocket routes are now modularized in `portal/routers/` and `portal/websockets/`.
-> Auth column: `user` = user_token cookie; `admin` = admin_token cookie; `session` = session_token cookie; `open` = no auth required; `token/Bearer` = optional legacy token guard.
+> Auth column: `user` = user_token cookie; `session` = session_token cookie; `open` = no auth required; `token/Bearer` = optional legacy token guard.
 
 ---
 
@@ -59,15 +59,15 @@
 
 ## Management Surfaces (`/workspace/*` and `/admin/*`)
 
-`/workspace/*` is the canonical event-management surface for event owners. Room coordinators use `/mission-control/*`, which filters the operational view to their assigned rooms. `/admin/*` is reserved for super admins, apart from legacy room-scoped coordinator handlers retained for compatibility. The paths in the table below name the shared `/admin` handler routes; current event-management paths have explicit event-owner mappings formed by replacing `/admin` with `/workspace`. Likewise, the listed `/api/admin/providers/...` and `/api/admin/events/...` routes have explicit `/api/workspace/...` event-owner mappings. New admin routes are not exposed through the workspace unless they are added to that allowlist.
+`/workspace/*` is the canonical event-management surface for event owners. Room coordinators use `/mission-control/*`, which filters the operational view to their assigned rooms. `/admin/*` is reserved for super admins, apart from legacy room-scoped coordinator handlers retained for compatibility. All admin and workspace routes require a `user_token` with `is_admin=True`, or the appropriate `event_owner` / `room_coordinator` membership for scoped routes. The paths in the table below name the shared `/admin` handler routes; current event-management paths have explicit event-owner mappings formed by replacing `/admin` with `/workspace`. Likewise, the listed `/api/admin/providers/...` and `/api/admin/events/...` routes have explicit `/api/workspace/...` event-owner mappings. New admin routes are not exposed through the workspace unless they are added to that allowlist.
 
 Legacy organizer requests to allowlisted event-management paths under `/admin/`, `/admin/events...`, `/admin/setup...`, or their management API equivalents receive a `307` redirect to the matching workspace URL. The redirect preserves the HTTP method and query string. System-only and unknown routes, including `/admin/users/`, `/admin/developer-accounts`, and `/admin/login`, have no workspace equivalent. OAuth routes under `/oauth/*` are unchanged. General workspace entry points such as the dashboard and setup require ownership of at least one event; routes containing `{event_id}` require ownership of that specific event.
 
 | Method | Path | Template | Notes |
 |---|---|---|---|
 | GET | `/admin/login` | `admin/login.html` | Redirects to `/admin/` if already admin |
-| POST | `/admin/login` | — | Sets `admin_token` cookie → `/admin/` |
-| GET | `/admin/logout` | — | Deletes `admin_token` → `/admin/login` |
+| POST | `/admin/login` | — | Validates account credentials and sets `user_token` → `/admin/` |
+| GET | `/admin/logout` | — | Deletes session cookies → `/admin/login` |
 | GET | `/admin/` or `/workspace/` | `admin/dashboard.html` | System-wide events for super admins; accessible events for organizers |
 | GET | `/admin/events/` | `admin/event_list.html` | — |
 | POST | `/admin/events/` | — | Creates event (slug + display_name) |

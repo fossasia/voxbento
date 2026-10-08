@@ -3,7 +3,6 @@ from __future__ import annotations
 import os
 
 os.environ["BOOTH_ACCESS_TOKEN"] = ""
-os.environ["ADMIN_PASSWORD"] = "test-admin-pass"
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -42,6 +41,7 @@ async def setup_oauth_clients(setup_db):
 
         # Add a developer account
         from portal.models import DeveloperAccount
+
         developer = DeveloperAccount(user_id=user.id)
         session.add(developer)
         await session.flush()
@@ -56,6 +56,7 @@ async def setup_oauth_clients(setup_db):
             scopes_requested=["events:write", "events:read"],
         )
         from portal.routers.oauth import hash_token
+
         # 2. Create a confidential client
         confidential_client = OAuthClient(
             developer_account_id=developer.id,
@@ -106,6 +107,7 @@ class TestOAuthMultiOrganizer:
         event = setup_oauth_clients["event"]
 
         from portal.auth import create_user_token
+
         user_token = create_user_token(user_id=setup_oauth_clients["user"].id, email="test@example.com")
 
         async with _client() as c:
@@ -137,6 +139,7 @@ class TestOAuthMultiOrganizer:
         event = setup_oauth_clients["event"]
 
         from portal.auth import create_user_token
+
         user_token = create_user_token(user_id=setup_oauth_clients["unrelated_user"].id, email="unrelated@example.com")
 
         async with _client() as c:
@@ -169,6 +172,7 @@ class TestOAuthMultiOrganizer:
         event = setup_oauth_clients["ownerless_event"]
 
         from portal.auth import create_user_token
+
         user_token = create_user_token(user_id=setup_oauth_clients["user"].id, email="test@example.com")
 
         async with _client() as c:
@@ -190,6 +194,7 @@ class TestOAuthMultiOrganizer:
 
         assert response.status_code == 303, f"Expected 303, got {response.status_code}: {response.json()}"
         assert "code=" in response.headers.get("location", "")
+
     @pytest.mark.anyio
     async def test_oauth_public_client_rejection(self, setup_oauth_clients):
         """
@@ -199,6 +204,7 @@ class TestOAuthMultiOrganizer:
         event = setup_oauth_clients["event"]
 
         from portal.auth import create_user_token
+
         user_token = create_user_token(user_id=setup_oauth_clients["unrelated_user"].id, email="unrelated@example.com")
 
         async with _client() as c:
@@ -230,6 +236,7 @@ class TestOAuthMultiOrganizer:
         event = setup_oauth_clients["event"]
 
         from portal.auth import create_user_token
+
         user_token = create_user_token(user_id=setup_oauth_clients["user"].id, email="test@example.com")
 
         async with _client() as c:
@@ -271,6 +278,7 @@ class TestOAuthMultiOrganizer:
             user = setup_oauth_clients["user"]
 
             from datetime import datetime, timedelta, timezone
+
             token_record = OAuthToken(
                 client_id=client.id,
                 user_id=user.id,
@@ -304,13 +312,17 @@ class TestOAuthMultiOrganizer:
 
             # Suspend the client
             from sqlalchemy import select
-            db_client = (await session.execute(select(OAuthClient).where(OAuthClient.id == client.id))).scalars().first()
+
+            db_client = (
+                (await session.execute(select(OAuthClient).where(OAuthClient.id == client.id))).scalars().first()
+            )
             db_client.status = "suspended"
 
             event_a = setup_oauth_clients["event"]
             user = setup_oauth_clients["user"]
 
             from datetime import datetime, timedelta, timezone
+
             token_record = OAuthToken(
                 client_id=client.id,
                 user_id=user.id,
@@ -351,11 +363,13 @@ class TestOAuthMultiOrganizer:
 
         import base64
         import hashlib
+
         verifier = "my-secure-verifier-my-secure-verifier"
         challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip("=")
 
         async with get_session() as session:
             from datetime import datetime, timedelta, timezone
+
             auth_code = OAuthAuthorizationCode(
                 client_id=client.id,
                 user_id=user.id,
