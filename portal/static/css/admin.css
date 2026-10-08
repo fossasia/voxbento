@@ -1042,3 +1042,30 @@ code { font-family: var(--font-mono); font-size: 0.85em; background: var(--color
 .dev-accounts-empty-icon { width: 48px; height: 48px; color: #cbd5e1; margin: 0 auto 1rem auto; display: block; }
 .dev-accounts-empty-title { margin: 0; font-size: 1.05rem; font-weight: 500; color: var(--color-text); }
 .dev-accounts-empty-text { margin: 4px 0 0 0; font-size: 0.95rem; }
+
+/* ── Admin API settings page ───────────────────────────────────────────────
+   Classes for the styles that used to sit in style attributes on
+   admin/api_settings.html. Compound selectors so they win over the generic
+   .btn, .btn:hover, .section-header and .muted rules, as the inline
+   styles did. */
+.muted.api-settings-intro { margin-bottom: 20px; }
+.card-form.api-settings-form { max-width: 600px; }
+
+.form-group.api-settings-toggle { padding: 15px; background: #f8f9fa; border: 1px solid #e2e8f0; border-radius: 6px; margin-bottom: 20px; }
+.api-settings-toggle-label { font-weight: 600; display: flex; align-items: center; gap: 8px; margin: 0; cursor: pointer; }
+.api-settings-toggle-label input { width: auto; }
+.form-help.api-settings-toggle-help { margin-top: 8px; margin-bottom: 0; }
+
+.form-group.api-key-field { margin-bottom: 24px; }
+.form-group.api-key-field--last { margin-bottom: 30px; }
+.api-key-label { display: block; font-weight: 600; margin-bottom: 8px; color: #374151; }
+.input.api-key-input { width: 100%; padding: 10px 12px; border: 1px solid #d1d5db; border-radius: 6px; box-sizing: border-box; font-family: monospace; font-size: 14px; }
+.api-key-meta { margin-top: 6px; display: flex; align-items: center; justify-content: space-between; }
+.form-help.api-key-help { font-size: 0.85rem; color: #6b7280; margin: 0; }
+.api-key-clear { font-size: 0.85rem; color: #ef4444; display: flex; align-items: center; gap: 4px; cursor: pointer; }
+
+.section-header.api-settings-divider { margin-top: 40px; padding-top: 30px; border-top: 1px solid #e5e7eb; }
+
+.form-actions.api-settings-actions { margin-top: 20px; padding-top: 20px; border-top: 1px solid #e5e7eb; display: flex; align-items: center; }
+.btn.api-settings-save { padding: 10px 20px; font-size: 14px; }
+.btn.api-settings-cancel { background: white; border: 1px solid #d1d5db; color: #374151; margin-left: 12px; padding: 10px 20px; font-size: 14px; }
