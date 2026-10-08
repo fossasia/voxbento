@@ -35,7 +35,7 @@ def _client():
 async def seed_data():
     from portal.auth import hash_password
     from portal.database import create_booth, create_event, create_room, create_user, get_session
-    from portal.models import DeveloperAccount, OAuthClient, OAuthToken
+    from portal.models import DeveloperAccount, EventMembership, OAuthClient, OAuthToken
 
     async with get_session() as s:
         user = await create_user(s, email="test@example.com", display_name="Test", password_hash=hash_password("pw"))
@@ -45,10 +45,16 @@ async def seed_data():
         room_a = await create_room(s, event_id=event_a.id, display_name="Room A")
         booth_a = await create_booth(s, event_id=event_a.id, room_id=room_a.id, language_code="en", language_name="English")
 
+        # Grant user Event Owner access to Event A
+        s.add(EventMembership(user_id=user.id, event_id=event_a.id, role="event_owner"))
+
         # event B
         event_b = await create_event(s, slug="event-b", display_name="Event B")
         room_b = await create_room(s, event_id=event_b.id, display_name="Room B")
         booth_b = await create_booth(s, event_id=event_b.id, room_id=room_b.id, language_code="es", language_name="Spanish")
+
+        # A cross-tenant rogue booth (attached to Room A, but belonging to Event B)
+        rogue_booth = await create_booth(s, event_id=event_b.id, room_id=room_a.id, language_code="fr", language_name="French")
 
         dev = DeveloperAccount(user_id=user.id)
         s.add(dev)
@@ -77,13 +83,13 @@ async def seed_data():
         s.add(token)
         await s.commit()
 
-    return event_a, room_a, booth_a, event_b, room_b, booth_b, token_str
+    return event_a, room_a, booth_a, event_b, room_b, booth_b, rogue_booth, token_str
 
 
 class TestApiV1IDOR:
     @pytest.mark.anyio
     async def test_room_id_cross_tenant_returns_404(self, seed_data):
-        event_a, room_a, booth_a, event_b, room_b, booth_b, token_a = seed_data
+        event_a, room_a, booth_a, event_b, room_b, booth_b, rogue_booth, token_a = seed_data
 
         async with _client() as c:
             # Token A belongs to Event A.
@@ -98,7 +104,7 @@ class TestApiV1IDOR:
 
     @pytest.mark.anyio
     async def test_booth_cross_tenant_returns_404(self, seed_data):
-        event_a, room_a, booth_a, event_b, room_b, booth_b, token_a = seed_data
+        event_a, room_a, booth_a, event_b, room_b, booth_b, rogue_booth, token_a = seed_data
 
         async with _client() as c:
             # Accessing Room B's booth through Event A
@@ -109,3 +115,50 @@ class TestApiV1IDOR:
 
         assert resp.status_code == 404
         assert resp.json()["detail"] == "Room not found"
+
+    @pytest.mark.anyio
+    async def test_booth_db_query_bounds(self, seed_data):
+        event_a, room_a, booth_a, event_b, room_b, booth_b, rogue_booth, token_a = seed_data
+
+        async with _client() as c:
+            # 1. Positive Access Check
+            # We should be able to see Booth A
+            resp = await c.get(
+                f"/api/v1/events/{event_a.slug}/rooms/{room_a.id}/booths/en",
+                headers={"Authorization": f"Bearer {token_a}"}
+            )
+            assert resp.status_code == 200
+
+            # 2. List exclusion
+            # Event B has a rogue booth 'fr' attached to Room A. It should NOT be returned when we query Event A.
+            resp = await c.get(
+                f"/api/v1/events/{event_a.slug}/rooms/{room_a.id}/booths",
+                headers={"Authorization": f"Bearer {token_a}"}
+            )
+            assert resp.status_code == 200
+            langs = [b["language_code"] for b in resp.json()]
+            assert "en" in langs
+            assert "fr" not in langs
+
+            # 3. Lookup exclusion
+            resp = await c.get(
+                f"/api/v1/events/{event_a.slug}/rooms/{room_a.id}/booths/fr",
+                headers={"Authorization": f"Bearer {token_a}"}
+            )
+            assert resp.status_code == 404
+
+            # 4. Creation does not treat Event B's 'fr' booth as an Event A duplicate
+            # It bypasses the 409 but fails with a 500 DB IntegrityError because of the unique constraint on (room_id, language_code)
+            with pytest.raises(Exception):
+                await c.post(
+                    f"/api/v1/events/{event_a.slug}/rooms/{room_a.id}/booths/fr",
+                    headers={"Authorization": f"Bearer {token_a}"}
+                )
+
+            # 5. Deletion fails to delete the Event B booth when attempting to delete through Event A
+            # Booth B ('es') is in Room B (Event B). If an Event A token tries to delete it using its room_b.id, it should 404.
+            resp = await c.delete(
+                f"/api/v1/events/{event_a.slug}/rooms/{room_b.id}/booths/es",
+                headers={"Authorization": f"Bearer {token_a}"}
+            )
+            assert resp.status_code == 404
