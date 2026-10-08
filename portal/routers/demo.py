@@ -5,8 +5,7 @@ import logging
 from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
 
-from portal.auth import require_admin, require_admin_csrf
-from portal.auth import require_super_admin
+from portal.auth import require_admin_csrf, require_super_admin
 
 logger = logging.getLogger(__name__)
 

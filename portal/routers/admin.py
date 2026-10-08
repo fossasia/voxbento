@@ -105,10 +105,7 @@ def _admin_template_context(request: Request) -> dict:
 
 templates = Jinja2Templates(
     directory=str(_BASE_DIR / "templates"),
-    context_processors=[_admin_template_context],
-templates = Jinja2Templates(
-    directory=str(_BASE_DIR / "templates"),
-    context_processors=[management_template_context],
+    context_processors=[_admin_template_context, management_template_context],
 )
 
 

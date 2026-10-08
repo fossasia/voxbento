@@ -40,6 +40,12 @@ def client():
     return AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
 
 
+async def _workspace_csrf(http, cookies):
+    response = await http.get("/workspace/", cookies=cookies, follow_redirects=False)
+    assert response.status_code == 303
+    return http.cookies.get("admin_csrf")
+
+
 @pytest.mark.parametrize(
     ("workspace_path", "handler_path"),
     [
@@ -136,9 +142,10 @@ async def test_legacy_admin_event_url_redirects_owner_and_preserves_query(organi
 @pytest.mark.anyio
 async def test_workspace_form_submission_stays_in_workspace_namespace(organizer):
     async with client() as http:
+        csrf_token = await _workspace_csrf(http, organizer["cookies"])
         response = await http.post(
             f"/workspace/events/{organizer['event_id']}/rooms/",
-            data={"display_name": "Main Hall"},
+            data={"display_name": "Main Hall", "csrf_token": csrf_token},
             cookies=organizer["cookies"],
             follow_redirects=False,
         )
@@ -304,9 +311,10 @@ async def test_room_coordinator_cannot_access_event_owner_workspace(organizer):
 )
 async def test_workspace_event_creation_assigns_creator_ownership(organizer, path, slug, display_name):
     async with client() as http:
+        csrf_token = await _workspace_csrf(http, organizer["cookies"])
         response = await http.post(
             path,
-            data={"slug": slug, "display_name": display_name},
+            data={"slug": slug, "display_name": display_name, "csrf_token": csrf_token},
             cookies=organizer["cookies"],
             follow_redirects=False,
         )

@@ -9,8 +9,10 @@ Covers:
 """
 
 from __future__ import annotations
-from httpx import ASGITransport, AsyncClient
+
 import os
+
+from httpx import ASGITransport, AsyncClient
 
 os.environ["BOOTH_ACCESS_TOKEN"] = ""
 os.environ["ADMIN_PASSWORD"] = "test-admin-pass"
@@ -19,6 +21,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 from fastapi.routing import APIRoute
+
 from portal.auth import create_admin_token, decode_token
 from portal.config import settings
 
@@ -152,6 +155,7 @@ class TestAdminLogin:
     @pytest.mark.anyio
     async def test_admin_csrf_cookie_secure_flag_matches_request_scheme(self, admin_cookie):
         from fastapi_app import app
+
         async with AsyncClient(
             transport=ASGITransport(app=app),
             base_url="http://test",
@@ -203,6 +207,53 @@ class TestAdminLogin:
             resp = await c.get("/admin/logout", follow_redirects=False)
         assert resp.status_code == 303
         assert resp.headers["location"] == "/admin/login"
+
+    @pytest.mark.anyio
+    async def test_old_csrf_token_rejected_after_logout_and_login(self):
+        async with _client() as c:
+            first_login = await c.post(
+                "/admin/login",
+                data={"password": "test-admin-pass"},
+                follow_redirects=False,
+            )
+            assert first_login.status_code == 303
+
+            old_csrf = c.cookies.get("admin_csrf")
+            assert old_csrf
+
+            await c.get("/admin/logout", follow_redirects=False)
+
+            second_login = await c.post(
+                "/admin/login",
+                data={"password": "test-admin-pass"},
+                follow_redirects=False,
+            )
+            assert second_login.status_code == 303
+
+            new_csrf = c.cookies.get("admin_csrf")
+            assert new_csrf
+            assert new_csrf != old_csrf
+
+            response = await c.post(
+                "/admin/events/",
+                data={
+                    "slug": "old-csrf",
+                    "display_name": "Old CSRF",
+                    "csrf_token": old_csrf,
+                },
+                follow_redirects=False,
+            )
+            assert response.status_code == 403
+            response = await c.post(
+                "/admin/events/",
+                data={
+                    "slug": "new-csrf",
+                    "display_name": "New CSRF",
+                    "csrf_token": new_csrf,
+                },
+                follow_redirects=False,
+            )
+            assert response.status_code == 303
 
 
 # ---------------------------------------------------------------------------
@@ -327,7 +378,7 @@ class TestEventCRUD:
         async with _client() as c:
             resp = await c.get("/admin/events/", cookies=admin_cookie)
         assert b"NewCon 2026" in resp.content
-    
+
     @pytest.mark.anyio
     async def test_create_event_rejects_missing_or_invalid_csrf(self, admin_cookie):
         async with _client() as c:
@@ -1238,7 +1289,7 @@ class TestAPIKeyCRUD:
             )
             assert res_blank.status_code == 400
             assert "cannot be blank" in res_blank.json()["detail"]
-            
+
             # List keys (should contain 1)
             res = await c.get(f"/workspace/api/events/{event_id}/api-keys")
             assert res.status_code == 200
@@ -1715,6 +1766,7 @@ async def test_admin_detail_pages_have_no_inline_styles(path, admin_cookie, seed
     body = resp.content.replace(b'style="display: none;"', b"")
     assert not re.search(rb"\sstyle\s*=", body, re.IGNORECASE)
 
+
 @pytest.mark.anyio
 async def test_all_state_changing_admin_routes_require_csrf():
     from fastapi_app import app
@@ -1732,10 +1784,10 @@ async def test_all_state_changing_admin_routes_require_csrf():
         if route.path == "/admin/login":
             continue
 
-        assert any(
-            dependency.call is require_admin_csrf
-            for dependency in route.dependant.dependencies
-        ), f"Missing CSRF protection: {route.methods} {route.path}"
+        assert any(dependency.call is require_admin_csrf for dependency in route.dependant.dependencies), (
+            f"Missing CSRF protection: {route.methods} {route.path}"
+        )
+
 
 @pytest.mark.anyio
 @pytest.mark.parametrize("seed_accounts", [False, True], ids=["empty", "all-statuses"])

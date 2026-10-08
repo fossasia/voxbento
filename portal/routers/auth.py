@@ -186,6 +186,7 @@ async def verify_email_route(request: Request, token: str, background_tasks: Bac
                 value=jwt_token,
                 httponly=True,
                 samesite="lax",
+                secure=request.url.scheme == "https",
                 max_age=settings.jwt_expiry_seconds,
             )
             return response
@@ -256,6 +257,7 @@ async def user_login_submit(request: Request):
         value=jwt_token,
         httponly=True,
         samesite="lax",
+        secure=request.url.scheme == "https",
         max_age=settings.jwt_expiry_seconds,
     )
     return response
@@ -310,6 +312,7 @@ async def redeem_magic_link(request: Request, token: str, background_tasks: Back
                 value=jwt_token,
                 httponly=True,
                 samesite="lax",
+                secure=request.url.scheme == "https",
                 max_age=settings.jwt_expiry_seconds,
             )
             return response
@@ -374,6 +377,7 @@ async def reset_password_submit(request: Request, token: str):
                 value=jwt_token,
                 httponly=True,
                 samesite="lax",
+                secure=request.url.scheme == "https",
                 max_age=settings.jwt_expiry_seconds,
             )
             return response
