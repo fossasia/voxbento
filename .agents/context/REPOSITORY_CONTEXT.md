@@ -20,7 +20,7 @@ Attendees receive sub-second audio via WHEP. All coordination flows through Fast
 | Runtime | Python | 3.13.x (enforced in `pyproject.toml`) |
 | Web framework | FastAPI + uvicorn | ASGI, async throughout |
 | Media server | MediaMTX | `bluenviron/mediamtx:1` — WHIP/WHEP/RTSP/HLS |
-| Floor monitoring | Jitsi Meet | `jitsi/*:stable-9823` — self-hosted, receive-only iframe |
+| Floor monitoring | Jitsi Meet | `ghcr.io/jitsi/*:stable-11248` — rootless, read-only, self-hosted receive-only iframe |
 | DB (dev) | SQLite + aiosqlite | `sqlite+aiosqlite:///./interpretation.db` |
 | DB (prod) | PostgreSQL + asyncpg | via `DATABASE_URL` env override |
 | ORM / migrations | SQLAlchemy 2.0 async + Alembic | 8 migrations in `alembic/versions/` |

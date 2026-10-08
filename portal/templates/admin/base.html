@@ -3,21 +3,22 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>{% block title %}Admin Panel{% endblock %} — Voxbento</title>
+    <title>{% block title %}{{ 'Organizer Workspace' if is_workspace else 'Admin Panel' }}{% endblock %} — Voxbento</title>
     <link rel="icon" type="image/x-icon" href="{{ url_for('static', path='img/favicon.ico') }}" />
+    <link rel="stylesheet" href="{{ url_for('static', path='css/fonts.css') }}" />
     <link rel="stylesheet" href="{{ url_for('static', path='css/admin.css') }}" />
     {% block head %}{% endblock %}
   </head>
-  <body>
+  <body data-management-prefix="{{ management_prefix }}" data-management-api-prefix="{{ management_api_prefix }}">
     {% set _path = request.url.path %}
     <header class="admin-header">
       <div class="header-left">
-        <a class="brand" href="/admin/">VoxBento</a>
-        <span class="header-badge">Console</span>
+        <a class="brand" href="{{ management_prefix }}/">VoxBento</a>
+        <span class="header-badge">{{ 'Organizer Workspace' if is_workspace else 'System Admin' }}</span>
       </div>
       <nav class="header-nav">
-        <a href="/admin/" class="{{ 'is-active' if _path == '/admin/' else '' }}">Dashboard</a>
-        <a href="/admin/events/" class="{{ 'is-active' if _path.startswith('/admin/events') or _path.startswith('/admin/setup') else '' }}">Events</a>
+        <a href="{{ management_prefix }}/" class="{{ 'is-active' if _path == '/admin/' else '' }}">Dashboard</a>
+        <a href="{{ management_prefix }}/events/" class="{{ 'is-active' if _path.startswith('/admin/events') or _path.startswith('/admin/setup') else '' }}">Events</a>
         {% if is_super_admin|default(false) or is_event_owner|default(false) or is_room_coordinator|default(false) %}
         <a href="/mission-control/" class="{{ 'is-active' if _path.startswith('/mission-control') else '' }}">Mission Control</a>
         {% endif %}
@@ -28,8 +29,8 @@
         <a href="/developer">Developer API</a>
         <a href="/account">Account</a>
         <a href="/" target="_blank">Portal Home</a>
-        <a href="/admin/setup" class="btn btn-sm btn-primary">+ New event</a>
-        <a href="/admin/logout" class="nav-logout">Logout</a>
+        <a href="{{ management_prefix }}/setup" class="btn btn-sm btn-primary">+ New event</a>
+        <a href="{{ '/logout' if is_workspace else '/admin/logout' }}" class="nav-logout">Logout</a>
       </nav>
     </header>
 
@@ -55,6 +56,10 @@
         </div>
       </div>
     </div>
+
+    <!-- Toast container for transient feedback (e.g. copy success/failure). Visible text plus
+         aria-live so both sighted and assistive-tech users get the same confirmation. -->
+    <div id="toast-container" class="toast-container" role="status" aria-live="polite"></div>
 
     <script type="module" src="{{ url_for('static', path='js/admin.js') }}"></script>
   </body>
