@@ -1882,7 +1882,8 @@ def test_ws_tts_rejects_anonymous():
 def test_ws_tts_accepts_listener_cookie():
     """Listener cookie is accepted if it matches the event."""
     import anyio
-    from portal.database import get_session, Event, Room
+
+    from portal.database import Event, Room, get_session
     async def setup():
         async with get_session() as session:
             ev = Event(slug="ttstest", display_name="TTS", listener_join_code="secret123")
@@ -1893,21 +1894,22 @@ def test_ws_tts_accepts_listener_cookie():
             await session.flush()
             return room.id
     room_id = anyio.run(setup)
-    
+
     # Needs valid Origin if testing cookie fallback
     headers = {"Origin": "http://testserver"}
-    
+
     with client.websocket_connect(
         f"/ws/tts/{room_id}/en/ttstest-{room_id}-en",
-        cookies={f"listener_code_ttstest": "secret123"},
+        cookies={"listener_code_ttstest": "secret123"},
         headers=headers
-    ) as ws:
+    ):
         pass # Connection accepted
 
 def test_ws_tts_rejects_mismatched_origin_scheme():
     import anyio
-    from portal.database import get_session, Event, Room
     from fastapi.websockets import WebSocketDisconnect
+
+    from portal.database import Event, Room, get_session
     async def setup():
         async with get_session() as session:
             ev = Event(slug="ttstest-scheme", display_name="TTS Scheme", listener_join_code="secret123")
@@ -1918,15 +1920,15 @@ def test_ws_tts_rejects_mismatched_origin_scheme():
             await session.flush()
             return room.id
     room_id = anyio.run(setup)
-    
+
     # Websocket URL is http://testserver/ws/tts/...
     # An Origin of https://testserver should be rejected because scheme does not match
     headers = {"Origin": "https://testserver"}
-    
+
     with pytest.raises(WebSocketDisconnect) as exc_info:
         with client.websocket_connect(
             f"/ws/tts/{room_id}/en/ttstest-scheme-{room_id}-en",
-            cookies={f"listener_code_ttstest-scheme": "secret123"},
+            cookies={"listener_code_ttstest-scheme": "secret123"},
             headers=headers
         ):
             pass
@@ -1934,7 +1936,8 @@ def test_ws_tts_rejects_mismatched_origin_scheme():
 
 def test_ws_tts_rejects_mismatched_room():
     import anyio
-    from portal.database import get_session, Event, Room
+
+    from portal.database import Event, Room, get_session
     async def setup():
         async with get_session() as session:
             ev = Event(slug="ttstest2", display_name="TTS 2", listener_join_code="secret123")
@@ -1945,14 +1948,14 @@ def test_ws_tts_rejects_mismatched_room():
             await session.flush()
             return room.id
     room_id = anyio.run(setup)
-    
+
     from fastapi.websockets import WebSocketDisconnect
     headers = {"Origin": "http://testserver"}
 
     with pytest.raises(WebSocketDisconnect) as exc_info:
         with client.websocket_connect(
             f"/ws/tts/{room_id + 1}/en/ttstest2-{room_id}-en",
-            cookies={f"listener_code_ttstest2": "secret123"},
+            cookies={"listener_code_ttstest2": "secret123"},
             headers=headers
         ):
             pass
@@ -1961,7 +1964,7 @@ def test_ws_tts_rejects_mismatched_room():
     with pytest.raises(WebSocketDisconnect) as exc_info:
         with client.websocket_connect(
             f"/ws/tts/{room_id}/en/ttstest2-{room_id + 1}-en",
-            cookies={f"listener_code_ttstest2": "secret123"},
+            cookies={"listener_code_ttstest2": "secret123"},
             headers=headers
         ):
             pass
@@ -1969,7 +1972,8 @@ def test_ws_tts_rejects_mismatched_room():
 
 def test_ws_tts_cleanup_on_disconnect():
     import anyio
-    from portal.database import get_session, Event, Room
+
+    from portal.database import Event, Room, get_session
     async def setup():
         async with get_session() as session:
             ev = Event(slug="ttstest3", display_name="TTS 3", listener_join_code="secret123")
@@ -1980,21 +1984,21 @@ def test_ws_tts_cleanup_on_disconnect():
             await session.flush()
             return room.id
     room_id = anyio.run(setup)
-    
+
     headers = {"Origin": "http://testserver"}
-    
+
     # We can check the internal tts_manager state.
     from portal.websockets.manager import tts_manager
     key = tts_manager._get_key(room_id, "en", f"ttstest3-{room_id}-en")
     initial_count = len(tts_manager._rooms.get(key, set()))
-    
+
     with client.websocket_connect(
         f"/ws/tts/{room_id}/en/ttstest3-{room_id}-en",
-        cookies={f"listener_code_ttstest3": "secret123"},
+        cookies={"listener_code_ttstest3": "secret123"},
         headers=headers
-    ) as ws:
+    ):
         assert len(tts_manager._rooms.get(key, set())) == initial_count + 1
-        
+
     # After exit, the context manager closes the websocket
     import time
     time.sleep(0.1) # allow time for cleanup

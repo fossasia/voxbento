@@ -121,9 +121,11 @@ async def ws_captions(websocket: WebSocket, booth_id: str) -> None:
 
 
 async def _authorize_tts(websocket: WebSocket, room_id: int, language_code: str, booth_id: str) -> None:
-    import jwt
     from urllib.parse import urlparse
-    from portal.auth import decode_token, get_booth_session, WSAuthError
+
+    import jwt
+
+    from portal.auth import WSAuthError, decode_token, get_booth_session
     from portal.booth_identity import parse_booth_id
     from portal.config import settings
     from portal.database import get_event_by_slug, get_session
@@ -181,7 +183,7 @@ async def _authorize_tts(websocket: WebSocket, room_id: int, language_code: str,
             if token_event != event_slug or token_lang != actual_lang or (token_room is not None and str(token_room) != str(actual_room)):
                 raise WSAuthError("Participant token scope does not match.")
             return
-            
+
         if payload.get("user") or payload.get("role"):
             return
 
@@ -191,13 +193,13 @@ async def _authorize_tts(websocket: WebSocket, room_id: int, language_code: str,
     if origin:
         parsed_origin = urlparse(origin)
         expected_pub = urlparse(settings.public_base_url)
-        
+
         ws_scheme = websocket.url.scheme
         if ws_scheme == "ws":
             ws_scheme = "http"
         elif ws_scheme == "wss":
             ws_scheme = "https"
-            
+
         allowed_origins = {
             (expected_pub.scheme, expected_pub.netloc),
             (ws_scheme, websocket.url.netloc)
@@ -223,7 +225,7 @@ async def ws_tts(websocket: WebSocket, room_id: int, language_code: str, booth_i
     except WSAuthError:
         await websocket.close(code=4003)
         return
-        
+
     await websocket.accept()
     tts_manager.add(websocket, room_id, language_code, booth_id)
     try:
