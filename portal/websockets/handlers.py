@@ -120,8 +120,112 @@ async def ws_captions(websocket: WebSocket, booth_id: str) -> None:
         listener_manager.remove(websocket, booth_id)
 
 
+async def _authorize_tts(websocket: WebSocket, room_id: int, language_code: str, booth_id: str) -> None:
+    from urllib.parse import urlparse
+
+    import jwt
+
+    from portal.auth import WSAuthError, decode_token, get_booth_session
+    from portal.booth_identity import parse_booth_id
+    from portal.config import settings
+    from portal.database import get_event_by_slug, get_session
+
+    try:
+        event_slug, actual_room, actual_lang = parse_booth_id(booth_id)
+    except ValueError:
+        raise WSAuthError("Invalid booth_id format.")
+
+    if room_id != actual_room or language_code != actual_lang:
+        raise WSAuthError("Mismatched room or language.")
+
+    # 1. JWT in query param
+    token = websocket.query_params.get("token", "")
+    if token:
+        try:
+            payload = decode_token(token)
+        except jwt.InvalidTokenError:
+            raise WSAuthError("Invalid token.")
+
+        if payload.get("is_admin") or payload.get("admin"):
+            return
+
+        token_event = payload.get("event_slug", "")
+        if payload.get("role") == "listener":
+            if not token_event or token_event != event_slug:
+                raise WSAuthError("Listener token event_slug does not match.")
+            return
+
+        token_lang = payload.get("language_code", "")
+        token_room = payload.get("room_id")
+        if token_event and token_lang:
+            if token_event != event_slug or token_lang != actual_lang or (token_room is not None and str(token_room) != str(actual_room)):
+                raise WSAuthError("Participant token scope does not match.")
+            return
+
+        if payload.get("role") or payload.get("is_admin") or payload.get("admin"):
+            return
+
+    # 2. JWT in cookie
+    payload = get_booth_session(websocket)
+    if payload:
+        if payload.get("is_admin") or payload.get("admin"):
+            return
+
+        token_event = payload.get("event_slug", "")
+        if payload.get("role") == "listener":
+            if not token_event or token_event != event_slug:
+                raise WSAuthError("Listener token event_slug does not match.")
+            return
+
+        token_lang = payload.get("language_code", "")
+        token_room = payload.get("room_id")
+        if token_event and token_lang:
+            if token_event != event_slug or token_lang != actual_lang or (token_room is not None and str(token_room) != str(actual_room)):
+                raise WSAuthError("Participant token scope does not match.")
+            return
+
+        if payload.get("user") or payload.get("role"):
+            return
+
+    # 3. Listener code cookie
+    # For requests without a token that rely on the cookie, check Origin strictly
+    origin = websocket.headers.get("origin")
+    if origin:
+        parsed_origin = urlparse(origin)
+        expected_pub = urlparse(settings.public_base_url)
+
+        ws_scheme = websocket.url.scheme
+        if ws_scheme == "ws":
+            ws_scheme = "http"
+        elif ws_scheme == "wss":
+            ws_scheme = "https"
+
+        allowed_origins = {
+            (expected_pub.scheme, expected_pub.netloc),
+            (ws_scheme, websocket.url.netloc)
+        }
+        if (parsed_origin.scheme, parsed_origin.netloc) not in allowed_origins:
+            raise WSAuthError("Origin mismatch.")
+
+    cookie_code = websocket.cookies.get(f"listener_code_{event_slug}")
+    if cookie_code:
+        async with get_session() as db_session:
+            ev = await get_event_by_slug(db_session, event_slug)
+            if not ev or not ev.listener_join_code or cookie_code != ev.listener_join_code:
+                raise WSAuthError("Invalid listener join code.")
+        return
+
+    raise WSAuthError("Unauthorized.")
+
+
 @router.websocket("/ws/tts/{room_id}/{language_code}/{booth_id}")
 async def ws_tts(websocket: WebSocket, room_id: int, language_code: str, booth_id: str) -> None:
+    try:
+        await _authorize_tts(websocket, room_id, language_code, booth_id)
+    except WSAuthError:
+        await websocket.close(code=4003)
+        return
+
     await websocket.accept()
     tts_manager.add(websocket, room_id, language_code, booth_id)
     try:
