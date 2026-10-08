@@ -6,6 +6,7 @@ from urllib.parse import urlparse
 
 import httpx
 import pytest
+import tenacity
 
 import portal.globals as pg
 from portal.transcription.providers.base import ProviderConfig, TranscriptionProvider, pcm_to_wav
@@ -60,7 +61,7 @@ class TestTranscriptionProviders:
         finally:
             pg.shared_http_client = None
 
-    async def test_openai_process_chunk_returns_empty_on_api_error(self):
+    async def test_openai_process_chunk_raises_on_api_error(self):
         from portal.transcription.providers.openai import OpenAIProvider
 
         provider = OpenAIProvider()
@@ -73,10 +74,70 @@ class TestTranscriptionProviders:
         pg.shared_http_client = mock_client
 
         try:
-            with pytest.raises(Exception):
-                await provider.process_chunk(b"\x00" * 3200, "en", "whisper-1", config)
+            with patch("tenacity.wait_exponential", return_value=tenacity.wait_none()):
+                with pytest.raises(httpx.ConnectError):
+                    await provider.process_chunk(b"\x00" * 3200, "en", "whisper-1", config)
         finally:
             pg.shared_http_client = None
+
+    async def test_openai_process_chunk_raises_on_400_status(self):
+        from portal.transcription.providers.openai import OpenAIProvider
+
+        provider = OpenAIProvider()
+        config = ProviderConfig(api_key="fake")
+
+        mock_client = MagicMock()
+        mock_client.is_closed = False
+        mock_response = MagicMock()
+        mock_response.status_code = 400
+        mock_response.raise_for_status.side_effect = httpx.HTTPStatusError(
+            "400 Bad Request", request=MagicMock(), response=mock_response
+        )
+        mock_client.post = AsyncMock(return_value=mock_response)
+
+        pg.shared_http_client = mock_client
+
+        try:
+            with pytest.raises(httpx.HTTPStatusError):
+                await provider.process_chunk(b"\x00" * 3200, "en", "whisper-1", config)
+            # Should fail immediately on 400, no retries
+            mock_client.post.assert_called_once()
+        finally:
+            pg.shared_http_client = None
+
+    async def test_openai_process_chunk_retries_on_500_status(self):
+        from portal.transcription.providers.openai import OpenAIProvider
+
+        provider = OpenAIProvider()
+        config = ProviderConfig(api_key="fake")
+
+        mock_client = MagicMock()
+        mock_client.is_closed = False
+        
+        # Two 500 responses, then a success
+        mock_error_resp = MagicMock()
+        mock_error_resp.status_code = 500
+        mock_error_resp.raise_for_status.side_effect = httpx.HTTPStatusError(
+            "500 Internal Server Error", request=MagicMock(), response=mock_error_resp
+        )
+        
+        mock_success_resp = MagicMock()
+        mock_success_resp.status_code = 200
+        mock_success_resp.json.return_value = {"text": "Hello"}
+        
+        mock_client.post = AsyncMock(side_effect=[mock_error_resp, mock_error_resp, mock_success_resp])
+
+        pg.shared_http_client = mock_client
+
+        try:
+            # We patch wait_exponential to run instantly
+            with patch("tenacity.wait_exponential", return_value=tenacity.wait_none()):
+                result = await provider.process_chunk(b"\x00" * 3200, "en", "whisper-1", config)
+                assert result == "Hello"
+                assert mock_client.post.call_count == 3
+        finally:
+            pg.shared_http_client = None
+
 
     async def test_local_model_ref_counting(self):
         from portal.transcription.providers.local import (

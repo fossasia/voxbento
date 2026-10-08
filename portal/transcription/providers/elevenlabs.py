@@ -3,12 +3,13 @@ import json
 import logging
 
 import httpx
-from tenacity import AsyncRetrying, retry_if_exception_type, stop_after_attempt, wait_exponential
+from tenacity import AsyncRetrying, retry_if_exception, stop_after_attempt, wait_exponential
 
 from portal.transcription.providers.base import (
     BoothTranscriptionState,
     ProviderConfig,
     TranscriptionProvider,
+    is_retriable_http_error,
     pcm_to_wav,
 )
 from portal.transcription.providers.openai import get_http_client
@@ -38,27 +39,18 @@ class ElevenLabsProvider(TranscriptionProvider):
         data = {"model_id": model_variant, "language_code": language_code}
 
         client = get_http_client()
-        try:
-            async for attempt in AsyncRetrying(
-                wait=wait_exponential(multiplier=1, min=2, max=10),
-                stop=stop_after_attempt(3),
-                retry=retry_if_exception_type((httpx.ReadTimeout, httpx.ConnectError, httpx.HTTPStatusError)),
-            ):
-                with attempt:
-                    resp = await client.post(
-                        "https://api.elevenlabs.io/v1/speech-to-text", headers=headers, files=files, data=data
-                    )
-                    if resp.status_code in (429, 502, 503, 504):
-                        resp.raise_for_status()
-
-                    if resp.status_code == 200:
-                        return resp.json().get("text", "").strip()
-                    else:
-                        logger.error(f"ElevenLabs error status={resp.status_code}")
-        except Exception as e:
-            logger.error(f"ElevenLabs request failed: {e}")
-            raise e
-        return ""
+        async for attempt in AsyncRetrying(
+            wait=wait_exponential(multiplier=1, min=2, max=10),
+            stop=stop_after_attempt(3),
+            retry=retry_if_exception(is_retriable_http_error),
+            reraise=True,
+        ):
+            with attempt:
+                resp = await client.post(
+                    "https://api.elevenlabs.io/v1/speech-to-text", headers=headers, files=files, data=data
+                )
+                resp.raise_for_status()
+                return resp.json().get("text", "").strip()
 
     async def run_stream(
         self,
