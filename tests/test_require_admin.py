@@ -1,11 +1,10 @@
 """Tests for portal.auth.require_admin and its helpers.
+
 Organised by authorization branch:
 
 1. Pure scope/role helpers (no DB, no request)
-2. ``_check_admin_token``  -- the ``admin_token`` cookie session
-3. ``_check_user_token``   -- ``user_token`` claims (admin flag, sub handling)
-4. ``_check_scoped_admin_role`` -- DB-backed global admin / event_owner / room_coordinator
-5. ``require_admin``       -- dispatch order and fallback between the two cookies
+2. ``resolve_principal`` -- user_token / admin_token cookie resolution against the DB
+3. ``require_admin``     -- workspace delegation, scoped access, and 403 fallback
 """
 
 from __future__ import annotations
@@ -16,6 +15,7 @@ os.environ.setdefault("BOOTH_ACCESS_TOKEN", "")
 os.environ.setdefault("ADMIN_PASSWORD", "test-admin-pass")
 
 from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import jwt
@@ -23,18 +23,20 @@ import pytest
 from fastapi import HTTPException
 
 from portal.auth import (
-    _check_admin_token,
-    _check_event_owner,
-    _check_room_coordinator,
-    _check_scoped_admin_role,
-    _check_user_token,
+    _has_scope_access,
+    _is_event_owner,
     _parse_scope_ids,
     create_admin_token,
     create_user_token,
     hash_password,
     require_admin,
+    require_event_owner,
+    resolve_principal,
 )
 from portal.config import settings
+
+# Every async test runs under anyio's asyncio backend; sync helper tests are unaffected.
+pytestmark = pytest.mark.anyio
 
 # ---------------------------------------------------------------------------
 # Fixtures / helpers
@@ -51,11 +53,17 @@ async def setup_db():
     await dispose()
 
 
-def _make_request(cookies: dict[str, str], path_params: dict | None = None):
+def _make_request(
+    cookies: dict[str, str],
+    path_params: dict | None = None,
+    *,
+    is_workspace: bool = False,
+):
     """Build a minimal fake Request with the given cookies and path params."""
     req = MagicMock()
     req.cookies = cookies
     req.path_params = path_params or {}
+    req.state = SimpleNamespace(is_workspace=is_workspace)
     return req
 
 
@@ -101,6 +109,24 @@ async def _grant_room_role(user_id: int, room_id: int, role: str) -> None:
         await set_room_membership(s, user_id=user_id, room_id=room_id, role=role)
 
 
+async def _make_db_admin(user_id: int) -> None:
+    from portal.database import get_session, get_user_by_id
+
+    async with get_session() as s:
+        (await get_user_by_id(s, user_id)).is_admin = True
+
+
+async def _resolve(cookies: dict, *, error_detail: str | None = None):
+    """Run resolve_principal against a fresh sqlite session."""
+    from portal.database import get_session
+
+    request = _make_request(cookies)
+    async with get_session() as s:
+        if error_detail is None:
+            return await resolve_principal(request, s)
+        return await resolve_principal(request, s, error_detail=error_detail)
+
+
 class _Membership:
     def __init__(self, event_id: int, role: str):
         self.event_id = event_id
@@ -128,44 +154,60 @@ def test_parse_scope_ids_ignores_non_digit_or_missing():
     assert _parse_scope_ids(_make_request({})) == (None, None)
 
 
-def test_check_event_owner_matches_only_owner_role_on_that_event():
+def test_is_event_owner_matches_only_owner_role_on_that_event():
     memberships = [_Membership(1, "event_owner"), _Membership(2, "interpreter")]
-    assert _check_event_owner(memberships, 1) is True
-    assert _check_event_owner(memberships, 2) is False  # wrong role
-    assert _check_event_owner(memberships, 3) is False  # wrong event
-    assert _check_event_owner(memberships, None) is False  # no event scope
+    assert _is_event_owner(memberships, 1) is True
+    assert _is_event_owner(memberships, 2) is False  # wrong role
+    assert _is_event_owner(memberships, 3) is False  # wrong event
+    assert _is_event_owner(memberships, None) is False  # no event scope
 
 
-def test_check_room_coordinator_by_room_requires_matching_event_when_given():
+def test_has_scope_access_room_scope_requires_matching_event_when_given():
     rms = [_RoomMembership(room_id=10, role="room_coordinator", event_id=7)]
-    assert _check_room_coordinator(rms, room_id=10) is True
-    assert _check_room_coordinator(rms, room_id=10, event_id=7) is True
-    assert _check_room_coordinator(rms, room_id=10, event_id=8) is False  # room is in event 7
-    assert _check_room_coordinator(rms, room_id=99) is False
+    owner = [_Membership(8, "event_owner")]
+
+    assert _has_scope_access([], rms, None, 10) is True  # no event scope in URL
+    assert _has_scope_access([], rms, 7, 10) is True  # room belongs to the event
+    assert _has_scope_access([], rms, 8, 10) is False  # room is in event 7, not 8
+    assert _has_scope_access([], rms, None, 99) is False  # unknown room
+    assert _has_scope_access(owner, [], 8, 10) is True  # event owner of the URL's event
+    assert _has_scope_access(owner, [], 7, 10) is False  # owner of a different event
 
 
-def test_check_room_coordinator_by_event_and_unscoped():
+def test_has_scope_access_event_scope():
     rms = [_RoomMembership(room_id=10, role="room_coordinator", event_id=7)]
-    assert _check_room_coordinator(rms, event_id=7) is True
-    assert _check_room_coordinator(rms, event_id=8) is False
-    assert _check_room_coordinator(rms) is True
-    assert _check_room_coordinator([_RoomMembership(10, "interpreter", 7)]) is False
+    assert _has_scope_access([], rms, 7, None) is True
+    assert _has_scope_access([], rms, 8, None) is False
+    assert _has_scope_access([_Membership(7, "event_owner")], [], 7, None) is True
+    assert _has_scope_access([_Membership(7, "interpreter")], [], 7, None) is False
+
+
+def test_has_scope_access_no_scope_accepts_any_admin_role_only():
+    assert _has_scope_access([_Membership(1, "event_owner")], [], None, None) is True
+    assert _has_scope_access([], [_RoomMembership(10, "room_coordinator", 7)], None, None) is True
+    assert _has_scope_access([_Membership(1, "interpreter")], [], None, None) is False
 
 
 # ---------------------------------------------------------------------------
-# 2. admin_token session
+# 2. resolve_principal: cookie resolution against the DB
 # ---------------------------------------------------------------------------
 
 
-def test_admin_token_valid_passes():
-    assert _check_admin_token(_make_request({"admin_token": create_admin_token()})) is None
+async def test_principal_valid_admin_token_passes(setup_db):
+    assert await _resolve({"admin_token": create_admin_token()}) == {"user_id": None, "is_global_admin": True}
 
 
-def test_admin_token_missing_is_403():
+async def test_principal_missing_admin_token_is_403(setup_db):
     with pytest.raises(HTTPException) as exc:
-        _check_admin_token(_make_request({}))
+        await _resolve({})
     assert exc.value.status_code == 403
     assert exc.value.detail == "Admin access required."
+
+
+async def test_principal_missing_admin_token_uses_custom_error_detail(setup_db):
+    with pytest.raises(HTTPException) as exc:
+        await _resolve({}, error_detail="Super-admin access required.")
+    assert exc.value.detail == "Super-admin access required."
 
 
 @pytest.mark.parametrize(
@@ -177,161 +219,94 @@ def test_admin_token_missing_is_403():
     ],
     ids=["garbage", "expired", "wrong-signature"],
 )
-def test_admin_token_invalid_is_403(token):
+async def test_principal_invalid_admin_token_is_403(setup_db, token):
     with pytest.raises(HTTPException) as exc:
-        _check_admin_token(_make_request({"admin_token": token}))
+        await _resolve({"admin_token": token})
     assert exc.value.status_code == 403
     assert exc.value.detail == "Invalid admin token."
 
 
 @pytest.mark.parametrize("claims", [{}, {"admin": False}], ids=["no-claim", "false-claim"])
-def test_admin_token_valid_signature_without_admin_claim_is_403(claims):
+async def test_principal_admin_signature_without_admin_claim_is_403(setup_db, claims):
     with pytest.raises(HTTPException) as exc:
-        _check_admin_token(_make_request({"admin_token": _signed(claims)}))
+        await _resolve({"admin_token": _signed(claims)})
     assert exc.value.status_code == 403
     assert exc.value.detail == "Admin access required."
 
 
-# ---------------------------------------------------------------------------
-# 3. user_token claims
-# ---------------------------------------------------------------------------
+async def test_principal_user_token_resolves_roles_from_db(setup_db):
+    """The DB record decides: JWT is_admin claims are never trusted on their own."""
+    admin = await _create_user("admin@example.com")
+    plain = await _create_user("plain@example.com")
+    await _make_db_admin(admin.id)
+
+    admin_token = create_user_token(user_id=admin.id, email=admin.email, is_admin=True)
+    plain_token = create_user_token(user_id=plain.id, email=plain.email)
+
+    assert await _resolve({"user_token": admin_token}) == {"user_id": admin.id, "is_global_admin": True}
+    assert await _resolve({"user_token": plain_token}) == {"user_id": plain.id, "is_global_admin": False}
 
 
-@pytest.mark.anyio
-async def test_user_token_absent_or_invalid_returns_false():
-    assert await _check_user_token(_make_request({}), None, None) is False
-    assert await _check_user_token(_make_request({"user_token": "garbage"}), None, None) is False
-    expired = _signed({"user": True, "sub": "1", "is_admin": True}, expires_in=-10)
-    assert await _check_user_token(_make_request({"user_token": expired}), None, None) is False
+async def test_principal_db_admin_revocation_beats_stale_jwt_claim(setup_db):
+    """is_admin=True in the JWT but False in the DB must not grant anything."""
+    user = await _create_user("lapsed@example.com")
+    token = create_user_token(user_id=user.id, email=user.email, is_admin=True)
+
+    principal = await _resolve({"user_token": token})
+    assert principal == {"user_id": user.id, "is_global_admin": False}
 
 
-@pytest.mark.anyio
-async def test_user_token_without_user_claim_returns_false():
-    """An admin-style token (no ``user`` claim) must not be accepted in the user_token slot."""
-    token = _signed({"admin": True, "is_admin": True, "sub": "1"})
-    assert await _check_user_token(_make_request({"user_token": token}), None, None) is False
+async def test_principal_user_token_non_numeric_sub_is_403(setup_db):
+    token = _signed({"user": True, "sub": "not-a-number"})
+    with pytest.raises(HTTPException) as exc:
+        await _resolve({"user_token": token})
+    assert exc.value.status_code == 403
 
 
-@pytest.mark.anyio
-async def test_user_token_is_admin_claim_short_circuits_without_db():
-    token = create_user_token(user_id=1, email="a@test.com", is_admin=True)
-    assert await _check_user_token(_make_request({"user_token": token}), 1, 2) is True
-
-
-@pytest.mark.anyio
-async def test_user_token_missing_or_non_numeric_sub_returns_false():
-    for claims in ({"user": True}, {"user": True, "sub": "not-a-number"}, {"user": True, "sub": [1]}):
-        token = _signed(claims)
-        assert await _check_user_token(_make_request({"user_token": token}), None, None) is False
-
-
-@pytest.mark.anyio
-async def test_user_token_delegates_to_db_roles(setup_db):
-    event = await _create_event("pycon", "PyCon")
-    owner = await _create_user("owner@example.com")
-    nobody = await _create_user("nobody@example.com")
-    await _grant_event_role(owner.id, event.id, "event_owner")
-
-    def request_for(user):
-        return _make_request({"user_token": create_user_token(user_id=user.id, email=user.email)})
-
-    assert await _check_user_token(request_for(owner), event.id, None) is True
-    assert await _check_user_token(request_for(nobody), event.id, None) is False
-
-
-# ---------------------------------------------------------------------------
-# 4. DB-backed scoped roles
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.anyio
-async def test_scoped_role_unknown_user_is_false(setup_db):
-    assert await _check_scoped_admin_role(9999, None, None) is False
-
-
-@pytest.mark.anyio
-async def test_scoped_role_db_global_admin_passes_any_scope(setup_db):
-    """DB is_admin wins even when the JWT's is_admin claim is stale/false."""
+async def test_principal_user_token_inactive_user_is_403(setup_db):
     from portal.database import get_session, get_user_by_id
 
-    user = await _create_user()
+    user = await _create_user("inactive@example.com")
     async with get_session() as s:
-        (await get_user_by_id(s, user.id)).is_admin = True
+        (await get_user_by_id(s, user.id)).is_active = False
 
-    assert await _check_scoped_admin_role(user.id, 123, 456) is True
-
-
-@pytest.mark.anyio
-async def test_scoped_role_event_scope(setup_db):
-    event = await _create_event("pycon", "PyCon")
-    other = await _create_event("djangocon", "DjangoCon")
-    room = await _create_room(event.id, "Main Hall")
-    owner = await _create_user("owner@example.com")
-    coordinator = await _create_user("coord@example.com")
-    await _grant_event_role(owner.id, event.id, "event_owner")
-    await _grant_room_role(coordinator.id, room.id, "room_coordinator")
-
-    assert await _check_scoped_admin_role(owner.id, event.id, None) is True
-    assert await _check_scoped_admin_role(owner.id, other.id, None) is False
-    assert await _check_scoped_admin_role(coordinator.id, event.id, None) is True
-    assert await _check_scoped_admin_role(coordinator.id, other.id, None) is False
+    token = create_user_token(user_id=user.id, email=user.email)
+    with pytest.raises(HTTPException) as exc:
+        await _resolve({"user_token": token})
+    assert exc.value.status_code == 403
 
 
-@pytest.mark.anyio
-async def test_scoped_role_room_scope(setup_db):
-    event = await _create_event("pycon", "PyCon")
-    other = await _create_event("djangocon", "DjangoCon")
-    room = await _create_room(event.id, "Main Hall")
-    other_room = await _create_room(event.id, "Side Room")
-    owner = await _create_user("owner@example.com")
-    coordinator = await _create_user("coord@example.com")
-    await _grant_event_role(owner.id, event.id, "event_owner")
-    await _grant_room_role(coordinator.id, room.id, "room_coordinator")
-
-    # coordinator: only their own room, and only via the event that room belongs to
-    assert await _check_scoped_admin_role(coordinator.id, event.id, room.id) is True
-    assert await _check_scoped_admin_role(coordinator.id, None, room.id) is True
-    assert await _check_scoped_admin_role(coordinator.id, event.id, other_room.id) is False
-    assert await _check_scoped_admin_role(coordinator.id, other.id, room.id) is False  # mismatched event
-    # event_owner falls back to owning the event named in the URL
-    assert await _check_scoped_admin_role(owner.id, event.id, room.id) is True
-    assert await _check_scoped_admin_role(owner.id, other.id, room.id) is False
+async def test_principal_user_token_without_user_claim_falls_back_to_admin_cookie(setup_db):
+    """An admin-style token (no ``user`` claim) in the user_token slot is ignored."""
+    token = _signed({"admin": True, "is_admin": True, "sub": "1"})
+    with pytest.raises(HTTPException):
+        await _resolve({"user_token": token})
+    principal = await _resolve({"user_token": token, "admin_token": create_admin_token()})
+    assert principal == {"user_id": None, "is_global_admin": True}
 
 
-@pytest.mark.anyio
-async def test_scoped_role_no_scope_accepts_any_admin_role_only(setup_db):
-    event = await _create_event("pycon", "PyCon")
-    room = await _create_room(event.id, "Main Hall")
-    owner = await _create_user("owner@example.com")
-    coordinator = await _create_user("coord@example.com")
-    interpreter = await _create_user("interp@example.com")
-    await _grant_event_role(owner.id, event.id, "event_owner")
-    await _grant_room_role(coordinator.id, room.id, "room_coordinator")
-    await _grant_event_role(interpreter.id, event.id, "interpreter")
-
-    assert await _check_scoped_admin_role(owner.id, None, None) is True
-    assert await _check_scoped_admin_role(coordinator.id, None, None) is True
-    assert await _check_scoped_admin_role(interpreter.id, None, None) is False
+async def test_principal_user_token_invalid_jwt_falls_back_to_admin_cookie(setup_db):
+    with pytest.raises(HTTPException):
+        await _resolve({"user_token": "garbage"})
+    principal = await _resolve({"user_token": "garbage", "admin_token": create_admin_token()})
+    assert principal == {"user_id": None, "is_global_admin": True}
 
 
 # ---------------------------------------------------------------------------
-# 5. require_admin: dispatch order and fallback
+# 3. require_admin: workspace delegation, scoped access, 403 fallback
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.anyio
 async def test_require_admin_no_cookies_is_403(setup_db):
     with pytest.raises(HTTPException) as exc:
         await require_admin(_make_request({}))
     assert exc.value.status_code == 403
 
 
-@pytest.mark.anyio
 async def test_require_admin_valid_admin_token_passes(setup_db):
     await require_admin(_make_request({"admin_token": create_admin_token()}))
 
 
-@pytest.mark.anyio
 async def test_require_admin_invalid_admin_token_is_403(setup_db):
     with pytest.raises(HTTPException) as exc:
         await require_admin(_make_request({"admin_token": "not-a-real-jwt"}))
@@ -339,14 +314,25 @@ async def test_require_admin_invalid_admin_token_is_403(setup_db):
     assert exc.value.detail == "Invalid admin token."
 
 
-@pytest.mark.anyio
-async def test_require_admin_user_token_wins_before_admin_cookie_is_checked(setup_db):
-    """An authorised user_token short-circuits; a bad admin_token is never consulted."""
-    token = create_user_token(user_id=1, email="a@test.com", is_admin=True)
-    await require_admin(_make_request({"user_token": token, "admin_token": "garbage"}))
+async def test_require_admin_db_global_admin_passes_any_scope(setup_db):
+    user = await _create_user()
+    await _make_db_admin(user.id)
+    token = create_user_token(user_id=user.id, email=user.email)
+
+    await require_admin(_make_request({"user_token": token}))
+    await require_admin(_make_request({"user_token": token}, {"event_id": "123", "room_id": "456"}))
 
 
-@pytest.mark.anyio
+async def test_require_admin_jwt_admin_claim_without_db_backing_is_403(setup_db):
+    """A user_token claiming is_admin must still resolve to a DB admin."""
+    user = await _create_user()
+    token = create_user_token(user_id=user.id, email=user.email, is_admin=True)
+
+    with pytest.raises(HTTPException) as exc:
+        await require_admin(_make_request({"user_token": token}))
+    assert exc.value.status_code == 403
+
+
 async def test_require_admin_role_user_token_passes_in_scope(setup_db):
     event = await _create_event("pycon", "PyCon")
     room = await _create_room(event.id, "Main Hall")
@@ -358,7 +344,6 @@ async def test_require_admin_role_user_token_passes_in_scope(setup_db):
     await require_admin(_make_request({"user_token": token}, scope))
 
 
-@pytest.mark.anyio
 async def test_require_admin_room_coordinator_rejected_for_mismatched_event(setup_db):
     """URL pairs another event's id with this coordinator's room: must be denied."""
     real_event = await _create_event("pycon", "PyCon")
@@ -374,36 +359,8 @@ async def test_require_admin_room_coordinator_rejected_for_mismatched_event(setu
     assert exc.value.status_code == 403
 
 
-@pytest.mark.anyio
-async def test_require_admin_ineligible_user_token_falls_back_to_admin_cookie(setup_db):
-    user = await _create_user()
-    token = create_user_token(user_id=user.id, email=user.email)
-    await require_admin(_make_request({"user_token": token, "admin_token": create_admin_token()}))
-
-
-@pytest.mark.anyio
-async def test_require_admin_ineligible_user_token_without_admin_cookie_is_403(setup_db):
-    user = await _create_user()
-    token = create_user_token(user_id=user.id, email=user.email)
-    with pytest.raises(HTTPException) as exc:
-        await require_admin(_make_request({"user_token": token}))
-    assert exc.value.status_code == 403
-
-
-@pytest.mark.anyio
-async def test_require_admin_malformed_user_tokens_fall_back_cleanly(setup_db):
-    """Garbage or non-numeric-sub user tokens never 500; they defer to admin_token."""
-    bad_tokens = ["garbage", _signed({"user": True, "sub": "not-a-number"})]
-    for bad in bad_tokens:
-        with pytest.raises(HTTPException) as exc:
-            await require_admin(_make_request({"user_token": bad}))
-        assert exc.value.status_code == 403
-        await require_admin(_make_request({"user_token": bad, "admin_token": create_admin_token()}))
-
-
-@pytest.mark.anyio
 async def test_require_admin_event_owner_rejected_for_other_events_room(setup_db):
-    """Owner of event A must not pass for /events/A/rooms/<room-in-B>/..."""
+    """Owner of event A must not pass for /events/A/rooms/<room-in-B>/... (IDOR)."""
     event_a = await _create_event("a-con", "A")
     event_b = await _create_event("b-con", "B")
     room_b = await _create_room(event_b.id, "B Hall")
@@ -417,7 +374,6 @@ async def test_require_admin_event_owner_rejected_for_other_events_room(setup_db
     assert exc.value.status_code == 403
 
 
-@pytest.mark.anyio
 async def test_require_admin_event_owner_allowed_for_own_events_room(setup_db):
     event_a = await _create_event("a-con", "A")
     room_a = await _create_room(event_a.id, "A Hall")
@@ -429,7 +385,6 @@ async def test_require_admin_event_owner_allowed_for_own_events_room(setup_db):
     await require_admin(_make_request({"user_token": token}, scope))
 
 
-@pytest.mark.anyio
 async def test_require_admin_event_owner_rejected_for_nonexistent_room(setup_db):
     event_a = await _create_event("a-con", "A")
     user = await _create_user()
@@ -440,3 +395,60 @@ async def test_require_admin_event_owner_rejected_for_nonexistent_room(setup_db)
     with pytest.raises(HTTPException) as exc:
         await require_admin(_make_request({"user_token": token}, scope))
     assert exc.value.status_code == 403
+
+
+async def test_require_admin_ineligible_user_token_is_403(setup_db):
+    user = await _create_user()
+    token = create_user_token(user_id=user.id, email=user.email)
+    with pytest.raises(HTTPException) as exc:
+        await require_admin(_make_request({"user_token": token}))
+    assert exc.value.status_code == 403
+
+
+async def test_require_admin_malformed_user_token_falls_back_to_admin_cookie(setup_db):
+    """A syntactically invalid user_token never 500s; it defers to admin_token."""
+    with pytest.raises(HTTPException) as exc:
+        await require_admin(_make_request({"user_token": "garbage"}))
+    assert exc.value.status_code == 403
+    await require_admin(_make_request({"user_token": "garbage", "admin_token": create_admin_token()}))
+
+
+async def test_require_admin_non_numeric_sub_denies_even_with_admin_cookie(setup_db):
+    """A well-signed user_token with a malformed sub aborts instead of falling back."""
+    bad = _signed({"user": True, "sub": "not-a-number"})
+    with pytest.raises(HTTPException) as exc:
+        await require_admin(_make_request({"user_token": bad, "admin_token": create_admin_token()}))
+    assert exc.value.status_code == 403
+
+
+async def test_require_admin_workspace_delegates_to_event_owner(setup_db):
+    """is_workspace requests use the event-owner policy, ignoring admin role scope."""
+    event = await _create_event("pycon", "PyCon")
+    owner = await _create_user("owner@example.com")
+    outsider = await _create_user("outsider@example.com")
+    await _grant_event_role(owner.id, event.id, "event_owner")
+
+    owner_token = create_user_token(user_id=owner.id, email=owner.email)
+    outsider_token = create_user_token(user_id=outsider.id, email=outsider.email)
+
+    # Unscoped workspace entry point: any event owner may pass.
+    await require_admin(_make_request({"user_token": owner_token}, is_workspace=True))
+    with pytest.raises(HTTPException):
+        await require_admin(_make_request({"user_token": outsider_token}, is_workspace=True))
+
+    # Event-scoped workspace route: only the owner of that event.
+    scope = {"event_id": str(event.id)}
+    await require_admin(_make_request({"user_token": owner_token}, scope, is_workspace=True))
+    with pytest.raises(HTTPException):
+        await require_admin(_make_request({"user_token": outsider_token}, scope, is_workspace=True))
+
+
+async def test_require_event_owner_unscoped_accepts_any_event_owner(setup_db):
+    event = await _create_event("pycon", "PyCon")
+    user = await _create_user()
+    await _grant_event_role(user.id, event.id, "event_owner")
+
+    token = create_user_token(user_id=user.id, email=user.email)
+    await require_event_owner(_make_request({"user_token": token}))
+    with pytest.raises(HTTPException):
+        await require_event_owner(_make_request({}))
