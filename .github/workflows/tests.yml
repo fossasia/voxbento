@@ -58,6 +58,10 @@ jobs:
           node --check portal/static/js/interpreter-booth.js
           node --check portal/static/js/whep-listener.js
           node --check portal/static/js/admin.js
+      - name: run node tests
+        run: |
+          node tests/test_audio_scheduler.js
+          node tests/test_tts_parser.js
 
       - name: Run unit tests
         run: uv run pytest tests/ -v
