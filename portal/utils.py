@@ -113,21 +113,48 @@ async def _ensure_mediamtx_path(channel_id: str) -> None:
         pass  # Non-fatal; path will use all_others defaults
 
 
-def _require_access(
+async def _require_access(
     request: Request,
     credentials: HTTPAuthorizationCredentials | None,
     token_query: str | None = None,
+    expected_event_slug: str | None = None,
 ) -> None:
-    """Allow request if access token is unset, or if a valid JWT or legacy token is provided."""
+    """Allow request if access is unset, or if a valid JWT or legacy token is provided; scoped JWTs must match the requested event, while global/admin JWTs without an event_slug are accepted."""
     if not settings.booth_access_token:
         return
+
+    async def _check_scope(payload: dict) -> None:
+        if payload.get("role") == "listener":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN, detail="Listener tokens cannot be used for this API."
+            )
+        token_event = payload.get("event_slug")
+        is_global = payload.get("admin") or payload.get("is_admin")
+        is_ordinary_user = payload.get("user") and not payload.get("is_admin")
+
+        if expected_event_slug:
+            if is_global:
+                return
+            if is_ordinary_user:
+                from portal.database import get_session, list_memberships_for_user, list_room_memberships_for_user
+                async with get_session() as db_session:
+                    memberships = await list_memberships_for_user(db_session, int(payload["sub"]))
+                    rms = await list_room_memberships_for_user(db_session, int(payload["sub"]))
+                    is_owner = any(m.event.slug == expected_event_slug and m.role == "event_owner" for m in memberships)
+                    is_coordinator = any(rm.room.event.slug == expected_event_slug and rm.role == "room_coordinator" for rm in rms)
+                    if not (is_owner or is_coordinator):
+                        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User is not a member of this event")
+                return
+
+            if not token_event:
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Token missing event scope")
+            if token_event and token_event != expected_event_slug:
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Token event scope mismatch")
+
     if credentials is not None:
         try:
             payload = decode_token(credentials.credentials)
-            if payload.get("role") == "listener":
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN, detail="Listener tokens cannot be used for this API."
-                )
+            await _check_scope(payload)
             return
         except pyjwt.InvalidTokenError:
             pass
@@ -139,10 +166,7 @@ def _require_access(
 
     payload = get_booth_session(request)
     if payload:
-        if payload.get("role") == "listener":
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN, detail="Listener tokens cannot be used for this API."
-            )
+        await _check_scope(payload)
         return
 
     raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid or missing auth token.")
