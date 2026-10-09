@@ -23,6 +23,7 @@
   --color-warning: #d18538;
   --radius: 0.25rem;
   --shadow-lightest: 0 1px 2px rgb(0 0 0 / 0.24);
+  --portal-gutter: 0.9rem;
 
   /* Booth redesign tokens */
   --bx-bg: #eef1f6;
@@ -85,7 +86,7 @@ body {
 }
 
 .portal-main {
-  padding: 0.9rem;
+  padding: var(--portal-gutter);
 }
 
 label {
@@ -1094,6 +1095,9 @@ label {
   .booth-columns {
     grid-template-columns: minmax(0, 1fr);
   }
+  .deck-controls {
+    flex-wrap: wrap;
+  }
   .stage-monitor {
     min-height: 40vh;
   }
@@ -1109,18 +1113,23 @@ label {
   }
 }
 
-/* Phones: the mic controls take their own row as two equal buttons, and
-   stack full width when there isn't room for the longer labels side by side. */
+/* Phones: full-width booth, matched mic buttons, and card header pills on their
+   own line. Wider screens keep the layout above. */
 @media (max-width: 480px) {
   /* Use the full phone width: cancel the .portal-main padding around the booth
-     and keep one 12px gutter. Jitsi only shows its "Join meeting" screen when
-     the Floor Monitor is at least 320px wide, which needs this on 360px phones. */
+     and keep one 12px gutter, with the top bar on the same edge. Jitsi only
+     shows its "Join meeting" screen when the Floor Monitor is at least 320px
+     wide, which needs this on 360px phones. */
   .booth-layout {
-    margin-inline: -0.9rem;
+    margin-inline: calc(-1 * var(--portal-gutter));
   }
+  .booth-topbar,
   .booth-columns {
     padding-inline: 0.75rem;
   }
+  /* Unmute and Pass Mic sit side by side as equal halves once each can have
+     11rem, which fits the longest label ("TAKE OVER", up to 164px in Firefox).
+     Below that they stack full width, which is the case on most phones. */
   .deck-controls {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(min(100%, 11rem), 1fr));

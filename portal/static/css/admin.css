@@ -957,6 +957,7 @@ code { font-family: var(--font-mono); font-size: 0.85em; background: var(--color
 @media (max-width: 480px) {
   .copy-field { flex-wrap: wrap; }
   .copy-field input { flex-basis: 100%; }
+  /* Same side padding on Copy (10px) and Open (12px), or flex leaves them 4px apart. */
   .copy-field .btn { flex: 1; padding-inline: 12px; }
 }
 

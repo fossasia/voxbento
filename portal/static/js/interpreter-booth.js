@@ -1532,14 +1532,16 @@ function setTextIfChanged(element, text) {
 }
 
 function showError(message) {
-  elements.errorBanner.textContent = message
-  if (!message) return
-  // The banner lives in the Audio Setup panel, which starts collapsed and sits
-  // at the bottom of the sidebar. Open it and bring the error into view so it
-  // is seen, and so screen readers can announce the alert.
+  const isNew = message && elements.errorBanner.textContent !== message
+  // The banner lives in the Audio Setup panel, which starts collapsed. Open it
+  // before writing the text, so the alert is in the accessibility tree when it
+  // changes and screen readers announce it.
   const panel = elements.errorBanner.closest('details')
-  if (panel) panel.open = true
-  elements.errorBanner.scrollIntoView({ block: 'nearest' })
+  if (message && panel) panel.open = true
+  elements.errorBanner.textContent = message
+  // The panel sits at the bottom of the sidebar, so bring a new error into
+  // view, but don't keep pulling the page there when the same error repeats.
+  if (isNew) elements.errorBanner.scrollIntoView({ block: 'nearest' })
 }
 
 function waitForIceGathering(peerConnection) {
