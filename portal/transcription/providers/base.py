@@ -6,10 +6,21 @@ import wave
 from dataclasses import dataclass
 from typing import AsyncGenerator, AsyncIterator, Awaitable, Callable
 
+import httpx
+
 from portal.models import Event
 from portal.transcription.constants import ProviderEnum
 
 logger = logging.getLogger(__name__)
+
+
+def is_retriable_http_error(e: BaseException) -> bool:
+    if isinstance(e, (httpx.ReadTimeout, httpx.ConnectError)):
+        return True
+    if isinstance(e, httpx.HTTPStatusError):
+        status = e.response.status_code
+        return status == 429 or status >= 500
+    return False
 
 
 def pcm_to_wav(pcm_data: bytes, sample_rate: int = 16000) -> bytes:
@@ -151,6 +162,11 @@ class TranscriptionProvider:
                     else:
                         await aggregator.handle_clear(booth_id)
                 except Exception as e:
+                    if isinstance(e, httpx.HTTPStatusError) and not is_retriable_http_error(e):
+                        logger.error(f"[{booth_id}] Fatal provider HTTP error: {e}")
+                        await broadcast_callback(booth_id, "[Transcription provider failed. Check logs.]")
+                        break
+
                     consecutive_errors += 1
                     logger.error(f"[{booth_id}] Provider error ({consecutive_errors}/3): {e}")
                     if consecutive_errors >= 3:
@@ -381,6 +397,14 @@ class ChunkedProvider(StreamingProvider):
                 except asyncio.CancelledError:
                     raise
                 except Exception as e:
+                    if isinstance(e, httpx.HTTPStatusError) and not is_retriable_http_error(e):
+                        logger.error(f"[{self.booth_id}] Fatal provider HTTP error: {e}")
+                        if hasattr(self.aggregator, "broadcast_callback"):
+                            await self.aggregator.broadcast_callback(
+                                self.booth_id, "[Transcription provider failed. Check logs.]"
+                            )
+                        break
+
                     consecutive_errors += 1
                     logger.error(f"[{self.booth_id}] Provider error ({consecutive_errors}/3): {e}")
                     if consecutive_errors >= 3:
