@@ -179,6 +179,41 @@ async def require_room_event_access(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required.")
 
 
+def _parse_scope_ids(request: Request) -> tuple[int | None, int | None]:
+    """Extract numeric event_id/room_id from the route's path params, if present."""
+    event_id_str = request.path_params.get("event_id")
+    room_id_str = request.path_params.get("room_id")
+    event_id = int(event_id_str) if event_id_str and event_id_str.isdigit() else None
+    room_id = int(room_id_str) if room_id_str and room_id_str.isdigit() else None
+    return event_id, room_id
+
+
+def _is_event_owner(memberships, event_id: int | None) -> bool:
+    """True if the user owns the given event."""
+    return any(m.event_id == event_id and m.role == "event_owner" for m in memberships)
+
+
+def _has_scope_access(memberships, rms, event_id: int | None, room_id: int | None) -> bool:
+    """Scoped access for a non-global-admin user, matching the legacy admin rules.
+
+    When both ``room_id`` and ``event_id`` are given, a room-coordinator match
+    also requires the room to belong to ``event_id``, so a URL pairing one
+    event's id with another event's room cannot authorize access.
+    """
+    if room_id is not None:
+        return any(
+            rm.room_id == room_id
+            and rm.role == "room_coordinator"
+            and (event_id is None or rm.room.event_id == event_id)
+            for rm in rms
+        ) or _is_event_owner(memberships, event_id)
+    if event_id is not None:
+        return _is_event_owner(memberships, event_id) or any(
+            rm.room.event_id == event_id and rm.role == "room_coordinator" for rm in rms
+        )
+    return any(m.role == "event_owner" for m in memberships) or any(rm.role == "room_coordinator" for rm in rms)
+
+
 async def require_admin(request: Request) -> None:
     """FastAPI dependency that guards shared management routes.
 
@@ -190,12 +225,9 @@ async def require_admin(request: Request) -> None:
         await require_event_owner(request)
         return
 
-    event_id_str = request.path_params.get("event_id")
-    event_id = int(event_id_str) if event_id_str and event_id_str.isdigit() else None
-    room_id_str = request.path_params.get("room_id")
-    room_id = int(room_id_str) if room_id_str and room_id_str.isdigit() else None
+    event_id, room_id = _parse_scope_ids(request)
 
-    from portal.database import get_session
+    from portal.database import get_session, list_memberships_for_user, list_room_memberships_for_user
 
     async with get_session() as db_session:
         principal = await resolve_principal(request, db_session)
@@ -206,25 +238,20 @@ async def require_admin(request: Request) -> None:
         if not user_id:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required.")
 
-        from portal.database import list_memberships_for_user, list_room_memberships_for_user
+        if room_id is not None and event_id is not None:
+            # A room-scoped URL must name a room of the event in the URL;
+            # otherwise an event owner could act on another event's room by
+            # pairing their own event_id with a foreign room_id (IDOR).
+            from portal.database import get_room_by_id
+
+            room = await get_room_by_id(db_session, room_id)
+            if room is None or room.event_id != event_id:
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required.")
 
         memberships = await list_memberships_for_user(db_session, user_id)
         rms = await list_room_memberships_for_user(db_session, user_id)
-        if room_id is not None:
-            if any((rm.room_id == room_id and rm.role == "room_coordinator" for rm in rms)):
-                return
-            if any((m.event_id == event_id and m.role == "event_owner" for m in memberships)):
-                return
-        elif event_id is not None:
-            if any((m.event_id == event_id and m.role == "event_owner" for m in memberships)):
-                return
-            if any((rm.room.event_id == event_id and rm.role == "room_coordinator" for rm in rms)):
-                return
-        if event_id is None and room_id is None:
-            if any((m.role == "event_owner" for m in memberships)) or any(
-                (rm.role == "room_coordinator" for rm in rms)
-            ):
-                return
+        if _has_scope_access(memberships, rms, event_id, room_id):
+            return
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required.")
 
 
