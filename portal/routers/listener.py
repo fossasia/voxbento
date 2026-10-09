@@ -197,21 +197,11 @@ async def listener_room_audio_delay(
         return {"audio_delay_ms": room.audio_delay_ms}
 
 
-async def _embed_listener_impl(
-    request: Request,
-    event_slug: str,
-    language_code: str,
-    room_id: int | None,
-    token: str,
-    theme: str,
-    primary_color: str,
-    font: str,
-    captions: bool,
-    custom_css_url: str | None,
-    headless: bool,
-    target_lang: str | None,
-):
-    # ── Authentication ────────────────────────────────────────────────────
+def _verify_embed_token(token: str, event_slug: str) -> None:
+    """Validate the embed token and its listener/embed claims for ``event_slug``.
+
+    Raises ``HTTPException(403)`` for a missing, expired, invalid, or mismatched token.
+    """
     if not token:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Missing embed token.")
 
@@ -230,60 +220,57 @@ async def _embed_listener_impl(
     if payload.get("event_slug") != event_slug:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Token is not valid for this event.")
 
-    # ── Resolve booth ─────────────────────────────────────────────────────
-    from portal.booth_identity import make_booth_id, make_mediamtx_path
-    from portal.database import list_booths_for_event, list_rooms_for_event
 
-    async with get_session() as session:
-        ev = await get_event_by_slug(session, event_slug)
-        if not ev:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event not found.")
-
-        rooms = await list_rooms_for_event(session, ev.id)
-        if room_id is None:
-            if not rooms:
-                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No rooms found for this event.")
-            if len(rooms) > 1:
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="This event has multiple rooms. Please use the /embed/{event_slug}/{room_id}/{language_code} URL instead.",
-                )
-            resolved_room_id = rooms[0].id
-            audio_delay_ms = rooms[0].audio_delay_ms
-        else:
-            resolved_room_id = room_id
-            room = next((r for r in rooms if r.id == resolved_room_id), None)
-            if not room:
-                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Room not found.")
-            audio_delay_ms = room.audio_delay_ms
-
-        try:
-            booth_id = make_booth_id(ev.slug, resolved_room_id, language_code.lower())
-            channel_id = make_mediamtx_path(ev.slug, resolved_room_id, language_code.lower())
-        except ValueError:
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Invalid language code.")
-
-        if language_code.lower() != "floor":
-            db_booths = await list_booths_for_event(session, ev.id)
-            booth = next(
-                (
-                    b
-                    for b in db_booths
-                    if b.language_code.lower() == language_code.lower() and b.room_id == resolved_room_id
-                ),
-                None,
+async def _resolve_embed_room(session: Any, ev: Any, room_id: int | None) -> tuple[int, int]:
+    """Resolve the target room id and its audio delay for an embed request."""
+    rooms = await list_rooms_for_event(session, ev.id)
+    if room_id is None:
+        if not rooms:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No rooms found for this event.")
+        if len(rooms) > 1:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="This event has multiple rooms. Please use the /embed/{event_slug}/{room_id}/{language_code} URL instead.",
             )
-            if booth is None:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail=f"No booth for language '{language_code}' in event '{event_slug}'.",
-                )
+        return rooms[0].id, rooms[0].audio_delay_ms
 
-    whep_url = f"{settings.mediamtx_whip_base}/{channel_id}/whep"
-    host = settings.public_base_url.replace("https://", "").replace("http://", "")
-    caption_url = f"wss://{host}/ws/captions/{booth_id}"
+    room = next((r for r in rooms if r.id == room_id), None)
+    if not room:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Room not found.")
+    return room.id, room.audio_delay_ms
 
-    # ── Sanitize theming params ───────────────────────────────────────────
+
+async def _resolve_embed_channel(
+    session: Any, ev: Any, event_slug: str, room_id: int, language_code: str
+) -> tuple[str, str]:
+    """Resolve the booth id and mediamtx channel id for the requested language."""
+    from portal.booth_identity import make_booth_id, make_mediamtx_path
+
+    try:
+        booth_id = make_booth_id(ev.slug, room_id, language_code.lower())
+        channel_id = make_mediamtx_path(ev.slug, room_id, language_code.lower())
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Invalid language code.")
+
+    if language_code.lower() != "floor":
+        db_booths = await list_booths_for_event(session, ev.id)
+        booth = next(
+            (b for b in db_booths if b.language_code.lower() == language_code.lower() and b.room_id == room_id),
+            None,
+        )
+        if booth is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"No booth for language '{language_code}' in event '{event_slug}'.",
+            )
+
+    return booth_id, channel_id
+
+
+def _sanitize_embed_theme(
+    theme: str, font: str, primary_color: str, custom_css_url: str | None
+) -> tuple[str, str, str, str | None]:
+    """Sanitize embed theming params: theme, font, and color are allowlisted; custom CSS is accepted from arbitrary HTTPS URLs."""
     safe_theme = theme if theme in _ALLOWED_THEMES else "dark"
     safe_font = font if font in _ALLOWED_FONTS else "inter"
     safe_primary = primary_color if _PRIMARY_COLOR_RE.match(primary_color) else _DEFAULT_PRIMARY
@@ -292,7 +279,11 @@ async def _embed_listener_impl(
     if custom_css_url and custom_css_url.startswith("https://"):
         safe_custom_css = custom_css_url
 
-    # ── Security headers ─────────────────────────────────────────────────
+    return safe_theme, safe_font, safe_primary, safe_custom_css
+
+
+def _build_embed_frame_policy() -> tuple[str, list[str], str]:
+    """Build the frame-ancestors CSP value, allowed origins list, and postMessage target origin."""
     allowed_origins_list = [o.strip() for o in settings.embed_allowed_origins.split(",") if o.strip()]
 
     if allowed_origins_list:
@@ -306,13 +297,28 @@ async def _embed_listener_impl(
     else:
         postmessage_target_origin = "*"
 
-    response_headers = {
-        "Cache-Control": "no-store, private",
-        "Referrer-Policy": "no-referrer",
-        "Content-Security-Policy": frame_ancestors,
-    }
+    return frame_ancestors, allowed_origins_list, postmessage_target_origin
 
-    context = {
+
+def _build_embed_context(
+    event_slug: str,
+    language_code: str,
+    whep_url: str,
+    caption_url: str,
+    token: str,
+    safe_theme: str,
+    safe_primary: str,
+    safe_font: str,
+    captions: bool,
+    safe_custom_css: str | None,
+    target_lang: str | None,
+    headless: bool,
+    postmessage_target_origin: str,
+    allowed_origins_list: list[str],
+    audio_delay_ms: int,
+) -> dict[str, Any]:
+    """Assemble the Jinja2 context for the embed template."""
+    return {
         "event_slug": event_slug,
         "language_code": language_code,
         "whep_url": whep_url,
@@ -330,6 +336,68 @@ async def _embed_listener_impl(
         "allowed_origins_list": allowed_origins_list,
         "audio_delay_ms": audio_delay_ms,
     }
+
+
+async def _embed_listener_impl(
+    request: Request,
+    event_slug: str,
+    language_code: str,
+    room_id: int | None,
+    token: str,
+    theme: str,
+    primary_color: str,
+    font: str,
+    captions: bool,
+    custom_css_url: str | None,
+    headless: bool,
+    target_lang: str | None,
+):
+    # Authentication
+    _verify_embed_token(token, event_slug)
+
+    # Resolve booth
+    async with get_session() as session:
+        ev = await get_event_by_slug(session, event_slug)
+        if not ev:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event not found.")
+
+        resolved_room_id, audio_delay_ms = await _resolve_embed_room(session, ev, room_id)
+        booth_id, channel_id = await _resolve_embed_channel(session, ev, event_slug, resolved_room_id, language_code)
+
+    whep_url = f"{settings.mediamtx_whip_base}/{channel_id}/whep"
+    host = settings.public_base_url.replace("https://", "").replace("http://", "")
+    caption_url = f"wss://{host}/ws/captions/{booth_id}"
+
+    # Sanitize theming params
+    safe_theme, safe_font, safe_primary, safe_custom_css = _sanitize_embed_theme(
+        theme, font, primary_color, custom_css_url
+    )
+
+    # Security headers
+    frame_ancestors, allowed_origins_list, postmessage_target_origin = _build_embed_frame_policy()
+    response_headers = {
+        "Cache-Control": "no-store, private",
+        "Referrer-Policy": "no-referrer",
+        "Content-Security-Policy": frame_ancestors,
+    }
+
+    context = _build_embed_context(
+        event_slug=event_slug,
+        language_code=language_code,
+        whep_url=whep_url,
+        caption_url=caption_url,
+        token=token,
+        safe_theme=safe_theme,
+        safe_primary=safe_primary,
+        safe_font=safe_font,
+        captions=captions,
+        safe_custom_css=safe_custom_css,
+        target_lang=target_lang,
+        headless=headless,
+        postmessage_target_origin=postmessage_target_origin,
+        allowed_origins_list=allowed_origins_list,
+        audio_delay_ms=audio_delay_ms,
+    )
 
     return templates.TemplateResponse(request=request, name="embed.html", context=context, headers=response_headers)
 
