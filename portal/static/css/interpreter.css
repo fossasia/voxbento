@@ -237,6 +237,19 @@ label {
   display: none !important;
 }
 
+/* Visually hidden but still read by screen readers (e.g. live announcements). */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border-width: 0;
+}
+
 /* ========================================================================== */
 /* ── 3. Interpreter booth redesign ─────────────────────────────────────── */
 /* ========================================================================== */
@@ -1076,8 +1089,13 @@ label {
     min-height: 100vh;
     overflow: visible;
   }
+  /* minmax(0, ...) like the desktop columns: a plain 1fr can't shrink below
+     its content, which pushed the cards off the right edge on phones. */
   .booth-columns {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .deck-controls {
+    flex-wrap: wrap;
   }
   .stage-monitor {
     min-height: 40vh;

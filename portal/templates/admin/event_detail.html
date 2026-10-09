@@ -188,6 +188,7 @@
     <table class="data-table compact">
       <thead>
         <tr>
+          <th>Room</th>
           <th>Language</th>
           <th>Code</th>
           <th>Status</th>
@@ -198,6 +199,7 @@
       <tbody>
         {% for bs in booths %}
         <tr>
+          <td>{{ bs.db.room.display_name }}</td>
           <td>{{ bs.db.language_name }}</td>
           <td><code>{{ bs.db.language_code }}</code></td>
           <td>

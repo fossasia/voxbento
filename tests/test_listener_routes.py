@@ -115,6 +115,23 @@ class TestListenerRoutes:
         assert "listener_code_testcon" in resp.headers["set-cookie"]
 
     @pytest.mark.anyio
+    async def test_listener_status_is_announced(self, seed_event):
+        """Screen reader users must hear when the stream goes live or drops."""
+        event, _, _ = seed_event
+
+        from portal.database import get_session
+
+        async with get_session() as s:
+            db_event = await s.get(type(event), event.id)
+            db_event.listener_join_code = "ROOM42"
+
+        async with _client() as c:
+            resp = await c.get(f"/listener/{event.slug}?code=ROOM42")
+
+        assert resp.status_code == 200
+        assert '<div id="status" role="status">' in resp.text
+
+    @pytest.mark.anyio
     async def test_audio_delay_requires_listener_access(self, seed_event):
         event, room, _ = seed_event
 
