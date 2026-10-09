@@ -12,12 +12,15 @@ from __future__ import annotations
 
 import os
 
+from httpx import ASGITransport, AsyncClient
+
 os.environ["BOOTH_ACCESS_TOKEN"] = ""
 os.environ["ADMIN_PASSWORD"] = "test-admin-pass"
 
 from datetime import datetime, timedelta, timezone
 
 import pytest
+from fastapi.routing import APIRoute
 
 from portal.auth import create_admin_token, decode_token
 from portal.config import settings
@@ -88,6 +91,14 @@ def _client():
     return AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
 
 
+async def _admin_csrf(c, cookies, path="/admin/events/"):
+    resp = await c.get(path, cookies=cookies)
+    assert resp.status_code == 200
+    csrf_token = c.cookies.get("admin_csrf") or resp.cookies.get("admin_csrf")
+    assert csrf_token
+    return csrf_token
+
+
 # ---------------------------------------------------------------------------
 # Login / Logout tests
 # ---------------------------------------------------------------------------
@@ -125,6 +136,47 @@ class TestAdminLogin:
         assert b"Invalid password" in resp.content
 
     @pytest.mark.anyio
+    async def test_login_rotates_admin_csrf_token(self):
+        async with _client() as c:
+            c.cookies.set("admin_csrf", "old-csrf-token")
+
+            resp = await c.post(
+                "/admin/login",
+                data={"password": "test-admin-pass"},
+                follow_redirects=False,
+            )
+
+            assert resp.status_code == 303
+
+            set_cookie = resp.headers.get("set-cookie", "")
+            assert "admin_csrf=" in set_cookie
+            assert "admin_csrf=old-csrf-token" not in set_cookie
+
+    @pytest.mark.anyio
+    async def test_admin_csrf_cookie_secure_flag_matches_request_scheme(self, admin_cookie):
+        from fastapi_app import app
+
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://test",
+        ) as http_client:
+            response = await http_client.get("/admin/events/", cookies=admin_cookie)
+
+        http_set_cookie = response.headers.get("set-cookie")
+        assert "admin_csrf=" in http_set_cookie
+        assert "Secure" not in http_set_cookie
+
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="https://test",
+        ) as https_client:
+            response = await https_client.get("/admin/events/", cookies=admin_cookie)
+
+        https_set_cookie = response.headers.get("set-cookie")
+        assert "admin_csrf=" in https_set_cookie
+        assert "Secure" in https_set_cookie
+
+    @pytest.mark.anyio
     async def test_login_strips_surrounding_whitespace(self):
         async with _client() as c:
             resp = await c.post(
@@ -155,6 +207,53 @@ class TestAdminLogin:
             resp = await c.get("/admin/logout", follow_redirects=False)
         assert resp.status_code == 303
         assert resp.headers["location"] == "/admin/login"
+
+    @pytest.mark.anyio
+    async def test_old_csrf_token_rejected_after_logout_and_login(self):
+        async with _client() as c:
+            first_login = await c.post(
+                "/admin/login",
+                data={"password": "test-admin-pass"},
+                follow_redirects=False,
+            )
+            assert first_login.status_code == 303
+
+            old_csrf = c.cookies.get("admin_csrf")
+            assert old_csrf
+
+            await c.get("/admin/logout", follow_redirects=False)
+
+            second_login = await c.post(
+                "/admin/login",
+                data={"password": "test-admin-pass"},
+                follow_redirects=False,
+            )
+            assert second_login.status_code == 303
+
+            new_csrf = c.cookies.get("admin_csrf")
+            assert new_csrf
+            assert new_csrf != old_csrf
+
+            response = await c.post(
+                "/admin/events/",
+                data={
+                    "slug": "old-csrf",
+                    "display_name": "Old CSRF",
+                    "csrf_token": old_csrf,
+                },
+                follow_redirects=False,
+            )
+            assert response.status_code == 403
+            response = await c.post(
+                "/admin/events/",
+                data={
+                    "slug": "new-csrf",
+                    "display_name": "New CSRF",
+                    "csrf_token": new_csrf,
+                },
+                follow_redirects=False,
+            )
+            assert response.status_code == 303
 
 
 # ---------------------------------------------------------------------------
@@ -263,9 +362,14 @@ class TestEventCRUD:
     @pytest.mark.anyio
     async def test_create_event(self, admin_cookie):
         async with _client() as c:
+            csrf_token = await _admin_csrf(c, admin_cookie)
             resp = await c.post(
                 "/admin/events/",
-                data={"slug": "newcon", "display_name": "NewCon 2026"},
+                data={
+                    "slug": "newcon",
+                    "display_name": "NewCon 2026",
+                    "csrf_token": csrf_token,
+                },
                 cookies=admin_cookie,
                 follow_redirects=False,
             )
@@ -274,6 +378,32 @@ class TestEventCRUD:
         async with _client() as c:
             resp = await c.get("/admin/events/", cookies=admin_cookie)
         assert b"NewCon 2026" in resp.content
+
+    @pytest.mark.anyio
+    async def test_create_event_rejects_missing_or_invalid_csrf(self, admin_cookie):
+        async with _client() as c:
+            missing_csrf = await c.post(
+                "/admin/events/",
+                cookies=admin_cookie,
+                data={
+                    "slug": "missing-csrf",
+                    "display_name": "Missing CSRF",
+                },
+                follow_redirects=False,
+            )
+            assert missing_csrf.status_code == 403
+
+            invalid_csrf = await c.post(
+                "/admin/events/",
+                cookies=admin_cookie,
+                data={
+                    "slug": "invalid-csrf",
+                    "display_name": "Invalid CSRF",
+                    "csrf_token": "invalid-token",
+                },
+                follow_redirects=False,
+            )
+            assert invalid_csrf.status_code == 403
 
     @pytest.mark.anyio
     async def test_event_detail(self, admin_cookie, seed_event):
@@ -295,10 +425,12 @@ class TestEventCRUD:
     async def test_delete_event(self, admin_cookie, seed_event):
         event, _, _ = seed_event
         async with _client() as c:
+            csrf_token = await _admin_csrf(c, admin_cookie)
             resp = await c.post(
                 f"/admin/events/{event.id}/delete",
                 cookies=admin_cookie,
                 follow_redirects=False,
+                data={"csrf_token": csrf_token},
             )
         assert resp.status_code == 303
         # Verify deleted
@@ -311,10 +443,11 @@ class TestEventCRUD:
         """Relay Settings sets rooms.relay_booth_id; the event must still be deletable."""
         event, room, booth = seed_event
         async with _client() as c:
+            csrf_token = await _admin_csrf(c, admin_cookie)
+            c.cookies.update(admin_cookie)
             resp = await c.post(
                 f"/admin/events/{event.id}/rooms/{room.id}/edit",
-                data={"form_section": "relay", "relay_booth_id": str(booth.id)},
-                cookies=admin_cookie,
+                data={"form_section": "relay", "relay_booth_id": str(booth.id), "csrf_token": csrf_token},
                 follow_redirects=False,
             )
             assert resp.status_code == 303
@@ -327,8 +460,10 @@ class TestEventCRUD:
             assert (await get_room_by_id(s, room.id)).relay_booth_id == booth.id
 
         async with _client() as c:
+            csrf_token = await _admin_csrf(c, admin_cookie)
             resp = await c.post(
                 f"/admin/events/{event.id}/delete",
+                data={"csrf_token": csrf_token},
                 cookies=admin_cookie,
                 follow_redirects=False,
             )
@@ -381,11 +516,23 @@ class TestEventCRUD:
 
         cookie = {"user_token": create_user_token(user_id=owner_id, email="owner@example.com")}
         async with _client() as c:
-            legacy = await c.post(f"/admin/events/{event.id}/delete", cookies=cookie, follow_redirects=False)
+            legacy = await c.post(
+                f"/admin/events/{event.id}/delete",
+                cookies=cookie,
+                follow_redirects=False,
+            )
             assert legacy.status_code == 307
             assert legacy.headers["location"] == f"/workspace/events/{event.id}/delete"
-            resp = await c.post(legacy.headers["location"], cookies=cookie, follow_redirects=False)
-        assert resp.status_code == 303
+
+            csrf_token = await _admin_csrf(c, cookie, "/workspace/events/")
+            resp = await c.post(
+                legacy.headers["location"],
+                cookies=cookie,
+                data={"csrf_token": csrf_token},
+                follow_redirects=False,
+            )
+            assert resp.status_code == 303
+
         async with get_session() as s:
             assert await get_event_by_id(s, event.id) is None
 
@@ -429,9 +576,10 @@ class TestRoomCRUD:
         event, _, _ = seed_event
         # Create an additional room to test search filtering
         async with _client() as c:
+            csrf_token = await _admin_csrf(c, admin_cookie)
             await c.post(
                 f"/admin/events/{event.id}/rooms/",
-                data={"display_name": "Workshop Room"},
+                data={"display_name": "Workshop Room", "csrf_token": csrf_token},
                 cookies=admin_cookie,
                 follow_redirects=False,
             )
@@ -462,9 +610,10 @@ class TestRoomCRUD:
 
         # Create a room with display_name containing a literal backslash
         async with _client() as c:
+            csrf_token = await _admin_csrf(c, admin_cookie)
             await c.post(
                 f"/admin/events/{event.id}/rooms/",
-                data={"display_name": "Backslash \\ Room"},
+                data={"display_name": "Backslash \\ Room", "csrf_token": csrf_token},
                 cookies=admin_cookie,
                 follow_redirects=False,
             )
@@ -487,9 +636,10 @@ class TestRoomCRUD:
     async def test_create_room(self, admin_cookie, seed_event):
         event, _, _ = seed_event
         async with _client() as c:
+            csrf_token = await _admin_csrf(c, admin_cookie)
             resp = await c.post(
                 f"/admin/events/{event.id}/rooms/",
-                data={"display_name": "Track B"},
+                data={"display_name": "Track B", "csrf_token": csrf_token},
                 cookies=admin_cookie,
                 follow_redirects=False,
             )
@@ -534,9 +684,117 @@ class TestRoomCRUD:
         assert b'name="audio_delay_ms"' in resp.content
 
     @pytest.mark.anyio
+    async def test_nllb_model_download_workflow_requires_and_uses_csrf(self, admin_cookie, seed_event, monkeypatch):
+        event, room, _ = seed_event
+
+        from portal.translations.providers import local
+
+        triggered_models = []
+        monkeypatch.setattr(
+            local,
+            "trigger_download",
+            lambda model: triggered_models.append(model),
+        )
+
+        async with _client() as c:
+            c.cookies.update(admin_cookie)
+
+            page = await c.get(
+                f"/admin/events/{event.id}/rooms/{room.id}/",
+            )
+            assert page.status_code == 200
+            assert b'<meta name="csrf-token"' in page.content
+
+            csrf_token = c.cookies.get("admin_csrf")
+            assert csrf_token
+
+            settings_response = await c.post(
+                f"/admin/events/{event.id}/rooms/{room.id}/edit",
+                data={
+                    "csrf_token": csrf_token,
+                    "form_section": "translation",
+                    "floor_translation_provider": "local",
+                    "floor_translation_model": "nllb-200-distilled-600M",
+                },
+                cookies=admin_cookie,
+                follow_redirects=True,
+            )
+            assert settings_response.status_code == 200, settings_response.text
+
+            download_response = await c.post(
+                "/admin/models/trigger_download",
+                headers={"X-CSRF-Token": csrf_token},
+                json={"model": "nllb-200-distilled-600M"},
+            )
+            assert download_response.status_code == 200
+            assert download_response.json() == {"status": "started"}
+
+            progress_response = await c.get(
+                "/admin/models/download_progress",
+                params={"model": "nllb-200-distilled-600M"},
+            )
+            assert progress_response.status_code == 200, progress_response.text
+
+        assert triggered_models == ["nllb-200-distilled-600M"]
+
+    @pytest.mark.anyio
+    async def test_supertonic_model_download_workflow_requires_and_uses_csrf(
+        self, admin_cookie, seed_event, monkeypatch
+    ):
+        event, room, _ = seed_event
+
+        from portal.tts.providers import supertonic
+
+        triggered = []
+        monkeypatch.setattr(
+            supertonic,
+            "trigger_supertonic_download",
+            lambda: triggered.append(True),
+        )
+
+        async with _client() as c:
+            c.cookies.update(admin_cookie)
+
+            page = await c.get(
+                f"/admin/events/{event.id}/rooms/{room.id}/",
+            )
+            assert page.status_code == 200
+            assert b'<meta name="csrf-token"' in page.content
+
+            csrf_token = c.cookies.get("admin_csrf")
+            assert csrf_token
+
+            settings_response = await c.post(
+                f"/admin/events/{event.id}/rooms/{room.id}/edit",
+                data={
+                    "csrf_token": csrf_token,
+                    "form_section": "tts",
+                    "floor_tts_provider": "supertonic",
+                    "floor_tts_voice": "M1",
+                },
+                follow_redirects=True,
+            )
+            assert settings_response.status_code == 200, settings_response.text
+
+            download_response = await c.post(
+                "/admin/models/supertonic/trigger_download",
+                headers={"X-CSRF-Token": csrf_token},
+            )
+            assert download_response.status_code == 200
+            assert download_response.json() == {"status": "started"}
+
+            progress_response = await c.get(
+                "/admin/models/supertonic/download_progress",
+            )
+            assert progress_response.status_code == 200
+
+        assert triggered == [True]
+
+    @pytest.mark.anyio
     async def test_update_room_audio_delay(self, admin_cookie, seed_event):
         event, room, _ = seed_event
         async with _client() as c:
+            csrf_token = await _admin_csrf(c, admin_cookie)
             resp = await c.post(
                 f"/admin/events/{event.id}/rooms/{room.id}/edit",
                 data={
@@ -544,6 +802,7 @@ class TestRoomCRUD:
                     "jitsi_url": "",
                     "relay_booth_id": "none",
                     "audio_delay_ms": "2500",
+                    "csrf_token": csrf_token,
                 },
                 cookies=admin_cookie,
                 follow_redirects=False,
@@ -561,6 +820,7 @@ class TestRoomCRUD:
     async def test_update_room_audio_delay_rejects_out_of_range(self, admin_cookie, seed_event):
         event, room, _ = seed_event
         async with _client() as c:
+            csrf_token = await _admin_csrf(c, admin_cookie)
             resp = await c.post(
                 f"/admin/events/{event.id}/rooms/{room.id}/edit",
                 data={
@@ -568,6 +828,7 @@ class TestRoomCRUD:
                     "jitsi_url": "",
                     "relay_booth_id": "none",
                     "audio_delay_ms": "10001",
+                    "csrf_token": csrf_token,
                 },
                 cookies=admin_cookie,
                 follow_redirects=False,
@@ -618,10 +879,12 @@ class TestRoomCRUD:
     async def test_delete_room(self, admin_cookie, seed_event):
         event, room, _ = seed_event
         async with _client() as c:
+            csrf_token = await _admin_csrf(c, admin_cookie)
             resp = await c.post(
                 f"/admin/events/{event.id}/rooms/{room.id}/delete",
                 cookies=admin_cookie,
                 follow_redirects=False,
+                data={"csrf_token": csrf_token},
             )
         assert resp.status_code == 303
 
@@ -647,9 +910,10 @@ class TestBoothCRUD:
     async def test_create_booth(self, admin_cookie, seed_event):
         event, room, _ = seed_event
         async with _client() as c:
+            csrf_token = await _admin_csrf(c, admin_cookie)
             resp = await c.post(
                 f"/admin/events/{event.id}/rooms/{room.id}/booths/",
-                data={"language_code": "fr", "language_name": "French"},
+                data={"language_code": "fr", "language_name": "French", "csrf_token": csrf_token},
                 cookies=admin_cookie,
                 follow_redirects=False,
             )
@@ -717,6 +981,7 @@ class TestBoothCRUD:
                 f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/delete",
                 cookies=admin_cookie,
                 follow_redirects=False,
+                data={"csrf_token": await _admin_csrf(c, admin_cookie)},
             )
         assert resp.status_code == 303
 
@@ -727,9 +992,14 @@ class TestBoothCRUD:
 
         event, room, booth = seed_event
         async with _client() as c:
+            csrf_token = await _admin_csrf(c, admin_cookie)
             resp = await c.post(
                 f"/admin/events/{event.id}/rooms/{room.id}/edit",
-                data={"form_section": "relay", "relay_booth_id": str(booth.id)},
+                data={
+                    "form_section": "relay",
+                    "relay_booth_id": str(booth.id),
+                    "csrf_token": csrf_token,
+                },
                 cookies=admin_cookie,
                 follow_redirects=False,
             )
@@ -738,9 +1008,11 @@ class TestBoothCRUD:
             assert (await get_room_by_id(s, room.id)).relay_booth_id == booth.id
 
         async with _client() as c:
+            csrf_token = await _admin_csrf(c, admin_cookie)
             resp = await c.post(
                 f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/delete",
                 cookies=admin_cookie,
+                data={"csrf_token": csrf_token},
                 follow_redirects=False,
             )
         assert resp.status_code == 303
@@ -776,12 +1048,18 @@ class TestBoothCRUD:
         assert relay_id > own_id
 
         async with _client() as c:
-            await c.post(
+            csrf_token = await _admin_csrf(c, admin_cookie)
+            resp = await c.post(
                 f"/admin/events/{event.id}/rooms/{room.id}/edit",
-                data={"form_section": "relay", "relay_booth_id": str(relay_id)},
+                data={
+                    "form_section": "relay",
+                    "relay_booth_id": str(relay_id),
+                    "csrf_token": csrf_token,
+                },
                 cookies=admin_cookie,
                 follow_redirects=False,
             )
+            assert resp.status_code == 303
         session_cookie = {
             "session_token": create_participant_token(
                 booth_id=own_id,
@@ -794,21 +1072,28 @@ class TestBoothCRUD:
         async with _client() as c:
             page = await c.get(f"/interpreter/{event.slug}/{room.id}/en", cookies=session_cookie)
         assert resolve_relay_attr(page.text) != "", "relay was never configured, so nothing is proven"
-
         async with _client() as c:
+            csrf_token = await _admin_csrf(c, admin_cookie)
             resp = await c.post(
                 f"/admin/events/{event.id}/rooms/{room.id}/booths/{relay_id}/delete",
                 cookies=admin_cookie,
+                data={"csrf_token": csrf_token},
                 follow_redirects=False,
             )
             assert resp.status_code == 303
             # a booth added to the other room can take the freed rowid
-            await c.post(
+            csrf_token = await _admin_csrf(c, admin_cookie)
+            resp = await c.post(
                 f"/admin/events/{event.id}/rooms/{other_room_id}/booths/",
-                data={"language_code": "fr", "language_name": "French"},
+                data={
+                    "language_code": "fr",
+                    "language_name": "French",
+                    "csrf_token": csrf_token,
+                },
                 cookies=admin_cookie,
                 follow_redirects=False,
             )
+            assert resp.status_code == 303
         async with get_session() as s:
             new_booth = (await list_booths_for_room(s, other_room_id))[0]
             assert (await get_room_by_id(s, room.id)).relay_booth_id is None
@@ -958,11 +1243,29 @@ class TestAPIKeyCRUD:
 
             # Initially empty
             res = await c.get(f"/workspace/api/events/{event_id}/api-keys")
-            assert res.status_code == 200
+            assert res.status_code == 200, res.headers.get("location")
             assert res.json() == []
+            csrf_token = await _admin_csrf(c, {"user_token": token}, "/workspace/events/")
+
+            res_no_csrf = await c.post(
+                f"/workspace/api/events/{event_id}/api-keys",
+                json={"name": "No CSRF"},
+            )
+            assert res_no_csrf.status_code == 403
+
+            res_invalid_csrf = await c.post(
+                f"/workspace/api/events/{event_id}/api-keys",
+                json={"name": "Invalid CSRF"},
+                headers={"X-CSRF-Token": "invalid-token"},
+            )
+            assert res_invalid_csrf.status_code == 403
 
             # Create API key
-            res = await c.post(f"/workspace/api/events/{event_id}/api-keys", json={"name": "Integration Key"})
+            res = await c.post(
+                f"/workspace/api/events/{event_id}/api-keys",
+                json={"name": "Integration Key"},
+                headers={"X-CSRF-Token": csrf_token},
+            )
             assert res.status_code == 200
             data = res.json()
             assert data["name"] == "Integration Key"
@@ -972,12 +1275,20 @@ class TestAPIKeyCRUD:
             key_id = data["id"]
 
             # Prevent duplicate name
-            res_dup = await c.post(f"/workspace/api/events/{event_id}/api-keys", json={"name": "Integration Key"})
+            res_dup = await c.post(
+                f"/workspace/api/events/{event_id}/api-keys",
+                json={"name": "Integration Key"},
+                headers={"X-CSRF-Token": csrf_token},
+            )
             assert res_dup.status_code == 400
             assert "already exists" in res_dup.json()["detail"]
 
             # Prevent blank name
-            res_blank = await c.post(f"/workspace/api/events/{event_id}/api-keys", json={"name": "   "})
+            res_blank = await c.post(
+                f"/workspace/api/events/{event_id}/api-keys",
+                json={"name": "   "},
+                headers={"X-CSRF-Token": csrf_token},
+            )
             assert res_blank.status_code == 400
             assert "cannot be blank" in res_blank.json()["detail"]
 
@@ -991,7 +1302,10 @@ class TestAPIKeyCRUD:
             assert "raw_key" not in keys[0]
 
             # Revoke key
-            res_del = await c.delete(f"/workspace/api/events/{event_id}/api-keys/{key_id}")
+            res_del = await c.delete(
+                f"/workspace/api/events/{event_id}/api-keys/{key_id}",
+                headers={"X-CSRF-Token": csrf_token},
+            )
             assert res_del.status_code == 200
 
             # List keys (should be empty again)
@@ -1001,7 +1315,9 @@ class TestAPIKeyCRUD:
 
             # Duplicate name is now allowed since the old one is revoked
             res_remake = await c.post(
-                f"/workspace/api/events/{event_id}/api-keys", json={"name": "Integration Key"}
+                f"/workspace/api/events/{event_id}/api-keys",
+                json={"name": "Integration Key"},
+                headers={"X-CSRF-Token": csrf_token},
             )
             assert res_remake.status_code == 200
             assert res_remake.json()["name"] == "Integration Key"
@@ -1451,6 +1767,28 @@ async def test_admin_detail_pages_have_no_inline_styles(path, admin_cookie, seed
     # The API key modals keep style="display: none", which admin.js toggles.
     body = resp.content.replace(b'style="display: none;"', b"")
     assert not re.search(rb"\sstyle\s*=", body, re.IGNORECASE)
+
+
+@pytest.mark.anyio
+async def test_all_state_changing_admin_routes_require_csrf():
+    from fastapi_app import app
+    from portal.auth import require_admin_csrf
+
+    state_changing_methods = {"POST", "PUT", "PATCH", "DELETE"}
+
+    for route in app.routes:
+        if not isinstance(route, APIRoute):
+            continue
+        if not route.path.startswith("/admin/"):
+            continue
+        if not route.methods & state_changing_methods:
+            continue
+        if route.path == "/admin/login":
+            continue
+
+        assert any(dependency.call is require_admin_csrf for dependency in route.dependant.dependencies), (
+            f"Missing CSRF protection: {route.methods} {route.path}"
+        )
 
 
 @pytest.mark.anyio

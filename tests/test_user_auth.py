@@ -28,7 +28,11 @@ async def setup_db():
 
 @pytest.fixture
 def admin_cookie():
-    return {"admin_token": create_admin_token()}
+    csrf_token = "test-csrf-token"
+    return {
+        "admin_token": create_admin_token(),
+        "admin_csrf": csrf_token,
+    }
 
 
 def _client():
@@ -361,7 +365,7 @@ class TestAdminUserManagement:
         async with _client() as c:
             resp = await c.post(
                 f"/admin/events/{event.id}/members/",
-                data={"email": user.email, "role": "interpreter"},
+                data={"email": user.email, "role": "interpreter", "csrf_token": admin_cookie["admin_csrf"]},
                 cookies=admin_cookie,
                 follow_redirects=False,
             )
@@ -380,6 +384,7 @@ class TestAdminUserManagement:
         async with _client() as c:
             resp = await c.post(
                 f"/admin/users/{user.id}/toggle-active",
+                data={"csrf_token": admin_cookie["admin_csrf"]},
                 cookies=admin_cookie,
                 follow_redirects=False,
             )
@@ -396,6 +401,7 @@ class TestAdminUserManagement:
         async with _client() as c:
             resp = await c.post(
                 f"/admin/users/{user.id}/delete",
+                data={"csrf_token": admin_cookie["admin_csrf"]},
                 cookies=admin_cookie,
                 follow_redirects=False,
             )

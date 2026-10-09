@@ -5,7 +5,7 @@ import logging
 from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
 
-from portal.auth import require_super_admin
+from portal.auth import require_admin_csrf, require_super_admin
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +46,10 @@ async def demo_manifest() -> JSONResponse:
     )
 
 
-@router.post("/admin/demo/regenerate", dependencies=[Depends(require_super_admin)])
+@router.post(
+    "/admin/demo/regenerate",
+    dependencies=[Depends(require_super_admin), Depends(require_admin_csrf)],
+)
 async def regenerate_demo() -> JSONResponse:
     """Re-generate the demo audio assets (admin only). Runs in the background."""
     import asyncio
