@@ -75,7 +75,23 @@ These variables configure how Voxbento talks to MediaMTX and other local Docker 
 | `MEDIAMTX_API_BASE` | `http://localhost:9997` | MediaMTX Control API URL. |
 | `MEDIAMTX_RTSP_BASE` | `rtsp://mediamtx:8554` | Internal RTSP URL for floor audio transcription. |
 | `FLOOR_BOT_BASE` | `http://floor-bot:8080` | URL for the floor-bot container. |
+| `MEDIAMTX_AUTH_HOOK_SECRET` | _(empty)_ | Shared secret MediaMTX appends as `?key=` when calling the portal's publish authorization hook (`/internal/mediamtx/auth`). Compose passes it to both containers. **Required when `DEBUG` is false** — the portal refuses to start without it. Generate with `openssl rand -hex 32`. In debug mode an empty value lets any caller use the hook. |
 | `JITSI_INTERNAL_BASE` | `https://jitsi-web:8443` in Compose | Internal HTTPS URL used by the floor bot. Jitsi `stable-11146` and newer listen on the unprivileged container port `8443`. |
+
+## Program Stream Ingest Variables
+
+These tune [Program Stream Ingest](../admin/program-stream-ingest). All are optional.
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `PROGRAM_INGEST_PUBLIC_BASE` | `MEDIAMTX_WHIP_BASE` | Public base URL shown to organizers as the encoder's WHIP server. |
+| `PROGRAM_INGEST_PROTOCOLS` | `webrtc` | Comma-separated MediaMTX protocols accepted for program ingest. Add `rtmp` or `srt` only after enabling RTMPS or SRT encryption in MediaMTX. |
+| `PROGRAM_INGEST_MAX_ACTIVE` | `4` | Maximum rooms receiving a program feed at the same time. |
+| `PROGRAM_INGEST_POLL_SECONDS` | `2` | How often the supervisor checks MediaMTX path state. |
+| `PROGRAM_INGEST_DISCONNECT_GRACE_SECONDS` | `15` | How long the floor transcription worker is kept after the encoder disconnects. |
+| `PROGRAM_INGEST_STALL_SECONDS` | `10` | Seconds without new media before a connected feed is reported as degraded. |
+| `PROGRAM_INGEST_AUTH_MAX_FAILURES` | `10` | Failed program-ingest publishes allowed per client IP per window. |
+| `PROGRAM_INGEST_AUTH_FAILURE_WINDOW_SECONDS` | `300` | Window for the failure limit above. |
 
 ## Jitsi Internal Auth Variables
 

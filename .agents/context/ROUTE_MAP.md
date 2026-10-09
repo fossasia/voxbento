@@ -44,6 +44,8 @@
 | GET | `/api/events/{event_slug}/booths/{language_code}/state` | token/Bearer | booth state dict | 404 if booth not in memory |
 | GET | `/api/events/{event_slug}/booths/{language_code}/whip-url` | token/Bearer | `{whip_url, channel_id, booth_id}` | Validates event ownership first |
 | GET | `/api/interpreter/status/{channel_id:path}` | open | `{channel_id, state, reachable}` | MediaMTX reachability (preflight check) |
+| POST | `/api/rooms/{room_id}/floor-transcription/start` | room event access | `{status}` | Starts floor bot + floor worker; **409** while the room's floor source is `program_ingest` |
+| POST | `/internal/mediamtx/auth` | MediaMTX shared key (`?key=`) | `200` / bare `401` | MediaMTX `authMethod: http` publish hook (`portal/routers/internal.py`). Floor paths accept only the room's floor source; blocked at Caddy; key redacted from access logs |
 
 ---
 
@@ -80,6 +82,11 @@ Legacy organizer requests to allowlisted event-management paths under `/admin/`,
 | GET | `/admin/events/{event_id}/rooms/{room_id}/` | `admin/room_detail.html` | Room + booths |
 | POST | `/admin/events/{event_id}/rooms/{room_id}/edit` | — | Updates jitsi_url + relay_booth_id |
 | POST | `/admin/events/{event_id}/rooms/{room_id}/delete` | — | Deletes room |
+| GET | `…/rooms/{room_id}/program-ingest/status` | — | Event owner; JSON ingest state, codecs, timestamps, credential hint, warnings (never the secret); `no-store` |
+| POST | `…/rooms/{room_id}/program-ingest/mode` | — | Event owner; form `floor_source_mode` = `jitsi_bot`\|`program_ingest`; hands the floor path over (stops bot/worker, kicks publisher) |
+| POST | `…/rooms/{room_id}/program-ingest/credential` | — | Event owner; JSON `{expires_in_days}`; returns the publish secret **once**; rotation kicks the current publisher |
+| POST | `…/rooms/{room_id}/program-ingest/credential/revoke` | — | Event owner; clears the secret and kicks the publisher |
+| POST | `…/rooms/{room_id}/program-ingest/sync-offset` | — | Event owner; form `program_sync_offset_ms` (0–30000) |
 | GET | `/admin/events/{event_id}/rooms/{room_id}/booths/` | `admin/booth_list.html` | — |
 | POST | `/admin/events/{event_id}/rooms/{room_id}/booths/` | — | Creates DBBooth |
 | GET | `/admin/events/{event_id}/rooms/{room_id}/booths/{booth_id}/` | `admin/booth_detail.html` | DB + live state, tokens, members |
@@ -105,7 +112,9 @@ Legacy organizer requests to allowlisted event-management paths under `/admin/`,
 
 | Module | Owns |
 |---|---|
-| `portal/routers/public.py` | Home page, health check, registration |
+| `portal/routers/public.py` | Home page, health check (incl. `program_ingest` counters), registration |
+| `portal/routers/program_ingest.py` | Room Program Stream Ingest management (event owners) |
+| `portal/routers/internal.py` | Service-to-service hooks (`/internal/*`), never exposed publicly |
 | `portal/routers/auth.py` | Login, logout, invite-token validation, and user profile page |
 | `portal/routers/interpreter.py` | Booth UI route |
 | `portal/routers/listener.py` | WHEP listener UI route |

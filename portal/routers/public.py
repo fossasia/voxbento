@@ -24,6 +24,7 @@ from portal.database import (
 )
 from portal.email_sender import send_demo_request_email
 from portal.globals import _JS_CACHE_BUST, booths
+from portal.program_ingest.supervisor import supervisor as program_ingest_supervisor
 from portal.utils import _check_mediamtx
 
 _BASE_DIR = Path(__file__).resolve().parent.parent
@@ -284,6 +285,7 @@ async def healthz() -> dict:
         "ok": True,
         "server": "fastapi",
         "mediamtx_ok": await _check_mediamtx(),
+        "program_ingest": program_ingest_supervisor.metrics(),
     }
 
 

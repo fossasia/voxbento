@@ -21,6 +21,7 @@ from portal.database import (
     list_rooms_for_event,
 )
 from portal.globals import _JS_CACHE_BUST
+from portal.models import FLOOR_SOURCE_PROGRAM_INGEST
 from portal.utils import _ensure_mediamtx_path
 
 # Allowlists for embed theming params — no free-text values accepted.
@@ -151,11 +152,18 @@ async def listen_event_page(request: Request, event_slug: str, code: str | None 
                     "channel_id": channel_id,
                     "whep_url": f"{settings.mediamtx_whip_base}/{channel_id}/whep",
                     "audio_delay_ms": r.audio_delay_ms,
+                    # Delays floor captions/TTS to match a slower parallel YouTube playback.
+                    "sync_offset_ms": (
+                        r.program_sync_offset_ms if r.floor_source_mode == FLOOR_SOURCE_PROGRAM_INGEST else 0
+                    ),
                     "translation_enabled": r.floor_translation_enabled,
                     "translation_languages": lang_data,
                 }
             )
-            ensure_tasks.append(_ensure_mediamtx_path(channel_id))
+            # Program ingest feeds carry the encoder's own tracks (often video +
+            # AAC/Opus); an Opus-only alwaysAvailable config would not match them.
+            if r.floor_source_mode != FLOOR_SOURCE_PROGRAM_INGEST:
+                ensure_tasks.append(_ensure_mediamtx_path(channel_id))
 
     if ensure_tasks:
         await asyncio.gather(*ensure_tasks)

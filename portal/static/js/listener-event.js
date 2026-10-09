@@ -31,6 +31,10 @@ var ttsWs = null;
 var audioCtx = null;
 var nextStartTime = 0;
 var currentAudioDelayMs = 0;
+// Program Stream Ingest sync offset: floor captions and TTS are held back by
+// this many ms so they line up with a slower parallel YouTube playback.
+var currentSyncOffsetMs = 0;
+var MAX_SYNC_OFFSET_MS = 30000;
 var currentRoomId = null;
 var currentSourceType = null;
 /** @type {ReturnType<typeof window.AudioScheduler.create>|null} */
@@ -84,6 +88,24 @@ function normalizeAudioDelayMs(value) {
   return Math.min(delayMs, 10000);
 }
 
+function normalizeSyncOffsetMs(value) {
+  var offsetMs = parseInt(value || 0, 10);
+  if (!Number.isFinite(offsetMs) || offsetMs < 0) return 0;
+  return Math.min(offsetMs, MAX_SYNC_OFFSET_MS);
+}
+
+// Deliver a socket message after the sync offset, preserving arrival order
+// (equal delays fire in order) and dropping it if the socket was replaced.
+function deliverWithSyncOffset(isCurrentSocket, handler, event) {
+  if (currentSyncOffsetMs <= 0) {
+    handler(event);
+    return;
+  }
+  setTimeout(function () {
+    if (isCurrentSocket()) handler(event);
+  }, currentSyncOffsetMs);
+}
+
 function stopCurrentStream() {
   WhepListener.stop();
   stopTtsWs();
@@ -91,6 +113,7 @@ function stopCurrentStream() {
   pendingWhepUrl = null;
   pendingAudioDelayMs = 0;
   currentAudioDelayMs = 0;
+  currentSyncOffsetMs = 0;
   pendingTtsLang = null;
   pendingRoomId = null;
   currentRoomId = null;
@@ -155,10 +178,21 @@ function startTtsWs(roomId, langCode, boothId, audioDelayMs) {
     langCode +
     "/" +
     boothId;
-  ttsWs = new WebSocket(wsUrl);
+  var socket = new WebSocket(wsUrl);
+  ttsWs = socket;
   ttsWs.binaryType = "arraybuffer";
 
   ttsWs.onmessage = function (event) {
+    deliverWithSyncOffset(
+      function () {
+        return ttsWs === socket;
+      },
+      handleTtsFrame,
+      event,
+    );
+  };
+
+  function handleTtsFrame(event) {
     if (event.data instanceof ArrayBuffer) {
       try {
         var frame = window.TTSParser.parseFrame(event.data);
@@ -217,7 +251,7 @@ function startTtsWs(roomId, langCode, boothId, audioDelayMs) {
         console.error("TTS parsing failed", e);
       }
     }
-  };
+  }
 
   ttsWs.onclose = function () {
     // closed
@@ -279,10 +313,19 @@ function startWhepAndCaptions(whepUrl, boothId, audioDelayMs) {
 function openCaptionsWs(boothId) {
   if (!boothId) return;
   var wsProto = window.location.protocol === "https:" ? "wss:" : "ws:";
-  captionsWs = new WebSocket(
+  var socket = new WebSocket(
     wsProto + "//" + window.location.host + "/ws/captions/" + boothId,
   );
-  captionsWs.onmessage = handleCaptionsMessage;
+  captionsWs = socket;
+  captionsWs.onmessage = function (event) {
+    deliverWithSyncOffset(
+      function () {
+        return captionsWs === socket;
+      },
+      handleCaptionsMessage,
+      event,
+    );
+  };
 }
 
 function renderItem(data) {
@@ -886,6 +929,10 @@ languageSelect.addEventListener("change", function () {
   );
   currentRoomId = roomId || null;
   currentSourceType = "whep";
+  currentSyncOffsetMs =
+    languageCode === "floor" && sourceData
+      ? normalizeSyncOffsetMs(sourceData.sync_offset_ms)
+      : 0;
 
   if (whepUrl) {
     if (boothId && languageCode) {

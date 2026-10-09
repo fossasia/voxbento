@@ -50,6 +50,13 @@ voxbento.com {
         reverse_proxy localhost:8889
     }
 
+    # ── Internal service hooks ────────────────────────────────────────────────
+    # /internal/* (e.g. the MediaMTX publish auth hook) is called container to
+    # container only and must never be reachable from the internet.
+    handle /internal/* {
+        respond 404
+    }
+
     # ── FastAPI portal (catch-all) ────────────────────────────────────────────
     reverse_proxy localhost:8000
 }

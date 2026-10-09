@@ -58,6 +58,7 @@ jobs:
           node --check portal/static/js/interpreter-booth.js
           node --check portal/static/js/whep-listener.js
           node --check portal/static/js/admin.js
+          node --check portal/static/js/program-ingest.js
 
       - name: Run unit tests
         run: uv run pytest tests/ -v
@@ -76,6 +77,7 @@ jobs:
       MEDIAMTX_API_PORT: 9997
       JITSI_HTTP_PORT: 8080
       SECRET_KEY: ci-test-secret-key-not-for-production
+      MEDIAMTX_AUTH_HOOK_SECRET: ci-test-mediamtx-hook-secret
       BOOTH_ACCESS_TOKEN: ci-test-token
       JVB_ADVERTISE_IPS: 127.0.0.1
       JITSI_DOMAIN: localhost:8080

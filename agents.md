@@ -77,13 +77,17 @@ VoxBento is a production-grade **browser-first interpretation booth console** fo
 | `portal/roles.py` | `Permission` enum, `ROLE_PERMISSIONS` dict, `ALL_ROLES` set, `_ROLE_RANK` |
 | `portal/crypto.py` | `encrypt_val` / `decrypt_val` (Fernet, SHA-256 key derivation) |
 | `portal/transcription/` | Transcription subsystem — see `TRANSCRIPTION_MAP.md` |
+| `portal/transcription/floor.py` | Room floor worker helpers (`floor_booth_id`, start/stop, readiness check) shared by every floor source |
+| `portal/program_ingest/` | Program Stream Ingest: credentials (`credentials.py`), MediaMTX publish authorization (`publish_auth.py`), Control API adapter (`mediamtx.py`), status supervisor (`supervisor.py`) |
+| `portal/routers/program_ingest.py` | Event-owner routes for floor source mode, ingest secret rotate/revoke, sync offset, status |
+| `portal/routers/internal.py` | `/internal/mediamtx/auth` — MediaMTX `authMethod: http` hook (never public) |
 | `portal/templates/` | Jinja2 HTML — `base.html`, `interpreter_booth.html`, `listener-event.html`, `admin/` |
 | `portal/static/js/interpreter-booth.js` | Booth UI — WebRTC/WHIP, WebSocket, Jitsi iframe, mic controls, level meter |
 | `portal/static/js/whep-listener.js` | WHEP playback client — RTCPeerConnection, auto-reconnect with exponential back-off |
 | `portal/static/js/admin.js` | Admin panel JS helpers |
-| `mediamtx.yml` | MediaMTX config — WHIP/WHEP paths, RTSP, Control API, `overridePublisher` |
+| `mediamtx.yml` | MediaMTX config — WHIP/WHEP paths, RTSP, Control API, `overridePublisher`, portal-backed publish auth |
 | `docker-compose.yml` | portal + mediamtx + jitsi-web/prosody/jicofo/jvb |
-| `alembic/versions/` | 8 migrations (001–008); run `uv run alembic upgrade head` |
+| `alembic/versions/` | Sequential migrations (001–025); run `uv run alembic upgrade head` |
 
 ---
 
@@ -91,7 +95,7 @@ VoxBento is a production-grade **browser-first interpretation booth console** fo
 
 1. **One active publisher per language channel.** MediaMTX enforces `overridePublisher: yes`; Python enforces via `BoothRegistry`.
 2. **Interpreter mic audio never routes to `AudioContext.destination`.** No local loopback.
-3. **No OBS/RTMP/external encoder.** Browser-only ingest via WHIP.
+3. **Interpreter ingest is browser-only.** Interpreters publish via browser WHIP — no OBS/RTMP for booths. The only external-encoder input is room-level Program Stream Ingest to the floor path (see 13).
 4. **Jitsi is monitoring only** — receive-only iframe. Not the ingest transport.
 5. **No framework.** Frontend is plain ES modules in `portal/static/js/`. No Vue, React, jQuery, inline `<script>` blocks.
 6. **No Flask, Socket.IO, aiortc.**
@@ -101,6 +105,8 @@ VoxBento is a production-grade **browser-first interpretation booth console** fo
 10. **Role is never trusted from client data.** WS handler reads `Session.granted_role` (derived from cookies at connect time).
 11. **No open redirects.** All redirects use `safe_redirect()` which validates path starts with `/` and has no netloc.
 12. **Management namespaces reflect privilege.** Event owners use `/workspace/*`; room coordinators use the room-scoped `/mission-control/*` surface. `/admin/*` is reserved for super-admin use, apart from legacy room-scoped coordinator handlers retained for compatibility. Legacy event-owner URLs redirect without changing OAuth routes or token behavior.
+13. **One floor source per room.** `Room.floor_source_mode` (`jitsi_bot` | `program_ingest`) decides who may publish `{event_slug}/{room_id}/floor`; the portal's MediaMTX publish hook (`/internal/mediamtx/auth`) enforces it. Never rely on `overridePublisher` to pick between the floor bot and an encoder, and never start the floor bot while program ingest owns the room.
+14. **Program ingest secrets are shown once.** Only a bcrypt hash is stored; never log, render, or return the secret after creation.
 
 ---
 

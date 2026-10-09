@@ -1,0 +1,156 @@
+---
+title: "Program Stream Ingest — Voxbento"
+sidebarTitle: "Program Stream Ingest"
+description: "Send your produced program from OBS or another encoder to Voxbento in parallel with YouTube, and get floor captions, translations, and translated speech from it."
+---
+
+Program Stream Ingest lets an event owner send the **same live program feed** they already stream to YouTube to Voxbento as well. Voxbento uses its copy as the room's floor source for source-language captions, translated captions, and translated text-to-speech (TTS). It never opens, scrapes, or screen-captures the YouTube player, and it never needs your YouTube stream key.
+
+```
+                         ┌──→ YouTube   (YouTube ingest URL + key)
+OBS / vMix / encoder ────┤
+                         └──→ Voxbento  (Voxbento WHIP URL + publish secret)
+```
+
+YouTube stays independent: if Voxbento's language pipeline fails, or you stop Voxbento entirely, the public YouTube broadcast carries on.
+
+:::tip When to use it
+Use Program Stream Ingest for produced events, pre-recorded or mixed content, and anything you are already broadcasting. Keep the **Jitsi floor bot** for ordinary meetings where speakers join a Jitsi room. Program ingest also avoids the failure mode where a headless Jitsi participant opens a YouTube embed and is shown YouTube's anti-bot challenge.
+:::
+
+## How it fits the pipeline
+
+Program ingest only changes **who publishes** the room's floor audio. Everything downstream is the existing floor pipeline:
+
+```
+Encoder ──WHIP (HTTPS + DTLS-SRTP)──▶ MediaMTX path {event_slug}/{room_id}/floor
+          (publish authorized by the portal)
+                 │
+                 ▼  worker-owned ffmpeg RTSP reader (video ignored, audio → 16 kHz PCM)
+          transcription provider → caption aggregator
+                 │  partial captions immediately; final segments get a stable segment id + seq
+                 ├─▶ transcript storage + /ws/captions
+                 └─▶ translation fan-out (per enabled target language, lazily)
+                          └─▶ translated text first, then synthesized audio (same segment id + seq)
+```
+
+Your room's transcription provider, model, source language, translation provider/model, target languages, and TTS settings all apply unchanged.
+
+## Floor source ownership
+
+Each room has exactly one **floor source**:
+
+| Mode | Who may publish `{event_slug}/{room_id}/floor` |
+|---|---|
+| Jitsi floor bot (default) | Only the internal floor bot (RTSP). External publishes are refused. |
+| Program Stream Ingest | Only an encoder presenting the room's current publish secret over WHIP. The floor bot is refused. |
+
+Ownership is enforced by the portal when MediaMTX asks whether a publish may proceed, so the bot and an encoder can never take turns replacing each other. While program ingest owns the room, **Start Bot** is hidden and the bot API returns `409`. Switching modes stops the previous source, disconnects any connected publisher, and stops the floor transcription worker.
+
+Jitsi monitoring for interpreters is unaffected: the Jitsi iframe stays receive-only in both modes.
+
+## Set up a room
+
+1. Open **Workspace → Events → your event → Rooms → your room**.
+2. Configure **Floor Audio Transcription** (provider, model, and ideally the floor language code). Optionally configure **Floor Audio Translation** and **Floor Audio TTS**.
+3. In **Floor Source & Program Stream Ingest**, choose **Program Stream Ingest** and select **Save floor source**.
+4. Choose a lifetime (never, 1, 7, 30, or 90 days) and select **Generate secret**. The secret is shown **once**. Copy it immediately; afterwards only its last four characters are shown.
+5. Copy the **Ingest server (WHIP)** URL, which looks like `https://your-domain/{event_slug}/{room_id}/floor/whip`.
+6. Configure your encoder (below) and start streaming. The status pill moves from **Waiting for stream** to **Processing**.
+
+The card warns you when transcription is disabled, no provider or language is set, translation has no target languages, TTS is enabled without translation, or the secret is missing or expired.
+
+## Encoder setup
+
+:::info Keep streaming directly to YouTube; add Voxbento as a second destination.
+Voxbento does not relay your stream to YouTube in this version.
+:::
+
+### OBS Studio 30 or newer (recommended)
+
+OBS's built-in **Stream** output can publish WHIP, and the *Multiple RTMP outputs* plugin adds extra destinations.
+
+1. Install the [obs-multi-rtmp](https://github.com/sorayuki/obs-multi-rtmp) plugin and add a **YouTube** target with your usual YouTube RTMP URL and key.
+2. In **Settings → Stream**, choose **Service: WHIP**, set **Server** to the Voxbento ingest URL, and set **Bearer Token** to the Voxbento publish secret.
+3. Audio: Opus (OBS's WHIP default) or AAC, 48 kHz. Video is optional and is ignored for speech recognition.
+4. Start streaming in OBS, then start the YouTube target in the multi-RTMP dock.
+
+Always rehearse with the exact encoder and plugin versions you will use on the day, and record those versions in your run sheet.
+
+You can also do the reverse (YouTube in **Settings → Stream** and Voxbento as a plugin target) if your plugin version supports WHIP targets.
+
+### vMix, hardware encoders, and single-destination encoders
+
+This deployment accepts **WHIP over HTTPS** only, because it goes through the existing reverse proxy and is encrypted end to end. If your encoder cannot publish WHIP, or can publish to only one destination:
+
+- enable a multi-output capability or plugin on the encoder;
+- send one output to an external distribution/relay service that fans out to YouTube and to Voxbento (WHIP); or
+- keep using the **Jitsi floor bot** until an optional Voxbento-to-YouTube relay mode exists.
+
+Operators who need RTMPS or encrypted SRT can enable those transports in MediaMTX (with TLS certificates or SRT passphrases) and add them to `PROGRAM_INGEST_PROTOCOLS`. The same credential then works as the RTMP `pass=` query value or the SRT stream ID password. Never enable plain RTMP on a public network.
+
+## Status reference
+
+| State | Meaning | Worker |
+|---|---|---|
+| Disabled | The room uses the Jitsi floor bot. | — |
+| Waiting for stream | No encoder has connected since the portal started. | Stopped |
+| Receiving | A feed with usable audio is present, but floor transcription is disabled or not configured. | Stopped |
+| Processing | Floor transcription is running on the program audio. | Running (exactly one) |
+| Degraded | Media is present but unusable: no audio track (video-only), an undecodable audio codec, no new media for `PROGRAM_INGEST_STALL_SECONDS`, a worker start failure (e.g. capacity), or the MediaMTX status API is unreachable. The detail line says which. | Depends |
+| Disconnected | The encoder went away. Transcription stays ready for `PROGRAM_INGEST_DISCONNECT_GRACE_SECONDS`, then the worker is stopped. | Kept, then stopped |
+
+The card also shows last connected and disconnected times, detected audio and video codecs, and whether the worker is running. A brief encoder reconnect reuses the existing worker, so you never get duplicate transcription sessions. Status is always derived from live MediaMTX data, so a portal restart never reports a stale publisher as active.
+
+## Credential rotation and revocation
+
+- **Rotate**: issues a new secret, invalidates the old one immediately, and disconnects the current encoder session. Paste the new secret into the encoder.
+- **Revoke**: deletes the secret and disconnects the encoder. Nothing can publish until you generate a new secret.
+- Only a bcrypt hash of the secret is stored. It never appears in logs, status responses, or rendered pages after creation.
+- Failed publish attempts are rate-limited per client IP (`PROGRAM_INGEST_AUTH_MAX_FAILURES` per `PROGRAM_INGEST_AUTH_FAILURE_WINDOW_SECONDS`). All refusals are the same `401`, whether the room exists or not.
+
+If MediaMTX cannot confirm that the current encoder was disconnected, rotation, revocation and floor-source switches fail with an error and **nothing is changed**, so an old credential or source can never stay live after you were told it was replaced.
+
+Rotating or revoking the Voxbento secret never touches your YouTube key.
+
+## Synchronizing with the YouTube playback
+
+YouTube transcodes and buffers your stream, so Voxbento captions and translated speech usually arrive **before** the YouTube picture. Set **Caption & TTS sync offset (ms)** on the room to hold them back in the listener's browser. Speech recognition, translation, and synthesis still run immediately; only listener display and playout are delayed, and text and audio for the same segment stay together.
+
+To calibrate before going live:
+
+1. Put a visible and audible cue in the program, such as a clapperboard or a spoken "three, two, one, mark" with an on-screen countdown.
+2. Open the YouTube watch page and the Voxbento listener page (Floor Audio with captions) side by side.
+3. Measure how much earlier the Voxbento caption for the cue appears than the cue on YouTube, and enter that value (0–30000 ms).
+4. Repeat the cue and adjust in 250–500 ms steps.
+
+The room's separate **audio synchronization delay** still controls the original-language WHEP audio.
+
+## Capacity planning
+
+- `PROGRAM_INGEST_MAX_ACTIVE` (default `4`) caps how many rooms may receive a program feed at once. New feeds beyond the cap are refused; rooms already connected keep their slot.
+- Each processing room uses one of the 10 transcription worker slots shared with interpreter booths. Local Whisper runs on the portal CPU, so cloud providers are recommended for several simultaneous rooms.
+- Program ingest bandwidth equals your encoder's bitrate per room. Audio-only or low-bitrate video keeps MediaMTX load small, because Voxbento discards video for captions.
+
+## Network, DNS, and TLS
+
+- The encoder connects to the same public HTTPS host as browsers (`MEDIAMTX_WHIP_BASE`, or `PROGRAM_INGEST_PUBLIC_BASE` if set). Caddy already proxies every path ending in `/whip` to MediaMTX on port 8889.
+- Media flows over WebRTC to UDP `8189`, which must be reachable from the encoder's network. Set `webrtcAdditionalHosts` in `mediamtx.yml` to your public IP or domain.
+- The MediaMTX Control API (9997) and RTSP (8554) are internal and bound to `127.0.0.1` on the host. The `/internal/*` portal hook is blocked at Caddy.
+- `MEDIAMTX_AUTH_HOOK_SECRET` (required outside debug mode) ensures only MediaMTX can call the publish authorization hook.
+
+## Troubleshooting
+
+| Symptom | Check |
+|---|---|
+| Encoder fails to connect with `401` | The secret was rotated or revoked, has expired, or was pasted with extra spaces; the room is still in Jitsi floor bot mode; too many failed attempts from this IP (wait for the window to pass); or the server's ingest limit is reached. |
+| Rotate, revoke or switching the floor source reports that the publisher could not be disconnected | The MediaMTX Control API (9997) is unreachable from the portal. Nothing was changed; restore MediaMTX and retry. |
+| Encoder fails to connect, nothing logged by the portal | MediaMTX cannot reach the portal hook. Check `MTX_AUTHHTTPADDRESS` and that `MEDIAMTX_AUTH_HOOK_SECRET` matches on both containers. |
+| Connects, but the state is **Degraded: no audio track** | The encoder is sending video only. Enable an audio track (Opus or AAC). |
+| **Degraded: no decodable audio** | Send Opus or AAC. |
+| **Degraded: no media has arrived** | Encoder network or UDP `8189` is blocked; check the firewall and `webrtcAdditionalHosts`. |
+| **Receiving** but no captions | Enable Floor Audio Transcription and choose a provider and model. |
+| Captions appear but no translations | Enable Floor Audio Translation, choose target languages, and make sure the event has the provider's API key. Translations are only produced while someone is listening to that language. |
+| Captions are ahead of YouTube | Increase the sync offset. |
+
+A healthy portal reports program ingest counters on `/healthz` under `program_ingest` (rooms, workers, and the number in each state).

@@ -130,6 +130,7 @@ Role is NEVER trusted from client data — always read from the server-side `Ses
 ## Key Invariants
 
 1. One active publisher per language channel (MediaMTX `overridePublisher: yes` enforces media level).
+   Room floor paths have one owner (`Room.floor_source_mode`), enforced by the portal publish hook `/internal/mediamtx/auth`.
 2. Interpreter mic audio NEVER routes to `AudioContext.destination`.
 3. `uv.lock` is the single source of truth for Python dependencies.
 4. No Flask, Socket.IO, aiortc, Vue, React, jQuery, inline `<script>` blocks.
@@ -146,8 +147,8 @@ Role is NEVER trusted from client data — always read from the server-side `Ses
 | MediaMTX HTTP | 8888 | Health / internal |
 | MediaMTX WHIP/WHEP | 8889 | WebRTC ingest + playback |
 | MediaMTX ICE/UDP | 8189 | ICE candidate negotiation |
-| MediaMTX Control API | 9997 | `alwaysAvailable` path creation |
-| MediaMTX RTSP | 8554 | ffmpeg/transcription RTSP pull |
+| MediaMTX Control API | 9997 | `alwaysAvailable` path creation, program ingest status/kick — bound to `127.0.0.1` |
+| MediaMTX RTSP | 8554 | ffmpeg/transcription RTSP pull, floor-bot publish — bound to `127.0.0.1` |
 | Jitsi Web | 8443 / 8080 | HTTPS / HTTP floor monitoring |
 | JVB UDP | 10000 | Jitsi media traffic |
 

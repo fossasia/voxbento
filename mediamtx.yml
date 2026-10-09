@@ -7,7 +7,7 @@
 # Production notes:
 # - Set webrtcEncryption/hlsEncryption to 'yes' and configure TLS certificates.
 # - Configure STUN/TURN servers under webrtcICEServers for NAT traversal.
-# - Restrict publishUser/publishPass per path to authenticate WHIP publishers.
+# - Publishes are authorized by the portal (see Authentication below).
 
 logLevel: info           # debug | info | warn | error
 logDestinations: [stdout]
@@ -38,6 +38,10 @@ webrtcAdditionalHosts:
 # Allow the browser JS on :8000 (FastAPI portal) to POST WHEP/WHIP offers
 # (cross-origin).  Plural form required by MediaMTX ≥ 1.18.
 webrtcAllowOrigins: ['*']
+# Trust X-Forwarded-For from the reverse proxy (Caddy on the host reaches the
+# container through the Docker bridge) so the publish auth hook sees the real
+# encoder IP for failed-attempt rate limiting.
+webrtcTrustedProxies: ['127.0.0.1/32', '172.16.0.0/12']
 
 # ── HLS output ──────────────────────────────────────────────────────────────
 # Playlists and segments are served at http://host:8888/{path}/index.m3u8.
@@ -64,29 +68,28 @@ hlsSegmentMaxSize: 50MB
 # hlsPartDuration: 200ms   # uncomment to enable LL-HLS (post-MVP)
 
 # ── Authentication ────────────────────────────────────────────────────────────
-# By default MediaMTX restricts api/metrics/pprof to 127.0.0.1 only.
-# Since Docker port-forwarding routes requests from the bridge IP (not
-# localhost), we need to allow API access from any IP for local dev.
-# Production: restrict ips to the FastAPI container's IP or network.
-authMethod: internal
-authInternalUsers:
-  # Allow any user to publish and read (same as default)
-  - user: any
-    pass:
-    ips: []
-    permissions:
-      - action: publish
-        path:
-      - action: read
-        path:
-      - action: playback
-        path:
-  # Allow API access from any IP (needed for Docker port-forwarding)
-  - user: any
-    pass:
-    ips: []
-    permissions:
-      - action: api
+# Every publish is authorized by the portal (authMethod: http). The portal:
+#   - keeps interpreter booth paths ({slug}/{room}/{lang}) open to publish as
+#     before (they are gated by the WHIP URL endpoint + overridePublisher);
+#   - restricts room floor paths ({slug}/{room}/floor) to their single owner:
+#     the internal floor bot (RTSP) in jitsi_bot mode, or an encoder holding
+#     the room's Program Stream Ingest credential in program_ingest mode.
+# Reads (WHEP/HLS/RTSP), playback and the Control API are excluded from the
+# hook and stay open to the network exactly as before; keep 9997 and 8554
+# private (docker-compose binds them to 127.0.0.1 on the host).
+#
+# docker-compose overrides authHTTPAddress via MTX_AUTHHTTPADDRESS to append
+# ?key=${MEDIAMTX_AUTH_HOOK_SECRET}. Native dev (portal outside Docker):
+#   MTX_AUTHHTTPADDRESS=http://localhost:8000/internal/mediamtx/auth ./mediamtx
+# If the portal is unreachable, MediaMTX rejects all publishes (fail closed).
+authMethod: http
+authHTTPAddress: http://portal:8000/internal/mediamtx/auth
+authHTTPExclude:
+  - action: read
+  - action: playback
+  - action: api
+  - action: metrics
+  - action: pprof
 
 # ── Control API ──────────────────────────────────────────────────────────────
 # Enables the REST API on port 9997.  FastAPI uses it to dynamically create

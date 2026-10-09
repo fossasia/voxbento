@@ -79,6 +79,7 @@ from portal.database import (
 from portal.email import send_role_invite_email
 from portal.globals import _JS_CACHE_BUST, booths, get_http_client
 from portal.models import (
+    FLOOR_SOURCE_PROGRAM_INGEST,
     BoothTranslationLanguage,
     RoomTranslationLanguage,
     TranscriptSegment,
@@ -86,6 +87,7 @@ from portal.models import (
     User,
     utc_now,
 )
+from portal.routers.program_ingest import ingest_status_payload
 from portal.transcription import ALLOWED_MODELS, ProviderConfig, ProviderEnum, get_api_key
 from portal.transcription.worker import start_transcription_worker, stop_transcription_worker
 from portal.translations.constants import TRANSLATION_MODELS, TranslationProviderEnum
@@ -781,6 +783,7 @@ async def admin_room_detail(request: Request, event_id: int, room_id: int):
         request=request,
         name="admin/room_detail.html",
         context={
+            "program_ingest": ingest_status_payload(room, event.slug),
             "event": event,
             "room": room,
             "booths": booth_statuses,
@@ -971,6 +974,12 @@ async def api_start_floor_transcription(room_id: int):
             raise HTTPException(status_code=400, detail="Floor transcription not enabled or invalid room")
         if room.floor_transcription_provider == "none":
             raise HTTPException(status_code=400, detail="Cannot start transcription with 'none' provider")
+        if room.floor_source_mode == FLOOR_SOURCE_PROGRAM_INGEST:
+            raise HTTPException(
+                status_code=409,
+                detail="Program Stream Ingest owns this room's floor source. Switch the floor source to the "
+                "Jitsi floor bot before starting the bot.",
+            )
         event = await get_event_by_id(session, room.event_id)
         if not event:
             raise HTTPException(status_code=400, detail="Event not found")

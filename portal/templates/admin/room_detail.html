@@ -1,6 +1,10 @@
 {% extends "admin/base.html" %}
 {% block title %}{{ room.display_name }} — {{ event.display_name }}{% endblock %}
 
+{% block head %}
+<script type="module" src="{{ url_for('static', path='js/program-ingest.js') }}"></script>
+{% endblock %}
+
 {% block breadcrumb %}
 <nav class="breadcrumb">
   <a href="{{ management_prefix }}/">Dashboard</a> <span>/</span>
@@ -81,13 +85,129 @@
     </div>
   </div>
 
+{% set ingest = program_ingest %}
+{% set ingest_base = management_prefix ~ '/events/' ~ event.id ~ '/rooms/' ~ room.id ~ '/program-ingest' %}
+<section class="token-form-card token-form-card--spaced ingest-card" id="program-ingest-card"
+         data-status-url="{{ ingest_base }}/status"
+         data-credential-url="{{ ingest_base }}/credential"
+         data-revoke-url="{{ ingest_base }}/credential/revoke"
+         data-enabled="{{ 'true' if ingest.enabled else 'false' }}">
+  <div class="card-head card-head--spaced">
+    <div>
+      <h3>Floor Source &amp; Program Stream Ingest</h3>
+      <p class="form-help form-help--tight">Choose who publishes this room's original floor audio for captions, translation and TTS.</p>
+    </div>
+    <div class="card-head-actions">
+      <span class="status-pill ingest-state ingest-state--{{ ingest.state }}" id="ingest-state-pill">
+        <span class="status-dot"></span>
+        <span id="ingest-state-text">{{ ingest.state|capitalize }}</span>
+      </span>
+    </div>
+  </div>
+
+  <form method="post" action="{{ ingest_base }}/mode" class="ingest-mode-form">
+    <fieldset class="ingest-mode-options">
+      <legend class="sr-only">Floor source</legend>
+      <label class="checkbox-label">
+        <input type="radio" name="floor_source_mode" value="jitsi_bot" {% if not ingest.enabled %}checked{% endif %}>
+        Jitsi floor bot — capture the room's Jitsi meeting audio
+      </label>
+      <label class="checkbox-label">
+        <input type="radio" name="floor_source_mode" value="program_ingest" {% if ingest.enabled %}checked{% endif %}>
+        Program Stream Ingest — receive the produced program from OBS, vMix or a hardware encoder
+      </label>
+    </fieldset>
+    <button type="submit" class="btn btn-sm btn-primary">Save floor source</button>
+  </form>
+
+  {% if ingest.enabled %}
+    <p class="alert alert-info ingest-callout"><strong>Keep streaming directly to YouTube; add VoxBento as a second destination.</strong> VoxBento never needs your YouTube stream key, and stopping VoxBento does not affect the YouTube broadcast.</p>
+
+    <ul class="ingest-warnings" id="ingest-warnings">
+      {% for warning in ingest.warnings %}
+        <li class="alert alert-warning">{{ warning }}</li>
+      {% endfor %}
+    </ul>
+
+    <p class="form-help" id="ingest-state-detail">{{ ingest.detail }}</p>
+    <dl class="ingest-facts">
+      <dt>Last connected</dt><dd id="ingest-last-connected" data-iso="{{ ingest.last_connected_at or '' }}">{{ ingest.last_connected_at or '—' }}</dd>
+      <dt>Last disconnected</dt><dd id="ingest-last-disconnected" data-iso="{{ ingest.last_disconnected_at or '' }}">{{ ingest.last_disconnected_at or '—' }}</dd>
+      <dt>Audio codecs</dt><dd id="ingest-audio-codecs">—</dd>
+      <dt>Video codecs</dt><dd id="ingest-video-codecs">—</dd>
+      <dt>Transcription worker</dt><dd id="ingest-worker">—</dd>
+    </dl>
+
+    <div class="field">
+      <label for="ingest-url">Ingest server (WHIP)</label>
+      <div class="copy-field">
+        <input type="text" id="ingest-url" value="{{ ingest.ingest_url }}" readonly>
+        <button type="button" class="btn btn-sm btn-outline" data-ingest-copy="ingest-url">Copy</button>
+      </div>
+    </div>
+
+    <div class="field">
+      <label>Bearer token (publish secret)</label>
+      <p class="form-help" id="ingest-credential-summary">
+        {% if ingest.credential.configured %}
+          Active secret ending in <code>…{{ ingest.credential.hint }}</code>{% if ingest.credential.expires_at %}, expires {{ ingest.credential.expires_at }}{% endif %}{% if ingest.credential.expired %} — <strong>expired</strong>{% endif %}. The full secret is only shown when it is generated.
+        {% else %}
+          No secret yet.
+        {% endif %}
+      </p>
+      <div class="ingest-secret-reveal" id="ingest-secret-reveal" hidden>
+        <p class="alert alert-warning">Copy this secret now. It will not be shown again.</p>
+        <div class="copy-field">
+          <input type="password" id="ingest-secret" value="" readonly autocomplete="off">
+          <button type="button" class="btn btn-sm btn-outline" id="ingest-secret-toggle">Show</button>
+          <button type="button" class="btn btn-sm btn-outline" data-ingest-copy="ingest-secret">Copy</button>
+        </div>
+      </div>
+      <div class="ingest-credential-actions">
+        <label for="ingest-expiry" class="sr-only">Secret lifetime</label>
+        <select id="ingest-expiry" class="input">
+          <option value="">Never expires</option>
+          <option value="1">Expires in 1 day</option>
+          <option value="7">Expires in 7 days</option>
+          <option value="30">Expires in 30 days</option>
+          <option value="90">Expires in 90 days</option>
+        </select>
+        <button type="button" class="btn btn-sm btn-primary" id="ingest-rotate-btn">{{ 'Rotate secret' if ingest.credential.configured else 'Generate secret' }}</button>
+        <button type="button" class="btn btn-sm btn-outline btn-stop" id="ingest-revoke-btn" {% if not ingest.credential.configured %}disabled{% endif %}>Revoke</button>
+      </div>
+      <p class="form-help">Rotating or revoking disconnects the current encoder session immediately. Your YouTube destination is unaffected.</p>
+    </div>
+
+    <form method="post" action="{{ ingest_base }}/sync-offset" class="inline-form ingest-sync-form">
+      <div class="field">
+        <label for="program_sync_offset_ms">Caption &amp; TTS sync offset (ms)</label>
+        <input type="number" id="program_sync_offset_ms" name="program_sync_offset_ms" min="0" max="30000" step="100" value="{{ ingest.sync_offset_ms }}">
+        <span class="hint">Delays floor captions and translated speech for listeners so they line up with the slower YouTube playback. Leave at 0 if listeners only use VoxBento.</span>
+      </div>
+      <button type="submit" class="btn btn-sm btn-primary">Save offset</button>
+    </form>
+
+    <details class="ingest-help">
+      <summary>Encoder setup (parallel YouTube + VoxBento)</summary>
+      <ol>
+        <li><strong>OBS Studio 30+</strong>: keep YouTube configured as you do today. Add VoxBento with the <em>Multiple RTMP outputs</em> plugin for YouTube and set OBS <em>Settings → Stream</em> to <em>Service: WHIP</em>, <em>Server</em> = the ingest server above, <em>Bearer Token</em> = the publish secret. Use Opus or AAC audio; H.264 video is optional and ignored for captions.</li>
+        <li><strong>vMix / hardware encoders without WHIP</strong>: publish to YouTube as usual and send a second output through a multi-output relay or distribution service that supports WHIP, or keep using the Jitsi floor bot until RTMPS/SRT ingest is enabled for this deployment.</li>
+        <li><strong>Encoder supports only one destination?</strong> Enable a multi-output plugin, use an external relay/distribution service, or stay on the Jitsi floor bot. VoxBento does not relay to YouTube in this version.</li>
+        <li><strong>Calibrate sync</strong>: play a clap or countdown on the program, watch it on YouTube and on the VoxBento listener page, and set the offset above to the measured difference.</li>
+      </ol>
+    </details>
+  {% endif %}
+</section>
+
 <form method="post" action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/edit" class="token-form">
   <input type="hidden" name="form_section" value="transcription">
   <div class="token-form-card token-form-card--spaced">
     <div class="card-head card-head--spaced">
       <h3>Floor Audio Transcription</h3>
       <div class="card-head-actions">
-        {% if room.floor_transcription_enabled %}
+        {% if program_ingest.enabled %}
+          <span class="status-pill">Floor source: Program Stream Ingest</span>
+        {% elif room.floor_transcription_enabled %}
           <span id="bot-status-pill" class="status-pill" data-room-id="{{ room.id }}">
             <span id="bot-status-dot" class="status-dot"></span>
             <span id="bot-status-text">Checking…</span>

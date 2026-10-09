@@ -57,6 +57,7 @@ uv run ruff format .
 node --check portal/static/js/interpreter-booth.js
 node --check portal/static/js/whep-listener.js
 node --check portal/static/js/admin.js
+node --check portal/static/js/program-ingest.js
 
 # Run the Pytest suite
 uv run pytest tests/ -v

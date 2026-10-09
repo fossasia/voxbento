@@ -37,6 +37,8 @@ Before deploying, confirm that your server meets the following requirements:
 | `8889` | TCP | MediaMTX | WHIP ingest and WHEP playback |
 | `8189` | UDP | MediaMTX | WebRTC ICE (media transport) |
 
+MediaMTX's Control API (`9997`) and RTSP (`8554`) are internal interfaces. Docker Compose binds them to `127.0.0.1` on the host; do not open them in your firewall.
+
 ## Deploy with Docker Compose
 
 ### Clone the repository
@@ -134,9 +136,12 @@ A healthy response looks like this:
 {
   "ok": true,
   "server": "voxbento",
-  "mediamtx_ok": true
+  "mediamtx_ok": true,
+  "program_ingest": {"waiting": 0, "receiving": 0, "processing": 1, "degraded": 0, "disconnected": 0, "rooms": 1, "workers": 1}
 }
 ```
+
+`program_ingest` counts rooms using [Program Stream Ingest](../admin/program-stream-ingest) by state. A non-zero `degraded` count deserves a look at the room page.
 
 If `mediamtx_ok` is `false`, the portal is running but MediaMTX is not reachable. Interpreters will be unable to go live until MediaMTX is restored. Check the `mediamtx` container logs with `docker compose logs mediamtx`.
 
@@ -181,6 +186,21 @@ WebRTC **requires HTTPS** in production browsers — Chrome and Firefox will not
   ```
 
   After setting up TLS, update `MEDIAMTX_WHIP_BASE` to use `https://` and update `JITSI_BASE_URL` to your Jitsi subdomain.
+
+  Proxy WHIP/WHEP (`/(whip|whep)$`) to MediaMTX on `8889` as the repository `Caddyfile` does, and block `/internal/*` (the MediaMTX publish authorization hook) so it is never reachable from the internet.
+
+</details>
+
+<details>
+<summary>Secure MediaMTX publishing</summary>
+
+MediaMTX authorizes every publish by calling the portal (`authMethod: http` in `mediamtx.yml`). Compose sets `MTX_AUTHHTTPADDRESS` to `http://portal:8000/internal/mediamtx/auth?key=${MEDIAMTX_AUTH_HOOK_SECRET}`. Set `MEDIAMTX_AUTH_HOOK_SECRET` to a long random value in `.env`.
+
+  - Room floor paths accept only their configured floor source (Jitsi floor bot or Program Stream Ingest); anonymous floor publishes are refused.
+  - Reads (WHEP/HLS/RTSP) and the Control API are excluded from the hook.
+  - `MEDIAMTX_AUTH_HOOK_SECRET` is **required outside debug mode**: the portal refuses to start without it, exactly like a weak `SECRET_KEY`. Add it to the server's `.env` before upgrading.
+  - If the portal is down, MediaMTX refuses all new publishes (fail closed). Existing sessions continue.
+  - For native development with MediaMTX outside Docker, run it with `MTX_AUTHHTTPADDRESS=http://localhost:8000/internal/mediamtx/auth`.
 
 </details>
 

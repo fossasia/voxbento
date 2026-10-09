@@ -22,17 +22,28 @@ Active interpreter Go Live
 ```
 
 ### 2. Floor Audio Pipeline
+Each room has one floor source (`Room.floor_source_mode`), enforced by the portal's
+MediaMTX publish hook (`portal/program_ingest/publish_auth.py`):
 ```
-Jitsi Meet Floor Conference
-        │
-        ▼
-   floor-bot (Headless Chromium)
-   Joins as "VoxBento FloorBot", captures audio via PulseAudio
-        │
-        ▼
-   ffmpeg (spawned by floor-bot)
-   Encodes to Opus → RTSP tcp push to MediaMTX:8554/{event_slug}/floor
+jitsi_bot (default)                         program_ingest
+Jitsi Meet floor conference                 OBS / encoder / relay (parallel to YouTube)
+   │ floor-bot: headless Chromium             │ WHIP over HTTPS, Bearer = room publish secret
+   │ → PulseAudio → ffmpeg Opus               │ (video + audio accepted; video ignored)
+   ▼ RTSP push (internal, no credentials)     ▼
+        MediaMTX path {event_slug}/{room_id}/floor
+                     │
+                     ▼ floor worker, booth id {event_slug}-{room_id}-floor
+        (portal/transcription/floor.py — same reader/aggregator/translation/TTS)
 ```
+- `jitsi_bot`: worker started manually with the bot (`/api/rooms/{id}/floor-transcription/start`).
+- `program_ingest`: `ProgramIngestSupervisor` (`portal/program_ingest/supervisor.py`, started in the
+  app lifespan) polls `GET /v3/paths/get/{path}` every `PROGRAM_INGEST_POLL_SECONDS`, starts exactly one
+  worker once decodable audio is present, reports `waiting|receiving|processing|degraded|disconnected`,
+  keeps the worker for `PROGRAM_INGEST_DISCONNECT_GRACE_SECONDS` after a disconnect, then stops it.
+  Video-only / undecodable / stalled feeds are `degraded` and run no worker. The bot is refused while
+  program ingest owns the room.
+- Listener page: program-ingest floor paths are not forced into Opus-only `alwaysAvailable`, and
+  `program_sync_offset_ms` delays floor caption/TTS delivery in the browser only.
 
 ### 3. Transcription & Translation Flow
 ```
@@ -79,6 +90,8 @@ Jitsi Meet Floor Conference
 | `portal/transcription/__init__.py` | Re-exports public API; holds `shared_http_client` (AsyncClient) |
 | `portal/transcription/constants.py` | `ProviderEnum`, `ALLOWED_MODELS` dict |
 | `portal/transcription/worker.py` | `transcription_worker`, `start_transcription_worker`, `stop_transcription_worker`; `active_workers`/`active_processes` dicts |
+| `portal/transcription/floor.py` | Floor worker helpers shared by every floor source: `floor_booth_id`, `floor_transcription_issue`, `start/stop_floor_transcription_worker`, `floor_worker_running`, `request_floor_bot_stop` |
+| `portal/program_ingest/` | Program Stream Ingest credentials, publish authorization, MediaMTX adapter, supervisor |
 | `portal/transcription/aggregator.py` | `CaptionAggregator`, `CaptionState` — partial/final merging, forced finalization |
 | `portal/transcription/providers/base.py` | `TranscriptionProvider` ABC, `ProviderConfig`, `BoothTranscriptionState`, `pcm_to_wav`, `get_api_key` |
 | `portal/transcription/providers/local.py` | `LocalProvider` — faster-whisper CPU; model cache + LRU eviction |

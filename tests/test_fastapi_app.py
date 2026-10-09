@@ -1578,7 +1578,12 @@ def test_weak_secret_allowed_in_debug_mode():
 def test_strong_secret_passes_production():
     from portal.config import Settings
 
-    s = Settings(debug=False, secret_key="a-strong-random-secret-0123456789abcdef", jwt_secret="")
+    s = Settings(
+        debug=False,
+        secret_key="a-strong-random-secret-0123456789abcdef",
+        jwt_secret="",
+        mediamtx_auth_hook_secret="a-strong-hook-secret-0123456789abcdef",
+    )
     s.validate_production_secrets()  # must not raise
 
 

@@ -29,6 +29,12 @@ services:
       # Browser-facing URLs — must be reachable from the user's machine
       MEDIAMTX_WHIP_BASE: "${MEDIAMTX_WHIP_BASE:-http://localhost:8889}"
       FLOOR_BOT_BASE: "http://floor-bot:8080"
+      # Shared with MediaMTX so only it can call /internal/mediamtx/auth.
+      MEDIAMTX_AUTH_HOOK_SECRET: "${MEDIAMTX_AUTH_HOOK_SECRET:-}"
+      # Program Stream Ingest — public base encoders publish to (defaults to
+      # MEDIAMTX_WHIP_BASE) and capacity limits.
+      PROGRAM_INGEST_PUBLIC_BASE: "${PROGRAM_INGEST_PUBLIC_BASE:-}"
+      PROGRAM_INGEST_MAX_ACTIVE: "${PROGRAM_INGEST_MAX_ACTIVE:-4}"
 
       # MediaMTX Control API (Docker internal) — creates alwaysAvailable paths
       MEDIAMTX_API_BASE: "http://mediamtx:9997"
@@ -75,12 +81,16 @@ services:
     image: bluenviron/mediamtx:1
     volumes:
       - ./mediamtx.yml:/mediamtx.yml:ro
+    environment:
+      # Publish authorization hook served by the portal (see mediamtx.yml).
+      MTX_AUTHHTTPADDRESS: "http://portal:8000/internal/mediamtx/auth?key=${MEDIAMTX_AUTH_HOOK_SECRET:-}"
     ports:
       - "8888:8888"    # MediaMTX HTTP (used by Control API health checks)
       - "8889:8889"    # WHIP/WHEP (WebRTC HTTP ingest + playback)
       - "8189:8189/udp" # WebRTC ICE/UDP mux
-      - "9997:9997"    # Control API (used by FastAPI for alwaysAvailable paths)
-      - "8554:8554"    # RTSP (for faster-whisper/ffmpeg integration)
+      # Internal interfaces: reachable from the host only, never the network.
+      - "127.0.0.1:9997:9997"    # Control API (portal path management + ingest status)
+      - "127.0.0.1:8554:8554"    # RTSP (floor bot publish, transcription ffmpeg reads)
     restart: unless-stopped
 
   # ── Self-hosted Jitsi Meet ────────────────────────────────────

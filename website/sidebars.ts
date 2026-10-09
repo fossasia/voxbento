@@ -26,6 +26,7 @@ const sidebars: SidebarsConfig = {
             'admin/members-and-roles',
             'admin/invite-tokens',
             'admin/transcription',
+            'admin/program-stream-ingest',
           ],
         },
         {

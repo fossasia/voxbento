@@ -86,10 +86,17 @@ Both namespaces use the same underlying management handlers, so the route split 
 When live captions or translations are enabled, Voxbento spawns background workers to process the audio in real-time. This pipeline supports both **Booth Audio** (interpreters) and **Floor Audio** (the main conference).
 
 ### Floor Audio Capture
-To transcribe or translate the original speakers without requiring external integrations, the system launches an isolated **Floor Bot** (`floor-bot`). This headless Chromium instance silently joins the Jitsi meeting, captures the live audio, and pushes it to MediaMTX via RTSP, making it accessible to the transcription workers just like a regular booth.
+Each room has exactly one **floor source**, which publishes the original-language audio to the room floor path `{event_slug}/{room_id}/floor` in MediaMTX:
+
+- **Jitsi floor bot** (default) — an isolated headless Chromium instance (`floor-bot`) silently joins the room's Jitsi meeting, plays it into a virtual PulseAudio sink, and FFmpeg pushes that audio to MediaMTX over RTSP. It is an audio adapter only; it does no speech recognition.
+- **Program Stream Ingest** — for produced events, the organizer's encoder (OBS, a hardware encoder, or a relay service) sends the same program it sends to YouTube to Voxbento as well, over authenticated WHIP. Voxbento never needs the YouTube stream key, and the YouTube broadcast does not depend on Voxbento. See [Program Stream Ingest](./admin/program-stream-ingest).
+
+MediaMTX asks the portal to authorize every publish (`authMethod: http`). Floor paths accept only the room's configured owner — the bot's internal RTSP publish, or an encoder presenting the room's current publish secret — so the two sources can never replace one another. In program-ingest mode a supervisor polls the MediaMTX Control API, starts exactly one floor transcription worker once usable audio is present, reports waiting/receiving/processing/degraded/disconnected status, and stops the worker after a disconnect grace period. Interpreter booth paths are unaffected.
+
+Once audio is on the floor path, both sources feed the same pipeline below; the reader ignores any video track.
 
 ### Pipeline Steps
-1. **Audio Ingest:** The worker uses FFmpeg to pull the live audio stream from MediaMTX via RTSP (`rtsp://mediamtx:8554/{event_slug}/{language_code}` or `rtsp://mediamtx:8554/{event_slug}/floor`).
+1. **Audio Ingest:** The worker uses FFmpeg to pull the live audio stream from MediaMTX via RTSP (`rtsp://mediamtx:8554/{event_slug}/{room_id}/{language_code}` or `rtsp://mediamtx:8554/{event_slug}/{room_id}/floor`).
 2. **Transcoding:** FFmpeg transcodes the audio to PCM S16LE (mono, 16kHz or 24kHz depending on the provider) and pipes it to the selected `TranscriptionProvider`.
 3. **Speech-to-Text (Transcription):** The provider sends audio to an AI service (OpenAI, Deepgram, ElevenLabs, NVIDIA, or Local Whisper). The `CaptionAggregator` receives raw text, splitting sentences and instantly broadcasting partial updates to listeners (`/ws/captions/{channel_id}`).
 4. **Finalization:** Once a full sentence is formed, the aggregator saves it to the database as a canonical `transcript_segment`.

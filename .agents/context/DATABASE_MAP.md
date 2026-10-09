@@ -71,6 +71,12 @@ Cascade: deletes rooms + booths when event is deleted.
 | `floor_tts_provider` | String(20) | Default `'deepgram'`; TTS engine — `'deepgram'` (cloud) or `'supertonic'` (self-hosted ONNX) |
 | `floor_tts_voice` | String(50) | Default `'M1'`; Supertonic preset voice (M1–M5, F1–F5) |
 | `audio_delay_ms` | Integer | Default 0; optional listener-side WHEP playback delay for all sources in the room |
+| `floor_source_mode` | String(20) | Default `'jitsi_bot'`; `'program_ingest'` hands the floor path to an organizer encoder. Exactly one source may publish `{slug}/{room_id}/floor` |
+| `program_ingest_secret_hash` | String(64) nullable | bcrypt hash of the publish secret (`portal/program_ingest/credentials.py`); plaintext shown once |
+| `program_ingest_secret_hint` | String(8) nullable | Last 4 characters of the secret for display |
+| `program_ingest_secret_created_at` / `_expires_at` | DateTime(tz) nullable | Expiry optional (1/7/30/90 days) |
+| `program_ingest_last_connected_at` / `_last_disconnected_at` | DateTime(tz) nullable | Written by the ingest supervisor on transitions; stale "connected" closed on startup |
+| `program_sync_offset_ms` | Integer | Default 0; listener-side delay for floor captions/TTS in program-ingest mode (0–30000) |
 | `created_at` | DateTime(tz) | UTC |
 
 ---
@@ -232,6 +238,8 @@ Tracks which languages the translation worker should generate for a given room o
 | 015 | `015_add_floor_tts_enabled.py` | `rooms.floor_tts_enabled` |
 | 016 | `016_add_room_audio_delay.py` | `rooms.audio_delay_ms` |
 | 017 | `017_add_tts_provider_fields.py` | `rooms.floor_tts_provider`, `rooms.floor_tts_voice` |
+| … | `018`–`024` | auth tokens, API keys/usage, multi-room, OAuth/developer platform, webhooks |
+| 025 | `025_add_program_stream_ingest.py` | `rooms.floor_source_mode`, `rooms.program_ingest_*`, `rooms.program_sync_offset_ms` |
 
 Run migrations: `uv run alembic upgrade head`
 

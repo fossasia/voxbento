@@ -34,6 +34,10 @@ from portal.roles import ALL_ROLES
 
 TOKEN_LENGTH = 64  # hex characters → 32 bytes of entropy
 
+FLOOR_SOURCE_JITSI_BOT = "jitsi_bot"
+FLOOR_SOURCE_PROGRAM_INGEST = "program_ingest"
+FLOOR_SOURCE_MODES = frozenset({FLOOR_SOURCE_JITSI_BOT, FLOOR_SOURCE_PROGRAM_INGEST})
+
 
 def utc_now() -> datetime:
     return datetime.now(tz=timezone.utc)
@@ -137,6 +141,31 @@ class Room(Base):
     )
     floor_tts_voice: Mapped[str] = mapped_column(String(50), default="M1", server_default=sa.text("'M1'"))
     audio_delay_ms: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+
+    # Floor source ownership: "jitsi_bot" (floor bot captures the Jitsi meeting)
+    # or "program_ingest" (an organizer encoder publishes the program feed).
+    # Exactly one source may publish to the room floor path at a time.
+    floor_source_mode: Mapped[str] = mapped_column(
+        String(20), default=FLOOR_SOURCE_JITSI_BOT, server_default=sa.text(f"'{FLOOR_SOURCE_JITSI_BOT}'")
+    )
+    # bcrypt hash of the program ingest publish secret; the plaintext is shown once.
+    program_ingest_secret_hash: Mapped[str | None] = mapped_column(String(64), nullable=True, default=None)
+    program_ingest_secret_hint: Mapped[str | None] = mapped_column(String(8), nullable=True, default=None)
+    program_ingest_secret_created_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, default=None
+    )
+    program_ingest_secret_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, default=None
+    )
+    program_ingest_last_connected_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, default=None
+    )
+    program_ingest_last_disconnected_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, default=None
+    )
+    # Listener-side delay applied to floor captions and TTS so they line up
+    # with a parallel (slower) YouTube playback of the same program.
+    program_sync_offset_ms: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 

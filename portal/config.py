@@ -32,6 +32,30 @@ class Settings(BaseSettings):
     mediamtx_api_base: str = "http://localhost:9997"
     mediamtx_rtsp_base: str = "rtsp://mediamtx:8554"
     floor_bot_base: str = "http://floor-bot:8080"
+    # Shared secret MediaMTX appends as ?key= when calling the publish auth
+    # hook (/internal/mediamtx/auth). Required outside DEBUG mode.
+    mediamtx_auth_hook_secret: str = ""
+
+    # ── Program Stream Ingest ────────────────────────────────────────────────
+    # Public base URL organizers' encoders publish to. Defaults to the WHIP base.
+    program_ingest_public_base: str = ""
+    # Comma-separated MediaMTX protocols accepted for program ingest publishes.
+    # Only add a protocol after enabling its encrypted transport in MediaMTX.
+    program_ingest_protocols: str = "webrtc"
+    program_ingest_max_active: int = 4
+    program_ingest_poll_seconds: float = 2.0
+    program_ingest_disconnect_grace_seconds: float = 15.0
+    program_ingest_stall_seconds: float = 10.0
+    program_ingest_auth_max_failures: int = 10
+    program_ingest_auth_failure_window_seconds: int = 300
+
+    @property
+    def effective_program_ingest_public_base(self) -> str:
+        return (self.program_ingest_public_base or self.mediamtx_whip_base).rstrip("/")
+
+    @property
+    def program_ingest_protocol_set(self) -> frozenset[str]:
+        return frozenset(p.strip().lower() for p in self.program_ingest_protocols.split(",") if p.strip())
 
     @property
     def effective_jitsi_base_url(self) -> str:
@@ -73,10 +97,11 @@ class Settings(BaseSettings):
         return self.jwt_secret or self.secret_key
 
     def validate_production_secrets(self) -> None:
-        """Refuse to start with a known-weak default secret outside debug mode.
+        """Refuse to start with a weak or missing secret outside debug mode.
 
         Called once at application startup. No-op in debug mode so local
-        development works without configuring a SECRET_KEY.
+        development works without configuring SECRET_KEY or
+        MEDIAMTX_AUTH_HOOK_SECRET.
         """
         if self.debug:
             return
@@ -85,6 +110,13 @@ class Settings(BaseSettings):
             raise RuntimeError(
                 "SECRET_KEY (or JWT_SECRET) is set to a known-weak default value. "
                 "Set a strong random value before running in production. "
+                "Generate one with: openssl rand -hex 32"
+            )
+        if not self.mediamtx_auth_hook_secret:
+            raise RuntimeError(
+                "MEDIAMTX_AUTH_HOOK_SECRET is not set. MediaMTX authorizes every publish through "
+                "/internal/mediamtx/auth and must present this shared secret. Set the same value for "
+                "the portal and MediaMTX (docker-compose passes it to both). "
                 "Generate one with: openssl rand -hex 32"
             )
 
