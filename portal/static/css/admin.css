@@ -953,6 +953,12 @@ code { font-family: var(--font-mono); font-size: 0.85em; background: var(--color
 .copy-field { display: flex; align-items: stretch; gap: 8px; }
 .copy-field input { flex: 1; min-width: 0; min-height: 40px; padding: 8px 12px; border: 1px solid var(--color-border-strong); border-radius: 10px; font-family: var(--font-mono); font-size: 0.85rem; background: var(--color-surface-2); color: var(--color-text); }
 .copy-field .btn-copy { height: auto; min-width: 72px; }
+/* Phones: give the link its own row so it stays readable; Copy and Open share the next. */
+@media (max-width: 480px) {
+  .copy-field { flex-wrap: wrap; }
+  .copy-field input { flex-basis: 100%; }
+  .copy-field .btn { flex: 1; padding-inline: 12px; }
+}
 
 /* ── Toasts ───────────────────────────────────────────────────────────────── */
 .toast-container { position: fixed; bottom: 20px; right: 20px; display: flex; flex-direction: column; gap: 8px; z-index: 1000; }

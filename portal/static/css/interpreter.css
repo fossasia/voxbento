@@ -1094,9 +1094,6 @@ label {
   .booth-columns {
     grid-template-columns: minmax(0, 1fr);
   }
-  .deck-controls {
-    flex-wrap: wrap;
-  }
   .stage-monitor {
     min-height: 40vh;
   }
@@ -1109,6 +1106,40 @@ label {
   .booth-topbar {
     flex-wrap: wrap;
     gap: 0.6rem;
+  }
+}
+
+/* Phones: the mic controls take their own row as two equal buttons, and
+   stack full width when there isn't room for the longer labels side by side. */
+@media (max-width: 480px) {
+  /* Use the full phone width: cancel the .portal-main padding around the booth
+     and keep one 12px gutter. Jitsi only shows its "Join meeting" screen when
+     the Floor Monitor is at least 320px wide, which needs this on 360px phones. */
+  .booth-layout {
+    margin-inline: -0.9rem;
+  }
+  .booth-columns {
+    padding-inline: 0.75rem;
+  }
+  .deck-controls {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 11rem), 1fr));
+    width: 100%;
+  }
+  .deck-controls .header-btn {
+    justify-content: center;
+  }
+  /* Collapsible card headers: title and arrow on top, the status pill on its
+     own line below so it is never squeezed into a narrow column. */
+  .card-head--summary {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    row-gap: 0.45rem;
+  }
+  .card-head--summary .status-badge {
+    grid-row: 2;
+    grid-column: 1 / -1;
+    justify-self: start;
   }
 }
 
