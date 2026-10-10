@@ -1006,6 +1006,33 @@ def test_ws_cancel_handoff_initiator_resets_state_to_idle():
     assert msg["state"]["handoff_initiator_id"] is None
 
 
+def test_ws_live_interpreter_disconnect_clears_ingest_status():
+    """When the live interpreter's socket drops, the booth is no longer reported as live."""
+    booth = "ingest-drop"
+    channel = f"{booth}-audio"
+
+    with client.websocket_connect(f"/ws/booth/{booth}", cookies=_ws_auth()) as ws_b:
+        with client.websocket_connect(f"/ws/booth/{booth}", cookies=_ws_auth()) as ws_a:
+            pid_a, _ = _ws_join(ws_a, "IntA", "interpreter", "French", channel)
+            ws_b.receive_text()  # drain broadcast from A joining on ws_b
+
+            pid_b, _ = _ws_join(ws_b, "IntB", "interpreter", "French", channel)
+            ws_a.receive_text()  # drain broadcast to ws_a when ws_b joins
+
+            ws_a.send_text(json.dumps({"type": "booth:update-state", "mic_active": True, "ingest_connected": True}))
+            live = json.loads(ws_a.receive_text())
+            ws_b.receive_text()  # same booth:state broadcast on ws_b
+            assert live["state"]["active_interpreter_id"] == pid_a
+            assert live["state"]["ingest_status"] == "connected"
+
+        # A's socket closed without booth:leave; B gets the state from the disconnect cleanup.
+        msg = json.loads(ws_b.receive_text())
+
+    assert msg["type"] == "booth:state"
+    assert msg["state"]["active_interpreter_id"] == pid_b
+    assert msg["state"]["ingest_status"] == "disconnected"
+
+
 # ── Layer 2: WHIP URL gated endpoint tests ────────────────────────────────────
 
 
