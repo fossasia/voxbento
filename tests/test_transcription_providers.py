@@ -11,8 +11,217 @@ import portal.globals as pg
 from portal.transcription.providers.base import ProviderConfig, TranscriptionProvider, pcm_to_wav
 
 
+def _atlas_response(status: int, body: object) -> httpx.Response:
+    return httpx.Response(
+        status,
+        json=body,
+        request=httpx.Request("GET", "https://api.atlascloud.ai/api/v1/model/prediction/p"),
+    )
+
+
+def _completed_payload(text: str) -> dict:
+    return {
+        "code": 200,
+        "data": {"id": "p", "status": "completed", "outputs": [text], "stt_result": {"text": text}},
+    }
+
+
+def _atlas_client(submit: httpx.Response, polls: list) -> MagicMock:
+    client = MagicMock()
+    client.post = AsyncMock(return_value=submit)
+    client.get = AsyncMock(side_effect=polls)
+    return client
+
+
+async def _run_atlas(provider, client: MagicMock, language: str = "en-US") -> str:
+    with (
+        patch("portal.transcription.providers.atlascloud.get_http_client", return_value=client),
+        patch("portal.transcription.providers.atlascloud.asyncio.sleep", new_callable=AsyncMock),
+    ):
+        return await provider.process_chunk(
+            b"\x00" * 3200, language, "bytedance/seed-asr-2.0", ProviderConfig(api_key="fake")
+        )
+
+
 @pytest.mark.anyio
 class TestTranscriptionProviders:
+    async def test_atlascloud_process_chunk_submits_once_and_polls(self):
+        from portal.transcription.providers.atlascloud import AtlasCloudProvider
+
+        mock_client = _atlas_client(
+            submit=_atlas_response(200, {"code": 200, "data": {"id": "prediction-1", "status": "processing"}}),
+            polls=[_atlas_response(200, _completed_payload("Hello from Atlas"))],
+        )
+
+        result = await _run_atlas(AtlasCloudProvider(), mock_client)
+
+        assert result == "Hello from Atlas"
+        mock_client.post.assert_awaited_once()
+        mock_client.get.assert_awaited_once()
+        payload = mock_client.post.await_args.kwargs["json"]
+        assert payload["model"] == "bytedance/seed-asr-2.0"
+        assert payload["audio_url"].startswith("data:audio/wav;base64,")
+        assert payload["format"] == "wav"
+        assert payload["language"] == "en-US"
+
+    async def test_atlascloud_reads_the_stt_result_shape_the_api_returns(self):
+        from portal.transcription.providers.atlascloud import AtlasCloudProvider
+
+        # Shape of a real seed-asr-2.0 prediction: stt_result carries the text, outputs repeats it.
+        mock_client = _atlas_client(
+            submit=_atlas_response(200, {"code": 200, "data": {"id": "p", "status": "processing", "outputs": None}}),
+            polls=[
+                _atlas_response(
+                    200,
+                    {
+                        "code": 200,
+                        "data": {
+                            "id": "p",
+                            "status": "completed",
+                            "outputs": ["Hello. This is a test of."],
+                            "stt_result": {"text": " Hello. This is a test of. ", "duration": 1.5, "words": []},
+                        },
+                    },
+                )
+            ],
+        )
+
+        assert await _run_atlas(AtlasCloudProvider(), mock_client) == "Hello. This is a test of."
+
+    async def test_atlascloud_completed_without_speech_returns_empty(self):
+        from portal.transcription.providers.atlascloud import AtlasCloudProvider
+
+        mock_client = _atlas_client(
+            submit=_atlas_response(200, _completed_payload("")),
+            polls=[],
+        )
+
+        assert await _run_atlas(AtlasCloudProvider(), mock_client) == ""
+        mock_client.get.assert_not_awaited()
+
+    async def test_atlascloud_omits_language_in_auto_detect(self):
+        from portal.transcription.providers.atlascloud import AtlasCloudProvider
+
+        mock_client = _atlas_client(submit=_atlas_response(200, _completed_payload("hi")), polls=[])
+
+        await _run_atlas(AtlasCloudProvider(), mock_client, language="")
+
+        assert "language" not in mock_client.post.await_args.kwargs["json"]
+
+    @pytest.mark.parametrize("status", [401, 403])
+    async def test_atlascloud_auth_failure_raises_with_the_provider_message(self, status):
+        from portal.transcription.providers.atlascloud import AtlasCloudError, AtlasCloudProvider
+
+        mock_client = _atlas_client(
+            submit=_atlas_response(status, {"code": status, "msg": "Invalid key", "data": None}),
+            polls=[],
+        )
+
+        with pytest.raises(AtlasCloudError, match=rf"HTTP {status}: Invalid key"):
+            await _run_atlas(AtlasCloudProvider(), mock_client)
+        mock_client.get.assert_not_awaited()
+
+    async def test_atlascloud_api_level_error_body_keeps_its_message(self):
+        from portal.transcription.providers.atlascloud import AtlasCloudError, AtlasCloudProvider
+
+        mock_client = _atlas_client(
+            submit=_atlas_response(200, {"code": 401, "msg": "Invalid key", "data": None}),
+            polls=[],
+        )
+
+        with pytest.raises(AtlasCloudError, match="Invalid key"):
+            await _run_atlas(AtlasCloudProvider(), mock_client)
+
+    async def test_atlascloud_failed_prediction_raises_instead_of_returning_empty(self):
+        from portal.transcription.providers.atlascloud import AtlasCloudError, AtlasCloudProvider
+
+        mock_client = _atlas_client(
+            submit=_atlas_response(200, {"code": 200, "data": {"id": "p", "status": "processing"}}),
+            polls=[_atlas_response(200, {"code": 200, "data": {"id": "p", "status": "failed", "error": "bad audio"}})],
+        )
+
+        with pytest.raises(AtlasCloudError, match="bad audio"):
+            await _run_atlas(AtlasCloudProvider(), mock_client)
+
+    @pytest.mark.parametrize(
+        "submit_body",
+        [
+            ["not", "an", "object"],
+            {"code": 200, "data": "not-an-object"},
+            {"code": 200, "data": {"status": "processing"}},
+        ],
+    )
+    async def test_atlascloud_malformed_submit_payload_raises(self, submit_body):
+        from portal.transcription.providers.atlascloud import AtlasCloudProvider
+
+        mock_client = _atlas_client(submit=_atlas_response(200, submit_body), polls=[])
+
+        with pytest.raises(ValueError):
+            await _run_atlas(AtlasCloudProvider(), mock_client)
+
+    async def test_atlascloud_retries_transient_poll_failures(self):
+        from portal.transcription.providers.atlascloud import AtlasCloudProvider
+
+        mock_client = _atlas_client(
+            submit=_atlas_response(200, {"code": 200, "data": {"id": "p", "status": "processing"}}),
+            polls=[
+                _atlas_response(429, {"code": 429, "msg": "slow down"}),
+                _atlas_response(503, {"code": 503, "msg": "unavailable"}),
+                httpx.ConnectError("boom", request=httpx.Request("GET", "https://api.atlascloud.ai/x")),
+                _atlas_response(200, _completed_payload("recovered")),
+            ],
+        )
+
+        assert await _run_atlas(AtlasCloudProvider(), mock_client) == "recovered"
+        assert mock_client.get.await_count == 4
+        mock_client.post.assert_awaited_once()
+
+    async def test_atlascloud_does_not_retry_an_auth_failure_while_polling(self):
+        from portal.transcription.providers.atlascloud import AtlasCloudError, AtlasCloudProvider
+
+        mock_client = _atlas_client(
+            submit=_atlas_response(200, {"code": 200, "data": {"id": "p", "status": "processing"}}),
+            polls=[_atlas_response(401, {"code": 401, "msg": "Invalid key"})],
+        )
+
+        with pytest.raises(AtlasCloudError, match="HTTP 401: Invalid key"):
+            await _run_atlas(AtlasCloudProvider(), mock_client)
+        assert mock_client.get.await_count == 1
+
+    async def test_atlascloud_poll_budget_is_short_enough_for_live_audio(self):
+        from portal.transcription.providers import atlascloud
+
+        assert atlascloud.MAX_POLL_ATTEMPTS * atlascloud.POLL_INTERVAL_SECONDS <= 12
+
+    async def test_atlascloud_times_out_when_the_prediction_never_finishes(self):
+        from portal.transcription.providers.atlascloud import AtlasCloudProvider
+
+        still_running = _atlas_response(200, {"code": 200, "data": {"id": "p", "status": "processing"}})
+        mock_client = _atlas_client(
+            submit=_atlas_response(200, {"code": 200, "data": {"id": "p", "status": "processing"}}),
+            polls=[still_running] * 3,
+        )
+
+        with patch("portal.transcription.providers.atlascloud.MAX_POLL_ATTEMPTS", 3):
+            with pytest.raises(TimeoutError):
+                await _run_atlas(AtlasCloudProvider(), mock_client)
+        assert mock_client.get.await_count == 3
+
+    async def test_atlascloud_missing_key_raises_without_a_request(self):
+        from portal.transcription.providers.atlascloud import AtlasCloudError, AtlasCloudProvider
+
+        provider = AtlasCloudProvider()
+        with patch("portal.transcription.providers.atlascloud.get_http_client") as mock_get_client:
+            with pytest.raises(AtlasCloudError, match="API key missing"):
+                await provider.process_chunk(
+                    b"\x00" * 100,
+                    "en-US",
+                    "bytedance/seed-asr-2.0",
+                    ProviderConfig(api_key=None),
+                )
+
+        mock_get_client.assert_not_called()
+
     async def test_pcm_to_wav_produces_valid_wav_header(self):
         result = pcm_to_wav(b"\x00" * 3200, sample_rate=16000)
         assert result.startswith(b"RIFF")

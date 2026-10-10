@@ -30,6 +30,7 @@ def get_api_key(event: Event, provider: ProviderEnum) -> str | None:
         ProviderEnum.DEEPGRAM: event.encrypted_deepgram_api_key,
         ProviderEnum.NVIDIA: event.encrypted_nvidia_api_key,
         ProviderEnum.ELEVENLABS: event.encrypted_elevenlabs_api_key,
+        ProviderEnum.ATLASCLOUD: event.encrypted_atlascloud_api_key,
     }
     encrypted = key_map.get(provider)
     return decrypt_val(encrypted) if encrypted else None
