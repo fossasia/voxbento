@@ -437,6 +437,49 @@ async def test_room_coordinator_cannot_set_ingest_connected_when_not_active():
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("value", [1, "true"])
+async def test_standby_interpreter_cannot_mark_booth_live_with_non_bool(value):
+    """A truthy non-bool must not skip the active-interpreter check."""
+    registry = BoothRegistry()
+    await join(registry, "Interpreter A")  # becomes active
+    interpreter_b = await join(registry, "Interpreter B")
+
+    with pytest.raises(ValueError, match="must be true or false"):
+        await registry.update_participant_state(
+            "hall-1-fr",
+            interpreter_b.participant_id,
+            "French",
+            "hall-1-fr-audio",
+            mic_active=value,
+            ingest_connected=value,
+        )
+
+    state = await registry.snapshot("hall-1-fr", "French", "hall-1-fr-audio")
+    assert state["ingest_status"] == "disconnected"
+    assert not any(p["mic_active"] or p["ingest_connected"] for p in state["participants"])
+
+
+@pytest.mark.anyio
+async def test_support_cannot_mark_booth_live_with_non_bool():
+    """A truthy non-bool must not skip the BOOTH_GO_LIVE check."""
+    registry = BoothRegistry()
+    await join(registry, "Interpreter A")  # becomes active
+    support = await join(registry, "Support", role="support")
+
+    with pytest.raises(ValueError, match="ingest_connected must be true or false"):
+        await registry.update_participant_state(
+            "hall-1-fr",
+            support.participant_id,
+            "French",
+            "hall-1-fr-audio",
+            ingest_connected=1,
+        )
+
+    state = await registry.snapshot("hall-1-fr", "French", "hall-1-fr-audio")
+    assert state["ingest_status"] == "disconnected"
+
+
+@pytest.mark.anyio
 async def test_check_publish_permission_active_interpreter_passes():
     """Active interpreter passes the publish permission check."""
     registry = BoothRegistry()

@@ -482,6 +482,40 @@ def test_ws_standby_cannot_set_mic_active():
     assert err_msg["type"] == "booth:error"
 
 
+def test_ws_standby_cannot_mark_booth_live_with_non_bool():
+    """Standby interpreter sending ingest_connected: 1 gets booth:error and the booth stays not live."""
+    from portal.globals import booths
+
+    booth = "non-bool-state-booth"
+    with (
+        client.websocket_connect(f"/ws/booth/{booth}", cookies=_ws_auth()) as ws_a,
+        client.websocket_connect(f"/ws/booth/{booth}", cookies=_ws_auth()) as ws_b,
+    ):
+        for ws, name in ((ws_a, "A"), (ws_b, "B")):
+            ws.send_text(
+                json.dumps(
+                    {
+                        "type": "booth:join",
+                        "display_name": name,
+                        "role": "interpreter",
+                        "language": "French",
+                        "channel_id": f"{booth}-audio",
+                    }
+                )
+            )
+            ws.receive_text()  # booth:joined
+            ws_a.receive_text()  # booth:state broadcast
+            ws_b.receive_text()  # booth:state broadcast
+
+        ws_b.send_text(json.dumps({"type": "booth:update-state", "ingest_connected": 1, "mic_active": 1}))
+        err_msg = json.loads(ws_b.receive_text())
+
+        assert err_msg["type"] == "booth:error"
+        state = booths.get_booth_sync(booth)
+        assert state.ingest_status == "disconnected"
+        assert not any(p.mic_active or p.ingest_connected for p in state.participants.values())
+
+
 def test_ws_three_way_coordinator_flow():
     """Full 3-connection scenario: two interpreters + coordinator.
 

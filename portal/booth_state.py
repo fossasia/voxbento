@@ -476,6 +476,15 @@ class BoothRegistry:
         ingest_connected: bool | None = None,
         connected: bool | None = None,
     ) -> dict:
+        # The permission checks below look for ``True``, so a truthy non-bool
+        # (``1``, ``"true"``) would skip them and still be stored.
+        for name, value in (
+            ("mic_active", mic_active),
+            ("ingest_connected", ingest_connected),
+            ("connected", connected),
+        ):
+            if value is not None and not isinstance(value, bool):
+                raise ValueError(f"{name} must be true or false.")
         async with self._lock:
             booth = self._get_or_create_booth(booth_id, language, channel_id)
             participant = booth.participants.get(participant_id)
