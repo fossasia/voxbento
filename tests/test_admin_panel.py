@@ -1416,6 +1416,92 @@ async def test_admin_pages_have_a_toast_live_region(admin_cookie, seed_event):
 @pytest.mark.parametrize(
     "path",
     [
+        "/admin/events/",
+        "/admin/users/",
+        "/admin/events/{event}/rooms/",
+        "/admin/events/{event}/rooms/{room}/booths/",
+    ],
+)
+async def test_admin_list_action_buttons_have_tooltips(path, admin_cookie, seed_event):
+    import re
+
+    from portal.database import create_user, get_session
+
+    event, room, _ = seed_event
+    async with get_session() as s:
+        await create_user(s, email="tooltip@example.com", display_name="Tooltip")
+
+    async with _client() as c:
+        resp = await c.get(path.format(event=event.id, room=room.id), cookies=admin_cookie)
+
+    assert resp.status_code == 200
+    buttons = re.findall(r'<button type="submit" class="btn btn-sm[^>]*>', resp.text)
+    assert buttons, "expected row action buttons on the page"
+    for button in buttons:
+        # Consistent title/aria-label: every row action carries both, non-empty and
+        # matching, so the accessible name is the same whether or not the browser
+        # exposes `title`.
+        title_match = re.search(r'title="([^"]*)"', button)
+        aria_label_match = re.search(r'aria-label="([^"]*)"', button)
+        assert title_match and title_match.group(1), button
+        assert aria_label_match and aria_label_match.group(1), button
+        assert title_match.group(1) == aria_label_match.group(1), button
+
+
+@pytest.mark.anyio
+async def test_user_list_row_actions_snapshot(admin_cookie):
+    """Small structural snapshot of the user list row actions.
+
+    Pins the shape of the Activate/Deactivate + Delete buttons (classes,
+    title, aria-label) so a future column change that drops one of these
+    attributes fails loudly here instead of only in manual QA.
+    """
+    import re
+
+    from portal.database import create_user, get_session
+
+    async with get_session() as s:
+        await create_user(s, email="snapshot@example.com", display_name="Snapshot User")
+
+    async with _client() as c:
+        resp = await c.get("/admin/users/", cookies=admin_cookie)
+
+    assert resp.status_code == 200
+    row_match = re.search(
+        r'<tr>(?:(?!</tr>).)*?snapshot@example\.com.*?</tr>',
+        resp.text,
+        re.DOTALL,
+    )
+    assert row_match, "expected a table row for the seeded user"
+    row = row_match.group(0)
+
+    # New users are active by default (portal.models.User.is_active), so the
+    # toggle button reads "Deactivate" here. The label includes the user's
+    # email so repeated "Deactivate"/"Delete" buttons across rows have distinct
+    # accessible names.
+    deactivate_toggle = re.search(
+        r'<button type="submit" class="btn btn-sm btn-warning"\s+'
+        r'title="Deactivate the account for snapshot@example\.com"\s+'
+        r'aria-label="Deactivate the account for snapshot@example\.com">'
+        r"\s*Deactivate\s*</button>",
+        row,
+    )
+    assert deactivate_toggle, row
+
+    delete_button = re.search(
+        r'<button type="submit" class="btn btn-sm btn-danger"'
+        r' title="Permanently delete the account for snapshot@example\.com"\s+'
+        r'aria-label="Permanently delete the account for snapshot@example\.com">'
+        r"Delete</button>",
+        row,
+    )
+    assert delete_button, row
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "path",
+    [
         "/admin/events/{event}/",
         "/admin/events/{event}/members/",
         "/admin/events/{event}/api-settings/",
