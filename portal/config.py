@@ -32,6 +32,11 @@ class Settings(BaseSettings):
     mediamtx_api_base: str = "http://localhost:9997"
     mediamtx_rtsp_base: str = "rtsp://mediamtx:8554"
     floor_bot_base: str = "http://floor-bot:8080"
+    mediamtx_auth_hook_secret: str = ""
+    program_ingest_enabled: bool = False  # Enable only with the authenticated MediaMTX configuration.
+    program_ingest_max_rooms: int = 10
+    program_ingest_disconnect_grace_secs: float = 15.0
+    program_ingest_stall_secs: float = 30.0
 
     @property
     def effective_jitsi_base_url(self) -> str:
@@ -86,6 +91,11 @@ class Settings(BaseSettings):
                 "SECRET_KEY (or JWT_SECRET) is set to a known-weak default value. "
                 "Set a strong random value before running in production. "
                 "Generate one with: openssl rand -hex 32"
+            )
+        if not self.mediamtx_auth_hook_secret:
+            raise RuntimeError(
+                "MEDIAMTX_AUTH_HOOK_SECRET is not set. Configure the same random value for "
+                "the portal and MediaMTX. Generate one with: openssl rand -hex 32"
             )
 
     # Transcription Settings

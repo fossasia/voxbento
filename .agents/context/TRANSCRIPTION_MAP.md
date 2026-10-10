@@ -181,3 +181,21 @@ If the booth is currently live (`state.active_interpreter_id is not None`), the 
 Clients subscribe to `/ws/captions/{booth_id}` (no auth).
 Receives: `booth:state`, `caption {status: partial|final|clear, text}`.
 Used by: listener pages, subtitling overlays.
+## Program floor ingest (#690)
+
+`portal/program_ingest.py` authenticates native MediaMTX floor publishes and
+reconciles exactly one existing floor worker per room from one bulk path snapshot
+per tick. Per-room locks isolate ownership work; the cross-room capacity lock
+covers only its reservation transaction. Migration 025 selects
+`jitsi_bot`/`program_ingest`; bot start is rejected for program-owned floors.
+Credential invalidation commits before MediaMTX cleanup, and publisher
+negotiation grace is tracked separately from an established stream disconnect.
+WHIP Opus → canonical `{event}/{room}/floor` → FFmpeg first audio track → existing
+provider/aggregator/storage/translation/TTS. PCM progress drives health separately
+from video byte progress. Partial captions never synthesize speech.
+
+Program floor final sequence is atomic/DB-backed. `transcription/timing.py` carries
+per-segment receive-time/offset metadata through async translation tasks into text
+and TTS frames. Listener `program-delivery.js` schedules presentation only. No true
+encoder timecode is claimed. See `docs/program-stream-ingest.md` for capacity,
+30-day key expiry, disconnect grace and test rehearsal requirements.

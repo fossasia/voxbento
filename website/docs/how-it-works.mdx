@@ -189,3 +189,23 @@ MediaMTX is configured to allow only one publisher per stream path at a time. Ev
 
 </TabItem>
 </Tabs>
+## Program floor source
+
+An optional program-ingest mode replaces only the Jitsi audio adapter. The encoder
+sends a separate HTTPS WHIP output to MediaMTX's canonical event/room/floor path;
+YouTube receives its own independent output. FastAPI authorizes publishing through
+MediaMTX's internal HTTP callback and reconciles room-owned transcription workers.
+The reconciler reads one MediaMTX path snapshot per tick, and per-room ownership
+locks keep an unavailable room from delaying authorization for other rooms.
+Credential revocation commits before media cleanup; if cleanup is temporarily
+unavailable, the old token stays invalid while reconciliation retries the kick.
+Media never passes through FastAPI. Only one floor source may own a room.
+
+The existing FFmpeg/STT/aggregator/storage/translation/TTS chain is reused. Program
+segments retain IDs, a persistent room sequence and receive-time metadata into
+translated text and synthesized speech. Listener-side delay aligns these with an
+external video; inference is never intentionally delayed. This is approximate
+manual synchronization, not shared encoder timecode.
+
+See the repository's `docs/program-stream-ingest.md` for rollout, security limits,
+encoder compatibility, capacity and the required two-destination rehearsal.

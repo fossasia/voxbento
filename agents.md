@@ -91,7 +91,7 @@ VoxBento is a production-grade **browser-first interpretation booth console** fo
 
 1. **One active publisher per language channel.** MediaMTX enforces `overridePublisher: yes`; Python enforces via `BoothRegistry`.
 2. **Interpreter mic audio never routes to `AudioContext.destination`.** No local loopback.
-3. **No OBS/RTMP/external encoder.** Browser-only ingest via WHIP.
+3. **Interpreter ingest remains browser-only WHIP.** Explicit exception: room-scoped Program Stream Ingest (#690) accepts authenticated HTTPS WHIP from an external encoder. No YouTube pulling/relay or public RTMP/SRT. Floor ownership is `jitsi_bot` or `program_ingest`; never last-publisher-wins.
 4. **Jitsi is monitoring only** — receive-only iframe. Not the ingest transport.
 5. **No framework.** Frontend is plain ES modules in `portal/static/js/`. No Vue, React, jQuery, inline `<script>` blocks.
 6. **No Flask, Socket.IO, aiortc.**
@@ -215,7 +215,13 @@ Manual browser check:
 
 - Python runtime: `3.13.x` (enforced in `pyproject.toml`)
 - `uv.lock` is the source of truth for all Python dependencies.
-- Docker images: `bluenviron/mediamtx:1`, `ghcr.io/jitsi/*:stable-11248`
+- Docker images: `bluenviron/mediamtx:1.18.2`, `ghcr.io/jitsi/*:stable-11248`
+
+Program ingest: `portal/program_ingest.py` owns floor authorization/reconciliation;
+`portal/routers/program_ingest.py` owns private media auth and event-owner controls.
+Migration 025 adds protected credentials, source ownership and persistent floor
+sequence. One portal replica; program media never traverses Python. Read
+`docs/program-stream-ingest.md` before changing this boundary or deploying it.
 
 ---
 

@@ -6,7 +6,7 @@ services:
       context: .
       dockerfile: Dockerfile
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
     environment:
       HOST: "0.0.0.0"
       PORT: "8000"
@@ -29,6 +29,9 @@ services:
       # Browser-facing URLs — must be reachable from the user's machine
       MEDIAMTX_WHIP_BASE: "${MEDIAMTX_WHIP_BASE:-http://localhost:8889}"
       FLOOR_BOT_BASE: "http://floor-bot:8080"
+      MEDIAMTX_AUTH_HOOK_SECRET: "${MEDIAMTX_AUTH_HOOK_SECRET:-}"
+      PROGRAM_INGEST_ENABLED: "${PROGRAM_INGEST_ENABLED:-false}"
+      PUBLIC_BASE_URL: "${PUBLIC_BASE_URL:-https://voxbento.com}"
 
       # MediaMTX Control API (Docker internal) — creates alwaysAvailable paths
       MEDIAMTX_API_BASE: "http://mediamtx:9997"
@@ -72,15 +75,19 @@ services:
 
   # ── MediaMTX audio server ─────────────────────────────────────
   mediamtx:
-    image: bluenviron/mediamtx:1
+    # Program-ingest kick endpoints are verified against this exact API version.
+    # Re-run tests/test_program_ingest_media.py before changing the pin.
+    image: bluenviron/mediamtx:1.18.2
     volumes:
       - ./mediamtx.yml:/mediamtx.yml:ro
+    environment:
+      MTX_AUTHHTTPADDRESS: "http://portal:8000/internal/media-auth?key=${MEDIAMTX_AUTH_HOOK_SECRET:-}"
     ports:
-      - "8888:8888"    # MediaMTX HTTP (used by Control API health checks)
-      - "8889:8889"    # WHIP/WHEP (WebRTC HTTP ingest + playback)
+      - "127.0.0.1:8888:8888" # HTTPS proxy only
+      - "127.0.0.1:8889:8889" # HTTPS proxy only
       - "8189:8189/udp" # WebRTC ICE/UDP mux
-      - "9997:9997"    # Control API (used by FastAPI for alwaysAvailable paths)
-      - "8554:8554"    # RTSP (for faster-whisper/ffmpeg integration)
+      - "127.0.0.1:9997:9997" # Private control API
+      - "127.0.0.1:8554:8554" # Private RTSP
     restart: unless-stopped
 
   # ── Self-hosted Jitsi Meet ────────────────────────────────────

@@ -98,6 +98,26 @@ def test_token_redactor_handles_split_args():
     assert "[REDACTED]" in output
 
 
+def test_token_redactor_hides_internal_hook_secret():
+    import logging
+
+    from fastapi_app import _UvicornTokenRedactor
+
+    record = logging.LogRecord(
+        name="uvicorn.access",
+        level=logging.INFO,
+        pathname="",
+        lineno=0,
+        msg='%s - "%s %s HTTP/%s" %d',
+        args=("127.0.0.1:1234", "POST", "/internal/media-auth?key=hook-secret", "1.1", 204),
+        exc_info=None,
+    )
+    _UvicornTokenRedactor().filter(record)
+    output = record.getMessage()
+    assert "hook-secret" not in output
+    assert "key=[REDACTED]" in output
+
+
 def test_healthz_ok():
     res = client.get("/healthz")
     assert res.status_code == 200, res.text
@@ -1578,8 +1598,26 @@ def test_weak_secret_allowed_in_debug_mode():
 def test_strong_secret_passes_production():
     from portal.config import Settings
 
-    s = Settings(debug=False, secret_key="a-strong-random-secret-0123456789abcdef", jwt_secret="")
+    s = Settings(
+        debug=False,
+        secret_key="a-strong-random-secret-0123456789abcdef",
+        jwt_secret="",
+        mediamtx_auth_hook_secret="media-hook-secret",
+    )
     s.validate_production_secrets()  # must not raise
+
+
+def test_missing_media_auth_hook_secret_raises_in_production():
+    from portal.config import Settings
+
+    s = Settings(
+        debug=False,
+        secret_key="a-strong-random-secret-0123456789abcdef",
+        jwt_secret="",
+        mediamtx_auth_hook_secret="",
+    )
+    with pytest.raises(RuntimeError, match="MEDIAMTX_AUTH_HOOK_SECRET"):
+        s.validate_production_secrets()
 
 
 # ── Unified error pages (PR #263) ──────────────────────────────────────

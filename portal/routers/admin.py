@@ -9,6 +9,7 @@ import urllib.parse
 from datetime import timedelta
 from pathlib import Path
 
+import httpx
 import pycountry
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request, status
 from fastapi.responses import RedirectResponse
@@ -969,6 +970,8 @@ async def api_start_floor_transcription(room_id: int):
         room = await get_room_by_id(session, room_id)
         if not room or not room.floor_transcription_enabled:
             raise HTTPException(status_code=400, detail="Floor transcription not enabled or invalid room")
+        if room.floor_source == "program_ingest":
+            raise HTTPException(status_code=409, detail="Program ingest owns the floor; transcription starts automatically when audio arrives")
         if room.floor_transcription_provider == "none":
             raise HTTPException(status_code=400, detail="Cannot start transcription with 'none' provider")
         event = await get_event_by_id(session, room.event_id)
@@ -1007,6 +1010,17 @@ async def api_start_floor_transcription(room_id: int):
     except Exception as e:
         logger.error(f"Failed to start floor-bot: {e}")
         raise HTTPException(status_code=502, detail="Bot service connection failed or access was revoked upstream.")
+    # Ownership may change while the bot's slow browser startup is in flight.
+    async with get_session() as session:
+        current_room = await get_room_by_id(session, room_id)
+        if not current_room or current_room.floor_source != "jitsi_bot":
+            try:
+                await client.post(
+                    f"{settings.floor_bot_base}/stop", json={"event_slug": event_slug, "room_id": room_id}
+                )
+            except httpx.HTTPError:
+                logger.warning("Failed to clean up floor-bot after ownership changed room_id=%s", room_id)
+            raise HTTPException(status_code=409, detail="Floor source changed during bot startup")
     try:
         api_key = get_api_key(event, ProviderEnum(room.floor_transcription_provider))
         config = ProviderConfig(api_key=api_key)
@@ -1035,6 +1049,8 @@ async def api_stop_floor_transcription(room_id: int):
         room = await get_room_by_id(session, room_id)
         if not room:
             raise HTTPException(status_code=400, detail="Invalid room")
+        if room.floor_source == "program_ingest":
+            raise HTTPException(status_code=409, detail="Revoke or disable program ingest in the room settings to stop its floor source")
         event = await get_event_by_id(session, room.event_id)
         if not event:
             raise HTTPException(status_code=400, detail="Event not found")

@@ -123,6 +123,14 @@ class Room(Base):
     )
     floor_transcription_model: Mapped[str] = mapped_column(String(40), default="tiny", server_default=sa.text("'tiny'"))
     floor_language_code: Mapped[str | None] = mapped_column(String(10), nullable=True, default=None)
+    floor_source: Mapped[str] = mapped_column(String(20), default="jitsi_bot", server_default="jitsi_bot")
+    program_key_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    program_key_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    program_session_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    program_connected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    program_disconnected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    program_sync_offset_ms: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    floor_caption_seq: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
 
     # Translation Settings
     floor_translation_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")

@@ -120,9 +120,14 @@ class TTSConnectionManager:
         caption: str = "",
         translation: str = "",
         error: str | None = None,
+        audio_pending: bool | None = None,
     ) -> None:
         key = self._get_key(room_id, language_code, booth_id)
-        header = {"segment_id": segment_id, "seq": seq, "caption": caption, "translation": translation, "error": error}
+        from portal.transcription.timing import timing_metadata
+
+        header = {"segment_id": segment_id, "seq": seq, "caption": caption, "translation": translation, "error": error,
+                  "audio_pending": (not audio_bytes and error is None) if audio_pending is None else audio_pending,
+                  **timing_metadata()}
         header_bytes = json.dumps(header).encode("utf-8")
         # Frame: [1-byte version][4-byte length L][L-bytes header][audio_bytes]
         frame = struct.pack(">BI", 1, len(header_bytes)) + header_bytes + audio_bytes

@@ -115,3 +115,16 @@ Legacy organizer requests to allowlisted event-management paths under `/admin/`,
 | `portal/websockets/manager.py` | `ws_booth` and `ws_captions` endpoints |
 | `portal/websockets/handlers.py` | Specific `_handle_*` logic for WS messages |
 | `fastapi_app.py` | Application lifespan, router include aggregation |
+## Program ingest routes (#690)
+
+- `POST /internal/media-auth`: private MediaMTX callback only, blocked by Caddy;
+  requires the shared `MEDIAMTX_AUTH_HOOK_SECRET`, then checks canonical floor
+  identity, source mode, digest, expiry, capacity and per-IP failure rate. Other
+  legacy interpreter paths are unchanged.
+- `GET/POST /workspace/events/{event_id}/rooms/{room_id}/program-ingest`:
+  event-owner controls/status, mapped to shared `/admin/...` handlers. No-store;
+  rotate/enable responses reveal a new token once. POST supports enable, rotate,
+  revoke, disable and sync. Revoke returns 202 with `cleanup_pending` when the
+  credential is invalidated but MediaMTX cleanup must be retried.
+  `portal/routers/program_ingest.py` owns both routes.
+- Existing floor-bot start/stop returns 409 while program ingest owns the room.

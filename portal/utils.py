@@ -91,6 +91,9 @@ async def _ensure_mediamtx_path(channel_id: str) -> None:
         "alwaysAvailableTracks": [{"codec": "Opus"}],
         "overridePublisher": True,
     }
+    # Floor publishers are selected explicitly, never by a last-publisher-wins race.
+    if channel_id.endswith("/floor"):
+        body = {"alwaysAvailable": False, "overridePublisher": False}
     try:
         client = get_http_client()
         r = await client.post(

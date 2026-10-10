@@ -1,0 +1,31 @@
+<section id='program-ingest' class='token-form-card token-form-card--spaced'
+  data-url='{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/program-ingest'>
+  <h3>Program Stream Ingest</h3>
+  <p><strong>Keep streaming directly to YouTube; add VoxBento as a second destination.</strong></p>
+  <p>Use a WHIP-capable encoder with Opus audio. In OBS choose WHIP and enter the endpoint and bearer token below.
+    Keep your YouTube output running separately using a multi-output capability or external distribution service.
+    VoxBento does not need your YouTube key. If your encoder has only one output, keep using Jitsi until you add a second output.</p>
+  <p id='program-status' role='status' aria-live='polite'>Loading ingest status…</p>
+  <p id='program-warnings'></p>
+  <label for='program-endpoint'>HTTPS WHIP endpoint</label>
+  <input id='program-endpoint' class='input' readonly>
+  <div class='form-row'>
+    <button type='button' class='btn btn-primary' data-ingest-action='enable'>Enable / replace floor source</button>
+    <button type='button' class='btn btn-secondary' data-ingest-action='rotate'>Rotate token</button>
+    <button type='button' class='btn btn-secondary' data-ingest-action='revoke'>Revoke token</button>
+    <button type='button' class='btn btn-secondary' data-ingest-action='disable'>Use Jitsi floor bot</button>
+  </div>
+  <div id='program-secret-panel' hidden>
+    <p>This token is shown only once and expires in 30 days. Save it in your encoder. Rotating or revoking disconnects the current stream.</p>
+    <label for='program-secret'>VoxBento bearer token</label>
+    <input id='program-secret' class='input' type='password' readonly autocomplete='off'>
+    <button type='button' class='btn btn-secondary' id='program-reveal'>Reveal / hide</button>
+    <button type='button' class='btn btn-secondary' id='program-copy'>Copy token</button>
+  </div>
+  <label for='program-offset'>Additional program caption / TTS delay (milliseconds, 0–120000)</label>
+  <input id='program-offset' class='input' type='number' min='0' max='120000' step='100' value='{{ room.program_sync_offset_ms }}'>
+  <button type='button' class='btn btn-secondary' data-ingest-action='sync'>Save synchronization delay</button>
+  <p>Calibrate with a spoken count and visible clap on YouTube. Delay VoxBento until both match; reload listeners after changing this value.
+    This delays listener presentation, not speech recognition. It cannot make late synthesized speech arrive earlier.</p>
+</section>
+<script type='module' src='/static/js/program-ingest.js'></script>

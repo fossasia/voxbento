@@ -266,3 +266,12 @@ async with get_session() as session:
 - `configure(url)` overrides engine (used in tests).
 - `init_db()` creates all tables without Alembic (tests only).
 - `dispose()` disposes connection pool.
+## Migration 025 — program floor ownership
+
+Room fields: `floor_source` (default `jitsi_bot`), nullable `program_key_hash`
+(PBKDF2-HMAC-SHA256 digest; never serialize), `program_key_expires_at`, `program_session_id`,
+`program_connected_at`, `program_disconnected_at`, plus `program_sync_offset_ms`
+and `floor_caption_seq` (both default 0). Source configuration uses a serialized
+transaction; the MediaMTX auth callback reserves a session before negotiation.
+Final floor sequence increments atomically and survives worker/portal restarts.
+Raw credentials are only returned at create/rotate; no YouTube keys are stored.

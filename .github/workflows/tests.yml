@@ -34,6 +34,7 @@ jobs:
 
     env:
       API_KEY_ENCRYPTION_KEY: "ci-test-encryption-key-must-be-32-chars-long"
+      MEDIAMTX_AUTH_HOOK_SECRET: "ci-test-mediamtx-hook-secret"
 
     steps:
       - name: Checkout repository
@@ -81,6 +82,7 @@ jobs:
       JITSI_DOMAIN: localhost:8080
       MEDIAMTX_WHIP_BASE: http://localhost:8889
       MEDIAMTX_API_BASE: http://mediamtx:9997
+      MEDIAMTX_AUTH_HOOK_SECRET: ci-test-mediamtx-hook-secret
       ADMIN_PASSWORD: ci-admin-pass
       API_KEY_ENCRYPTION_KEY: "ci-test-encryption-key-must-be-32-chars-long"
 
@@ -92,7 +94,9 @@ jobs:
         uses: docker/setup-buildx-action@v4
 
       - name: Validate Docker Compose configuration
-        run: docker compose config --quiet
+        run: |
+          test -n "$MEDIAMTX_AUTH_HOOK_SECRET"
+          docker compose config --quiet
 
       # ── Shared helpers ──────────────────────────────────────
       # wait_for_url  URL  LABEL  [MAX_ATTEMPTS]  [ACCEPT_CODES]

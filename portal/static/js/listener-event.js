@@ -1,3 +1,8 @@
+import { createDeliveryQueue } from './program-delivery.js';
+
+const captionDelivery = createDeliveryQueue();
+const speechDelivery = createDeliveryQueue();
+
 document
   .getElementById("toggle-captions-btn")
   .addEventListener("click", function () {
@@ -73,7 +78,7 @@ var pendingAudioDelayMs = 0;
 var pendingTtsLang = null; // TTS language to start once live
 var pendingRoomId = null;
 var segmentStore = Object.create(null);
-var expectedSeq = 1;
+var expectedSeq = null;
 var isSegmentPlaying = false;
 var fallbackQueueTimer = null;
 var seqWaitTimer = null;
@@ -85,6 +90,8 @@ function normalizeAudioDelayMs(value) {
 }
 
 function stopCurrentStream() {
+  captionDelivery.reset();
+  speechDelivery.reset();
   WhepListener.stop();
   stopTtsWs();
   pendingBoothId = null;
@@ -106,7 +113,7 @@ function stopCurrentStream() {
     fallbackQueueTimer = null;
   }
   segmentStore = Object.create(null);
-  expectedSeq = 1;
+  expectedSeq = null;
   isSegmentPlaying = false;
   if (audioScheduler) {
     audioScheduler.reset();
@@ -126,6 +133,7 @@ function stopCurrentStream() {
 }
 
 function startTtsWs(roomId, langCode, boothId, audioDelayMs) {
+  speechDelivery.reset();
   stopTtsWs();
   if (!audioCtx) {
     audioCtx = new (window.AudioContext || window.webkitAudioContext)();
@@ -162,6 +170,12 @@ function startTtsWs(roomId, langCode, boothId, audioDelayMs) {
     if (event.data instanceof ArrayBuffer) {
       try {
         var frame = window.TTSParser.parseFrame(event.data);
+        if (!event.programDelivered) {
+          speechDelivery.schedule(frame.header, () => {
+            if (ttsWs) ttsWs.onmessage({data: event.data, programDelivered: true});
+          });
+          return;
+        }
         var seq = frame.header.seq;
         if (!seq) return;
 
@@ -169,14 +183,21 @@ function startTtsWs(roomId, langCode, boothId, audioDelayMs) {
         if (expectedSeq === null || expectedSeq === undefined) {
           expectedSeq = seq;
         }
+        if (seq < expectedSeq) return; // Late stage-2 audio must not replay an expired segment.
 
         segmentStore[seq] = {
           seq: seq,
           caption: frame.header.caption || "",
           translation: frame.header.translation || "",
-          error: frame.header.error || null,
+          error: frame.header.error || (frame.header.audio_pending === false && !frame.audioBytes.byteLength ? 'no_audio' : null),
           audioBuffer: null,
+          receivedAt: segmentStore[seq]?.receivedAt || Date.now(),
         };
+
+        if (frame.header.translation) {
+          renderItem({type: 'translation', status: 'final', text: frame.header.translation,
+            language_code: langCode, segment_id: 'seq-' + seq});
+        }
 
         if (
           !frame.header.error &&
@@ -514,6 +535,13 @@ function pumpSegmentQueue() {
       // We have already rendered the text in Steps 1 & 2.
       // Pause the queue and wait for the audio bundle to trigger pumpSegmentQueue again.
       isSegmentPlaying = false;
+      if (!seqWaitTimer) {
+        seqWaitTimer = setTimeout(() => {
+          seqWaitTimer = null;
+          if (segmentStore[expectedSeq]) segmentStore[expectedSeq].error = 'tts_timeout';
+          pumpSegmentQueue();
+        }, Math.max(0, 65000 - (Date.now() - nextSeg.receivedAt)));
+      }
       return;
     }
   } else {
@@ -551,6 +579,10 @@ function finishSegmentWithDelay(seg, seqId) {
 function handleCaptionsMessage(event) {
   try {
     var data = JSON.parse(event.data);
+    if (!event.programDelivered && ['caption', 'translation', 'translated_caption'].includes(data.type)) {
+      captionDelivery.schedule(data, () => handleCaptionsMessage({data: event.data, programDelivered: true}));
+      return;
+    }
     var waitingText = document.getElementById("waiting-text");
 
     if (data.type === "booth:state") {
@@ -610,6 +642,7 @@ function handleCaptionsMessage(event) {
           });
         }
       } else if (data.status === "final") {
+        if (expectedSeq === null && data.seq) expectedSeq = data.seq;
         var mode = captionModeSelect ? captionModeSelect.value : "original";
         var isTranslationActive =
           Boolean(translationLangSelect.value) && mode !== "original";
@@ -643,12 +676,12 @@ function handleCaptionsMessage(event) {
         var currentBox = document.getElementById("caption-current");
         if (currentBox) currentBox.textContent = "";
       }
-    } else if (data.type === "translation") {
+    } else if (data.type === "translation" || data.type === "translated_caption") {
       // Legacy support: translations should now come via the atomic bundle on ttsWs.
       // This block is preserved just in case some legacy clients still send it,
       // but under the new architecture it shouldn't be hit for floor audio.
       var sid = data.segment_id;
-      renderItem(data);
+      renderItem({...data, type: 'translation', segment_id: data.seq ? 'seq-' + data.seq : data.segment_id});
     } else if (data.type === "ping") {
       if (captionsWs && captionsWs.readyState === WebSocket.OPEN) {
         captionsWs.send("pong");
@@ -762,6 +795,7 @@ if (ttsSyncToggle) {
 }
 
 translationLangSelect.addEventListener("change", function () {
+  speechDelivery.reset();
   if (this.value) {
     if (captionModeSelect.value === "original") {
       captionModeSelect.value = "stacked";

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import asyncio
 import logging
 import os
@@ -7,6 +9,7 @@ from typing import Optional
 from portal.config import settings
 
 logger = logging.getLogger(__name__)
+audio_progress: dict[str, float] = {}
 
 
 class FfmpegProcess:
@@ -33,6 +36,8 @@ class FfmpegProcess:
             "tcp",
             "-i",
             self.rtsp_url,
+            "-map",
+            "0:a:0",
             "-vn",
             "-acodec",
             "pcm_s16le",
@@ -42,6 +47,8 @@ class FfmpegProcess:
             "1",
             "-f",
             "s16le",
+            "-progress",
+            "pipe:2",
             "-",
         ]
 
@@ -61,6 +68,10 @@ class FfmpegProcess:
                 line = await self.process.stderr.readline()
                 if not line:
                     break
+                if line.startswith(b"out_time_us="):
+                    value = line.partition(b"=")[2].strip()
+                    if value.isdigit() and int(value) > 0:
+                        audio_progress[self.booth_id] = asyncio.get_running_loop().time()
                 logger.debug(f"[{self.booth_id}] ffmpeg: {line.decode().strip()}")
         except Exception as e:
             logger.debug(f"[{self.booth_id}] ffmpeg stderr logger stopped: {e}")
@@ -82,6 +93,7 @@ class FfmpegProcess:
             raise
 
     async def _perform_cleanup(self):
+        audio_progress.pop(self.booth_id, None)
         if self.process.returncode is None:
             logger.info(f"[{self.booth_id}] Attempting termination of ffmpeg process group (pid={self.process.pid})")
 
@@ -119,3 +131,4 @@ class FfmpegProcess:
                 logger.error(f"[{self.booth_id}] Unexpected error awaiting stderr_task: {e}")
 
         logger.info(f"[{self.booth_id}] ffmpeg cleanup fully completed.")
+        audio_progress.pop(self.booth_id, None)
