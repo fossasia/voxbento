@@ -132,6 +132,64 @@ class TestRegistration:
             assert await get_user_by_email(s, "typo@example.com") is None
 
     @pytest.mark.anyio
+    async def test_register_rejects_short_password(self, setup_db):
+        from portal.database import get_session, get_user_by_email
+
+        async with _client() as c:
+            resp = await c.post(
+                "/register",
+                data={
+                    "email": "short@example.com",
+                    "display_name": "Short User",
+                    "password": "1234567",
+                    "password_confirm": "1234567",
+                },
+            )
+        assert resp.status_code == 422
+        assert b"Password must be at least 8 characters." in resp.content
+        async with get_session() as s:
+            assert await get_user_by_email(s, "short@example.com") is None
+
+    @pytest.mark.anyio
+    async def test_register_accepts_eight_character_password(self, setup_db):
+        from portal.database import get_session, get_user_by_email
+
+        async with _client() as c:
+            resp = await c.post(
+                "/register",
+                data={
+                    "email": "exact8@example.com",
+                    "display_name": "Exact 8 User",
+                    "password": "12345678",
+                    "password_confirm": "12345678",
+                },
+                follow_redirects=False,
+            )
+        assert resp.status_code == 200
+        assert b"Check your email" in resp.content
+        async with get_session() as s:
+            assert await get_user_by_email(s, "exact8@example.com") is not None
+
+    @pytest.mark.anyio
+    async def test_register_rejects_whitespace_only_password(self, setup_db):
+        from portal.database import get_session, get_user_by_email
+
+        async with _client() as c:
+            resp = await c.post(
+                "/register",
+                data={
+                    "email": "whitespace@example.com",
+                    "display_name": "Whitespace User",
+                    "password": "   ",
+                    "password_confirm": "   ",
+                },
+            )
+        assert resp.status_code == 422
+        assert b"Password cannot be blank or only whitespace." in resp.content
+        async with get_session() as s:
+            assert await get_user_by_email(s, "whitespace@example.com") is None
+
+    @pytest.mark.anyio
     async def test_register_passwordless_needs_no_confirm(self, setup_db):
         async with _client() as c:
             resp = await c.post(
