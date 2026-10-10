@@ -171,6 +171,26 @@ class TestRegistration:
             assert await get_user_by_email(s, "exact8@example.com") is not None
 
     @pytest.mark.anyio
+    async def test_register_accepts_password_with_leading_trailing_spaces(self, setup_db):
+        from portal.database import get_session, get_user_by_email
+
+        async with _client() as c:
+            resp = await c.post(
+                "/register",
+                data={
+                    "email": "spaces@example.com",
+                    "display_name": "Spaces User",
+                    "password": "  abcdef  ",
+                    "password_confirm": "  abcdef  ",
+                },
+                follow_redirects=False,
+            )
+        assert resp.status_code == 200
+        assert b"Check your email" in resp.content
+        async with get_session() as s:
+            assert await get_user_by_email(s, "spaces@example.com") is not None
+
+    @pytest.mark.anyio
     async def test_register_rejects_whitespace_only_password(self, setup_db):
         from portal.database import get_session, get_user_by_email
 
