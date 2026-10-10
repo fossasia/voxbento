@@ -62,6 +62,10 @@ def client():
             "/api/admin/events/1/rooms/2/transcripts/en",
         ),
         ("/api/workspace/providers/translation/models", "/api/admin/providers/translation/models"),
+        (
+            "/workspace/events/1/rooms/2/booths/3/tokens/" + "a1b2c3d4" * 8 + "/revoke",
+            "/admin/events/1/rooms/2/booths/3/tokens/" + "a1b2c3d4" * 8 + "/revoke",
+        ),
     ],
 )
 @pytest.mark.anyio
@@ -82,6 +86,10 @@ async def test_workspace_route_inventory_maps_only_known_route_families(workspac
         "/workspace/models/supertonic/future-route",
         "/api/workspace/events/1/not-a-route",
         "/api/workspace/providers/future-route",
+        "/workspace/events/1/rooms/2/booths/3/tokens/not-hex!/revoke",
+        "/workspace/events/1/rooms/2/booths/3/tokens/abc123/revoke",
+        "/workspace/events/1/rooms/2/booths/3/tokens/" + "A1B2C3D4" * 8 + "/revoke",
+        "/workspace/events/1/rooms/2/booths/3/tokens/" + "a1b2c3d4" * 8 + "0/revoke",
     ],
 )
 @pytest.mark.anyio
