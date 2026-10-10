@@ -5,6 +5,7 @@ import logging
 import httpx
 from tenacity import AsyncRetrying, retry_if_exception_type, stop_after_attempt, wait_exponential
 
+from portal.transcription.errors import TranscriptionAuthError
 from portal.transcription.providers.base import (
     BoothTranscriptionState,
     ProviderConfig,
@@ -51,14 +52,39 @@ class ElevenLabsProvider(TranscriptionProvider):
                     if resp.status_code in (429, 502, 503, 504):
                         resp.raise_for_status()
 
+                    if resp.status_code in (401, 403):
+                        raise TranscriptionAuthError(
+                            "elevenlabs",
+                            f"ElevenLabs API key was rejected ({resp.status_code} {resp.reason_phrase}).",
+                            resp.status_code,
+                        )
                     if resp.status_code == 200:
                         return resp.json().get("text", "").strip()
                     else:
                         logger.error(f"ElevenLabs error status={resp.status_code}")
+        except TranscriptionAuthError:
+            raise
         except Exception as e:
             logger.error(f"ElevenLabs request failed: {e}")
             raise e
         return ""
+
+    @staticmethod
+    def _auth_error_from_frame(data: dict) -> TranscriptionAuthError | None:
+        """Return an auth error if this frame is ElevenLabs rejecting the key."""
+        message_type = (data.get("message_type") or "").lower()
+        detail = str(data.get("error") or data.get("message") or data).strip()
+        if message_type in ("auth_error", "authentication_error", "unauthorized"):
+            return TranscriptionAuthError(
+                "elevenlabs", f"ElevenLabs API key was rejected ({detail})."
+            )
+        if "error" in message_type and any(
+            token in detail.lower() for token in ("api key", "api_key", "unauthorized", "authentication")
+        ):
+            return TranscriptionAuthError(
+                "elevenlabs", f"ElevenLabs API key was rejected ({detail})."
+            )
+        return None
 
     async def run_stream(
         self,
@@ -101,6 +127,9 @@ class ElevenLabsProvider(TranscriptionProvider):
                     init_msg = await ws.recv()
                     init_data = json.loads(init_msg)
                     if init_data.get("message_type") != "session_started":
+                        auth_error = self._auth_error_from_frame(init_data)
+                        if auth_error:
+                            raise auth_error
                         logger.error(f"[{booth_id}] Expected ElevenLabs session_started, got: {init_data}")
                         return
 
@@ -145,7 +174,12 @@ class ElevenLabsProvider(TranscriptionProvider):
                                     if text:
                                         await aggregator.handle_partial(booth_id, text)
                                 elif message_type and "error" in message_type:
+                                    auth_error = self._auth_error_from_frame(data)
+                                    if auth_error:
+                                        raise auth_error
                                     logger.error(f"[{booth_id}] ElevenLabs Realtime Error: {data}")
+                        except TranscriptionAuthError:
+                            raise
                         except Exception as e:
                             logger.error(f"[{booth_id}] ElevenLabs WS receiver error: {e}")
                             return "ERROR"
@@ -160,13 +194,30 @@ class ElevenLabsProvider(TranscriptionProvider):
                     for task in pending:
                         task.cancel()
 
+                    for task in done:
+                        try:
+                            error = task.exception()
+                        except asyncio.CancelledError:
+                            continue
+                        if error is not None:
+                            raise error
+
                     if process.returncode is not None:
                         return
 
                     if sender_task in done and sender_task.result() == "EOF":
                         return
 
+            except TranscriptionAuthError:
+                raise
             except Exception as e:
+                status = getattr(getattr(e, "response", None), "status_code", None) or getattr(e, "status_code", None)
+                if status in (401, 403):
+                    raise TranscriptionAuthError(
+                        "elevenlabs",
+                        f"ElevenLabs API key was rejected ({status} during the websocket handshake).",
+                        status,
+                    ) from e
                 consecutive_errors += 1
                 logger.error(f"[{booth_id}] ElevenLabs connection failed ({consecutive_errors}): {e}")
                 if consecutive_errors >= 5:

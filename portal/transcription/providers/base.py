@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import asyncio
 import io
 import logging
@@ -8,8 +10,20 @@ from typing import AsyncGenerator, AsyncIterator, Awaitable, Callable
 
 from portal.models import Event
 from portal.transcription.constants import ProviderEnum
+from portal.transcription.errors import TranscriptionAuthError
 
 logger = logging.getLogger(__name__)
+
+
+def _drain_queue_to_eof(queue: asyncio.Queue) -> bool:
+    saw_eof = False
+    while not queue.empty():
+        try:
+            if queue.get_nowait() is None:
+                saw_eof = True
+        except asyncio.QueueEmpty:
+            break
+    return saw_eof
 
 
 def pcm_to_wav(pcm_data: bytes, sample_rate: int = 16000) -> bytes:
@@ -126,11 +140,8 @@ class TranscriptionProvider:
 
                 if booth_state.consecutive_drops > 3:
                     logger.error(f"[{booth_id}] Overload Protection triggered. Pausing inference for 10s.")
-                    while not queue.empty():
-                        try:
-                            queue.get_nowait()
-                        except asyncio.QueueEmpty:
-                            break
+                    if _drain_queue_to_eof(queue):
+                        queue.put_nowait(None)
                     await broadcast_callback(booth_id, "[Server overloaded - transcription temporarily paused]")
                     await asyncio.sleep(10)
                     booth_state.consecutive_drops = 0
@@ -150,6 +161,8 @@ class TranscriptionProvider:
                         await aggregator.handle_chunk(booth_id, text)
                     else:
                         await aggregator.handle_clear(booth_id)
+                except TranscriptionAuthError:
+                    raise
                 except Exception as e:
                     consecutive_errors += 1
                     logger.error(f"[{booth_id}] Provider error ({consecutive_errors}/3): {e}")
@@ -171,10 +184,17 @@ class TranscriptionProvider:
         reader = asyncio.create_task(audio_reader_task())
         inference = asyncio.create_task(inference_task())
 
-        await asyncio.wait([reader, inference], return_when=asyncio.FIRST_COMPLETED)
+        done, _ = await asyncio.wait([reader, inference], return_when=asyncio.FIRST_COMPLETED)
 
-        reader.cancel()
-        inference.cancel()
+        try:
+            if reader in done:
+                await reader
+            await inference
+        finally:
+            for task in (reader, inference):
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(reader, inference, return_exceptions=True)
 
 
 @dataclass(frozen=True)
