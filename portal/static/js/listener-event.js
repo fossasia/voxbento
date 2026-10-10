@@ -17,6 +17,62 @@ var boothsData = eventData.booths;
 
 var roomsData = eventData.rooms;
 
+const shareEventBtn = document.getElementById("share-event-btn");
+const shareEventStatus = document.getElementById("share-event-status");
+var shareResetTimer = null;
+var shareClickId = 0;
+
+function announceShareStatus(message) {
+  if (!shareEventStatus) return;
+  // Clear first so the same message announced twice still triggers the live region.
+  shareEventStatus.textContent = "";
+  window.setTimeout(function () {
+    shareEventStatus.textContent = message;
+  }, 50);
+}
+
+shareEventBtn.addEventListener("click", async function () {
+  var clickId = ++shareClickId;
+  clearTimeout(shareResetTimer);
+  // The canonical public listener URL for this event, without a ?code= join code so
+  // sharing the link doesn't hand out access. Built server-side from the configured
+  // public base URL (see portal/routers/listener.py) rather than window.location, so
+  // the shared link is correct even behind a proxy or a different public hostname.
+  var url = eventData.shareUrl;
+
+  if (navigator.share) {
+    try {
+      await navigator.share({ title: document.title, url: url });
+      // The share sheet itself confirms success to the user; nothing more to announce.
+      // Still restore the label in case a previous click left "Copied!"/"Copy failed" showing.
+      shareEventBtn.textContent = "Share Event";
+      return;
+    } catch (error) {
+      if (error && error.name === "AbortError") {
+        // User dismissed the share sheet; do not fall back to clipboard.
+        shareEventBtn.textContent = "Share Event";
+        return;
+      }
+      console.error("Web Share failed, falling back to clipboard", error);
+    }
+  }
+
+  try {
+    await navigator.clipboard.writeText(url);
+    if (clickId !== shareClickId) return;
+    shareEventBtn.textContent = "Copied!";
+    announceShareStatus("Event link copied to clipboard.");
+  } catch (error) {
+    console.error("Failed to copy the event link", error);
+    if (clickId !== shareClickId) return;
+    shareEventBtn.textContent = "Copy failed";
+    announceShareStatus("Could not copy the event link.");
+  }
+  shareResetTimer = setTimeout(function () {
+    shareEventBtn.textContent = "Share Event";
+  }, 2000);
+});
+
 var roomSelect = document.getElementById("room-select");
 var languageSelect = document.getElementById("language-select");
 var captionModeSelect = document.getElementById("caption-mode-select");
