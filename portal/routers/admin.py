@@ -6,6 +6,7 @@ import math
 import re
 import secrets
 import urllib.parse
+from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
 
@@ -16,6 +17,7 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.datastructures import FormData
 
 from portal.auth import (
     create_admin_token,
@@ -80,6 +82,7 @@ from portal.email import send_role_invite_email
 from portal.globals import _JS_CACHE_BUST, booths, get_http_client
 from portal.models import (
     BoothTranslationLanguage,
+    Room,
     RoomTranslationLanguage,
     TranscriptSegment,
     TranscriptTranslation,
@@ -811,73 +814,136 @@ async def admin_room_transcripts(request: Request, event_id: int, room_id: int):
     )
 
 
+@dataclass(frozen=True)
+class RoomEditValues:
+    form_section: str
+    display_name: str
+    jitsi_url: str
+    relay_booth_id: int | None
+    audio_delay_ms: int
+    floor_transcription_enabled: bool
+    floor_transcription_provider: str
+    floor_transcription_model: str
+    floor_language_code: str | None
+    floor_translation_enabled: bool
+    floor_translation_provider: str | None
+    floor_translation_model: str | None
+    floor_translation_languages: tuple[str, ...]
+    floor_tts_enabled: bool
+    floor_tts_provider: str
+    floor_tts_voice: str
+
+
+def _parse_relay_booth_id(value: str) -> int | None:
+    return int(value) if value and value.lower() != "none" else None
+
+
+def _normalise_tts_provider(value: str | None) -> str:
+    provider = (value or "deepgram").strip().lower() or "deepgram"
+    return provider if provider in {"deepgram", "supertonic"} else "deepgram"
+
+
+def _normalise_tts_voice(value: str | None) -> str:
+    voice = (value or "M1").strip().upper() or "M1"
+    valid_voices = {"M1", "M2", "M3", "M4", "M5", "F1", "F2", "F3", "F4", "F5"}
+    return voice if voice in valid_voices else "M1"
+
+
+def _parse_room_edit_values(form: FormData) -> RoomEditValues:
+    form_section = str(form.get("form_section", "")).strip()
+    # Only the relay submission (or an all-sections save) consumes this field, so a
+    # stale value left on another section's form must not block that update.
+    relay_booth_id = None
+    if not form_section or form_section == "relay":
+        try:
+            relay_booth_id = _parse_relay_booth_id(str(form.get("relay_booth_id", "")).strip())
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail="Invalid relay booth selection.") from exc
+    return RoomEditValues(
+        form_section=form_section,
+        display_name=str(form.get("display_name", "")).strip(),
+        jitsi_url=str(form.get("jitsi_url", "")).strip(),
+        relay_booth_id=relay_booth_id,
+        audio_delay_ms=parse_audio_delay_ms(form.get("audio_delay_ms", "0")),
+        floor_transcription_enabled=form.get("floor_transcription_enabled") == "on",
+        floor_transcription_provider=str(form.get("floor_transcription_provider", "local")).strip(),
+        floor_transcription_model=str(form.get("floor_transcription_model", "tiny")).strip(),
+        floor_language_code=str(form.get("floor_language_code", "")).strip() or None,
+        floor_translation_enabled=form.get("floor_translation_enabled") == "on",
+        floor_translation_provider=str(form.get("floor_translation_provider", "")).strip() or None,
+        floor_translation_model=str(form.get("floor_translation_model", "")).strip() or None,
+        floor_translation_languages=tuple(str(code) for code in form.getlist("floor_translation_languages")),
+        floor_tts_enabled=form.get("floor_tts_enabled") == "on",
+        floor_tts_provider=_normalise_tts_provider(form.get("floor_tts_provider")),
+        floor_tts_voice=_normalise_tts_voice(form.get("floor_tts_voice")),
+    )
+
+
+def _updates_section(values: RoomEditValues, section: str) -> bool:
+    return not values.form_section or values.form_section == section
+
+
+def _update_room_general(room: Room, values: RoomEditValues) -> None:
+    if values.display_name:
+        room.display_name = values.display_name
+    room.jitsi_url = values.jitsi_url or None
+    room.audio_delay_ms = values.audio_delay_ms
+
+
+def _update_room_transcription(room: Room, values: RoomEditValues) -> None:
+    room.floor_transcription_enabled = values.floor_transcription_enabled
+    room.floor_transcription_provider = values.floor_transcription_provider
+    room.floor_transcription_model = values.floor_transcription_model
+    room.floor_language_code = values.floor_language_code
+
+
+def _update_room_translation(session: AsyncSession, room: Room, values: RoomEditValues) -> None:
+    room.floor_translation_enabled = values.floor_translation_enabled
+    room.floor_translation_provider = values.floor_translation_provider
+    room.floor_translation_model = values.floor_translation_model
+
+    existing_languages = {language.language_code: language for language in room.translation_languages}
+    requested_codes = {code.strip() for code in values.floor_translation_languages if code and code.strip()}
+    for code, language in existing_languages.items():
+        language.enabled = code in requested_codes
+    for code in requested_codes - existing_languages.keys():
+        language = pycountry.languages.get(alpha_2=code)
+        session.add(
+            RoomTranslationLanguage(
+                room_id=room.id,
+                language_code=code,
+                language_name=language.name if language else code,
+                enabled=True,
+            )
+        )
+
+
+def _update_room_tts(room: Room, values: RoomEditValues) -> None:
+    room.floor_tts_enabled = values.floor_tts_enabled
+    room.floor_tts_provider = values.floor_tts_provider
+    room.floor_tts_voice = values.floor_tts_voice
+
+
+def _apply_room_edit(session: AsyncSession, room: Room, values: RoomEditValues) -> None:
+    if _updates_section(values, "general"):
+        _update_room_general(room, values)
+    if _updates_section(values, "relay"):
+        room.relay_booth_id = values.relay_booth_id
+    if _updates_section(values, "transcription"):
+        _update_room_transcription(room, values)
+    if _updates_section(values, "translation"):
+        _update_room_translation(session, room, values)
+    if _updates_section(values, "tts"):
+        _update_room_tts(room, values)
+
+
 @router.post("/admin/events/{event_id}/rooms/{room_id}/edit", dependencies=[Depends(require_admin)])
 async def admin_edit_room(request: Request, event_id: int, room_id: int):
-    form = await request.form()
-    form_section = form.get("form_section", "").strip()
-    display_name = form.get("display_name", "").strip()
-    jitsi_url = form.get("jitsi_url", "").strip()
-    relay_booth_id_str = form.get("relay_booth_id", "").strip()
-    relay_booth_id = int(relay_booth_id_str) if relay_booth_id_str and relay_booth_id_str.lower() != "none" else None
-    audio_delay_ms = parse_audio_delay_ms(form.get("audio_delay_ms", "0"))
-    floor_transcription_enabled = form.get("floor_transcription_enabled") == "on"
-    floor_transcription_provider = form.get("floor_transcription_provider", "local").strip()
-    floor_transcription_model = form.get("floor_transcription_model", "tiny").strip()
-    floor_language_code = form.get("floor_language_code", "").strip() or None
-    floor_translation_enabled = form.get("floor_translation_enabled") == "on"
-    floor_translation_provider = form.get("floor_translation_provider", "").strip() or None
-    floor_translation_model = form.get("floor_translation_model", "").strip() or None
-    floor_translation_languages = form.getlist("floor_translation_languages")
-    floor_tts_enabled = form.get("floor_tts_enabled") == "on"
-    floor_tts_provider = (form.get("floor_tts_provider", "deepgram") or "deepgram").strip().lower() or "deepgram"
-    if floor_tts_provider not in {"deepgram", "supertonic"}:
-        floor_tts_provider = "deepgram"
-    floor_tts_voice = (form.get("floor_tts_voice", "M1") or "M1").strip().upper() or "M1"
-    if floor_tts_voice not in {"M1", "M2", "M3", "M4", "M5", "F1", "F2", "F3", "F4", "F5"}:
-        floor_tts_voice = "M1"
+    values = _parse_room_edit_values(await request.form())
     async with get_session() as session:
         room = await get_room_by_id(session, room_id)
         if room and room.event_id == event_id:
-            if not form_section or form_section == "general":
-                if display_name:
-                    room.display_name = display_name
-                room.jitsi_url = jitsi_url if jitsi_url else None
-                room.audio_delay_ms = audio_delay_ms
-
-            if not form_section or form_section == "relay":
-                room.relay_booth_id = relay_booth_id
-
-            if not form_section or form_section == "transcription":
-                room.floor_transcription_enabled = floor_transcription_enabled
-                room.floor_transcription_provider = floor_transcription_provider
-                room.floor_transcription_model = floor_transcription_model
-                room.floor_language_code = floor_language_code
-
-            if not form_section or form_section == "translation":
-                room.floor_translation_enabled = floor_translation_enabled
-                room.floor_translation_provider = floor_translation_provider
-                room.floor_translation_model = floor_translation_model
-
-                existing_langs = {lang.language_code: lang for lang in room.translation_languages}
-                requested_codes = set(floor_translation_languages)
-                for code, lang in existing_langs.items():
-                    if code not in requested_codes:
-                        lang.enabled = False
-                for code in requested_codes:
-                    if code in existing_langs:
-                        existing_langs[code].enabled = True
-                    else:
-                        lang_obj = pycountry.languages.get(alpha_2=code)
-                        lang_name = lang_obj.name if lang_obj else code
-                        new_lang = RoomTranslationLanguage(
-                            room_id=room_id, language_code=code, language_name=lang_name, enabled=True
-                        )
-                        session.add(new_lang)
-
-            if not form_section or form_section == "tts":
-                room.floor_tts_enabled = floor_tts_enabled
-                room.floor_tts_provider = floor_tts_provider
-                room.floor_tts_voice = floor_tts_voice
+            _apply_room_edit(session, room, values)
             await session.flush()
     return safe_redirect(
         url=management_url(request, f"events/{event_id}/rooms/{room_id}/"),
