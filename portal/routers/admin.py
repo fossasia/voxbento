@@ -80,6 +80,7 @@ from portal.email import send_role_invite_email
 from portal.globals import _JS_CACHE_BUST, booths, get_http_client
 from portal.models import (
     BoothTranslationLanguage,
+    Event,
     RoomTranslationLanguage,
     TranscriptSegment,
     TranscriptTranslation,
@@ -99,6 +100,17 @@ templates = Jinja2Templates(
     directory=str(_BASE_DIR / "templates"),
     context_processors=[management_template_context],
 )
+
+
+def _apply_api_key_updates(
+    event: Event,
+    updates: tuple[tuple[str, str | None, bool | None], ...],
+) -> None:
+    for attribute, value, clear in updates:
+        if clear:
+            setattr(event, attribute, None)
+        elif value and (trimmed_value := value.strip()):
+            setattr(event, attribute, encrypt_val(trimmed_value))
 
 
 async def _send_admin_invite(session, user: User, role_name: str, context_name: str, target_url: str):
@@ -656,42 +668,24 @@ async def admin_event_api_settings_post(
             raise HTTPException(status_code=404, detail="Event not found.")
         event.transcription_api_enabled = bool(transcription_api_enabled)
         try:
-            if clear_openai_api_key:
-                event.encrypted_openai_api_key = None
-            elif openai_api_key and openai_api_key.strip():
-                event.encrypted_openai_api_key = encrypt_val(openai_api_key.strip())
-            if clear_deepgram_api_key:
-                event.encrypted_deepgram_api_key = None
-            elif deepgram_api_key and deepgram_api_key.strip():
-                event.encrypted_deepgram_api_key = encrypt_val(deepgram_api_key.strip())
-            if clear_nvidia_api_key:
-                event.encrypted_nvidia_api_key = None
-            elif nvidia_api_key and nvidia_api_key.strip():
-                event.encrypted_nvidia_api_key = encrypt_val(nvidia_api_key.strip())
-            if clear_elevenlabs_api_key:
-                event.encrypted_elevenlabs_api_key = None
-            elif elevenlabs_api_key and elevenlabs_api_key.strip():
-                event.encrypted_elevenlabs_api_key = encrypt_val(elevenlabs_api_key.strip())
-            if clear_translation_openai_api_key:
-                event.encrypted_translation_openai_api_key = None
-            elif translation_openai_api_key and translation_openai_api_key.strip():
-                event.encrypted_translation_openai_api_key = encrypt_val(translation_openai_api_key.strip())
-            if clear_openrouter_api_key:
-                event.encrypted_openrouter_api_key = None
-            elif openrouter_api_key and openrouter_api_key.strip():
-                event.encrypted_openrouter_api_key = encrypt_val(openrouter_api_key.strip())
-            if clear_gemini_api_key:
-                event.encrypted_gemini_api_key = None
-            elif gemini_api_key and gemini_api_key.strip():
-                event.encrypted_gemini_api_key = encrypt_val(gemini_api_key.strip())
-            if clear_anthropic_api_key:
-                event.encrypted_anthropic_api_key = None
-            elif anthropic_api_key and anthropic_api_key.strip():
-                event.encrypted_anthropic_api_key = encrypt_val(anthropic_api_key.strip())
-            if clear_groq_api_key:
-                event.encrypted_groq_api_key = None
-            elif groq_api_key and groq_api_key.strip():
-                event.encrypted_groq_api_key = encrypt_val(groq_api_key.strip())
+            _apply_api_key_updates(
+                event,
+                (
+                    ("encrypted_openai_api_key", openai_api_key, clear_openai_api_key),
+                    ("encrypted_deepgram_api_key", deepgram_api_key, clear_deepgram_api_key),
+                    ("encrypted_nvidia_api_key", nvidia_api_key, clear_nvidia_api_key),
+                    ("encrypted_elevenlabs_api_key", elevenlabs_api_key, clear_elevenlabs_api_key),
+                    (
+                        "encrypted_translation_openai_api_key",
+                        translation_openai_api_key,
+                        clear_translation_openai_api_key,
+                    ),
+                    ("encrypted_openrouter_api_key", openrouter_api_key, clear_openrouter_api_key),
+                    ("encrypted_gemini_api_key", gemini_api_key, clear_gemini_api_key),
+                    ("encrypted_anthropic_api_key", anthropic_api_key, clear_anthropic_api_key),
+                    ("encrypted_groq_api_key", groq_api_key, clear_groq_api_key),
+                ),
+            )
         except (ValueError, RuntimeError) as e:
             raise HTTPException(status_code=400, detail=f"API Key encryption failed: {e}")
         await session.flush()
