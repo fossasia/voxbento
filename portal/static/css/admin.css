@@ -438,11 +438,11 @@ code { font-family: var(--font-mono); font-size: 0.85em; background: var(--color
 }
 .mc-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(320px, 100%), 1fr));
   gap: 1rem;
 }
 .mc-grid--cards {
-  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(300px, 100%), 1fr));
 }
 .mc-card { padding: 1.5rem; }
 .mc-card h3 { margin-top: 0; }
@@ -822,7 +822,7 @@ code { font-family: var(--font-mono); font-size: 0.85em; background: var(--color
 .btn-invite:hover { border: 2px solid #000; background: #fff; color: #000; border-radius: 4px; box-shadow: 2px 2px 0px #000; padding: 4px 12px; font-weight: bold; }
 
 .event-share-row { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; }
-.event-share-field { flex: 1; min-width: 260px; }
+.event-share-field { flex: 1; min-width: min(260px, 100%); }
 .transcripts-head { display: flex; justify-content: space-between; align-items: center; }
 .transcripts-head h3 { margin: 0; }
 
@@ -951,8 +951,15 @@ code { font-family: var(--font-mono); font-size: 0.85em; background: var(--color
 
 /* ── Copy field ──────────────────────────────────────────────────────────── */
 .copy-field { display: flex; align-items: stretch; gap: 8px; }
-.copy-field input { flex: 1; min-height: 40px; padding: 8px 12px; border: 1px solid var(--color-border-strong); border-radius: 10px; font-family: var(--font-mono); font-size: 0.85rem; background: var(--color-surface-2); color: var(--color-text); }
+.copy-field input { flex: 1; min-width: 0; min-height: 40px; padding: 8px 12px; border: 1px solid var(--color-border-strong); border-radius: 10px; font-family: var(--font-mono); font-size: 0.85rem; background: var(--color-surface-2); color: var(--color-text); }
 .copy-field .btn-copy { height: auto; min-width: 72px; }
+/* Phones: give the link its own row so it stays readable; Copy and Open share the next. */
+@media (max-width: 480px) {
+  .copy-field { flex-wrap: wrap; }
+  .copy-field input { flex-basis: 100%; }
+  /* Same side padding on Copy (10px) and Open (12px), or flex leaves them 4px apart. */
+  .copy-field .btn { flex: 1; padding-inline: 12px; }
+}
 
 /* ── Toasts ───────────────────────────────────────────────────────────────── */
 .toast-container { position: fixed; bottom: 20px; right: 20px; display: flex; flex-direction: column; gap: 8px; z-index: 1000; }
@@ -992,7 +999,7 @@ code { font-family: var(--font-mono); font-size: 0.85em; background: var(--color
 .wizard-card .wizard-section-title--spaced { margin: 26px 0 6px; }
 .wizard-card .wizard-section-hint { margin-bottom: 12px; }
 .wizard-card .wizard-share-row { display: flex; gap: 16px; align-items: center; flex-wrap: wrap; }
-.wizard-card .wizard-share-field { flex: 1; min-width: 260px; }
+.wizard-card .wizard-share-field { flex: 1; min-width: min(260px, 100%); }
 .wizard-card .wizard-room-group { margin-top: 18px; }
 .wizard-card .wizard-room-label { font-weight: 600; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; margin-bottom: 6px; }
 

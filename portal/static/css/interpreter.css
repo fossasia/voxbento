@@ -23,6 +23,7 @@
   --color-warning: #d18538;
   --radius: 0.25rem;
   --shadow-lightest: 0 1px 2px rgb(0 0 0 / 0.24);
+  --portal-gutter: 0.9rem;
 
   /* Booth redesign tokens */
   --bx-bg: #eef1f6;
@@ -85,7 +86,7 @@ body {
 }
 
 .portal-main {
-  padding: 0.9rem;
+  padding: var(--portal-gutter);
 }
 
 label {
@@ -235,6 +236,19 @@ label {
 
 .hidden {
   display: none !important;
+}
+
+/* Visually hidden but still read by screen readers (e.g. live announcements). */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border-width: 0;
 }
 
 /* ========================================================================== */
@@ -1076,8 +1090,13 @@ label {
     min-height: 100vh;
     overflow: visible;
   }
+  /* minmax(0, ...) like the desktop columns: a plain 1fr can't shrink below
+     its content, which pushed the cards off the right edge on phones. */
   .booth-columns {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .deck-controls {
+    flex-wrap: wrap;
   }
   .stage-monitor {
     min-height: 40vh;
@@ -1091,6 +1110,45 @@ label {
   .booth-topbar {
     flex-wrap: wrap;
     gap: 0.6rem;
+  }
+}
+
+/* Phones: full-width booth, matched mic buttons, and card header pills on their
+   own line. Wider screens keep the layout above. */
+@media (max-width: 480px) {
+  /* Use the full phone width: cancel the .portal-main padding around the booth
+     and keep one 12px gutter, with the top bar on the same edge. Jitsi only
+     shows its "Join meeting" screen when the Floor Monitor is at least 320px
+     wide, which needs this on 360px phones. */
+  .booth-layout {
+    margin-inline: calc(-1 * var(--portal-gutter));
+  }
+  .booth-topbar,
+  .booth-columns {
+    padding-inline: 0.75rem;
+  }
+  /* Unmute and Pass Mic sit side by side as equal halves once each can have
+     11rem, which fits the longest label ("TAKE OVER", up to 164px in Firefox).
+     Below that they stack full width, which is the case on most phones. */
+  .deck-controls {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(min(100%, 11rem), 1fr));
+    width: 100%;
+  }
+  .deck-controls .header-btn {
+    justify-content: center;
+  }
+  /* Collapsible card headers: title and arrow on top, the status pill on its
+     own line below so it is never squeezed into a narrow column. */
+  .card-head--summary {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    row-gap: 0.45rem;
+  }
+  .card-head--summary .status-badge {
+    grid-row: 2;
+    grid-column: 1 / -1;
+    justify-self: start;
   }
 }
 

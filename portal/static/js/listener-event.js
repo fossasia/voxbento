@@ -37,6 +37,17 @@ var currentSourceType = null;
 var audioScheduler = null;
 
 function setStatus(text, cls) {
+  // #status is a live region, and rewriting it with the same badge makes some
+  // screen readers announce it again. WHEP reports ICE and peer changes
+  // separately, so the same status often arrives twice in a row.
+  var badge = statusEl.firstElementChild;
+  if (
+    badge &&
+    badge.textContent === text &&
+    badge.className === "status-badge " + cls
+  ) {
+    return;
+  }
   statusEl.innerHTML =
     '<span class="status-badge ' + cls + '">' + text + "</span>";
 }
