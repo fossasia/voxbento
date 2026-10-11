@@ -25,7 +25,6 @@ PROVIDERS = {
 }
 
 active_workers_lock = asyncio.Lock()
-MAX_TOTAL_WORKERS = 10
 
 
 class State(Enum):
@@ -196,9 +195,10 @@ async def start_transcription_worker(
         async with active_workers_lock:
             existing_session = active_workers.get(booth_id)
             if not existing_session:
-                if len(active_workers) >= MAX_TOTAL_WORKERS:
+                if len(active_workers) >= settings.max_transcription_workers:
                     raise ValueError(
-                        f"System at maximum capacity ({MAX_TOTAL_WORKERS} concurrent transcription booths)."
+                        "System at maximum capacity "
+                        f"({settings.max_transcription_workers} concurrent transcription booths)."
                     )
 
                 if provider == "local":

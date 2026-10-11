@@ -108,7 +108,7 @@ asyncio.run(main())
 2. Check ffmpeg can reach MediaMTX RTSP: `docker-compose exec portal ffmpeg -rtsp_transport tcp -i rtsp://mediamtx:8554/{event_slug}/{language_code} -f null - -t 5`.
 3. Check API key exists and is valid: portal logs for `API key missing` or `Failed to decrypt`.
 4. Check `event.transcription_api_enabled` is `True` for external providers.
-5. Check `MAX_TOTAL_WORKERS` (10) not exceeded: count workers in portal logs.
+5. Check the configured `MAX_TRANSCRIPTION_WORKERS` limit is not exceeded: count workers in portal logs.
 6. Check booth DB config: `db_booth.transcription_enabled`, `db_booth.transcription_provider`, `db_booth.transcription_model`.
 
 **Fix:** Restart transcription worker via admin panel → booth detail → transcription settings (re-save). Or call `stop_transcription_worker(booth_id)` + `start_transcription_worker(...)` via debug endpoint if available.
