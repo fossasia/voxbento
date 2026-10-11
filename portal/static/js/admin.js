@@ -348,7 +348,10 @@ window.adminAPIKeys = {
       btn.disabled = true;
       const res = await fetch(`${managementPrefix()}/api/events/${this.eventId}/api-keys`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'X-CSRF-Token': document.querySelector('meta[name="csrf-token"]').content
+       },
         body: JSON.stringify({ name: nameInput })
       });
       
@@ -421,12 +424,14 @@ window.adminAPIKeys = {
     
     try {
       const res = await fetch(`${managementPrefix()}/api/events/${this.eventId}/api-keys/${this.revokeKeyId}`, {
-        method: 'DELETE'
+        method: 'DELETE',
+        headers: {
+          'X-CSRF-Token': document.querySelector('meta[name="csrf-token"]').content
+        }
       });
       if (!res.ok) throw new Error('Failed to revoke');
       
       this.closeModal('api-key-revoke-modal');
-      
       this.loadKeys();
     } catch (err) {
       alert('Error revoking key: ' + err.message);

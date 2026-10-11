@@ -50,19 +50,24 @@
         </td>
         <td class="dev-accounts-cell-actions">
           {% if acc.status == 'pending' %}
-          <form method="POST" action="/api/admin/developer-accounts/{{ acc.id }}/approve" class="dev-accounts-form">
-            <button type="submit" class="dev-accounts-btn dev-accounts-btn--approve">Approve</button>
-          </form>
-          <form method="POST" action="/api/admin/developer-accounts/{{ acc.id }}/reject" class="dev-accounts-form">
-            <button type="submit" class="dev-accounts-btn dev-accounts-btn--reject">Reject</button>
-          </form>
-          {% elif acc.status == 'approved' %}
-          <form method="POST" action="/api/admin/developer-accounts/{{ acc.id }}/reject" class="dev-accounts-form">
-            <button type="submit" class="dev-accounts-btn dev-accounts-btn--suspend">Suspend</button>
-          </form>
-          {% elif acc.status in ['suspended', 'rejected'] %}
-          <form method="POST" action="/api/admin/developer-accounts/{{ acc.id }}/approve" class="dev-accounts-form">
-            <button type="submit" class="dev-accounts-btn dev-accounts-btn--restore">Restore</button>
+<form method="POST" action="/api/admin/developer-accounts/{{ acc.id }}/approve" class="dev-accounts-form">
+             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+             <button type="submit" class="dev-accounts-btn dev-accounts-btn--approve">Approve</button>
+           </form>
+           <form method="POST" action="/api/admin/developer-accounts/{{ acc.id }}/reject" class="dev-accounts-form">
+             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+             <button type="submit" class="dev-accounts-btn dev-accounts-btn--reject">Reject</button>
+           </form>
+           {% elif acc.status == 'approved' %}
+           <form method="POST" action="/api/admin/developer-accounts/{{ acc.id }}/reject" class="dev-accounts-form">
+             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+             <button type="submit" class="dev-accounts-btn dev-accounts-btn--suspend">Suspend</button>
+           </form>
+           {% elif acc.status in ['suspended', 'rejected'] %}
+           <form method="POST" action="/api/admin/developer-accounts/{{ acc.id }}/approve" class="dev-accounts-form">
+             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+             <button type="submit" class="dev-accounts-btn dev-accounts-btn--restore">Restore</button>
+
           </form>
           {% endif %}
         </td>

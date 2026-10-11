@@ -11,8 +11,9 @@ from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.middleware.base import BaseHTTPMiddleware
 
-from portal.auth import require_admin
+from portal.auth import get_admin_csrf_token, require_admin
 from portal.config import settings
 from portal.routers.admin import router as admin_router
 from portal.routers.api import router as api_router
@@ -108,7 +109,31 @@ class _UvicornTokenRedactor(logging.Filter):
         return True
 
 
+class AdminCSRFMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        if request.url.path.startswith(("/admin/", "/api/admin/")):
+            response = await call_next(request)
+
+            if (
+                response.status_code < 400
+                and "admin_csrf" not in request.cookies
+                and ("admin_token" in request.cookies or "user_token" in request.cookies)
+            ):
+                csrf_token = get_admin_csrf_token(request)
+                response.set_cookie(
+                    "admin_csrf",
+                    csrf_token,
+                    httponly=True,
+                    samesite="lax",
+                    secure=request.url.scheme == "https",
+                )
+            return response
+
+        return await call_next(request)
+
+
 app = FastAPI(title="Voxbento", version="1.0.0", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
+app.add_middleware(AdminCSRFMiddleware)
 app.add_middleware(WorkspaceRoutingMiddleware)
 
 

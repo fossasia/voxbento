@@ -48,7 +48,13 @@ def _client():
 
     from fastapi_app import app
 
-    return AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
+    return AsyncClient(transport=ASGITransport(app=app), base_url="https://test")
+
+
+async def _admin_csrf(c, cookies):
+    resp = await c.get("/admin/events/", cookies=cookies)
+    assert resp.status_code == 200
+    return c.cookies.get("admin_csrf")
 
 
 async def _create_test_user(email="test@example.com", display_name="Test User", password="securepass123"):
@@ -296,9 +302,10 @@ class TestAdminEventMembersRoutes:
         event, _, _ = await _seed_event_room_booth()
         user = await _create_test_user()
         async with _client() as c:
+            csrf_token = await _admin_csrf(c, admin_cookie)
             resp = await c.post(
                 f"/admin/events/{event.id}/members/",
-                data={"email": user.email, "role": "event_owner"},
+                data={"email": user.email, "role": "event_owner", "csrf_token": csrf_token},
                 cookies=admin_cookie,
                 follow_redirects=False,
             )
@@ -334,8 +341,10 @@ class TestAdminEventMembersRoutes:
             m = await set_event_membership(s, user_id=user.id, event_id=event.id, role="interpreter")
             mid = m.id
         async with _client() as c:
+            csrf_token = await _admin_csrf(c, admin_cookie)
             resp = await c.post(
                 f"/admin/events/{event.id}/members/{mid}/delete",
+                data={"csrf_token": csrf_token},
                 cookies=admin_cookie,
                 follow_redirects=False,
             )
@@ -354,9 +363,10 @@ class TestAdminEventMembersRoutes:
             await set_event_membership(s, user_id=user.id, event_id=event.id, role="interpreter")
         # POST with empty role removes the membership
         async with _client() as c:
+            csrf_token = await _admin_csrf(c, admin_cookie)
             resp = await c.post(
                 f"/admin/events/{event.id}/members/",
-                data={"email": user.email, "role": ""},
+                data={"email": user.email, "role": "", "csrf_token": csrf_token},
                 cookies=admin_cookie,
                 follow_redirects=False,
             )
@@ -378,9 +388,10 @@ class TestAdminTokenRoutes:
 
         event, room, booth = await _seed_event_room_booth()
         async with _client() as c:
+            csrf_token = await _admin_csrf(c, admin_cookie)
             resp = await c.post(
                 f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/tokens/",
-                data={"role": "interpreter", "label": "Alice"},
+                data={"role": "interpreter", "label": "Alice", "csrf_token": csrf_token},
                 cookies=admin_cookie,
                 follow_redirects=False,
             )
@@ -397,9 +408,10 @@ class TestAdminTokenRoutes:
 
         event, room, booth = await _seed_event_room_booth()
         async with _client() as c:
+            csrf_token = await _admin_csrf(c, admin_cookie)
             resp = await c.post(
                 f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/tokens/",
-                data={"role": "interpreter", "label": "Bob", "expires_hours": "24"},
+                data={"role": "interpreter", "label": "Bob", "expires_hours": "24", "csrf_token": csrf_token},
                 cookies=admin_cookie,
                 follow_redirects=False,
             )
@@ -425,9 +437,10 @@ class TestAdminTokenRoutes:
 
         event, room, booth = await _seed_event_room_booth()
         async with _client() as c:
+            csrf_token = await _admin_csrf(c, admin_cookie)
             resp = await c.post(
                 f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/tokens/",
-                data={"role": "", "label": "NoRole"},
+                data={"role": "", "label": "NoRole", "csrf_token": csrf_token},
                 cookies=admin_cookie,
                 follow_redirects=False,
             )
@@ -445,8 +458,10 @@ class TestAdminTokenRoutes:
             tok = await create_invite_token(s, booth_id=booth.id, role="interpreter")
             token_str = tok.token
         async with _client() as c:
+            csrf_token = await _admin_csrf(c, admin_cookie)
             resp = await c.post(
                 f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/tokens/{token_str}/revoke",
+                data={"csrf_token": csrf_token},
                 cookies=admin_cookie,
                 follow_redirects=False,
             )
@@ -609,12 +624,10 @@ class TestEndToEndAdminWorkflow:
 
         # 1. Create event
         async with _client() as c:
+            csrf_token = await _admin_csrf(c, admin_cookie)
             resp = await c.post(
                 "/admin/events/",
-                data={
-                    "slug": "e2e-event",
-                    "display_name": "E2E Event",
-                },
+                data={"slug": "e2e-event", "display_name": "E2E Event", "csrf_token": csrf_token},
                 cookies=admin_cookie,
                 follow_redirects=False,
             )
@@ -629,11 +642,10 @@ class TestEndToEndAdminWorkflow:
 
         # 2. Create room
         async with _client() as c:
+            csrf_token = await _admin_csrf(c, admin_cookie)
             resp = await c.post(
                 f"/admin/events/{event.id}/rooms/",
-                data={
-                    "display_name": "Room A",
-                },
+                data={"display_name": "Room A", "csrf_token": csrf_token},
                 cookies=admin_cookie,
                 follow_redirects=False,
             )
@@ -648,12 +660,10 @@ class TestEndToEndAdminWorkflow:
 
         # 3. Create booth
         async with _client() as c:
+            csrf_token = await _admin_csrf(c, admin_cookie)
             resp = await c.post(
                 f"/admin/events/{event.id}/rooms/{room.id}/booths/",
-                data={
-                    "language_code": "fr",
-                    "language_name": "French",
-                },
+                data={"language_code": "fr", "language_name": "French", "csrf_token": csrf_token},
                 cookies=admin_cookie,
                 follow_redirects=False,
             )
@@ -668,12 +678,14 @@ class TestEndToEndAdminWorkflow:
 
         # 4. Register a user
         async with _client() as c:
+            csrf_token = await _admin_csrf(c, admin_cookie)
             resp = await c.post(
                 "/register",
                 data={
                     "email": "alice@e2e.com",
                     "display_name": "Alice",
                     "password": "securepass123",
+                    "csrf_token": csrf_token,
                     "password_confirm": "securepass123",
                 },
                 follow_redirects=False,
@@ -692,12 +704,10 @@ class TestEndToEndAdminWorkflow:
 
         # 5. Assign per-event role
         async with _client() as c:
+            csrf_token = await _admin_csrf(c, admin_cookie)
             resp = await c.post(
                 f"/admin/events/{event.id}/members/",
-                data={
-                    "email": alice.email,
-                    "role": "event_owner",
-                },
+                data={"email": alice.email, "role": "event_owner", "csrf_token": csrf_token},
                 cookies=admin_cookie,
                 follow_redirects=False,
             )
@@ -710,9 +720,10 @@ class TestEndToEndAdminWorkflow:
 
         # 6. Generate invite token for the booth
         async with _client() as c:
+            csrf_token = await _admin_csrf(c, admin_cookie)
             resp = await c.post(
                 f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/tokens/",
-                data={"role": "interpreter", "label": "Alice FR booth"},
+                data={"role": "interpreter", "label": "Alice FR booth", "csrf_token": csrf_token},
                 cookies=admin_cookie,
                 follow_redirects=False,
             )
@@ -738,10 +749,12 @@ class TestEndToEndAdminWorkflow:
 
         # 8. Revoke the token
         async with _client() as c:
+            csrf_token = await _admin_csrf(c, admin_cookie)
             resp = await c.post(
                 f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/tokens/{token_str}/revoke",
                 cookies=admin_cookie,
                 follow_redirects=False,
+                data={"csrf_token": csrf_token},
             )
         assert resp.status_code == 303
 
@@ -762,10 +775,12 @@ class TestEndToEndAdminWorkflow:
             memberships = await list_memberships_for_event(s, event.id)
         mid = memberships[0].id
         async with _client() as c:
+            csrf_token = await _admin_csrf(c, admin_cookie)
             resp = await c.post(
                 f"/admin/events/{event.id}/members/{mid}/delete",
                 cookies=admin_cookie,
                 follow_redirects=False,
+                data={"csrf_token": csrf_token},
             )
         assert resp.status_code == 303
         async with get_session() as s:

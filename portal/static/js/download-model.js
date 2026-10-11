@@ -37,14 +37,28 @@ export function initLocalModelDownloader() {
         const actionUrl = transForm.getAttribute('action');
         
         try {
-          await fetch(actionUrl, { method: 'POST', body: formData, redirect: 'follow' });
-          
+          const settingsResponse = await fetch(actionUrl, {
+            method: 'POST',
+            body: formData,
+            redirect: 'follow'
+          });
+
+          if (!settingsResponse.ok) {
+            throw new Error('Failed to save translation settings');
+          }
+
           const transModel = document.getElementById('floor_translation_model').value || 'nllb-200-distilled-600M';
-          await fetch(`${managementPrefix}/models/trigger_download`, {
-            method: 'POST', headers: {'Content-Type': 'application/json'},
+          const downloadResponse = await fetch(`${managementPrefix()}/models/trigger_download`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-CSRF-Token': document.querySelector('meta[name="csrf-token"]').content
+            },
             body: JSON.stringify({model: transModel})
           });
-          
+          if (!downloadResponse.ok) {
+            throw new Error('Failed to trigger translation model download');
+          }
           document.getElementById('nllb_download_progress_container').style.display = 'flex';
           
           const interval = setInterval(async () => {
@@ -110,8 +124,26 @@ export function initLocalModelDownloader() {
         const actionUrl = ttsForm.getAttribute('action');
         
         try {
-          await fetch(actionUrl, { method: 'POST', body: formData, redirect: 'follow' });
-          await fetch(`${managementPrefix}/models/supertonic/trigger_download`, { method: 'POST' });
+          const settingsResponse = await fetch(actionUrl, {
+            method: 'POST',
+            body: formData,
+            redirect: 'follow'
+        });
+
+        if (!settingsResponse.ok) {
+          throw new Error('Failed to save Supertonic settings');
+        }
+
+        const downloadResponse = await fetch(`${managementPrefix}/models/supertonic/trigger_download`, {
+          method: 'POST',
+          headers: {
+            'X-CSRF-Token': document.querySelector('meta[name="csrf-token"]').content
+          }
+        });
+
+        if (!downloadResponse.ok) {
+          throw new Error('Failed to trigger Supertonic model download');
+        }
           
           document.getElementById('supertonic_download_progress_container').style.display = 'flex';
           

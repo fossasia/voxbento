@@ -27,6 +27,7 @@
   </p>
 
   <form method="post" action="{{ management_prefix }}/events/{{ event.id }}/api-settings" class="card-form api-settings-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
 
     <div class="form-group checkbox-group api-settings-toggle">
       <label class="api-settings-toggle-label">
