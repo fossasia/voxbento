@@ -95,8 +95,24 @@ For floor-bot dependency upgrades, run
 job in `.github/workflows/tests.yml` builds the actual image and starts its normal
 entrypoint, then exercises `/start`, real Chromium/PulseAudio/FFmpeg audio capture,
 and `/stop` using `tests/floor_bot_container_smoke.py`. A healthy HTTP server alone
-does not prove that a capture subprocess can launch. See README upgrade notes for
-local container commands and the compressed image budget.
+does not prove that a capture subprocess can launch.
+
+The Linux amd64 compressed base-image budget is 900 MB, allowing headroom above
+the known-good 743 MB image. Larger upgrades require slimming or an explicit
+budget review. This does not replace checking deployment-host free space for
+extraction, cached images, and other services.
+
+Run the real container check locally:
+
+```bash
+docker build --platform linux/amd64 -t voxbento-floor-bot-ci ./floor-bot
+docker run -d --name floor-bot-ci \
+  -v "$PWD/tests/floor_bot_container_smoke.py:/tmp/floor_bot_container_smoke.py:ro" \
+  voxbento-floor-bot-ci
+docker exec floor-bot-ci python /tmp/floor_bot_container_smoke.py
+docker logs floor-bot-ci
+docker rm -f floor-bot-ci
+```
 
 1. Read `.github/instructions/python.instructions.md` and `.github/instructions/js.instructions.md`.
 2. Check all invariants from [REPOSITORY_CONTEXT.md](REPOSITORY_CONTEXT.md) — **Key Invariants** section.
