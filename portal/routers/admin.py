@@ -465,14 +465,21 @@ async def admin_create_event(request: Request):
 # Guided setup wizard: Event → Rooms → Booths → Invite
 # ---------------------------------------------------------------------------
 
+async def require_event_setup_access(request: Request) -> None:
+    """Allow authenticated users to start workspace event setup."""
+    if getattr(request.state, "is_workspace", False):
+        await require_user(request)
+        return
 
-@router.get("/admin/setup", dependencies=[Depends(require_admin)])
+    await require_admin(request)
+
+@router.get("/admin/setup", dependencies=[Depends(require_event_setup_access)])
 async def admin_setup_start(request: Request):
     admin_flags = await get_admin_flags(request)
     return templates.TemplateResponse(request=request, name="admin/wizard_event.html", context={**admin_flags})
 
 
-@router.post("/admin/setup", dependencies=[Depends(require_admin)])
+@router.post("/admin/setup", dependencies=[Depends(require_event_setup_access)])
 async def admin_setup_create_event(request: Request):
     form = await request.form()
     display_name = form.get("display_name", "").strip()

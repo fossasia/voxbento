@@ -26,8 +26,10 @@
   <div class="account-page-header">
     <h1 class="account-page-title">My Account</h1>
     <p class="account-page-subtitle">Manage your profile, roles, and security settings.</p>
+    <a href="{{ primary_action_url }}" class="btn btn-primary btn-lg account-primary-action">
+      {{ primary_action_label }} &rarr;
+    </a>
   </div>
-
   <div class="account-panel account-panel--spaced">
     <table class="data-table account-table">
       <tbody>
@@ -101,7 +103,15 @@
               {% endif %}
             </td>
             <td>
-              <span class="badge badge-role badge-{{ m.role }} account-badge">{{ m.role }}</span>
+            {% set role_labels = {
+                'event_owner': 'Organizer',
+                'room_coordinator': 'Coordinator',
+                'interpreter': 'Interpreter',
+                'listener': 'Listener'
+            } %}
+            <span class="badge badge-role badge-{{ m.role }} account-badge">
+                {{ role_labels.get(m.role, m.role|replace('_', ' ')|title) }}
+            </span>
             </td>
             <td class="account-td--since">
               {{ m.created_at.strftime('%b %d, %Y') if m.created_at else '—' }}
@@ -113,7 +123,7 @@
     </div>
     {% else %}
     <div class="account-empty">
-      <p>You have not been assigned a role for any event, room, or booth yet.</p>
+      <p>You haven't joined any events, rooms, or booths yet.</p>
     </div>
     {% endif %}
   </div>

@@ -418,13 +418,13 @@ async def account_page(request: Request):
     }
     for m in event_memberships:
         if m.event is None:
-            link = "#"
+            link = "/"
         elif m.role == "event_owner":
             link = f"/workspace/events/{m.event.id}/"
         elif m.event_id in coordinated_event_slugs:
             link = f"/mission-control/{coordinated_event_slugs[m.event_id]}/"
         else:
-            link = "#"
+            link = "/"
         unified_memberships.append(
             {
                 "context": m.event.display_name if m.event else "—",
@@ -440,7 +440,11 @@ async def account_page(request: Request):
             if m.room and m.room.event
             else (m.room.display_name if m.room else "—")
         )
-        link_str = f"/mission-control/{m.room.event.slug}/" if m.room and m.room.event else "#"
+        link_str = (
+            f"/mission-control/{m.room.event.slug}/"
+            if m.room and m.room.event
+            else "/"
+        )
         unified_memberships.append(
             {"context": context_str, "link": link_str, "type": "Room", "role": m.role, "created_at": m.created_at}
         )
@@ -450,12 +454,27 @@ async def account_page(request: Request):
             if m.booth and m.booth.event and m.booth.room
             else "—"
         )
-        link_str = f"/interpreter/{m.booth.event.slug}/{m.booth.language_code}" if m.booth and m.booth.event else "#"
+        link_str = (
+            f"/interpreter/{m.booth.event.slug}/{m.booth.room_id}/"
+            f"{m.booth.language_code}"
+            if m.booth and m.booth.event and m.booth.room
+            else "/"
+        )
         unified_memberships.append(
             {"context": context_str, "link": link_str, "type": "Booth", "role": m.role, "created_at": m.created_at}
         )
 
     unified_memberships.sort(key=lambda x: x["created_at"] or datetime.min.replace(tzinfo=timezone.utc))
+
+    
+    interpreter_booth = next(
+        (
+            m
+            for m in booth_memberships
+            if m.booth and m.booth.event and m.booth.room
+        ),
+        None,
+    )
 
     if user.is_admin:
         management_home = "/admin/"
@@ -470,6 +489,30 @@ async def account_page(request: Request):
         management_home = "/account"
         management_label = "My Account"
 
+    if user.is_admin:
+        primary_action_url = "/admin/"
+        primary_action_label = "Admin Panel"
+    elif any(m.role == "event_owner" for m in event_memberships):
+        primary_action_url = "/workspace/"
+        primary_action_label = "Organizer Workspace"
+    elif any(m.role == "room_coordinator" for m in room_memberships):
+        primary_action_url = "/mission-control/"
+        primary_action_label = "Mission Control"
+    elif interpreter_booth:
+        primary_action_url = (
+            f"/interpreter/{interpreter_booth.booth.event.slug}/"
+            f"{interpreter_booth.booth.room_id}/"
+            f"{interpreter_booth.booth.language_code}"
+        )
+        primary_action_label = "Enter booth"
+    elif not event_memberships and not room_memberships and not booth_memberships:
+        primary_action_url = "/workspace/setup"
+        primary_action_label = "Create your first event"
+    else:
+        primary_action_url = "/account"
+        primary_action_label = "My Account"
+
+
     return templates.TemplateResponse(
         request=request,
         name="account.html",
@@ -478,6 +521,8 @@ async def account_page(request: Request):
             "memberships": unified_memberships,
             "management_home": management_home,
             "management_label": management_label,
+            "primary_action_url": primary_action_url,
+            "primary_action_label": primary_action_label,
         },
     )
 
