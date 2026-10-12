@@ -99,9 +99,7 @@ class _HealthCheckFilter(logging.Filter):
 class _UvicornTokenRedactor(logging.Filter):
     import re as _re
 
-    _TOKEN_RE = _re.compile(
-        r"(?i)((?:^|&|\?)(?:token|client_secret|code|access_token|refresh_token|key)=)[^&\s]*"
-    )
+    _TOKEN_RE = _re.compile(r"(?i)((?:^|&|\?)(?:token|client_secret|code|access_token|refresh_token|key)=)[^&\s]*")
 
     def filter(self, record):
         try:
@@ -109,11 +107,17 @@ class _UvicornTokenRedactor(logging.Filter):
         except Exception:
             return True
 
-        if any(x in message for x in ["token=", "client_secret=", "code=", "key="]) and any(
-            x in message for x in ["/embed/", "/ws/", "/oauth/", "/internal/"]
+        lowered = message.casefold()
+        if any(x in lowered for x in ["token=", "client_secret=", "code=", "key="]) and any(
+            x in lowered for x in ["/embed/", "/ws/", "/oauth/", "/internal/"]
         ):
-            record.msg = self._TOKEN_RE.sub(r"\1[REDACTED]", message)
-            record.args = ()
+            if isinstance(record.msg, str):
+                record.msg = self._TOKEN_RE.sub(r"\1[REDACTED]", record.msg)
+            if isinstance(record.args, tuple):
+                record.args = tuple(
+                    self._TOKEN_RE.sub(r"\1[REDACTED]", value) if isinstance(value, str) else value
+                    for value in record.args
+                )
         return True
 
 

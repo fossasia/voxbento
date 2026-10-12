@@ -101,6 +101,8 @@ def test_token_redactor_handles_split_args():
 def test_token_redactor_hides_internal_hook_secret():
     import logging
 
+    from uvicorn.logging import AccessFormatter
+
     from fastapi_app import _UvicornTokenRedactor
 
     record = logging.LogRecord(
@@ -116,6 +118,9 @@ def test_token_redactor_hides_internal_hook_secret():
     output = record.getMessage()
     assert "hook-secret" not in output
     assert "key=[REDACTED]" in output
+    formatted = AccessFormatter('%(client_addr)s - "%(request_line)s" %(status_code)s').format(record)
+    assert "hook-secret" not in formatted
+    assert "key=[REDACTED]" in formatted
 
 
 def test_healthz_ok():

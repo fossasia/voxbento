@@ -381,6 +381,46 @@ async def test_reconnect_reuses_room_worker_without_duplicate_start(environment)
 
 
 @pytest.mark.anyio
+async def test_reconnect_does_not_reuse_stale_worker_start_time(environment, monkeypatch):
+    client, event, rooms, media, _, start, stop = environment
+    room = rooms[0]
+    monkeypatch.setattr(settings, "program_ingest_stall_secs", 10)
+    token = await enable(client, event, room)
+    auth = credentials(room, token)
+    assert (await client.post("/internal/media-auth", json=auth)).status_code == 204
+    path = auth["path"]
+    media[path] = {
+        "name": path,
+        "ready": True,
+        "source": {"type": "webRTCSession", "id": auth["id"]},
+        "tracks": ["Opus"],
+        "bytesReceived": 10,
+    }
+    await ingest.reconcile_once()
+    ingest.health[room.id].worker_started_at = ingest.time.monotonic() - 11
+
+    media.clear()
+    ingest.audio_progress.pop(f"program-test-{room.id}-floor", None)
+    await ingest.reconcile_once()
+    stop_count = stop.await_count
+
+    reconnect = credentials(room, token)
+    assert (await client.post("/internal/media-auth", json=reconnect)).status_code == 204
+    start.side_effect = None  # Real ffmpeg does not report PCM in the same reconciliation tick.
+    media[path] = {
+        "name": path,
+        "ready": True,
+        "source": {"type": "webRTCSession", "id": reconnect["id"]},
+        "tracks": ["Opus"],
+        "bytesReceived": 20,
+    }
+    await ingest.reconcile_once()
+
+    assert ingest.health[room.id].state == "receiving"
+    assert stop.await_count == stop_count
+
+
+@pytest.mark.anyio
 async def test_reconnect_gets_fresh_negotiation_grace_after_previous_grace_elapsed(environment, monkeypatch):
     client, event, rooms, *_ = environment
     room = rooms[0]
@@ -423,11 +463,13 @@ async def test_video_only_and_two_room_isolation(environment):
             "tracks": ["H264"] if room.id == rooms[0].id else ["Opus"],
             "bytesReceived": 50,
         }
+    ingest.health.setdefault(rooms[0].id, ingest.IngestHealth()).worker_started_at = ingest.time.monotonic() - 30
     await ingest.reconcile_once()
     assert start.await_count == 1
     assert start.call_args.kwargs["room_id"] == rooms[1].id
     assert (await client.get(admin_url(event, rooms[0]))).json()["state"] == "degraded"
     assert "Opus" in (await client.get(admin_url(event, rooms[0]))).json()["reason"]
+    assert ingest.health[rooms[0].id].worker_started_at is None
 
 
 @pytest.mark.anyio

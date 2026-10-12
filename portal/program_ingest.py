@@ -384,6 +384,7 @@ async def reconcile_room(room: Room, event: Event, path: MediaPath | None) -> No
         if now - grace_started_at >= settings.program_ingest_disconnect_grace_secs:
             await stop_transcription_worker(booth_id)
             current.worker_config = None
+            current.worker_started_at = None
             if room.program_session_id:
                 await kick(path_name, MediaSource(type="webRTCSession", id=room.program_session_id))
                 room.program_session_id = None
@@ -412,6 +413,7 @@ async def reconcile_room(room: Room, event: Event, path: MediaPath | None) -> No
         current.state, current.reason = "degraded", problem
         await stop_transcription_worker(booth_id)
         current.worker_config = None
+        current.worker_started_at = None
         return
     current.state, current.reason = "receiving", "Audio received; starting transcription."
     provider = ProviderEnum(room.floor_transcription_provider)
@@ -420,10 +422,12 @@ async def reconcile_room(room: Room, event: Event, path: MediaPath | None) -> No
         current.state, current.reason = "degraded", "Enable the event transcription API and configure its provider key."
         await stop_transcription_worker(booth_id)
         current.worker_config = None
+        current.worker_started_at = None
         return
     config = (room.floor_transcription_provider, room.floor_transcription_model, room.floor_language_code)
     if current.worker_config and current.worker_config != config:
         await stop_transcription_worker(booth_id)
+        current.worker_started_at = None
     await start_transcription_worker(
         event_slug=event.slug,
         language_code="floor",
