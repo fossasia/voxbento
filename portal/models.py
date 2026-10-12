@@ -126,6 +126,9 @@ class Room(Base):
     floor_source: Mapped[str] = mapped_column(String(20), default="jitsi_bot", server_default="jitsi_bot")
     program_key_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     program_key_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Short-lived credential for the first-party browser sender, kept separate from the encoder key.
+    program_session_secret_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    program_session_secret_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     program_session_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     program_connected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     program_disconnected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

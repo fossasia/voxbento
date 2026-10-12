@@ -144,6 +144,33 @@ def key_digest_valid(room: Room, digest: str) -> bool:
     )
 
 
+def session_digest_valid(room: Room, digest: str) -> bool:
+    """Validate the short-lived browser-sender secret; independent of the encoder key."""
+    return bool(
+        room.floor_source == "program_ingest"
+        and room.program_session_secret_hash
+        and secrets.compare_digest(room.program_session_secret_hash, digest)
+        and room.program_session_secret_expires_at
+        and aware(room.program_session_secret_expires_at) > utc_now()
+    )
+
+
+def credential_digest_valid(room: Room, digest: str) -> bool:
+    """A floor publisher may present either the encoder key or a browser-sender secret."""
+    return key_digest_valid(room, digest) or session_digest_valid(room, digest)
+
+
+def has_valid_credential(room: Room) -> bool:
+    now = utc_now()
+    key_live = bool(room.program_key_hash and room.program_key_expires_at and aware(room.program_key_expires_at) > now)
+    session_live = bool(
+        room.program_session_secret_hash
+        and room.program_session_secret_expires_at
+        and aware(room.program_session_secret_expires_at) > now
+    )
+    return key_live or session_live
+
+
 def deny(ip: str) -> None:
     now = time.monotonic()
     start, count = failures.get(ip, (now, 0))
@@ -212,7 +239,7 @@ async def authorize_publish(data: MediaAuth) -> None:
                 not settings.program_ingest_enabled
                 or data.protocol != "webrtc"
                 or data.query
-                or not key_digest_valid(room, presented_digest)
+                or not credential_digest_valid(room, presented_digest)
             ):
                 deny(data.ip)
             try:
@@ -240,7 +267,7 @@ async def authorize_publish(data: MediaAuth) -> None:
         # MediaMTX calls and credential KDF work happen before reaching it.
         async with capacity_lock, get_session() as session:
             room = await session.get(Room, parsed_room_id)
-            if room is None or not key_digest_valid(room, presented_digest):
+            if room is None or not credential_digest_valid(room, presented_digest):
                 deny(data.ip)
             if room.program_session_id and room.program_session_id != session_id:
                 raise HTTPException(409, "A floor publisher is already connected or connecting")
@@ -344,6 +371,9 @@ async def configure_source(room: Room, event: Event, action: str, offset_ms: int
     room.program_sync_offset_ms = offset_ms
     room.program_key_hash = None
     room.program_key_expires_at = None
+    # Any source or credential change also invalidates an in-flight browser session.
+    room.program_session_secret_hash = None
+    room.program_session_secret_expires_at = None
     room.floor_source = "jitsi_bot" if action == "disable" else "program_ingest"
     health.pop(room.id, None)
     secret = None
@@ -355,17 +385,79 @@ async def configure_source(room: Room, event: Event, action: str, offset_ms: int
     return secret
 
 
+async def ensure_floor_path(path: str) -> None:
+    """Create or normalize the MediaMTX floor path with duplicate protection off."""
+    client = get_http_client()
+    response = await client.patch(
+        f"{settings.mediamtx_api_base}/v3/config/paths/patch/{path}",
+        json={"overridePublisher": False, "alwaysAvailable": False},
+        timeout=MEDIA_CONTROL_TIMEOUT,
+    )
+    if response.status_code == 404:
+        response = await client.post(
+            f"{settings.mediamtx_api_base}/v3/config/paths/add/{path}",
+            json={"overridePublisher": False, "alwaysAvailable": False},
+            timeout=MEDIA_CONTROL_TIMEOUT,
+        )
+    response.raise_for_status()
+
+
+async def open_sender_session(room: Room, event: Event, offset_ms: int, ttl_secs: int) -> str:
+    """Claim a free floor for the browser sender and mint a short-lived publish secret.
+
+    Caller holds the room lock and DB transaction. Rejects with 409 when another
+    source is live on the floor; never replaces a connected publisher implicitly and
+    never touches the long-lived encoder credential.
+    """
+    path = make_mediamtx_path(event.slug, room.id, "floor")
+    current_path = await media_path(path)
+    if current_path and current_path.source is not None:
+        raise HTTPException(409, "Another source is publishing to the floor; stop it before starting the browser sender.")
+    await ensure_floor_path(path)
+    if room.floor_source == "jitsi_bot":
+        try:
+            response = await get_http_client().post(
+                f"{settings.floor_bot_base}/stop",
+                json={"event_slug": event.slug, "room_id": room.id},
+                timeout=MEDIA_CONTROL_TIMEOUT,
+            )
+            response.raise_for_status()
+        except httpx.RequestError:
+            logger.warning("program_ingest floor_bot_unreachable room_id=%s", room.id)
+    # No live source above, so only a stale reservation can remain; drop it.
+    if room.program_session_id:
+        await kick(path, MediaSource(type="webRTCSession", id=room.program_session_id))
+        room.program_session_id = None
+    await stop_transcription_worker(make_booth_id(event.slug, room.id, "floor"))
+    room.program_sync_offset_ms = offset_ms
+    room.floor_source = "program_ingest"
+    secret = secrets.token_urlsafe(32)
+    room.program_session_secret_hash = await asyncio.to_thread(digest_program_secret, secret)
+    room.program_session_secret_expires_at = utc_now() + timedelta(seconds=ttl_secs)
+    health.pop(room.id, None)
+    logger.info("program_ingest sender_session_opened room_id=%s", room.id)
+    return secret
+
+
+async def close_sender_session(room: Room, event: Event) -> None:
+    """Release only this browser sender's session: invalidate its secret and kick it."""
+    room.program_session_secret_hash = None
+    room.program_session_secret_expires_at = None
+    path = make_mediamtx_path(event.slug, room.id, "floor")
+    if room.program_session_id:
+        await kick(path, MediaSource(type="webRTCSession", id=room.program_session_id))
+        room.program_session_id = None
+        room.program_disconnected_at = utc_now()
+    health.pop(room.id, None)
+    logger.info("program_ingest sender_session_closed room_id=%s", room.id)
+
+
 async def reconcile_room(room: Room, event: Event, path: MediaPath | None) -> None:
     current = health.setdefault(room.id, IngestHealth())
     path_name = make_mediamtx_path(event.slug, room.id, "floor")
     booth_id = make_booth_id(event.slug, room.id, "floor")
     now = time.monotonic()
-    permitted = bool(
-        settings.program_ingest_enabled
-        and room.program_key_hash
-        and room.program_key_expires_at
-        and aware(room.program_key_expires_at) > utc_now()
-    )
+    permitted = bool(settings.program_ingest_enabled and has_valid_credential(room))
     if path and path.source and (not permitted or path.source.id != room.program_session_id):
         await kick(path_name, path.source)
         path = None

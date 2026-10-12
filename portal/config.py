@@ -37,6 +37,7 @@ class Settings(BaseSettings):
     program_ingest_max_rooms: int = 10
     program_ingest_disconnect_grace_secs: float = 15.0
     program_ingest_stall_secs: float = 30.0
+    program_sender_session_ttl_secs: int = 150  # Browser sender publish window; long enough to negotiate, short enough to expire.
 
     @property
     def effective_jitsi_base_url(self) -> str:

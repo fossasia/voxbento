@@ -15,7 +15,15 @@ from portal.auth import require_event_owner
 from portal.booth_identity import make_mediamtx_path
 from portal.config import settings
 from portal.database import get_event_by_id, get_room_by_id, get_session
-from portal.program_ingest import MediaAuth, authorize_publish, configure_source, health, room_lock
+from portal.program_ingest import (
+    MediaAuth,
+    authorize_publish,
+    close_sender_session,
+    configure_source,
+    health,
+    open_sender_session,
+    room_lock,
+)
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -24,6 +32,16 @@ logger = logging.getLogger(__name__)
 class IngestChange(BaseModel):
     action: Literal["enable", "rotate", "revoke", "disable", "sync"]
     sync_offset_ms: int = Field(default=0, ge=0, le=120000)
+
+
+class SenderSessionRequest(BaseModel):
+    sync_offset_ms: int = Field(default=0, ge=0, le=120000)
+
+
+def _check_origin(request: Request) -> None:
+    origin = request.headers.get("origin")
+    if origin and origin.rstrip("/") != settings.public_base_url.rstrip("/"):
+        raise HTTPException(403, "Origin mismatch")
 
 
 @router.post("/internal/media-auth", include_in_schema=False)
@@ -95,9 +113,7 @@ async def ingest_status(event_id: int, room_id: int) -> JSONResponse:
 
 @router.post("/admin/events/{event_id}/rooms/{room_id}/program-ingest", dependencies=[Depends(require_event_owner)])
 async def ingest_change(request: Request, event_id: int, room_id: int, change: IngestChange) -> JSONResponse:
-    origin = request.headers.get("origin")
-    if origin and origin.rstrip("/") != settings.public_base_url.rstrip("/"):
-        raise HTTPException(403, "Origin mismatch")
+    _check_origin(request)
     if change.action in {"enable", "rotate"} and not settings.program_ingest_enabled:
         raise HTTPException(409, "Program ingest must first be enabled by the server operator")
     secret = None
@@ -148,3 +164,48 @@ async def ingest_change(request: Request, event_id: int, room_id: int, change: I
         status_code=202 if cleanup_pending else 200,
         headers={"Cache-Control": "no-store", "Pragma": "no-cache"},
     )
+
+
+SENDER_PATH = "/admin/events/{event_id}/rooms/{room_id}/program-sender"
+
+
+@router.post(SENDER_PATH, dependencies=[Depends(require_event_owner)])
+async def sender_session_start(
+    request: Request, event_id: int, room_id: int, body: SenderSessionRequest
+) -> JSONResponse:
+    _check_origin(request)
+    if not settings.program_ingest_enabled:
+        raise HTTPException(409, "Program ingest must first be enabled by the server operator")
+    async with room_lock(room_id):
+        async with get_session() as session:
+            room = await get_room_by_id(session, room_id)
+            event = await get_event_by_id(session, event_id)
+            if not room or room.event_id != event_id or not event:
+                raise HTTPException(404, "Room not found")
+            try:
+                secret = await open_sender_session(
+                    room, event, body.sync_offset_ms, settings.program_sender_session_ttl_secs
+                )
+            except httpx.HTTPError:
+                raise HTTPException(502, "Could not confirm floor availability; no session was issued. Retry.") from None
+            endpoint = f"{settings.public_base_url.rstrip('/')}/{make_mediamtx_path(event.slug, room_id, 'floor')}/whip"
+    return JSONResponse(
+        {"secret": secret, "endpoint": endpoint, "expires_in": settings.program_sender_session_ttl_secs},
+        headers={"Cache-Control": "no-store", "Pragma": "no-cache"},
+    )
+
+
+@router.delete(SENDER_PATH, dependencies=[Depends(require_event_owner)])
+async def sender_session_stop(request: Request, event_id: int, room_id: int) -> JSONResponse:
+    _check_origin(request)
+    async with room_lock(room_id):
+        async with get_session() as session:
+            room = await get_room_by_id(session, room_id)
+            event = await get_event_by_id(session, event_id)
+            if not room or room.event_id != event_id or not event:
+                raise HTTPException(404, "Room not found")
+            try:
+                await close_sender_session(room, event)
+            except httpx.HTTPError:
+                logger.warning("program_ingest sender_close_cleanup_pending room_id=%s", room_id)
+    return JSONResponse({"stopped": True}, headers={"Cache-Control": "no-store"})
