@@ -85,7 +85,7 @@ class Event(Base):
     encrypted_groq_api_key: Mapped[str | None] = mapped_column("groq_api_key", Text, nullable=True, default=None)
     listener_join_code: Mapped[str | None] = mapped_column(String(64), nullable=True, default=None)
     # Organizer opt-in: only public events are advertised on the homepage and /events.
-    is_public: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    is_public: Mapped[bool] = mapped_column(Boolean, default=False, server_default=sa.false())
     starts_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
     ends_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)

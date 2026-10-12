@@ -767,7 +767,12 @@ class TestEventVisibilityToggle:
     async def test_unchecked_box_makes_event_private(self, admin_cookie):
         event = await _add_event("pub", "Was Public")
         async with _client() as c:
-            await c.post(f"/admin/events/{event.id}/visibility", data={}, cookies=admin_cookie, headers={"Origin": str(c.base_url)})
+            await c.post(
+                f"/admin/events/{event.id}/visibility",
+                data={},
+                cookies=admin_cookie,
+                headers={"Origin": str(c.base_url)},
+            )
             home = await c.get("/")
         assert b"Was Public" not in home.content
 
@@ -782,6 +787,24 @@ class TestEventVisibilityToggle:
                 headers={"Origin": str(c.base_url)},
             )
         assert resp.status_code == 422
+
+    @pytest.mark.anyio
+    async def test_publishing_generates_join_code(self, admin_cookie):
+        from portal.database import get_event_by_id, get_session
+
+        event = await _add_event("nocode", "No Code Yet", is_public=False)
+        async with get_session() as s:
+            assert (await get_event_by_id(s, event.id)).listener_join_code is None
+        async with _client() as c:
+            resp = await c.post(
+                f"/admin/events/{event.id}/visibility",
+                data={"is_public": "true"},
+                cookies=admin_cookie,
+                headers={"Origin": str(c.base_url)},
+            )
+        assert resp.status_code == 303
+        async with get_session() as s:
+            assert (await get_event_by_id(s, event.id)).listener_join_code
 
     @pytest.mark.anyio
     async def test_requires_auth(self, seed_event):

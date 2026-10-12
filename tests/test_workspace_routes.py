@@ -45,6 +45,7 @@ def client():
         ("/workspace", "/admin"),
         ("/workspace/events", "/admin/events"),
         ("/workspace/setup", "/admin/setup"),
+        ("/workspace/events/1/visibility", "/admin/events/1/visibility"),
         ("/workspace/api/events/1/api-keys", "/admin/api/events/1/api-keys"),
         ("/workspace/models/trigger_download", "/admin/models/trigger_download"),
         ("/workspace/models/download_progress", "/admin/models/download_progress"),

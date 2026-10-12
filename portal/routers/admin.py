@@ -823,6 +823,9 @@ async def admin_event_visibility(
         if event is None:
             raise HTTPException(status_code=404, detail="Event not found.")
         event.is_public = is_public
+        if is_public and not event.listener_join_code:
+            # The public attendee link needs a code to be usable; owners may never have opened the invite wizard.
+            event.listener_join_code = "".join(secrets.choice("ABCDEFGHJKLMNPQRSTUVWXYZ23456789") for _ in range(6))
         event.starts_at = start
         event.ends_at = end
         await session.flush()
