@@ -7,13 +7,8 @@ import os
 from datetime import datetime, timedelta, timezone
 
 os.environ["BOOTH_ACCESS_TOKEN"] = ""
-os.environ["ADMIN_PASSWORD"] = "test-admin-pass"
 
 import pytest
-
-from portal.config import settings
-
-settings.admin_password = "test-admin-pass"
 
 
 @pytest.fixture(autouse=True)
