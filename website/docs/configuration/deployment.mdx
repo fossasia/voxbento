@@ -12,7 +12,7 @@ Before deploying, confirm that your server meets the following requirements:
 
 ### Docker & Docker Compose
 
-    Install the latest stable versions of Docker Engine and the Docker Compose plugin. Voxbento uses Compose v2 syntax (`docker compose`, not `docker-compose`).
+    Install the latest stable versions of Docker Engine and the Docker Compose plugin (Compose 2.24.0 or newer for optional environment files). Voxbento uses Compose v2 syntax (`docker compose`, not `docker-compose`).
   
   ### Public IP or Domain
 
@@ -66,6 +66,9 @@ Open `.env` in a text editor and configure at minimum the following variables be
 
     # API key encryption — generate with: openssl rand -hex 32
     API_KEY_ENCRYPTION_KEY=your-32-char-minimum-key
+
+    # Private portal-to-MediaMTX authentication — generate with: openssl rand -hex 32
+    MEDIAMTX_AUTH_HOOK_SECRET=your-64-char-random-string
 
     ```
 
@@ -141,6 +144,26 @@ If `mediamtx_ok` is `false`, the portal is running but MediaMTX is not reachable
 Database migrations run automatically on container startup. You do not need to run any migration commands manually when using Docker Compose.
 :::
 
+## Deployment preflight
+
+The production GitHub Actions workflow builds candidate images in a temporary Git
+worktree and validates the server's current `.env` and candidate Caddy configuration
+before updating the live checkout or replacing any running container. If a required
+secret is missing or unsafe, the deployment stops and the existing stack remains
+running. Old images are retained until the replacement portal passes `/healthz`,
+then dangling images are pruned. The temporary worktree is removed on exit.
+Compose always uses the `voxbento` project name to retain existing volumes and
+networks. The portal runs source and dependencies from its image, with `.env`
+loaded as container environment variables; rebuild the image to apply code changes.
+
+You can run the same configuration check manually from the deployment directory:
+
+```bash
+docker compose run --rm --no-deps portal \
+  uv run python -c \
+  "from portal.config import settings; settings.validate_production_secrets()"
+```
+
 ## Production Considerations
 
 A default `docker compose up` is sufficient to verify that everything works, but you should address the following before accepting real traffic.
@@ -209,3 +232,21 @@ The `.env.example` file ships with `changeme` as the password for Jitsi's intern
   These passwords are only used internally between Jitsi services — you do not need to share them with anyone.
 
 </details>
+## Program stream ingest rollout
+
+Program ingest is opt-in (`PROGRAM_INGEST_ENABLED=true`) after migration 025 and
+coordinated deployment of the portal, MediaMTX 1.18.2 configuration and Caddy.
+Use one portal replica. Set `PUBLIC_BASE_URL` and `MEDIAMTX_WHIP_BASE` to the
+public HTTPS origin; expose HTTPS 443 and WebRTC UDP 8189. Control API 9997,
+RTSP 8554 and HTTP signalling/portal ports must remain private/loopback-bound.
+Set `MEDIAMTX_AUTH_HOOK_SECRET` to a strong random value shared by the portal and
+MediaMTX (`openssl rand -hex 32`); production startup fails when it is absent.
+Block `/internal/*` at every public reverse proxy. Never publish the auth callback.
+
+The encoder sends WHIP with Opus audio and a room-scoped bearer token. It keeps
+its independent YouTube destination; VoxBento does not relay to YouTube. See
+`docs/program-stream-ingest.md` in the repository for exact setup, supported/tested
+versions, credential rotation, synchronization, rollback and event rehearsal.
+Because program-ingest credential digests are bound to `JWT_SECRET` (or its
+`SECRET_KEY` fallback), rotate each room's ingest token after changing that server
+secret and before the next event.
