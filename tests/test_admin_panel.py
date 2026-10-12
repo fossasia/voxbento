@@ -757,6 +757,7 @@ class TestEventVisibilityToggle:
                 f"/admin/events/{event.id}/visibility",
                 data={"is_public": "true", "starts_at": "2030-01-01T09:00", "ends_at": "2030-01-02T17:00"},
                 cookies=admin_cookie,
+                headers={"Origin": str(c.base_url)},
             )
             assert resp.status_code == 303
             home = await c.get("/")
@@ -766,7 +767,7 @@ class TestEventVisibilityToggle:
     async def test_unchecked_box_makes_event_private(self, admin_cookie):
         event = await _add_event("pub", "Was Public")
         async with _client() as c:
-            await c.post(f"/admin/events/{event.id}/visibility", data={}, cookies=admin_cookie)
+            await c.post(f"/admin/events/{event.id}/visibility", data={}, cookies=admin_cookie, headers={"Origin": str(c.base_url)})
             home = await c.get("/")
         assert b"Was Public" not in home.content
 
@@ -778,6 +779,7 @@ class TestEventVisibilityToggle:
                 f"/admin/events/{event.id}/visibility",
                 data={"is_public": "true", "starts_at": "2030-01-02T09:00", "ends_at": "2030-01-01T09:00"},
                 cookies=admin_cookie,
+                headers={"Origin": str(c.base_url)},
             )
         assert resp.status_code == 422
 
@@ -785,8 +787,26 @@ class TestEventVisibilityToggle:
     async def test_requires_auth(self, seed_event):
         event, _, _ = seed_event
         async with _client() as c:
-            resp = await c.post(f"/admin/events/{event.id}/visibility", data={"is_public": "true"})
+            resp = await c.post(
+                f"/admin/events/{event.id}/visibility",
+                data={"is_public": "true"},
+                headers={"Origin": str(c.base_url)},
+            )
         assert resp.status_code in (401, 403)
+
+    @pytest.mark.anyio
+    async def test_rejects_cross_origin_post(self, admin_cookie):
+        event = await _add_event("pub", "Stays Public")
+        async with _client() as c:
+            resp = await c.post(
+                f"/admin/events/{event.id}/visibility",
+                data={},  # would unpublish if the request were accepted
+                cookies=admin_cookie,
+                headers={"Origin": "http://evil.example"},
+            )
+            home = await c.get("/")
+        assert resp.status_code == 403
+        assert b"Stays Public" in home.content
 
 
 # ---------------------------------------------------------------------------

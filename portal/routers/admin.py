@@ -767,7 +767,19 @@ async def admin_event_api_settings_post(
     )
 
 
-@router.post("/admin/events/{event_id}/visibility", dependencies=[Depends(require_event_owner)])
+async def require_same_origin(request: Request) -> None:
+    """Reject cross-origin form posts on cookie-authenticated, state-changing routes."""
+    from urllib.parse import urlparse
+
+    source = request.headers.get("origin") or request.headers.get("referer")
+    if not source or urlparse(source).netloc != request.url.netloc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Cross-origin request blocked.")
+
+
+@router.post(
+    "/admin/events/{event_id}/visibility",
+    dependencies=[Depends(require_event_owner), Depends(require_same_origin)],
+)
 async def admin_event_visibility(
     request: Request,
     event_id: int,
@@ -793,6 +805,17 @@ async def admin_event_visibility(
     if start and end and end < start:
         raise HTTPException(status_code=422, detail="End must not be before start.")
     async with get_session() as session:
+        # Re-validate ownership in the same session as the write so a revocation
+        # that lands after the dependency check cannot slip through.
+        from portal.auth import resolve_principal
+        from portal.database import list_memberships_for_user
+
+        principal = await resolve_principal(request, session)
+        if not principal["is_global_admin"]:
+            user_id = principal["user_id"]
+            memberships = await list_memberships_for_user(session, user_id) if user_id else []
+            if not any(m.event_id == event_id and m.role == "event_owner" for m in memberships):
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required.")
         event = await get_event_by_id(session, event_id)
         if event is None:
             raise HTTPException(status_code=404, detail="Event not found.")
