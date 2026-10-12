@@ -292,6 +292,35 @@ class TestEventCRUD:
         assert b"/interpreter/testcon/1/en" in resp.content
 
     @pytest.mark.anyio
+    async def test_event_detail_groups_booths_by_room(self, admin_cookie, seed_event):
+        """With two rooms sharing a language, each booth row must say which room it is in."""
+        event, main_hall, _ = seed_event
+        from portal.database import create_booth, create_room, get_session
+
+        async with get_session() as s:
+            workshop = await create_room(s, event_id=event.id, display_name="Workshop B")
+            await create_booth(s, event_id=event.id, room_id=main_hall.id, language_code="de", language_name="Deutsch")
+            await create_booth(s, event_id=event.id, room_id=workshop.id, language_code="de", language_name="Deutsch")
+            await create_booth(s, event_id=event.id, room_id=workshop.id, language_code="en", language_name="English")
+
+        async with _client() as c:
+            resp = await c.get(f"/admin/events/{event.id}/", cookies=admin_cookie)
+        assert resp.status_code == 200
+        html = resp.text
+        assert "<th>Room</th>" in html
+        assert html.count("<td>Main Hall</td>") == 2
+        assert html.count("<td>Workshop B</td>") == 2
+        # Rows follow the Rooms list order, then language within a room.
+        rows = [
+            f"/interpreter/testcon/{main_hall.id}/de",
+            f"/interpreter/testcon/{main_hall.id}/en",
+            f"/interpreter/testcon/{workshop.id}/de",
+            f"/interpreter/testcon/{workshop.id}/en",
+        ]
+        positions = [html.index(f'href="{row}"') for row in rows]
+        assert positions == sorted(positions)
+
+    @pytest.mark.anyio
     async def test_delete_event(self, admin_cookie, seed_event):
         event, _, _ = seed_event
         async with _client() as c:
