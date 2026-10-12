@@ -182,9 +182,12 @@ Listeners connected to the caption WebSocket receive transcription segments as t
 ## Administrative access
 
 Administrative access is tied to registered user accounts rather than a shared
-deployment password. A site-wide administrator signs in at `/admin/login` with
-their email address and password and receives the normal `user_token` session
-cookie. Event owners and room coordinators receive only the scoped access their
+deployment password. Everyone, including site-wide administrators, event owners
+and room coordinators, signs in at `/login` with their email address and receives
+the normal `user_token` session cookie. The sign-in page asks for the email first:
+known addresses continue to a password or magic link, and unknown addresses go to
+`/register` with the email pre-filled. The retired `/admin/login` URL redirects to
+`/login?next=/admin/`. Event owners and room coordinators receive only the scoped access their
 memberships allow. Operators should maintain at least two active administrator
 accounts; the [admin-login migration guide](https://github.com/fossasia/voxbento/blob/dev/docs/admin-password-removal-migration.md)
 documents the controlled recovery procedure.
@@ -211,9 +214,8 @@ MediaMTX is configured to allow only one publisher per stream path at a time. Ev
 </TabItem>
 </Tabs>
 
-Admin password sign-in requires a verified email address. Both `/login` and
-`/admin/login` share a limit of 10 attempts per email address per hour, preventing
-users from bypassing the limit by switching login pages.
+Password sign-in requires a verified email address. `/login` allows 10 attempts
+per email address per hour.
 
 ## Program floor source
 

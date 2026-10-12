@@ -500,12 +500,16 @@ class TestAdminUserManagement:
 
 class TestHomePageAuthLinks:
     @pytest.mark.anyio
-    async def test_home_shows_login_register_when_logged_out(self, setup_db):
+    async def test_home_shows_single_sign_in_when_logged_out(self, setup_db):
         async with _client() as c:
             resp = await c.get("/")
         assert resp.status_code == 200
-        assert b"Sign In" in resp.content
-        assert b"Register" in resp.content
+        assert b'<a href="/login"' in resp.content
+        assert b">Sign in</a>" in resp.content
+        # One entry point: no separate Register button or "Login" label (#752).
+        assert b"Register" not in resp.content
+        assert b"Login" not in resp.content
+        assert b"Sign In" not in resp.content
 
     @pytest.mark.anyio
     async def test_home_shows_account_when_logged_in(self, setup_db):

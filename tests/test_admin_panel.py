@@ -1,7 +1,7 @@
 """Tests for the admin panel routes (Phase 3, Step 4).
 
 Covers:
-- Admin login/logout flow
+- Admin sign-in redirect and logout flow
 - require_admin() guard (403 without cookie)
 - CRUD operations for events, rooms, booths
 - Dashboard with live status
@@ -109,11 +109,61 @@ def _client():
 
 
 class TestAdminLogin:
+    """Admins sign in through the shared ``/login`` page (#752)."""
+
     @pytest.fixture(autouse=True)
     def isolated_login_limits(self, monkeypatch):
         import portal.rate_limit
 
         monkeypatch.setattr(portal.rate_limit, "_rates", {})
+
+    @pytest.mark.anyio
+    async def test_admin_login_page_redirects_to_shared_sign_in(self):
+        async with _client() as c:
+            resp = await c.get("/admin/login", follow_redirects=False)
+        assert resp.status_code == 303
+        assert resp.headers["location"] == "/login?next=/admin/"
+
+    @pytest.mark.anyio
+    async def test_admin_login_form_post_is_gone(self):
+        async with _client() as c:
+            resp = await c.post(
+                "/admin/login",
+                data={"email": "admin@example.com", "password": "test-admin-pass"},
+                follow_redirects=False,
+            )
+        assert resp.status_code == 405
+        assert "user_token" not in resp.headers.get("set-cookie", "")
+
+    @pytest.mark.anyio
+    async def test_admin_signs_in_through_shared_page(self):
+        from portal.database import create_user, get_session
+
+        async with get_session() as s:
+            admin = await create_user(
+                s,
+                email="admin@example.com",
+                display_name="Admin",
+                password_hash=hash_password("test-admin-pass"),
+                email_verified=True,
+                is_admin=True,
+            )
+
+        async with _client() as c:
+            resp = await c.post(
+                "/login",
+                data={"email": "admin@example.com", "password": "test-admin-pass", "next_url": "/admin/"},
+                follow_redirects=False,
+            )
+            assert resp.status_code == 303
+            assert resp.headers["location"] == "/admin/"
+            token_val = resp.cookies.get("user_token")
+            payload = decode_token(token_val)
+            assert payload["sub"] == str(admin.id)
+            assert payload["is_admin"] is True
+
+            dashboard = await c.get("/admin/", cookies={"user_token": token_val})
+        assert dashboard.status_code == 200
 
     @pytest.mark.anyio
     async def test_login_rejects_unverified_admin(self):
@@ -130,137 +180,13 @@ class TestAdminLogin:
             )
         async with _client() as client:
             response = await client.post(
-                "/admin/login",
-                data={"email": "unverified@example.com", "password": "test-admin-pass"},
+                "/login",
+                data={"email": "unverified@example.com", "password": "test-admin-pass", "next_url": "/admin/"},
                 follow_redirects=False,
             )
         assert response.status_code == 403
         assert "Please verify your email address first." in response.text
         assert "user_token" not in response.cookies
-
-    @pytest.mark.anyio
-    @pytest.mark.parametrize("first_endpoint,second_endpoint", [("/login", "/admin/login"), ("/admin/login", "/login")])
-    async def test_login_endpoints_share_attempt_limit(self, first_endpoint, second_endpoint):
-        from portal.database import create_user, get_session
-
-        async with get_session() as session:
-            await create_user(
-                session,
-                email="limited@example.com",
-                display_name="Limited admin",
-                password_hash=hash_password("test-admin-pass"),
-                is_admin=True,
-                email_verified=True,
-            )
-        async with _client() as client:
-            for _ in range(10):
-                response = await client.post(
-                    first_endpoint,
-                    data={"email": "limited@example.com", "password": "wrong"},
-                    follow_redirects=False,
-                )
-                assert response.status_code == 403
-            response = await client.post(
-                second_endpoint,
-                data={"email": "LIMITED@example.com", "password": "test-admin-pass"},
-                follow_redirects=False,
-            )
-        assert response.status_code == 429
-        assert "Too many attempts." in response.text
-        assert "user_token" not in response.cookies
-
-    @pytest.mark.anyio
-    async def test_login_page_renders(self):
-        async with _client() as c:
-            resp = await c.get("/admin/login")
-        assert resp.status_code == 200
-        assert b"Admin" in resp.content
-        assert b'name="email"' in resp.content
-        assert b'name="password"' in resp.content
-
-    @pytest.mark.anyio
-    async def test_login_with_correct_credentials(self, setup_db):
-        from portal.database import create_user, get_session
-
-        async with get_session() as s:
-            user = await create_user(
-                s,
-                email="admin@example.com",
-                display_name="Admin",
-                password_hash=hash_password("test-admin-pass"),
-                email_verified=True,
-                is_admin=True,
-            )
-
-        async with _client() as c:
-            resp = await c.post(
-                "/admin/login",
-                data={"email": "admin@example.com", "password": "test-admin-pass"},
-                follow_redirects=False,
-            )
-        assert resp.status_code == 303
-        assert resp.headers["location"] == "/admin/"
-        assert "user_token" in resp.headers.get("set-cookie", "")
-        cookie_val = resp.cookies.get("user_token")
-        payload = decode_token(cookie_val)
-        assert payload["sub"] == str(user.id)
-        assert payload["is_admin"] is True
-
-    @pytest.mark.anyio
-    async def test_login_with_wrong_password(self, setup_db):
-        from portal.database import create_user, get_session
-
-        async with get_session() as s:
-            await create_user(
-                s,
-                email="admin@example.com",
-                display_name="Admin",
-                password_hash=hash_password("test-admin-pass"),
-                email_verified=True,
-                is_admin=True,
-            )
-
-        async with _client() as c:
-            resp = await c.post(
-                "/admin/login",
-                data={"email": "admin@example.com", "password": "wrong"},
-                follow_redirects=False,
-            )
-        assert resp.status_code == 403
-        assert b"Invalid email or password" in resp.content
-
-    @pytest.mark.anyio
-    async def test_login_with_non_admin_user_rejected(self, setup_db):
-        from portal.database import create_user, get_session
-
-        async with get_session() as s:
-            await create_user(
-                s,
-                email="regular@example.com",
-                display_name="Regular",
-                password_hash=hash_password("test-admin-pass"),
-                email_verified=True,
-                is_admin=False,
-            )
-
-        async with _client() as c:
-            resp = await c.post(
-                "/admin/login",
-                data={"email": "regular@example.com", "password": "test-admin-pass"},
-                follow_redirects=False,
-            )
-        assert resp.status_code == 403
-        assert b"Admin privileges required" in resp.content
-
-    @pytest.mark.anyio
-    async def test_login_rejects_empty_credentials(self):
-        async with _client() as c:
-            resp = await c.post(
-                "/admin/login",
-                data={"email": "", "password": ""},
-                follow_redirects=False,
-            )
-        assert resp.status_code == 403
 
     @pytest.mark.anyio
     async def test_login_fails_closed_when_legacy_password_is_set(self, monkeypatch, setup_db):
@@ -269,8 +195,8 @@ class TestAdminLogin:
 
         async with _client() as c:
             resp = await c.post(
-                "/admin/login",
-                data={"email": "admin@example.com", "password": "legacy-shared-secret"},
+                "/login",
+                data={"email": "admin@example.com", "password": "legacy-shared-secret", "next_url": "/admin/"},
                 follow_redirects=False,
             )
 
@@ -295,28 +221,12 @@ class TestAdminLogin:
 
         async with _client() as c:
             resp = await c.post(
-                "/admin/login",
-                data={"email": "inactive-admin@example.com", "password": "test-admin-pass"},
+                "/login",
+                data={"email": "inactive-admin@example.com", "password": "test-admin-pass", "next_url": "/admin/"},
                 follow_redirects=False,
             )
         assert resp.status_code == 403
         assert "user_token" not in resp.headers.get("set-cookie", "")
-
-    @pytest.mark.anyio
-    async def test_login_when_no_active_admin_account_exists(self, setup_db):
-        """When the database has no active administrators, login fails closed safely."""
-        async with _client() as c:
-            get_resp = await c.get("/admin/login")
-            assert get_resp.status_code == 200
-            assert b'name="email"' in get_resp.content
-
-            resp = await c.post(
-                "/admin/login",
-                data={"email": "nobody@example.com", "password": "any-password"},
-                follow_redirects=False,
-            )
-            assert resp.status_code == 403
-            assert "user_token" not in resp.headers.get("set-cookie", "")
 
     @pytest.mark.anyio
     async def test_documented_break_glass_recovery_procedure(self, setup_db):
@@ -336,38 +246,24 @@ class TestAdminLogin:
             )
 
         async with _client() as c:
-            # 1. Before recovery, regular user cannot access admin login
-            denied_login = await c.post(
-                "/admin/login",
-                data={"email": "operator@example.com", "password": "operator-pass"},
+            # 1. The operator can sign in, but is not yet allowed into the admin panel
+            login = await c.post(
+                "/login",
+                data={"email": "operator@example.com", "password": "operator-pass", "next_url": "/admin/"},
                 follow_redirects=False,
             )
-            assert denied_login.status_code == 403
+            assert login.status_code == 303
+            token_val = login.cookies.get("user_token")
+            assert token_val is not None
+            denied = await c.get("/admin/", cookies={"user_token": token_val})
+            assert denied.status_code == 403
 
             # 2. Execute documented break-glass recovery SQL from docs/admin-password-removal-migration.md
             async with get_session() as s:
                 await s.execute(text("UPDATE users SET is_admin = 1 WHERE email = 'operator@example.com'"))
                 await s.commit()
 
-            # 3. After running the recovery SQL, user signs in successfully immediately
-            allowed_login = await c.post(
-                "/admin/login",
-                data={"email": "operator@example.com", "password": "operator-pass"},
-                follow_redirects=False,
-            )
-            assert allowed_login.status_code == 303
-            assert allowed_login.headers["location"] == "/admin/"
-            cookie_header = allowed_login.headers.get("set-cookie", "")
-            assert "user_token" in cookie_header
-
-            # 4. Promoted user can now access the admin panel
-            token_val = None
-            for cookie_part in cookie_header.split(";"):
-                part = cookie_part.strip()
-                if part.startswith("user_token="):
-                    token_val = part.split("=", 1)[1]
-                    break
-            assert token_val is not None
+            # 3. Authorization follows the database, so the same session now reaches the panel
             dashboard = await c.get("/admin/", cookies={"user_token": token_val})
             assert dashboard.status_code == 200
 
@@ -388,13 +284,13 @@ class TestAdminLogin:
 
         async with _client() as c:
             stripped = await c.post(
-                "/admin/login",
-                data={"email": "spacey-admin@example.com", "password": "padded-pass"},
+                "/login",
+                data={"email": "spacey-admin@example.com", "password": "padded-pass", "next_url": "/admin/"},
                 follow_redirects=False,
             )
             verbatim = await c.post(
-                "/admin/login",
-                data={"email": "spacey-admin@example.com", "password": " padded-pass "},
+                "/login",
+                data={"email": "spacey-admin@example.com", "password": " padded-pass ", "next_url": "/admin/"},
                 follow_redirects=False,
             )
 
@@ -422,7 +318,7 @@ class TestAdminLogin:
         async with _client() as c:
             resp = await c.get("/admin/logout", follow_redirects=False)
         assert resp.status_code == 303
-        assert resp.headers["location"] == "/admin/login"
+        assert resp.headers["location"] == "/login"
 
 
 class TestStaleAdminToken:
