@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from urllib.parse import urlparse
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -107,6 +107,25 @@ class Settings(BaseSettings):
     smtp_password: str = ""
     smtp_from_email: str = "noreply@voxbento.com"
     public_base_url: str = "https://voxbento.com"
+    # Authentication Rate Limiting (slowapi, per client IP and per account)
+    rate_limit_enabled: bool = True
+    rate_limit_register: str = "5/minute"
+    rate_limit_login: str = "10/minute"
+    rate_limit_login_account: str = "5/minute"
+    rate_limit_admin_login: str = "5/minute"
+    # Trusted proxy IPs/CIDRs for Uvicorn ProxyHeadersMiddleware (host Caddy via Docker gateway 172.28.0.1)
+    forwarded_allow_ips: str = "127.0.0.1,172.28.0.1"
+
+    @field_validator("forwarded_allow_ips")
+    @classmethod
+    def validate_forwarded_allow_ips(cls, v: str) -> str:
+        tokens = [t.strip() for t in v.split(",") if t.strip()]
+        if "*" in tokens:
+            raise ValueError(
+                "Wildcard '*' is forbidden for forwarded_allow_ips because port 8000 is published. "
+                "Specify explicit trusted proxy IPs or CIDR subnets (e.g. '127.0.0.1,172.28.0.1')."
+            )
+        return v
 
 
 settings = Settings()

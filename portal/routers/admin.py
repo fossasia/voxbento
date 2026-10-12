@@ -78,6 +78,7 @@ from portal.database import (
 )
 from portal.email import send_role_invite_email
 from portal.globals import _JS_CACHE_BUST, booths, get_http_client
+from portal.limiter import limiter
 from portal.models import (
     BoothTranslationLanguage,
     RoomTranslationLanguage,
@@ -266,6 +267,7 @@ async def admin_login_page(request: Request):
 
 
 @router.post("/admin/login")
+@limiter.limit(lambda: settings.rate_limit_admin_login)
 async def admin_login_submit(request: Request):
     form = await request.form()
     password = form.get("password", "").strip()

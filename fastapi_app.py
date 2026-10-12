@@ -10,10 +10,12 @@ from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from slowapi.errors import RateLimitExceeded
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from portal.auth import require_admin
 from portal.config import settings
+from portal.limiter import limiter, rate_limit_exceeded_handler
 from portal.routers.admin import router as admin_router
 from portal.routers.api import router as api_router
 from portal.routers.api_v1 import router as api_v1_router
@@ -109,6 +111,8 @@ class _UvicornTokenRedactor(logging.Filter):
 
 
 app = FastAPI(title="Voxbento", version="1.0.0", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, rate_limit_exceeded_handler)
 app.add_middleware(WorkspaceRoutingMiddleware)
 
 
@@ -185,7 +189,13 @@ app.include_router(ws_router)
 def main() -> None:
     import uvicorn
 
-    uvicorn.run("fastapi_app:app", host=settings.host, port=settings.port, reload=settings.debug)
+    uvicorn.run(
+        "fastapi_app:app",
+        host=settings.host,
+        port=settings.port,
+        reload=settings.debug,
+        forwarded_allow_ips=settings.forwarded_allow_ips,
+    )
 
 
 if __name__ == "__main__":

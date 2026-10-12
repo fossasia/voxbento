@@ -49,3 +49,13 @@ def _reset_shared_http_client():
 @pytest.fixture(params=["asyncio"])
 def anyio_backend(request):
     return request.param
+
+
+@pytest.fixture(autouse=True)
+def _reset_auth_rate_limiter():
+    """Ensure in-memory rate limiter counts do not leak across tests."""
+    from portal.limiter import limiter
+
+    limiter.reset()
+    yield
+    limiter.reset()
