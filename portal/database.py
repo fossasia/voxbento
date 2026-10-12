@@ -23,7 +23,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 
 import sqlalchemy as sa
-from sqlalchemy import func, or_, select
+from sqlalchemy import case, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import joinedload, selectinload
 
@@ -190,6 +190,44 @@ async def list_events(
     return list(result.scalars().all())
 
 
+def public_event_filters(now: datetime, *, upcoming_only: bool) -> list[sa.ColumnElement[bool]]:
+    """WHERE clauses shared by the homepage and the /events listing."""
+    filters: list[sa.ColumnElement[bool]] = [Event.deleted_at.is_(None), Event.is_public.is_(True)]
+    if upcoming_only:
+        # Running now or upcoming. An event with no end date is treated as ongoing.
+        filters.append(or_(Event.ends_at.is_(None), Event.ends_at >= now))
+        # Events without any booth have nothing to show on the dashboard.
+        filters.append(sa.exists().where(DBBooth.event_id == Event.id))
+    return filters
+
+
+async def list_public_events(
+    session: AsyncSession,
+    *,
+    upcoming_only: bool = True,
+    limit: int = 100,
+    offset: int = 0,
+    now: datetime | None = None,
+) -> list[Event]:
+    """Events organizers chose to advertise, soonest first.
+
+    ``upcoming_only=True`` (homepage) keeps events that are running now or upcoming and have booths.
+    ``upcoming_only=False`` (/events) also includes past events, listed after the current ones.
+    Private and test events are never returned; they stay reachable through their own links.
+    """
+    now = now or datetime.now(timezone.utc)
+    has_ended = case((Event.ends_at.is_not(None) & (Event.ends_at < now), 1), else_=0)
+    stmt = (
+        select(Event)
+        .where(*public_event_filters(now, upcoming_only=upcoming_only))
+        .order_by(has_ended, Event.starts_at.is_(None), Event.starts_at, Event.created_at)
+        .limit(limit)
+        .offset(offset)
+    )
+    result = await session.execute(stmt)
+    return list(result.scalars().all())
+
+
 async def delete_event(session: AsyncSession, event_id: int) -> bool:
     ev = await get_event_by_id(session, event_id)
     if ev is None:
@@ -262,7 +300,6 @@ async def list_rooms_for_event(
 
     result = await session.execute(query)
     return list(result.scalars().all())
-
 
 
 async def delete_room(session: AsyncSession, room_id: int) -> bool:

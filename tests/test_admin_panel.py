@@ -642,6 +642,20 @@ class TestRequireAdmin:
 # ---------------------------------------------------------------------------
 
 
+async def _add_event(slug, name, *, is_public=True, starts_at=None, ends_at=None, with_booth=True):
+    from portal.database import create_booth, create_event, create_room, get_session
+
+    async with get_session() as s:
+        event = await create_event(s, slug=slug, display_name=name)
+        event.is_public = is_public
+        event.starts_at = starts_at
+        event.ends_at = ends_at
+        if with_booth:
+            room = await create_room(s, event_id=event.id, display_name="Main Hall")
+            await create_booth(s, event_id=event.id, room_id=room.id, language_code="en", language_name="English")
+    return event
+
+
 class TestHomePage:
     @pytest.mark.anyio
     async def test_home_renders(self):
@@ -651,18 +665,128 @@ class TestHomePage:
         assert b"VoxBento" in resp.content
 
     @pytest.mark.anyio
-    async def test_home_shows_events(self, seed_event):
+    async def test_home_shows_public_events(self, seed_event):
+        event, _, _ = seed_event
+        from portal.database import get_event_by_id, get_session
+
+        async with get_session() as s:
+            (await get_event_by_id(s, event.id)).is_public = True
         async with _client() as c:
             resp = await c.get("/")
         assert resp.status_code == 200
         assert b"TestCon 2026" in resp.content
+        assert b"/listener/testcon" in resp.content
 
     @pytest.mark.anyio
-    async def test_home_shows_listener_links(self, seed_event):
+    async def test_home_hides_private_events(self, seed_event):
         async with _client() as c:
             resp = await c.get("/")
         assert resp.status_code == 200
-        assert b"/listener/testcon" in resp.content
+        assert b"TestCon 2026" not in resp.content
+        assert b"/listener/testcon" not in resp.content
+
+    @pytest.mark.anyio
+    async def test_home_hides_past_and_boothless_events(self):
+        now = datetime.now(timezone.utc)
+        await _add_event("past", "Past Summit", ends_at=now - timedelta(days=30))
+        await _add_event("nobooths", "Empty Event", with_booth=False)
+        await _add_event(
+            "current", "Current Summit", starts_at=now - timedelta(days=1), ends_at=now + timedelta(days=1)
+        )
+        async with _client() as c:
+            resp = await c.get("/")
+        assert b"Current Summit" in resp.content
+        assert b"Past Summit" not in resp.content
+        assert b"Empty Event" not in resp.content
+
+    @pytest.mark.anyio
+    async def test_home_limits_and_orders_soonest_first(self):
+        from portal.routers.public import HOME_FEATURED_EVENT_LIMIT
+
+        now = datetime.now(timezone.utc)
+        total = HOME_FEATURED_EVENT_LIMIT + 2
+        for i in range(total):
+            # Created latest-first so creation order is the opposite of start order.
+            await _add_event(f"ev{i}", f"Event number {i}", starts_at=now + timedelta(days=total - i))
+        async with _client() as c:
+            resp = await c.get("/")
+        body = resp.text
+        shown = [i for i in range(total) if f"Event number {i}<" in body]
+        # The soonest events are the ones created last.
+        assert shown == list(range(total - HOME_FEATURED_EVENT_LIMIT, total))
+        assert body.index(f"Event number {total - 1}<") < body.index(f"Event number {total - 2}<")
+        assert 'href="/events"' in body
+
+    @pytest.mark.anyio
+    async def test_private_event_still_reachable_directly(self, seed_event):
+        event, _, _ = seed_event
+        from portal.database import get_event_by_id, get_session
+
+        async with get_session() as s:
+            ev = await get_event_by_id(s, event.id)
+            code = ev.listener_join_code or "ABC123"
+            ev.listener_join_code = code
+        async with _client() as c:
+            resp = await c.get(f"/listener/{event.slug}?code={code}")
+        assert resp.status_code == 200
+
+
+class TestPublicEventsPage:
+    @pytest.mark.anyio
+    async def test_lists_public_including_past_but_not_private(self):
+        now = datetime.now(timezone.utc)
+        await _add_event("past", "Past Summit", ends_at=now - timedelta(days=30))
+        await _add_event("soon", "Soon Summit", starts_at=now + timedelta(days=3))
+        await _add_event("secret", "Testroom1", is_public=False)
+        async with _client() as c:
+            resp = await c.get("/events")
+        assert resp.status_code == 200
+        assert b"Soon Summit" in resp.content
+        assert b"Past Summit" in resp.content
+        assert b"Testroom1" not in resp.content
+        # Current events come before ended ones.
+        assert resp.text.index("Soon Summit") < resp.text.index("Past Summit")
+
+
+class TestEventVisibilityToggle:
+    @pytest.mark.anyio
+    async def test_owner_can_publish_event(self, admin_cookie, seed_event):
+        event, _, _ = seed_event
+        async with _client() as c:
+            resp = await c.post(
+                f"/admin/events/{event.id}/visibility",
+                data={"is_public": "true", "starts_at": "2030-01-01T09:00", "ends_at": "2030-01-02T17:00"},
+                cookies=admin_cookie,
+            )
+            assert resp.status_code == 303
+            home = await c.get("/")
+        assert b"TestCon 2026" in home.content
+
+    @pytest.mark.anyio
+    async def test_unchecked_box_makes_event_private(self, admin_cookie):
+        event = await _add_event("pub", "Was Public")
+        async with _client() as c:
+            await c.post(f"/admin/events/{event.id}/visibility", data={}, cookies=admin_cookie)
+            home = await c.get("/")
+        assert b"Was Public" not in home.content
+
+    @pytest.mark.anyio
+    async def test_rejects_end_before_start(self, admin_cookie, seed_event):
+        event, _, _ = seed_event
+        async with _client() as c:
+            resp = await c.post(
+                f"/admin/events/{event.id}/visibility",
+                data={"is_public": "true", "starts_at": "2030-01-02T09:00", "ends_at": "2030-01-01T09:00"},
+                cookies=admin_cookie,
+            )
+        assert resp.status_code == 422
+
+    @pytest.mark.anyio
+    async def test_requires_auth(self, seed_event):
+        event, _, _ = seed_event
+        async with _client() as c:
+            resp = await c.post(f"/admin/events/{event.id}/visibility", data={"is_public": "true"})
+        assert resp.status_code in (401, 403)
 
 
 # ---------------------------------------------------------------------------

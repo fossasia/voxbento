@@ -6,7 +6,7 @@ import math
 import re
 import secrets
 import urllib.parse
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import httpx
@@ -767,6 +767,40 @@ async def admin_event_api_settings_post(
     )
 
 
+@router.post("/admin/events/{event_id}/visibility", dependencies=[Depends(require_event_owner)])
+async def admin_event_visibility(
+    request: Request,
+    event_id: int,
+    is_public: bool = Form(False),
+    starts_at: str = Form(""),
+    ends_at: str = Form(""),
+):
+    """Let the organizer decide whether the event is advertised on the homepage and /events."""
+
+    def parse_utc(value: str) -> datetime | None:
+        value = value.strip()
+        if not value:
+            return None
+        try:
+            parsed = datetime.fromisoformat(value)
+        except ValueError:
+            raise HTTPException(status_code=422, detail="Invalid date/time.") from None
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+    start, end = parse_utc(starts_at), parse_utc(ends_at)
+    if start and end and end < start:
+        raise HTTPException(status_code=422, detail="End must not be before start.")
+    async with get_session() as session:
+        event = await get_event_by_id(session, event_id)
+        if event is None:
+            raise HTTPException(status_code=404, detail="Event not found.")
+        event.is_public = is_public
+        event.starts_at = start
+        event.ends_at = end
+        await session.flush()
+    return safe_redirect(url=management_url(request, f"events/{event_id}/"), status_code=status.HTTP_303_SEE_OTHER)
+
+
 @router.post("/admin/events/{event_id}/delete", dependencies=[Depends(require_event_owner)])
 async def admin_delete_event(request: Request, event_id: int):
     async with get_session() as session:
@@ -1036,7 +1070,10 @@ async def api_start_floor_transcription(room_id: int):
         if not room or not room.floor_transcription_enabled:
             raise HTTPException(status_code=400, detail="Floor transcription not enabled or invalid room")
         if room.floor_source == "program_ingest":
-            raise HTTPException(status_code=409, detail="Program ingest owns the floor; transcription starts automatically when audio arrives")
+            raise HTTPException(
+                status_code=409,
+                detail="Program ingest owns the floor; transcription starts automatically when audio arrives",
+            )
         if room.floor_transcription_provider == "none":
             raise HTTPException(status_code=400, detail="Cannot start transcription with 'none' provider")
         event = await get_event_by_id(session, room.event_id)
@@ -1115,7 +1152,9 @@ async def api_stop_floor_transcription(room_id: int):
         if not room:
             raise HTTPException(status_code=400, detail="Invalid room")
         if room.floor_source == "program_ingest":
-            raise HTTPException(status_code=409, detail="Revoke or disable program ingest in the room settings to stop its floor source")
+            raise HTTPException(
+                status_code=409, detail="Revoke or disable program ingest in the room settings to stop its floor source"
+            )
         event = await get_event_by_id(session, room.event_id)
         if not event:
             raise HTTPException(status_code=400, detail="Event not found")

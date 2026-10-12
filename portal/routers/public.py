@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 
 # We assume templates is initialized in fastapi_app and imported here, or
 # we initialize it here. Usually, Jinja2Templates is shared or re-initialized.
@@ -18,18 +19,32 @@ from portal.database import (
     get_session,
     list_all_booths_for_events,
     list_booth_memberships_for_user,
-    list_events,
     list_memberships_for_user,
+    list_public_events,
     list_room_memberships_for_user,
 )
 from portal.email_sender import send_demo_request_email
 from portal.globals import _JS_CACHE_BUST, booths
+from portal.models import Event
 from portal.utils import _check_mediamtx
 
 _BASE_DIR = Path(__file__).resolve().parent.parent
 templates = Jinja2Templates(directory=str(_BASE_DIR / "templates"))
 
 router = APIRouter()
+
+# How many events the homepage "Live Dashboard" advertises; the rest live on /events.
+HOME_FEATURED_EVENT_LIMIT = 4
+
+
+def event_has_ended(event: Event, now: datetime) -> bool:
+    # SQLite hands back naive datetimes; they are stored as UTC.
+    ends_at = event.ends_at
+    if ends_at is None:
+        return False
+    if ends_at.tzinfo is None:
+        ends_at = ends_at.replace(tzinfo=timezone.utc)
+    return ends_at < now
 
 
 @router.get("/")
@@ -44,7 +59,7 @@ async def home(request: Request):
 
     try:
         async with get_session() as session:
-            events = await list_events(session)
+            events = await list_public_events(session, upcoming_only=True, limit=HOME_FEATURED_EVENT_LIMIT)
 
             user_event_roles = {}
             user_booth_roles = {}
@@ -133,6 +148,23 @@ async def home(request: Request):
             "management_home": management_home,
             "my_booths": my_booths,
             "js_version": _JS_CACHE_BUST,
+        },
+    )
+
+
+@router.get("/events")
+@router.get("/events/")
+async def public_events(request: Request):
+    current_user = await get_current_user(request)
+    now = datetime.now(timezone.utc)
+    async with get_session() as session:
+        events = await list_public_events(session, upcoming_only=False, now=now)
+    return templates.TemplateResponse(
+        request=request,
+        name="events.html",
+        context={
+            "events": [{"event": ev, "ended": event_has_ended(ev, now)} for ev in events],
+            "current_user": current_user,
         },
     )
 

@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block title %}Events | VoxBento{% endblock %}
+{% block head %}
+<style>
+  .events-page { max-width: 48rem; margin: 0 auto; padding: 2rem 1rem; }
+  .events-page h1 { margin-bottom: 1.5rem; }
+  .events-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.75rem; }
+  .events-item { display: flex; justify-content: space-between; align-items: center; gap: 1rem; padding: 1rem; border: 2px solid currentColor; }
+  .events-item small { display: block; opacity: 0.7; margin-top: 0.25rem; }
+  .events-item--past { opacity: 0.6; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="events-page">
+  <p><a href="/">&larr; Home</a></p>
+  <h1>Events</h1>
+  {% if events %}
+  <ul class="events-list">
+    {% for item in events %}
+    {% set ev = item.event %}{% set ended = item.ended %}
+    <li class="events-item{% if ended %} events-item--past{% endif %}">
+      <div>
+        <strong>{{ ev.display_name }}</strong>
+        <small>
+          {% if ev.starts_at %}{{ ev.starts_at.strftime('%b %d, %Y') }}{% if ev.ends_at and ev.ends_at.date() != ev.starts_at.date() %} – {{ ev.ends_at.strftime('%b %d, %Y') }}{% endif %}{% elif ev.ends_at %}Until {{ ev.ends_at.strftime('%b %d, %Y') }}{% else %}Ongoing{% endif %}
+          {% if ended %} · Ended{% endif %}
+        </small>
+      </div>
+      {% if not ended %}<a href="/listener/{{ ev.slug }}">Listen as Attendee &rarr;</a>{% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p>No public events right now.</p>
+  {% endif %}
+</div>
+{% endblock %}

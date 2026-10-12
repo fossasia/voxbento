@@ -53,6 +53,22 @@
 </div>
 
 {% if is_event_owner %}
+<!-- Public listing -->
+<div class="section-card section-card--spaced">
+  <div class="section-header">
+    <h2>Public listing</h2>
+  </div>
+  <p class="muted hint--spaced">Public events running now or coming up (with at least one booth) are featured on the VoxBento homepage and the events page. Private events stay reachable through their own links. Times are UTC.</p>
+  <form method="post" action="{{ management_prefix }}/events/{{ event.id }}/visibility">
+    <label><input type="checkbox" name="is_public" value="true" {% if event.is_public %}checked{% endif %}> List this event publicly</label>
+    <div class="event-share-row">
+      <label>Starts <input type="datetime-local" name="starts_at" value="{{ event.starts_at.strftime('%Y-%m-%dT%H:%M') if event.starts_at else '' }}"></label>
+      <label>Ends <input type="datetime-local" name="ends_at" value="{{ event.ends_at.strftime('%Y-%m-%dT%H:%M') if event.ends_at else '' }}"></label>
+    </div>
+    <button type="submit" class="btn btn-sm btn-primary">Save</button>
+  </form>
+</div>
+
 <!-- Listener Access -->
 <div class="section-card section-card--spaced">
   <div class="section-header">
