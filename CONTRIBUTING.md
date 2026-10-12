@@ -31,7 +31,6 @@ uv run python -c "
 import secrets, re
 env = open('.env').read()
 env = re.sub(r'API_KEY_ENCRYPTION_KEY=.*', f'API_KEY_ENCRYPTION_KEY={secrets.token_hex(16)}', env)
-env = re.sub(r'ADMIN_PASSWORD=.*', 'ADMIN_PASSWORD=admin', env)
 open('.env', 'w').write(env)
 "
 
@@ -40,7 +39,7 @@ docker compose up -d --build
 ```
 
 You can now visit the app at `http://localhost:8000`. 
-To access the admin panel, set `ADMIN_PASSWORD` explicitly in `.env` during setup, then go to `http://localhost:8000/admin/login`. There is no usable default password.
+To access the admin panel, sign in with an account having admin privileges at `http://localhost:8000/admin/login`.
 
 ---
 
