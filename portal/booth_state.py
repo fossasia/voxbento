@@ -77,6 +77,12 @@ class Booth:
             if not self.channel_id:
                 self.channel_id = self.mediamtx_path
 
+    def refresh_ingest_status(self) -> None:
+        """Set ``ingest_status`` from whether any participant is still publishing."""
+        self.ingest_status = (
+            "connected" if any(p.ingest_connected for p in self.participants.values()) else "disconnected"
+        )
+
     def as_public_dict(self) -> dict:
         return {
             "booth_id": self.booth_id,
@@ -250,6 +256,9 @@ class BoothRegistry:
             if was_active or participant_id == booth.handoff_initiator_id:
                 booth.handoff_state = "idle"
                 booth.handoff_initiator_id = None
+            # The booth is no longer live if the participant who left was the one publishing.
+            if participant.ingest_connected:
+                booth.refresh_ingest_status()
             if not booth.participants:
                 booth.ingest_status = "disconnected"
                 booth.handoff_state = "idle"
@@ -319,9 +328,7 @@ class BoothRegistry:
                 p.ingest_connected = p.participant_id == target_id and p.ingest_connected
                 p.mic_active = p.participant_id == target_id and p.mic_active
                 p.updated_at = utc_now_iso()
-            booth.ingest_status = (
-                "connected" if any(p.ingest_connected for p in booth.participants.values()) else "disconnected"
-            )
+            booth.refresh_ingest_status()
             return booth.as_public_dict()
 
     async def initiate_handoff(
@@ -416,9 +423,7 @@ class BoothRegistry:
                 p.ingest_connected = p.participant_id == new_active and p.ingest_connected
                 p.mic_active = p.participant_id == new_active and p.mic_active
                 p.updated_at = utc_now_iso()
-            booth.ingest_status = (
-                "connected" if any(p.ingest_connected for p in booth.participants.values()) else "disconnected"
-            )
+            booth.refresh_ingest_status()
             return booth.as_public_dict()
 
     async def cancel_handoff(
@@ -495,9 +500,7 @@ class BoothRegistry:
             if connected is not None:
                 participant.connected = connected
             participant.updated_at = utc_now_iso()
-            booth.ingest_status = (
-                "connected" if any(p.ingest_connected for p in booth.participants.values()) else "disconnected"
-            )
+            booth.refresh_ingest_status()
             return booth.as_public_dict()
 
     async def check_publish_permission(
