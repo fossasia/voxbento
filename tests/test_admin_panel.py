@@ -808,6 +808,33 @@ class TestEventVisibilityToggle:
         assert resp.status_code == 403
         assert b"Stays Public" in home.content
 
+    @pytest.mark.anyio
+    async def test_rejects_scheme_mismatch(self, admin_cookie):
+        event = await _add_event("pub", "Scheme Public")
+        async with _client() as c:
+            resp = await c.post(
+                f"/admin/events/{event.id}/visibility",
+                data={},
+                cookies=admin_cookie,
+                headers={"Origin": str(c.base_url).replace("http://", "https://", 1)},
+            )
+        assert resp.status_code == 403
+
+    @pytest.mark.anyio
+    async def test_accepts_https_origin_behind_proxy(self, admin_cookie):
+        event = await _add_event("pub", "Proxy Public")
+        async with _client() as c:
+            resp = await c.post(
+                f"/admin/events/{event.id}/visibility",
+                data={"is_public": "true"},
+                cookies=admin_cookie,
+                headers={
+                    "Origin": str(c.base_url).replace("http://", "https://", 1),
+                    "X-Forwarded-Proto": "https",
+                },
+            )
+        assert resp.status_code == 303
+
 
 # ---------------------------------------------------------------------------
 # Dashboard

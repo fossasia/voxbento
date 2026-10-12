@@ -772,7 +772,10 @@ async def require_same_origin(request: Request) -> None:
     from urllib.parse import urlparse
 
     source = request.headers.get("origin") or request.headers.get("referer")
-    if not source or urlparse(source).netloc != request.url.netloc:
+    parsed = urlparse(source) if source else None
+    # Behind a TLS-terminating proxy the app sees http; the proxy reports the real scheme.
+    scheme = request.headers.get("x-forwarded-proto", "").split(",")[0].strip().lower() or request.url.scheme
+    if not parsed or (parsed.scheme, parsed.netloc) != (scheme, request.url.netloc):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Cross-origin request blocked.")
 
 
