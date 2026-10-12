@@ -79,6 +79,33 @@ ownership (it does not silently restart the bot).
 “Use Jitsi floor bot” explicitly returns ownership; start the bot separately.
 All source changes affect VoxBento only, not the independent YouTube output.
 
+## Browser program-audio sender (#748)
+
+For venue sound desks without a WHIP encoder, the event owner can publish the floor
+directly from the room page's **Program audio sender** panel. It selects a local
+audio input (use a USB sound-desk feed), shows a live level meter, and publishes
+Opus over authenticated WHIP to the same canonical `{event_slug}/{room_id}/floor`
+path. Media never traverses FastAPI; the browser negotiates WebRTC with MediaMTX.
+
+The sender uses a **short-lived room-scoped session secret**, not the 30-day encoder
+token. `POST /admin/events/{id}/rooms/{id}/program-sender` mints a secret that
+expires after `PROGRAM_SENDER_SESSION_TTL_SECS` (default 150s) — long enough to
+negotiate, short enough to expire if a tab is abandoned. It is stored only as a
+PBKDF2 digest in `program_session_secret_hash`, is independent of the encoder key
+(`program_key_hash`), and is accepted by the publish authorizer alongside it. The
+secret lives only in page memory and is cleared on stop and page hide. Apply
+migration 026 (`uv run alembic upgrade head`) with this feature.
+
+Ownership is explicit and never implicit: starting is rejected with `409` when
+another source is already live on the floor (external encoder, meeting agent, or
+another sender). On a free floor the sender claims it, stopping the Jitsi bot if it
+owned the floor. Stopping releases only this sender's session — it clears the session
+secret and kicks the session, but leaves any encoder credential and the
+`program_ingest` floor selection intact. Rotating/revoking/switching the source from
+the ingest panel also invalidates any in-flight sender session. The sender UI state
+machine covers connecting, live, reconnecting, no-audio, permission-denied, and
+stopped, and reconnects with a fresh session on transient WebRTC failures.
+
 ## Processing, recovery, and capacity
 
 `WHIP → MediaMTX floor → FFmpeg (first audio track, PCM) → existing STT →
@@ -130,7 +157,10 @@ and differs by viewer/network; this is manual calibration, not frame-accurate sy
 
 ## Verification / event rehearsal
 
-- Unit/integration: `uv run pytest tests/test_program_ingest.py tests/test_caption_aggregator.py tests/test_translation_pipeline.py`.
+- Unit/integration: `uv run pytest tests/test_program_ingest.py tests/test_program_sender.py tests/test_caption_aggregator.py tests/test_translation_pipeline.py`.
+- Browser sender rehearsal: from a second owner device, Start the sender on a free
+  floor and confirm captions; confirm Start is rejected while an encoder is live;
+  confirm Stop frees the floor; pull the network briefly and confirm it reconnects.
 - Native real-media transport: set `MEDIAMTX_TEST_BINARY` to a 1.18.2 binary and run
   `uv run pytest tests/test_program_ingest_media.py -v`. Requires FFmpeg with WHIP.
   It starts isolated local services, publishes generated audio, decodes PCM, and
