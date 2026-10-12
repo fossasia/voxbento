@@ -25,6 +25,66 @@ permissions:
 # ────────────────────────────────────────────────────────────────
 jobs:
 
+  floor-bot-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Detect floor-bot and smoke-test changes
+        id: changes
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ] || \
+             [ -z "$BASE_SHA" ] || [ "$BASE_SHA" = "0000000000000000000000000000000000000000" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            git diff --name-only "$BASE_SHA" HEAD > /tmp/floor-bot-changed-files
+            if grep -Eq '^(floor-bot/|docker-compose\.yml$|\.github/workflows/tests\.yml$|tests/(floor_bot_container_smoke|check_floor_bot_image_size|test_floor_bot_dependencies)\.py$)' /tmp/floor-bot-changed-files; then
+              echo "changed=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "changed=false" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+
+      - name: Check floor-bot base image download budget
+        if: steps.changes.outputs.changed == 'true'
+        run: python3 tests/check_floor_bot_image_size.py
+
+      - name: Build floor-bot image
+        if: steps.changes.outputs.changed == 'true'
+        run: docker build --platform linux/amd64 -t voxbento-floor-bot-ci ./floor-bot
+
+      - name: Start floor bot with its production entrypoint
+        if: steps.changes.outputs.changed == 'true'
+        run: |
+          docker network create floor-bot-ci
+          docker run -d --name floor-bot-mtx --network floor-bot-ci \
+            bluenviron/mediamtx:1.18.2
+          docker run -d --name floor-bot-ci --network floor-bot-ci \
+            -v "$PWD/tests/floor_bot_container_smoke.py:/tmp/floor_bot_container_smoke.py:ro" \
+            voxbento-floor-bot-ci
+
+      - name: Verify real Chromium audio capture and room lifecycle
+        if: steps.changes.outputs.changed == 'true'
+        run: docker exec floor-bot-ci python /tmp/floor_bot_container_smoke.py
+
+      - name: Dump floor-bot logs on failure
+        if: failure()
+        run: |
+          docker logs floor-bot-ci || true
+          docker logs floor-bot-mtx || true
+
+      - name: Remove floor-bot smoke container
+        if: always()
+        run: |
+          docker rm -f floor-bot-ci floor-bot-mtx || true
+          docker network rm floor-bot-ci || true
+
   # ── 1. Unit tests + lint (fast, no Docker) ───────────────────
   unit-tests:
     runs-on: ubuntu-latest
@@ -34,6 +94,7 @@ jobs:
 
     env:
       API_KEY_ENCRYPTION_KEY: "ci-test-encryption-key-must-be-32-chars-long"
+      MEDIAMTX_AUTH_HOOK_SECRET: "ci-test-mediamtx-hook-secret"
 
     steps:
       - name: Checkout repository
@@ -58,6 +119,10 @@ jobs:
           node --check portal/static/js/interpreter-booth.js
           node --check portal/static/js/whep-listener.js
           node --check portal/static/js/admin.js
+      - name: run node tests
+        run: |
+          node tests/test_audio_scheduler.js
+          node tests/test_tts_parser.js
 
       - name: Run unit tests
         run: uv run pytest tests/ -v
@@ -81,7 +146,7 @@ jobs:
       JITSI_DOMAIN: localhost:8080
       MEDIAMTX_WHIP_BASE: http://localhost:8889
       MEDIAMTX_API_BASE: http://mediamtx:9997
-      ADMIN_PASSWORD: ci-admin-pass
+      MEDIAMTX_AUTH_HOOK_SECRET: ci-test-mediamtx-hook-secret
       API_KEY_ENCRYPTION_KEY: "ci-test-encryption-key-must-be-32-chars-long"
 
     steps:
@@ -92,7 +157,9 @@ jobs:
         uses: docker/setup-buildx-action@v4
 
       - name: Validate Docker Compose configuration
-        run: docker compose config --quiet
+        run: |
+          test -n "$MEDIAMTX_AUTH_HOOK_SECRET"
+          docker compose config --quiet
 
       # ── Shared helpers ──────────────────────────────────────
       # wait_for_url  URL  LABEL  [MAX_ATTEMPTS]  [ACCEPT_CODES]
@@ -213,33 +280,57 @@ jobs:
           echo "GET /admin/login → $code"
           [ "$code" = "200" ] || { echo "FAIL"; exit 1; }
 
-          # Admin login with correct password → redirect + cookie
-          resp=$(curl -s -D - -o /dev/null -X POST "${BASE}/admin/login" -d "password=ci-admin-pass")
-          echo "$resp" | head -5
-          echo "$resp" | grep -qi "set-cookie.*admin_token" || { echo "FAIL: no admin_token cookie"; exit 1; }
+          # Bootstrap a per-user administrator for this isolated smoke-test DB.
+          docker compose exec -T portal uv run python - <<'PY'
+          import asyncio
 
-          # Extract the admin_token cookie
-          ADMIN_COOKIE=$(echo "$resp" | grep -i 'set-cookie.*admin_token' | sed 's/.*admin_token=\([^;]*\).*/\1/')
-          echo "Admin token: ${ADMIN_COOKIE:0:20}..."
+          from portal.auth import hash_password
+          from portal.database import create_user, get_session
+
+
+          async def bootstrap() -> None:
+              async with get_session() as session:
+                  await create_user(
+                      session,
+                      email="ci-admin@example.com",
+                      display_name="CI Admin",
+                      password_hash=hash_password("ci-admin-pass"),
+                      is_admin=True,
+                      email_verified=True,
+                  )
+
+
+          asyncio.run(bootstrap())
+          PY
+
+          # Admin login with account credentials → redirect + user_token cookie
+          resp=$(curl -s -D - -o /dev/null -X POST "${BASE}/admin/login" \
+            -d "email=ci-admin%40example.com&password=ci-admin-pass")
+          echo "$resp" | head -5
+          echo "$resp" | grep -qi "set-cookie.*user_token" || { echo "FAIL: no user_token cookie"; exit 1; }
+
+          # Extract the user_token cookie
+          ADMIN_COOKIE=$(echo "$resp" | grep -i 'set-cookie.*user_token' | sed 's/.*user_token=\([^;]*\).*/\1/')
+          echo "Admin user token: ${ADMIN_COOKIE:0:20}..."
 
           # Dashboard loads
-          code=$(curl -s -o /dev/null -w '%{http_code}' -b "admin_token=${ADMIN_COOKIE}" "${BASE}/admin/")
+          code=$(curl -s -o /dev/null -w '%{http_code}' -b "user_token=${ADMIN_COOKIE}" "${BASE}/admin/")
           echo "GET /admin/ → $code"
           [ "$code" = "200" ] || { echo "FAIL"; exit 1; }
 
           # Create event
-          code=$(curl -s -o /dev/null -w '%{http_code}' -X POST -b "admin_token=${ADMIN_COOKIE}" \
+          code=$(curl -s -o /dev/null -w '%{http_code}' -X POST -b "user_token=${ADMIN_COOKIE}" \
             -d "slug=ci-smoke&display_name=CI+Smoke+Test" "${BASE}/admin/events/")
           echo "POST /admin/events/ → $code"
           [ "$code" = "303" ] || { echo "FAIL"; exit 1; }
 
           # Events list renders
-          code=$(curl -s -o /dev/null -w '%{http_code}' -b "admin_token=${ADMIN_COOKIE}" "${BASE}/admin/events/")
+          code=$(curl -s -o /dev/null -w '%{http_code}' -b "user_token=${ADMIN_COOKIE}" "${BASE}/admin/events/")
           echo "GET /admin/events/ → $code"
           [ "$code" = "200" ] || { echo "FAIL"; exit 1; }
 
           # Users list renders
-          code=$(curl -s -o /dev/null -w '%{http_code}' -b "admin_token=${ADMIN_COOKIE}" "${BASE}/admin/users/")
+          code=$(curl -s -o /dev/null -w '%{http_code}' -b "user_token=${ADMIN_COOKIE}" "${BASE}/admin/users/")
           echo "GET /admin/users/ → $code"
           [ "$code" = "200" ] || { echo "FAIL"; exit 1; }
 

@@ -17,10 +17,8 @@ logDestinations: [stdout]
 # WHEP (read):    browsers POST SDP offer to http://host:8889/{path}/whep
 # Both use the same WebRTC server on port 8889.
 #
-# webrtcEncryption: disables DTLS-SRTP (per-packet media encryption), which is
-# required for local dev because self-signed DTLS certs are otherwise needed.
-# This is DISTINCT from HTTPS/TLS transport — it controls WebRTC media
-# encryption only. NEVER set this to 'no' in production.
+# HTTPS signalling terminates at Caddy. WebRTC media always uses DTLS-SRTP;
+# webrtcEncryption controls signalling TLS, not media encryption.
 webrtcAddress: :8889
 webrtcEncryption: no
 webrtcLocalUDPAddress: :8189  # single UDP port for all ICE traffic (replaces deprecated webrtcICEUDPMuxAddress)
@@ -68,25 +66,18 @@ hlsSegmentMaxSize: 50MB
 # Since Docker port-forwarding routes requests from the bridge IP (not
 # localhost), we need to allow API access from any IP for local dev.
 # Production: restrict ips to the FastAPI container's IP or network.
-authMethod: internal
-authInternalUsers:
-  # Allow any user to publish and read (same as default)
-  - user: any
-    pass:
-    ips: []
-    permissions:
-      - action: publish
-        path:
-      - action: read
-        path:
-      - action: playback
-        path:
-  # Allow API access from any IP (needed for Docker port-forwarding)
-  - user: any
-    pass:
-    ips: []
-    permissions:
-      - action: api
+authMethod: http
+authHTTPAddress: http://portal:8000/internal/media-auth
+# Publishing is ALWAYS authorized. Internal control and public reads retain
+# their existing behavior; ports 9997 and 8554 are not public.
+authHTTPExclude:
+  - action: api
+  - action: read
+  - action: playback
+webrtcTrustedProxies: ['172.16.0.0/12', '127.0.0.1/32']
+rtspTransports: [tcp]
+rtmp: no
+srt: no
 
 # ── Control API ──────────────────────────────────────────────────────────────
 # Enables the REST API on port 9997.  FastAPI uses it to dynamically create
@@ -122,4 +113,6 @@ pathDefaults:
 # first WHIP publish. Without this, MediaMTX v1.x returns 400
 # "path not configured" even though pathDefaults is set.
 paths:
+  '~^[a-z0-9-]+/[0-9]+/floor$':
+    overridePublisher: no
   all_others:

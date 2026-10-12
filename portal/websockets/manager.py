@@ -120,9 +120,14 @@ class TTSConnectionManager:
         caption: str = "",
         translation: str = "",
         error: str | None = None,
+        audio_pending: bool | None = None,
     ) -> None:
         key = self._get_key(room_id, language_code, booth_id)
-        header = {"segment_id": segment_id, "seq": seq, "caption": caption, "translation": translation, "error": error}
+        from portal.transcription.timing import timing_metadata
+
+        header = {"segment_id": segment_id, "seq": seq, "caption": caption, "translation": translation, "error": error,
+                  "audio_pending": (not audio_bytes and error is None) if audio_pending is None else audio_pending,
+                  **timing_metadata()}
         header_bytes = json.dumps(header).encode("utf-8")
         # Frame: [1-byte version][4-byte length L][L-bytes header][audio_bytes]
         frame = struct.pack(">BI", 1, len(header_bytes)) + header_bytes + audio_bytes
@@ -266,8 +271,6 @@ async def _handle_set_active(ws: WebSocket, session: Session, data: dict) -> Non
     if not target_id:
         await ws.send_text(json.dumps({"type": "booth:error", "message": "Missing target_id."}))
         return
-    snap = await booths.snapshot(session.booth_id, session.language, session.channel_id)
-    previous_active = snap.get("active_interpreter_id")
     try:
         state = await booths.set_active_interpreter(
             session.booth_id, session.participant_id, target_id, session.language, session.channel_id
@@ -275,8 +278,6 @@ async def _handle_set_active(ws: WebSocket, session: Session, data: dict) -> Non
     except (ValueError, PermissionError) as exc:
         await ws.send_text(json.dumps({"type": "booth:error", "message": str(exc)}))
         return
-    if previous_active and previous_active != target_id:
-        pass
     await manager.broadcast(session.booth_id, {"type": "booth:state", "state": state})
 
 
