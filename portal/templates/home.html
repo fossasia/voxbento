@@ -386,6 +386,13 @@
                     </div>
                 </div>
                 {% endif %}
+{% if not events %}
+<div class="mt-8 text-center">
+    <a href="/events"
+        class="text-[#2563eb] text-sm font-extrabold hover:text-[#1d4ed8] inline-flex items-center gap-1">View
+        all events &rarr;</a>
+</div>
+{% endif %}
             </div>
         </section>
         {% endif %}

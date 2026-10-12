@@ -196,8 +196,8 @@ def public_event_filters(now: datetime, *, upcoming_only: bool) -> list[sa.Colum
     if upcoming_only:
         # Running now or upcoming. An event with no end date is treated as ongoing.
         filters.append(or_(Event.ends_at.is_(None), Event.ends_at >= now))
-        # Events without any booth have nothing to show on the dashboard.
-        filters.append(sa.exists().where(DBBooth.event_id == Event.id))
+    # Events without any booth have nothing to join, so never list them publicly.
+    filters.append(sa.exists().where(DBBooth.event_id == Event.id))
     return filters
 
 

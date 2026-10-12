@@ -62,8 +62,8 @@
   <form method="post" action="{{ management_prefix }}/events/{{ event.id }}/visibility">
     <label><input type="checkbox" name="is_public" value="true" {% if event.is_public %}checked{% endif %}> List this event publicly</label>
     <div class="event-share-row">
-      <label>Starts <input type="datetime-local" name="starts_at" value="{{ event.starts_at.strftime('%Y-%m-%dT%H:%M') if event.starts_at else '' }}"></label>
-      <label>Ends <input type="datetime-local" name="ends_at" value="{{ event.ends_at.strftime('%Y-%m-%dT%H:%M') if event.ends_at else '' }}"></label>
+      <label>Starts <input type="datetime-local" name="starts_at" value="{{ ('%04d-%02d-%02dT%02d:%02d' % event.starts_at.utctimetuple()[:5]) if event.starts_at else '' }}"></label>
+      <label>Ends <input type="datetime-local" name="ends_at" value="{{ ('%04d-%02d-%02dT%02d:%02d' % event.ends_at.utctimetuple()[:5]) if event.ends_at else '' }}"></label>
     </div>
     <button type="submit" class="btn btn-sm btn-primary">Save</button>
   </form>

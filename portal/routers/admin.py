@@ -785,7 +785,9 @@ async def admin_event_visibility(
             parsed = datetime.fromisoformat(value)
         except ValueError:
             raise HTTPException(status_code=422, detail="Invalid date/time.") from None
-        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+        if parsed.tzinfo is None:
+            return parsed.replace(tzinfo=timezone.utc)
+        return parsed.astimezone(timezone.utc)
 
     start, end = parse_utc(starts_at), parse_utc(ends_at)
     if start and end and end < start:
