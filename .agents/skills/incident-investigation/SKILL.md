@@ -117,13 +117,13 @@ asyncio.run(main())
 
 ### IC-05: Admin login fails
 
-**Symptoms:** `/admin/login` with correct password → still shows error.
+**Symptoms:** `/admin/login` with correct account credentials → still shows error.
 
 **Diagnosis:**
-1. Check `ADMIN_PASSWORD` env var is set and not empty.
-2. Check `admin_token` cookie is being set (DevTools → Application → Cookies).
+1. Confirm the user is active, has a password, and has `is_admin=True` or an appropriate membership.
+2. Check that the login response sets a `user_token` cookie (DevTools → Application → Cookies).
 3. Check JWT secret is consistent (`settings.effective_jwt_secret`).
-4. Alternative: log in as user with `is_admin=True` — uses `/login` + `user_token` cookie.
+4. If all administrators are unavailable, follow the controlled recovery procedure in `docs/admin-password-removal-migration.md`.
 
 ---
 
