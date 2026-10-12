@@ -595,6 +595,9 @@ async def admin_event_detail(request: Request, event_id: int):
             raise HTTPException(status_code=404, detail="Event not found.")
         rooms = await list_rooms_for_event(session, event_id)
         db_booths = await list_booths_for_event(session, event_id)
+    # Keep each room's booths together, in the same order as the Rooms list.
+    room_order = {room.id: index for index, room in enumerate(rooms)}
+    db_booths.sort(key=lambda b: (room_order.get(b.room_id, len(room_order)), b.language_code))
     booth_statuses = []
     for b in db_booths:
         bid = make_booth_id(event.slug, b.room_id, b.language_code)
