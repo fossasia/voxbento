@@ -89,22 +89,26 @@ path. Media never traverses FastAPI; the browser negotiates WebRTC with MediaMTX
 
 The sender uses a **short-lived room-scoped session secret**, not the 30-day encoder
 token. `POST /admin/events/{id}/rooms/{id}/program-sender` mints a secret that
-expires after `PROGRAM_SENDER_SESSION_TTL_SECS` (default 150s) — long enough to
-negotiate, short enough to expire if a tab is abandoned. It is stored only as a
-PBKDF2 digest in `program_session_secret_hash`, is independent of the encoder key
-(`program_key_hash`), and is accepted by the publish authorizer alongside it. The
-secret lives only in page memory and is cleared on stop and page hide. Apply
-migration 026 (`uv run alembic upgrade head`) with this feature.
+expires after `PROGRAM_SENDER_SESSION_TTL_SECS` (default 150s). The TTL bounds how
+long a *new* publish may be authorized; it does not revoke a session that is already
+connected, so an established browser broadcast is not kicked when the secret expires.
+It is stored only as a PBKDF2 digest in `program_session_secret_hash`, is independent
+of the encoder key (`program_key_hash`), and is accepted by the publish authorizer
+alongside it. The secret lives only in page memory and is cleared on stop and page
+hide. Apply migration 026 (`uv run alembic upgrade head`) with this feature.
 
-Ownership is explicit and never implicit: starting is rejected with `409` when
-another source is already live on the floor (external encoder, meeting agent, or
-another sender). On a free floor the sender claims it, stopping the Jitsi bot if it
-owned the floor. Stopping releases only this sender's session — it clears the session
-secret and kicks the session, but leaves any encoder credential and the
+Ownership stays explicit. Starting is rejected with `409` when another program-ingest
+publisher — an external encoder or another browser sender — is live or still
+negotiating on the floor; it never displaces one. The Jitsi floor bot is a deliberate
+takeover on the owner's click: the bot is stopped first, then the floor is claimed.
+Stopping releases only this sender's session — it clears the session secret and kicks
+that session (and only when a browser session was actually open, so a rejected start
+or stray Stop can never disconnect an encoder), leaving any encoder credential and the
 `program_ingest` floor selection intact. Rotating/revoking/switching the source from
 the ingest panel also invalidates any in-flight sender session. The sender UI state
 machine covers connecting, live, reconnecting, no-audio, permission-denied, and
-stopped, and reconnects with a fresh session on transient WebRTC failures.
+stopped; on a transient WebRTC failure it drops the stale WHIP resource, releases the
+old session, and reconnects with a fresh one.
 
 ## Processing, recovery, and capacity
 

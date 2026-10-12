@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import timedelta
+from unittest import mock
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
@@ -112,8 +113,10 @@ async def test_session_secret_authorizes_whip_publish(environment):
 
 
 @pytest.mark.anyio
-async def test_start_rejected_when_another_source_is_live(environment):
+async def test_start_rejected_when_program_ingest_source_is_live(environment):
     client, event, room, media = environment
+    async with get_session() as session:
+        (await session.get(Room, room.id)).floor_source = "program_ingest"
     media[f"sender-test/{room.id}/floor"] = {
         "name": f"sender-test/{room.id}/floor",
         "ready": True,
@@ -123,6 +126,114 @@ async def test_start_rejected_when_another_source_is_live(environment):
     }
     response = await client.post(sender_url(event, room), json={"sync_offset_ms": 0})
     assert response.status_code == 409
+
+
+@pytest.mark.anyio
+async def test_start_takes_over_idle_jitsi_bot(environment, monkeypatch):
+    client, event, room, _ = environment
+    stop_calls = []
+    real_client = ingest.get_http_client()
+    orig_post = real_client.post
+
+    async def spy_post(url, **kwargs):
+        if url.endswith("/stop"):
+            stop_calls.append(url)
+        return await orig_post(url, **kwargs)
+
+    monkeypatch.setattr(real_client, "post", spy_post)
+    data = await start_session(client, event, room)
+    assert data["secret"]
+    assert any("/stop" in url for url in stop_calls)  # Bot takeover stops the Jitsi bot.
+    async with get_session() as session:
+        assert (await session.get(Room, room.id)).floor_source == "program_ingest"
+
+
+@pytest.mark.anyio
+async def test_close_does_not_kick_an_encoder(environment):
+    client, event, room, media = environment
+    encoder_session = str(uuid4())
+    async with get_session() as session:
+        stored = await session.get(Room, room.id)
+        stored.floor_source = "program_ingest"
+        stored.program_key_hash = "encoderhash"
+        stored.program_session_id = encoder_session  # Encoder owns the floor, no browser session.
+    kicks = []
+    orig_kick = ingest.kick
+
+    async def spy_kick(path, source):
+        if source is not None:
+            kicks.append(source.id)
+        return await orig_kick(path, source)
+
+    with mock.patch.object(ingest, "kick", spy_kick):
+        stop = await client.delete(sender_url(event, room))
+    assert stop.status_code == 200
+    assert encoder_session not in kicks  # The encoder was never kicked.
+    async with get_session() as session:
+        stored = await session.get(Room, room.id)
+        assert stored.program_key_hash == "encoderhash"
+        assert stored.program_session_id == encoder_session
+
+
+@pytest.mark.anyio
+async def test_duplicate_start_rejected_while_pending(environment):
+    client, event, room, _ = environment
+    await start_session(client, event, room)  # First start mints and marks the session pending.
+    second = await client.post(sender_url(event, room), json={"sync_offset_ms": 0})
+    assert second.status_code == 409
+
+
+@pytest.mark.anyio
+async def test_revoke_also_clears_sender_session_secret(environment):
+    client, event, room, _ = environment
+    await client.post(f"/admin/events/{event.id}/rooms/{room.id}/program-ingest", json={"action": "enable"})
+    await start_session(client, event, room)  # Now both encoder key and session secret exist.
+    revoke = await client.post(
+        f"/admin/events/{event.id}/rooms/{room.id}/program-ingest", json={"action": "revoke"}
+    )
+    assert revoke.status_code in {200, 202}
+    async with get_session() as session:
+        stored = await session.get(Room, room.id)
+        assert stored.program_session_secret_hash is None
+        assert stored.program_key_hash is None
+
+
+@pytest.mark.anyio
+async def test_reconcile_keeps_live_session_past_secret_expiry(environment):
+    client, event, room, media = environment
+    data = await start_session(client, event, room)
+    session_id = str(uuid4())
+    path_name = f"sender-test/{room.id}/floor"
+    media[path_name] = {
+        "name": path_name,
+        "ready": True,
+        "source": {"type": "webRTCSession", "id": session_id},
+        "tracks2": [{"codec": "Opus"}],
+        "bytesReceived": 500,
+    }
+    async with get_session() as session:
+        stored = await session.get(Room, room.id)
+        stored.program_session_id = session_id  # Publisher is connected.
+        stored.program_session_secret_expires_at = ingest.utc_now() - timedelta(seconds=1)  # TTL elapsed.
+        stored.program_connected_at = ingest.utc_now()
+        stored.floor_transcription_enabled = False  # Force an early return without touching providers.
+    assert data["secret"]
+    kicks = []
+    orig_kick = ingest.kick
+
+    async def spy_kick(path, source):
+        if source is not None:
+            kicks.append(source.id)
+        return await orig_kick(path, source)
+
+    from portal.models import Event as EventModel
+
+    with mock.patch.object(ingest, "kick", spy_kick):
+        async with get_session() as session:
+            stored = await session.get(Room, room.id)
+            ev = await session.get(EventModel, event.id)
+            await ingest.reconcile_room(stored, ev, ingest.MediaPath.model_validate(media[path_name]))
+    assert session_id not in kicks  # The connected publisher survives TTL expiry.
 
 
 @pytest.mark.anyio
