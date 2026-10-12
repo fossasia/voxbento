@@ -16,9 +16,10 @@ const stateLabels = {
 };
 
 function renderStatus(data) {
-  stateBadge.textContent = stateLabels[data.state] || data.state;
+  const stateLabel = stateLabels[data.state] || data.state;
+  stateBadge.textContent = stateLabel;
   stateBadge.dataset.state = data.state;
-  status.textContent = data.reason;
+  status.textContent = data.reason ? `${stateLabel}. ${data.reason}` : stateLabel;
   document.getElementById('program-codecs').textContent = data.codecs.join(', ') || 'None detected';
   document.getElementById('program-connected').textContent = data.last_connected_at || 'Never';
   document.getElementById('program-disconnected').textContent = data.last_disconnected_at || 'Never';
