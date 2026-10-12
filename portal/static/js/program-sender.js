@@ -27,6 +27,7 @@ let analyser = null;
 let meterTimer = null;
 let resourceUrl = null;
 let sessionSecret = null;
+let sessionActive = false;
 let userStopped = false;
 let reconnects = 0;
 let silentSince = null;
@@ -153,8 +154,18 @@ async function reconnect() {
   reconnects += 1;
   setState('reconnecting', `Connection dropped. Reconnecting (attempt ${reconnects})…`);
   teardownPeer();
+  // Drop the stale WHIP source and release the old session so the retry claims the floor cleanly.
+  if (resourceUrl) {
+    try { await fetch(resourceUrl, {method: 'DELETE'}); } catch (error) { /* already gone */ }
+    resourceUrl = null;
+  }
+  if (sessionActive) {
+    try { await fetch(card.dataset.mintUrl, {method: 'DELETE', cache: 'no-store'}); } catch (error) { /* already gone */ }
+    sessionActive = false;
+  }
   try {
     const session = await mintSession();
+    sessionActive = true;
     await publish(session.endpoint);
   } catch (error) {
     window.setTimeout(reconnect, 2000);
@@ -176,13 +187,15 @@ async function start() {
   }
   userStopped = false;
   reconnects = 0;
+  sessionActive = false;
   startButton.disabled = true;
   setState('connecting', 'Requesting the audio input…');
   try {
     const deviceId = deviceSelect.value;
-    stream = await navigator.mediaDevices.getUserMedia({
-      audio: deviceId ? {deviceId: {exact: deviceId}} : true,
-    });
+    // Program audio must bypass voice DSP, which pumps levels and hurts music and STT.
+    const audioConstraints = {echoCancellation: false, noiseSuppression: false, autoGainControl: false};
+    if (deviceId) audioConstraints.deviceId = {exact: deviceId};
+    stream = await navigator.mediaDevices.getUserMedia({audio: audioConstraints});
   } catch (error) {
     startButton.disabled = false;
     if (error && (error.name === 'NotAllowedError' || error.name === 'SecurityError')) {
@@ -193,10 +206,11 @@ async function start() {
     return;
   }
   await listDevices();
-  startMeter();
   try {
+    startMeter();
     setState('connecting', 'Connecting to the floor…');
     const session = await mintSession();
+    sessionActive = true;
     await publish(session.endpoint);
     setState('live', 'Sending program audio.');
     startButton.hidden = true;
@@ -220,8 +234,11 @@ async function stop(keepState) {
     fetch(resourceUrl, {method: 'DELETE'}).catch(() => {});
     resourceUrl = null;
   }
-  // Release the server-side session so the floor frees immediately.
-  fetch(card.dataset.mintUrl, {method: 'DELETE', cache: 'no-store'}).catch(() => {});
+  // Release only a session we actually opened, so a rejected start never disconnects an encoder.
+  if (sessionActive) {
+    fetch(card.dataset.mintUrl, {method: 'DELETE', cache: 'no-store'}).catch(() => {});
+    sessionActive = false;
+  }
   sessionSecret = null;
   stopButton.hidden = true;
   startButton.hidden = false;
