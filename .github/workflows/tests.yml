@@ -25,6 +25,66 @@ permissions:
 # ────────────────────────────────────────────────────────────────
 jobs:
 
+  floor-bot-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Detect floor-bot and smoke-test changes
+        id: changes
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: |
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ] || \
+             [ -z "$BASE_SHA" ] || [ "$BASE_SHA" = "0000000000000000000000000000000000000000" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            git diff --name-only "$BASE_SHA" HEAD > /tmp/floor-bot-changed-files
+            if grep -Eq '^(floor-bot/|docker-compose\.yml$|\.github/workflows/tests\.yml$|tests/(floor_bot_container_smoke|check_floor_bot_image_size|test_floor_bot_dependencies)\.py$)' /tmp/floor-bot-changed-files; then
+              echo "changed=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "changed=false" >> "$GITHUB_OUTPUT"
+            fi
+          fi
+
+      - name: Check floor-bot base image download budget
+        if: steps.changes.outputs.changed == 'true'
+        run: python3 tests/check_floor_bot_image_size.py
+
+      - name: Build floor-bot image
+        if: steps.changes.outputs.changed == 'true'
+        run: docker build --platform linux/amd64 -t voxbento-floor-bot-ci ./floor-bot
+
+      - name: Start floor bot with its production entrypoint
+        if: steps.changes.outputs.changed == 'true'
+        run: |
+          docker network create floor-bot-ci
+          docker run -d --name floor-bot-mtx --network floor-bot-ci \
+            bluenviron/mediamtx:1.18.2
+          docker run -d --name floor-bot-ci --network floor-bot-ci \
+            -v "$PWD/tests/floor_bot_container_smoke.py:/tmp/floor_bot_container_smoke.py:ro" \
+            voxbento-floor-bot-ci
+
+      - name: Verify real Chromium audio capture and room lifecycle
+        if: steps.changes.outputs.changed == 'true'
+        run: docker exec floor-bot-ci python /tmp/floor_bot_container_smoke.py
+
+      - name: Dump floor-bot logs on failure
+        if: failure()
+        run: |
+          docker logs floor-bot-ci || true
+          docker logs floor-bot-mtx || true
+
+      - name: Remove floor-bot smoke container
+        if: always()
+        run: |
+          docker rm -f floor-bot-ci floor-bot-mtx || true
+          docker network rm floor-bot-ci || true
+
   # ── 1. Unit tests + lint (fast, no Docker) ───────────────────
   unit-tests:
     runs-on: ubuntu-latest

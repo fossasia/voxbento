@@ -89,6 +89,17 @@ When live captions or translations are enabled, Voxbento spawns background worke
 To transcribe or translate the original speakers without requiring external integrations, the system launches an isolated **Floor Bot** (`floor-bot`). This headless Chromium instance silently joins the Jitsi meeting, captures the live audio, and pushes it to MediaMTX via RTSP, making it accessible to the transcription workers just like a regular booth.
 
 ### Pipeline Steps
+
+Floor-bot dependency upgrades are checked separately in CI: the Playwright SDK
+must match the bundled browser version, and the real container must launch
+Chromium, publish a local audio tone through PulseAudio and the production FFmpeg
+Opus/RTSP command, and decode it from a local MediaMTX server. The check requires
+sustained energy at the fixture's 440 Hz frequency; brief startup noise cannot
+declare capture healthy. CI also
+checks a 900 MB compressed base-image budget for Linux amd64 before pulling
+layers. These checks cover browser and audio dependencies without an external
+Jitsi session; they do not validate a deployment host's available disk space.
+
 1. **Audio Ingest:** The worker uses FFmpeg to pull the live audio stream from MediaMTX via RTSP (`rtsp://mediamtx:8554/{event_slug}/{language_code}` or `rtsp://mediamtx:8554/{event_slug}/floor`).
 2. **Transcoding:** FFmpeg transcodes the audio to PCM S16LE (mono, 16kHz or 24kHz depending on the provider) and pipes it to the selected `TranscriptionProvider`.
 3. **Speech-to-Text (Transcription):** The provider sends audio to an AI service (OpenAI, Deepgram, ElevenLabs, NVIDIA, or Local Whisper). The `CaptionAggregator` receives raw text, splitting sentences and instantly broadcasting partial updates to listeners (`/ws/captions/{channel_id}`).
