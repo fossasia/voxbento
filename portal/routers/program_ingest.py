@@ -133,6 +133,8 @@ async def ingest_change(request: Request, event_id: int, room_id: int, change: I
                 # never roll the old credential back into validity.
                 room.program_key_hash = None
                 room.program_key_expires_at = None
+                room.program_session_secret_hash = None
+                room.program_session_secret_expires_at = None
             else:
                 try:
                     secret = await configure_source(room, event, change.action, room.program_sync_offset_ms)

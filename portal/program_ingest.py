@@ -39,6 +39,8 @@ room_locks: dict[int, asyncio.Lock] = {}
 capacity_lock = asyncio.Lock()
 FLOOR_PATH = re.compile(r"([a-z0-9]+(?:-[a-z0-9]+)*)/([1-9][0-9]*)/floor")
 MEDIA_CONTROL_TIMEOUT = 3.0
+# A freshly minted sender session may still be negotiating; reject duplicate starts within this window.
+SENDER_PENDING_SECS = 15.0
 
 
 def room_lock(room_id: int) -> asyncio.Lock:
@@ -405,16 +407,25 @@ async def ensure_floor_path(path: str) -> None:
 async def open_sender_session(room: Room, event: Event, offset_ms: int, ttl_secs: int) -> str:
     """Claim a free floor for the browser sender and mint a short-lived publish secret.
 
-    Caller holds the room lock and DB transaction. Rejects with 409 when another
-    source is live on the floor; never replaces a connected publisher implicitly and
-    never touches the long-lived encoder credential.
+    Caller holds the room lock and DB transaction. Starting is rejected with 409 when
+    an external encoder or another sender owns the floor; the Jitsi floor bot is an
+    explicit takeover on the owner's click. Never touches the encoder credential.
     """
     path = make_mediamtx_path(event.slug, room.id, "floor")
-    current_path = await media_path(path)
-    if current_path and current_path.source is not None:
-        raise HTTPException(409, "Another source is publishing to the floor; stop it before starting the browser sender.")
-    await ensure_floor_path(path)
-    if room.floor_source == "jitsi_bot":
+    if room.floor_source == "program_ingest":
+        # Floor already owned by program ingest; never displace a connected or
+        # still-negotiating publisher (external encoder or another sender).
+        current_path = await media_path(path)
+        reservation = health.get(room.id)
+        reservation_recent = bool(
+            reservation
+            and reservation.reservation_started_at
+            and time.monotonic() - reservation.reservation_started_at < SENDER_PENDING_SECS
+        )
+        if (current_path and current_path.source is not None) or reservation_recent:
+            raise HTTPException(409, "Another source is publishing to the floor; stop it before starting the browser sender.")
+    else:
+        # Explicit takeover from the Jitsi floor bot. Stop it before judging occupancy.
         try:
             response = await get_http_client().post(
                 f"{settings.floor_bot_base}/stop",
@@ -424,7 +435,10 @@ async def open_sender_session(room: Room, event: Event, offset_ms: int, ttl_secs
             response.raise_for_status()
         except httpx.RequestError:
             logger.warning("program_ingest floor_bot_unreachable room_id=%s", room.id)
-    # No live source above, so only a stale reservation can remain; drop it.
+        current_path = await media_path(path)
+    await ensure_floor_path(path)
+    # Clear a lingering bot source on takeover, or a stale program-ingest reservation.
+    await kick(path, current_path.source if current_path else None)
     if room.program_session_id:
         await kick(path, MediaSource(type="webRTCSession", id=room.program_session_id))
         room.program_session_id = None
@@ -434,22 +448,30 @@ async def open_sender_session(room: Room, event: Event, offset_ms: int, ttl_secs
     secret = secrets.token_urlsafe(32)
     room.program_session_secret_hash = await asyncio.to_thread(digest_program_secret, secret)
     room.program_session_secret_expires_at = utc_now() + timedelta(seconds=ttl_secs)
-    health.pop(room.id, None)
+    # Mark the session pending so a racing duplicate start is rejected, not clobbered.
+    pending = health.setdefault(room.id, IngestHealth())
+    pending.reservation_started_at = time.monotonic()
+    pending.missing_since = None
     logger.info("program_ingest sender_session_opened room_id=%s", room.id)
     return secret
 
 
 async def close_sender_session(room: Room, event: Event) -> None:
-    """Release only this browser sender's session: invalidate its secret and kick it."""
+    """Release only this browser sender's session: invalidate its secret and kick it.
+
+    No-op kick when no browser session is active, so a rejected start or stray Stop
+    can never disconnect an external encoder that owns the floor.
+    """
+    had_session = bool(room.program_session_secret_hash)
     room.program_session_secret_hash = None
     room.program_session_secret_expires_at = None
-    path = make_mediamtx_path(event.slug, room.id, "floor")
-    if room.program_session_id:
+    if had_session and room.program_session_id:
+        path = make_mediamtx_path(event.slug, room.id, "floor")
         await kick(path, MediaSource(type="webRTCSession", id=room.program_session_id))
         room.program_session_id = None
         room.program_disconnected_at = utc_now()
-    health.pop(room.id, None)
-    logger.info("program_ingest sender_session_closed room_id=%s", room.id)
+        health.pop(room.id, None)
+    logger.info("program_ingest sender_session_closed room_id=%s had_session=%s", room.id, had_session)
 
 
 async def reconcile_room(room: Room, event: Event, path: MediaPath | None) -> None:
@@ -457,7 +479,9 @@ async def reconcile_room(room: Room, event: Event, path: MediaPath | None) -> No
     path_name = make_mediamtx_path(event.slug, room.id, "floor")
     booth_id = make_booth_id(event.slug, room.id, "floor")
     now = time.monotonic()
-    permitted = bool(settings.program_ingest_enabled and has_valid_credential(room))
+    # A short-lived sender secret gates new publishes, not an already-connected session.
+    session_live = bool(path and path.source and room.program_session_id and path.source.id == room.program_session_id)
+    permitted = bool(settings.program_ingest_enabled and (has_valid_credential(room) or session_live))
     if path and path.source and (not permitted or path.source.id != room.program_session_id):
         await kick(path_name, path.source)
         path = None
