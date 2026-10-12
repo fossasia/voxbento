@@ -89,6 +89,35 @@ uv run pytest tests/ -v
 
 ## W4: PR Review
 
+For floor-bot dependency upgrades, run
+`uv run pytest tests/test_floor_bot_dependencies.py -q` and
+`python tests/check_floor_bot_image_size.py`. The independent `floor-bot-smoke`
+job in `.github/workflows/tests.yml` builds the actual image and starts its normal
+entrypoint, then exercises `/start`, real Chromium/PulseAudio/FFmpeg audio capture
+through the production Opus publisher and a local MediaMTX RTSP server,
+and `/stop` using `tests/floor_bot_container_smoke.py`. A healthy HTTP server alone
+does not prove that a capture subprocess can launch.
+
+The Linux amd64 compressed base-image budget is 900 MB, allowing headroom above
+the known-good 743 MB image. Larger upgrades require slimming or an explicit
+budget review. This does not replace checking deployment-host free space for
+extraction, cached images, and other services.
+
+Run the real container check locally:
+
+```bash
+docker build --platform linux/amd64 -t voxbento-floor-bot-ci ./floor-bot
+docker network create floor-bot-ci
+docker run -d --name floor-bot-mtx --network floor-bot-ci bluenviron/mediamtx:1.18.2
+docker run -d --name floor-bot-ci --network floor-bot-ci \
+  -v "$PWD/tests/floor_bot_container_smoke.py:/tmp/floor_bot_container_smoke.py:ro" \
+  voxbento-floor-bot-ci
+docker exec floor-bot-ci python /tmp/floor_bot_container_smoke.py
+docker logs floor-bot-ci
+docker rm -f floor-bot-ci floor-bot-mtx
+docker network rm floor-bot-ci
+```
+
 1. Read `.github/instructions/python.instructions.md` and `.github/instructions/js.instructions.md`.
 2. Check all invariants from [REPOSITORY_CONTEXT.md](REPOSITORY_CONTEXT.md) — **Key Invariants** section.
 3. If DB changes: verify Alembic migration exists and is correct.
