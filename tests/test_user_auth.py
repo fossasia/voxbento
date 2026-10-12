@@ -5,11 +5,10 @@ from __future__ import annotations
 import os
 
 os.environ["BOOTH_ACCESS_TOKEN"] = ""
-os.environ["ADMIN_PASSWORD"] = "test-admin-pass"
 
 import pytest
 
-from portal.auth import create_admin_token, create_user_token, hash_password, verify_password
+from portal.auth import create_user_token, hash_password, verify_password
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -27,8 +26,18 @@ async def setup_db():
 
 
 @pytest.fixture
-def admin_cookie():
-    return {"admin_token": create_admin_token()}
+async def admin_cookie():
+    from portal.database import create_user, get_session
+
+    async with get_session() as s:
+        user = await create_user(
+            s,
+            email="admin@example.com",
+            display_name="Admin",
+            password_hash=hash_password("test-admin-pass"),
+            is_admin=True,
+        )
+    return {"user_token": create_user_token(user_id=user.id, email="admin@example.com", is_admin=True)}
 
 
 def _client():
@@ -130,6 +139,84 @@ class TestRegistration:
         assert b"Passwords do not match." in resp.content
         async with get_session() as s:
             assert await get_user_by_email(s, "typo@example.com") is None
+
+    @pytest.mark.anyio
+    async def test_register_rejects_short_password(self, setup_db):
+        from portal.database import get_session, get_user_by_email
+
+        async with _client() as c:
+            resp = await c.post(
+                "/register",
+                data={
+                    "email": "short@example.com",
+                    "display_name": "Short User",
+                    "password": "1234567",
+                    "password_confirm": "1234567",
+                },
+            )
+        assert resp.status_code == 422
+        assert b"Password must be at least 8 characters." in resp.content
+        async with get_session() as s:
+            assert await get_user_by_email(s, "short@example.com") is None
+
+    @pytest.mark.anyio
+    async def test_register_accepts_eight_character_password(self, setup_db):
+        from portal.database import get_session, get_user_by_email
+
+        async with _client() as c:
+            resp = await c.post(
+                "/register",
+                data={
+                    "email": "exact8@example.com",
+                    "display_name": "Exact 8 User",
+                    "password": "12345678",
+                    "password_confirm": "12345678",
+                },
+                follow_redirects=False,
+            )
+        assert resp.status_code == 200
+        assert b"Check your email" in resp.content
+        async with get_session() as s:
+            assert await get_user_by_email(s, "exact8@example.com") is not None
+
+    @pytest.mark.anyio
+    async def test_register_accepts_password_with_leading_trailing_spaces(self, setup_db):
+        from portal.database import get_session, get_user_by_email
+
+        async with _client() as c:
+            resp = await c.post(
+                "/register",
+                data={
+                    "email": "spaces@example.com",
+                    "display_name": "Spaces User",
+                    "password": "  abcdef  ",
+                    "password_confirm": "  abcdef  ",
+                },
+                follow_redirects=False,
+            )
+        assert resp.status_code == 200
+        assert b"Check your email" in resp.content
+        async with get_session() as s:
+            assert await get_user_by_email(s, "spaces@example.com") is not None
+
+    @pytest.mark.anyio
+    async def test_register_rejects_whitespace_only_password(self, setup_db):
+        from portal.database import get_session, get_user_by_email
+
+        async with _client() as c:
+            resp = await c.post(
+                "/register",
+                data={
+                    "email": "whitespace@example.com",
+                    "display_name": "Whitespace User",
+                    "password": "   ",
+                    "password_confirm": "   ",
+                },
+            )
+        assert resp.status_code == 422
+        assert b"Password cannot be blank or only whitespace." in resp.content
+        async with get_session() as s:
+            assert await get_user_by_email(s, "whitespace@example.com") is None
 
     @pytest.mark.anyio
     async def test_register_passwordless_needs_no_confirm(self, setup_db):
@@ -305,9 +392,10 @@ class TestAdminUserManagement:
         _u1 = await _create_test_user(email="user1@example.com", display_name="User One")
         _u2 = await _create_test_user(email="user2@example.com", display_name="User Two")
         u3 = await _create_test_user(email="user3@example.com", display_name="User Three")
-        assert u3.id == 3
+        # u3 is the newest user, so it sorts first when descending by created_at.
+        newest_id = max(_u1.id, _u2.id, u3.id)
+        assert u3.id == newest_id
 
-        # When sorted desc, first row is user3 (database ID=3, but row index=1)
         async with _client() as c:
             resp = await c.get("/admin/users/?sort_by=created_at&sort_order=desc&limit=1&page=1", cookies=admin_cookie)
         assert resp.status_code == 200
@@ -315,11 +403,11 @@ class TestAdminUserManagement:
         assert b"User Three" in resp.content
         assert b"user1@example.com" not in resp.content
         assert b"<th>#</th>" in resp.content
-        # Row number must be 1, NOT the database primary key (3)
+        # Row number must be 1, NOT the database primary key.
         assert b"<td>1</td>" in resp.content
-        assert b"<td>3</td>" not in resp.content
+        assert f"<td>{u3.id}</td>".encode() not in resp.content
 
-        # On page 2 with limit=1 (descending), user2 (ID=2) is displayed with row index 2
+        # On page 2 with limit=1 (descending), the middle user gets row index 2.
         async with _client() as c:
             resp2 = await c.get("/admin/users/?sort_by=created_at&sort_order=desc&limit=1&page=2", cookies=admin_cookie)
         assert resp2.status_code == 200

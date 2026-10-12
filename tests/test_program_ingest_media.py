@@ -20,9 +20,9 @@ import uvicorn
 from fastapi_app import app
 from portal import globals as pg
 from portal import program_ingest as ingest
-from portal.auth import create_admin_token
+from portal.auth import create_user_token
 from portal.config import settings
-from portal.database import configure, dispose, get_session, init_db
+from portal.database import configure, create_user, dispose, get_session, init_db
 from portal.models import Event, Room
 from portal.transcription.process import FfmpegProcess
 
@@ -47,6 +47,13 @@ async def test_native_whip_auth_decode_revoke(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "mediamtx_api_base", f"http://127.0.0.1:{api_port}")
     monkeypatch.setattr(settings, "program_ingest_disconnect_grace_secs", 0)
     async with get_session() as session:
+        admin = await create_user(
+            session,
+            email="native-admin@example.com",
+            display_name="Native Admin",
+            email_verified=True,
+            is_admin=True,
+        )
         event = Event(slug="native", display_name="Native")
         session.add(event)
         await session.flush()
@@ -95,7 +102,10 @@ paths:
             else:
                 pytest.fail((tmp_path / "media.log").read_text())
             url = f"http://127.0.0.1:{http_port}/admin/events/{event.id}/rooms/{room.id}/program-ingest"
-            client.cookies.set("admin_token", create_admin_token())
+            client.cookies.set(
+                "user_token",
+                create_user_token(user_id=admin.id, email=admin.email, is_admin=True),
+            )
             response = await client.post(url, json={"action": "enable"})
             assert response.status_code == 200, response.text
             token = response.json()["secret"]
@@ -138,7 +148,7 @@ paths:
                 details = ""
                 if encoder.returncode is not None:
                     _, stderr = await encoder.communicate()
-                    details = stderr.decode().replace(token, '[REDACTED]')
+                    details = stderr.decode().replace(token, "[REDACTED]")
                 pytest.fail("WHIP did not publish: " + details + (tmp_path / "media.log").read_text())
             assert "Opus" in ready.tracks
             async with FfmpegProcess(f"rtsp://127.0.0.1:{rtsp_port}/{path}", "16000", "native-test") as decoder:

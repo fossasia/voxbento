@@ -12,9 +12,9 @@ import pytest
 
 from fastapi_app import app
 from portal import program_ingest as ingest
-from portal.auth import create_admin_token
+from portal.auth import create_user_token
 from portal.config import settings
-from portal.database import configure, dispose, get_session, init_db
+from portal.database import configure, create_user, dispose, get_session, init_db
 from portal.models import Event, Room, RoomTranslationLanguage, TranscriptSegment
 from portal.transcription.aggregator import CaptionAggregator
 from portal.websockets.manager import tts_manager
@@ -54,6 +54,13 @@ async def environment(monkeypatch):
         monkeypatch.setattr(ingest, "start_transcription_worker", start)
         monkeypatch.setattr(ingest, "stop_transcription_worker", stop)
         async with get_session() as session:
+            admin = await create_user(
+                session,
+                email="program-admin@example.com",
+                display_name="Program Admin",
+                email_verified=True,
+                is_admin=True,
+            )
             event = Event(slug="program-test", display_name="Program Test")
             session.add(event)
             await session.flush()
@@ -67,10 +74,11 @@ async def environment(monkeypatch):
                 for n in range(2)
             ]
             session.add_all(rooms)
+        admin_token = create_user_token(user_id=admin.id, email=admin.email, is_admin=True)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app, client=("127.0.0.1", 1234)),
             base_url="http://test",
-            cookies={"admin_token": create_admin_token()},
+            cookies={"user_token": admin_token},
         ) as client:
             yield client, event, rooms, media, calls, start, stop
     ingest.health.clear()
@@ -296,9 +304,10 @@ async def test_auth_throttling_and_anonymous_floor_denial(environment):
 async def test_owner_guard_csrf_and_cross_event(environment):
     client, event, rooms, *_ = environment
     url = admin_url(event, rooms[0])
+    admin_token = client.cookies.get("user_token")
     client.cookies.clear()
     assert (await client.post(url, json={"action": "enable"})).status_code == 403
-    client.cookies.set("admin_token", create_admin_token())
+    client.cookies.set("user_token", admin_token)
     assert (
         await client.post(url, json={"action": "enable"}, headers={"Origin": "https://evil.example"})
     ).status_code == 403
