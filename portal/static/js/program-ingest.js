@@ -2,7 +2,48 @@ const card = document.getElementById('program-ingest');
 const status = document.getElementById('program-status');
 const secret = document.getElementById('program-secret');
 const offset = document.getElementById('program-offset');
+const stateBadge = document.getElementById('program-state-badge');
+const warning = document.getElementById('program-warning');
 let busy = false;
+
+const stateLabels = {
+  disabled: 'Disabled',
+  waiting: 'Waiting for OBS',
+  receiving: 'Receiving stream',
+  processing: 'Processing audio',
+  degraded: 'Needs attention',
+  disconnected: 'Disconnected',
+};
+
+function renderStatus(data) {
+  stateBadge.textContent = stateLabels[data.state] || data.state;
+  stateBadge.dataset.state = data.state;
+  status.textContent = data.reason;
+  document.getElementById('program-codecs').textContent = data.codecs.join(', ') || 'None detected';
+  document.getElementById('program-connected').textContent = data.last_connected_at || 'Never';
+  document.getElementById('program-disconnected').textContent = data.last_disconnected_at || 'Never';
+  document.getElementById('program-expires').textContent = data.expires_at || 'Not created';
+
+  const warnings = [...data.warnings];
+  if (!data.available) warnings.push('Ask the server operator to enable authenticated program ingest.');
+  warning.hidden = warnings.length === 0;
+  document.getElementById('program-warning-title').textContent = data.available
+    ? 'Program ingest needs attention'
+    : 'Program ingest is not available yet';
+  document.getElementById('program-warnings').textContent = warnings.join(' ');
+}
+
+async function copyField(input, button, successLabel) {
+  const originalLabel = button.textContent;
+  try {
+    await navigator.clipboard.writeText(input.value);
+    button.textContent = successLabel;
+    window.setTimeout(() => { button.textContent = originalLabel; }, 1600);
+  } catch (error) {
+    console.error('Program ingest value could not be copied', error);
+    status.textContent = 'Clipboard unavailable. Select and copy the value manually.';
+  }
+}
 
 async function refresh() {
   if (busy || document.hidden) return;
@@ -11,9 +52,7 @@ async function refresh() {
     if (!response.ok) throw new Error('Cannot load program ingest status');
     const data = await response.json();
     document.getElementById('program-endpoint').value = data.endpoint;
-    status.textContent = `${data.state}: ${data.reason} Codecs: ${data.codecs.join(', ') || 'none'}. Last connected: ${data.last_connected_at || 'never'}. Disconnected: ${data.last_disconnected_at || 'never'}. Token expires: ${data.expires_at || 'none'}.`;
-    document.getElementById('program-warnings').textContent = data.warnings.join(' ') +
-      (data.available ? '' : ' Server operator must enable authenticated program ingest first.');
+    renderStatus(data);
     card.querySelectorAll('[data-ingest-action]').forEach(button => {
       const action = button.dataset.ingestAction;
       button.disabled = (['enable', 'rotate'].includes(action) && !data.available) ||
@@ -35,6 +74,7 @@ card.querySelectorAll('[data-ingest-action]').forEach(button => {
     card.querySelectorAll('button').forEach(item => { item.disabled = true; });
     secret.value = '';
     secret.type = 'password';
+    document.getElementById('program-reveal').textContent = 'Show';
     document.getElementById('program-secret-panel').hidden = true;
     try {
       const response = await fetch(card.dataset.url, {
@@ -66,14 +106,13 @@ card.querySelectorAll('[data-ingest-action]').forEach(button => {
 });
 document.getElementById('program-reveal').addEventListener('click', () => {
   secret.type = secret.type === 'password' ? 'text' : 'password';
+  document.getElementById('program-reveal').textContent = secret.type === 'password' ? 'Show' : 'Hide';
 });
 document.getElementById('program-copy').addEventListener('click', async () => {
-  try {
-    await navigator.clipboard.writeText(secret.value);
-  } catch (error) {
-    console.error('Cannot copy program token', error);
-    status.textContent = 'Clipboard unavailable. Reveal and copy the token manually.';
-  }
+  await copyField(secret, document.getElementById('program-copy'), 'Token copied');
+});
+document.getElementById('program-copy-endpoint').addEventListener('click', async () => {
+  await copyField(document.getElementById('program-endpoint'), document.getElementById('program-copy-endpoint'), 'URL copied');
 });
 window.addEventListener('pagehide', () => { secret.value = ''; });
 refresh();
