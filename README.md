@@ -88,6 +88,32 @@ For detailed API documentation, environment variables, and configuration, visit 
 
 ## Upgrade Notes
 
+### Floor-bot dependency checks
+
+Upgrade the Playwright Python SDK and its Docker browser image together. CI checks
+the version pairing, then runs the production floor-bot entrypoint and captures a
+local browser-generated tone through PulseAudio and FFmpeg. This checks actual
+Chromium startup and audio capture without relying on an external Jitsi meeting.
+
+The `floor-bot-smoke` CI job also limits the Linux amd64 base image's compressed
+layers to 900 MB, allowing headroom above the known-good 743 MB image. Oversized
+upgrades must slim the image or explicitly review the budget. This growth limit
+does not replace checking free disk space on the deployment host, where cached
+images and extraction also consume space.
+
+Run the fast checks with `uv run pytest tests/test_floor_bot_dependencies.py -q`
+and `python tests/check_floor_bot_image_size.py`. For the container check:
+
+```bash
+docker build --platform linux/amd64 -t voxbento-floor-bot-ci ./floor-bot
+docker run -d --name floor-bot-ci \
+  -v "$PWD/tests/floor_bot_container_smoke.py:/tmp/floor_bot_container_smoke.py:ro" \
+  voxbento-floor-bot-ci
+docker exec floor-bot-ci python /tmp/floor_bot_container_smoke.py
+docker logs floor-bot-ci
+docker rm -f floor-bot-ci
+```
+
 ### Admin login migration
 
 The legacy shared `ADMIN_PASSWORD` login has been removed. Before upgrading,

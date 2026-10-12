@@ -89,6 +89,15 @@ uv run pytest tests/ -v
 
 ## W4: PR Review
 
+For floor-bot dependency upgrades, run
+`uv run pytest tests/test_floor_bot_dependencies.py -q` and
+`python tests/check_floor_bot_image_size.py`. The independent `floor-bot-smoke`
+job in `.github/workflows/tests.yml` builds the actual image and starts its normal
+entrypoint, then exercises `/start`, real Chromium/PulseAudio/FFmpeg audio capture,
+and `/stop` using `tests/floor_bot_container_smoke.py`. A healthy HTTP server alone
+does not prove that a capture subprocess can launch. See README upgrade notes for
+local container commands and the compressed image budget.
+
 1. Read `.github/instructions/python.instructions.md` and `.github/instructions/js.instructions.md`.
 2. Check all invariants from [REPOSITORY_CONTEXT.md](REPOSITORY_CONTEXT.md) — **Key Invariants** section.
 3. If DB changes: verify Alembic migration exists and is correct.
