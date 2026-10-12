@@ -577,7 +577,7 @@ async def create_booth(
 
     await _verify_token_rbac(db, token, event, room_id)
 
-    result = await db.execute(select(DBBooth).where(DBBooth.room_id == room_id, DBBooth.language_code == language_code, DBBooth.event_id == event.id))
+    result = await db.execute(select(DBBooth).where(DBBooth.room_id == room_id, DBBooth.language_code == language_code))
     if result.scalars().first():
         raise HTTPException(status_code=409, detail="Booth already exists")
 

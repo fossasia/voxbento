@@ -98,9 +98,16 @@ class TestApiV1IDOR:
                 f"/api/v1/events/{event_a.slug}/rooms/{room_b.id}/booths",
                 headers={"Authorization": f"Bearer {token_a}"}
             )
+            assert resp.status_code == 404
+            assert resp.json()["detail"] == "Room not found"
 
-        assert resp.status_code == 404
-        assert resp.json()["detail"] == "Room not found"
+            # Cross-tenant POST to create a booth in Room B using Event A token
+            resp_post = await c.post(
+                f"/api/v1/events/{event_a.slug}/rooms/{room_b.id}/booths/de",
+                headers={"Authorization": f"Bearer {token_a}"}
+            )
+            assert resp_post.status_code == 404
+            assert resp_post.json()["detail"] == "Room not found"
 
     @pytest.mark.anyio
     async def test_booth_cross_tenant_returns_404(self, seed_data):
@@ -147,13 +154,13 @@ class TestApiV1IDOR:
             )
             assert resp.status_code == 404
 
-            # 4. Creation does not treat Event B's 'fr' booth as an Event A duplicate
-            # It bypasses the 409 but fails with a 500 DB IntegrityError because of the unique constraint on (room_id, language_code)
-            with pytest.raises(Exception):
-                await c.post(
-                    f"/api/v1/events/{event_a.slug}/rooms/{room_a.id}/booths/fr",
-                    headers={"Authorization": f"Bearer {token_a}"}
-                )
+            # 4. Creation checks duplicate by room_id and language_code and returns 409
+            resp = await c.post(
+                f"/api/v1/events/{event_a.slug}/rooms/{room_a.id}/booths/fr",
+                headers={"Authorization": f"Bearer {token_a}"}
+            )
+            assert resp.status_code == 409
+            assert resp.json()["detail"] == "Booth already exists"
 
             # 5. Deletion fails to delete the Event B booth when attempting to delete through Event A
             # Booth B ('es') is in Room B (Event B). If an Event A token tries to delete it using its room_b.id, it should 404.
