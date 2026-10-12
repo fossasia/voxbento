@@ -5,8 +5,11 @@ import math
 import re
 import shlex
 import struct
+import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
+import floor_bot_container_smoke as smoke
 import pytest
 from floor_bot_container_smoke import assert_fixture_tone
 
@@ -119,3 +122,56 @@ def test_audio_check_rejects_transients_and_invalid_captures(kind: str) -> None:
         samples = samples[:4000]
     with pytest.raises(AssertionError):
         assert_fixture_tone(struct.pack(f"<{len(samples)}h", *samples))
+
+
+def test_rtsp_capture_recovers_after_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A slow initial reader must not fail the smoke before the publisher is ready."""
+    clock = [0.0]
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append(kwargs["timeout"])
+        if len(calls) == 1:
+            clock[0] += kwargs["timeout"]
+            raise subprocess.TimeoutExpired(command, kwargs["timeout"])
+        return subprocess.CompletedProcess(command, 0, stdout=b"decoded audio", stderr=b"")
+
+    monkeypatch.setattr(smoke, "time", SimpleNamespace(
+        monotonic=lambda: clock[0], sleep=lambda seconds: clock.__setitem__(0, clock[0] + seconds)
+    ))
+    monkeypatch.setattr(smoke.subprocess, "run", run)
+    assert smoke.capture_published_audio("rtsp://test/floor") == b"decoded audio"
+    assert calls == [15, 14.5]
+
+
+@pytest.mark.parametrize("failure", ["timeout", "timeout_with_stderr", "exit"])
+def test_rtsp_capture_reports_latest_failure_at_deadline(
+    monkeypatch: pytest.MonkeyPatch, failure: str,
+) -> None:
+    """Both timeout and exit diagnostics survive retries until the total deadline."""
+    clock = [0.0]
+    calls = []
+
+    def run(command, **kwargs):
+        calls.append(kwargs["timeout"])
+        clock[0] += kwargs["timeout"]
+        if len(calls) == 1:
+            return subprocess.CompletedProcess(command, 1, stdout=b"", stderr=b"old failure")
+        if failure.startswith("timeout"):
+            stderr = b"latest timeout detail" if failure == "timeout_with_stderr" else None
+            raise subprocess.TimeoutExpired(command, kwargs["timeout"], stderr=stderr)
+        return subprocess.CompletedProcess(command, 1, stdout=b"", stderr=b"latest exit detail")
+
+    monkeypatch.setattr(smoke, "time", SimpleNamespace(
+        monotonic=lambda: clock[0], sleep=lambda seconds: clock.__setitem__(0, clock[0] + seconds)
+    ))
+    monkeypatch.setattr(smoke.subprocess, "run", run)
+    with pytest.raises(AssertionError) as error:
+        smoke.capture_published_audio("rtsp://test/floor")
+    detail = str(error.value)
+    assert "old failure" not in detail
+    assert ("timed out" if failure.startswith("timeout") else "latest exit detail") in detail
+    if failure == "timeout_with_stderr":
+        assert "latest timeout detail" in detail
+    assert calls == [15, 14.5]
+    assert clock[0] == 30

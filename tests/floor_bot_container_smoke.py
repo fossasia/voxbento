@@ -74,18 +74,27 @@ def assert_fixture_tone(audio: bytes) -> None:
 def capture_published_audio(rtsp_url: str) -> bytes:
     """Read the bot's production Opus/RTSP publisher rather than its local sink."""
     deadline = time.monotonic() + 30
-    while True:
-        result = subprocess.run(  # nosec B603 B607
-            ["ffmpeg", "-v", "error", "-rtsp_transport", "tcp", "-i", rtsp_url,
-             "-t", "2", "-ac", "1", "-ar", "16000", "-f", "s16le", "pipe:1"],
-            capture_output=True, timeout=15,
-        )
-        if result.returncode == 0:
-            return result.stdout
-        if time.monotonic() >= deadline:
-            raise AssertionError("Production FFmpeg never published readable RTSP audio: "
-                                 + result.stderr.decode(errors="replace"))
-        time.sleep(0.5)
+    failure_detail = "No RTSP read attempt completed"
+    while (remaining := deadline - time.monotonic()) > 0:
+        try:
+            result = subprocess.run(  # nosec B603 B607
+                ["ffmpeg", "-v", "error", "-rtsp_transport", "tcp", "-i", rtsp_url,
+                 "-t", "2", "-ac", "1", "-ar", "16000", "-f", "s16le", "pipe:1"],
+                capture_output=True, timeout=min(15, remaining),
+            )
+        except subprocess.TimeoutExpired as exc:
+            stderr = exc.stderr.decode(errors="replace") if isinstance(exc.stderr, bytes) else exc.stderr
+            failure_detail = f"FFmpeg RTSP read timed out after {exc.timeout:g} seconds"
+            if stderr:
+                failure_detail += f": {stderr}"
+        else:
+            if result.returncode == 0:
+                return result.stdout
+            failure_detail = result.stderr.decode(errors="replace")
+        remaining = deadline - time.monotonic()
+        if remaining > 0:
+            time.sleep(min(0.5, remaining))
+    raise AssertionError("Production FFmpeg never published readable RTSP audio: " + failure_detail)
 
 
 def main() -> None:
