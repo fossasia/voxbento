@@ -115,3 +115,6 @@ Legacy organizer requests to allowlisted event-management paths under `/admin/`,
 | `portal/websockets/manager.py` | `ws_booth` and `ws_captions` endpoints |
 | `portal/websockets/handlers.py` | Specific `_handle_*` logic for WS messages |
 | `fastapi_app.py` | Application lifespan, router include aggregation |
+
+`POST /admin/login` requires verified email and shares the `login` rate-limit
+bucket with `POST /login`: 10 attempts per normalized email per hour.

@@ -228,3 +228,6 @@ Every PR that adds, removes, or changes a feature **must** update these files in
 - Relevant context file in `.agents/context/` — if the change affects routes, DB schema, or transcription
 
 Do not defer documentation to a follow-up PR.
+
+Admin password sign-in requires `User.email_verified`; `/admin/login` and `/login`
+share the `login` rate-limit bucket (10 attempts per normalized email per hour).

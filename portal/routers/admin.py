@@ -87,6 +87,7 @@ from portal.models import (
     User,
     utc_now,
 )
+from portal.rate_limit import check_rate_limit
 from portal.transcription import ALLOWED_MODELS, ProviderConfig, ProviderEnum, get_api_key
 from portal.transcription.worker import start_transcription_worker, stop_transcription_worker
 from portal.translations.constants import TRANSLATION_MODELS, TranslationProviderEnum
@@ -292,6 +293,14 @@ async def admin_login_submit(request: Request):
             status_code=status.HTTP_403_FORBIDDEN,
         )
 
+    if not check_rate_limit("login", email, max_requests=10, window_seconds=3600):
+        return templates.TemplateResponse(
+            request=request,
+            name="admin/login.html",
+            context={"error": "Too many attempts. Try again later.", "email": email},
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+        )
+
     async with get_session() as session:
         user = await get_user_by_email(session, email)
         if (
@@ -304,6 +313,14 @@ async def admin_login_submit(request: Request):
                 request=request,
                 name="admin/login.html",
                 context={"error": "Invalid email or password.", "email": email},
+                status_code=status.HTTP_403_FORBIDDEN,
+            )
+
+        if not user.email_verified:
+            return templates.TemplateResponse(
+                request=request,
+                name="admin/login.html",
+                context={"error": "Please verify your email address first.", "email": email},
                 status_code=status.HTTP_403_FORBIDDEN,
             )
 

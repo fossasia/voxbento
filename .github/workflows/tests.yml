@@ -232,6 +232,7 @@ jobs:
                       display_name="CI Admin",
                       password_hash=hash_password("ci-admin-pass"),
                       is_admin=True,
+                      email_verified=True,
                   )
 
 

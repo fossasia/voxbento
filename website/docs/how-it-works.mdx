@@ -199,3 +199,7 @@ MediaMTX is configured to allow only one publisher per stream path at a time. Ev
 
 </TabItem>
 </Tabs>
+
+Admin password sign-in requires a verified email address. Both `/login` and
+`/admin/login` share a limit of 10 attempts per email address per hour, preventing
+users from bypassing the limit by switching login pages.

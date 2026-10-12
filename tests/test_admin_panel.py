@@ -109,6 +109,66 @@ def _client():
 
 
 class TestAdminLogin:
+    @pytest.fixture(autouse=True)
+    def isolated_login_limits(self, monkeypatch):
+        import portal.rate_limit
+
+        monkeypatch.setattr(portal.rate_limit, "_rates", {})
+
+    @pytest.mark.anyio
+    async def test_login_rejects_unverified_admin(self):
+        from portal.database import create_user, get_session
+
+        async with get_session() as session:
+            await create_user(
+                session,
+                email="unverified@example.com",
+                display_name="Unverified admin",
+                password_hash=hash_password("test-admin-pass"),
+                is_admin=True,
+                email_verified=False,
+            )
+        async with _client() as client:
+            response = await client.post(
+                "/admin/login",
+                data={"email": "unverified@example.com", "password": "test-admin-pass"},
+                follow_redirects=False,
+            )
+        assert response.status_code == 403
+        assert "Please verify your email address first." in response.text
+        assert "user_token" not in response.cookies
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize("first_endpoint,second_endpoint", [("/login", "/admin/login"), ("/admin/login", "/login")])
+    async def test_login_endpoints_share_attempt_limit(self, first_endpoint, second_endpoint):
+        from portal.database import create_user, get_session
+
+        async with get_session() as session:
+            await create_user(
+                session,
+                email="limited@example.com",
+                display_name="Limited admin",
+                password_hash=hash_password("test-admin-pass"),
+                is_admin=True,
+                email_verified=True,
+            )
+        async with _client() as client:
+            for _ in range(10):
+                response = await client.post(
+                    first_endpoint,
+                    data={"email": "limited@example.com", "password": "wrong"},
+                    follow_redirects=False,
+                )
+                assert response.status_code == 403
+            response = await client.post(
+                second_endpoint,
+                data={"email": "LIMITED@example.com", "password": "test-admin-pass"},
+                follow_redirects=False,
+            )
+        assert response.status_code == 429
+        assert "Too many attempts." in response.text
+        assert "user_token" not in response.cookies
+
     @pytest.mark.anyio
     async def test_login_page_renders(self):
         async with _client() as c:
@@ -128,6 +188,7 @@ class TestAdminLogin:
                 email="admin@example.com",
                 display_name="Admin",
                 password_hash=hash_password("test-admin-pass"),
+                email_verified=True,
                 is_admin=True,
             )
 
@@ -155,6 +216,7 @@ class TestAdminLogin:
                 email="admin@example.com",
                 display_name="Admin",
                 password_hash=hash_password("test-admin-pass"),
+                email_verified=True,
                 is_admin=True,
             )
 
@@ -177,6 +239,7 @@ class TestAdminLogin:
                 email="regular@example.com",
                 display_name="Regular",
                 password_hash=hash_password("test-admin-pass"),
+                email_verified=True,
                 is_admin=False,
             )
 
@@ -225,6 +288,7 @@ class TestAdminLogin:
                 email="inactive-admin@example.com",
                 display_name="Inactive Admin",
                 password_hash=hash_password("test-admin-pass"),
+                email_verified=True,
                 is_admin=True,
             )
             await update_user_active(s, user.id, is_active=False)
@@ -267,6 +331,7 @@ class TestAdminLogin:
                 email="operator@example.com",
                 display_name="Operator",
                 password_hash=hash_password("operator-pass"),
+                email_verified=True,
                 is_admin=False,
             )
 
@@ -317,6 +382,7 @@ class TestAdminLogin:
                 email="spacey-admin@example.com",
                 display_name="Spacey Admin",
                 password_hash=hash_password(" padded-pass "),
+                email_verified=True,
                 is_admin=True,
             )
 
@@ -1413,9 +1479,7 @@ class TestAPIKeyCRUD:
             assert res.json() == []
 
             # Duplicate name is now allowed since the old one is revoked
-            res_remake = await c.post(
-                f"/workspace/api/events/{event_id}/api-keys", json={"name": "Integration Key"}
-            )
+            res_remake = await c.post(f"/workspace/api/events/{event_id}/api-keys", json={"name": "Integration Key"})
             assert res_remake.status_code == 200
             assert res_remake.json()["name"] == "Integration Key"
 

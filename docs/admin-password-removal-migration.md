@@ -6,7 +6,7 @@ site-wide administrator or has an event-owner or room-coordinator membership.
 
 ## Before rollout
 
-1. Back up the database and verify that at least two active administrator
+1. Back up the database and verify that at least two active, email-verified administrator
    accounts can sign in with their own email addresses and passwords. Do this
    while the current release is still running.
 2. Remove `ADMIN_PASSWORD` from `.env`, Docker/Compose overrides, CI secrets,
@@ -29,7 +29,7 @@ site-wide administrator or has an event-owner or room-coordinator membership.
 ## Break-glass recovery
 
 If every administrator loses access, use a controlled database-console session
-to promote an **existing active registered user**, then sign in normally. Record
+to promote an **existing active, email-verified registered user**, then sign in normally. Record
 the incident and remove the emergency privilege when it is no longer needed.
 
 For PostgreSQL:
@@ -47,3 +47,7 @@ UPDATE users SET is_admin = 1 WHERE email = 'operator@example.com';
 This is intentionally a database operation, not an environment-variable
 fallback: it is auditable through controlled database access and cannot be
 enabled accidentally by an old deployment secret.
+
+Admin sign-in requires email verification and shares the normal `/login` limit of
+10 attempts per email address per hour. Switching between login pages does not
+reset this limit. Complete email verification before promoting an account.
