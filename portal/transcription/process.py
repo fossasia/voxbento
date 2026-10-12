@@ -91,6 +91,7 @@ class FfmpegProcess:
         Terminate the process and all descendants on Windows using taskkill /T.
         Falls back to direct process termination if taskkill fails or times out.
         """
+        taskkill_succeeded = False
         try:
             cmd = ["taskkill", "/PID", str(self.process.pid), "/T"]
             if force:
@@ -107,6 +108,8 @@ class FfmpegProcess:
                         f"[{self.booth_id}] taskkill failed to tear down process tree "
                         f"(exit code {exit_code}); falling back to direct process termination"
                     )
+                else:
+                    taskkill_succeeded = True
             except TimeoutError:
                 logger.debug(f"[{self.booth_id}] taskkill timed out, killing taskkill process")
                 kill_proc.kill()
@@ -117,13 +120,14 @@ class FfmpegProcess:
             # The process may have exited and been reaped while taskkill ran, in which case
             # terminate()/kill() raise ProcessLookupError. That is the desired end state, so
             # treat it as success rather than letting it unwind the cleanup sequence.
-            try:
-                if force:
-                    self.process.kill()
-                else:
-                    self.process.terminate()
-            except ProcessLookupError:
-                logger.debug(f"[{self.booth_id}] ffmpeg process already exited before fallback termination")
+            if not taskkill_succeeded or force:
+                try:
+                    if force:
+                        self.process.kill()
+                    else:
+                        self.process.terminate()
+                except ProcessLookupError:
+                    logger.debug(f"[{self.booth_id}] ffmpeg process already exited before fallback termination")
 
     async def _perform_cleanup(self):
         if self.process.returncode is None:

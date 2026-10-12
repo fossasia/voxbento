@@ -274,3 +274,53 @@ class TestTranscriptionProviders:
             assert kwargs.get("log_prob_threshold") == -1.0
             assert kwargs.get("condition_on_previous_text") is False
             assert kwargs.get("vad_filter") is True
+
+    async def test_consecutive_errors_preserved_across_overload_protection(self):
+        class FailingProvider(TranscriptionProvider):
+            def __init__(self):
+                super().__init__()
+                self.calls = 0
+
+            async def process_chunk(self, chunk, language_code, model_variant, config, booth_state=None):
+                self.calls += 1
+                if booth_state and self.calls == 2:
+                    booth_state.consecutive_drops = 4
+                raise httpx.ReadTimeout("Timeout from provider")
+
+        provider = FailingProvider()
+        broadcast_messages = []
+
+        async def broadcast_callback(booth_id, msg):
+            broadcast_messages.append(msg)
+
+        mock_process = MagicMock()
+        mock_process.returncode = None
+        chunk_bytes = b"\x00" * (16000 * 2 * 3)
+
+        async def continuous_audio(n):
+            await asyncio.sleep(0.0001)
+            return chunk_bytes
+
+        mock_process.stdout = MagicMock()
+        mock_process.stdout.readexactly = AsyncMock(side_effect=continuous_audio)
+
+        real_sleep = asyncio.sleep
+
+        async def fast_sleep(delay, *args, **kwargs):
+            if delay >= 1:
+                return
+            await real_sleep(delay, *args, **kwargs)
+
+        with patch("asyncio.sleep", side_effect=fast_sleep):
+            await provider.run_stream(
+                process=mock_process,
+                language_code="en",
+                model_variant="test",
+                config=ProviderConfig(api_key="fake"),
+                broadcast_callback=broadcast_callback,
+                booth_id="test_overload_booth",
+            )
+
+        assert "[Server overloaded - transcription temporarily paused]" in broadcast_messages
+        assert "[Transcription provider failed. Check logs.]" in broadcast_messages
+

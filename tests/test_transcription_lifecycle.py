@@ -431,7 +431,7 @@ async def test_kill_windows_tree_invokes_taskkill():
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL,
         )
-        mock_proc.terminate.assert_called_once()
+        mock_proc.terminate.assert_not_called()
 
         # Forceful tree termination
         mock_exec.reset_mock()
@@ -557,11 +557,14 @@ async def test_kill_windows_tree_tolerates_already_exited_process():
     proc.kill = MagicMock(side_effect=ProcessLookupError())
     fp.process = proc
 
+    fake_fail_proc = MagicMock()
+    fake_fail_proc.wait = AsyncMock(return_value=1)
+
     with patch(
         "portal.transcription.process.asyncio.create_subprocess_exec",
-        new=AsyncMock(return_value=_fake_kill_proc()),
+        new=AsyncMock(return_value=fake_fail_proc),
     ):
-        # Must not raise, for both the graceful and the forced path.
+        # Must not raise, for both the graceful (on taskkill failure fallback) and the forced path.
         await fp._kill_windows_tree(force=False)
         await fp._kill_windows_tree(force=True)
 

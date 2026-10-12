@@ -145,7 +145,6 @@ class TranscriptionProvider:
                     await broadcast_callback(booth_id, "[Server overloaded - transcription temporarily paused]")
                     await asyncio.sleep(10)
                     booth_state.consecutive_drops = 0
-                    consecutive_errors = 0
                     continue
 
                 t0 = time.time()
