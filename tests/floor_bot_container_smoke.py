@@ -7,7 +7,9 @@ Run inside the container after its normal entrypoint has started:
 from __future__ import annotations
 
 import json
+import math
 import os
+import struct
 import subprocess
 import threading
 import time
@@ -18,6 +20,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 class AudioPageHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
+        """Serve a stable tone so decoding can prove the complete media path."""
         self.send_response(200)
         self.send_header("Content-Type", "text/html")
         self.end_headers()
@@ -33,6 +36,7 @@ context.resume();
 
 
 def bot_request(path: str, payload: dict | None = None) -> dict:
+    """Call the production bot HTTP API with a bounded network wait."""
     request = urllib.request.Request(
         "http://127.0.0.1:8080" + path,
         data=json.dumps(payload).encode() if payload is not None else None,
@@ -42,7 +46,50 @@ def bot_request(path: str, payload: dict | None = None) -> dict:
         return json.load(response)
 
 
+def assert_fixture_tone(audio: bytes) -> None:
+    """Require sustained 440 Hz energy, rejecting silence, spikes and other audio."""
+    samples = [sample[0] for sample in struct.iter_unpack("<h", audio)]
+    window_size = 4000  # 250 ms at the decoded 16 kHz sample rate
+    window_count = len(samples) // window_size
+    assert window_count >= 4, "RTSP did not deliver at least one second of decoded audio"
+    coefficient = 2 * math.cos(2 * math.pi * 440 / 16000)
+    tone_windows = 0
+    for start in range(0, window_count * window_size, window_size):
+        window = samples[start:start + window_size]
+        energy = sum(sample * sample for sample in window)
+        previous = previous_previous = 0.0
+        for sample in window:
+            current = sample + coefficient * previous - previous_previous
+            previous_previous, previous = previous, current
+        tone_energy = previous * previous + previous_previous * previous_previous - coefficient * previous * previous_previous
+        rms = math.sqrt(energy / window_size) / 32768
+        tone_fraction = 2 * tone_energy / (window_size * energy) if energy else 0
+        if rms >= 0.02 and tone_fraction >= 0.7:
+            tone_windows += 1
+    assert tone_windows >= math.ceil(0.75 * window_count), (
+        f"Expected sustained 440 Hz fixture tone; found it in {tone_windows}/{window_count} windows"
+    )
+
+
+def capture_published_audio(rtsp_url: str) -> bytes:
+    """Read the bot's production Opus/RTSP publisher rather than its local sink."""
+    deadline = time.monotonic() + 30
+    while True:
+        result = subprocess.run(  # nosec B603 B607
+            ["ffmpeg", "-v", "error", "-rtsp_transport", "tcp", "-i", rtsp_url,
+             "-t", "2", "-ac", "1", "-ar", "16000", "-f", "s16le", "pipe:1"],
+            capture_output=True, timeout=15,
+        )
+        if result.returncode == 0:
+            return result.stdout
+        if time.monotonic() >= deadline:
+            raise AssertionError("Production FFmpeg never published readable RTSP audio: "
+                                 + result.stderr.decode(errors="replace"))
+        time.sleep(0.5)
+
+
 def main() -> None:
+    """Verify real room startup, published audio and shutdown in the built image."""
     deadline = time.monotonic() + 60
     while True:
         try:
@@ -56,11 +103,12 @@ def main() -> None:
     fixture = HTTPServer(("127.0.0.1", 8090), AudioPageHandler)
     threading.Thread(target=fixture.serve_forever, daemon=True).start()
     room = {"event_slug": "ci-audio", "room_id": 1}
+    rtsp_base = os.environ.get("SMOKE_MEDIAMTX_RTSP_BASE", "rtsp://floor-bot-mtx:8554")
     try:
         result = bot_request("/start", {
             **room,
             "jitsi_url": "http://127.0.0.1:8090/",
-            "mediamtx_rtsp_base": "rtsp://127.0.0.1:1",
+            "mediamtx_rtsp_base": rtsp_base,
         })
         assert result["status"] == "started", result
         deadline = time.monotonic() + 45
@@ -73,16 +121,9 @@ def main() -> None:
                 raise TimeoutError(f"Chromium never reached the audio page: {status}")
             time.sleep(0.5)
 
-        # Capture the fixture tone from the actual browser's PulseAudio sink.
-        audio = subprocess.run(  # nosec B603 B607
-            ["ffmpeg", "-v", "error", "-f", "pulse", "-i", "sink_ci-audio_1.monitor",
-             "-t", "1", "-ac", "1", "-ar", "16000", "-f", "s16le", "pipe:1"],
-            env={**os.environ, "PULSE_SERVER": "unix:/tmp/pulse-ci-audio-1.sock"},
-            capture_output=True, check=True, timeout=10,
-        ).stdout
-        assert len(audio) >= 16000, "FFmpeg did not capture audio from PulseAudio"
-        assert any(audio), "Chromium produced only silence; floor audio capture is broken"
-        print("Floor-bot entrypoint, Chromium launch, PulseAudio and FFmpeg capture passed")
+        audio = capture_published_audio(f"{rtsp_base}/ci-audio/1/floor")
+        assert_fixture_tone(audio)
+        print("Floor-bot Chromium, PulseAudio, production Opus/RTSP publishing and tone verification passed")
     finally:
         try:
             bot_request("/stop", room)

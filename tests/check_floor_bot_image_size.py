@@ -23,6 +23,7 @@ MANIFEST_TYPES = ", ".join((
 
 
 def fetch_manifest(reference: str) -> dict:
+    """Resolve registry metadata without downloading browser image layers."""
     request = urllib.request.Request(
         f"{REGISTRY}/manifests/{reference}", headers={"Accept": MANIFEST_TYPES}
     )
@@ -31,6 +32,7 @@ def fetch_manifest(reference: str) -> dict:
 
 
 def compressed_size(manifest: dict) -> int:
+    """Validate and sum registry layer sizes for the pre-pull budget."""
     layers = manifest["layers"]
     if not layers or any(not isinstance(layer["size"], int) or layer["size"] < 0 for layer in layers):
         raise ValueError("Registry returned invalid layer sizes")
@@ -38,6 +40,7 @@ def compressed_size(manifest: dict) -> int:
 
 
 def main() -> None:
+    """Reject base images that exceed the production architecture's growth limit."""
     dockerfile = (Path(__file__).resolve().parents[1] / "floor-bot/Dockerfile").read_text()
     match = re.search(r"^FROM\s+mcr\.microsoft\.com/playwright/python:([^\s]+)", dockerfile, re.MULTILINE)
     if match is None:

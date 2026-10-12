@@ -62,7 +62,10 @@ jobs:
       - name: Start floor bot with its production entrypoint
         if: steps.changes.outputs.changed == 'true'
         run: |
-          docker run -d --name floor-bot-ci \
+          docker network create floor-bot-ci
+          docker run -d --name floor-bot-mtx --network floor-bot-ci \
+            bluenviron/mediamtx:1.18.2
+          docker run -d --name floor-bot-ci --network floor-bot-ci \
             -v "$PWD/tests/floor_bot_container_smoke.py:/tmp/floor_bot_container_smoke.py:ro" \
             voxbento-floor-bot-ci
 
@@ -72,11 +75,15 @@ jobs:
 
       - name: Dump floor-bot logs on failure
         if: failure()
-        run: docker logs floor-bot-ci || true
+        run: |
+          docker logs floor-bot-ci || true
+          docker logs floor-bot-mtx || true
 
       - name: Remove floor-bot smoke container
         if: always()
-        run: docker rm -f floor-bot-ci || true
+        run: |
+          docker rm -f floor-bot-ci floor-bot-mtx || true
+          docker network rm floor-bot-ci || true
 
   # ── 1. Unit tests + lint (fast, no Docker) ───────────────────
   unit-tests:

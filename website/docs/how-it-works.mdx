@@ -92,7 +92,10 @@ To transcribe or translate the original speakers without requiring external inte
 
 Floor-bot dependency upgrades are checked separately in CI: the Playwright SDK
 must match the bundled browser version, and the real container must launch
-Chromium and capture a local audio tone through PulseAudio and FFmpeg. CI also
+Chromium, publish a local audio tone through PulseAudio and the production FFmpeg
+Opus/RTSP command, and decode it from a local MediaMTX server. The check requires
+sustained energy at the fixture's 440 Hz frequency; brief startup noise cannot
+declare capture healthy. CI also
 checks a 900 MB compressed base-image budget for Linux amd64 before pulling
 layers. These checks cover browser and audio dependencies without an external
 Jitsi session; they do not validate a deployment host's available disk space.
