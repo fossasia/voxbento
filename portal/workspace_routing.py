@@ -34,7 +34,7 @@ _WORKSPACE_ROUTE_PATTERNS = (
         r"/workspace/events/\d+/rooms/\d+/booths/\d+/members"
         r"(?:/\d+/(?:invite|delete))?/?"
     ),
-    re.compile(r"/workspace/events/\d+/rooms/\d+/booths/\d+/tokens(?:/\d+/revoke)?/?"),
+    re.compile(r"/workspace/events/\d+/rooms/\d+/booths/\d+/tokens(?:/[0-9a-f]{64}/revoke)?/?"),
     re.compile(r"/workspace/api/events/\d+/api-keys(?:/\d+)?/?"),
     re.compile(r"/workspace/models/(?:trigger_download|download_progress)"),
     re.compile(r"/workspace/models/supertonic/(?:trigger_download|download_progress)"),
