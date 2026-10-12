@@ -49,6 +49,6 @@ This is intentionally a database operation, not an environment-variable
 fallback: it is auditable through controlled database access and cannot be
 enabled accidentally by an old deployment secret.
 
-Admin sign-in requires email verification and shares the normal `/login` limit of
-10 attempts per email address per hour. Switching between login pages does not
-reset this limit. Complete email verification before promoting an account.
+Admin sign-in requires email verification and uses the normal `/login` limit of
+10 attempts per email address per hour. Complete email verification before
+promoting an account.
