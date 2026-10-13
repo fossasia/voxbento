@@ -167,6 +167,11 @@ async def broadcast_transcription(booth_id: str, payload: str | dict):
 
 
 async def _handle_join(ws: WebSocket, session: Session, data: dict) -> None:
+    """Handle a client joining a booth session.
+
+    Validates client role and language parameters, initializes participant state,
+    and broadcasts state updates to listeners.
+    """
     display_name = data.get("display_name", "Interpreter")
     role = data.get("role", "interpreter")
     language = data.get("language") or session.language
@@ -306,9 +311,19 @@ async def _handle_update_state(ws: WebSocket, session: Session, data: dict) -> N
 
 
 async def _handle_set_broadcast_unlocked(ws: WebSocket, session: Session, data: dict) -> None:
+    """Handle setting broadcast lock state for a booth session.
+
+    Requires room coordinator or administrator privileges and a configured
+    session language.
+    """
     if session.granted_role not in ("room_coordinator", "event_owner", "super_admin"):
         await ws.send_text(
             json.dumps({"type": "booth:error", "message": "Only Room Coordinators can manage broadcast lock."})
+        )
+        return
+    if not session.language:
+        await ws.send_text(
+            json.dumps({"type": "booth:error", "message": "Language must be specified or configured for this booth."})
         )
         return
     unlocked = bool(data.get("unlocked"))

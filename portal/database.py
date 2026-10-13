@@ -980,6 +980,10 @@ async def get_booth_language_name(booth_id: str) -> str | None:
 
     try:
         event_slug, room_id, language_code = parse_booth_id(booth_id)
+    except ValueError:
+        return None
+
+    try:
         async with get_session() as db_session:
             stmt = (
                 select(DBBooth.language_name)
@@ -989,6 +993,7 @@ async def get_booth_language_name(booth_id: str) -> str | None:
             res = await db_session.scalar(stmt)
             if res:
                 return res
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning("Database error while resolving language for booth '%s': %s", booth_id, exc, exc_info=True)
+        return None
     return None

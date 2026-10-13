@@ -311,6 +311,15 @@ def test_ws_join_uses_db_booth_language_when_unspecified():
             assert joined["state"]["language"] == "Japanese"
 
 
+def test_ws_broadcast_unlock_rejected_when_language_unconfigured():
+    """Authorized coordinator cannot unlock broadcast if booth language is unconfigured."""
+    with client.websocket_connect("/ws/booth/unknown-unlock-booth", cookies=_ws_auth()) as ws:
+        ws.send_text(json.dumps({"type": "booth:set-broadcast-unlocked", "unlocked": True}))
+        msg = json.loads(ws.receive_text())
+        assert msg["type"] == "booth:error"
+        assert "Language must be specified or configured for this booth." in msg["message"]
+
+
 def test_ws_join_rejected_without_session():
     """WebSocket join must be rejected when no session cookie is present."""
     with client.websocket_connect("/ws/booth/no-session-booth") as ws:
