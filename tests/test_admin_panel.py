@@ -1069,12 +1069,15 @@ class TestEventCRUD:
         assert resp.headers["location"] == "/admin/events/?error=delete_failed"
 
         # Verify redirect page renders error message and event was not deleted
+        import re
+
         async with _client() as c:
             resp = await c.get("/admin/events/?error=delete_failed", cookies=admin_cookie)
         assert resp.status_code == 200
         assert b"Failed to delete event" in resp.content
         assert b"The event was not deleted." in resp.content
         assert b"testcon" in resp.content
+        assert not re.search(rb"\sstyle\s*=", resp.content, re.IGNORECASE)
 
 
 # ---------------------------------------------------------------------------
