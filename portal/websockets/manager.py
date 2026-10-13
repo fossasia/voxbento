@@ -16,7 +16,7 @@ from portal.globals import booths
 class Session:
     booth_id: str
     participant_id: str | None
-    language: str
+    language: str | None
     channel_id: str
     # Role derived from the bearer cookie at WS connection time — never from client data.
     granted_role: str | None = None
@@ -169,7 +169,12 @@ async def broadcast_transcription(booth_id: str, payload: str | dict):
 async def _handle_join(ws: WebSocket, session: Session, data: dict) -> None:
     display_name = data.get("display_name", "Interpreter")
     role = data.get("role", "interpreter")
-    language = data.get("language", session.language)
+    language = data.get("language") or session.language
+    if not language:
+        await ws.send_text(
+            json.dumps({"type": "booth:error", "message": "Language must be specified or configured for this booth."})
+        )
+        return
     channel_id = data.get("channel_id", f"{session.booth_id}-audio")
     participant_id = data.get("participant_id")
     if session.granted_role is None:
