@@ -153,7 +153,11 @@ function handleConnectionChange() {
 
 async function reconnect() {
   if (userStopped || reconnects >= MAX_RECONNECTS) {
-    if (!userStopped) setState('error', 'Lost the connection and could not reconnect. Start again when the network recovers.');
+    if (!userStopped) {
+      setState('error', 'Lost the connection and could not reconnect. Start again when the network recovers.');
+      // Give up: release the last minted session so the floor frees immediately.
+      await stop(true);
+    }
     return;
   }
   reconnects += 1;
