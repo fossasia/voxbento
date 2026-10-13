@@ -1,0 +1,47 @@
+name: Mark Stale Pull Requests
+
+# Run this workflow every single day at midnight UTC
+on:
+  schedule:
+    - cron: '0 0 * * *'
+  # Allows you to manually trigger it from the "Actions" tab for testing
+  workflow_dispatch:
+
+jobs:
+  stale:
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      pull-requests: write
+
+    steps:
+      - name: Close Inactive PRs and Issues
+        # Pin actions/stale v9.0.0 to its verified commit instead of a mutable tag.
+        uses: actions/stale@4391f3da665fdf50b6810c1a66712fb9ba21aa93
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          # --- TIMING CONFIGURATION ---
+          # Days of inactivity before adding a "stale" label (2 weeks)
+          days-before-stale: 14
+          # Days of inactivity *after* being labeled stale before closing (1 week)
+          days-before-close: 7
+
+          # --- TARGETING ---
+          # Only handle pull requests (set days-before-issue-stale to -1 to ignore issues)
+          days-before-issue-stale: -1 
+          stale-pr-label: 'stale'
+          
+          # --- MESSAGES ---
+          stale-pr-message: >
+            This pull request has been automatically marked as stale because it has not had 
+            any recent activity over the last 14 days. It will be closed in 7 days if no further 
+            activity occurs. Thank you for your contributions!
+          
+          close-pr-message: >
+            This pull request has been automatically closed due to inactivity. 
+            If you are still working on this or want to resume, feel free to leave a comment 
+            and a maintainer can reopen it.
+
+          # --- SAFETY EXCLUSIONS ---
+          # Never touch PRs that have these specific labels attached
+          exempt-pr-labels: 'pinned,security,confirmed,in-progress,wontfix'

@@ -11,6 +11,7 @@
     <script src="https://cdn.tailwindcss.com"></script>
 
     <!-- Custom CSS for animations and overrides -->
+    <link rel="stylesheet" href="{{ url_for('static', path='css/fonts.css') }}?v={{ js_version }}" />
     <link rel="stylesheet" href="{{ url_for('static', path='css/landing.css') }}?v={{ js_version }}" />
     <link rel="stylesheet" href="{{ url_for('static', path='css/home.css') }}?v={{ js_version }}" />
 
@@ -42,41 +43,71 @@
 
     <!-- Premium Navbar -->
     <header class="fixed top-0 w-full z-50 bg-[#eef2f6] border-b-[3px] border-[#0d0f10] transition-all duration-300" id="navbar">
-        <div class="max-w-7xl mx-auto px-4 md:px-6 h-16 flex items-center justify-between">
-            <a href="/" class="flex items-center gap-2 md:gap-3 flex-shrink-0">
-                <img src="{{ url_for('static', path='img/app_icon.png') }}" alt="VoxBento Icon" class="w-7 h-7 md:w-8 md:h-8 brutal-border rounded shadow-none">
-                <span class="text-lg md:text-[1.35rem] font-black tracking-tight text-[#0d0f10]">VoxBento</span>
-            </a>
-            <nav class="flex max-md:hidden items-center gap-8 text-sm font-bold text-[#0d0f10]">
-                <a href="#solutions"
-                    class="hover:text-brand-600 transition-colors uppercase tracking-wider">Solutions</a>
-                <a href="#interactive-demo"
-                    class="hover:text-brand-600 transition-colors uppercase tracking-wider">Demo</a>
-                <a href="#open-source" class="hover:text-brand-600 transition-colors uppercase tracking-wider">Open
-                    Source</a>
-            </nav>
-            <div class="flex items-center gap-1.5 sm:gap-3 md:gap-4 text-[10px] sm:text-xs md:text-sm font-bold flex-shrink-0">
-                <button onclick="openDemoModal()" class="brutal-btn brutal-btn-secondary brutal-btn-nav !bg-[#fbbf24] !border-[#0d0f10] hover:!bg-[#f59e0b] !px-2 sm:!px-2.5 !py-1 sm:!py-1.5 md:!px-5 md:!py-2 rounded-full whitespace-nowrap">
-                    <span class="max-sm:hidden">Request a demo</span>
-                    <span class="sm:hidden">Demo</span>
+        <div class="max-w-7xl mx-auto px-4 md:px-6 h-16 flex items-center justify-between gap-3 sm:gap-6">
+            <div class="flex items-center gap-4 lg:gap-8 xl:gap-10 min-w-0">
+                <a href="/" class="flex items-center gap-2 md:gap-3 flex-shrink-0">
+                    <img src="{{ url_for('static', path='img/app_icon.png') }}" alt="VoxBento Icon" class="w-7 h-7 md:w-8 md:h-8 brutal-border rounded shadow-none">
+                    <span class="text-lg md:text-[1.35rem] font-black tracking-tight text-[#0d0f10] whitespace-nowrap">VoxBento</span>
+                </a>
+                <nav class="hidden md:flex items-center gap-3 lg:gap-6 xl:gap-8 text-xs xl:text-sm font-bold text-[#0d0f10] whitespace-nowrap flex-shrink-0">
+                    <a href="#solutions"
+                        class="hover:text-brand-600 transition-colors uppercase tracking-wider whitespace-nowrap">Solutions</a>
+                    <a href="#interactive-demo"
+                        class="hover:text-brand-600 transition-colors uppercase tracking-wider whitespace-nowrap">Demo</a>
+                    <a href="#open-source" class="hover:text-brand-600 transition-colors uppercase tracking-wider whitespace-nowrap">Open Source</a>
+                    <a href="/local" class="hover:text-brand-600 transition-colors uppercase tracking-wider inline-flex items-center gap-1.5 whitespace-nowrap">
+                        <span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse flex-shrink-0"></span>
+                        <span>Local App</span>
+                    </a>
+                </nav>
+            </div>
+            <div class="flex items-center gap-1.5 sm:gap-2.5 md:gap-3 text-[10px] sm:text-xs md:text-sm font-bold flex-shrink-0">
+                {% if not current_user %}
+                <button onclick="openDemoModal()" class="brutal-btn brutal-btn-secondary brutal-btn-nav !bg-[#fbbf24] !border-[#0d0f10] hover:!bg-[#f59e0b] !px-2.5 sm:!px-3 !py-1 sm:!py-1.5 md:!px-4 md:!py-2 rounded-full whitespace-nowrap !hidden lg:!inline-flex">
+                    <span>Request a demo</span>
                 </button>
-                {% if current_user %}
-                <a href="/developer" class="brutal-btn brutal-btn-outline brutal-btn-nav max-md:hidden !px-2.5 !py-1.5 md:!px-5 md:!py-2 whitespace-nowrap">Developer</a>
-                <a href="/account" class="brutal-btn brutal-btn-outline brutal-btn-nav !px-2 sm:!px-2.5 !py-1 sm:!py-1.5 md:!px-5 md:!py-2 max-sm:hidden whitespace-nowrap">Account</a>
-                <a href="/admin/events/" class="brutal-btn brutal-btn-primary brutal-btn-nav !px-2 sm:!px-2.5 !py-1 sm:!py-1.5 md:!px-5 md:!py-2 whitespace-nowrap">
+                <a href="/login" class="brutal-btn brutal-btn-primary brutal-btn-nav !px-2.5 sm:!px-3 !py-1 sm:!py-1.5 md:!px-4 md:!py-2 whitespace-nowrap">Sign in</a>
+                {% else %}
+                <a href="/developer" class="brutal-btn brutal-btn-outline brutal-btn-nav !hidden xl:!inline-flex !px-2.5 !py-1.5 md:!px-4 md:!py-2 whitespace-nowrap">Developer</a>
+                {% if management_home != "/account" %}
+                <a href="/account" class="brutal-btn brutal-btn-outline brutal-btn-nav !hidden lg:!inline-flex !px-2.5 !py-1.5 md:!px-4 md:!py-2 whitespace-nowrap">Account</a>
+                <a href="{{ management_home }}" class="brutal-btn brutal-btn-primary brutal-btn-nav !px-2.5 sm:!px-3 !py-1 sm:!py-1.5 md:!px-4 md:!py-2 whitespace-nowrap">
                     <span class="max-sm:hidden">Dashboard</span>
                     <span class="sm:hidden">Dash</span>
                 </a>
-                <a href="/logout" class="brutal-btn brutal-btn-outline brutal-btn-nav !px-2 sm:!px-2.5 !py-1 sm:!py-1.5 md:!px-5 md:!py-2 whitespace-nowrap">
+                {% else %}
+                <a href="/account" class="brutal-btn brutal-btn-primary brutal-btn-nav !px-2.5 sm:!px-3 !py-1 sm:!py-1.5 md:!px-4 md:!py-2 whitespace-nowrap">Account</a>
+                {% endif %}
+                <a href="/logout" class="brutal-btn brutal-btn-outline brutal-btn-nav !px-2 sm:!px-2.5 !py-1 sm:!py-1.5 md:!px-3 md:!py-2 whitespace-nowrap">
                     <span class="max-sm:hidden">Logout</span>
                     <span class="sm:hidden">Exit</span>
                 </a>
-                {% else %}
-                <a href="/login" class="brutal-btn brutal-btn-primary brutal-btn-nav !px-2 sm:!px-2.5 !py-1 sm:!py-1.5 md:!px-5 md:!py-2 whitespace-nowrap">
-                    <span class="max-sm:hidden">Sign In</span>
-                    <span class="sm:hidden">Login</span>
+                {% endif %}
+                <button id="mobile-menu-btn" type="button" class="md:!hidden brutal-btn brutal-btn-outline !p-1.5 sm:!p-2 !inline-flex items-center justify-center text-[#0d0f10]" aria-label="Toggle navigation menu" aria-expanded="false">
+                    <svg id="menu-icon-open" class="w-4 h-4 sm:w-5 sm:h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M4 6h16M4 12h16M4 18h16"></path></svg>
+                    <svg id="menu-icon-close" class="w-4 h-4 sm:w-5 sm:h-5 !hidden" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12"></path></svg>
+                </button>
+            </div>
+        </div>
+        <!-- Mobile Dropdown Menu -->
+        <div id="mobile-menu" class="hidden md:hidden border-t-[3px] border-[#0d0f10] bg-[#eef2f6] px-5 py-4 space-y-3 font-bold text-xs sm:text-sm shadow-[0_4px_0_#0d0f10]">
+            <div class="flex flex-col space-y-2">
+                <a href="#solutions" class="mobile-nav-link hover:text-brand-600 transition-colors uppercase tracking-wider py-1">Solutions</a>
+                <a href="#interactive-demo" class="mobile-nav-link hover:text-brand-600 transition-colors uppercase tracking-wider py-1">Demo</a>
+                <a href="#open-source" class="mobile-nav-link hover:text-brand-600 transition-colors uppercase tracking-wider py-1">Open Source</a>
+                <a href="/local" class="mobile-nav-link hover:text-brand-600 transition-colors uppercase tracking-wider inline-flex items-center gap-1.5 py-1">
+                    <span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                    <span>Local App</span>
                 </a>
-                <a href="/register" class="brutal-btn brutal-btn-outline brutal-btn-nav !px-2 sm:!px-2.5 !py-1 sm:!py-1.5 md:!px-5 md:!py-2 max-sm:hidden whitespace-nowrap">Register</a>
+            </div>
+            <div class="pt-2 border-t-2 border-zinc-300 flex flex-col gap-2">
+                {% if current_user %}
+                <a href="/account" class="brutal-btn brutal-btn-outline text-center py-2 text-xs uppercase tracking-wider font-bold">Account</a>
+                <a href="/developer" class="brutal-btn brutal-btn-outline text-center py-2 text-xs uppercase tracking-wider font-bold">Developer</a>
+                {% else %}
+                <button onclick="openDemoModal(); closeMobileMenu();" class="brutal-btn brutal-btn-secondary !bg-[#fbbf24] !border-[#0d0f10] text-center py-2 text-xs uppercase tracking-wider font-bold">
+                    Request a demo
+                </button>
                 {% endif %}
             </div>
         </div>
@@ -89,6 +120,11 @@
             class="relative max-w-7xl mx-auto px-6 pt-12 pb-24 lg:pt-20 lg:pb-32 flex flex-col lg:flex-row items-center gap-12 animate-fade-in-up">
             <!-- Left Text -->
             <div class="flex-1 text-center lg:text-left z-10">
+                <div class="mb-6 inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full border-2 border-[#0d0f10] bg-white shadow-[2px_2px_0px_#0d0f10] text-xs font-bold text-[#0d0f10]">
+                    <span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
+                    <span>NEW: VoxBento Local for macOS, Windows & Linux</span>
+                    <a href="/local" class="text-brand-600 hover:underline flex items-center gap-0.5 font-extrabold ml-1">Download &rarr;</a>
+                </div>
                 <h1
                     class="text-[2.75rem] md:text-6xl lg:text-7xl font-extrabold tracking-tight text-[#0d0f10] mb-8 leading-[1.1] flex flex-col items-center lg:items-start text-center lg:text-left w-full">
                     <div class="relative w-full text-[#2563eb]">
@@ -113,9 +149,13 @@
                     single platform.
                 </p>
                 <div class="flex flex-col sm:flex-row items-center gap-4 justify-center lg:justify-start">
-                    <a href="{% if current_user %}/admin/events/{% else %}/register{% endif %}"
+                    <a href="{% if current_user %}{{ management_home }}{% else %}/register{% endif %}"
                         class="brutal-btn brutal-btn-primary w-full sm:w-auto text-center">
                         Start Hosting Free
+                    </a>
+                    <a href="/local" class="brutal-btn brutal-btn-secondary w-full sm:w-auto text-center flex items-center justify-center gap-2 !bg-[#fbbf24] !text-[#0d0f10]">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
+                        Download Desktop App
                     </a>
                     <a href="#interactive-demo" class="brutal-btn brutal-btn-outline w-full sm:w-auto text-center">
                         View Interactive Demo
@@ -128,7 +168,7 @@
                 <div class="relative w-full aspect-[4/3]">
                     <div class="absolute inset-0 rounded-lg brutal-border brutal-shadow overflow-hidden bg-slate-900">
                         <img src="https://images.unsplash.com/photo-1541829070764-84a7d30dd3f3?q=80&w=1200&auto=format&fit=crop"
-                            alt="Conference" class="w-full h-full object-cover opacity-90">
+                            alt="Empty lecture hall with rows of wooden desks and seats" class="w-full h-full object-cover opacity-90">
                         <div class="absolute inset-0 bg-slate-900 opacity-10"></div>
                     </div>
 
@@ -200,146 +240,6 @@
             </div>
         </section>
 
-        <!-- Dynamic User/Event Dashboard Injections -->
-        {% if my_booths or events %}
-        <section class="max-w-7xl mx-auto px-6 py-16 mb-24 relative z-20">
-            <div class="mb-12 border-b-2 border-[#0d0f10] pb-6 flex items-end justify-between">
-                <div>
-                    <h2 class="text-3xl font-extrabold text-[#0d0f10] tracking-tight">Live Dashboard</h2>
-                    <p class="text-[#0d0f10] opacity-70 text-base font-bold mt-2">Access your active events and
-                        interpretation booths.</p>
-                </div>
-            </div>
-
-            <div class="flex flex-col gap-16">
-                {% if my_booths %}
-                <div>
-                    <h3 class="text-xl font-extrabold text-[#0d0f10] mb-6 flex items-center gap-3">
-                        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="square" stroke-linejoin="miter" stroke-width="2"
-                                d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10">
-                            </path>
-                        </svg>
-                        Your Assigned Booths
-                    </h3>
-                    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                        {% for b in my_booths %}
-                        <div
-                            class="group bg-white border-2 border-[#0d0f10] p-6 hover:shadow-[8px_8px_0px_#0d0f10] hover:-translate-y-1 transition-all flex flex-col justify-between min-h-[160px]">
-                            <div class="flex justify-between items-start mb-6">
-                                <div>
-                                    <h4 class="font-extrabold text-[#0d0f10] text-lg">{{ b.language_name }}</h4>
-                                    <p class="text-sm font-bold text-[#0d0f10] opacity-60 mt-1">{{ b.event_name }}</p>
-                                    <p class="text-xs font-bold text-[#2563eb] mt-0.5">{{ b.room_name }}</p>
-                                </div>
-                                {% if b.is_live %}
-                                <span
-                                    class="bg-red-600 text-white text-[10px] font-extrabold px-2 py-1 uppercase tracking-widest flex items-center gap-1.5"><span
-                                        class="w-1.5 h-1.5 bg-white rounded-full animate-pulse"></span> LIVE</span>
-                                {% endif %}
-                            </div>
-                            <div
-                                class="flex justify-between items-end mt-auto pt-4 border-t-2 border-[#0d0f10]/10 group-hover:border-[#0d0f10]/30 transition-colors">
-                                <span
-                                    class="text-[10px] font-extrabold text-[#0d0f10] opacity-60 uppercase tracking-widest">{{
-                                    b.membership.role.replace('_', ' ') }}</span>
-                                {% if b.membership.role in ['room_coordinator', 'event_owner', 'super_admin'] %}
-                                <a href="/mission-control/{{ b.event_slug }}/"
-                                    class="text-[#2563eb] text-sm font-extrabold hover:text-[#1d4ed8] inline-flex items-center gap-1">Mission
-                                    Control <svg class="w-4 h-4 group-hover:translate-x-1 transition-transform"
-                                        fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path stroke-linecap="square" stroke-linejoin="miter" stroke-width="2"
-                                            d="M14 5l7 7m0 0l-7 7m7-7H3"></path>
-                                    </svg></a>
-                                {% else %}
-                                <a href="/interpreter"
-                                    class="text-[#2563eb] text-sm font-extrabold hover:text-[#1d4ed8] inline-flex items-center gap-1">Go
-                                    to Lobby <svg class="w-4 h-4 group-hover:translate-x-1 transition-transform"
-                                        fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path stroke-linecap="square" stroke-linejoin="miter" stroke-width="2"
-                                            d="M14 5l7 7m0 0l-7 7m7-7H3"></path>
-                                    </svg></a>
-                                {% endif %}
-                            </div>
-                        </div>
-                        {% endfor %}
-                    </div>
-                </div>
-                {% endif %}
-
-                {% if events %}
-                <div>
-                    <h3 class="text-xl font-extrabold text-[#0d0f10] mb-6 flex items-center gap-3">
-                        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="square" stroke-linejoin="miter" stroke-width="2"
-                                d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 019-9">
-                            </path>
-                        </svg>
-                        Public Events
-                    </h3>
-                    <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
-                        {% for ed in events %}
-                        <div class="bg-white border-2 border-[#0d0f10] flex flex-col">
-                            <div
-                                class="p-6 border-b-2 border-[#0d0f10] flex justify-between items-center bg-[#2563eb] text-white">
-                                <h4 class="font-extrabold text-lg">{{ ed.event.display_name }}</h4>
-                                {% if ed.live_count > 0 %}
-                                <span
-                                    class="bg-green-500 text-[#0d0f10] text-[10px] font-extrabold px-2 py-1 uppercase tracking-widest shadow-[2px_2px_0px_#fff]">
-                                    {{ ed.live_count }} LIVE
-                                </span>
-                                {% endif %}
-                            </div>
-                            <div class="p-6 flex-1 flex flex-col">
-                                {% if ed.rooms %}
-                                <div class="space-y-5 mb-8 flex-1">
-                                    {% for room in ed.rooms %}
-                                    <div>
-                                        <p class="text-[10px] font-extrabold uppercase tracking-widest text-[#0d0f10] opacity-50 mb-2 flex items-center gap-1.5">
-                                            <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="square" stroke-linejoin="miter" stroke-width="2" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"></path></svg>
-                                            {{ room.room_name }}
-                                        </p>
-                                        <div class="space-y-2 pl-2 border-l-2 border-[#0d0f10]/10">
-                                            {% for bs in room.booths %}
-                                            <div class="flex items-center justify-between group">
-                                                <div class="flex items-center gap-3">
-                                                    {% if bs.is_live %}
-                                                    <span class="w-2.5 h-2.5 bg-red-500 rounded-full animate-pulse"></span>
-                                                    {% else %}
-                                                    <span class="w-2.5 h-2.5 bg-[#0d0f10] opacity-20 rounded-full"></span>
-                                                    {% endif %}
-                                                    <span class="font-extrabold text-[#0d0f10]">{{ bs.db.language_name }}</span>
-                                                </div>
-                                                {% if bs.can_interpret %}
-                                                <a href="/interpreter"
-                                                    class="text-[#2563eb] hover:text-[#1d4ed8] font-extrabold text-xs uppercase tracking-widest opacity-0 group-hover:opacity-100 transition-opacity focus:opacity-100">Enter
-                                                    Lobby &rarr;</a>
-                                                {% endif %}
-                                            </div>
-                                            {% endfor %}
-                                        </div>
-                                    </div>
-                                    {% endfor %}
-                                </div>
-                                <a href="/listener/{{ ed.event.slug }}"
-                                    class="brutal-btn w-full text-center bg-[#eef2f6] text-[#0d0f10] hover:bg-[#2563eb] hover:text-white transition-colors border-2 border-[#0d0f10] py-3 text-sm">Listen
-                                    as Attendee</a>
-                                {% else %}
-                                <div class="flex-1 flex items-center justify-center opacity-40 py-8">
-                                    <p class="text-sm font-extrabold uppercase tracking-widest italic">No booths
-                                        configured</p>
-                                </div>
-                                {% endif %}
-                            </div>
-                        </div>
-                        {% endfor %}
-                    </div>
-                </div>
-                {% endif %}
-            </div>
-        </section>
-        {% endif %}
-
         <!-- Solutions Section -->
         <section id="solutions" class="py-24 bg-white relative z-10 border-t-[3px] border-[#0d0f10]">
             <div class="max-w-7xl mx-auto px-6">
@@ -375,7 +275,7 @@
                                     <div class="circle circle-1"></div>
                                     <div class="circle circle-2"></div>
                                     <img src="https://images.unsplash.com/photo-1540575467063-178a50c2df87?q=80&w=800&auto=format&fit=crop"
-                                        class="img-bg" alt="Human Interpretation">
+                                        class="img-bg" alt="Audience seated in a dark auditorium, watching a talk">
                                     <div class="front-content">
                                         <div class="badge">Professional</div>
                                         <div class="description">
@@ -412,7 +312,7 @@
                                     <div class="circle circle-1"></div>
                                     <div class="circle circle-2"></div>
                                     <img src="https://images.unsplash.com/photo-1516321318423-f06f85e504b3?q=80&w=800&auto=format&fit=crop"
-                                        class="img-bg" alt="AI Speech Translation">
+                                        class="img-bg" alt="Two people pointing at a laptop screen">
                                     <div class="front-content">
                                         <div class="badge">Automated</div>
                                         <div class="description">
@@ -449,7 +349,7 @@
                                     <div class="circle circle-1"></div>
                                     <div class="circle circle-2"></div>
                                     <img src="https://images.unsplash.com/photo-1551818255-e6e10975bc17?q=80&w=800&auto=format&fit=crop"
-                                        class="img-bg" alt="Live Captions">
+                                        class="img-bg" alt="Large audience filling a conference hall in front of a stage">
                                     <div class="front-content">
                                         <div class="badge">Accessible</div>
                                         <div class="description">
@@ -486,7 +386,7 @@
                                     <div class="circle circle-1"></div>
                                     <div class="circle circle-2"></div>
                                     <img src="https://images.unsplash.com/photo-1598488035139-bdbb2231ce04?q=80&w=800&auto=format&fit=crop"
-                                        class="img-bg" alt="Media Routing">
+                                        class="img-bg" alt="Audio studio with a mixing console, monitors and racks of equipment">
                                     <div class="front-content">
                                         <div class="badge">Infrastructure</div>
                                         <div class="description">
@@ -504,99 +404,8 @@
             </div>
         </section>
 
-        <!-- Enterprise-Ready Section -->
-        <section class="py-24 bg-[#eef2f6]">
-            <div class="max-w-7xl mx-auto px-6">
-                <div class="text-center md:text-left mb-16 md:mb-0">
-                    <h2 class="text-4xl md:text-5xl font-extrabold text-[#0d0f10] md:max-w-2xl mx-auto md:mx-0">
-                        Enterprise-Ready for Every Event Format</h2>
-                </div>
-                <div class="grid grid-cols-1 lg:grid-cols-5 gap-12 items-start mt-12">
-                    <!-- Left: Floating Image / Graphic (Spans 2 cols) -->
-                    <div class="lg:col-span-2 sticky top-32 max-md:hidden">
-                        <div
-                            class="relative rounded-lg overflow-hidden aspect-[4/5] brutal-border brutal-shadow">
-                            <img src="https://images.unsplash.com/photo-1505373877841-8d25f7d46678?q=80&w=1000&auto=format&fit=crop"
-                                class="w-full h-full object-cover" alt="Speaker">
-                            <div class="absolute top-8 right-8 text-white/50">
-                                <svg class="w-16 h-16" fill="currentColor" viewBox="0 0 24 24">
-                                    <path
-                                        d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 15h-2v-2h2v2zm0-4h-2V7h2v6z" />
-                                </svg>
-                            </div>
-                        </div>
-                    </div>
-
-                    <!-- Right: Text Blocks (Spans 3 cols) -->
-                    <div class="lg:col-span-3">
-                        <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
-                            <!-- Format 1 -->
-                            <div
-                                class="bg-white rounded-lg p-8 hover:-translate-y-1 hover:shadow-[10px_10px_0px_#0d0f10] transition-all brutal-border brutal-shadow">
-                                <h3 class="text-2xl font-bold text-[#0d0f10] mb-4">In-Person Events</h3>
-                                <p class="text-[#0d0f10] opacity-80 mb-8 leading-relaxed font-bold">Enhance your
-                                    in-person multilingual event experience with simultaneous interpretation, live
-                                    speech translation and captions integrated into your AV setup.</p>
-                                <a href="#"
-                                    class="text-[#2563eb] font-extrabold text-sm uppercase tracking-widest flex items-center gap-2 hover:text-[#1d4ed8] transition-colors underline decoration-2 underline-offset-2">Explore
-                                    More <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="3"
-                                            d="M14 5l7 7m0 0l-7 7m7-7H3"></path>
-                                    </svg></a>
-                            </div>
-
-                            <!-- Format 2 -->
-                            <div
-                                class="bg-white rounded-lg p-8 hover:-translate-y-1 hover:shadow-[10px_10px_0px_#0d0f10] transition-all brutal-border brutal-shadow">
-                                <h3 class="text-2xl font-bold text-[#0d0f10] mb-4">Online Meetings & Events</h3>
-                                <p class="text-[#0d0f10] opacity-80 mb-8 leading-relaxed font-bold">Host high-quality
-                                    meetings in multiple languages with our enterprise-grade technology that can
-                                    integrate with any meeting platform.</p>
-                                <a href="#"
-                                    class="text-[#2563eb] font-extrabold text-sm uppercase tracking-widest flex items-center gap-2 hover:text-[#1d4ed8] transition-colors underline decoration-2 underline-offset-2">Explore
-                                    More <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="3"
-                                            d="M14 5l7 7m0 0l-7 7m7-7H3"></path>
-                                    </svg></a>
-                            </div>
-
-                            <!-- Format 3 -->
-                            <div
-                                class="bg-white rounded-lg p-8 hover:-translate-y-1 hover:shadow-[10px_10px_0px_#0d0f10] transition-all brutal-border brutal-shadow">
-                                <h3 class="text-2xl font-bold text-[#0d0f10] mb-4">Hybrid Events</h3>
-                                <p class="text-[#0d0f10] opacity-80 mb-8 leading-relaxed font-bold">Bring on-site and
-                                    remote participants together with enterprise-level live translation and
-                                    interpretation technology, supported end-to-end.</p>
-                                <a href="#"
-                                    class="text-[#2563eb] font-extrabold text-sm uppercase tracking-widest flex items-center gap-2 hover:text-[#1d4ed8] transition-colors underline decoration-2 underline-offset-2">Explore
-                                    More <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="3"
-                                            d="M14 5l7 7m0 0l-7 7m7-7H3"></path>
-                                    </svg></a>
-                            </div>
-
-                            <!-- Format 4 -->
-                            <div
-                                class="bg-white rounded-lg p-8 hover:-translate-y-1 hover:shadow-[10px_10px_0px_#0d0f10] transition-all brutal-border brutal-shadow">
-                                <h3 class="text-2xl font-bold text-[#0d0f10] mb-4">Broadcasting</h3>
-                                <p class="text-[#0d0f10] opacity-80 mb-8 leading-relaxed font-bold">Make your live
-                                    broadcasts easy to follow in any language. We add real-time interpretation and
-                                    captions, so everyone stays connected.</p>
-                                <a href="#"
-                                    class="text-[#2563eb] font-extrabold text-sm uppercase tracking-widest flex items-center gap-2 hover:text-[#1d4ed8] transition-colors underline decoration-2 underline-offset-2">Explore
-                                    More <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="3"
-                                            d="M14 5l7 7m0 0l-7 7m7-7H3"></path>
-                                    </svg></a>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </section>
-
         <!-- Interactive Demo Section -->
-        <section id="interactive-demo" class="py-24 bg-white border-t border-slate-200">
+        <section id="interactive-demo" class="py-24 bg-white border-t-[3px] border-[#0d0f10]">
             <div class="max-w-4xl mx-auto px-6">
                 <div class="text-center mb-14">
                     <h2 class="text-5xl font-extrabold text-brand-600 mb-6">VoxBento Demo</h2>
@@ -616,24 +425,18 @@
                         <div class="md:hidden relative mx-auto w-full max-w-[280px] sm:max-w-[320px]">
                             <div
                                 class="bg-slate-900 rounded-[2.5rem] p-2 shadow-2xl border-[8px] border-slate-800 flex flex-col">
-                                <div class="bg-slate-800 w-full rounded-[1.5rem] overflow-hidden"
-                                    style="aspect-ratio:9/19;">
+                                <div class="bg-slate-800 w-full rounded-[1.5rem] overflow-hidden demo-phone-screen">
                                     <div class="w-full h-full flex flex-col items-center justify-center gap-3">
-                                        <div class="flex items-end gap-1 h-8">
-                                            <div class="w-1.5 bg-brand-500 rounded-full"
-                                                style="height:10px;animation:demoWave 0.5s ease-in-out infinite alternate;">
+                                        <div class="flex items-end gap-1 h-8 demo-wave demo-wave--loading-phone">
+                                            <div class="w-1.5 bg-brand-500 rounded-full">
                                             </div>
-                                            <div class="w-1.5 bg-brand-500 rounded-full"
-                                                style="height:18px;animation:demoWave 0.6s ease-in-out infinite alternate;animation-delay:0.1s;">
+                                            <div class="w-1.5 bg-brand-500 rounded-full">
                                             </div>
-                                            <div class="w-1.5 bg-brand-500 rounded-full"
-                                                style="height:24px;animation:demoWave 0.55s ease-in-out infinite alternate;animation-delay:0.2s;">
+                                            <div class="w-1.5 bg-brand-500 rounded-full">
                                             </div>
-                                            <div class="w-1.5 bg-brand-500 rounded-full"
-                                                style="height:14px;animation:demoWave 0.7s ease-in-out infinite alternate;animation-delay:0.3s;">
+                                            <div class="w-1.5 bg-brand-500 rounded-full">
                                             </div>
-                                            <div class="w-1.5 bg-brand-500 rounded-full"
-                                                style="height:20px;animation:demoWave 0.5s ease-in-out infinite alternate;animation-delay:0.4s;">
+                                            <div class="w-1.5 bg-brand-500 rounded-full">
                                             </div>
                                         </div>
                                         <p class="text-white/50 text-xs font-medium px-4 text-center">Generating
@@ -652,39 +455,28 @@
                                 class="bg-black rounded-[1.5rem] p-3 pb-4 shadow-2xl ring-1 ring-white/20 flex flex-col">
                                 <div
                                     class="bg-slate-800 w-full aspect-video rounded-xl flex flex-col items-center justify-center gap-4">
-                                    <div class="flex items-end gap-1 h-10">
-                                        <div class="w-1.5 bg-brand-500 rounded-full"
-                                            style="height:14px;animation:demoWave 0.5s ease-in-out infinite alternate;">
+                                    <div class="flex items-end gap-1 h-10 demo-wave demo-wave--loading-laptop">
+                                        <div class="w-1.5 bg-brand-500 rounded-full">
                                         </div>
-                                        <div class="w-1.5 bg-brand-500 rounded-full"
-                                            style="height:22px;animation:demoWave 0.6s ease-in-out infinite alternate;animation-delay:0.05s;">
+                                        <div class="w-1.5 bg-brand-500 rounded-full">
                                         </div>
-                                        <div class="w-1.5 bg-brand-500 rounded-full"
-                                            style="height:18px;animation:demoWave 0.55s ease-in-out infinite alternate;animation-delay:0.1s;">
+                                        <div class="w-1.5 bg-brand-500 rounded-full">
                                         </div>
-                                        <div class="w-1.5 bg-brand-500 rounded-full"
-                                            style="height:28px;animation:demoWave 0.7s ease-in-out infinite alternate;animation-delay:0.15s;">
+                                        <div class="w-1.5 bg-brand-500 rounded-full">
                                         </div>
-                                        <div class="w-1.5 bg-brand-500 rounded-full"
-                                            style="height:12px;animation:demoWave 0.5s ease-in-out infinite alternate;animation-delay:0.2s;">
+                                        <div class="w-1.5 bg-brand-500 rounded-full">
                                         </div>
-                                        <div class="w-1.5 bg-brand-500 rounded-full"
-                                            style="height:20px;animation:demoWave 0.65s ease-in-out infinite alternate;animation-delay:0.25s;">
+                                        <div class="w-1.5 bg-brand-500 rounded-full">
                                         </div>
-                                        <div class="w-1.5 bg-brand-500 rounded-full"
-                                            style="height:30px;animation:demoWave 0.6s ease-in-out infinite alternate;animation-delay:0.3s;">
+                                        <div class="w-1.5 bg-brand-500 rounded-full">
                                         </div>
-                                        <div class="w-1.5 bg-brand-500 rounded-full"
-                                            style="height:16px;animation:demoWave 0.5s ease-in-out infinite alternate;animation-delay:0.35s;">
+                                        <div class="w-1.5 bg-brand-500 rounded-full">
                                         </div>
-                                        <div class="w-1.5 bg-brand-500 rounded-full"
-                                            style="height:24px;animation:demoWave 0.7s ease-in-out infinite alternate;animation-delay:0.4s;">
+                                        <div class="w-1.5 bg-brand-500 rounded-full">
                                         </div>
-                                        <div class="w-1.5 bg-brand-500 rounded-full"
-                                            style="height:10px;animation:demoWave 0.55s ease-in-out infinite alternate;animation-delay:0.45s;">
+                                        <div class="w-1.5 bg-brand-500 rounded-full">
                                         </div>
-                                        <div class="w-1.5 bg-brand-500 rounded-full"
-                                            style="height:26px;animation:demoWave 0.6s ease-in-out infinite alternate;animation-delay:0.5s;">
+                                        <div class="w-1.5 bg-brand-500 rounded-full">
                                         </div>
                                     </div>
                                     <p class="text-white/60 text-sm font-medium">Generating demo audio&hellip;</p>
@@ -724,10 +516,9 @@
                                     class="absolute top-0 left-1/2 -translate-x-1/2 w-32 h-6 bg-slate-800 rounded-b-xl z-20 flex justify-center items-end pb-1.5">
                                     <div class="w-12 h-1 bg-slate-900 rounded-full"></div>
                                 </div>
-                                <div class="bg-black w-full rounded-[1.5rem] relative overflow-hidden flex flex-col border border-white/5"
-                                    style="aspect-ratio:9/19;">
+                                <div class="bg-black w-full rounded-[1.5rem] relative overflow-hidden flex flex-col border border-white/5 demo-phone-screen">
                                     <img src="https://images.unsplash.com/photo-1540575467063-178a50c2df87?q=80&w=800&auto=format&fit=crop"
-                                        class="absolute inset-0 w-full h-full object-cover opacity-30" alt="Conference">
+                                        class="absolute inset-0 w-full h-full object-cover opacity-30" alt="">
                                     <div class="absolute top-4 left-4 z-20">
                                         <span
                                             class="bg-red-600 text-white text-[10px] font-extrabold px-2 py-0.5 rounded-full uppercase tracking-widest flex items-center gap-1">
@@ -736,21 +527,16 @@
                                     </div>
                                     <div id="demo-waveform-mobile"
                                         class="absolute inset-0 flex items-center justify-center z-10 pointer-events-none opacity-0 transition-opacity duration-500">
-                                        <div class="flex items-end gap-1 h-8">
-                                            <div class="w-1 bg-brand-500 rounded-full"
-                                                style="height:8px;animation:demoWave 0.5s ease-in-out infinite alternate;">
+                                        <div class="flex items-end gap-1 h-8 demo-wave demo-wave--phone">
+                                            <div class="w-1 bg-brand-500 rounded-full">
                                             </div>
-                                            <div class="w-1 bg-brand-500 rounded-full"
-                                                style="height:16px;animation:demoWave 0.6s ease-in-out infinite alternate;animation-delay:0.08s;">
+                                            <div class="w-1 bg-brand-500 rounded-full">
                                             </div>
-                                            <div class="w-1 bg-brand-500 rounded-full"
-                                                style="height:20px;animation:demoWave 0.55s ease-in-out infinite alternate;animation-delay:0.16s;">
+                                            <div class="w-1 bg-brand-500 rounded-full">
                                             </div>
-                                            <div class="w-1 bg-brand-500 rounded-full"
-                                                style="height:12px;animation:demoWave 0.7s ease-in-out infinite alternate;animation-delay:0.24s;">
+                                            <div class="w-1 bg-brand-500 rounded-full">
                                             </div>
-                                            <div class="w-1 bg-brand-500 rounded-full"
-                                                style="height:18px;animation:demoWave 0.6s ease-in-out infinite alternate;animation-delay:0.32s;">
+                                            <div class="w-1 bg-brand-500 rounded-full">
                                             </div>
                                         </div>
                                     </div>
@@ -811,49 +597,36 @@
                                     class="bg-black w-full aspect-video rounded-xl relative overflow-hidden border border-white/5">
                                     <img src="https://images.unsplash.com/photo-1540575467063-178a50c2df87?q=80&w=1200&auto=format&fit=crop"
                                         class="absolute inset-0 w-full h-full object-cover opacity-35 group-hover/mockup:scale-105 transition-transform duration-1000"
-                                        alt="Conference">
+                                        alt="">
                                     <!-- Waveform -->
                                     <div id="demo-waveform"
                                         class="absolute inset-0 flex items-center justify-center z-10 pointer-events-none opacity-0 transition-opacity duration-500">
-                                        <div class="flex items-end gap-1 h-12">
-                                            <div class="w-1.5 bg-brand-500 rounded-full"
-                                                style="height:10px;animation:demoWave 0.5s ease-in-out infinite alternate;">
+                                        <div class="flex items-end gap-1 h-12 demo-wave demo-wave--laptop">
+                                            <div class="w-1.5 bg-brand-500 rounded-full">
                                             </div>
-                                            <div class="w-1.5 bg-brand-500 rounded-full"
-                                                style="height:24px;animation:demoWave 0.6s ease-in-out infinite alternate;animation-delay:0.04s;">
+                                            <div class="w-1.5 bg-brand-500 rounded-full">
                                             </div>
-                                            <div class="w-1.5 bg-brand-500 rounded-full"
-                                                style="height:18px;animation:demoWave 0.55s ease-in-out infinite alternate;animation-delay:0.08s;">
+                                            <div class="w-1.5 bg-brand-500 rounded-full">
                                             </div>
-                                            <div class="w-1.5 bg-brand-500 rounded-full"
-                                                style="height:32px;animation:demoWave 0.7s ease-in-out infinite alternate;animation-delay:0.12s;">
+                                            <div class="w-1.5 bg-brand-500 rounded-full">
                                             </div>
-                                            <div class="w-1.5 bg-brand-500 rounded-full"
-                                                style="height:14px;animation:demoWave 0.5s ease-in-out infinite alternate;animation-delay:0.16s;">
+                                            <div class="w-1.5 bg-brand-500 rounded-full">
                                             </div>
-                                            <div class="w-1.5 bg-brand-500 rounded-full"
-                                                style="height:22px;animation:demoWave 0.65s ease-in-out infinite alternate;animation-delay:0.2s;">
+                                            <div class="w-1.5 bg-brand-500 rounded-full">
                                             </div>
-                                            <div class="w-1.5 bg-brand-500 rounded-full"
-                                                style="height:36px;animation:demoWave 0.6s ease-in-out infinite alternate;animation-delay:0.24s;">
+                                            <div class="w-1.5 bg-brand-500 rounded-full">
                                             </div>
-                                            <div class="w-1.5 bg-brand-500 rounded-full"
-                                                style="height:16px;animation:demoWave 0.5s ease-in-out infinite alternate;animation-delay:0.28s;">
+                                            <div class="w-1.5 bg-brand-500 rounded-full">
                                             </div>
-                                            <div class="w-1.5 bg-brand-500 rounded-full"
-                                                style="height:28px;animation:demoWave 0.7s ease-in-out infinite alternate;animation-delay:0.32s;">
+                                            <div class="w-1.5 bg-brand-500 rounded-full">
                                             </div>
-                                            <div class="w-1.5 bg-brand-500 rounded-full"
-                                                style="height:12px;animation:demoWave 0.55s ease-in-out infinite alternate;animation-delay:0.36s;">
+                                            <div class="w-1.5 bg-brand-500 rounded-full">
                                             </div>
-                                            <div class="w-1.5 bg-brand-500 rounded-full"
-                                                style="height:30px;animation:demoWave 0.6s ease-in-out infinite alternate;animation-delay:0.4s;">
+                                            <div class="w-1.5 bg-brand-500 rounded-full">
                                             </div>
-                                            <div class="w-1.5 bg-brand-500 rounded-full"
-                                                style="height:20px;animation:demoWave 0.5s ease-in-out infinite alternate;animation-delay:0.44s;">
+                                            <div class="w-1.5 bg-brand-500 rounded-full">
                                             </div>
-                                            <div class="w-1.5 bg-brand-500 rounded-full"
-                                                style="height:26px;animation:demoWave 0.7s ease-in-out infinite alternate;animation-delay:0.48s;">
+                                            <div class="w-1.5 bg-brand-500 rounded-full">
                                             </div>
                                         </div>
                                     </div>
@@ -983,7 +756,7 @@
             <p class="text-white opacity-90 text-xl mb-12 max-w-2xl mx-auto font-bold">Launch multilingual events in
                 minutes with VoxBento. No complex setups, no hardware.</p>
             <div class="flex flex-col sm:flex-row justify-center gap-6">
-                <a href="{% if current_user %}/admin/events/{% else %}/register{% endif %}"
+                <a href="{% if current_user %}{{ management_home }}{% else %}/register{% endif %}"
                     class="brutal-btn bg-white text-[#0d0f10] hover:bg-slate-100 w-full sm:w-auto text-lg py-5 px-10">Get
                     Started Now</a>
             </div>
@@ -1016,6 +789,9 @@
                 <div>
                     <h3 class="text-[#0d0f10] font-extrabold mb-4 text-sm uppercase tracking-wider">Product</h3>
                     <ul class="space-y-3 text-sm opacity-80">
+                        <li><a href="/local"
+                                class="hover:text-[#2563eb] transition-colors underline decoration-2 underline-offset-2 flex items-center gap-1.5"><span class="w-1.5 h-1.5 rounded-full bg-emerald-500"></span>VoxBento Local (Desktop)</a>
+                        </li>
                         <li><a href="#solutions"
                                 class="hover:text-[#2563eb] transition-colors underline decoration-2 underline-offset-2">Solutions</a>
                         </li>
@@ -1027,7 +803,7 @@
                         </li>
                         <li><a href="/login"
                                 class="hover:text-[#2563eb] transition-colors underline decoration-2 underline-offset-2">Sign
-                                In</a></li>
+                                in</a></li>
                     </ul>
                 </div>
                 <div>
@@ -1086,12 +862,9 @@
                 class="mt-16 pt-8 border-t-2 border-[#0d0f10] text-sm text-[#0d0f10] opacity-80 flex flex-col md:flex-row justify-between items-center gap-4">
                 <p>&copy; 2026 VoxBento. Open Source software by FOSSASIA.</p>
                 <div class="flex gap-6">
-                    <a href="#"
+                    <a href="https://voxbento.com/privacy"
                         class="hover:text-[#2563eb] transition-colors underline decoration-2 underline-offset-2">Privacy
                         Policy</a>
-                    <a href="#"
-                        class="hover:text-[#2563eb] transition-colors underline decoration-2 underline-offset-2">Terms
-                        of Service</a>
                 </div>
             </div>
         </div>
@@ -1109,7 +882,7 @@
             <!-- Header -->
             <div class="p-6 border-b border-gray-200 flex justify-between items-center bg-gray-50">
                 <h2 class="text-xl font-extrabold text-[#0d0f10]">Request a Live Demo</h2>
-                <button onclick="closeDemoModal()" class="text-gray-500 hover:text-[#0d0f10] transition-colors p-1">
+                <button onclick="closeDemoModal()" aria-label="Close demo modal" title="Close" class="text-gray-500 hover:text-[#0d0f10] transition-colors p-1">
                     <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
                 </button>
             </div>
@@ -1125,7 +898,7 @@
                         
                         <div class="flex items-start gap-2">
                             <input type="checkbox" id="demo-privacy" required class="mt-1 w-4 h-4 text-[#2563eb] rounded border-gray-300 focus:ring-[#2563eb]">
-                            <label for="demo-privacy" class="text-xs text-gray-600">I agree to VoxBento's <a href="#" class="text-[#2563eb] hover:underline">Privacy Policy</a> and consent to receive communications.</label>
+                            <label for="demo-privacy" class="text-xs text-gray-600">I agree to VoxBento's <a href="https://voxbento.com/privacy" class="text-[#2563eb] hover:underline">Privacy Policy</a> and consent to receive communications.</label>
                         </div>
                     </div>
 
@@ -1291,6 +1064,34 @@
                     spinner.classList.add('hidden');
                 }
             }
+        });
+
+        // Mobile Menu toggle
+        const menuBtn = document.getElementById('mobile-menu-btn');
+        const mobileMenu = document.getElementById('mobile-menu');
+        const iconOpen = document.getElementById('menu-icon-open');
+        const iconClose = document.getElementById('menu-icon-close');
+
+        function toggleMobileMenu() {
+            if (!menuBtn || !mobileMenu) return;
+            const isExpanded = menuBtn.getAttribute('aria-expanded') === 'true';
+            menuBtn.setAttribute('aria-expanded', !isExpanded);
+            mobileMenu.classList.toggle('hidden');
+            iconOpen?.classList.toggle('hidden');
+            iconClose?.classList.toggle('hidden');
+        }
+
+        function closeMobileMenu() {
+            if (!menuBtn || !mobileMenu) return;
+            menuBtn.setAttribute('aria-expanded', 'false');
+            mobileMenu.classList.add('hidden');
+            iconOpen?.classList.remove('hidden');
+            iconClose?.classList.add('hidden');
+        }
+
+        menuBtn?.addEventListener('click', toggleMobileMenu);
+        document.querySelectorAll('.mobile-nav-link').forEach(link => {
+            link.addEventListener('click', closeMobileMenu);
         });
     </script>
 </body>

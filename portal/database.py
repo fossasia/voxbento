@@ -65,6 +65,7 @@ def _get_engine():
 
         if settings.database_url.startswith("sqlite"):
             from sqlalchemy import event
+
             @event.listens_for(_engine.sync_engine, "connect")
             def set_sqlite_pragma(dbapi_connection, connection_record):
                 cursor = dbapi_connection.cursor()
@@ -93,6 +94,7 @@ def configure(url: str, *, echo: bool = False) -> None:
 
     if url.startswith("sqlite"):
         from sqlalchemy import event
+
         @event.listens_for(_engine.sync_engine, "connect")
         def set_sqlite_pragma(dbapi_connection, connection_record):
             cursor = dbapi_connection.cursor()
@@ -192,12 +194,18 @@ async def delete_event(session: AsyncSession, event_id: int) -> bool:
     ev = await get_event_by_id(session, event_id)
     if ev is None:
         return False
-    # Break the circular FK cycle: rooms.relay_booth_id → booths.id ↔ booths.room_id → rooms.id
-    # assign the relationship, not the column, so an already-loaded relay_booth is
-    # cleared too and the unit of work no longer sees the Room ↔ DBBooth dependency
-    result = await session.execute(select(Room).where(Room.event_id == event_id))
-    for room in result.scalars().all():
+    # Break the rooms.relay_booth_id -> booths.id <-> booths.room_id -> rooms.id cycle.
+    # Scope by booth, not by the room's event: admin_edit_room assigns relay_booth_id
+    # straight from the form, so a room in another event can point at one of these booths.
+    # Assign the relationship, not the column. The unit of work builds its delete graph
+    # from mapper state, so a Room still in the identity map keeps the stale edge and
+    # raises CircularDependencyError no matter what the row now says.
+    booth_ids = select(DBBooth.id).where(DBBooth.event_id == event_id)
+    relaying = await session.execute(select(Room).where(Room.relay_booth_id.in_(booth_ids)))
+    for room in relaying.scalars().all():
         room.relay_booth = None
+    await session.flush()
+
     await session.delete(ev)
     await session.flush()
     return True
@@ -240,20 +248,21 @@ async def list_rooms_for_event(
     session: AsyncSession,
     event_id: int,
     *,
+    search: str | None = None,
     limit: int = 100,
     offset: int = 0,
 ) -> list[Room]:
     from sqlalchemy.orm import selectinload
 
-    result = await session.execute(
-        select(Room)
-        .options(selectinload(Room.translation_languages))
-        .where(Room.event_id == event_id)
-        .order_by(Room.created_at)
-        .limit(limit)
-        .offset(offset),
-    )
+    query = select(Room).options(selectinload(Room.translation_languages)).where(Room.event_id == event_id)
+    if search and search.strip():
+        escaped_search = search.strip().replace("\\", "\\\\").replace("%", r"\%").replace("_", r"\_")
+        query = query.where(Room.display_name.ilike(f"%{escaped_search}%", escape="\\"))
+    query = query.order_by(Room.created_at).limit(limit).offset(offset)
+
+    result = await session.execute(query)
     return list(result.scalars().all())
+
 
 
 async def delete_room(session: AsyncSession, room_id: int) -> bool:
@@ -261,15 +270,21 @@ async def delete_room(session: AsyncSession, room_id: int) -> bool:
     if room is None:
         return False
     # Break the circular FK cycle: rooms.relay_booth_id → booths.id ↔ booths.room_id → rooms.id
-    # null out relay_booth_id to remove the back-reference
-    room.relay_booth_id = None
+    # Assign the relationship, not the column, so a Room already in the identity map
+    # drops the edge too. Other rooms can relay from this room's booths, so clear those
+    # as well or they point at booths that are about to go.
+    room.relay_booth = None
     await session.flush()
     # delete all booths belonging to this room explicitly
     from sqlalchemy import delete as sa_delete
     from sqlalchemy import select as sa_select
 
-    # First delete booth memberships and tokens to avoid orphans since SQLite FKs are OFF
+    # First delete booth memberships and tokens
     booth_ids = sa_select(DBBooth.id).where(DBBooth.room_id == room_id)
+    relaying = await session.execute(select(Room).where(Room.relay_booth_id.in_(booth_ids)))
+    for other in relaying.scalars().all():
+        other.relay_booth = None
+    await session.flush()
     await session.execute(sa_delete(BoothMembership).where(BoothMembership.booth_id.in_(booth_ids)))
     await session.execute(sa_delete(InviteToken).where(InviteToken.booth_id.in_(booth_ids)))
     await session.execute(sa_delete(DBBooth).where(DBBooth.room_id == room_id))
@@ -389,6 +404,15 @@ async def delete_booth(session: AsyncSession, booth_id: int) -> bool:
     booth = await get_booth_by_id(session, booth_id)
     if booth is None:
         return False
+    # rooms.relay_booth_id declares ondelete="SET NULL" and SQLite runs with FKs ON, so
+    # the database clears the row itself. Clear it here too, and assign the relationship
+    # rather than the column: a Room already loaded in this session otherwise keeps
+    # resolving relay_booth to the booth just deleted, and a read later in the same
+    # request would build a relay URL from it.
+    result = await session.execute(select(Room).where(Room.relay_booth_id == booth_id))
+    for room in result.scalars().all():
+        room.relay_booth = None
+    await session.flush()
     await session.delete(booth)
     await session.flush()
     return True
@@ -466,12 +490,16 @@ async def create_user(
     display_name: str,
     password_hash: str | None = None,
     email_verified: bool = False,
+    is_admin: bool = False,
+    is_active: bool = True,
 ) -> User:
     user = User(
         email=email.strip().lower(),
         display_name=display_name.strip(),
         password_hash=password_hash,
         email_verified=email_verified,
+        is_admin=is_admin,
+        is_active=is_active,
     )
     session.add(user)
     await session.flush()
@@ -484,6 +512,8 @@ async def update_user(
     *,
     password_hash: str | None = None,
     email_verified: bool | None = None,
+    is_admin: bool | None = None,
+    is_active: bool | None = None,
 ) -> User | None:
     user = await get_user_by_id(session, user_id)
     if user:
@@ -491,6 +521,10 @@ async def update_user(
             user.password_hash = password_hash
         if email_verified is not None:
             user.email_verified = email_verified
+        if is_admin is not None:
+            user.is_admin = is_admin
+        if is_active is not None:
+            user.is_active = is_active
         await session.flush()
     return user
 
@@ -515,6 +549,17 @@ async def count_users(session: AsyncSession, search: str | None = None) -> int:
     return result.scalar_one()
 
 
+_USER_SORT_COLUMNS = {
+    "id": User.id,
+    "email": User.email,
+    "display_name": User.display_name,
+    "is_admin": User.is_admin,
+    "email_verified": User.email_verified,
+    "is_active": User.is_active,
+    "created_at": User.created_at,
+}
+
+
 async def list_users(
     session: AsyncSession,
     *,
@@ -529,13 +574,14 @@ async def list_users(
     if search:
         stmt = stmt.where(or_(User.email.ilike(f"%{search}%"), User.display_name.ilike(f"%{search}%")))
 
-    sort_column = getattr(User, sort_by, User.created_at)
+    sort_column = _USER_SORT_COLUMNS.get(sort_by, User.created_at)
+    # Tie-break on id so rows sharing a sort value keep a stable order across pages.
     if sort_order == "desc":
-        sort_column = sort_column.desc()
+        order_by = (sort_column.desc(), User.id.desc())
     else:
-        sort_column = sort_column.asc()
+        order_by = (sort_column.asc(), User.id.asc())
 
-    stmt = stmt.order_by(sort_column).limit(limit).offset(offset)
+    stmt = stmt.order_by(*order_by).limit(limit).offset(offset)
 
     result = await session.execute(stmt)
     return list(result.scalars().all())

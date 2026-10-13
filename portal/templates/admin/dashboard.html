@@ -13,7 +13,7 @@
     <h1>Dashboard</h1>
     <p>Manage your events, rooms and interpretation booths.</p>
   </div>
-  <a href="/admin/setup" class="btn btn-primary btn-lg">+ New event</a>
+  <a href="{{ management_prefix }}/setup" class="btn btn-primary btn-lg">+ New event</a>
 </div>
 
 {% if not event_data %}
@@ -21,7 +21,7 @@
   <div class="empty-state-icon">🎧</div>
   <h2 class="empty-state-title empty-state-title--lg">Let's set up your first event</h2>
   <p class="empty-state-text--narrow">Create an event, add rooms and language booths, and invite your team — all in a few guided steps.</p>
-  <a href="/admin/setup" class="btn btn-primary btn-lg">Create your first event &rarr;</a>
+  <a href="{{ management_prefix }}/setup" class="btn btn-primary btn-lg">Create your first event &rarr;</a>
 </div>
 {% else %}
 <div class="stat-cards">
@@ -43,7 +43,7 @@
   {% for ed in event_data %}
   <div class="card event-card">
     <div class="card-header">
-      <a href="/admin/events/{{ ed.event.id }}/" class="card-title">{{ ed.event.display_name }}</a>
+      <a href="{{ management_prefix }}/events/{{ ed.event.id }}/" class="card-title">{{ ed.event.display_name }}</a>
       <span class="badge badge-slug">{{ ed.event.slug }}</span>
     </div>
     <div class="card-body">
@@ -73,7 +73,7 @@
       {% endif %}
     </div>
     <div class="card-actions card-actions--row">
-      <a href="/admin/events/{{ ed.event.id }}/" class="btn btn-sm">Manage</a>
+      <a href="{{ management_prefix }}/events/{{ ed.event.id }}/" class="btn btn-sm">Manage</a>
       <a href="/mission-control/{{ ed.event.slug }}/" class="btn btn-sm btn-primary">Mission Control</a>
     </div>
   </div>

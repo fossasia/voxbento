@@ -5,11 +5,10 @@ from __future__ import annotations
 import os
 
 os.environ["BOOTH_ACCESS_TOKEN"] = ""
-os.environ["ADMIN_PASSWORD"] = "test-admin-pass"
 
 import pytest
 
-from portal.auth import create_admin_token, create_user_token, hash_password, verify_password
+from portal.auth import create_user_token, hash_password, verify_password
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -27,8 +26,18 @@ async def setup_db():
 
 
 @pytest.fixture
-def admin_cookie():
-    return {"admin_token": create_admin_token()}
+async def admin_cookie():
+    from portal.database import create_user, get_session
+
+    async with get_session() as s:
+        user = await create_user(
+            s,
+            email="admin@example.com",
+            display_name="Admin",
+            password_hash=hash_password("test-admin-pass"),
+            is_admin=True,
+        )
+    return {"user_token": create_user_token(user_id=user.id, email="admin@example.com", is_admin=True)}
 
 
 def _client():
@@ -89,6 +98,7 @@ class TestRegistration:
                     "email": "new@example.com",
                     "display_name": "New User",
                     "password": "securepass123",
+                    "password_confirm": "securepass123",
                 },
                 follow_redirects=False,
             )
@@ -105,10 +115,135 @@ class TestRegistration:
                     "email": "dupe@example.com",
                     "display_name": "Another User",
                     "password": "securepass123",
+                    "password_confirm": "securepass123",
                 },
             )
         assert resp.status_code == 422
         assert b"already exists" in resp.content
+
+    @pytest.mark.anyio
+    async def test_register_rejects_mismatched_password_confirm(self, setup_db):
+        from portal.database import get_session, get_user_by_email
+
+        async with _client() as c:
+            resp = await c.post(
+                "/register",
+                data={
+                    "email": "typo@example.com",
+                    "display_name": "Typo User",
+                    "password": "securepass123",
+                    "password_confirm": "securepass124",
+                },
+            )
+        assert resp.status_code == 422
+        assert b"Passwords do not match." in resp.content
+        async with get_session() as s:
+            assert await get_user_by_email(s, "typo@example.com") is None
+
+    @pytest.mark.anyio
+    async def test_register_rejects_short_password(self, setup_db):
+        from portal.database import get_session, get_user_by_email
+
+        async with _client() as c:
+            resp = await c.post(
+                "/register",
+                data={
+                    "email": "short@example.com",
+                    "display_name": "Short User",
+                    "password": "1234567",
+                    "password_confirm": "1234567",
+                },
+            )
+        assert resp.status_code == 422
+        assert b"Password must be at least 8 characters." in resp.content
+        async with get_session() as s:
+            assert await get_user_by_email(s, "short@example.com") is None
+
+    @pytest.mark.anyio
+    async def test_register_accepts_eight_character_password(self, setup_db):
+        from portal.database import get_session, get_user_by_email
+
+        async with _client() as c:
+            resp = await c.post(
+                "/register",
+                data={
+                    "email": "exact8@example.com",
+                    "display_name": "Exact 8 User",
+                    "password": "12345678",
+                    "password_confirm": "12345678",
+                },
+                follow_redirects=False,
+            )
+        assert resp.status_code == 200
+        assert b"Check your email" in resp.content
+        async with get_session() as s:
+            assert await get_user_by_email(s, "exact8@example.com") is not None
+
+    @pytest.mark.anyio
+    async def test_register_accepts_password_with_leading_trailing_spaces(self, setup_db):
+        from portal.database import get_session, get_user_by_email
+
+        async with _client() as c:
+            resp = await c.post(
+                "/register",
+                data={
+                    "email": "spaces@example.com",
+                    "display_name": "Spaces User",
+                    "password": "  abcdef  ",
+                    "password_confirm": "  abcdef  ",
+                },
+                follow_redirects=False,
+            )
+        assert resp.status_code == 200
+        assert b"Check your email" in resp.content
+        async with get_session() as s:
+            assert await get_user_by_email(s, "spaces@example.com") is not None
+
+    @pytest.mark.anyio
+    async def test_register_rejects_whitespace_only_password(self, setup_db):
+        from portal.database import get_session, get_user_by_email
+
+        async with _client() as c:
+            resp = await c.post(
+                "/register",
+                data={
+                    "email": "whitespace@example.com",
+                    "display_name": "Whitespace User",
+                    "password": "   ",
+                    "password_confirm": "   ",
+                },
+            )
+        assert resp.status_code == 422
+        assert b"Password cannot be blank or only whitespace." in resp.content
+        async with get_session() as s:
+            assert await get_user_by_email(s, "whitespace@example.com") is None
+
+    @pytest.mark.anyio
+    async def test_register_passwordless_needs_no_confirm(self, setup_db):
+        async with _client() as c:
+            resp = await c.post(
+                "/register",
+                data={"email": "nopass@example.com", "display_name": "No Pass"},
+                follow_redirects=False,
+            )
+        assert resp.status_code == 200
+        assert b"Check your email" in resp.content
+
+    @pytest.mark.anyio
+    async def test_register_passwordless_ignores_leftover_confirm(self, setup_db):
+        async with _client() as c:
+            resp = await c.post(
+                "/register",
+                data={
+                    "email": "leftover@example.com",
+                    "display_name": "Leftover",
+                    "password": "",
+                    "password_confirm": "stale-value",
+                },
+                follow_redirects=False,
+            )
+        assert resp.status_code == 200
+        assert b"Check your email" in resp.content
 
     @pytest.mark.anyio
     async def test_register_creates_active_non_admin(self, setup_db):
@@ -144,6 +279,8 @@ class TestUserLogin:
             resp = await c.get("/login")
         assert resp.status_code == 200
         assert b"Sign in" in resp.content
+        assert b'type="button" id="forgot-password-link"' in resp.content
+        assert b'href="#" id="forgot-password-link"' not in resp.content
 
     @pytest.mark.anyio
     async def test_login_with_correct_credentials(self, setup_db):
@@ -243,6 +380,30 @@ class TestAccountPage:
         assert b"me@example.com" in resp.content
         assert b"Me" in resp.content
 
+    @pytest.mark.anyio
+    async def test_account_booth_link_includes_room_and_resolves(self, setup_db):
+        from portal.database import create_booth, create_event, create_room, get_session, set_booth_membership
+
+        user = await _create_test_user(email="interp@example.com", display_name="Interp")
+        async with get_session() as s:
+            event = await create_event(s, slug="zephyr-2031", display_name="Zephyr Summit 2031")
+            room = await create_room(s, event_id=event.id, display_name="Quartz Hall")
+            booth = await create_booth(
+                s, event_id=event.id, room_id=room.id, language_code="ja", language_name="Japanese"
+            )
+            await set_booth_membership(s, user_id=user.id, booth_id=booth.id, role="interpreter")
+        token = create_user_token(user_id=user.id, email=user.email, is_admin=user.is_admin)
+        link = f"/interpreter/zephyr-2031/{room.id}/ja"
+
+        async with _client() as c:
+            account = await c.get("/account", cookies={"user_token": token})
+            booth_page = await c.get(link, follow_redirects=False)
+
+        assert f'href="{link}"' in account.text
+        assert 'href="/interpreter/zephyr-2031/ja"' not in account.text
+        assert booth_page.status_code == 303
+        assert booth_page.headers["location"].startswith(f"/login?next={link}")
+
 
 # ---------------------------------------------------------------------------
 # Admin user management
@@ -252,12 +413,49 @@ class TestAccountPage:
 class TestAdminUserManagement:
     @pytest.mark.anyio
     async def test_user_list_shows_users(self, setup_db, admin_cookie):
-        await _create_test_user(email="user1@example.com", display_name="User One")
+        _u1 = await _create_test_user(email="user1@example.com", display_name="User One")
+        _u2 = await _create_test_user(email="user2@example.com", display_name="User Two")
+        u3 = await _create_test_user(email="user3@example.com", display_name="User Three")
+        # u3 is the newest user, so it sorts first when descending by created_at.
+        newest_id = max(_u1.id, _u2.id, u3.id)
+        assert u3.id == newest_id
+
+        async with _client() as c:
+            resp = await c.get("/admin/users/?sort_by=created_at&sort_order=desc&limit=1&page=1", cookies=admin_cookie)
+        assert resp.status_code == 200
+        assert b"user3@example.com" in resp.content
+        assert b"User Three" in resp.content
+        assert b"user1@example.com" not in resp.content
+        assert b"<th>#</th>" in resp.content
+        # Row number must be 1, NOT the database primary key.
+        assert b"<td>1</td>" in resp.content
+        assert f"<td>{u3.id}</td>".encode() not in resp.content
+
+        # On page 2 with limit=1 (descending), the middle user gets row index 2.
+        async with _client() as c:
+            resp2 = await c.get("/admin/users/?sort_by=created_at&sort_order=desc&limit=1&page=2", cookies=admin_cookie)
+        assert resp2.status_code == 200
+        assert b"user2@example.com" in resp2.content
+        assert b"<td>2</td>" in resp2.content
+        assert b"limit=1" in resp2.content
+
+    @pytest.mark.anyio
+    async def test_user_list_shows_readable_join_date(self, setup_db, admin_cookie):
+        user = await _create_test_user(email="dated@example.com")
         async with _client() as c:
             resp = await c.get("/admin/users/", cookies=admin_cookie)
         assert resp.status_code == 200
-        assert b"user1@example.com" in resp.content
-        assert b"User One" in resp.content
+        assert user.created_at.strftime("%b %d, %Y").encode() in resp.content
+        assert user.created_at.strftime("%Y-%m-%d").encode() not in resp.content
+
+    @pytest.mark.anyio
+    async def test_user_detail_shows_readable_join_date(self, setup_db, admin_cookie):
+        user = await _create_test_user(email="detail@example.com")
+        async with _client() as c:
+            resp = await c.get(f"/admin/users/{user.id}/", cookies=admin_cookie)
+        assert resp.status_code == 200
+        assert user.created_at.strftime("%b %d, %Y, %H:%M UTC").encode() in resp.content
+        assert user.created_at.strftime("%Y-%m-%d").encode() not in resp.content
 
     @pytest.mark.anyio
     async def test_user_list_requires_admin(self, setup_db):
@@ -326,12 +524,16 @@ class TestAdminUserManagement:
 
 class TestHomePageAuthLinks:
     @pytest.mark.anyio
-    async def test_home_shows_login_register_when_logged_out(self, setup_db):
+    async def test_home_shows_single_sign_in_when_logged_out(self, setup_db):
         async with _client() as c:
             resp = await c.get("/")
         assert resp.status_code == 200
-        assert b"Sign In" in resp.content
-        assert b"Register" in resp.content
+        assert b'<a href="/login"' in resp.content
+        assert b">Sign in</a>" in resp.content
+        # One entry point: no separate Register button or "Login" label (#752).
+        assert b"Register" not in resp.content
+        assert b"Login" not in resp.content
+        assert b"Sign In" not in resp.content
 
     @pytest.mark.anyio
     async def test_home_shows_account_when_logged_in(self, setup_db):

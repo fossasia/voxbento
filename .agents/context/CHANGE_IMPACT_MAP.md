@@ -68,8 +68,8 @@
 
 **Files to change:**
 1. `portal/config.py` — `Settings.effective_jwt_secret` (property)
-2. `portal/auth.py` — `create_token`, `create_participant_token`, `create_user_token`, `create_admin_token`, `decode_token`
-3. All cookie names: `session_token`, `user_token`, `admin_token` — search across `portal/routers/`
+2. `portal/auth.py` — `create_token`, `create_participant_token`, `create_user_token`, `decode_token`
+3. All cookie names: `session_token`, `user_token` — search across `portal/routers/`
 4. `portal/static/js/interpreter-booth.js` — `?token=` query param for WS if legacy token auth is changed
 
 ---
@@ -148,3 +148,12 @@
 | `portal/booth_identity.py` | Booth ID + MediaMTX path — breaks all in-memory state |
 | `portal/routers/` | All routes — every user-facing feature |
 | `mediamtx.yml` | Media server behaviour — WHIP/WHEP/transcription |
+## Program Stream Ingest
+
+For room floor publishing/auth/lifecycle: `portal/program_ingest.py`,
+`portal/routers/program_ingest.py`, Room model/migration 025, `mediamtx.yml`,
+`docker-compose.yml`, `Caddyfile`, owner card `_program_ingest.html` and
+`program-ingest.js`. Timing changes also touch aggregator, translation worker,
+TTS manager, `program-delivery.js` and listener client. Preserve interpreter
+browser publishing. Update `docs/program-stream-ingest.md` and run native media
+smoke tests in addition to unit tests before production sign-off.

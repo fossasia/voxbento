@@ -42,12 +42,6 @@ _mediamtx_cache: tuple[float, bool] | None = None
 _MEDIAMTX_CACHE_TTL = 5.0
 
 
-def _clear_mediamtx_cache() -> None:
-    """Drop the cached MediaMTX health result so the next call re-checks."""
-    global _mediamtx_cache
-    _mediamtx_cache = None
-
-
 async def _check_mediamtx() -> bool:
     """Non-blocking reachability check for MediaMTX API endpoint (cached)."""
     global _mediamtx_cache
@@ -97,6 +91,9 @@ async def _ensure_mediamtx_path(channel_id: str) -> None:
         "alwaysAvailableTracks": [{"codec": "Opus"}],
         "overridePublisher": True,
     }
+    # Floor publishers are selected explicitly, never by a last-publisher-wins race.
+    if channel_id.endswith("/floor"):
+        body = {"alwaysAvailable": False, "overridePublisher": False}
     try:
         client = get_http_client()
         r = await client.post(

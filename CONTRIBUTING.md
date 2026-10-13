@@ -31,7 +31,6 @@ uv run python -c "
 import secrets, re
 env = open('.env').read()
 env = re.sub(r'API_KEY_ENCRYPTION_KEY=.*', f'API_KEY_ENCRYPTION_KEY={secrets.token_hex(16)}', env)
-env = re.sub(r'ADMIN_PASSWORD=.*', 'ADMIN_PASSWORD=admin', env)
 open('.env', 'w').write(env)
 "
 
@@ -40,7 +39,7 @@ docker compose up -d --build
 ```
 
 You can now visit the app at `http://localhost:8000`. 
-To access the admin panel, set `ADMIN_PASSWORD` explicitly in `.env` during setup, then go to `http://localhost:8000/admin/login`. There is no usable default password.
+To access the admin panel, sign in with an account having admin privileges at `http://localhost:8000/login?next=/admin/`.
 
 ---
 
@@ -85,9 +84,11 @@ If your feature requires changes to the database schema:
 # 1. Edit your SQLAlchemy models in portal/models.py
 # 2. Generate a new migration file locally
 uv run alembic revision --autogenerate -m "describe your change"
+# Note: Please rename the generated revision ID to be sequential (e.g., 009, 010) to match our existing migrations. Do not use Alembic's default random hex IDs.
 # 3. Apply it to the running Docker container
 docker compose exec portal uv run alembic upgrade head
 ```
+
 Always commit the generated migration files in `alembic/versions/`. Do **not** commit your local `.db` files.
 
 ---
@@ -99,6 +100,7 @@ Always commit the generated migration files in `alembic/versions/`. Do **not** c
 3. Keep your commits atomic and focused.
 4. Make sure you don't use inline scripts in HTML templates (strict CSP is enforced).
 5. Do not use jQuery or external UI frameworks.
-6. Push your branch and open a PR against `main`.
+6. Push your branch and open a PR against `dev`.
+7. **Keep no more than 3 PRs open at a time when possible.** Limiting the number of concurrent PRs helps maintainers and reviewers focus on each change and provide thorough, timely reviews. Before opening another PR, try to get one of your existing PRs merged or otherwise closed.
 
 Thank you for contributing!

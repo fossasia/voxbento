@@ -1,0 +1,318 @@
+/* ── Developer dashboard ────────────────────────────────────────────────────
+   Styles for templates/developer/dashboard.html. Loaded after admin.css.
+   Replaces the inline style="" attributes and the embedded <style> block
+   that the template used to carry.
+   ─────────────────────────────────────────────────────────────────────────── */
+
+/* ── Page layout ─────────────────────────────────────────────────────────── */
+.admin-main.dev-main { max-width: 1000px; padding: 40px 24px; }
+
+.dev-page-header {
+  margin-bottom: 3rem;
+  border-bottom: 1px solid var(--color-border);
+  padding-bottom: 2rem;
+}
+.dev-page-title {
+  font-size: 2.25rem;
+  font-weight: 800;
+  letter-spacing: -0.025em;
+  color: var(--color-text);
+  margin-bottom: 0.5rem;
+}
+.dev-page-subtitle { font-size: 1.1rem; color: var(--color-text-secondary); }
+
+.dev-section--spaced { margin-top: 4rem; }
+.dev-section-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  margin-bottom: 1.5rem;
+}
+.dev-section-title { font-size: 1.5rem; font-weight: 700; color: var(--color-text); }
+.dev-section-desc {
+  color: var(--color-text-secondary);
+  font-size: 0.95rem;
+  margin-top: 0.25rem;
+}
+.dev-btn-create {
+  padding: 10px 20px;
+  font-weight: 600;
+  border-radius: 8px;
+  box-shadow: 0 4px 6px -1px rgba(59, 130, 246, 0.3);
+}
+
+/* ── Application form panel ──────────────────────────────────────────────── */
+.create-panel {
+  max-width: 600px;
+  margin: 0 auto;
+  box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.1);
+  border-radius: 12px;
+  overflow: hidden;
+  border: 1px solid var(--color-border);
+}
+.dev-panel-head {
+  background: var(--color-surface-2);
+  padding: 24px 32px;
+  border-bottom: 1px solid var(--color-border);
+}
+.dev-panel-title { font-size: 1.25rem; font-weight: 700; margin-bottom: 0.5rem; }
+.dev-panel-desc { color: var(--color-text-secondary); font-size: 0.95rem; }
+.dev-panel-body { padding: 32px; }
+
+.field .dev-label { font-weight: 600; margin-bottom: 0.5rem; display: block; }
+.field .dev-input {
+  width: 100%;
+  padding: 12px;
+  border-radius: 8px;
+  border: 1px solid var(--color-border);
+}
+.field .dev-hint { display: block; margin-top: 0.5rem; font-size: 0.85rem; }
+.dev-form-actions { margin-top: 2rem; }
+.btn.dev-btn-block {
+  width: 100%;
+  padding: 12px;
+  font-weight: 600;
+  border-radius: 8px;
+}
+
+/* ── Account status notices ──────────────────────────────────────────────── */
+.dev-notice {
+  border-radius: 12px;
+  padding: 24px;
+  display: flex;
+  gap: 16px;
+  align-items: flex-start;
+}
+.dev-notice--approved { margin-bottom: 3rem; }
+.dev-notice-icon { width: 24px; height: 24px; flex-shrink: 0; margin-top: 2px; }
+.dev-notice-title { font-size: 1.1rem; font-weight: 700; margin-bottom: 0.25rem; }
+.dev-notice-text { font-size: 0.95rem; line-height: 1.5; }
+
+.dev-notice--info { background: #eff6ff; border: 1px solid #bfdbfe; }
+.dev-notice--info .dev-notice-icon { color: #3b82f6; }
+.dev-notice--info .dev-notice-title { color: #1e40af; }
+.dev-notice--info .dev-notice-text { color: #1e3a8a; }
+
+.dev-notice--danger { background: #fef2f2; border: 1px solid #fecaca; }
+.dev-notice--danger .dev-notice-icon { color: #ef4444; }
+.dev-notice--danger .dev-notice-title { color: #991b1b; }
+.dev-notice--danger .dev-notice-text { color: #7f1d1d; }
+
+.dev-notice--success { background: #ecfdf5; border: 1px solid #a7f3d0; }
+.dev-notice--success .dev-notice-icon { color: #10b981; }
+.dev-notice--success .dev-notice-title { color: #065f46; }
+.dev-notice--success .dev-notice-text { color: #064e3b; }
+
+/* ── Tables (apps, webhooks) ─────────────────────────────────────────────── */
+.dev-table-card {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: 12px;
+  overflow: hidden;
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05);
+}
+.data-table.dev-table { border: none; margin: 0; }
+.dev-table thead { background: #f8fafc; }
+.dev-table thead .dev-th {
+  padding: 16px 24px;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: #64748b;
+  border-bottom: 1px solid var(--color-border);
+}
+.dev-table .dev-th--narrow { width: 120px; }
+.dev-table .dev-row { border-bottom: 1px solid var(--color-border); }
+.dev-table .dev-td { padding: 20px 24px; border: none; }
+.dev-table .dev-td--right { text-align: right; }
+.dev-table .dev-td--wrap { word-break: break-all; }
+.dev-client-name { font-size: 1rem; color: var(--color-text); }
+.dev-webhook-url { font-size: 0.9rem; color: var(--color-text); }
+.dev-table .copy-text { font-size: 0.9rem; }
+
+.status-badge.dev-badge {
+  padding: 6px 12px;
+  border-radius: 9999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+.status-badge.dev-badge--active { background: #ecfdf5; color: #065f46; }
+.status-badge.dev-badge--disabled { background: #fef2f2; color: #991b1b; }
+
+.dev-inline-form { display: inline; }
+.btn.dev-btn-delete {
+  color: #ef4444;
+  border-color: #ef4444;
+  padding: 4px 8px;
+  font-size: 0.8rem;
+}
+
+/* ── Empty states ────────────────────────────────────────────────────────── */
+.dev-empty {
+  margin-top: 1rem;
+  text-align: center;
+  padding: 4rem 2rem;
+  background: var(--color-surface);
+  border: 1px dashed var(--color-border-strong);
+  border-radius: 12px;
+}
+.dev-empty-icon {
+  width: 48px;
+  height: 48px;
+  color: #cbd5e1;
+  margin: 0 auto 1rem auto;
+}
+.dev-empty-title {
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: var(--color-text);
+  margin-bottom: 0.5rem;
+}
+.dev-empty-text {
+  color: var(--color-text-secondary);
+  font-size: 0.95rem;
+  max-width: 400px;
+  margin: 0 auto;
+}
+
+/* ── Modals ──────────────────────────────────────────────────────────────── */
+.custom-modal.dev-modal--narrow { max-width: 500px; }
+.field.dev-field--spaced { margin-top: 1rem; }
+.dev-secret-group { margin-top: 1rem; }
+.dev-secret-label {
+  font-size: 0.8rem;
+  color: var(--color-text-secondary);
+  font-weight: 500;
+}
+.hint.dev-hint--warn { color: #b45309; font-weight: 500; }
+
+/* ── Copy-to-clipboard wrapper ───────────────────────────────────────────── */
+.copy-wrapper {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 10px;
+  background: var(--color-surface, #ffffff);
+  border: 1px solid var(--color-border-strong, #cbd5e1);
+  border-radius: 8px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.85rem;
+  color: var(--color-text, #1e293b);
+  cursor: pointer;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.copy-wrapper:hover {
+  background: #f8fafc;
+  border-color: #94a3b8;
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -1px rgba(0, 0, 0, 0.03);
+  transform: translateY(-1px);
+}
+
+.copy-wrapper:active {
+  transform: translateY(0);
+  box-shadow: none;
+}
+
+.copy-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.copy-icon-container {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #94a3b8;
+  transition: all 0.2s ease;
+}
+
+.copy-wrapper:hover .copy-icon-container { color: var(--color-primary, #3b82f6); }
+
+.copy-wrapper.copied {
+  border-color: #10b981;
+  background: #ecfdf5;
+  color: #065f46;
+}
+
+.copy-wrapper.copied .copy-icon-container { color: #10b981; }
+
+.copy-tooltip {
+  position: absolute;
+  top: -34px;
+  left: 50%;
+  transform: translateX(-50%) translateY(8px) scale(0.95);
+  background: #1e293b;
+  color: white;
+  padding: 5px 10px;
+  border-radius: 6px;
+  font-size: 0.75rem;
+  font-family: system-ui, -apple-system, sans-serif;
+  font-weight: 500;
+  opacity: 0;
+  visibility: hidden;
+  transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  pointer-events: none;
+  white-space: nowrap;
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+  z-index: 10;
+}
+
+.copy-tooltip::after {
+  content: '';
+  position: absolute;
+  bottom: -4px;
+  left: 50%;
+  transform: translateX(-50%);
+  border-width: 4px 4px 0;
+  border-style: solid;
+  border-color: #1e293b transparent transparent transparent;
+}
+
+.copy-wrapper:hover .copy-tooltip {
+  opacity: 1;
+  visibility: visible;
+  transform: translateX(-50%) translateY(0) scale(1);
+}
+
+.copy-wrapper.copied .copy-tooltip {
+  opacity: 1;
+  visibility: visible;
+  transform: translateX(-50%) translateY(0) scale(1);
+  background: #10b981;
+}
+
+.copy-wrapper.copied .copy-tooltip::after {
+  border-color: #10b981 transparent transparent transparent;
+}
+
+/* Specific styling for the modal secrets */
+.secret-box.copy-wrapper {
+  width: 100%;
+  justify-content: space-between;
+  padding: 12px 16px;
+  font-size: 0.95rem;
+  margin: 8px 0;
+}
+
+.secret-box-danger.copy-wrapper {
+  background: #fffbeb;
+  border-color: #fde047;
+}
+
+.secret-box-danger.copy-wrapper:hover {
+  background: #fef3c7;
+  border-color: #facc15;
+}
+
+.secret-box-danger.copy-wrapper.copied {
+  background: #ecfdf5;
+  border-color: #10b981;
+}
+
+/* Copy / check icon swap — driven by the .copied class set in the template script */
+.copy-wrapper .icon-check { display: none; }
+.copy-wrapper.copied .icon-copy { display: none; }
+.copy-wrapper.copied .icon-check { display: block; }

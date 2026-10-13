@@ -1,7 +1,7 @@
 # VoxBento — Route Map
 
 > All HTTP and WebSocket routes are now modularized in `portal/routers/` and `portal/websockets/`.
-> Auth column: `user` = user_token cookie; `admin` = admin_token cookie; `session` = session_token cookie; `open` = no auth required; `token/Bearer` = optional legacy token guard.
+> Auth column: `user` = user_token cookie; `session` = session_token cookie; `open` = no auth required; `token/Bearer` = optional legacy token guard.
 
 ---
 
@@ -9,10 +9,11 @@
 
 | Method | Path | Auth | Template | Notes |
 |---|---|---|---|---|
-| GET | `/` | open | `home.html` | Lists events + booth statuses; personalised if logged in |
+| GET | `/` | open | `home.html` | Landing page; no event or booth lists; navbar links personalised if logged in |
+| GET | `/local` | open | `local.html` | VoxBento Local desktop console download page with client OS detection & release links |
 | GET | `/healthz` | open | — | JSON: `{ok, server, mediamtx_ok}` |
 | GET | `/register` | open | `register.html` | Redirects to `/account` if already logged in |
-| POST | `/register` | open | `register.html` | Creates user, sets `user_token` cookie → `/account` |
+| POST | `/register` | open | `register.html` | Creates user, sets `user_token` cookie → `/account`; if `password` is set, `password_confirm` must match (422 otherwise) |
 | GET | `/login` | open | `login.html` | Redirects to `/account` or `?next=` if logged in |
 | POST | `/login` | open | `login.html` | Verifies bcrypt, sets `user_token` cookie |
 | GET | `/logout` | open | — | Deletes `user_token` cookie → `/` |
@@ -56,23 +57,24 @@
 
 ---
 
-## Admin Panel (`/admin/*`)
+## Management Surfaces (`/workspace/*` and `/admin/*`)
 
-All admin routes require `admin_token` cookie (or `user_token` with `is_admin=True` or `event_owner` membership for event-scoped routes).
+`/workspace/*` is the canonical event-management surface for event owners. Room coordinators use `/mission-control/*`, which filters the operational view to their assigned rooms. `/admin/*` is reserved for super admins, apart from legacy room-scoped coordinator handlers retained for compatibility. All admin and workspace routes require a `user_token` with `is_admin=True`, or the appropriate `event_owner` / `room_coordinator` membership for scoped routes. The paths in the table below name the shared `/admin` handler routes; current event-management paths have explicit event-owner mappings formed by replacing `/admin` with `/workspace`. Likewise, the listed `/api/admin/providers/...` and `/api/admin/events/...` routes have explicit `/api/workspace/...` event-owner mappings. New admin routes are not exposed through the workspace unless they are added to that allowlist.
+
+Legacy organizer requests to allowlisted event-management paths under `/admin/`, `/admin/events...`, `/admin/setup...`, or their management API equivalents receive a `307` redirect to the matching workspace URL. The redirect preserves the HTTP method and query string. System-only and unknown routes, including `/admin/users/`, `/admin/developer-accounts`, and `/admin/login`, have no workspace equivalent. OAuth routes under `/oauth/*` are unchanged. General workspace entry points such as the dashboard and setup require ownership of at least one event; routes containing `{event_id}` require ownership of that specific event.
 
 | Method | Path | Template | Notes |
 |---|---|---|---|
-| GET | `/admin/login` | `admin/login.html` | Redirects to `/admin/` if already admin |
-| POST | `/admin/login` | — | Sets `admin_token` cookie → `/admin/` |
-| GET | `/admin/logout` | — | Deletes `admin_token` → `/admin/login` |
-| GET | `/admin/` | `admin/dashboard.html` | Event list with live booth counts + MediaMTX status |
+| GET | `/admin/login` | — | `303` → `/login?next=/admin/` (admins use the shared sign-in page) |
+| GET | `/admin/logout` | — | Deletes session cookies → `/login` |
+| GET | `/admin/` or `/workspace/` | `admin/dashboard.html` | System-wide events for super admins; accessible events for organizers |
 | GET | `/admin/events/` | `admin/event_list.html` | — |
 | POST | `/admin/events/` | — | Creates event (slug + display_name) |
 | GET | `/admin/events/{event_id}/` | `admin/event_detail.html` | Event + rooms + booths |
 | GET | `/admin/events/{event_id}/api-settings/` | `admin/api_settings.html` | View encrypted API keys |
 | POST | `/admin/events/{event_id}/api-settings` | — | Update transcription API keys (Fernet-encrypted) |
 | POST | `/admin/events/{event_id}/delete` | — | Cascade-deletes event |
-| GET | `/admin/events/{event_id}/rooms/` | `admin/room_list.html` | — |
+| GET | `/admin/events/{event_id}/rooms/` | `admin/room_list.html` | Supports optional `search` query parameter to filter rooms server-side against `Room.display_name` (case-insensitive `ilike` match with SQL wildcard escaping for `%`, `_`, and `\\`). |
 | POST | `/admin/events/{event_id}/rooms/` | — | Creates room; auto-generates Jitsi URL |
 | GET | `/admin/events/{event_id}/rooms/{room_id}/` | `admin/room_detail.html` | Room + booths |
 | POST | `/admin/events/{event_id}/rooms/{room_id}/edit` | — | Updates jitsi_url + relay_booth_id |
@@ -89,7 +91,7 @@ All admin routes require `admin_token` cookie (or `user_token` with `is_admin=Tr
 | GET | `/admin/events/{event_id}/members/` | `admin/event_members.html` | EventMembership list |
 | POST | `/admin/events/{event_id}/members/` | — | Upserts EventMembership by email + role |
 | POST | `/admin/events/{event_id}/members/{membership_id}/delete` | — | Removes EventMembership |
-| GET | `/admin/users/` | `admin/user_list.html` | — |
+| GET | `/admin/users/` | `admin/user_list.html` | Paginated; `sort_by`/`sort_order` query params, defaults to `created_at` desc (newest first) |
 | GET | `/admin/users/{user_id}/` | `admin/user_detail.html` | User + event admin assignments |
 | POST | `/admin/users/{user_id}/toggle-active` | — | Flips `is_active` |
 | POST | `/admin/users/{user_id}/delete` | — | Deletes user |
@@ -103,12 +105,29 @@ All admin routes require `admin_token` cookie (or `user_token` with `is_admin=Tr
 | Module | Owns |
 |---|---|
 | `portal/routers/public.py` | Home page, health check, registration |
-| `portal/routers/auth.py` | Login, logout, invite token validation |
-| `portal/routers/account.py` | User profile page |
+| `portal/routers/auth.py` | Login, logout, invite-token validation, and user profile page |
 | `portal/routers/interpreter.py` | Booth UI route |
 | `portal/routers/listener.py` | WHEP listener UI route |
 | `portal/routers/api.py` | Booth state REST API, WHIP URL generation |
-| `portal/routers/admin/*.py` | All `/admin/*` routes (split by resource: events, rooms, dashboard) |
+| `portal/routers/admin.py` | Shared event-management handlers and system-admin routes |
+| `portal/workspace_routing.py` | `/workspace` handler mapping, legacy organizer redirects, and template URL context |
 | `portal/websockets/manager.py` | `ws_booth` and `ws_captions` endpoints |
 | `portal/websockets/handlers.py` | Specific `_handle_*` logic for WS messages |
 | `fastapi_app.py` | Application lifespan, router include aggregation |
+
+## Program ingest routes (#690)
+
+- `POST /internal/media-auth`: private MediaMTX callback only, blocked by Caddy;
+  requires the shared `MEDIAMTX_AUTH_HOOK_SECRET`, then checks canonical floor
+  identity, source mode, digest, expiry, capacity and per-IP failure rate. Other
+  legacy interpreter paths are unchanged.
+- `GET/POST /workspace/events/{event_id}/rooms/{room_id}/program-ingest`:
+  event-owner controls/status, mapped to shared `/admin/...` handlers. No-store;
+  rotate/enable responses reveal a new token once. POST supports enable, rotate,
+  revoke, disable and sync. Revoke returns 202 with `cleanup_pending` when the
+  credential is invalidated but MediaMTX cleanup must be retried.
+  `portal/routers/program_ingest.py` owns both routes.
+- Existing floor-bot start/stop returns 409 while program ingest owns the room.
+
+`POST /login` requires verified email and uses the `login` rate-limit bucket:
+10 attempts per normalized email per hour. There is no separate admin sign-in form.

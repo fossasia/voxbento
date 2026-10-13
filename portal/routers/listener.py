@@ -155,7 +155,8 @@ async def listen_event_page(request: Request, event_slug: str, code: str | None 
                     "translation_languages": lang_data,
                 }
             )
-            ensure_tasks.append(_ensure_mediamtx_path(channel_id))
+            if r.floor_source != "program_ingest":
+                ensure_tasks.append(_ensure_mediamtx_path(channel_id))
 
     if ensure_tasks:
         await asyncio.gather(*ensure_tasks)

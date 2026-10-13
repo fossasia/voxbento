@@ -213,9 +213,11 @@ async def test_process_delivery_circuit_breaker(db):
     assert audits[0].action == "webhook.circuit_breaker_tripped"
     assert audits[0].client_id is None  # Zero-client case coverage
 
+
 @pytest.mark.anyio
 async def test_process_delivery_circuit_breaker_with_multiple_clients(db):
     from portal.models import OAuthClient
+
     client1 = OAuthClient(developer_account_id=1, client_id="client_1", name="C1")
     client2 = OAuthClient(developer_account_id=1, client_id="client_2", name="C2")
     db.add_all([client1, client2])

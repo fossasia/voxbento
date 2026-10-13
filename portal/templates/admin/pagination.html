@@ -7,7 +7,8 @@
 {% if sort_order %}
   {% set sort_qs = sort_qs ~ '&sort_order=' ~ sort_order %}
 {% endif %}
-{% set qs = search_qs ~ sort_qs %}
+{% set limit_qs = '&limit=' ~ limit if limit else '' %}
+{% set qs = search_qs ~ sort_qs ~ limit_qs %}
 <div class="pagination">
   {% if page > 1 %}
     <a href="?page={{ page - 1 }}{{ qs }}" class="btn btn-sm">Previous</a>

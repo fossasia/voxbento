@@ -3,12 +3,12 @@
 
 {% block breadcrumb %}
 <nav class="breadcrumb">
-  <a href="/admin/">Dashboard</a> <span>/</span>
-  <a href="/admin/events/">Events</a> <span>/</span>
-  <a href="/admin/events/{{ event.id }}/">{{ event.display_name }}</a> <span>/</span>
-  <a href="/admin/events/{{ event.id }}/rooms/">Rooms</a> <span>/</span>
-  <a href="/admin/events/{{ event.id }}/rooms/{{ room.id }}/">{{ room.display_name }}</a> <span>/</span>
-  <span>Booths</span>
+  <a href="{{ management_prefix }}/">Dashboard</a> <span>/</span>
+  <a href="{{ management_prefix }}/events/">Events</a> <span>/</span>
+  <a href="{{ management_prefix }}/events/{{ event.id }}/">{{ event.display_name }}</a> <span>/</span>
+  <a href="{{ management_prefix }}/events/{{ event.id }}/rooms/">Rooms</a> <span>/</span>
+  <a href="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/">{{ room.display_name }}</a> <span>/</span>
+  <span class="breadcrumb-current" aria-current="page">Booths</span>
 </nav>
 {% endblock %}
 
@@ -23,7 +23,7 @@
 <div class="form-card">
   <h3>Add an interpretation booth</h3>
   <p class="form-card-hint">Each booth is one language channel. Use a two-letter code (ISO 639-1), e.g. <code>en</code>, <code>fr</code>, <code>zh</code>.</p>
-  <form method="post" action="/admin/events/{{ event.id }}/rooms/{{ room.id }}/booths/" class="inline-form">
+  <form method="post" action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/booths/" class="inline-form">
     <input type="text" name="language_code" placeholder="Code (e.g. en)" required
            pattern="^[a-z]{2}$" maxlength="2" title="Two-letter ISO 639-1 code" class="input-code" />
     <input type="text" name="language_name" placeholder="Language name (e.g. English)" required class="input-grow" />
@@ -66,8 +66,8 @@
         </a>
       </td>
       <td>
-        <a href="/admin/events/{{ event.id }}/rooms/{{ room.id }}/booths/{{ bs.db.id }}/" class="btn btn-sm">Details</a>
-        <form method="post" action="/admin/events/{{ event.id }}/rooms/{{ room.id }}/booths/{{ bs.db.id }}/delete"
+        <a href="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/booths/{{ bs.db.id }}/" class="btn btn-sm">Details</a>
+        <form method="post" action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/booths/{{ bs.db.id }}/delete"
               class="inline-delete"
               data-confirm="Delete {{ bs.db.language_name }} booth?">
           <button type="submit" class="btn btn-sm btn-danger">Delete</button>

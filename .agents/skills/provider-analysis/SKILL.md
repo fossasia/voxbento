@@ -51,7 +51,7 @@ Used by `/healthz` and booth page template.
 - URL: room-specific Jitsi URL from `DBBooth.room.jitsi_url` (admin-configured) OR `_make_jitsi_url(base_url, default_jitsi_room)`.
 - URL format: `{effective_jitsi_base_url}/{room_name}` (if room is not already a full URL).
 - Domain passed to template as `jitsi_domain` (derived from `effective_jitsi_base_url`).
-- Self-hosted; image: `jitsi/*:stable-9823`.
+- Self-hosted; image: `ghcr.io/jitsi/*:stable-11248`.
 
 ### Jitsi room naming convention (auto-generated)
 When admin creates a room, a Jitsi URL is auto-generated:
