@@ -106,6 +106,13 @@ rollout and break-glass recovery procedure.
 Admin login requires verified email and shares the normal login limit of 10 attempts
 per email address per hour.
 
+### Single sign-in page
+
+Admins, organizers and attendees all sign in at `/login`. The separate admin form is
+gone: `/admin/login` now redirects to `/login?next=/admin/`, so update bookmarks or
+scripts that posted to it. Entering an email that has no account continues to
+`/register` with the email filled in.
+
 ### API Key Encryption & Rotation
 A mandatory environment variable `API_KEY_ENCRYPTION_KEY` securely encrypts third-party API keys in the database. 
 - You must generate a secure key (e.g., using `openssl rand -hex 32`) and add it to your `.env` file before starting the application. 

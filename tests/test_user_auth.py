@@ -380,6 +380,30 @@ class TestAccountPage:
         assert b"me@example.com" in resp.content
         assert b"Me" in resp.content
 
+    @pytest.mark.anyio
+    async def test_account_booth_link_includes_room_and_resolves(self, setup_db):
+        from portal.database import create_booth, create_event, create_room, get_session, set_booth_membership
+
+        user = await _create_test_user(email="interp@example.com", display_name="Interp")
+        async with get_session() as s:
+            event = await create_event(s, slug="zephyr-2031", display_name="Zephyr Summit 2031")
+            room = await create_room(s, event_id=event.id, display_name="Quartz Hall")
+            booth = await create_booth(
+                s, event_id=event.id, room_id=room.id, language_code="ja", language_name="Japanese"
+            )
+            await set_booth_membership(s, user_id=user.id, booth_id=booth.id, role="interpreter")
+        token = create_user_token(user_id=user.id, email=user.email, is_admin=user.is_admin)
+        link = f"/interpreter/zephyr-2031/{room.id}/ja"
+
+        async with _client() as c:
+            account = await c.get("/account", cookies={"user_token": token})
+            booth_page = await c.get(link, follow_redirects=False)
+
+        assert f'href="{link}"' in account.text
+        assert 'href="/interpreter/zephyr-2031/ja"' not in account.text
+        assert booth_page.status_code == 303
+        assert booth_page.headers["location"].startswith(f"/login?next={link}")
+
 
 # ---------------------------------------------------------------------------
 # Admin user management
@@ -500,12 +524,16 @@ class TestAdminUserManagement:
 
 class TestHomePageAuthLinks:
     @pytest.mark.anyio
-    async def test_home_shows_login_register_when_logged_out(self, setup_db):
+    async def test_home_shows_single_sign_in_when_logged_out(self, setup_db):
         async with _client() as c:
             resp = await c.get("/")
         assert resp.status_code == 200
-        assert b"Sign In" in resp.content
-        assert b"Register" in resp.content
+        assert b'<a href="/login"' in resp.content
+        assert b">Sign in</a>" in resp.content
+        # One entry point: no separate Register button or "Login" label (#752).
+        assert b"Register" not in resp.content
+        assert b"Login" not in resp.content
+        assert b"Sign In" not in resp.content
 
     @pytest.mark.anyio
     async def test_home_shows_account_when_logged_in(self, setup_db):

@@ -114,7 +114,7 @@ VoxBento uses **in-memory booth state** (`BoothRegistry`). A portal restart:
 ## Post-Deploy Verification
 
 1. `GET /healthz` → `{ok: true, mediamtx_ok: true}`
-2. Admin login at `/admin/login`.
+2. Admin sign-in at `/login?next=/admin/`.
 3. Create test event + booth + invite token.
 4. Open invite link in browser → redirected to booth page.
 5. Verify Jitsi iframe loads.

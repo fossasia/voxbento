@@ -9,7 +9,7 @@
 
 | Method | Path | Auth | Template | Notes |
 |---|---|---|---|---|
-| GET | `/` | open | `home.html` | Lists events + booth statuses; personalised if logged in |
+| GET | `/` | open | `home.html` | Landing page; no event or booth lists; navbar links personalised if logged in |
 | GET | `/local` | open | `local.html` | VoxBento Local desktop console download page with client OS detection & release links |
 | GET | `/healthz` | open | — | JSON: `{ok, server, mediamtx_ok}` |
 | GET | `/register` | open | `register.html` | Redirects to `/account` if already logged in |
@@ -65,9 +65,8 @@ Legacy organizer requests to allowlisted event-management paths under `/admin/`,
 
 | Method | Path | Template | Notes |
 |---|---|---|---|
-| GET | `/admin/login` | `admin/login.html` | Redirects to `/admin/` if already admin |
-| POST | `/admin/login` | — | Validates account credentials and sets `user_token` → `/admin/` |
-| GET | `/admin/logout` | — | Deletes session cookies → `/admin/login` |
+| GET | `/admin/login` | — | `303` → `/login?next=/admin/` (admins use the shared sign-in page) |
+| GET | `/admin/logout` | — | Deletes session cookies → `/login` |
 | GET | `/admin/` or `/workspace/` | `admin/dashboard.html` | System-wide events for super admins; accessible events for organizers |
 | GET | `/admin/events/` | `admin/event_list.html` | — |
 | POST | `/admin/events/` | — | Creates event (slug + display_name) |
@@ -130,5 +129,5 @@ Legacy organizer requests to allowlisted event-management paths under `/admin/`,
   `portal/routers/program_ingest.py` owns both routes.
 - Existing floor-bot start/stop returns 409 while program ingest owns the room.
 
-`POST /admin/login` requires verified email and shares the `login` rate-limit
-bucket with `POST /login`: 10 attempts per normalized email per hour.
+`POST /login` requires verified email and uses the `login` rate-limit bucket:
+10 attempts per normalized email per hour. There is no separate admin sign-in form.

@@ -275,10 +275,10 @@ jobs:
         run: |
           BASE="http://${CI_HOST}:${PORTAL_PORT}"
 
-          # Admin login page renders
-          code=$(curl -s -o /dev/null -w '%{http_code}' "${BASE}/admin/login")
-          echo "GET /admin/login → $code"
-          [ "$code" = "200" ] || { echo "FAIL"; exit 1; }
+          # Retired admin sign-in page redirects to the shared sign-in page (#752)
+          loc=$(curl -s -o /dev/null -w '%{http_code} %{redirect_url}' "${BASE}/admin/login")
+          echo "GET /admin/login → $loc"
+          [ "$loc" = "303 ${BASE}/login?next=/admin/" ] || { echo "FAIL"; exit 1; }
 
           # Bootstrap a per-user administrator for this isolated smoke-test DB.
           docker compose exec -T portal uv run python - <<'PY'
@@ -303,10 +303,11 @@ jobs:
           asyncio.run(bootstrap())
           PY
 
-          # Admin login with account credentials → redirect + user_token cookie
-          resp=$(curl -s -D - -o /dev/null -X POST "${BASE}/admin/login" \
-            -d "email=ci-admin%40example.com&password=ci-admin-pass")
+          # Admin signs in on the shared page → redirect to /admin/ + user_token cookie
+          resp=$(curl -s -D - -o /dev/null -X POST "${BASE}/login" \
+            -d "email=ci-admin%40example.com&password=ci-admin-pass&next_url=%2Fadmin%2F")
           echo "$resp" | head -5
+          echo "$resp" | grep -qi "^location: /admin/" || { echo "FAIL: not redirected to /admin/"; exit 1; }
           echo "$resp" | grep -qi "set-cookie.*user_token" || { echo "FAIL: no user_token cookie"; exit 1; }
 
           # Extract the user_token cookie
