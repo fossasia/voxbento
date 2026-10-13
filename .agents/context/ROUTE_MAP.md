@@ -129,5 +129,20 @@ Legacy organizer requests to allowlisted event-management paths under `/admin/`,
   `portal/routers/program_ingest.py` owns both routes.
 - Existing floor-bot start/stop returns 409 while program ingest owns the room.
 
+## Meeting source routes (#747)
+
+- `GET/POST /workspace/events/{event_id}/rooms/{room_id}/meeting-source`:
+  event-owner status and controls, mapped to shared `/admin/...` handlers in
+  `portal/routers/meeting_source.py`. POST `{action: connect|disconnect,
+  meeting_url?, confirm_source_change?}`. Connect returns 422 for an invalid URL,
+  409 `{code: source_conflict}` while program ingest owns the floor (retry with
+  `confirm_source_change: true`), and 502 when the floor-bot service is
+  unreachable. Disconnect returns 202 with `cleanup_pending` if the agent stop
+  must be retried. Responses never include the meeting URL.
+- `POST /api/rooms/{room_id}/floor-transcription/start|stop` and
+  `GET .../status` (room coordinators and owners) delegate to the same managed
+  lifecycle. Start no longer launches the transcription worker directly; the
+  reconcile loop starts it once audio arrives.
+
 `POST /login` requires verified email and uses the `login` rate-limit bucket:
 10 attempts per normalized email per hour. There is no separate admin sign-in form.

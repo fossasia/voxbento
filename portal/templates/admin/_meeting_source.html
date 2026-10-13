@@ -1,0 +1,80 @@
+<section id='meeting-source' class='token-form-card token-form-card--spaced program-ingest-card meeting-source-card'
+  data-url='{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/meeting-source'>
+  <div class='program-ingest-head'>
+    <div>
+      <p class='program-ingest-eyebrow'>Live source</p>
+      <h3>Meeting source</h3>
+      <p class='program-ingest-lede'>VoxBento joins this room's online meeting and turns its audio into live captions, translation, and speech.</p>
+    </div>
+    <span id='meeting-state-badge' class='program-state-badge' data-state='loading'>Checking status</span>
+  </div>
+
+  <div class='program-signal-path' aria-label='The Jitsi meeting is joined by the VoxBento agent, which produces captions, translations, and speech'>
+    <span class='program-signal-node'>Jitsi meeting</span>
+    <span class='program-signal-arrow' aria-hidden='true'>→</span>
+    <span class='program-signal-node program-signal-node--active'>VoxBento agent</span>
+    <span class='program-signal-arrow' aria-hidden='true'>→</span>
+    <span class='program-signal-output'>Captions · Translation · TTS</span>
+  </div>
+
+  <div id='meeting-warning' class='program-ingest-warning' role='alert' hidden>
+    <span class='program-ingest-warning-icon' aria-hidden='true'>!</span>
+    <div>
+      <strong id='meeting-warning-title'>Meeting source needs attention</strong>
+      <p id='meeting-warning-text'></p>
+    </div>
+  </div>
+
+  <div class='program-ingest-layout'>
+    <div class='program-ingest-setup'>
+      <div class='program-section-head'>
+        <span class='program-step'>1</span>
+        <div>
+          <h4>Choose the meeting</h4>
+          <p>The agent joins muted as <strong>VoxBento FloorBot</strong> and only listens.</p>
+        </div>
+      </div>
+
+      <div class='meeting-source-fields'>
+        <div>
+          <label for='meeting-platform'>Platform</label>
+          <select id='meeting-platform' class='input'>
+            <option value='jitsi' selected>Jitsi Meet (self-hosted)</option>
+          </select>
+        </div>
+        <div>
+          <label for='meeting-url'>Meeting URL</label>
+          <input id='meeting-url' class='input' type='url' maxlength='500' required
+            value='{{ room.jitsi_url or fallback_jitsi_url }}' placeholder='https://meet.example.org/TrackA'>
+        </div>
+      </div>
+
+      <div class='program-primary-action'>
+        <button type='button' class='btn btn-primary' data-meeting-action='connect'>Connect meeting</button>
+        <button type='button' class='btn btn-outline' data-meeting-action='disconnect'>Disconnect</button>
+      </div>
+      <p class='meeting-source-note'>Interpreters monitor the same meeting. Zoom, Teams, Google Meet and Webex are not supported yet.</p>
+    </div>
+
+    <aside class='program-ingest-monitor' aria-labelledby='meeting-monitor-title'>
+      <div class='program-section-head'>
+        <span class='program-step'>2</span>
+        <div>
+          <h4 id='meeting-monitor-title'>Monitor the agent</h4>
+          <p id='meeting-status' role='status' aria-live='polite'>Loading meeting status…</p>
+        </div>
+      </div>
+      <ol class='meeting-lifecycle' aria-label='Meeting agent progress'>
+        <li data-step='starting'>Starting</li>
+        <li data-step='joined'>Joined</li>
+        <li data-step='receiving'>Receiving audio</li>
+        <li data-step='processing'>Processing</li>
+      </ol>
+      <dl class='program-ingest-facts'>
+        <div><dt>Floor owner</dt><dd id='meeting-owner'>—</dd></div>
+        <div><dt>Automatic reconnects</dt><dd id='meeting-restarts'>—</dd></div>
+      </dl>
+    </aside>
+  </div>
+</section>
+<script type='module' src='/static/js/meeting-source.js'></script>

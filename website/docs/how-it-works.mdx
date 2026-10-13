@@ -88,6 +88,8 @@ When live captions or translations are enabled, Voxbento spawns background worke
 ### Floor Audio Capture
 To transcribe or translate the original speakers without requiring external integrations, the system launches an isolated **Floor Bot** (`floor-bot`). This headless Chromium instance silently joins the Jitsi meeting, captures the live audio, and pushes it to MediaMTX via RTSP, making it accessible to the transcription workers just like a regular booth.
 
+Event owners control the bot as a managed **Meeting source** on the room page. `rooms.meeting_agent_enabled` stores the desired state; `portal/meeting_source.py` compares it every two seconds with the bot's `/status` and the MediaMTX floor path. It restarts a failed agent with back-off up to `MEETING_AGENT_MAX_RESTARTS` times, starts the floor transcription worker only after audio arrives, and stops agents that no rooms want after a portal restart. The room has one floor owner: the meeting agent or program ingest. Switching between them requires confirmation. Meeting URLs can carry Jitsi credentials, so they are never logged or returned in status responses.
+
 ### Pipeline Steps
 
 Floor-bot dependency upgrades are checked separately in CI: the Playwright SDK
