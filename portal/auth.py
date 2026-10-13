@@ -14,8 +14,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from portal.config import settings
 from portal.database import get_db_session
 from portal.models import User
+from portal.access_policy import AccessPolicy, Principal
 from portal.roles import _ROLE_RANK
-
 logger = logging.getLogger(__name__)
 
 security = HTTPBearer(auto_error=False)
@@ -123,93 +123,106 @@ async def _current_user(payload: dict) -> User | None:
     return user
 
 
+
 async def resolve_principal(
-    request: Request, db_session: AsyncSession, error_detail: str = "Admin access required."
-) -> dict:
-    """Extract and verify user token to determine the principal.
-
-    Always resolves the database record so that admin-flag revocations
-    or deactivations take effect immediately without waiting for the JWT to expire.
-    Raises HTTP 403 on failure.
-    """
+    request: Request,
+    db_session: AsyncSession,
+    error_detail: str = "Admin access required.",
+) -> Principal:
+    """Resolve an active user and build their policy from current DB state."""
     user_cookie = request.cookies.get("user_token", "")
-    if user_cookie:
-        try:
-            payload = decode_token(user_cookie)
-            if payload.get("user"):
-                sub = payload.get("sub")
-                if sub:
-                    try:
-                        user_id = int(sub)
-                    except (ValueError, TypeError):
-                        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=error_detail)
-                    from portal.database import get_user_by_id
+    if not user_cookie:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=error_detail,
+        )
 
-                    # Always resolve the database record so that admin-flag revocations
-                    # take effect immediately without waiting for the JWT to expire.
-                    user = await get_user_by_id(db_session, user_id)
-                    if not user or not user.is_active:
-                        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=error_detail)
-                    return {"user_id": user_id, "is_global_admin": user.is_admin}
-        except jwt.InvalidTokenError:
-            pass
+    try:
+        payload = decode_token(user_cookie)
+    except jwt.InvalidTokenError:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=error_detail,
+        )
 
-    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=error_detail)
+    if not payload.get("user"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=error_detail,
+        )
+
+    try:
+        user_id = int(payload.get("sub"))
+    except (TypeError, ValueError):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=error_detail,
+        )
+
+    from portal.database import (
+        get_user_by_id,
+        list_booth_memberships_for_user,
+        list_memberships_for_user,
+        list_room_memberships_for_user,
+    )
+
+    user = await get_user_by_id(db_session, user_id)
+    if user is None or not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=error_detail,
+        )
+
+    event_memberships = await list_memberships_for_user(db_session, user.id)
+    room_memberships = await list_room_memberships_for_user(db_session, user.id)
+    booth_memberships = await list_booth_memberships_for_user(db_session, user.id)
+
+    policy = AccessPolicy.from_memberships(
+        user,
+        event_memberships,
+        room_memberships,
+        booth_memberships,
+    )
+    return Principal(user_id=user.id, policy=policy)
+
 
 
 async def require_room_event_access(
-    room_id: int, request: Request, db_session: AsyncSession = Depends(get_db_session)
+    room_id: int,
+    request: Request,
+    db_session: AsyncSession = Depends(get_db_session),
 ) -> None:
-    """FastAPI dependency for room/event scoped routes (like bot control).
-
-    Checks for global admin. If not global admin, verifies active Membership
-    (event_owner) or RoomMembership (room_coordinator).
-    Raises HTTP 403 on failure to prevent room enumeration.
-    """
-
+    """Allow global admins, parent-event owners, or coordinators of this room."""
     principal = await resolve_principal(request, db_session)
-    if principal["is_global_admin"]:
+
+    if principal.is_global_admin:
         return
 
-    user_id = principal["user_id"]
-    if not user_id:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required.")
+    from portal.database import get_room_by_id
 
-    from sqlalchemy import or_, select
+    room = await get_room_by_id(db_session, room_id)
+    if room is None:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin access required.",
+        )
 
-    from portal.models import EventMembership, Room, RoomMembership
+    if (
+        principal.policy.has_role("event_owner", event_id=room.event_id)
+        or principal.policy.room_roles.get(room_id) == "room_coordinator"
+    ):
+        return
 
-    stmt = select(Room.id).where(
-        Room.id == room_id,
-        or_(
-            select(EventMembership.id)
-            .where(
-                EventMembership.user_id == user_id,
-                EventMembership.event_id == Room.event_id,
-                EventMembership.role == "event_owner",
-            )
-            .exists(),
-            select(RoomMembership.id)
-            .where(
-                RoomMembership.user_id == user_id,
-                RoomMembership.room_id == Room.id,
-                RoomMembership.role == "room_coordinator",
-            )
-            .exists(),
-        ),
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="Admin access required.",
     )
-    result = (await db_session.execute(stmt)).scalars().first()
-    if result is None:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required.")
+
+
 
 
 async def require_admin(request: Request) -> None:
-    """FastAPI dependency that guards shared management routes.
-
-    Workspace requests use the event-owner policy. Legacy admin paths retain
-    their existing scoped event-owner and room-coordinator compatibility.
-    Returns None on success; raises HTTP 403 on failure.
-    """
+    """Guard management routes using the existing scoped access rules."""
     if getattr(request.state, "is_workspace", False):
         await require_event_owner(request)
         return
@@ -219,162 +232,165 @@ async def require_admin(request: Request) -> None:
     room_id_str = request.path_params.get("room_id")
     room_id = int(room_id_str) if room_id_str and room_id_str.isdigit() else None
 
-    from portal.database import get_session
+    from portal.database import get_session, get_room_by_id
 
     async with get_session() as db_session:
         principal = await resolve_principal(request, db_session)
-        if principal["is_global_admin"]:
+
+        if principal.is_global_admin:
             return
 
-        user_id = principal["user_id"]
-        if not user_id:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required.")
+        policy = principal.policy
 
-        from portal.database import list_memberships_for_user, list_room_memberships_for_user
-
-        memberships = await list_memberships_for_user(db_session, user_id)
-        rms = await list_room_memberships_for_user(db_session, user_id)
         if room_id is not None:
-            if any((rm.room_id == room_id and rm.role == "room_coordinator" for rm in rms)):
+            if policy.room_roles.get(room_id) == "room_coordinator":
                 return
+
             if event_id is not None:
-                if any((m.event_id == event_id and m.role == "event_owner" for m in memberships)):
+                if policy.has_role("event_owner", event_id=event_id):
                     return
             else:
-                from portal.database import get_room_by_id
-
                 room = await get_room_by_id(db_session, room_id)
-                if room is not None and any(
-                    (m.event_id == room.event_id and m.role == "event_owner" for m in memberships)
+                if room is not None and policy.has_role(
+                    "event_owner", event_id=room.event_id
                 ):
                     return
+
         elif event_id is not None:
-            if any((m.event_id == event_id and m.role == "event_owner" for m in memberships)):
+            if policy.has_role("event_owner", event_id=event_id):
                 return
-            if any((rm.room.event_id == event_id and rm.role == "room_coordinator" for rm in rms)):
+            if policy.has_room_coordinator_in_event(event_id):
                 return
-        if event_id is None and room_id is None:
-            if any((m.role == "event_owner" for m in memberships)) or any(
-                (rm.role == "room_coordinator" for rm in rms)
+
+        else:
+            if policy.has_any_role("event_owner") or policy.has_any_role(
+                "room_coordinator"
             ):
                 return
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required.")
+
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="Admin access required.",
+    )
+
 
 
 async def require_super_admin(request: Request) -> None:
-    """FastAPI dependency that guards super-admin routes."""
+    """Allow only a current global administrator."""
     from portal.database import get_session
 
     async with get_session() as db_session:
-        principal = await resolve_principal(request, db_session, error_detail="Super-admin access required.")
-        if principal["is_global_admin"]:
+        principal = await resolve_principal(
+            request,
+            db_session,
+            error_detail="Super-admin access required.",
+        )
+        if principal.is_global_admin:
             return
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Super-admin access required.")
+
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="Super-admin access required.",
+    )
 
 
 async def require_event_owner(request: Request) -> None:
-    """FastAPI dependency that guards event owner routes.
-
-    Checks for a valid ``user_token`` whose owner currently has ``is_admin=True``,
-    or an event_owner membership for the specified event, in the database.
-    Routes without an ``event_id`` are general workspace entry points and accept
-    a user who owns at least one event; event-scoped routes require ownership of
-    that specific event.
-    Returns None on success; raises HTTP 403 on failure.
-    """
+    """Require global-admin or event-owner access to the requested scope."""
     event_id_str = request.path_params.get("event_id")
     event_id = int(event_id_str) if event_id_str and event_id_str.isdigit() else None
     room_id_str = request.path_params.get("room_id")
     room_id = int(room_id_str) if room_id_str and room_id_str.isdigit() else None
 
-    from portal.database import get_session
+    from portal.database import get_session, get_room_by_id
 
     async with get_session() as db_session:
         principal = await resolve_principal(request, db_session)
-        if principal["is_global_admin"]:
+
+        if principal.is_global_admin:
             return
 
-        user_id = principal["user_id"]
-        if not user_id:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required.")
+        policy = principal.policy
 
-        from portal.database import list_memberships_for_user
-
-        memberships = await list_memberships_for_user(db_session, user_id)
         if event_id is not None:
-            if any((m.event_id == event_id and m.role == "event_owner" for m in memberships)):
+            if policy.has_role("event_owner", event_id=event_id):
                 return
         elif room_id is not None:
-            from portal.database import get_room_by_id
-
             room = await get_room_by_id(db_session, room_id)
-            if room is not None and any(
-                (m.event_id == room.event_id and m.role == "event_owner" for m in memberships)
+            if room is not None and policy.has_role(
+                "event_owner", event_id=room.event_id
             ):
                 return
-        else:
-            if any((m.role == "event_owner" for m in memberships)):
-                return
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required.")
+        elif policy.has_any_role("event_owner"):
+            return
+
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail="Admin access required.",
+    )
 
 
+async def get_admin_flags(
+    request: Request,
+    event_id: int | None = None,
+    room_id: int | None = None,
+) -> dict[str, bool]:
+    """Return admin template flags from current database-backed permissions."""
+    flags = {
+        "is_super_admin": False,
+        "is_event_owner": False,
+        "is_room_coordinator": False,
+    }
 
-async def get_admin_flags(request: Request, event_id: int | None = None, room_id: int | None = None) -> dict[str, bool]:
-    """Helper to pass boolean RBAC flags to Jinja admin templates.
+    from portal.database import get_room_by_id, get_session
 
-    Flags are derived from the user's current database state, so a demoted or
-    deactivated administrator does not keep admin flags from a stale token.
-    """
-    flags = {"is_super_admin": False, "is_event_owner": False, "is_room_coordinator": False}
-    user_cookie = request.cookies.get("user_token", "")
-    if user_cookie:
+    async with get_session() as db_session:
         try:
-            payload = decode_token(user_cookie)
-            if payload.get("user"):
-                user = await _current_user(payload)
-                if user is not None:
-                    if user.is_admin:
-                        flags["is_super_admin"] = True
-                        flags["is_event_owner"] = True
-                        flags["is_room_coordinator"] = True
-                        return flags
-                    from portal.database import (
-                        get_session,
-                        list_memberships_for_user,
-                        list_room_memberships_for_user,
+            principal = await resolve_principal(request, db_session)
+        except HTTPException:
+            return flags
+
+        if principal.is_global_admin:
+            return {
+                "is_super_admin": True,
+                "is_event_owner": True,
+                "is_room_coordinator": True,
+            }
+
+        policy = principal.policy
+
+        if event_id is None and room_id is None:
+            flags["is_event_owner"] = policy.has_any_role("event_owner")
+            flags["is_room_coordinator"] = (
+                flags["is_event_owner"]
+                or policy.has_any_role("room_coordinator")
+            )
+
+        if event_id is not None:
+            flags["is_event_owner"] = policy.has_role(
+                "event_owner", event_id=event_id
+            )
+            flags["is_room_coordinator"] = (
+                flags["is_event_owner"]
+                or policy.has_room_coordinator_in_event(event_id)
+            )
+
+        if room_id is not None:
+            flags["is_room_coordinator"] = (
+                flags["is_room_coordinator"]
+                or policy.room_roles.get(room_id) == "room_coordinator"
+            )
+
+            if not flags["is_event_owner"] and event_id is None:
+                room = await get_room_by_id(db_session, room_id)
+                if room is not None:
+                    flags["is_event_owner"] = policy.has_role(
+                        "event_owner", event_id=room.event_id
                     )
+                    if flags["is_event_owner"]:
+                        flags["is_room_coordinator"] = True
 
-                    async with get_session() as db_session:
-                        memberships = await list_memberships_for_user(db_session, user.id)
-                        rms = await list_room_memberships_for_user(db_session, user.id)
-                        if event_id is None and room_id is None:
-                            if any((m.role == "event_owner" for m in memberships)):
-                                flags["is_event_owner"] = True
-                                flags["is_room_coordinator"] = True
-                            if any((rm.role == "room_coordinator" for rm in rms)):
-                                flags["is_room_coordinator"] = True
-                        if event_id is not None:
-                            if any((m.event_id == event_id and m.role == "event_owner" for m in memberships)):
-                                flags["is_event_owner"] = True
-                                flags["is_room_coordinator"] = True
-                        if room_id is not None:
-                            if any((rm.room_id == room_id and rm.role == "room_coordinator" for rm in rms)):
-                                flags["is_room_coordinator"] = True
-                            if not flags["is_event_owner"] and event_id is None:
-                                from portal.database import get_room_by_id
-
-                                room = await get_room_by_id(db_session, room_id)
-                                if room is not None and any(
-                                    (m.event_id == room.event_id and m.role == "event_owner" for m in memberships)
-                                ):
-                                    flags["is_event_owner"] = True
-                                    flags["is_room_coordinator"] = True
-                        if not flags["is_event_owner"] and event_id is not None:
-                            if any((rm.room.event_id == event_id and rm.role == "room_coordinator" for rm in rms)):
-                                flags["is_room_coordinator"] = True
-        except jwt.InvalidTokenError:
-            pass
     return flags
+
 
 
 def create_user_token(*, user_id: int, email: str, display_name: str = "", is_admin: bool = False) -> str:
@@ -583,20 +599,19 @@ async def resolve_ws_auth(websocket: WebSocket, booth_id: str) -> dict:
     return payload
 
 
-async def resolve_booth_role(payload: dict | None, booth_id: str | None = None) -> str | None:
-    """Extract the role claim from a booth session payload.
 
-    - Invite tokens carry a ``role`` claim directly.
-    - User tokens without an explicit role will check the database for
-      BoothMembership, RoomMembership, and EventMembership.
-    - If no DB membership exists, is_admin users default to 'super_admin'.
-    """
+async def resolve_booth_role(
+    payload: dict | None,
+    booth_id: str | None = None,
+) -> str | None:
+    """Resolve the highest-ranked role from token claims and database memberships."""
     if payload is None:
         return None
 
     roles = []
     if "role" in payload:
         roles.append(payload["role"])
+
     if payload.get("sub") and booth_id:
         from sqlalchemy import select
 
@@ -611,6 +626,7 @@ async def resolve_booth_role(payload: dict | None, booth_id: str | None = None) 
 
         try:
             event_slug, room_id, lang_code = parse_booth_id(booth_id)
+
             async with get_session() as db_session:
                 stmt = (
                     select(DBBooth)
@@ -623,31 +639,52 @@ async def resolve_booth_role(payload: dict | None, booth_id: str | None = None) 
                     )
                 )
                 booth = (await db_session.scalars(stmt)).first()
+
                 if booth:
-                    bms = await list_booth_memberships_for_user(db_session, int(payload["sub"]))
-                    for bm in bms:
-                        if bm.booth_id == booth.id:
-                            roles.append(bm.role)
-                            break
-                    rms = await list_room_memberships_for_user(db_session, int(payload["sub"]))
-                    for rm in rms:
-                        if rm.room_id == booth.room_id:
-                            roles.append(rm.role)
-                            break
-                    memberships = await list_memberships_for_user(db_session, int(payload["sub"]))
-                    for m in memberships:
-                        if m.event_id == booth.event_id:
-                            roles.append(m.role)
-                            break
+                    user_id = int(payload["sub"])
+                    booth_memberships = await list_booth_memberships_for_user(
+                        db_session, user_id
+                    )
+                    room_memberships = await list_room_memberships_for_user(
+                        db_session, user_id
+                    )
+                    event_memberships = await list_memberships_for_user(
+                        db_session, user_id
+                    )
+
+                    # Preserve roles inherited from the booth's room and event,
+                    # even when the user has no direct booth membership.
+                    policy = AccessPolicy()
+                    policy.booth_scopes[booth.id] = (
+                        booth.room_id,
+                        booth.event_id,
+                    )
+
+                    for membership in booth_memberships:
+                        policy.booth_roles[membership.booth_id] = membership.role
+
+                    for membership in room_memberships:
+                        policy.room_roles[membership.room_id] = membership.role
+
+                    for membership in event_memberships:
+                        policy.event_roles[membership.event_id] = membership.role
+
+                    roles_for_booth = policy._roles_for_scope(booth_id=booth.id)
+                    roles.extend(roles_for_booth)
+
         except ValueError:
             pass
         except Exception:
             logger.exception("Failed to resolve booth role from database")
+
     if payload.get("is_admin") or payload.get("admin"):
         roles.append("super_admin")
+
     if not roles:
         return None
-    return max(roles, key=lambda r: _ROLE_RANK.get(r, 0))
+
+    return max(roles, key=lambda role: _ROLE_RANK.get(role, 0))
+
 
 
 def can_perform_role(granted_role: str | None, requested_role: str) -> bool:
