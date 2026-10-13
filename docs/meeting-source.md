@@ -28,7 +28,8 @@ The URL entered here is saved as the room's Jitsi URL, which interpreters also
 use for floor monitoring. The URL can carry a Jitsi `jwt` query parameter; it is
 never logged, and status responses never include it.
 Changing the URL here or in Room Settings while the agent is connected moves the
-agent to the new meeting within a few seconds.
+agent to the new meeting within a few seconds. A corrected URL also gets a fresh
+reconnect budget, so fixing a wrong URL recovers a room that shows **Needs attention**.
 
 ## States
 
@@ -57,7 +58,10 @@ agent to the new meeting within a few seconds.
   connects again.
 - If the agent is in the meeting but no audio reaches MediaMTX for
   `MEETING_AGENT_NO_AUDIO_SECS` (default 45), the agent is restarted.
-- After a portal restart, reconciliation adopts agents the database still wants,
+- The floor bot reports a SHA-256 fingerprint of the URL it joined (never the URL
+  itself), so the portal can tell whether a running agent is in the configured meeting.
+- After a portal restart, reconciliation adopts agents the database still wants
+  (rejoining any whose fingerprint shows an outdated meeting),
   restarts missing ones and stops agents for rooms that no longer want one. A
   disconnect that cannot reach the floor-bot service returns `202` with
   `cleanup_pending: true`; the desired state is already cleared and the stale
@@ -71,8 +75,10 @@ agent to the new meeting within a few seconds.
   Jitsi deployment is joined at the URL the owner enters.
 - Apply migration 027 with `uv run alembic upgrade head`. It adds one boolean
   column with a `false` default; existing rooms stay stopped until an owner connects.
-- Rebuild the `floor-bot` image so the agent reports join and audio failures.
-  An older image still works, but every failure is reported as an unexpected exit.
+- Rebuild the `floor-bot` image so the agent reports join and audio failures and
+  its meeting fingerprint. An older image still works, but every failure is reported
+  as an unexpected exit, and an agent adopted after a portal restart is assumed to
+  be in the configured meeting.
 
 ## Troubleshooting
 

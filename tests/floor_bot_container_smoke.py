@@ -6,6 +6,7 @@ Run inside the container after its normal entrypoint has started:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import os
@@ -128,6 +129,8 @@ def main() -> None:
             assert status and status["state"] != "dead", f"Capture subprocess failed: {status}"
             if status["stage"] == "in_meeting":
                 assert (status.get("event_slug"), status.get("room_id")) == ("ci-audio", 1), status
+                expected = hashlib.sha256(b"http://127.0.0.1:8090/").hexdigest()[:16]
+                assert status.get("url_fingerprint") == expected, status
                 break
             if time.monotonic() >= deadline:
                 raise TimeoutError(f"Chromium never reached the audio page: {status}")

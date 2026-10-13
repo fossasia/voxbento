@@ -10,6 +10,7 @@ they are never logged or returned in status responses.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import re
 import urllib.parse
@@ -101,6 +102,23 @@ def validate_meeting_url(url: str) -> str:
     return url
 
 
+def url_fingerprint(url: str) -> str:
+    """Identify a meeting URL without revealing it; the floor bot reports the same value."""
+    return hashlib.sha256(url.encode("utf-8")).hexdigest()[:16]
+
+
+def joined_other_url(agent: dict | None, known_url: str | None, target_url: str) -> bool:
+    """Whether the agent joined a meeting other than target_url.
+
+    The bot's fingerprint of the URL it actually joined is authoritative; images
+    that predate it fall back to the URL this portal last started the agent with.
+    """
+    fingerprint = agent.get("url_fingerprint") if agent else None
+    if fingerprint:
+        return fingerprint != url_fingerprint(target_url)
+    return known_url is not None and known_url != target_url
+
+
 def agent_url(room: Room, event: Event) -> str:
     """Resolve the URL the agent joins, routing the bundled Jitsi through the private network."""
     if not room.jitsi_url:
@@ -151,7 +169,7 @@ async def stop_agent(event_slug: str, room_id: int) -> None:
 async def connect(room: Room, event: Event, meeting_url: str | None, confirm_source_change: bool) -> None:
     """Make the meeting agent the floor source. Caller holds the room lock and DB transaction."""
     current = health.get(room.id)
-    running_url = current.agent_url if current and current.agent_url else agent_url(room, event)
+    known_url = current.agent_url if current and current.agent_url else agent_url(room, event)
     try:
         if meeting_url is not None:
             room.jitsi_url = validate_meeting_url(meeting_url)
@@ -171,7 +189,7 @@ async def connect(room: Room, event: Event, meeting_url: str | None, confirm_sou
     started = False
     # The bot reads its URL only at launch, so a changed URL needs a fresh agent.
     target_url = agent_url(room, event)
-    if target_url != running_url or not agent or agent.get("state") != "healthy":
+    if joined_other_url(agent, known_url, target_url) or not agent or agent.get("state") != "healthy":
         try:
             await start_agent(room, event)
         except httpx.HTTPError:
@@ -288,6 +306,21 @@ async def reconcile_room(
     current = health.setdefault(room.id, AgentHealth())
     booth_id = make_booth_id(event.slug, room.id, "floor")
     now = monotonic()
+    target_url = agent_url(room, event)
+    if joined_other_url(agent, current.agent_url, target_url):
+        # The owner changed the meeting URL. Rejoin with a fresh budget even if the old
+        # agent failed: retries spent on the previous URL say nothing about the new one.
+        await _stop_worker(current, booth_id)
+        await start_agent(room, event)
+        current.agent_url = target_url
+        current.restarts = 0
+        current.next_restart_at = None
+        current.joined_at = None
+        current.last_progress = None
+        current.last_bytes = -1
+        current.state, current.reason = "starting", "The meeting URL changed; joining the new meeting."
+        logger.info("meeting_agent url_changed room_id=%s", room.id)
+        return
     alive = bool(agent and agent.get("state") == "healthy")
     # A scheduled restart proceeds even if the old agent survived a failed stop:
     # start_agent replaces the room's process, so recovery stays bounded.
@@ -299,20 +332,8 @@ async def reconcile_room(
             failure = "missing" if not agent else str(agent.get("failure") or "exited")
         await _recover(room, event, current, now, failure)
         return
-    target_url = agent_url(room, event)
-    if current.agent_url is None:
-        current.agent_url = target_url
-    elif current.agent_url != target_url:
-        # Room settings changed the meeting URL under a running agent: rejoin the new meeting.
-        await _stop_worker(current, booth_id)
-        await start_agent(room, event)
-        current.agent_url = target_url
-        current.joined_at = None
-        current.last_progress = None
-        current.last_bytes = -1
-        current.state, current.reason = "starting", "The meeting URL changed; joining the new meeting."
-        logger.info("meeting_agent url_changed room_id=%s", room.id)
-        return
+    # Adopted after a portal restart: the fingerprint check above confirmed the URL when available.
+    current.agent_url = target_url
     stage = agent.get("stage")
     if stage in {"launching", "joining"}:
         current.state = "starting"

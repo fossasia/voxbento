@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -336,7 +337,12 @@ raise SystemExit(asyncio.run(run_capture()))
 
             self.room_states[process_key] = "launching"
             self.room_failures.pop(process_key, None)
-            self.room_meta[process_key] = {"event_slug": event_slug, "room_id": room_id}
+            self.room_meta[process_key] = {
+                "event_slug": event_slug,
+                "room_id": room_id,
+                # Lets the portal detect a stale meeting without the URL (which may hold a jwt) leaving the bot.
+                "url_fingerprint": hashlib.sha256(jitsi_url.encode("utf-8")).hexdigest()[:16],
+            }
             self.rooms[process_key] = proc
 
     def stop_room_locked(self, process_key: str):

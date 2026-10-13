@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 from unittest.mock import AsyncMock
@@ -18,6 +19,11 @@ from portal.database import configure, create_user, dispose, get_session, init_d
 from portal.models import Event, Room
 
 SECRET_URL = "https://meet.example.org/TrackA?jwt=meeting-secret-token"
+
+
+def fingerprint(url: str) -> str:
+    """Mirror of the floor bot's /status fingerprint, computed independently of the portal."""
+    return hashlib.sha256(url.encode("utf-8")).hexdigest()[:16]
 
 
 class FakeAgents:
@@ -45,6 +51,7 @@ class FakeAgents:
             self.rooms[key] = {
                 "event_slug": body["event_slug"],
                 "room_id": body["room_id"],
+                "url_fingerprint": fingerprint(body["jitsi_url"]),
                 "state": "healthy",
                 "stage": "launching",
             }
@@ -266,6 +273,52 @@ async def test_room_settings_url_change_rejoins_new_meeting(env):
     current = meeting.health[env["room_id"]]
     assert current.state == "starting" and "meeting URL changed" in current.reason
     assert current.restarts == 0  # an owner's change is not a failure
+
+
+@pytest.mark.anyio
+async def test_url_fix_rescues_agent_that_exhausted_its_retries(env):
+    old_url, new_url = "https://meet.example.org/WrongRoom", "https://meet.example.org/TrackA"
+    await env["client"].post(env["url"], json={"action": "connect", "meeting_url": old_url})
+    failed = {"state": "dead", "stage": "dead", "failure": "join_failed", "url_fingerprint": fingerprint(old_url)}
+    for _ in range(8):
+        env["agents"].rooms[env["key"]] = dict(failed)
+        env["clock"].now += 60
+        await meeting.reconcile_once()
+    assert meeting.health[env["room_id"]].state == "degraded"
+    starts_before = len(env["agents"].starts)
+
+    async with get_session() as session:
+        (await session.get(Room, env["room_id"])).jitsi_url = new_url
+    await meeting.reconcile_once()
+
+    assert len(env["agents"].starts) == starts_before + 1
+    assert env["agents"].starts[-1]["jitsi_url"] == new_url
+    current = meeting.health[env["room_id"]]
+    assert current.state == "starting" and current.restarts == 0
+
+
+@pytest.mark.anyio
+async def test_restart_adoption_trusts_the_agent_fingerprint_over_settings(env):
+    joined_url, configured_url = "https://meet.example.org/OldRoom", "https://meet.example.org/TrackA"
+    async with get_session() as session:
+        room = await session.get(Room, env["room_id"])
+        room.meeting_agent_enabled = True
+        room.jitsi_url = configured_url
+    # The URL changed just before a portal restart; the surviving agent is still in the old meeting.
+    env["agents"].rooms[env["key"]] = {
+        "event_slug": "meet-test",
+        "room_id": env["room_id"],
+        "url_fingerprint": fingerprint(joined_url),
+        "state": "healthy",
+        "stage": "in_meeting",
+    }
+    await meeting.reconcile_once()
+    assert [start["jitsi_url"] for start in env["agents"].starts] == [configured_url]
+
+    # Once the agent reports the configured meeting it is left alone.
+    env["agents"].rooms[env["key"]]["stage"] = "in_meeting"
+    await meeting.reconcile_once()
+    assert len(env["agents"].starts) == 1
 
 
 @pytest.mark.anyio
