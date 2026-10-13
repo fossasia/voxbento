@@ -12,6 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from portal import meeting_source, program_ingest
 from portal.auth import require_admin
 from portal.config import settings
 from portal.routers.admin import router as admin_router
@@ -22,10 +23,13 @@ from portal.routers.demo import router as demo_router
 from portal.routers.developer import router as developer_router
 from portal.routers.interpreter import router as interpreter_router
 from portal.routers.listener import router as listener_router
+from portal.routers.meeting_source import router as meeting_source_router
 from portal.routers.oauth import router as oauth_router
+from portal.routers.program_ingest import router as program_ingest_router
 from portal.routers.public import router as public_router
 from portal.routers.webhooks import router as webhooks_router
 from portal.websockets.handlers import router as ws_router
+from portal.workspace_routing import WorkspaceRoutingMiddleware
 
 "FastAPI entry point — sole backend for the Voxbento.\n\nStart with:\n    uvicorn fastapi_app:app --host 0.0.0.0 --port 8000 --reload\n"
 
@@ -64,6 +68,8 @@ async def lifespan(app: FastAPI):
     # Reference via module attribute so test-time monkey-patching of
     # portal.webhooks.worker.webhook_worker_loop is respected.
     webhook_task = asyncio.create_task(_webhook_worker_mod.webhook_worker_loop())
+    ingest_task = asyncio.create_task(program_ingest.reconcile_loop()) if settings.program_ingest_enabled else None
+    meeting_task = asyncio.create_task(meeting_source.reconcile_loop())
 
     dg.track_task(asyncio.create_task(_gen()))
 
@@ -73,6 +79,13 @@ async def lifespan(app: FastAPI):
     import contextlib
 
     webhook_task.cancel()
+    meeting_task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await meeting_task
+    if ingest_task:
+        ingest_task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await ingest_task
     with contextlib.suppress(asyncio.CancelledError):
         await webhook_task
 
@@ -91,7 +104,7 @@ class _HealthCheckFilter(logging.Filter):
 class _UvicornTokenRedactor(logging.Filter):
     import re as _re
 
-    _TOKEN_RE = _re.compile(r"(?i)((?:^|&|\?)(?:token|client_secret|code|access_token|refresh_token)=)[^&\s]*")
+    _TOKEN_RE = _re.compile(r"(?i)((?:^|&|\?)(?:token|client_secret|code|access_token|refresh_token|key)=)[^&\s]*")
 
     def filter(self, record):
         try:
@@ -99,15 +112,22 @@ class _UvicornTokenRedactor(logging.Filter):
         except Exception:
             return True
 
-        if any(x in message for x in ["token=", "client_secret=", "code="]) and any(
-            x in message for x in ["/embed/", "/ws/", "/oauth/"]
+        lowered = message.casefold()
+        if any(x in lowered for x in ["token=", "client_secret=", "code=", "key="]) and any(
+            x in lowered for x in ["/embed/", "/ws/", "/oauth/", "/internal/"]
         ):
-            record.msg = self._TOKEN_RE.sub(r"\1[REDACTED]", message)
-            record.args = ()
+            if isinstance(record.msg, str):
+                record.msg = self._TOKEN_RE.sub(r"\1[REDACTED]", record.msg)
+            if isinstance(record.args, tuple):
+                record.args = tuple(
+                    self._TOKEN_RE.sub(r"\1[REDACTED]", value) if isinstance(value, str) else value
+                    for value in record.args
+                )
         return True
 
 
 app = FastAPI(title="Voxbento", version="1.0.0", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
+app.add_middleware(WorkspaceRoutingMiddleware)
 
 
 @app.get("/docs", include_in_schema=False)
@@ -174,6 +194,8 @@ app.include_router(api_router)
 app.include_router(api_v1_router)
 
 app.include_router(admin_router)
+app.include_router(program_ingest_router)
+app.include_router(meeting_source_router)
 
 app.include_router(demo_router)
 

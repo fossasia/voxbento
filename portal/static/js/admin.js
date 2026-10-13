@@ -5,6 +5,10 @@
 
 import { initLocalModelDownloader } from './download-model.js';
 
+function managementPrefix() {
+  return document.body.dataset.managementPrefix || '/admin';
+}
+
 /**
  * Shows a short-lived toast and announces it via the aria-live region in
  * admin/base.html, so both sighted and assistive-tech users get the same
@@ -264,7 +268,7 @@ window.adminAPIKeys = {
     if (!container || !this.eventId) return;
 
     try {
-      const res = await fetch(`/admin/api/events/${this.eventId}/api-keys`);
+      const res = await fetch(`${managementPrefix()}/api/events/${this.eventId}/api-keys`);
       if (!res.ok) throw new Error('Failed to load keys');
       const keys = await res.json();
       
@@ -342,7 +346,7 @@ window.adminAPIKeys = {
     
     try {
       btn.disabled = true;
-      const res = await fetch(`/admin/api/events/${this.eventId}/api-keys`, {
+      const res = await fetch(`${managementPrefix()}/api/events/${this.eventId}/api-keys`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: nameInput })
@@ -416,7 +420,7 @@ window.adminAPIKeys = {
     if (!this.revokeKeyId) return;
     
     try {
-      const res = await fetch(`/admin/api/events/${this.eventId}/api-keys/${this.revokeKeyId}`, {
+      const res = await fetch(`${managementPrefix()}/api/events/${this.eventId}/api-keys/${this.revokeKeyId}`, {
         method: 'DELETE'
       });
       if (!res.ok) throw new Error('Failed to revoke');

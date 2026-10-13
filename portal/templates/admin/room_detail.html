@@ -3,10 +3,10 @@
 
 {% block breadcrumb %}
 <nav class="breadcrumb">
-  <a href="/admin/">Dashboard</a> <span>/</span>
-  <a href="/admin/events/">Events</a> <span>/</span>
-  <a href="/admin/events/{{ event.id }}/">{{ event.display_name }}</a> <span>/</span>
-  <a href="/admin/events/{{ event.id }}/rooms/">Rooms</a> <span>/</span>
+  <a href="{{ management_prefix }}/">Dashboard</a> <span>/</span>
+  <a href="{{ management_prefix }}/events/">Events</a> <span>/</span>
+  <a href="{{ management_prefix }}/events/{{ event.id }}/">{{ event.display_name }}</a> <span>/</span>
+  <a href="{{ management_prefix }}/events/{{ event.id }}/rooms/">Rooms</a> <span>/</span>
   <span class="breadcrumb-current" aria-current="page">{{ room.display_name }}</span>
 </nav>
 {% endblock %}
@@ -22,8 +22,11 @@
 
 <!-- Room Settings Form -->
 {% if is_event_owner %}
+  {% include 'admin/_meeting_source.html' %}
+  {% include 'admin/_program_ingest.html' %}
+  {% include 'admin/_program_sender.html' %}
 
-  <form method="post" action="/admin/events/{{ event.id }}/rooms/{{ room.id }}/edit" class="token-form">
+  <form method="post" action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/edit" class="token-form">
   <input type="hidden" name="form_section" value="general">
   <div class="token-form-card token-form-card--spaced-sm">
     <h3>Room Settings</h3>
@@ -49,7 +52,7 @@
   </div>
 </form>
 
-<form method="post" action="/admin/events/{{ event.id }}/rooms/{{ room.id }}/edit" class="token-form">
+<form method="post" action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/edit" class="token-form">
   <input type="hidden" name="form_section" value="relay">
   <div class="token-form-card token-form-card--spaced">
     <h3>Relay Settings</h3>
@@ -77,25 +80,15 @@
         <h3>Stored Transcripts</h3>
         <p class="form-help form-help--tight">View and download past transcripts and translations generated for this room.</p>
       </div>
-      <a href="/admin/events/{{ event.id }}/rooms/{{ room.id }}/transcripts/" class="btn btn-primary">View Transcripts</a>
+      <a href="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/transcripts/" class="btn btn-primary">View Transcripts</a>
     </div>
   </div>
 
-<form method="post" action="/admin/events/{{ event.id }}/rooms/{{ room.id }}/edit" class="token-form">
+<form method="post" action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/edit" class="token-form">
   <input type="hidden" name="form_section" value="transcription">
   <div class="token-form-card token-form-card--spaced">
     <div class="card-head card-head--spaced">
       <h3>Floor Audio Transcription</h3>
-      <div class="card-head-actions">
-        {% if room.floor_transcription_enabled %}
-          <span id="bot-status-pill" class="status-pill" data-room-id="{{ room.id }}">
-            <span id="bot-status-dot" class="status-dot"></span>
-            <span id="bot-status-text">Checking…</span>
-          </span>
-          <button type="button" class="btn btn-sm btn-outline" id="start-bot-btn" onclick="startFloorTranscription({{ room.id }})">Start Bot</button>
-          <button type="button" class="btn btn-sm btn-outline btn-stop" id="stop-bot-btn" onclick="stopFloorTranscription({{ room.id }})">Stop Bot</button>
-        {% endif %}
-      </div>
     </div>
     
     <div class="form-row">
@@ -143,11 +136,11 @@
         <button type="submit" class="btn btn-primary">Save Settings</button>
       </div>
     </div>
-    <p class="form-help form-help--spaced">If enabled, listeners can select "Floor Audio" to see captions of the original floor audio. Use the Start/Stop buttons after saving to control the bot.</p>
+    <p class="form-help form-help--spaced">If enabled, listeners can select "Floor Audio" to see captions of the original floor audio. Captions start automatically once the meeting source or program ingest delivers audio.</p>
   </div>
 </form>
 
-<form id="floor_translation_form" method="post" action="/admin/events/{{ event.id }}/rooms/{{ room.id }}/edit" class="token-form">
+<form id="floor_translation_form" method="post" action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/edit" class="token-form">
   <input type="hidden" name="form_section" value="translation">
   <div class="token-form-card token-form-card--spaced">
     <div class="card-head card-head--spaced">
@@ -215,7 +208,7 @@
   </div>
 </form>
 
-<form method="post" action="/admin/events/{{ event.id }}/rooms/{{ room.id }}/edit" class="token-form" id="floor_tts_form">
+<form method="post" action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/edit" class="token-form" id="floor_tts_form">
   <input type="hidden" name="form_section" value="tts">
   <div class="token-form-card token-form-card--spaced">
     <div class="card-head card-head--spaced">
@@ -462,122 +455,6 @@
       hiddenId: 'lp_floor_translation_hidden',
     });
   });
-
-async function startFloorTranscription(roomId) {
-  const btn = document.getElementById('start-bot-btn');
-  btn.textContent = 'Starting...';
-  btn.disabled = true;
-  try {
-    const res = await fetch(`/api/rooms/${roomId}/floor-transcription/start`, { method: 'POST' });
-    if (!res.ok) {
-      const data = await res.json().catch(() => ({}));
-      setBotError("Error: " + (data.detail || "Failed to start"));
-    }
-  } catch (err) {
-    setBotError("Failed to reach server");
-  } finally {
-    btn.textContent = 'Start Bot';
-    startBotPolling(roomId, true);
-  }
-}
-
-async function stopFloorTranscription(roomId) {
-  const btn = document.getElementById('stop-bot-btn');
-  btn.textContent = 'Stopping...';
-  btn.disabled = true;
-  try {
-    const res = await fetch(`/api/rooms/${roomId}/floor-transcription/stop`, { method: 'POST' });
-    if (!res.ok) {
-      const data = await res.json().catch(() => ({}));
-      setBotError("Error: " + (data.detail || "Failed to stop"));
-    }
-  } catch (err) {
-    setBotError("Failed to reach server");
-  } finally {
-    btn.textContent = 'Stop Bot';
-    startBotPolling(roomId, true);
-  }
-}
-
-const BOT_STAGE_DISPLAY = {
-  launching: { text: 'Starting bot…', color: '#b8860b', dot: '#e0a800', pulse: true },
-  joining: { text: 'Joining meeting…', color: '#b8860b', dot: '#e0a800', pulse: true },
-  in_meeting: { text: 'In meeting · streaming', color: '#1c7c34', dot: '#28a745', pulse: false },
-  leaving: { text: 'Leaving meeting…', color: '#b8860b', dot: '#e0a800', pulse: true },
-  stopping: { text: 'Stopping…', color: '#b8860b', dot: '#e0a800', pulse: true },
-  stopped: { text: 'Stopped', color: '#666', dot: '#999', pulse: false },
-  dead: { text: 'Bot crashed', color: '#b21f2d', dot: '#dc3545', pulse: false },
-  error: { text: 'Bot crashed', color: '#b21f2d', dot: '#dc3545', pulse: false },
-  unknown: { text: 'Bot offline', color: '#b21f2d', dot: '#dc3545', pulse: false },
-};
-
-let _botPollTimer = null;
-
-function setBotError(msg) {
-  const text = document.getElementById('bot-status-text');
-  const dot = document.getElementById('bot-status-dot');
-  if (text) { text.textContent = msg; text.parentElement.style.color = '#b21f2d'; }
-  if (dot) dot.style.background = '#dc3545';
-}
-
-function applyBotStatus(stage, running) {
-  const pill = document.getElementById('bot-status-pill');
-  const text = document.getElementById('bot-status-text');
-  const dot = document.getElementById('bot-status-dot');
-  const startBtn = document.getElementById('start-bot-btn');
-  const stopBtn = document.getElementById('stop-bot-btn');
-  if (!pill || !text || !dot) return;
-
-  let info = BOT_STAGE_DISPLAY[stage];
-  if (!info) {
-    // Unknown stage (e.g. an older bot that only reports "healthy"):
-    // fall back based on whether the bot process is actually running.
-    info = running ? BOT_STAGE_DISPLAY.in_meeting : BOT_STAGE_DISPLAY.unknown;
-  }
-  text.textContent = info.text;
-  pill.style.color = info.color;
-  dot.style.background = info.dot;
-  dot.style.boxShadow = info.pulse ? `0 0 0 3px ${info.dot}33` : 'none';
-
-  const transitional = stage === 'stopping' || stage === 'leaving';
-  if (startBtn) startBtn.disabled = running || transitional;
-  if (stopBtn) stopBtn.disabled = (!running && !transitional);
-}
-
-async function pollBotStatus(roomId) {
-  try {
-    const res = await fetch(`/api/rooms/${roomId}/floor-transcription/status`);
-    if (!res.ok) { applyBotStatus('unknown', false); return; }
-    const data = await res.json();
-    const stage = data.bot_reachable ? data.stage : 'unknown';
-    applyBotStatus(stage, data.running);
-    // Slow the poll once the bot has settled into a stable state.
-    const stable = !data.running && (stage === 'stopped' || stage === 'unknown');
-    schedulePoll(roomId, stable ? 8000 : 2500);
-  } catch (err) {
-    applyBotStatus('unknown', false);
-    schedulePoll(roomId, 8000);
-  }
-}
-
-function schedulePoll(roomId, delay) {
-  if (_botPollTimer) clearTimeout(_botPollTimer);
-  _botPollTimer = setTimeout(() => pollBotStatus(roomId), delay);
-}
-
-function startBotPolling(roomId, immediate) {
-  if (_botPollTimer) clearTimeout(_botPollTimer);
-  if (immediate) {
-    pollBotStatus(roomId);
-  } else {
-    schedulePoll(roomId, 500);
-  }
-}
-
-document.addEventListener('DOMContentLoaded', function() {
-  const pill = document.getElementById('bot-status-pill');
-  if (pill) startBotPolling(pill.dataset.roomId, true);
-});
 </script>
 
 
@@ -585,7 +462,7 @@ document.addEventListener('DOMContentLoaded', function() {
 <div class="section-card section-card--spaced-lg">
   <div class="section-header">
     <h2>Interpretation Booths ({{ booths|length }})</h2>
-    <a href="/admin/events/{{ event.id }}/rooms/{{ room.id }}/booths/" class="btn btn-sm btn-primary">Manage Booths</a>
+    <a href="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/booths/" class="btn btn-sm btn-primary">Manage Booths</a>
   </div>
 
   {% if booths %}
@@ -623,14 +500,14 @@ document.addEventListener('DOMContentLoaded', function() {
           </a>
         </td>
         <td>
-          <a href="/admin/events/{{ event.id }}/rooms/{{ room.id }}/booths/{{ bs.db.id }}/" class="btn btn-sm">View</a>
+          <a href="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/booths/{{ bs.db.id }}/" class="btn btn-sm">View</a>
         </td>
       </tr>
       {% endfor %}
     </tbody>
   </table>
   {% else %}
-  <p class="muted">No booths in this room. <a href="/admin/events/{{ event.id }}/rooms/{{ room.id }}/booths/">Add booths</a>.</p>
+  <p class="muted">No booths in this room. <a href="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/booths/">Add booths</a>.</p>
   {% endif %}
 </div>
 
@@ -654,7 +531,7 @@ document.addEventListener('DOMContentLoaded', function() {
   <!-- Assign Member Form -->
   <div class="token-form-card token-form-card--spaced-sm">
     <h3>Assign Coordinator</h3>
-    <form method="post" action="/admin/events/{{ event.id }}/rooms/{{ room.id }}/members/" class="token-form">
+    <form method="post" action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/members/" class="token-form">
       <div class="form-row">
         <div class="form-group">
           <label for="member_email">User Email</label>
@@ -702,12 +579,12 @@ document.addEventListener('DOMContentLoaded', function() {
         </td>
         <td class="actions-cell">
           <form method="post"
-                action="/admin/events/{{ event.id }}/rooms/{{ room.id }}/members/{{ m.id }}/invite"
+                action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/members/{{ m.id }}/invite"
                 class="inline-form form-inline-spaced">
             <button type="submit" class="btn btn-sm btn-outline btn-invite">✉️ Invite</button>
           </form>
           <form method="post"
-                action="/admin/events/{{ event.id }}/rooms/{{ room.id }}/members/{{ m.id }}/delete"
+                action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/members/{{ m.id }}/delete"
                 class="inline-form"
                 data-confirm="Remove {{ u.display_name }} from this room?">
             <button type="submit" class="btn btn-sm btn-danger">Remove</button>
@@ -727,7 +604,7 @@ document.addEventListener('DOMContentLoaded', function() {
 {% if is_event_owner %}
 <div class="danger-zone">
   <h3>Danger Zone</h3>
-  <form method="post" action="/admin/events/{{ event.id }}/rooms/{{ room.id }}/delete" class="inline-delete"
+  <form method="post" action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/delete" class="inline-delete"
         data-confirm="Delete room '{{ room.display_name }}'? All booths in this room will be removed.">
     <button type="submit" class="btn btn-danger">Delete Room</button>
     <span class="danger-text">This removes all booths and their invite tokens.</span>

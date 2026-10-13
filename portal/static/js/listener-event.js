@@ -1,3 +1,8 @@
+import { createDeliveryQueue } from './program-delivery.js';
+
+const captionDelivery = createDeliveryQueue();
+const speechDelivery = createDeliveryQueue();
+
 document
   .getElementById("toggle-captions-btn")
   .addEventListener("click", function () {
@@ -16,6 +21,62 @@ var eventSlug = eventData.eventSlug;
 var boothsData = eventData.booths;
 
 var roomsData = eventData.rooms;
+
+const shareEventBtn = document.getElementById("share-event-btn");
+const shareEventStatus = document.getElementById("share-event-status");
+var shareResetTimer = null;
+var shareClickId = 0;
+
+function announceShareStatus(message) {
+  if (!shareEventStatus) return;
+  // Clear first so the same message announced twice still triggers the live region.
+  shareEventStatus.textContent = "";
+  window.setTimeout(function () {
+    shareEventStatus.textContent = message;
+  }, 50);
+}
+
+shareEventBtn.addEventListener("click", async function () {
+  var clickId = ++shareClickId;
+  clearTimeout(shareResetTimer);
+  // The canonical public listener URL for this event, without a ?code= join code so
+  // sharing the link doesn't hand out access. Built server-side from the configured
+  // public base URL (see portal/routers/listener.py) rather than window.location, so
+  // the shared link is correct even behind a proxy or a different public hostname.
+  var url = eventData.shareUrl;
+
+  if (navigator.share) {
+    try {
+      await navigator.share({ title: document.title, url: url });
+      // The share sheet itself confirms success to the user; nothing more to announce.
+      // Still restore the label in case a previous click left "Copied!"/"Copy failed" showing.
+      shareEventBtn.textContent = "Share Event";
+      return;
+    } catch (error) {
+      if (error && error.name === "AbortError") {
+        // User dismissed the share sheet; do not fall back to clipboard.
+        shareEventBtn.textContent = "Share Event";
+        return;
+      }
+      console.error("Web Share failed, falling back to clipboard", error);
+    }
+  }
+
+  try {
+    await navigator.clipboard.writeText(url);
+    if (clickId !== shareClickId) return;
+    shareEventBtn.textContent = "Copied!";
+    announceShareStatus("Event link copied to clipboard.");
+  } catch (error) {
+    console.error("Failed to copy the event link", error);
+    if (clickId !== shareClickId) return;
+    shareEventBtn.textContent = "Copy failed";
+    announceShareStatus("Could not copy the event link.");
+  }
+  shareResetTimer = setTimeout(function () {
+    shareEventBtn.textContent = "Share Event";
+  }, 2000);
+});
 
 var roomSelect = document.getElementById("room-select");
 var languageSelect = document.getElementById("language-select");
@@ -37,6 +98,17 @@ var currentSourceType = null;
 var audioScheduler = null;
 
 function setStatus(text, cls) {
+  // #status is a live region, and rewriting it with the same badge makes some
+  // screen readers announce it again. WHEP reports ICE and peer changes
+  // separately, so the same status often arrives twice in a row.
+  var badge = statusEl.firstElementChild;
+  if (
+    badge &&
+    badge.textContent === text &&
+    badge.className === "status-badge " + cls
+  ) {
+    return;
+  }
   statusEl.innerHTML =
     '<span class="status-badge ' + cls + '">' + text + "</span>";
 }
@@ -73,7 +145,7 @@ var pendingAudioDelayMs = 0;
 var pendingTtsLang = null; // TTS language to start once live
 var pendingRoomId = null;
 var segmentStore = Object.create(null);
-var expectedSeq = 1;
+var expectedSeq = null;
 var isSegmentPlaying = false;
 var fallbackQueueTimer = null;
 var seqWaitTimer = null;
@@ -85,6 +157,8 @@ function normalizeAudioDelayMs(value) {
 }
 
 function stopCurrentStream() {
+  captionDelivery.reset();
+  speechDelivery.reset();
   WhepListener.stop();
   stopTtsWs();
   pendingBoothId = null;
@@ -106,7 +180,7 @@ function stopCurrentStream() {
     fallbackQueueTimer = null;
   }
   segmentStore = Object.create(null);
-  expectedSeq = 1;
+  expectedSeq = null;
   isSegmentPlaying = false;
   if (audioScheduler) {
     audioScheduler.reset();
@@ -126,6 +200,7 @@ function stopCurrentStream() {
 }
 
 function startTtsWs(roomId, langCode, boothId, audioDelayMs) {
+  speechDelivery.reset();
   stopTtsWs();
   if (!audioCtx) {
     audioCtx = new (window.AudioContext || window.webkitAudioContext)();
@@ -162,6 +237,12 @@ function startTtsWs(roomId, langCode, boothId, audioDelayMs) {
     if (event.data instanceof ArrayBuffer) {
       try {
         var frame = window.TTSParser.parseFrame(event.data);
+        if (!event.programDelivered) {
+          speechDelivery.schedule(frame.header, () => {
+            if (ttsWs) ttsWs.onmessage({data: event.data, programDelivered: true});
+          });
+          return;
+        }
         var seq = frame.header.seq;
         if (!seq) return;
 
@@ -169,14 +250,21 @@ function startTtsWs(roomId, langCode, boothId, audioDelayMs) {
         if (expectedSeq === null || expectedSeq === undefined) {
           expectedSeq = seq;
         }
+        if (seq < expectedSeq) return; // Late stage-2 audio must not replay an expired segment.
 
         segmentStore[seq] = {
           seq: seq,
           caption: frame.header.caption || "",
           translation: frame.header.translation || "",
-          error: frame.header.error || null,
+          error: frame.header.error || (frame.header.audio_pending === false && !frame.audioBytes.byteLength ? 'no_audio' : null),
           audioBuffer: null,
+          receivedAt: segmentStore[seq]?.receivedAt || Date.now(),
         };
+
+        if (frame.header.translation) {
+          renderItem({type: 'translation', status: 'final', text: frame.header.translation,
+            language_code: langCode, segment_id: 'seq-' + seq});
+        }
 
         if (
           !frame.header.error &&
@@ -514,6 +602,13 @@ function pumpSegmentQueue() {
       // We have already rendered the text in Steps 1 & 2.
       // Pause the queue and wait for the audio bundle to trigger pumpSegmentQueue again.
       isSegmentPlaying = false;
+      if (!seqWaitTimer) {
+        seqWaitTimer = setTimeout(() => {
+          seqWaitTimer = null;
+          if (segmentStore[expectedSeq]) segmentStore[expectedSeq].error = 'tts_timeout';
+          pumpSegmentQueue();
+        }, Math.max(0, 65000 - (Date.now() - nextSeg.receivedAt)));
+      }
       return;
     }
   } else {
@@ -551,6 +646,10 @@ function finishSegmentWithDelay(seg, seqId) {
 function handleCaptionsMessage(event) {
   try {
     var data = JSON.parse(event.data);
+    if (!event.programDelivered && ['caption', 'translation', 'translated_caption'].includes(data.type)) {
+      captionDelivery.schedule(data, () => handleCaptionsMessage({data: event.data, programDelivered: true}));
+      return;
+    }
     var waitingText = document.getElementById("waiting-text");
 
     if (data.type === "booth:state") {
@@ -610,6 +709,7 @@ function handleCaptionsMessage(event) {
           });
         }
       } else if (data.status === "final") {
+        if (expectedSeq === null && data.seq) expectedSeq = data.seq;
         var mode = captionModeSelect ? captionModeSelect.value : "original";
         var isTranslationActive =
           Boolean(translationLangSelect.value) && mode !== "original";
@@ -643,12 +743,12 @@ function handleCaptionsMessage(event) {
         var currentBox = document.getElementById("caption-current");
         if (currentBox) currentBox.textContent = "";
       }
-    } else if (data.type === "translation") {
+    } else if (data.type === "translation" || data.type === "translated_caption") {
       // Legacy support: translations should now come via the atomic bundle on ttsWs.
       // This block is preserved just in case some legacy clients still send it,
       // but under the new architecture it shouldn't be hit for floor audio.
       var sid = data.segment_id;
-      renderItem(data);
+      renderItem({...data, type: 'translation', segment_id: data.seq ? 'seq-' + data.seq : data.segment_id});
     } else if (data.type === "ping") {
       if (captionsWs && captionsWs.readyState === WebSocket.OPEN) {
         captionsWs.send("pong");
@@ -762,6 +862,7 @@ if (ttsSyncToggle) {
 }
 
 translationLangSelect.addEventListener("change", function () {
+  speechDelivery.reset();
   if (this.value) {
     if (captionModeSelect.value === "original") {
       captionModeSelect.value = "stacked";

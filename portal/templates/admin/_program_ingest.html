@@ -1,0 +1,108 @@
+<section id='program-ingest' class='token-form-card token-form-card--spaced program-ingest-card'
+  data-url='{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/program-ingest'>
+  <div class='program-ingest-head'>
+    <div>
+      <p class='program-ingest-eyebrow'>Live source</p>
+      <h3>Program stream ingest</h3>
+      <p class='program-ingest-lede'>Send this room's program feed to VoxBento for live captions, translation, and speech.</p>
+    </div>
+    <span id='program-state-badge' class='program-state-badge' data-state='loading'>Checking status</span>
+  </div>
+
+  <div class='program-signal-path' aria-label='OBS sends a WHIP stream to VoxBento, which produces captions, translations, and speech'>
+    <span class='program-signal-node'>OBS</span>
+    <span class='program-signal-arrow' aria-hidden='true'>→</span>
+    <span class='program-signal-node program-signal-node--active'>VoxBento</span>
+    <span class='program-signal-arrow' aria-hidden='true'>→</span>
+    <span class='program-signal-output'>Captions · Translation · TTS</span>
+  </div>
+
+  <div id='program-warning' class='program-ingest-warning' role='alert' hidden>
+    <span class='program-ingest-warning-icon' aria-hidden='true'>!</span>
+    <div>
+      <strong id='program-warning-title'>Program ingest needs attention</strong>
+      <p id='program-warnings'></p>
+    </div>
+  </div>
+
+  <div class='program-ingest-layout'>
+    <div class='program-ingest-setup'>
+      <div class='program-section-head'>
+        <span class='program-step'>1</span>
+        <div>
+          <h4>Connect OBS</h4>
+          <p>Choose <strong>WHIP</strong> in OBS, then paste this endpoint and the room token.</p>
+        </div>
+      </div>
+
+      <label for='program-endpoint'>WHIP server URL</label>
+      <div class='program-copy-field'>
+        <input id='program-endpoint' class='input' readonly>
+        <button type='button' class='btn btn-outline' id='program-copy-endpoint'>Copy URL</button>
+      </div>
+
+      <div class='program-primary-action'>
+        <button type='button' class='btn btn-primary' data-ingest-action='enable'>Enable ingest and create token</button>
+        <p>The token is room-specific and shown only once.</p>
+      </div>
+
+      <form id='program-secret-panel' class='program-secret-panel' hidden>
+        <div class='program-secret-head'>
+          <div>
+            <label for='program-secret'>Bearer token</label>
+            <p>Paste this into OBS as the Bearer Token. It expires in 30 days.</p>
+          </div>
+          <span>Shown once</span>
+        </div>
+        <div class='program-copy-field'>
+          <input id='program-secret' class='input' type='password' readonly autocomplete='off'>
+          <button type='button' class='btn btn-outline' id='program-reveal'>Show</button>
+          <button type='button' class='btn btn-outline' id='program-copy'>Copy token</button>
+        </div>
+      </form>
+    </div>
+
+    <aside class='program-ingest-monitor' aria-labelledby='program-monitor-title'>
+      <div class='program-section-head'>
+        <span class='program-step'>2</span>
+        <div>
+          <h4 id='program-monitor-title'>Monitor the feed</h4>
+          <p id='program-status' role='status' aria-live='polite'>Loading ingest status…</p>
+        </div>
+      </div>
+      <dl class='program-ingest-facts'>
+        <div><dt>Audio / video</dt><dd id='program-codecs'>—</dd></div>
+        <div><dt>Last connected</dt><dd id='program-connected'>Never</dd></div>
+        <div><dt>Last disconnected</dt><dd id='program-disconnected'>Never</dd></div>
+        <div><dt>Token expires</dt><dd id='program-expires'>Not created</dd></div>
+      </dl>
+    </aside>
+  </div>
+
+  <div class='program-ingest-controls'>
+    <div class='program-sync-control'>
+      <div>
+        <h4>Sync with the YouTube picture</h4>
+        <p>Use a visible clap and spoken count, then delay VoxBento's captions and speech until they match.</p>
+      </div>
+      <div class='program-sync-action'>
+        <label for='program-offset'>Delay</label>
+        <div class='program-number-field'>
+          <input id='program-offset' class='input' type='number' min='0' max='120000' step='100' value='{{ room.program_sync_offset_ms }}'>
+          <span>ms</span>
+        </div>
+        <button type='button' class='btn btn-outline' data-ingest-action='sync'>Save delay</button>
+      </div>
+    </div>
+
+    <div class='program-secondary-actions'>
+      <span>Source and credential controls</span>
+      <div>
+        <button type='button' class='btn btn-outline' data-ingest-action='rotate'>Rotate token</button>
+        <button type='button' class='btn btn-outline program-revoke-button' data-ingest-action='revoke'>Revoke token</button>
+        <button type='button' class='btn btn-outline' data-ingest-action='disable'>Switch to Jitsi bot</button>
+      </div>
+    </div>
+  </div>
+</section>
+<script type='module' src='/static/js/program-ingest.js'></script>

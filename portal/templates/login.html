@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 
-{% block title %}Sign In — Voxbento{% endblock %}
+{% block title %}Sign in — Voxbento{% endblock %}
 
 {% block head %}
 <link rel="stylesheet" href="{{ url_for('static', path='css/auth.css') }}" />
@@ -39,7 +39,7 @@
         <input type="hidden" name="next_url" value="{{ next_url|default('', true) }}" />
         <label for="password">Password</label>
         <input type="password" id="password" name="password" placeholder="Enter your password" required />
-        <button type="submit" class="btn btn-primary">Sign In</button>
+        <button type="submit" class="btn btn-primary">Sign in</button>
         <div class="login-forgot-row">
           <button type="button" id="forgot-password-link" class="login-forgot-link">Forgot password?</button>
         </div>
