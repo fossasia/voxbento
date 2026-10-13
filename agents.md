@@ -216,6 +216,11 @@ Manual browser check:
 - `uv.lock` is the source of truth for all Python dependencies.
 - Docker images: `bluenviron/mediamtx:1.18.2`, `ghcr.io/jitsi/*:stable-11248`
 
+Meeting source: `portal/meeting_source.py` owns the managed Jitsi agent lifecycle
+(desired state `rooms.meeting_agent_enabled`, migration 027, bounded restarts,
+restart reconciliation); `portal/routers/meeting_source.py` owns its owner controls.
+Never log or return the meeting URL. Read `docs/meeting-source.md` first.
+
 Program ingest: `portal/program_ingest.py` owns floor authorization/reconciliation;
 `portal/routers/program_ingest.py` owns private media auth and event-owner controls.
 Migration 025 adds protected credentials, source ownership and persistent floor
@@ -235,8 +240,9 @@ Every PR that adds, removes, or changes a feature **must** update these files in
 
 Do not defer documentation to a follow-up PR.
 
-Admin password sign-in requires `User.email_verified`; `/admin/login` and `/login`
-share the `login` rate-limit bucket (10 attempts per normalized email per hour).
+Password sign-in requires `User.email_verified`; everyone, admins included, signs in
+at `/login` (`login` rate-limit bucket, 10 attempts per normalized email per hour).
+`/admin/login` only redirects to `/login?next=/admin/`.
 
 Production deployments validate a separate candidate checkout before advancing
 the live checkout. Portal source and dependencies must come from the built image,

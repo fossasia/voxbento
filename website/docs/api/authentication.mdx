@@ -120,7 +120,7 @@ While external integrations use the Bearer tokens described above, the Voxbento 
 
 Voxbento issues cookies evaluated in the following order of precedence:
 
-1. **`user_token`**: Issued when a registered user logs in (via `/login` or `/admin/login`). It contains claims about their identity (`sub`) and whether they have site-wide admin rights (`is_admin=True`).
+1. **`user_token`**: Issued when a registered user logs in (via `/login`). It contains claims about their identity (`sub`) and whether they have site-wide admin rights (`is_admin=True`).
 2. **`session_token`**: Issued when a user clicks a magic invite link (`/join/{token}`). It is scoped to a specific `event_slug` and `booth_id` with a specific role.
 
 ### Role Resolution (`resolve_booth_role`)

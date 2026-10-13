@@ -9,17 +9,17 @@ import urllib.parse
 from datetime import timedelta
 from pathlib import Path
 
-import httpx
 import pycountry
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request, status
-from fastapi.responses import RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 from sqlalchemy import select, update
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from portal import meeting_source
 from portal.auth import (
-    create_user_token,
     get_accessible_event_ids,
     get_admin_flags,
     get_current_user,
@@ -28,7 +28,6 @@ from portal.auth import (
     require_room_event_access,
     require_super_admin,
     require_user,
-    verify_password,
 )
 from portal.booth_identity import make_booth_id, make_mediamtx_path, validate_event_slug, validate_language_code
 from portal.config import settings
@@ -79,7 +78,7 @@ from portal.database import (
     update_user_active,
 )
 from portal.email import send_role_invite_email
-from portal.globals import _JS_CACHE_BUST, booths, get_http_client
+from portal.globals import _JS_CACHE_BUST, booths
 from portal.models import (
     BoothTranslationLanguage,
     Event,
@@ -89,7 +88,7 @@ from portal.models import (
     User,
     utc_now,
 )
-from portal.rate_limit import check_rate_limit
+from portal.program_ingest import room_lock
 from portal.transcription import ALLOWED_MODELS, ProviderConfig, ProviderEnum, get_api_key
 from portal.transcription.worker import start_transcription_worker, stop_transcription_worker
 from portal.translations.constants import TRANSLATION_MODELS, TranslationProviderEnum
@@ -99,6 +98,7 @@ from portal.workspace_routing import management_template_context, management_url
 
 _BASE_DIR = Path(__file__).resolve().parent.parent
 
+logger = logging.getLogger(__name__)
 templates = Jinja2Templates(
     directory=str(_BASE_DIR / "templates"),
     context_processors=[management_template_context],
@@ -273,102 +273,14 @@ async def mission_control_grid(request: Request, event_slug: str, user=Depends(r
 
 
 @router.get("/admin/login")
-async def admin_login_page(request: Request):
-    user = await get_current_user(request)
-    if user:
-        if user.get("is_admin"):
-            return safe_redirect(url="/admin/", status_code=status.HTTP_303_SEE_OTHER)
-        user_id = int(user["sub"]) if user.get("sub") else None
-        if user_id:
-            async with get_session() as session:
-                memberships = await list_memberships_for_user(session, user_id)
-                room_memberships = await list_room_memberships_for_user(session, user_id)
-                if any(m.role == "event_owner" for m in memberships) or any(
-                    rm.role == "room_coordinator" for rm in room_memberships
-                ):
-                    return safe_redirect(url="/admin/", status_code=status.HTTP_303_SEE_OTHER)
-    return templates.TemplateResponse(request=request, name="admin/login.html", context={})
-
-
-@router.post("/admin/login")
-async def admin_login_submit(request: Request):
-    form = await request.form()
-    email = (form.get("email", "") or "").strip().lower()
-    # Passwords are compared verbatim: never strip them. Leading/trailing
-    # whitespace may be part of the stored credential (matches /login).
-    password = form.get("password", "") or ""
-
-    if not email or not password:
-        return templates.TemplateResponse(
-            request=request,
-            name="admin/login.html",
-            context={"error": "Invalid email or password.", "email": email},
-            status_code=status.HTTP_403_FORBIDDEN,
-        )
-
-    if not check_rate_limit("login", email, max_requests=10, window_seconds=3600):
-        return templates.TemplateResponse(
-            request=request,
-            name="admin/login.html",
-            context={"error": "Too many attempts. Try again later.", "email": email},
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-        )
-
-    async with get_session() as session:
-        user = await get_user_by_email(session, email)
-        if (
-            user is None
-            or not user.is_active
-            or not user.password_hash
-            or not verify_password(password, user.password_hash)
-        ):
-            return templates.TemplateResponse(
-                request=request,
-                name="admin/login.html",
-                context={"error": "Invalid email or password.", "email": email},
-                status_code=status.HTTP_403_FORBIDDEN,
-            )
-
-        if not user.email_verified:
-            return templates.TemplateResponse(
-                request=request,
-                name="admin/login.html",
-                context={"error": "Please verify your email address first.", "email": email},
-                status_code=status.HTTP_403_FORBIDDEN,
-            )
-
-        has_admin_access = user.is_admin
-        if not has_admin_access:
-            memberships = await list_memberships_for_user(session, user.id)
-            room_memberships = await list_room_memberships_for_user(session, user.id)
-            has_admin_access = any(m.role == "event_owner" for m in memberships) or any(
-                rm.role == "room_coordinator" for rm in room_memberships
-            )
-
-        if not has_admin_access:
-            return templates.TemplateResponse(
-                request=request,
-                name="admin/login.html",
-                context={"error": "Access denied. Admin privileges required.", "email": email},
-                status_code=status.HTTP_403_FORBIDDEN,
-            )
-
-    token = create_user_token(
-        user_id=user.id,
-        email=user.email,
-        display_name=user.display_name,
-        is_admin=user.is_admin,
-    )
-    response = safe_redirect(url="/admin/", status_code=status.HTTP_303_SEE_OTHER)
-    response.set_cookie(
-        key="user_token", value=token, httponly=True, samesite="lax", max_age=settings.jwt_expiry_seconds
-    )
-    return response
+async def admin_login_page():
+    """Retired admin sign-in page; everyone signs in through ``/login``."""
+    return safe_redirect(url="/login?next=/admin/", status_code=status.HTTP_303_SEE_OTHER)
 
 
 @router.get("/admin/logout")
 async def admin_logout():
-    response = safe_redirect(url="/admin/login", status_code=status.HTTP_303_SEE_OTHER)
+    response = safe_redirect(url="/login", status_code=status.HTTP_303_SEE_OTHER)
     response.delete_cookie("admin_token")
     response.delete_cookie("user_token")
     response.delete_cookie("session_token")
@@ -427,21 +339,34 @@ async def admin_dashboard(request: Request, page: int = 1):
 
 
 @router.get("/admin/events/", dependencies=[Depends(require_admin)])
-async def admin_event_list(request: Request, page: int = 1):
+async def admin_event_list(request: Request, page: int = 1, search: str | None = None):
+    requested_page = page
+    search = (search or "").strip() or None
     admin_flags = await get_admin_flags(request)
     user = await get_current_user(request)
     user_id = int(user["sub"]) if user and user.get("sub") else None
     allowed_event_ids = await _management_event_ids(request, user_id)
     limit = 20
-    offset = (page - 1) * limit
     async with get_session() as session:
-        total_events = await count_events(session, allowed_event_ids=allowed_event_ids)
-        events = await list_events(session, limit=limit, offset=offset, allowed_event_ids=allowed_event_ids)
-    total_pages = max(1, math.ceil(total_events / limit))
+        total_events = await count_events(session, allowed_event_ids=allowed_event_ids, search=search)
+        total_pages = max(1, math.ceil(total_events / limit))
+        page = min(max(page, 1), total_pages)
+        offset = (page - 1) * limit
+        events = await list_events(
+            session, limit=limit, offset=offset, allowed_event_ids=allowed_event_ids, search=search
+        )
     return templates.TemplateResponse(
         request=request,
         name="admin/event_list.html",
-        context={"events": events, "page": page, "total_pages": total_pages, **admin_flags},
+        context={
+            "events": events,
+            "page": page,
+            "requested_page": requested_page,
+            "total_pages": total_pages,
+            "total_events": total_events,
+            "search": search,
+            **admin_flags,
+        },
     )
 
 
@@ -769,8 +694,20 @@ async def admin_event_api_settings_post(
 
 @router.post("/admin/events/{event_id}/delete", dependencies=[Depends(require_event_owner)])
 async def admin_delete_event(request: Request, event_id: int):
-    async with get_session() as session:
-        await delete_event(session, event_id)
+    """Delete an event by ID, returning 404 if missing or redirecting with an error alert on database failure."""
+    try:
+        async with get_session() as session:
+            deleted = await delete_event(session, event_id)
+            if not deleted:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event not found.")
+    except HTTPException:
+        raise
+    except SQLAlchemyError as e:
+        logger.error(f"Failed to delete event {event_id}: {e}")
+        return safe_redirect(
+            url=management_url(request, "events/?error=delete_failed"),
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
     return safe_redirect(url=management_url(request, "events/"), status_code=status.HTTP_303_SEE_OTHER)
 
 
@@ -956,7 +893,6 @@ async def get_translation_models():
     return TRANSLATION_MODELS
 
 
-logger = logging.getLogger(__name__)
 MAX_AUDIO_DELAY_MS = 10_000
 
 
@@ -1029,105 +965,46 @@ async def admin_delete_api_key(request: Request, event_id: int, key_id: int):
         return {"success": True}
 
 
+# Legacy room-scoped API retained for coordinators and scripts. It drives the
+# same managed meeting agent as the room page, so the reconcile loop owns retries
+# and starts the floor worker once audio arrives.
 @router.post("/api/rooms/{room_id}/floor-transcription/start", dependencies=[Depends(require_room_event_access)])
 async def api_start_floor_transcription(room_id: int):
-    async with get_session() as session:
+    async with room_lock(room_id), get_session() as session:
         room = await get_room_by_id(session, room_id)
         if not room or not room.floor_transcription_enabled:
             raise HTTPException(status_code=400, detail="Floor transcription not enabled or invalid room")
         if room.floor_source == "program_ingest":
-            raise HTTPException(status_code=409, detail="Program ingest owns the floor; transcription starts automatically when audio arrives")
+            raise HTTPException(
+                status_code=409,
+                detail="Program ingest owns the floor; transcription starts automatically when audio arrives",
+            )
         if room.floor_transcription_provider == "none":
             raise HTTPException(status_code=400, detail="Cannot start transcription with 'none' provider")
         event = await get_event_by_id(session, room.event_id)
         if not event:
             raise HTTPException(status_code=400, detail="Event not found")
-        event_slug = event.slug
-        clean_name = re.sub("[^a-zA-Z0-9]+", "", room.display_name)
-        room_id_str = f"Voxbento-{event.slug}-{clean_name}"
-        if room.jitsi_url:
-            jitsi_url = room.jitsi_url
-            parsed = urllib.parse.urlparse(room.jitsi_url)
-            internal_parsed = urllib.parse.urlparse(settings.effective_jitsi_internal_base)
-            base_parsed = urllib.parse.urlparse(settings.effective_jitsi_base_url)
-            if parsed.netloc in ("jitsi.voxbento.com", base_parsed.netloc) or parsed.netloc.startswith(
-                ("localhost", "127.0.0.1")
-            ):
-                parsed = parsed._replace(scheme=internal_parsed.scheme, netloc=internal_parsed.netloc)
-                jitsi_url = urllib.parse.urlunparse(parsed)
-            else:
-                jitsi_url = room.jitsi_url
-        else:
-            jitsi_url = f"{settings.effective_jitsi_internal_base}/{room_id_str}"
-    try:
-        client = get_http_client()
-        resp = await client.post(
-            f"{settings.floor_bot_base}/start",
-            json={
-                "event_slug": event_slug,
-                "room_id": room_id,
-                "jitsi_url": jitsi_url,
-                "mediamtx_rtsp_base": settings.mediamtx_rtsp_base,
-            },
-            timeout=10.0,
-        )
-        resp.raise_for_status()
-    except Exception as e:
-        logger.error(f"Failed to start floor-bot: {e}")
-        raise HTTPException(status_code=502, detail="Bot service connection failed or access was revoked upstream.")
-    # Ownership may change while the bot's slow browser startup is in flight.
-    async with get_session() as session:
-        current_room = await get_room_by_id(session, room_id)
-        if not current_room or current_room.floor_source != "jitsi_bot":
-            try:
-                await client.post(
-                    f"{settings.floor_bot_base}/stop", json={"event_slug": event_slug, "room_id": room_id}
-                )
-            except httpx.HTTPError:
-                logger.warning("Failed to clean up floor-bot after ownership changed room_id=%s", room_id)
-            raise HTTPException(status_code=409, detail="Floor source changed during bot startup")
-    try:
-        api_key = get_api_key(event, ProviderEnum(room.floor_transcription_provider))
-        config = ProviderConfig(api_key=api_key)
-        await start_transcription_worker(
-            event_slug=event_slug,
-            language_code="floor",
-            booth_id=make_booth_id(event_slug, room_id, "floor"),
-            broadcast_callback=broadcast_transcription,
-            provider=room.floor_transcription_provider,
-            model_size=room.floor_transcription_model,
-            config=config,
-            transcription_language=room.floor_language_code,
-            room_id=room_id,
-        )
-    except Exception as e:
-        logger.error(f"Failed to start transcription worker: {e}")
-        client = get_http_client()
-        await client.post(f"{settings.floor_bot_base}/stop", json={"event_slug": event_slug, "room_id": room_id})
-        raise HTTPException(status_code=500, detail=f"Failed to start transcription worker: {e}")
+        await meeting_source.connect(room, event, None, confirm_source_change=False)
     return {"status": "started"}
 
 
 @router.post("/api/rooms/{room_id}/floor-transcription/stop", dependencies=[Depends(require_room_event_access)])
 async def api_stop_floor_transcription(room_id: int):
-    async with get_session() as session:
+    async with room_lock(room_id), get_session() as session:
         room = await get_room_by_id(session, room_id)
         if not room:
             raise HTTPException(status_code=400, detail="Invalid room")
         if room.floor_source == "program_ingest":
-            raise HTTPException(status_code=409, detail="Revoke or disable program ingest in the room settings to stop its floor source")
+            raise HTTPException(
+                status_code=409, detail="Revoke or disable program ingest in the room settings to stop its floor source"
+            )
         event = await get_event_by_id(session, room.event_id)
         if not event:
             raise HTTPException(status_code=400, detail="Event not found")
-        event_slug = event.slug
-    try:
-        client = get_http_client()
-        await client.post(
-            f"{settings.floor_bot_base}/stop", json={"event_slug": event_slug, "room_id": room_id}, timeout=15.0
-        )
-    except Exception as e:
-        logger.error(f"Failed to stop floor-bot: {e}")
-    await stop_transcription_worker(make_booth_id(event_slug, room_id, "floor"))
+        stopped = await meeting_source.disconnect(room, event)
+    if not stopped:
+        # Mirror the owner route: the agent may still be in the meeting until reconcile retries.
+        return JSONResponse({"status": "stopping", "cleanup_pending": True}, status_code=202)
     return {"status": "stopped"}
 
 
@@ -1140,25 +1017,12 @@ async def api_floor_transcription_status(room_id: int):
         event = await get_event_by_id(session, room.event_id)
         if not event:
             raise HTTPException(status_code=404, detail="Event not found")
-        event_slug = event.slug
-    running = False
-    stage = "stopped"
-    bot_reachable = True
-    try:
-        client = get_http_client()
-        resp = await client.get(f"{settings.floor_bot_base}/status", timeout=5.0)
-        resp.raise_for_status()
-        data = resp.json()
-        process_key = f"{event_slug}-{room_id}"
-        info = (data.get("active_rooms") or {}).get(process_key)
-        if info:
-            stage = info.get("stage", info.get("state", "unknown"))
-            running = info.get("state") == "healthy"
-    except Exception as e:
-        logger.error(f"Failed to query floor-bot status: {e}")
-        bot_reachable = False
-        stage = "unknown"
-    return {"running": running, "stage": stage, "bot_reachable": bot_reachable}
+        body = meeting_source.status(room)
+    # Keep the pre-managed fields with their original meaning (raw bot stage such as
+    # launching, in_meeting or dead) so existing scripts and monitors keep working;
+    # the managed lifecycle is reported separately in "state".
+    body["bot_reachable"], body["stage"], body["running"] = await meeting_source.bot_stage(event.slug, room.id)
+    return body
 
 
 @router.post("/admin/events/{event_id}/rooms/{room_id}/delete", dependencies=[Depends(require_admin)])

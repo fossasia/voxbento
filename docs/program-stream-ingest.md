@@ -76,8 +76,41 @@ token. Revocation is committed before media cleanup: if MediaMTX cannot confirm
 the disconnect, the API returns `202` with `cleanup_pending: true`, the old token
 remains invalid, and reconciliation retries cleanup. Revoke keeps program
 ownership (it does not silently restart the bot).
-“Use Jitsi floor bot” explicitly returns ownership; start the bot separately.
+“Switch to Jitsi bot” explicitly returns ownership; connect the meeting from the
+room's **Meeting source** card. Connecting the meeting while program ingest owns
+the floor asks for confirmation, then performs the same switch.
 All source changes affect VoxBento only, not the independent YouTube output.
+
+## Browser program-audio sender
+
+For venue sound desks without a WHIP encoder, the event owner can publish the floor
+directly from the room page's **Program audio sender** panel. It selects a local
+audio input (use a USB sound-desk feed), shows a live level meter, and publishes
+Opus over authenticated WHIP to the same canonical `{event_slug}/{room_id}/floor`
+path. Media never traverses FastAPI; the browser negotiates WebRTC with MediaMTX.
+
+The sender uses a **short-lived room-scoped session secret**, not the 30-day encoder
+token. `POST /admin/events/{id}/rooms/{id}/program-sender` mints a secret that
+expires after `PROGRAM_SENDER_SESSION_TTL_SECS` (default 150s). The TTL bounds how
+long a *new* publish may be authorized; it does not revoke a session that is already
+connected, so an established browser broadcast is not kicked when the secret expires.
+It is stored only as a PBKDF2 digest in `program_session_secret_hash`, is independent
+of the encoder key (`program_key_hash`), and is accepted by the publish authorizer
+alongside it. The secret lives only in page memory and is cleared on stop and page
+hide. Apply migration 026 (`uv run alembic upgrade head`) with this feature.
+
+Ownership stays explicit. Starting is rejected with `409` when another program-ingest
+publisher — an external encoder or another browser sender — is live or still
+negotiating on the floor; it never displaces one. The Jitsi floor bot is a deliberate
+takeover on the owner's click: the bot is stopped first, then the floor is claimed.
+Stopping releases only this sender's session — it clears the session secret and kicks
+that session (and only when a browser session was actually open, so a rejected start
+or stray Stop can never disconnect an encoder), leaving any encoder credential and the
+`program_ingest` floor selection intact. Rotating/revoking/switching the source from
+the ingest panel also invalidates any in-flight sender session. The sender UI state
+machine covers connecting, live, reconnecting, no-audio, permission-denied, and
+stopped; on a transient WebRTC failure it drops the stale WHIP resource, releases the
+old session, and reconnects with a fresh one.
 
 ## Processing, recovery, and capacity
 
@@ -130,7 +163,10 @@ and differs by viewer/network; this is manual calibration, not frame-accurate sy
 
 ## Verification / event rehearsal
 
-- Unit/integration: `uv run pytest tests/test_program_ingest.py tests/test_caption_aggregator.py tests/test_translation_pipeline.py`.
+- Unit/integration: `uv run pytest tests/test_program_ingest.py tests/test_program_sender.py tests/test_caption_aggregator.py tests/test_translation_pipeline.py`.
+- Browser sender rehearsal: from a second owner device, Start the sender on a free
+  floor and confirm captions; confirm Start is rejected while an encoder is live;
+  confirm Stop frees the floor; pull the network briefly and confirm it reconnects.
 - Native real-media transport: set `MEDIAMTX_TEST_BINARY` to a 1.18.2 binary and run
   `uv run pytest tests/test_program_ingest_media.py -v`. Requires FFmpeg with WHIP.
   It starts isolated local services, publishes generated audio, decodes PCM, and
@@ -147,7 +183,7 @@ and differs by viewer/network; this is manual calibration, not frame-accurate sy
   This last external/encoder rehearsal is required before production sign-off;
   an automated local test cannot establish it.
 
-Rollback: disable/revoke room ingest and explicitly select/start the Jitsi bot,
+Rollback: disable/revoke room ingest and click **Connect meeting** in the room's Meeting source,
 then set the feature flag false. Keep the floor authentication boundary and
 private ports; do not restore anonymous public floor publishing. Migration 025
 supports downgrade, but back up first: downgrade removes program configuration

@@ -39,6 +39,8 @@ room_locks: dict[int, asyncio.Lock] = {}
 capacity_lock = asyncio.Lock()
 FLOOR_PATH = re.compile(r"([a-z0-9]+(?:-[a-z0-9]+)*)/([1-9][0-9]*)/floor")
 MEDIA_CONTROL_TIMEOUT = 3.0
+# A freshly minted sender session may still be negotiating; reject duplicate starts within this window.
+SENDER_PENDING_SECS = 15.0
 
 
 def room_lock(room_id: int) -> asyncio.Lock:
@@ -144,6 +146,33 @@ def key_digest_valid(room: Room, digest: str) -> bool:
     )
 
 
+def session_digest_valid(room: Room, digest: str) -> bool:
+    """Validate the short-lived browser-sender secret; independent of the encoder key."""
+    return bool(
+        room.floor_source == "program_ingest"
+        and room.program_session_secret_hash
+        and secrets.compare_digest(room.program_session_secret_hash, digest)
+        and room.program_session_secret_expires_at
+        and aware(room.program_session_secret_expires_at) > utc_now()
+    )
+
+
+def credential_digest_valid(room: Room, digest: str) -> bool:
+    """A floor publisher may present either the encoder key or a browser-sender secret."""
+    return key_digest_valid(room, digest) or session_digest_valid(room, digest)
+
+
+def has_valid_credential(room: Room) -> bool:
+    now = utc_now()
+    key_live = bool(room.program_key_hash and room.program_key_expires_at and aware(room.program_key_expires_at) > now)
+    session_live = bool(
+        room.program_session_secret_hash
+        and room.program_session_secret_expires_at
+        and aware(room.program_session_secret_expires_at) > now
+    )
+    return key_live or session_live
+
+
 def deny(ip: str) -> None:
     now = time.monotonic()
     start, count = failures.get(ip, (now, 0))
@@ -212,7 +241,7 @@ async def authorize_publish(data: MediaAuth) -> None:
                 not settings.program_ingest_enabled
                 or data.protocol != "webrtc"
                 or data.query
-                or not key_digest_valid(room, presented_digest)
+                or not credential_digest_valid(room, presented_digest)
             ):
                 deny(data.ip)
             try:
@@ -240,7 +269,7 @@ async def authorize_publish(data: MediaAuth) -> None:
         # MediaMTX calls and credential KDF work happen before reaching it.
         async with capacity_lock, get_session() as session:
             room = await session.get(Room, parsed_room_id)
-            if room is None or not key_digest_valid(room, presented_digest):
+            if room is None or not credential_digest_valid(room, presented_digest):
                 deny(data.ip)
             if room.program_session_id and room.program_session_id != session_id:
                 raise HTTPException(409, "A floor publisher is already connected or connecting")
@@ -258,6 +287,18 @@ async def authorize_publish(data: MediaAuth) -> None:
         current = health.setdefault(parsed_room_id, IngestHealth())
         current.reservation_started_at = time.monotonic()
         current.missing_since = None
+
+
+def pipeline_problem(room: Room, event: Event) -> str | None:
+    """Return why room settings block the canonical floor pipeline, if they do."""
+    if not room.floor_transcription_enabled or room.floor_transcription_provider == "none":
+        return "Floor transcription is disabled. Enable it in the room AI settings."
+    if not room.floor_language_code:
+        return "Select the floor source language in the room AI settings."
+    provider = ProviderEnum(room.floor_transcription_provider)
+    if provider != ProviderEnum.LOCAL and (not event.transcription_api_enabled or not get_api_key(event, provider)):
+        return "Enable the event transcription API and configure its provider key."
+    return None
 
 
 async def media_path(path: str) -> MediaPath | None:
@@ -320,6 +361,7 @@ async def configure_source(room: Room, event: Event, action: str, offset_ms: int
         )
     response.raise_for_status()
     if room.floor_source == "jitsi_bot" and action == "enable":
+        room.meeting_agent_enabled = False
         try:
             response = await client.post(
                 f"{settings.floor_bot_base}/stop",
@@ -344,6 +386,9 @@ async def configure_source(room: Room, event: Event, action: str, offset_ms: int
     room.program_sync_offset_ms = offset_ms
     room.program_key_hash = None
     room.program_key_expires_at = None
+    # Any source or credential change also invalidates an in-flight browser session.
+    room.program_session_secret_hash = None
+    room.program_session_secret_expires_at = None
     room.floor_source = "jitsi_bot" if action == "disable" else "program_ingest"
     health.pop(room.id, None)
     secret = None
@@ -355,17 +400,107 @@ async def configure_source(room: Room, event: Event, action: str, offset_ms: int
     return secret
 
 
+async def ensure_floor_path(path: str) -> None:
+    """Create or normalize the MediaMTX floor path with duplicate protection off."""
+    client = get_http_client()
+    response = await client.patch(
+        f"{settings.mediamtx_api_base}/v3/config/paths/patch/{path}",
+        json={"overridePublisher": False, "alwaysAvailable": False},
+        timeout=MEDIA_CONTROL_TIMEOUT,
+    )
+    if response.status_code == 404:
+        response = await client.post(
+            f"{settings.mediamtx_api_base}/v3/config/paths/add/{path}",
+            json={"overridePublisher": False, "alwaysAvailable": False},
+            timeout=MEDIA_CONTROL_TIMEOUT,
+        )
+    response.raise_for_status()
+
+
+async def open_sender_session(room: Room, event: Event, offset_ms: int, ttl_secs: int) -> str:
+    """Claim a free floor for the browser sender and mint a short-lived publish secret.
+
+    Caller holds the room lock and DB transaction. Starting is rejected with 409 when
+    an external encoder or another sender owns the floor; the Jitsi floor bot is an
+    explicit takeover on the owner's click. Never touches the encoder credential.
+    """
+    path = make_mediamtx_path(event.slug, room.id, "floor")
+    if room.floor_source == "program_ingest":
+        # Floor already owned by program ingest; never displace a connected or
+        # still-negotiating publisher (external encoder or another sender).
+        current_path = await media_path(path)
+        reservation = health.get(room.id)
+        reservation_recent = bool(
+            reservation
+            and reservation.reservation_started_at
+            and time.monotonic() - reservation.reservation_started_at < SENDER_PENDING_SECS
+        )
+        if (current_path and current_path.source is not None) or reservation_recent:
+            raise HTTPException(409, "Another source is publishing to the floor; stop it before starting the browser sender.")
+    else:
+        # Explicit takeover from the Jitsi floor bot. Stop it before judging occupancy.
+        room.meeting_agent_enabled = False
+        try:
+            response = await get_http_client().post(
+                f"{settings.floor_bot_base}/stop",
+                json={"event_slug": event.slug, "room_id": room.id},
+                timeout=MEDIA_CONTROL_TIMEOUT,
+            )
+            response.raise_for_status()
+        except httpx.RequestError:
+            logger.warning("program_ingest floor_bot_unreachable room_id=%s", room.id)
+        current_path = await media_path(path)
+    await ensure_floor_path(path)
+    # Clear a lingering bot source on takeover, or a stale program-ingest reservation.
+    await kick(path, current_path.source if current_path else None)
+    if room.program_session_id:
+        await kick(path, MediaSource(type="webRTCSession", id=room.program_session_id))
+        room.program_session_id = None
+    await stop_transcription_worker(make_booth_id(event.slug, room.id, "floor"))
+    room.program_sync_offset_ms = offset_ms
+    room.floor_source = "program_ingest"
+    secret = secrets.token_urlsafe(32)
+    room.program_session_secret_hash = await asyncio.to_thread(digest_program_secret, secret)
+    room.program_session_secret_expires_at = utc_now() + timedelta(seconds=ttl_secs)
+    # Mark the session pending so a racing duplicate start is rejected, not clobbered.
+    pending = health.setdefault(room.id, IngestHealth())
+    pending.reservation_started_at = time.monotonic()
+    pending.missing_since = None
+    logger.info("program_ingest sender_session_opened room_id=%s", room.id)
+    return secret
+
+
+async def close_sender_session(room: Room, event: Event, secret: str | None) -> None:
+    """Release only the browser session whose secret matches the one presented.
+
+    Binding to the secret stops a delayed or foreign DELETE from clearing a newer
+    session's reservation or disconnecting an external encoder that owns the floor.
+    """
+    if not secret or not room.program_session_secret_hash:
+        return
+    digest = await asyncio.to_thread(digest_program_secret, secret)
+    if not secrets.compare_digest(room.program_session_secret_hash, digest):
+        return
+    room.program_session_secret_hash = None
+    room.program_session_secret_expires_at = None
+    path = make_mediamtx_path(event.slug, room.id, "floor")
+    if room.program_session_id:
+        await kick(path, MediaSource(type="webRTCSession", id=room.program_session_id))
+        room.program_session_id = None
+        room.program_disconnected_at = utc_now()
+    # Always drop the pending reservation for the matched session so retries are not blocked.
+    health.pop(room.id, None)
+    logger.info("program_ingest sender_session_closed room_id=%s", room.id)
+
+
 async def reconcile_room(room: Room, event: Event, path: MediaPath | None) -> None:
     current = health.setdefault(room.id, IngestHealth())
     path_name = make_mediamtx_path(event.slug, room.id, "floor")
     booth_id = make_booth_id(event.slug, room.id, "floor")
     now = time.monotonic()
-    permitted = bool(
-        settings.program_ingest_enabled
-        and room.program_key_hash
-        and room.program_key_expires_at
-        and aware(room.program_key_expires_at) > utc_now()
-    )
+    # A short-lived sender secret gates new publishes, not an already-connected session.
+    session_live = bool(path and path.source and room.program_session_id and path.source.id == room.program_session_id)
+    permitted = bool(settings.program_ingest_enabled and (has_valid_credential(room) or session_live))
     if path and path.source and (not permitted or path.source.id != room.program_session_id):
         await kick(path_name, path.source)
         path = None
@@ -405,10 +540,8 @@ async def reconcile_room(room: Room, event: Event, path: MediaPath | None) -> No
         problem = "No supported audio track. Configure the WHIP encoder to send Opus audio."
     elif now - current.last_progress >= settings.program_ingest_stall_secs:
         problem = "Media has stalled. Check the encoder and network."
-    elif not room.floor_transcription_enabled or room.floor_transcription_provider == "none":
-        problem = "Floor transcription is disabled. Enable it in the room AI settings."
-    elif not room.floor_language_code:
-        problem = "Select the floor source language in the room AI settings."
+    else:
+        problem = pipeline_problem(room, event)
     if problem:
         current.state, current.reason = "degraded", problem
         await stop_transcription_worker(booth_id)
@@ -416,14 +549,7 @@ async def reconcile_room(room: Room, event: Event, path: MediaPath | None) -> No
         current.worker_started_at = None
         return
     current.state, current.reason = "receiving", "Audio received; starting transcription."
-    provider = ProviderEnum(room.floor_transcription_provider)
-    api_key = get_api_key(event, provider)
-    if provider != ProviderEnum.LOCAL and (not event.transcription_api_enabled or not api_key):
-        current.state, current.reason = "degraded", "Enable the event transcription API and configure its provider key."
-        await stop_transcription_worker(booth_id)
-        current.worker_config = None
-        current.worker_started_at = None
-        return
+    api_key = get_api_key(event, ProviderEnum(room.floor_transcription_provider))
     config = (room.floor_transcription_provider, room.floor_transcription_model, room.floor_language_code)
     if current.worker_config and current.worker_config != config:
         await stop_transcription_worker(booth_id)
