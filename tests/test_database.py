@@ -1306,6 +1306,32 @@ async def test_list_users_pages_through_created_at_ties_without_gaps(db: AsyncSe
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("unsupported_sort", ["__repr__", "unknown_field"])
+async def test_list_users_unsupported_sort_by_falls_back_to_created_at(db: AsyncSession, unsupported_sort: str):
+    base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    # Day 2, Day 0, Day 1, Day 1 (tied dates to verify id tie-breaker)
+    ids = await _create_users_joined_at(
+        db, [base + timedelta(days=2), base, base + timedelta(days=1), base + timedelta(days=1)]
+    )
+
+    users = await list_users(db, sort_by=unsupported_sort, sort_order="desc")
+
+    # In descending order: day 2 (ids[0]), day 1 tie-broken by id desc (ids[3] before ids[2]), day 0 (ids[1])
+    assert [u.id for u in users] == [ids[0], ids[3], ids[2], ids[1]]
+
+
+@pytest.mark.anyio
+async def test_list_users_valid_sort_by_column(db: AsyncSession):
+    await create_user(db, email="beta@example.com", display_name="User B")
+    await create_user(db, email="alpha@example.com", display_name="User A")
+    await db.flush()
+
+    users = await list_users(db, sort_by="email", sort_order="asc")
+    emails = [u.email for u in users]
+    assert emails.index("alpha@example.com") < emails.index("beta@example.com")
+
+
+@pytest.mark.anyio
 async def test_list_events_default_limit_does_not_break(db: AsyncSession):
     for i in range(3):
         await create_event(db, slug=f"ev-def-{i}", display_name=f"Ev {i}")

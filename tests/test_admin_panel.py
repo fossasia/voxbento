@@ -1823,6 +1823,31 @@ async def test_user_list_orders_same_join_time_by_newest_id(admin_cookie):
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("sort_field", ["__repr__", "unknown_field"])
+async def test_user_list_unsupported_sort_by_falls_back_to_default_ordering(admin_cookie, sort_field):
+    await _seed_users_with_join_dates()
+
+    async with _client() as c:
+        resp = await c.get(f"/admin/users/?sort_by={sort_field}", cookies=admin_cookie)
+
+    assert resp.status_code == 200
+    body = resp.text
+    assert body.index("newest@example.com") < body.index("middle@example.com") < body.index("oldest@example.com")
+
+
+@pytest.mark.anyio
+async def test_user_list_valid_sort_by_orders_correctly(admin_cookie):
+    await _seed_users_with_join_dates()
+
+    async with _client() as c:
+        resp = await c.get("/admin/users/?sort_by=email&sort_order=asc", cookies=admin_cookie)
+
+    assert resp.status_code == 200
+    body = resp.text
+    assert body.index("middle@example.com") < body.index("newest@example.com") < body.index("oldest@example.com")
+
+
+@pytest.mark.anyio
 async def test_user_list_badge_shows_total_across_pages(admin_cookie):
     from portal.database import create_user, get_session
 

@@ -549,6 +549,17 @@ async def count_users(session: AsyncSession, search: str | None = None) -> int:
     return result.scalar_one()
 
 
+_USER_SORT_COLUMNS = {
+    "id": User.id,
+    "email": User.email,
+    "display_name": User.display_name,
+    "is_admin": User.is_admin,
+    "email_verified": User.email_verified,
+    "is_active": User.is_active,
+    "created_at": User.created_at,
+}
+
+
 async def list_users(
     session: AsyncSession,
     *,
@@ -563,7 +574,7 @@ async def list_users(
     if search:
         stmt = stmt.where(or_(User.email.ilike(f"%{search}%"), User.display_name.ilike(f"%{search}%")))
 
-    sort_column = getattr(User, sort_by, User.created_at)
+    sort_column = _USER_SORT_COLUMNS.get(sort_by, User.created_at)
     # Tie-break on id so rows sharing a sort value keep a stable order across pages.
     if sort_order == "desc":
         order_by = (sort_column.desc(), User.id.desc())
