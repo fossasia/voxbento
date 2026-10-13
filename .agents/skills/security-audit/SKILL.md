@@ -27,7 +27,7 @@ description: Use this skill for security reviews of VoxBento code. Covers OWASP 
 
 ### A01 — Broken Access Control
 - [ ] All admin routes use `Depends(require_admin)`.
-- [ ] `require_admin` checks `user_token` (is_admin or event_admin) then `admin_token`.
+- [ ] `require_admin` checks `user_token` for site-wide admin or scoped membership access.
 - [ ] WHIP URL only returned to active interpreter (`check_publish_permission` in `BoothRegistry`).
 - [ ] WS `booth:set-active`: only coordinator or current active can reassign.
 - [ ] WS token scope: `session_token.event_slug + language_code` must match `booth_id`.
@@ -39,7 +39,7 @@ description: Use this skill for security reviews of VoxBento code. Covers OWASP 
 - [ ] `API_KEY_ENCRYPTION_KEY` is not `"change-this-encryption-key-in-production"` (raises `RuntimeError` if default).
 - [ ] API keys stored Fernet-encrypted in DB; never plaintext.
 - [ ] Passwords hashed with bcrypt (cost factor determined by bcrypt defaults ~12).
-- [ ] `admin_password` / `jwt_secret` not logged.
+- [ ] Passwords and JWT secrets are not logged.
 - [ ] HTTPS enforced by reverse proxy (Caddyfile provided).
 
 ### A03 — Injection
@@ -51,7 +51,7 @@ description: Use this skill for security reviews of VoxBento code. Covers OWASP 
 ### A05 — Security Misconfiguration
 - [ ] `debug: bool = True` in default settings — must be `False` in production.
 - [ ] `BOOTH_ACCESS_TOKEN` unset = no token guard on API; set it in production if API is public.
-- [ ] `ADMIN_PASSWORD` must be set; empty string disables admin login (see `portal/routers/auth.py`).
+- [ ] Legacy `ADMIN_PASSWORD` configuration is absent; administrator access uses registered accounts only.
 - [ ] `database_url` default is SQLite — use PostgreSQL in production.
 - [ ] `SECRET_KEY: str = 'change-me'` — must be overridden.
 
@@ -95,7 +95,7 @@ Ensure all uses pass through `safe_redirect`.
 |---|---|---|---|
 | `session_token` | ✓ | lax | ✗ (set by reverse proxy TLS) |
 | `user_token` | ✓ | lax | ✗ |
-| `admin_token` | ✓ | lax | ✗ |
+| `user_token` (administrator) | ✓ | lax | ✗ |
 
 Production hardening: ensure TLS termination at Caddy/nginx level; add `Strict-Transport-Security` header.
 

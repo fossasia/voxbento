@@ -91,7 +91,7 @@ VoxBento is a production-grade **browser-first interpretation booth console** fo
 
 1. **One active publisher per language channel.** MediaMTX enforces `overridePublisher: yes`; Python enforces via `BoothRegistry`.
 2. **Interpreter mic audio never routes to `AudioContext.destination`.** No local loopback.
-3. **No OBS/RTMP/external encoder.** Browser-only ingest via WHIP.
+3. **Interpreter ingest remains browser-only WHIP.** Explicit exception: room-scoped Program Stream Ingest (#690) accepts authenticated HTTPS WHIP from an external encoder. No YouTube pulling/relay or public RTMP/SRT. Floor ownership is `jitsi_bot` or `program_ingest`; never last-publisher-wins.
 4. **Jitsi is monitoring only** — receive-only iframe. Not the ingest transport.
 5. **No framework.** Frontend is plain ES modules in `portal/static/js/`. No Vue, React, jQuery, inline `<script>` blocks.
 6. **No Flask, Socket.IO, aiortc.**
@@ -128,8 +128,7 @@ Enforced in: `portal/websockets/handlers.py` (`_handle_join`), `portal/routers/a
 | Purpose | Token type | Cookie name | Key claims |
 |---|---|---|---|
 | Invite-link participant | `create_participant_token()` | `session_token` | `booth_id`, `role`, `event_slug`, `language_code` |
-| Registered user | `create_user_token()` | `user_token` | `sub` (user_id), `email`, `is_admin`, `user=True` |
-| Admin panel | `create_admin_token()` | `admin_token` | `admin=True` |
+| Registered user / Admin | `create_user_token()` | `user_token` | `sub` (user_id), `email`, `is_admin`, `user=True` |
 
 All tokens: HS256, `settings.effective_jwt_secret`, expiry = `jwt_expiry_seconds`.
 Password hashing: bcrypt (`portal/auth.py` `hash_password` / `verify_password`).
@@ -215,7 +214,18 @@ Manual browser check:
 
 - Python runtime: `3.13.x` (enforced in `pyproject.toml`)
 - `uv.lock` is the source of truth for all Python dependencies.
-- Docker images: `bluenviron/mediamtx:1`, `ghcr.io/jitsi/*:stable-11248`
+- Docker images: `bluenviron/mediamtx:1.18.2`, `ghcr.io/jitsi/*:stable-11248`
+
+Meeting source: `portal/meeting_source.py` owns the managed Jitsi agent lifecycle
+(desired state `rooms.meeting_agent_enabled`, migration 027, bounded restarts,
+restart reconciliation); `portal/routers/meeting_source.py` owns its owner controls.
+Never log or return the meeting URL. Read `docs/meeting-source.md` first.
+
+Program ingest: `portal/program_ingest.py` owns floor authorization/reconciliation;
+`portal/routers/program_ingest.py` owns private media auth and event-owner controls.
+Migration 025 adds protected credentials, source ownership and persistent floor
+sequence. One portal replica; program media never traverses Python. Read
+`docs/program-stream-ingest.md` before changing this boundary or deploying it.
 
 ---
 
@@ -224,8 +234,16 @@ Manual browser check:
 Every PR that adds, removes, or changes a feature **must** update these files in the same commit:
 
 - `README.md` — operational usage and setup
-- `docs/how-it-works.mdx` — system design
+- `website/docs/how-it-works.mdx` — system design
 - `agents.md` (this file) — guardrails, if they changed
 - Relevant context file in `.agents/context/` — if the change affects routes, DB schema, or transcription
 
 Do not defer documentation to a follow-up PR.
+
+Password sign-in requires `User.email_verified`; everyone, admins included, signs in
+at `/login` (`login` rate-limit bucket, 10 attempts per normalized email per hour).
+`/admin/login` only redirects to `/login?next=/admin/`.
+
+Production deployments validate a separate candidate checkout before advancing
+the live checkout. Portal source and dependencies must come from the built image,
+with persistent data volumes retained under the `voxbento` Compose project.

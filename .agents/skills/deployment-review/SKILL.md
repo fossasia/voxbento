@@ -26,7 +26,7 @@ uv run alembic upgrade head
 |---|---|
 | `SECRET_KEY` | 32+ char random string — NOT `change-me` |
 | `API_KEY_ENCRYPTION_KEY` | 32+ char random string — required if transcription API keys are stored |
-| `ADMIN_PASSWORD` | Set — empty string disables admin login |
+| Administrator account | At least two active users with administrator access; no shared-password fallback exists |
 | `JWT_SECRET` | Recommended — otherwise falls back to `SECRET_KEY` |
 | `DATABASE_URL` | `postgresql+asyncpg://user:pass@host/db` for production |
 | `MEDIAMTX_WHIP_BASE` | Browser-reachable HTTPS URL (e.g. `https://media.example.com:8889`) |
@@ -114,7 +114,7 @@ VoxBento uses **in-memory booth state** (`BoothRegistry`). A portal restart:
 ## Post-Deploy Verification
 
 1. `GET /healthz` → `{ok: true, mediamtx_ok: true}`
-2. Admin login at `/admin/login`.
+2. Admin sign-in at `/login?next=/admin/`.
 3. Create test event + booth + invite token.
 4. Open invite link in browser → redirected to booth page.
 5. Verify Jitsi iframe loads.

@@ -12,7 +12,7 @@ Before deploying, confirm that your server meets the following requirements:
 
 ### Docker & Docker Compose
 
-    Install the latest stable versions of Docker Engine and the Docker Compose plugin. Voxbento uses Compose v2 syntax (`docker compose`, not `docker-compose`).
+    Install the latest stable versions of Docker Engine and the Docker Compose plugin (Compose 2.24.0 or newer for optional environment files). Voxbento uses Compose v2 syntax (`docker compose`, not `docker-compose`).
   
   ### Public IP or Domain
 
@@ -58,17 +58,17 @@ Copy the example environment file to create your local configuration:
 
   ### Set required environment variables
 
-Open `.env` in a text editor and configure at minimum the following three variables before starting any service:
+Open `.env` in a text editor and configure at minimum the following variables before starting any service:
 
     ```bash
-    # Strong password for /admin/login
-    ADMIN_PASSWORD=your-strong-admin-password
-
     # JWT signing key — generate with: openssl rand -hex 32
     SECRET_KEY=your-64-char-random-string
 
     # API key encryption — generate with: openssl rand -hex 32
     API_KEY_ENCRYPTION_KEY=your-32-char-minimum-key
+
+    # Private portal-to-MediaMTX authentication — generate with: openssl rand -hex 32
+    MEDIAMTX_AUTH_HOOK_SECRET=your-64-char-random-string
 
     ```
 
@@ -115,10 +115,10 @@ Open your browser and navigate to your server's address on port 8000:
 Log in to the admin panel to create events, rooms, and booths:
 
     ```
-    http://your-server-ip:8000/admin/login
+    http://your-server-ip:8000/login?next=/admin/
     ```
 
-    Enter the `ADMIN_PASSWORD` you set in `.env`.
+    Enter the email and password of an administrator account.
 
 ## Health Check
 
@@ -143,6 +143,26 @@ If `mediamtx_ok` is `false`, the portal is running but MediaMTX is not reachable
 :::info
 Database migrations run automatically on container startup. You do not need to run any migration commands manually when using Docker Compose.
 :::
+
+## Deployment preflight
+
+The production GitHub Actions workflow builds candidate images in a temporary Git
+worktree and validates the server's current `.env` and candidate Caddy configuration
+before updating the live checkout or replacing any running container. If a required
+secret is missing or unsafe, the deployment stops and the existing stack remains
+running. Old images are retained until the replacement portal passes `/healthz`,
+then dangling images are pruned. The temporary worktree is removed on exit.
+Compose always uses the `voxbento` project name to retain existing volumes and
+networks. The portal runs source and dependencies from its image, with `.env`
+loaded as container environment variables; rebuild the image to apply code changes.
+
+You can run the same configuration check manually from the deployment directory:
+
+```bash
+docker compose run --rm --no-deps portal \
+  uv run python -c \
+  "from portal.config import settings; settings.validate_production_secrets()"
+```
 
 ## Production Considerations
 
@@ -212,3 +232,21 @@ The `.env.example` file ships with `changeme` as the password for Jitsi's intern
   These passwords are only used internally between Jitsi services — you do not need to share them with anyone.
 
 </details>
+## Program stream ingest rollout
+
+Program ingest is opt-in (`PROGRAM_INGEST_ENABLED=true`) after migration 025 and
+coordinated deployment of the portal, MediaMTX 1.18.2 configuration and Caddy.
+Use one portal replica. Set `PUBLIC_BASE_URL` and `MEDIAMTX_WHIP_BASE` to the
+public HTTPS origin; expose HTTPS 443 and WebRTC UDP 8189. Control API 9997,
+RTSP 8554 and HTTP signalling/portal ports must remain private/loopback-bound.
+Set `MEDIAMTX_AUTH_HOOK_SECRET` to a strong random value shared by the portal and
+MediaMTX (`openssl rand -hex 32`); production startup fails when it is absent.
+Block `/internal/*` at every public reverse proxy. Never publish the auth callback.
+
+The encoder sends WHIP with Opus audio and a room-scoped bearer token. It keeps
+its independent YouTube destination; VoxBento does not relay to YouTube. See
+`docs/program-stream-ingest.md` in the repository for exact setup, supported/tested
+versions, credential rotation, synchronization, rollback and event rehearsal.
+Because program-ingest credential digests are bound to `JWT_SECRET` (or its
+`SECRET_KEY` fallback), rotate each room's ingest token after changing that server
+secret and before the next event.

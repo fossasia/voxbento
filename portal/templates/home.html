@@ -66,11 +66,7 @@
                 <button onclick="openDemoModal()" class="brutal-btn brutal-btn-secondary brutal-btn-nav !bg-[#fbbf24] !border-[#0d0f10] hover:!bg-[#f59e0b] !px-2.5 sm:!px-3 !py-1 sm:!py-1.5 md:!px-4 md:!py-2 rounded-full whitespace-nowrap !hidden lg:!inline-flex">
                     <span>Request a demo</span>
                 </button>
-                <a href="/login" class="brutal-btn brutal-btn-primary brutal-btn-nav !px-2.5 sm:!px-3 !py-1 sm:!py-1.5 md:!px-4 md:!py-2 whitespace-nowrap">
-                    <span class="max-sm:hidden">Sign In</span>
-                    <span class="sm:hidden">Login</span>
-                </a>
-                <a href="/register" class="brutal-btn brutal-btn-outline brutal-btn-nav !px-2.5 sm:!px-3 !py-1 sm:!py-1.5 md:!px-4 md:!py-2 !hidden sm:!inline-flex whitespace-nowrap">Register</a>
+                <a href="/login" class="brutal-btn brutal-btn-primary brutal-btn-nav !px-2.5 sm:!px-3 !py-1 sm:!py-1.5 md:!px-4 md:!py-2 whitespace-nowrap">Sign in</a>
                 {% else %}
                 <a href="/developer" class="brutal-btn brutal-btn-outline brutal-btn-nav !hidden xl:!inline-flex !px-2.5 !py-1.5 md:!px-4 md:!py-2 whitespace-nowrap">Developer</a>
                 {% if management_home != "/account" %}
@@ -112,7 +108,6 @@
                 <button onclick="openDemoModal(); closeMobileMenu();" class="brutal-btn brutal-btn-secondary !bg-[#fbbf24] !border-[#0d0f10] text-center py-2 text-xs uppercase tracking-wider font-bold">
                     Request a demo
                 </button>
-                <a href="/register" class="brutal-btn brutal-btn-outline text-center py-2 text-xs uppercase tracking-wider font-bold">Register</a>
                 {% endif %}
             </div>
         </div>
@@ -244,146 +239,6 @@
                 </div>
             </div>
         </section>
-
-        <!-- Dynamic User/Event Dashboard Injections -->
-        {% if my_booths or events %}
-        <section id="live-dashboard" class="max-w-7xl mx-auto px-6 py-16 mb-24 relative z-20">
-            <div class="mb-12 border-b-2 border-[#0d0f10] pb-6 flex items-end justify-between">
-                <div>
-                    <h2 class="text-3xl font-extrabold text-[#0d0f10] tracking-tight">Live Dashboard</h2>
-                    <p class="text-[#0d0f10] opacity-70 text-base font-bold mt-2">Access your active events and
-                        interpretation booths.</p>
-                </div>
-            </div>
-
-            <div class="flex flex-col gap-16">
-                {% if my_booths %}
-                <div>
-                    <h3 class="text-xl font-extrabold text-[#0d0f10] mb-6 flex items-center gap-3">
-                        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="square" stroke-linejoin="miter" stroke-width="2"
-                                d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10">
-                            </path>
-                        </svg>
-                        Your Assigned Booths
-                    </h3>
-                    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                        {% for b in my_booths %}
-                        <div
-                            class="group bg-white border-2 border-[#0d0f10] p-6 hover:shadow-[8px_8px_0px_#0d0f10] hover:-translate-y-1 transition-all flex flex-col justify-between min-h-[160px]">
-                            <div class="flex justify-between items-start mb-6">
-                                <div>
-                                    <h4 class="font-extrabold text-[#0d0f10] text-lg">{{ b.language_name }}</h4>
-                                    <p class="text-sm font-bold text-[#0d0f10] opacity-60 mt-1">{{ b.event_name }}</p>
-                                    <p class="text-xs font-bold text-[#2563eb] mt-0.5">{{ b.room_name }}</p>
-                                </div>
-                                {% if b.is_live %}
-                                <span
-                                    class="bg-red-600 text-white text-[10px] font-extrabold px-2 py-1 uppercase tracking-widest flex items-center gap-1.5"><span
-                                        class="w-1.5 h-1.5 bg-white rounded-full animate-pulse"></span> LIVE</span>
-                                {% endif %}
-                            </div>
-                            <div
-                                class="flex justify-between items-end mt-auto pt-4 border-t-2 border-[#0d0f10]/10 group-hover:border-[#0d0f10]/30 transition-colors">
-                                <span
-                                    class="text-[10px] font-extrabold text-[#0d0f10] opacity-60 uppercase tracking-widest">{{
-                                    b.membership.role.replace('_', ' ') }}</span>
-                                {% if b.membership.role in ['room_coordinator', 'event_owner', 'super_admin'] %}
-                                <a href="/mission-control/{{ b.event_slug }}/"
-                                    class="text-[#2563eb] text-sm font-extrabold hover:text-[#1d4ed8] inline-flex items-center gap-1">Mission
-                                    Control <svg class="w-4 h-4 group-hover:translate-x-1 transition-transform"
-                                        fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path stroke-linecap="square" stroke-linejoin="miter" stroke-width="2"
-                                            d="M14 5l7 7m0 0l-7 7m7-7H3"></path>
-                                    </svg></a>
-                                {% else %}
-                                <a href="/interpreter"
-                                    class="text-[#2563eb] text-sm font-extrabold hover:text-[#1d4ed8] inline-flex items-center gap-1">Go
-                                    to Lobby <svg class="w-4 h-4 group-hover:translate-x-1 transition-transform"
-                                        fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path stroke-linecap="square" stroke-linejoin="miter" stroke-width="2"
-                                            d="M14 5l7 7m0 0l-7 7m7-7H3"></path>
-                                    </svg></a>
-                                {% endif %}
-                            </div>
-                        </div>
-                        {% endfor %}
-                    </div>
-                </div>
-                {% endif %}
-
-                {% if events %}
-                <div>
-                    <h3 class="text-xl font-extrabold text-[#0d0f10] mb-6 flex items-center gap-3">
-                        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path stroke-linecap="square" stroke-linejoin="miter" stroke-width="2"
-                                d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 019-9">
-                            </path>
-                        </svg>
-                        Public Events
-                    </h3>
-                    <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
-                        {% for ed in events %}
-                        <div class="bg-white border-2 border-[#0d0f10] flex flex-col">
-                            <div
-                                class="p-6 border-b-2 border-[#0d0f10] flex justify-between items-center bg-[#2563eb] text-white">
-                                <h4 class="font-extrabold text-lg">{{ ed.event.display_name }}</h4>
-                                {% if ed.live_count > 0 %}
-                                <span
-                                    class="bg-green-500 text-[#0d0f10] text-[10px] font-extrabold px-2 py-1 uppercase tracking-widest shadow-[2px_2px_0px_#fff]">
-                                    {{ ed.live_count }} LIVE
-                                </span>
-                                {% endif %}
-                            </div>
-                            <div class="p-6 flex-1 flex flex-col">
-                                {% if ed.rooms %}
-                                <div class="space-y-5 mb-8 flex-1">
-                                    {% for room in ed.rooms %}
-                                    <div>
-                                        <p class="text-[10px] font-extrabold uppercase tracking-widest text-[#0d0f10] opacity-50 mb-2 flex items-center gap-1.5">
-                                            <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="square" stroke-linejoin="miter" stroke-width="2" d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6"></path></svg>
-                                            {{ room.room_name }}
-                                        </p>
-                                        <div class="space-y-2 pl-2 border-l-2 border-[#0d0f10]/10">
-                                            {% for bs in room.booths %}
-                                            <div class="flex items-center justify-between group">
-                                                <div class="flex items-center gap-3">
-                                                    {% if bs.is_live %}
-                                                    <span class="w-2.5 h-2.5 bg-red-500 rounded-full animate-pulse"></span>
-                                                    {% else %}
-                                                    <span class="w-2.5 h-2.5 bg-[#0d0f10] opacity-20 rounded-full"></span>
-                                                    {% endif %}
-                                                    <span class="font-extrabold text-[#0d0f10]">{{ bs.db.language_name }}</span>
-                                                </div>
-                                                {% if bs.can_interpret %}
-                                                <a href="/interpreter"
-                                                    class="text-[#2563eb] hover:text-[#1d4ed8] font-extrabold text-xs uppercase tracking-widest opacity-0 group-hover:opacity-100 transition-opacity focus:opacity-100">Enter
-                                                    Lobby &rarr;</a>
-                                                {% endif %}
-                                            </div>
-                                            {% endfor %}
-                                        </div>
-                                    </div>
-                                    {% endfor %}
-                                </div>
-                                <a href="/listener/{{ ed.event.slug }}"
-                                    class="brutal-btn w-full text-center bg-[#eef2f6] text-[#0d0f10] hover:bg-[#2563eb] hover:text-white transition-colors border-2 border-[#0d0f10] py-3 text-sm">Listen
-                                    as Attendee</a>
-                                {% else %}
-                                <div class="flex-1 flex items-center justify-center opacity-40 py-8">
-                                    <p class="text-sm font-extrabold uppercase tracking-widest italic">No booths
-                                        configured</p>
-                                </div>
-                                {% endif %}
-                            </div>
-                        </div>
-                        {% endfor %}
-                    </div>
-                </div>
-                {% endif %}
-            </div>
-        </section>
-        {% endif %}
 
         <!-- Solutions Section -->
         <section id="solutions" class="py-24 bg-white relative z-10 border-t-[3px] border-[#0d0f10]">
@@ -549,99 +404,8 @@
             </div>
         </section>
 
-        <!-- Enterprise-Ready Section -->
-        <section class="py-24 bg-[#eef2f6]">
-            <div class="max-w-7xl mx-auto px-6">
-                <div class="text-center md:text-left mb-16 md:mb-0">
-                    <h2 class="text-4xl md:text-5xl font-extrabold text-[#0d0f10] md:max-w-2xl mx-auto md:mx-0">
-                        Enterprise-Ready for Every Event Format</h2>
-                </div>
-                <div class="grid grid-cols-1 lg:grid-cols-5 gap-12 items-start mt-12">
-                    <!-- Left: Floating Image / Graphic (Spans 2 cols) -->
-                    <div class="lg:col-span-2 sticky top-32 max-md:hidden">
-                        <div
-                            class="relative rounded-lg overflow-hidden aspect-[4/5] brutal-border brutal-shadow">
-                            <img src="https://images.unsplash.com/photo-1505373877841-8d25f7d46678?q=80&w=1000&auto=format&fit=crop"
-                                class="w-full h-full object-cover" alt="Presenter speaking on stage beside a projected slide, with the audience in the foreground">
-                            <div class="absolute top-8 right-8 text-white/50">
-                                <svg class="w-16 h-16" fill="currentColor" viewBox="0 0 24 24">
-                                    <path
-                                        d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 15h-2v-2h2v2zm0-4h-2V7h2v6z" />
-                                </svg>
-                            </div>
-                        </div>
-                    </div>
-
-                    <!-- Right: Text Blocks (Spans 3 cols) -->
-                    <div class="lg:col-span-3">
-                        <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
-                            <!-- Format 1 -->
-                            <div
-                                class="bg-white rounded-lg p-8 hover:-translate-y-1 hover:shadow-[10px_10px_0px_#0d0f10] transition-all brutal-border brutal-shadow">
-                                <h3 class="text-2xl font-bold text-[#0d0f10] mb-4">In-Person Events</h3>
-                                <p class="text-[#0d0f10] opacity-80 mb-8 leading-relaxed font-bold">Enhance your
-                                    in-person multilingual event experience with simultaneous interpretation, live
-                                    speech translation and captions integrated into your AV setup.</p>
-                                <a href="#interactive-demo"
-                                    class="text-[#2563eb] font-extrabold text-sm uppercase tracking-widest flex items-center gap-2 hover:text-[#1d4ed8] transition-colors underline decoration-2 underline-offset-2">Explore
-                                    More <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="3"
-                                            d="M14 5l7 7m0 0l-7 7m7-7H3"></path>
-                                    </svg></a>
-                            </div>
-
-                            <!-- Format 2 -->
-                            <div
-                                class="bg-white rounded-lg p-8 hover:-translate-y-1 hover:shadow-[10px_10px_0px_#0d0f10] transition-all brutal-border brutal-shadow">
-                                <h3 class="text-2xl font-bold text-[#0d0f10] mb-4">Online Meetings & Events</h3>
-                                <p class="text-[#0d0f10] opacity-80 mb-8 leading-relaxed font-bold">Host high-quality
-                                    meetings in multiple languages with our enterprise-grade technology that can
-                                    integrate with any meeting platform.</p>
-                                <a href="#interactive-demo"
-                                    class="text-[#2563eb] font-extrabold text-sm uppercase tracking-widest flex items-center gap-2 hover:text-[#1d4ed8] transition-colors underline decoration-2 underline-offset-2">Explore
-                                    More <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="3"
-                                            d="M14 5l7 7m0 0l-7 7m7-7H3"></path>
-                                    </svg></a>
-                            </div>
-
-                            <!-- Format 3 -->
-                            <div
-                                class="bg-white rounded-lg p-8 hover:-translate-y-1 hover:shadow-[10px_10px_0px_#0d0f10] transition-all brutal-border brutal-shadow">
-                                <h3 class="text-2xl font-bold text-[#0d0f10] mb-4">Hybrid Events</h3>
-                                <p class="text-[#0d0f10] opacity-80 mb-8 leading-relaxed font-bold">Bring on-site and
-                                    remote participants together with enterprise-level live translation and
-                                    interpretation technology, supported end-to-end.</p>
-                                <a href="#interactive-demo"
-                                    class="text-[#2563eb] font-extrabold text-sm uppercase tracking-widest flex items-center gap-2 hover:text-[#1d4ed8] transition-colors underline decoration-2 underline-offset-2">Explore
-                                    More <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="3"
-                                            d="M14 5l7 7m0 0l-7 7m7-7H3"></path>
-                                    </svg></a>
-                            </div>
-
-                            <!-- Format 4 -->
-                            <div
-                                class="bg-white rounded-lg p-8 hover:-translate-y-1 hover:shadow-[10px_10px_0px_#0d0f10] transition-all brutal-border brutal-shadow">
-                                <h3 class="text-2xl font-bold text-[#0d0f10] mb-4">Broadcasting</h3>
-                                <p class="text-[#0d0f10] opacity-80 mb-8 leading-relaxed font-bold">Make your live
-                                    broadcasts easy to follow in any language. We add real-time interpretation and
-                                    captions, so everyone stays connected.</p>
-                                <a href="#interactive-demo"
-                                    class="text-[#2563eb] font-extrabold text-sm uppercase tracking-widest flex items-center gap-2 hover:text-[#1d4ed8] transition-colors underline decoration-2 underline-offset-2">Explore
-                                    More <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="3"
-                                            d="M14 5l7 7m0 0l-7 7m7-7H3"></path>
-                                    </svg></a>
-                            </div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </section>
-
         <!-- Interactive Demo Section -->
-        <section id="interactive-demo" class="py-24 bg-white border-t border-slate-200">
+        <section id="interactive-demo" class="py-24 bg-white border-t-[3px] border-[#0d0f10]">
             <div class="max-w-4xl mx-auto px-6">
                 <div class="text-center mb-14">
                     <h2 class="text-5xl font-extrabold text-brand-600 mb-6">VoxBento Demo</h2>
@@ -1039,7 +803,7 @@
                         </li>
                         <li><a href="/login"
                                 class="hover:text-[#2563eb] transition-colors underline decoration-2 underline-offset-2">Sign
-                                In</a></li>
+                                in</a></li>
                     </ul>
                 </div>
                 <div>

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated
@@ -21,6 +22,7 @@ from portal.config import settings
 from portal.database import (
     create_auth_token,
     create_user,
+    get_auth_token,
     get_session,
     get_user_by_email,
     get_user_by_id,
@@ -42,6 +44,7 @@ _BASE_DIR = Path(__file__).resolve().parent.parent
 templates = Jinja2Templates(directory=str(_BASE_DIR / "templates"))
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 @router.post("/api/auth/token", response_model=TokenResponse)
@@ -125,6 +128,8 @@ async def register_submit(request: Request):
         errors.append("Display name is required.")
     if password_raw and not password:
         errors.append("Password cannot be blank or only whitespace.")
+    elif password_raw and len(password_raw) < 8:
+        errors.append("Password must be at least 8 characters.")
     elif password_raw and password_raw != password_confirm:
         errors.append("Passwords do not match.")
 
@@ -344,6 +349,24 @@ async def forgot_password_request(request: Request):
 
 @router.get("/auth/reset/{token}")
 async def reset_password_page(request: Request, token: str):
+    async with get_session() as session:
+        tok = await get_auth_token(session, token)
+        error = None
+        if tok is None or tok.token_type != "password_reset":
+            error = "Invalid reset link."
+        elif tok.is_expired:
+            error = "This reset link has expired."
+        elif tok.is_used:
+            error = "This reset link has already been used."
+
+        if error:
+            return templates.TemplateResponse(
+                request=request,
+                name="reset_password.html",
+                context={"token": token, "error": error, "token_invalid": True},
+                status_code=status.HTTP_400_BAD_REQUEST,
+            )
+
     return templates.TemplateResponse(request=request, name="reset_password.html", context={"token": token})
 
 
@@ -357,30 +380,49 @@ async def reset_password_submit(request: Request, token: str):
             request=request,
             name="reset_password.html",
             context={"token": token, "error": "Password must be at least 8 characters"},
+            status_code=status.HTTP_400_BAD_REQUEST,
         )
 
-    async with get_session() as session:
-        try:
-            auth_token = await redeem_auth_token(session, token, "password_reset")
+    try:
+        async with get_session() as session:
+            try:
+                auth_token = await redeem_auth_token(session, token, "password_reset")
+            except ValueError as e:
+                return templates.TemplateResponse(
+                    request=request,
+                    name="reset_password.html",
+                    context={"token": token, "error": str(e), "token_invalid": True},
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                )
+
             pw_hash = hash_password(password)
             user = await update_user(session, auth_token.user_id, password_hash=pw_hash)
-
+            if user is None:
+                raise ValueError("User not found.")
             jwt_token = create_user_token(
                 user_id=user.id, email=user.email, display_name=user.display_name, is_admin=user.is_admin
             )
-            response = safe_redirect(url="/account", status_code=status.HTTP_303_SEE_OTHER)
-            response.set_cookie(
-                key="user_token",
-                value=jwt_token,
-                httponly=True,
-                samesite="lax",
-                max_age=settings.jwt_expiry_seconds,
-            )
-            return response
-        except ValueError as e:
-            return templates.TemplateResponse(
-                request=request, name="reset_password.html", context={"token": token, "error": str(e)}
-            )
+    except Exception:
+        logger.exception("Failed to complete password reset for token")
+        return templates.TemplateResponse(
+            request=request,
+            name="reset_password.html",
+            context={
+                "token": token,
+                "error": "An error occurred while resetting your password. Please try again.",
+            },
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
+
+    response = safe_redirect(url="/account", status_code=status.HTTP_303_SEE_OTHER)
+    response.set_cookie(
+        key="user_token",
+        value=jwt_token,
+        httponly=True,
+        samesite="lax",
+        max_age=settings.jwt_expiry_seconds,
+    )
+    return response
 
 
 @router.get("/logout")
@@ -448,7 +490,11 @@ async def account_page(request: Request):
             if m.booth and m.booth.event and m.booth.room
             else "—"
         )
-        link_str = f"/interpreter/{m.booth.event.slug}/{m.booth.language_code}" if m.booth and m.booth.event else "#"
+        link_str = (
+            f"/interpreter/{m.booth.event.slug}/{m.booth.room_id}/{m.booth.language_code}"
+            if m.booth and m.booth.event
+            else "#"
+        )
         unified_memberships.append(
             {"context": context_str, "link": link_str, "type": "Booth", "role": m.role, "created_at": m.created_at}
         )
