@@ -1,8 +1,9 @@
 # Removing the legacy `ADMIN_PASSWORD` login
 
-`ADMIN_PASSWORD` no longer grants administrative access. The `/admin/login` page
-now accepts only the email and password of a registered user who is either a
-site-wide administrator or has an event-owner or room-coordinator membership.
+`ADMIN_PASSWORD` no longer grants administrative access. Administrators sign in
+at the shared `/login` page with the email and password of a registered user who
+is either a site-wide administrator or has an event-owner or room-coordinator
+membership. The old `/admin/login` URL redirects to `/login?next=/admin/`.
 
 ## Before rollout
 
@@ -20,10 +21,10 @@ site-wide administrator or has an event-owner or room-coordinator membership.
 
 1. Deploy the release that removes the shared-password fallback.
 2. Restart the portal using the normal deployment procedure.
-3. In a private browser window, sign in at `/admin/login` with an existing
+3. In a private browser window, sign in at `/login` with an existing
    administrator account. Confirm that the response sets `user_token`, not
    `admin_token`.
-4. Verify a non-administrator cannot sign in to the admin panel, then revoke
+4. Verify a non-administrator cannot open the admin panel, then revoke
    the retired shared secret from the secret manager and deployment history.
 
 ## Break-glass recovery
@@ -48,6 +49,6 @@ This is intentionally a database operation, not an environment-variable
 fallback: it is auditable through controlled database access and cannot be
 enabled accidentally by an old deployment secret.
 
-Admin sign-in requires email verification and shares the normal `/login` limit of
-10 attempts per email address per hour. Switching between login pages does not
-reset this limit. Complete email verification before promoting an account.
+Admin sign-in requires email verification and uses the normal `/login` limit of
+10 attempts per email address per hour. Complete email verification before
+promoting an account.

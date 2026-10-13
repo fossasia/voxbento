@@ -9,7 +9,7 @@
 
 | Method | Path | Auth | Template | Notes |
 |---|---|---|---|---|
-| GET | `/` | open | `home.html` | Lists events + booth statuses; personalised if logged in |
+| GET | `/` | open | `home.html` | Landing page; no event or booth lists; navbar links personalised if logged in |
 | GET | `/local` | open | `local.html` | VoxBento Local desktop console download page with client OS detection & release links |
 | GET | `/healthz` | open | — | JSON: `{ok, server, mediamtx_ok}` |
 | GET | `/register` | open | `register.html` | Redirects to `/account` if already logged in |
@@ -65,11 +65,10 @@ Legacy organizer requests to allowlisted event-management paths under `/admin/`,
 
 | Method | Path | Template | Notes |
 |---|---|---|---|
-| GET | `/admin/login` | `admin/login.html` | Redirects to `/admin/` if already admin |
-| POST | `/admin/login` | — | Validates account credentials and sets `user_token` → `/admin/` |
-| GET | `/admin/logout` | — | Deletes session cookies → `/admin/login` |
+| GET | `/admin/login` | — | `303` → `/login?next=/admin/` (admins use the shared sign-in page) |
+| GET | `/admin/logout` | — | Deletes session cookies → `/login` |
 | GET | `/admin/` or `/workspace/` | `admin/dashboard.html` | System-wide events for super admins; accessible events for organizers |
-| GET | `/admin/events/` | `admin/event_list.html` | — |
+| GET | `/admin/events/` | `admin/event_list.html` | Search by event slug or display name with `?search=`; blank queries show all events; `%` and `_` are literal; pagination URL-encodes the term and clamps out-of-range pages |
 | POST | `/admin/events/` | — | Creates event (slug + display_name) |
 | GET | `/admin/events/{event_id}/` | `admin/event_detail.html` | Event + rooms + booths |
 | GET | `/admin/events/{event_id}/api-settings/` | `admin/api_settings.html` | View encrypted API keys |
@@ -116,5 +115,38 @@ Legacy organizer requests to allowlisted event-management paths under `/admin/`,
 | `portal/websockets/handlers.py` | Specific `_handle_*` logic for WS messages |
 | `fastapi_app.py` | Application lifespan, router include aggregation |
 
-`POST /admin/login` requires verified email and shares the `login` rate-limit
-bucket with `POST /login`: 10 attempts per normalized email per hour.
+## Program ingest routes (#690)
+
+- `POST /internal/media-auth`: private MediaMTX callback only, blocked by Caddy;
+  requires the shared `MEDIAMTX_AUTH_HOOK_SECRET`, then checks canonical floor
+  identity, source mode, digest, expiry, capacity and per-IP failure rate. Other
+  legacy interpreter paths are unchanged.
+- `GET/POST /workspace/events/{event_id}/rooms/{room_id}/program-ingest`:
+  event-owner controls/status, mapped to shared `/admin/...` handlers. No-store;
+  rotate/enable responses reveal a new token once. POST supports enable, rotate,
+  revoke, disable and sync. Revoke returns 202 with `cleanup_pending` when the
+  credential is invalidated but MediaMTX cleanup must be retried.
+  `portal/routers/program_ingest.py` owns both routes.
+- Existing floor-bot start/stop returns 409 while program ingest owns the room.
+
+## Meeting source routes (#747)
+
+- `GET/POST /workspace/events/{event_id}/rooms/{room_id}/meeting-source`:
+  event-owner status and controls, mapped to shared `/admin/...` handlers in
+  `portal/routers/meeting_source.py`. POST `{action: connect|disconnect,
+  meeting_url?, confirm_source_change?}`. Connect returns 422 for an invalid URL,
+  409 `{code: source_conflict}` while program ingest owns the floor (retry with
+  `confirm_source_change: true`), and 502 when the floor-bot service is
+  unreachable. Disconnect returns 202 with `cleanup_pending` if the agent stop
+  must be retried. Responses never include the meeting URL.
+- `POST /api/rooms/{room_id}/floor-transcription/start|stop` and
+  `GET .../status` (room coordinators and owners) delegate to the same managed
+  lifecycle. Start no longer launches the transcription worker directly; the
+  reconcile loop starts it once audio arrives. Stop returns 202 with
+  `cleanup_pending` when the agent could not be confirmed stopped. Status keeps
+  the legacy `running`, `stage` and `bot_reachable` fields with their original
+  meaning: `stage` is the raw floor-bot stage (`launching`, `in_meeting`, `dead`, …;
+  `unknown` when the service is unreachable); the managed lifecycle is in `state`.
+
+`POST /login` requires verified email and uses the `login` rate-limit bucket:
+10 attempts per normalized email per hour. There is no separate admin sign-in form.

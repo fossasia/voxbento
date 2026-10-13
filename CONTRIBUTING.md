@@ -39,7 +39,7 @@ docker compose up -d --build
 ```
 
 You can now visit the app at `http://localhost:8000`. 
-To access the admin panel, sign in with an account having admin privileges at `http://localhost:8000/admin/login`.
+To access the admin panel, sign in with an account having admin privileges at `http://localhost:8000/login?next=/admin/`.
 
 ---
 

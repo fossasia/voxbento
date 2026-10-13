@@ -1,6 +1,15 @@
+from __future__ import annotations
+
 import logging
 import time
-from dataclasses import dataclass
+import uuid
+from dataclasses import dataclass, field
+
+from sqlalchemy import select, update
+
+from portal.database import get_session
+from portal.models import Room
+from portal.transcription.timing import SegmentTiming, segment_timing, timing_metadata
 
 logger = logging.getLogger(__name__)
 
@@ -11,6 +20,7 @@ class CaptionState:
     current_utterance: str = ""
     utterance_start_time: float = 0.0
     current_word_count: int = 0
+    segment_id: str = field(default_factory=lambda: str(uuid.uuid4()))
 
 
 class CaptionAggregator:
@@ -45,8 +55,20 @@ class CaptionAggregator:
             return
 
         await self.broadcast_callback(
-            booth_id, {"type": "caption", "status": "partial", "text": state.current_utterance}
+            booth_id, {"type": "caption", "status": "partial", "text": state.current_utterance,
+                       "segment_id": state.segment_id, **await self.partial_timing(booth_id)}
         )
+
+    async def partial_timing(self, booth_id: str) -> dict:
+        if self.room_id is None or not booth_id.endswith("-floor"):
+            return {}
+        async with get_session() as session:
+            room = await session.get(Room, self.room_id)
+            if room and room.floor_source == "program_ingest":
+                now = int(time.time() * 1000)
+                return {"source_received_at_ms": now, "server_sent_at_ms": now,
+                        "sync_offset_ms": room.program_sync_offset_ms, "timestamp_basis": "stt_receive_wall_clock"}
+        return {}
 
     async def handle_chunk(self, booth_id: str, text: str):
         """Used by Local Whisper. Appends finalized chunks and splits on punctuation."""
@@ -95,7 +117,8 @@ class CaptionAggregator:
 
         if state.current_utterance:
             await self.broadcast_callback(
-                booth_id, {"type": "caption", "status": "partial", "text": state.current_utterance}
+                booth_id, {"type": "caption", "status": "partial", "text": state.current_utterance,
+                           "segment_id": state.segment_id, **await self.partial_timing(booth_id)}
             )
         elif has_finalized:
             # Only send clear if we just finalized something and have nothing left,
@@ -117,14 +140,34 @@ class CaptionAggregator:
         if not final_text:
             return
 
-        import uuid
-
         self._seq_counter += 1
         seq = self._seq_counter
-        segment_id = str(uuid.uuid4())
+        segment_id = state.segment_id
+        timing = None
+        if self.room_id is not None and booth_id.endswith("-floor"):
+            async with get_session() as session:
+                room = await session.scalar(select(Room).where(Room.id == self.room_id))
+                if room and room.floor_source == "program_ingest":
+                    seq = await session.scalar(update(Room).where(Room.id == room.id).values(
+                        floor_caption_seq=Room.floor_caption_seq + 1,
+                    ).returning(Room.floor_caption_seq))
+                    timing = SegmentTiming(int((state.utterance_start_time or time.time()) * 1000), room.program_sync_offset_ms)
+        context_token = segment_timing.set(timing)
+
+        try:
+            await self.publish_final(booth_id, final_text, segment_id, seq)
+        finally:
+            segment_timing.reset(context_token)
+        state.current_utterance = ""
+        state.utterance_start_time = 0.0
+        state.current_word_count = 0
+        state.segment_id = str(uuid.uuid4())
+
+    async def publish_final(self, booth_id: str, final_text: str, segment_id: str, seq: int):
 
         await self.broadcast_callback(
-            booth_id, {"type": "caption", "status": "final", "text": final_text, "segment_id": segment_id, "seq": seq}
+            booth_id, {"type": "caption", "status": "final", "text": final_text, "segment_id": segment_id, "seq": seq,
+                       **timing_metadata()}
         )
 
         if self.room_id is not None:
@@ -146,11 +189,6 @@ class CaptionAggregator:
                     logger.error(f"[{booth_id}] _save_and_translate failed: {e}", exc_info=True)
 
             asyncio.create_task(_save_and_translate())
-
-        # Reset state for next utterance
-        state.current_utterance = ""
-        state.utterance_start_time = 0.0
-        state.current_word_count = 0
 
     async def handle_clear(self, booth_id: str):
         """Called when silence is explicitly detected or a turn ends."""
