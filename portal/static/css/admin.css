@@ -1170,4 +1170,27 @@ code { font-family: var(--font-mono); font-size: 0.85em; background: var(--color
   .program-sync-action { grid-template-columns: 1fr; }
   .program-sync-action .btn { grid-column: 1; grid-row: auto; }
   .program-secondary-actions > div { flex-direction: column; }
+  .program-sender-actions { flex-direction: column; align-items: stretch; }
 }
+
+/* Program audio sender (browser WHIP) */
+.program-state-badge[data-state='live'] { border-color: #bbf7d0; background: #f0fdf4; color: #166534; }
+.program-state-badge[data-state='live']::before { background: var(--color-success); }
+.program-state-badge[data-state='connecting'],
+.program-state-badge[data-state='reconnecting'] { border-color: var(--color-primary-border); background: var(--color-primary-subtle); color: var(--color-primary-active); }
+.program-state-badge[data-state='connecting']::before,
+.program-state-badge[data-state='reconnecting']::before { background: var(--color-primary); }
+.program-state-badge[data-state='no-audio'],
+.program-state-badge[data-state='permission-denied'],
+.program-state-badge[data-state='error'] { border-color: #fde68a; background: #fffbeb; color: #92400e; }
+.program-state-badge[data-state='no-audio']::before,
+.program-state-badge[data-state='permission-denied']::before,
+.program-state-badge[data-state='error']::before { background: var(--color-warning); }
+
+.program-sender-controls { padding: 24px 26px 26px; }
+.program-sender-controls .input { width: 100%; height: 40px; padding: 8px 11px; border: 1px solid var(--color-border-strong); border-radius: 8px; background: var(--color-surface-2); color: var(--color-text); }
+.program-sender-meter { height: 10px; margin: 16px 0; border-radius: 999px; background: var(--color-surface-2); overflow: hidden; }
+.program-sender-meter-fill { width: 0%; height: 100%; border-radius: 999px; background: linear-gradient(90deg, var(--color-success), var(--color-warning)); transition: width 0.1s linear; }
+.program-sender-actions { display: flex; gap: 12px; }
+.program-sender-actions .btn[hidden] { display: none; }
+.program-sender-controls > p { margin-top: 12px; color: var(--color-text-secondary); font-size: 0.8rem; }

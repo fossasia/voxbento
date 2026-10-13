@@ -23,6 +23,7 @@
 <!-- Room Settings Form -->
 {% if is_event_owner %}
   {% include 'admin/_program_ingest.html' %}
+  {% include 'admin/_program_sender.html' %}
 
   <form method="post" action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/edit" class="token-form">
   <input type="hidden" name="form_section" value="general">
