@@ -26,7 +26,7 @@ The workspace and admin surfaces share the same management implementation and au
 ```
 Interpreter browser
   │  iframe → Jitsi Meet (Monitor conference floor video/audio)
-  │  mic → RTCPeerConnection → WHIP POST
+  │  mic → RTCPeerConnection → WHIP POST (single-use ticket from the booth WebSocket)
   ▼
 MediaMTX :8889 (WHIP ingest + WHEP)   Python is never in the audio path
   │  WebRTC termination + remux
