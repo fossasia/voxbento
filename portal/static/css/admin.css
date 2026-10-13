@@ -927,6 +927,7 @@ code { font-family: var(--font-mono); font-size: 0.85em; background: var(--color
 
 .search-bar { margin-bottom: 24px; }
 .search-form { display: flex; gap: 10px; max-width: 500px; }
+.search-form .search-label { align-self: center; color: var(--color-text-secondary); font-size: 0.85rem; font-weight: 600; white-space: nowrap; }
 .search-form .search-input {
   min-height: 42px; padding: 10px 12px; font-size: 0.95rem;
   border: 1px solid var(--color-border-strong); border-radius: 10px;

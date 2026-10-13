@@ -68,7 +68,7 @@ Legacy organizer requests to allowlisted event-management paths under `/admin/`,
 | GET | `/admin/login` | — | `303` → `/login?next=/admin/` (admins use the shared sign-in page) |
 | GET | `/admin/logout` | — | Deletes session cookies → `/login` |
 | GET | `/admin/` or `/workspace/` | `admin/dashboard.html` | System-wide events for super admins; accessible events for organizers |
-| GET | `/admin/events/` | `admin/event_list.html` | — |
+| GET | `/admin/events/` | `admin/event_list.html` | Search by event slug or display name with `?search=`; blank queries show all events; `%` and `_` are literal; pagination URL-encodes the term and clamps out-of-range pages |
 | POST | `/admin/events/` | — | Creates event (slug + display_name) |
 | GET | `/admin/events/{event_id}/` | `admin/event_detail.html` | Event + rooms + booths |
 | GET | `/admin/events/{event_id}/api-settings/` | `admin/api_settings.html` | View encrypted API keys |
