@@ -992,10 +992,12 @@ async def log_usage_metric(session: AsyncSession, event_id: int, metric_name: st
     await session.flush()
 
 
-async def get_booth_language_name(booth_id: str) -> str:
+async def get_booth_language_name(booth_id: str) -> str | None:
     """Resolve the real language name for a booth_id from the database.
 
-    Returns 'English' as a fallback if the booth is not found or parsing fails.
+    Returns ``None`` if the booth is not found in the database or if
+    ``booth_id`` cannot be parsed. Callers must handle ``None`` explicitly
+    rather than assuming a default language.
     """
     from sqlalchemy import select
 
@@ -1004,6 +1006,10 @@ async def get_booth_language_name(booth_id: str) -> str:
 
     try:
         event_slug, room_id, language_code = parse_booth_id(booth_id)
+    except ValueError:
+        return None
+
+    try:
         async with get_session() as db_session:
             stmt = (
                 select(DBBooth.language_name)
@@ -1013,6 +1019,7 @@ async def get_booth_language_name(booth_id: str) -> str:
             res = await db_session.scalar(stmt)
             if res:
                 return res
-    except Exception:
-        pass
-    return "English"
+    except Exception as exc:
+        logger.warning("Database error while resolving language for booth '%s': %s", booth_id, exc, exc_info=True)
+        return None
+    return None
