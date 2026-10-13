@@ -2101,3 +2101,234 @@ def test_ws_tts_cleanup_on_disconnect():
     import time
     time.sleep(0.1) # allow time for cleanup
     assert len(tts_manager._rooms.get(key, set())) == initial_count
+
+
+def test_ws_tts_rejects_unscoped_query_token():
+    import anyio
+    import jwt
+    from fastapi.websockets import WebSocketDisconnect
+
+    from portal.config import settings
+    from portal.database import Event, Room, get_session
+
+    async def setup():
+        async with get_session() as session:
+            ev = Event(slug="ttstest-unscoped", display_name="TTS Unscoped", listener_join_code="secret123")
+            session.add(ev)
+            await session.flush()
+            room = Room(display_name="r", event_id=ev.id, audio_delay_ms=0)
+            session.add(room)
+            await session.flush()
+            return room.id
+
+    room_id = anyio.run(setup)
+
+    unscoped_token = jwt.encode({"sub": "user1", "role": "viewer"}, settings.effective_jwt_secret, algorithm="HS256")
+
+    with pytest.raises(WebSocketDisconnect) as exc_info:
+        with client.websocket_connect(
+            f"/ws/tts/{room_id}/en/ttstest-unscoped-{room_id}-en?token={unscoped_token}"
+        ):
+            pass
+    assert exc_info.value.code == 4003
+
+
+def test_ws_tts_accepts_and_rejects_scoped_tokens():
+    import anyio
+    from fastapi.websockets import WebSocketDisconnect
+
+    from portal.auth import create_listener_token, create_participant_token
+    from portal.database import Event, Room, get_session
+
+    async def setup():
+        async with get_session() as session:
+            ev = Event(slug="ttstest-scoped", display_name="TTS Scoped", listener_join_code="secret123")
+            session.add(ev)
+            await session.flush()
+            room = Room(display_name="r", event_id=ev.id, audio_delay_ms=0)
+            session.add(room)
+            await session.flush()
+            return room.id
+
+    room_id = anyio.run(setup)
+
+    # Valid listener token
+    listener_tok = create_listener_token(event_slug="ttstest-scoped")
+    with client.websocket_connect(
+        f"/ws/tts/{room_id}/en/ttstest-scoped-{room_id}-en?token={listener_tok}"
+    ):
+        pass
+
+    # Listener token with mismatched event
+    bad_listener_tok = create_listener_token(event_slug="other-event")
+    with pytest.raises(WebSocketDisconnect) as exc_info:
+        with client.websocket_connect(
+            f"/ws/tts/{room_id}/en/ttstest-scoped-{room_id}-en?token={bad_listener_tok}"
+        ):
+            pass
+    assert exc_info.value.code == 4003
+
+    # Valid participant token
+    part_tok = create_participant_token(
+        booth_id=1,
+        role="interpreter",
+        event_slug="ttstest-scoped",
+        room_id=room_id,
+        language_code="en",
+    )
+    with client.websocket_connect(
+        f"/ws/tts/{room_id}/en/ttstest-scoped-{room_id}-en?token={part_tok}"
+    ):
+        pass
+
+    # Participant token with wrong language
+    bad_part_tok = create_participant_token(
+        booth_id=1,
+        role="interpreter",
+        event_slug="ttstest-scoped",
+        room_id=room_id,
+        language_code="fr",
+    )
+    with pytest.raises(WebSocketDisconnect) as exc_info:
+        with client.websocket_connect(
+            f"/ws/tts/{room_id}/en/ttstest-scoped-{room_id}-en?token={bad_part_tok}"
+        ):
+            pass
+    assert exc_info.value.code == 4003
+
+
+def test_ws_tts_rejects_unpermitted_registered_user_cookie():
+    """Registered user without membership or listener join code is rejected."""
+    import anyio
+    from fastapi.websockets import WebSocketDisconnect
+
+    from portal.auth import create_user_token
+    from portal.database import Event, Room, get_session
+
+    async def setup():
+        async with get_session() as session:
+            ev = Event(slug="ttstest-unauth-user", display_name="TTS Unauth User", listener_join_code="secret123")
+            session.add(ev)
+            await session.flush()
+            room = Room(display_name="r", event_id=ev.id, audio_delay_ms=0)
+            session.add(room)
+            await session.flush()
+            return room.id
+
+    room_id = anyio.run(setup)
+
+    user_tok = create_user_token(user_id=8888, email="unauth@example.com", is_admin=False)
+    headers = {"Origin": "http://testserver"}
+
+    with pytest.raises(WebSocketDisconnect) as exc_info:
+        with client.websocket_connect(
+            f"/ws/tts/{room_id}/en/ttstest-unauth-user-{room_id}-en",
+            cookies={"user_token": user_tok},
+            headers=headers,
+        ):
+            pass
+    assert exc_info.value.code == 4003
+
+
+def test_ws_tts_accepts_permitted_registered_user_cookie():
+    """Registered user with membership to the event/booth is accepted."""
+    import anyio
+
+    from portal.auth import create_user_token
+    from portal.database import (
+        create_booth,
+        create_event,
+        create_room,
+        create_user,
+        get_session,
+    )
+    from portal.models import EventMembership
+
+    async def setup():
+        async with get_session() as session:
+            user = await create_user(session, email="owner@example.com", display_name="Owner")
+            ev = await create_event(session, slug="ttstest-auth-user", display_name="TTS Auth User")
+            room = await create_room(session, event_id=ev.id, display_name="Main Room")
+            await create_booth(session, event_id=ev.id, room_id=room.id, language_code="en", language_name="English")
+            session.add(EventMembership(user_id=user.id, event_id=ev.id, role="event_owner"))
+            await session.flush()
+            return user.id, room.id
+
+    user_id, room_id = anyio.run(setup)
+
+    user_tok = create_user_token(user_id=user_id, email="owner@example.com", is_admin=False)
+    headers = {"Origin": "http://testserver"}
+
+    with client.websocket_connect(
+        f"/ws/tts/{room_id}/en/ttstest-auth-user-{room_id}-en",
+        cookies={"user_token": user_tok},
+        headers=headers,
+    ):
+        pass
+
+
+def test_ws_tts_accepts_registered_user_with_listener_cookie():
+    """Registered user without membership but with valid listener code is accepted."""
+    import anyio
+
+    from portal.auth import create_user_token
+    from portal.database import Event, Room, get_session
+
+    async def setup():
+        async with get_session() as session:
+            ev = Event(slug="ttstest-reg-listener", display_name="TTS Reg Listener", listener_join_code="secret123")
+            session.add(ev)
+            await session.flush()
+            room = Room(display_name="r", event_id=ev.id, audio_delay_ms=0)
+            session.add(room)
+            await session.flush()
+            return room.id
+
+    room_id = anyio.run(setup)
+
+    user_tok = create_user_token(user_id=9999, email="attendee@example.com", is_admin=False)
+    headers = {"Origin": "http://testserver"}
+
+    with client.websocket_connect(
+        f"/ws/tts/{room_id}/en/ttstest-reg-listener-{room_id}-en",
+        cookies={
+            "user_token": user_tok,
+            "listener_code_ttstest-reg-listener": "secret123",
+        },
+        headers=headers,
+    ):
+        pass
+
+
+def test_ws_tts_rejects_unscoped_session_cookie():
+    """Unscoped session_token cookie is rejected."""
+    import anyio
+    import jwt
+    from fastapi.websockets import WebSocketDisconnect
+
+    from portal.config import settings
+    from portal.database import Event, Room, get_session
+
+    async def setup():
+        async with get_session() as session:
+            ev = Event(slug="ttstest-unscoped-sess", display_name="TTS Unscoped Sess", listener_join_code="secret123")
+            session.add(ev)
+            await session.flush()
+            room = Room(display_name="r", event_id=ev.id, audio_delay_ms=0)
+            session.add(room)
+            await session.flush()
+            return room.id
+
+    room_id = anyio.run(setup)
+
+    unscoped_tok = jwt.encode({"sub": "user1", "role": "viewer"}, settings.effective_jwt_secret, algorithm="HS256")
+    headers = {"Origin": "http://testserver"}
+
+    with pytest.raises(WebSocketDisconnect) as exc_info:
+        with client.websocket_connect(
+            f"/ws/tts/{room_id}/en/ttstest-unscoped-sess-{room_id}-en",
+            cookies={"session_token": unscoped_tok},
+            headers=headers,
+        ):
+            pass
+    assert exc_info.value.code == 4003

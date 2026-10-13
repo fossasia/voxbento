@@ -125,7 +125,7 @@ async def _authorize_tts(websocket: WebSocket, room_id: int, language_code: str,
 
     import jwt
 
-    from portal.auth import WSAuthError, decode_token, get_booth_session
+    from portal.auth import WSAuthError, decode_token, get_booth_session, resolve_booth_role
     from portal.booth_identity import parse_booth_id
     from portal.config import settings
     from portal.database import get_event_by_slug, get_session
@@ -162,8 +162,26 @@ async def _authorize_tts(websocket: WebSocket, room_id: int, language_code: str,
                 raise WSAuthError("Participant token scope does not match.")
             return
 
-        if payload.get("role") or payload.get("is_admin") or payload.get("admin"):
-            return
+        raise WSAuthError("Token scope is required.")
+
+    # For requests without a token that rely on cookies, check Origin strictly
+    origin = websocket.headers.get("origin")
+    if origin:
+        parsed_origin = urlparse(origin)
+        expected_pub = urlparse(settings.public_base_url)
+
+        ws_scheme = websocket.url.scheme
+        if ws_scheme == "ws":
+            ws_scheme = "http"
+        elif ws_scheme == "wss":
+            ws_scheme = "https"
+
+        allowed_origins = {
+            (expected_pub.scheme, expected_pub.netloc),
+            (ws_scheme, websocket.url.netloc),
+        }
+        if (parsed_origin.scheme, parsed_origin.netloc) not in allowed_origins:
+            raise WSAuthError("Origin mismatch.")
 
     # 2. JWT in cookie
     payload = get_booth_session(websocket)
@@ -184,29 +202,17 @@ async def _authorize_tts(websocket: WebSocket, room_id: int, language_code: str,
                 raise WSAuthError("Participant token scope does not match.")
             return
 
-        if payload.get("user") or payload.get("role"):
-            return
+        if payload.get("user"):
+            user_payload = {k: v for k, v in payload.items() if k != "role"}
+            user_role = await resolve_booth_role(user_payload, booth_id)
+            if user_role:
+                return
+            if not websocket.cookies.get(f"listener_code_{event_slug}"):
+                raise WSAuthError("Token scope is required.")
+        else:
+            raise WSAuthError("Token scope is required.")
 
     # 3. Listener code cookie
-    # For requests without a token that rely on the cookie, check Origin strictly
-    origin = websocket.headers.get("origin")
-    if origin:
-        parsed_origin = urlparse(origin)
-        expected_pub = urlparse(settings.public_base_url)
-
-        ws_scheme = websocket.url.scheme
-        if ws_scheme == "ws":
-            ws_scheme = "http"
-        elif ws_scheme == "wss":
-            ws_scheme = "https"
-
-        allowed_origins = {
-            (expected_pub.scheme, expected_pub.netloc),
-            (ws_scheme, websocket.url.netloc)
-        }
-        if (parsed_origin.scheme, parsed_origin.netloc) not in allowed_origins:
-            raise WSAuthError("Origin mismatch.")
-
     cookie_code = websocket.cookies.get(f"listener_code_{event_slug}")
     if cookie_code:
         async with get_session() as db_session:
