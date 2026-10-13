@@ -49,8 +49,8 @@ FAILURES = {
 }
 UNREACHABLE = "The meeting agent service is unreachable. Ask the server operator to check the floor-bot service."
 SOURCE_CONFLICT = (
-    "Program ingest owns this room's floor. Confirm the source change to disconnect the encoder "
-    "and connect the meeting."
+    "Program ingest (an encoder or the browser sender) owns this room's floor. Confirm the source "
+    "change to disconnect it and connect the meeting."
 )
 
 
@@ -209,7 +209,7 @@ def status(room: Room) -> dict:
         reason = current.reason if current else "Launching the meeting agent."
     else:
         state = "stopped"
-        reason = "Program ingest owns the floor." if room.floor_source != "jitsi_bot" else ""
+        reason = "Program ingest (an encoder or the browser sender) owns the floor." if room.floor_source != "jitsi_bot" else ""
     return {
         "enabled": enabled,
         "state": state,

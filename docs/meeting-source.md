@@ -42,7 +42,7 @@ never logged, and status responses never include it.
 
 ## Ownership and recovery
 
-- `rooms.meeting_agent_enabled` (migration 026) is the durable desired state.
+- `rooms.meeting_agent_enabled` (migration 027) is the durable desired state.
   The floor-bot `/status` endpoint is the observed state. `portal/meeting_source.py`
   reconciles them every two seconds under the per-room lock shared with program ingest.
 - There is at most one agent process per room. Repeated **Connect** clicks
@@ -67,7 +67,7 @@ never logged, and status responses never include it.
   (default `http://floor-bot:8080`) and must not be exposed publicly.
 - The bundled Jitsi is joined through `JITSI_INTERNAL_BASE`. A meeting on another
   Jitsi deployment is joined at the URL the owner enters.
-- Apply migration 026 with `uv run alembic upgrade head`. It adds one boolean
+- Apply migration 027 with `uv run alembic upgrade head`. It adds one boolean
   column with a `false` default; existing rooms stay stopped until an owner connects.
 - Rebuild the `floor-bot` image so the agent reports join and audio failures.
   An older image still works, but every failure is reported as an unexpected exit.
@@ -102,4 +102,4 @@ Before an event, in the production room:
    each switch asks for confirmation.
 
 Rollback: click **Disconnect** in each room. To roll back the schema, back up the
-database and run `uv run alembic downgrade 025`.
+database and run `uv run alembic downgrade 026`.

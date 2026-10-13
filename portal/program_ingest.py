@@ -439,6 +439,7 @@ async def open_sender_session(room: Room, event: Event, offset_ms: int, ttl_secs
             raise HTTPException(409, "Another source is publishing to the floor; stop it before starting the browser sender.")
     else:
         # Explicit takeover from the Jitsi floor bot. Stop it before judging occupancy.
+        room.meeting_agent_enabled = False
         try:
             response = await get_http_client().post(
                 f"{settings.floor_bot_base}/stop",

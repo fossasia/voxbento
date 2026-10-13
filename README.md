@@ -140,7 +140,7 @@ confirm the meeting URL and click **Connect meeting**. VoxBento runs a managed,
 listen-only agent, reports its lifecycle (starting, joined, receiving audio,
 processing, reconnecting, needs attention, stopped), restarts it within a bounded
 policy and starts floor captions, translation and TTS once audio arrives. It never
-replaces program ingest without confirmation. Apply migration 026 and rebuild the
+replaces program ingest without confirmation. Apply migration 027 and rebuild the
 `floor-bot` image. See [workflow, recovery, troubleshooting and rehearsal](docs/meeting-source.md).
 
 # Program stream ingest

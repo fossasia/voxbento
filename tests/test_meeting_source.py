@@ -256,6 +256,26 @@ async def test_enabling_program_ingest_releases_the_meeting_agent(env):
 
 
 @pytest.mark.anyio
+async def test_browser_sender_takeover_releases_the_meeting_agent(env):
+    await env["client"].post(env["url"], json={"action": "connect"})
+    response = await env["client"].post(
+        f"/admin/events/{env['event_id']}/rooms/{env['room_id']}/program-sender",
+        json={"sync_offset_ms": 0},
+    )
+    assert response.status_code == 200, response.text
+    room = await room_row(env["room_id"])
+    assert room.floor_source == "program_ingest" and not room.meeting_agent_enabled
+    assert env["key"] in env["agents"].stops
+
+    # The reconcile loop must not bring the agent back while the sender owns the floor.
+    for _ in range(3):
+        env["clock"].now += 60
+        await meeting.reconcile_once()
+    assert len(env["agents"].starts) == 1
+    assert env["room_id"] not in meeting.health
+
+
+@pytest.mark.anyio
 async def test_unreachable_agent_service_leaves_floor_unchanged(env):
     async with get_session() as session:
         room = await session.get(Room, env["room_id"])

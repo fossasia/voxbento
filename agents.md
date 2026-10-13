@@ -217,7 +217,7 @@ Manual browser check:
 - Docker images: `bluenviron/mediamtx:1.18.2`, `ghcr.io/jitsi/*:stable-11248`
 
 Meeting source: `portal/meeting_source.py` owns the managed Jitsi agent lifecycle
-(desired state `rooms.meeting_agent_enabled`, migration 026, bounded restarts,
+(desired state `rooms.meeting_agent_enabled`, migration 027, bounded restarts,
 restart reconciliation); `portal/routers/meeting_source.py` owns its owner controls.
 Never log or return the meeting URL. Read `docs/meeting-source.md` first.
 
