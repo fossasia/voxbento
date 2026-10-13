@@ -26,8 +26,10 @@ VoxBento asks for confirmation before it disconnects the encoder, revokes its
 token and connects the meeting. Selecting the meeting never replaces an encoder
 implicitly. Enabling program ingest likewise stops the meeting agent.
 
-The URL entered here is saved as the room's Jitsi URL, which interpreters also
-use for floor monitoring. The URL can carry a Jitsi `jwt` query parameter; it is
+Meeting URLs must use `https://`. Plain `http://` is accepted only for the bundled
+Jitsi (the configured Jitsi host or `localhost`), which the agent reaches over the
+private network anyway. The URL entered here is saved as the room's Jitsi URL, which
+interpreters also use for floor monitoring. The URL can carry a Jitsi `jwt` query parameter; it is
 never logged, and status responses never include it.
 Changing the URL here or in Room Settings while the agent is connected moves the
 agent to the new meeting within a few seconds. A corrected URL also gets a fresh
@@ -64,7 +66,9 @@ reconnect budget, so fixing a wrong URL recovers a room that shows **Needs atten
   itself), so the portal can tell whether a running agent is in the configured meeting.
 - After a portal restart, reconciliation adopts agents the database still wants
   (rejoining any whose fingerprint shows an outdated meeting),
-  restarts missing ones and stops agents for rooms that no longer want one. A
+  restarts missing ones and stops agents for rooms that no longer want one. While
+  no room wants an agent, this sweep still runs every 30 seconds, so an agent left
+  behind by a source takeover during a floor-bot outage is removed. A
   disconnect that cannot reach the floor-bot service returns `202` with
   `cleanup_pending: true`; the desired state is already cleared and the stale
   agent is stopped on the next successful reconcile.
@@ -94,8 +98,9 @@ reconnect budget, so fixing a wrong URL recovers a room that shows **Needs atten
 | No meeting audio reached the media server | Check `docker compose logs floor-bot` for FFmpeg errors and `docker compose logs mediamtx` for the `<event>/<room>/floor` path. |
 | Floor transcription is disabled / Select the floor source language | Fix the room's Floor Audio Transcription settings; the agent stays in the meeting. |
 
-Floor-bot logs redact `jwt`, `token` and `password` query values and never print
-the join URL.
+Floor-bot logs redact `jwt`, `token` and `password` values in query, JSON and
+`key: value` forms, and never print the join URL. A redirect is accepted only if it
+stays on the same host and room; it may upgrade `http` to `https`, never downgrade.
 
 ## Rehearsal
 

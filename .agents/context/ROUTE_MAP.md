@@ -144,8 +144,9 @@ Legacy organizer requests to allowlisted event-management paths under `/admin/`,
   lifecycle. Start no longer launches the transcription worker directly; the
   reconcile loop starts it once audio arrives. Stop returns 202 with
   `cleanup_pending` when the agent could not be confirmed stopped. Status keeps
-  the legacy `running`, `stage` and `bot_reachable` fields (`stage` is `unknown`
-  when the floor-bot service is unreachable).
+  the legacy `running`, `stage` and `bot_reachable` fields with their original
+  meaning: `stage` is the raw floor-bot stage (`launching`, `in_meeting`, `dead`, …;
+  `unknown` when the service is unreachable); the managed lifecycle is in `state`.
 
 `POST /login` requires verified email and uses the `login` rate-limit bucket:
 10 attempts per normalized email per hour. There is no separate admin sign-in form.

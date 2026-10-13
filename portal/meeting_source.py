@@ -36,6 +36,8 @@ from portal.websockets.manager import broadcast_transcription
 logger = logging.getLogger(__name__)
 AGENT_CONTROL_TIMEOUT = 10.0
 RECONCILE_INTERVAL_SECS = 2.0
+# With no room wanting an agent, still look for orphans (e.g. a takeover whose /stop failed).
+IDLE_SWEEP_SECS = 30.0
 RESTART_BACKOFF_SECS = (2.0, 5.0, 10.0, 20.0, 30.0)
 # Processing this long without a fault ends the incident and refills the restart budget.
 STABLE_RESET_SECS = 60.0
@@ -75,12 +77,22 @@ class AgentHealth:
 
 
 health: dict[int, AgentHealth] = {}
-_swept = False
+_last_sweep = 0.0  # monotonic time of the last stale-agent sweep; 0 forces one
 _unreachable = False
 
 
 def process_key(event_slug: str, room_id: int) -> str:
     return f"{event_slug}-{room_id}"
+
+
+def _routes_to_internal_jitsi(parsed: urllib.parse.SplitResult) -> bool:
+    """The bundled Jitsi is reached over the private network, whatever scheme was typed."""
+    public = urllib.parse.urlsplit(settings.effective_jitsi_base_url)
+    return parsed.netloc in ("jitsi.voxbento.com", public.netloc) or parsed.hostname in {
+        "localhost",
+        "127.0.0.1",
+        "::1",
+    }
 
 
 def validate_meeting_url(url: str) -> str:
@@ -93,6 +105,9 @@ def validate_meeting_url(url: str) -> str:
     parsed = urllib.parse.urlsplit(url)
     if parsed.scheme not in {"https", "http"} or not parsed.hostname:
         raise ValueError("Enter a full meeting URL that starts with https://.")
+    if parsed.scheme == "http" and not _routes_to_internal_jitsi(parsed):
+        # The agent would send the room URL, including any Jitsi jwt, in clear text.
+        raise ValueError("Use an https:// meeting URL; plain http would expose meeting credentials.")
     if parsed.username or parsed.password:
         raise ValueError("Remove the username and password from the meeting URL.")
     if parsed.fragment:
@@ -126,11 +141,10 @@ def agent_url(room: Room, event: Event) -> str:
     if not room.jitsi_url:
         clean_name = re.sub("[^a-zA-Z0-9]+", "", room.display_name)
         return f"{settings.effective_jitsi_internal_base}/Voxbento-{event.slug}-{clean_name}"
-    parsed = urllib.parse.urlparse(room.jitsi_url)
-    internal = urllib.parse.urlparse(settings.effective_jitsi_internal_base)
-    public = urllib.parse.urlparse(settings.effective_jitsi_base_url)
-    if parsed.netloc in ("jitsi.voxbento.com", public.netloc) or parsed.netloc.startswith(("localhost", "127.0.0.1")):
-        return urllib.parse.urlunparse(parsed._replace(scheme=internal.scheme, netloc=internal.netloc))
+    parsed = urllib.parse.urlsplit(room.jitsi_url)
+    if _routes_to_internal_jitsi(parsed):
+        internal = urllib.parse.urlsplit(settings.effective_jitsi_internal_base)
+        return urllib.parse.urlunsplit(parsed._replace(scheme=internal.scheme, netloc=internal.netloc))
     return room.jitsi_url
 
 
@@ -148,12 +162,15 @@ async def agent_snapshot() -> dict[str, dict]:
     return agents
 
 
-async def service_reachable() -> bool:
+async def bot_stage(event_slug: str, room_id: int) -> tuple[bool, str, bool]:
+    """Raw floor-bot view for the legacy API: (service reachable, bot stage, process running)."""
     try:
-        await agent_snapshot()
+        info = (await agent_snapshot()).get(process_key(event_slug, room_id))
     except (httpx.HTTPError, ValueError):
-        return False
-    return True
+        return False, "unknown", False
+    if not info:
+        return True, "stopped", False
+    return True, str(info.get("stage", info.get("state", "unknown"))), info.get("state") == "healthy"
 
 
 async def start_agent(room: Room, event: Event) -> None:
@@ -225,11 +242,11 @@ async def connect(room: Room, event: Event, meeting_url: str | None, confirm_sou
 
 async def _abandon_agent(event_slug: str, room_id: int) -> None:
     """Stop an agent whose connect failed; the reconcile sweep retries if this stop fails."""
-    global _swept
+    global _last_sweep
     try:
         await stop_agent(event_slug, room_id)
     except httpx.HTTPError:
-        _swept = False
+        _last_sweep = 0.0
         logger.warning("meeting_agent stop_pending room_id=%s", room_id)
 
 
@@ -239,7 +256,7 @@ async def disconnect(room: Room, event: Event) -> bool:
     Returns False when the agent could not be confirmed stopped; the reconcile loop
     retries that cleanup because the desired state is already cleared.
     """
-    global _swept
+    global _last_sweep
     room.meeting_agent_enabled = False
     health.pop(room.id, None)
     # A program encoder may own the floor worker; only stop the worker the agent fed.
@@ -248,7 +265,7 @@ async def disconnect(room: Room, event: Event) -> bool:
     try:
         await stop_agent(event.slug, room.id)
     except httpx.HTTPError:
-        _swept = False
+        _last_sweep = 0.0
         logger.warning("meeting_agent stop_pending room_id=%s", room.id)
         return False
     logger.info("meeting_agent action=disconnect room_id=%s", room.id)
@@ -437,13 +454,13 @@ async def _stop_stale_agents(agents: dict[str, dict]) -> None:
 
 
 async def reconcile_once() -> None:
-    global _swept, _unreachable
+    global _last_sweep, _unreachable
     async with get_session() as session:
         rows = (await session.execute(select(Room.id, Event.slug).join(Event).where(Room.meeting_agent_enabled))).all()
     ids = [room_id for room_id, _ in rows]
     for room_id in set(health) - set(ids):
         health.pop(room_id, None)
-    if not rows and _swept:
+    if not rows and monotonic() - _last_sweep < IDLE_SWEEP_SECS:
         return
     try:
         agents = await agent_snapshot()
@@ -459,7 +476,7 @@ async def reconcile_once() -> None:
     wanted = {process_key(slug, room_id) for room_id, slug in rows}
     try:
         await _stop_stale_agents({key: info for key, info in agents.items() if key not in wanted})
-        _swept = True
+        _last_sweep = monotonic()
     except (httpx.HTTPError, ValueError):
         logger.warning("meeting_agent stale_cleanup_pending")
     paths: dict[str, MediaPath] = {}

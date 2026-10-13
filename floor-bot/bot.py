@@ -13,7 +13,10 @@ from typing import Dict
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("floor-bot")
 # Authenticated Jitsi deployments carry credentials in the room URL and XMPP traffic.
-SECRET_QUERY = re.compile(r"(?i)\b((?:jwt|token|password)=)[^&\s#\"']+")
+# Browser console lines use query (jwt=...), JSON ("jwt":"...") and prose (token: ...) forms.
+SECRET_VALUE = re.compile(
+    r"""(?i)(["']?\b(?:jwt|(?:access_|refresh_)?token|password)\b["']?\s*[:=]\s*["']?)[^&\s#"',;}]+"""
+)
 
 
 class SubprocessManager:
@@ -59,6 +62,20 @@ JOINED_JS = (
     " && typeof APP.conference.isJoined === 'function' && APP.conference.isJoined()"
 )
 IS_JITSI_JS = "() => typeof APP !== 'undefined' && !!APP.conference"
+
+def same_meeting(requested, final):
+    # Whether a followed redirect still points at the requested room on the same Jitsi.
+    # Host and room must match. The port may change only with an http-to-https upgrade;
+    # a downgrade to http is refused because it would expose the room credential.
+    import urllib.parse
+    req, got = urllib.parse.urlsplit(requested), urllib.parse.urlsplit(final)
+    def room(parts):
+        return (parts.hostname or "").casefold(), parts.path.strip("/").casefold()
+    if room(req) != room(got):
+        return False
+    if req.scheme == got.scheme:
+        return req.port == got.port
+    return req.scheme == "http" and got.scheme == "https"
 
 async def evaluate(page, script):
     try:
@@ -177,14 +194,9 @@ async def run_capture():
             await page.goto(join_url, timeout=30000)
         except Exception:
             raise AgentFailure("join_failed")
-        # goto follows HTTP redirects. Refuse one that lands in another room or on another
-        # Jitsi host, so the requested-URL fingerprint in /status names the room actually
-        # joined. Scheme and port may change, which keeps http-to-https upgrades working.
-        def meeting_identity(url):
-            parts = urllib.parse.urlsplit(url)
-            return (parts.hostname or "").casefold(), parts.path.strip("/").casefold()
-
-        if meeting_identity(page.url) != meeting_identity(jitsi_url):
+        # goto follows HTTP redirects. Refuse one that leaves the requested room, so the
+        # requested-URL fingerprint in /status names the room actually joined.
+        if not same_meeting(jitsi_url, page.url):
             raise AgentFailure("redirected")
 
         try:
@@ -334,7 +346,7 @@ raise SystemExit(asyncio.run(run_capture()))
 
             def log_stream(stream, prefix):
                 for line in iter(stream.readline, ""):
-                    text = SECRET_QUERY.sub(r"\1[redacted]", line.strip())
+                    text = SECRET_VALUE.sub(r"\1[redacted]", line.strip())
                     logger.info(f"{prefix}: {text}")
                     if "BOT_STAGE:" in text:
                         self.room_states[process_key] = text.split("BOT_STAGE:", 1)[1].strip()

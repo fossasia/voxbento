@@ -1001,11 +1001,14 @@ async def api_floor_transcription_status(room_id: int):
         room = await get_room_by_id(session, room_id)
         if not room:
             raise HTTPException(status_code=404, detail="Invalid room")
+        event = await get_event_by_id(session, room.event_id)
+        if not event:
+            raise HTTPException(status_code=404, detail="Event not found")
         body = meeting_source.status(room)
-    # Keep the pre-managed response fields so existing scripts and monitors still work.
-    body["bot_reachable"] = await meeting_source.service_reachable()
-    body["running"] = body["state"] in {"joined", "receiving", "processing"}
-    body["stage"] = body["state"] if body["bot_reachable"] else "unknown"
+    # Keep the pre-managed fields with their original meaning (raw bot stage such as
+    # launching, in_meeting or dead) so existing scripts and monitors keep working;
+    # the managed lifecycle is reported separately in "state".
+    body["bot_reachable"], body["stage"], body["running"] = await meeting_source.bot_stage(event.slug, room.id)
     return body
 
 

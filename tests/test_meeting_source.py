@@ -38,6 +38,7 @@ class FakeAgents:
         self.fail_start = False
         self.fail_stop = False
         self.malformed = False
+        self.stop_unreachable = False
 
     def handle(self, request: httpx.Request) -> httpx.Response:
         if not self.reachable:
@@ -60,6 +61,8 @@ class FakeAgents:
                 "stage": "launching",
             }
         elif request.url.path == "/stop":
+            if self.stop_unreachable:
+                raise httpx.ConnectError("floor-bot down", request=request)
             if self.fail_stop:
                 return httpx.Response(500)
             self.stops.append(key)
@@ -84,7 +87,7 @@ async def env(monkeypatch):
     monkeypatch.setattr(settings, "meeting_agent_max_restarts", 2)
     monkeypatch.setattr(settings, "meeting_agent_no_audio_secs", 30.0)
     meeting.health.clear()
-    monkeypatch.setattr(meeting, "_swept", False)
+    monkeypatch.setattr(meeting, "_last_sweep", 0.0)
     ingest.health.clear()
     ingest.room_locks.clear()
     clock = Clock()
@@ -184,6 +187,7 @@ def publish(env, received: int) -> None:
         ("https://meet.example.org/TrackA#config.x=1", "'#' part"),
         ("https://meet.example.org/", "end with the Jitsi room name"),
         ("https://meet.example.org/a/b/c", "end with the Jitsi room name"),
+        ("http://meet.example.org/TrackA?jwt=secret", "Use an https:// meeting URL"),
     ],
 )
 async def test_invalid_meeting_url_is_rejected_without_starting_agent(env, url, message):
@@ -618,13 +622,54 @@ async def test_reconcile_loop_survives_unexpected_errors(env, monkeypatch, caplo
 
 
 @pytest.mark.anyio
-async def test_legacy_status_keeps_bot_reachable(env):
+async def test_legacy_status_keeps_original_field_meanings(env):
     status_url = f"/api/rooms/{env['room_id']}/floor-transcription/status"
     body = (await env["client"].get(status_url)).json()
-    assert body["bot_reachable"] is True and body["stage"] == "stopped"
+    assert (body["bot_reachable"], body["stage"], body["running"]) == (True, "stopped", False)
+
+    await env["client"].post(env["url"], json={"action": "connect"})
+    env["agents"].rooms[env["key"]]["stage"] = "in_meeting"
+    await meeting.reconcile_once()
+    body = (await env["client"].get(status_url)).json()
+    # stage keeps the raw bot values scripts check for; the managed lifecycle is separate.
+    assert (body["stage"], body["running"], body["state"]) == ("in_meeting", True, "joined")
+
+    env["agents"].rooms[env["key"]] = {"state": "dead", "stage": "dead", "exit_code": 3}
+    assert (await env["client"].get(status_url)).json()["stage"] == "dead"
+
     env["agents"].reachable = False
     body = (await env["client"].get(status_url)).json()
-    assert body["bot_reachable"] is False and body["stage"] == "unknown"
+    assert (body["bot_reachable"], body["stage"], body["running"]) == (False, "unknown", False)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("url", ["http://localhost:8080/TrackA", "http://jitsi.voxbento.com/TrackA"])
+async def test_http_is_allowed_only_where_routed_to_private_jitsi(env, url):
+    response = await env["client"].post(env["url"], json={"action": "connect", "meeting_url": url})
+    assert response.status_code == 200, response.text
+    # The agent joins through the configured internal base, not the typed URL.
+    internal = settings.effective_jitsi_internal_base.rstrip("/")
+    assert env["agents"].starts[-1]["jitsi_url"] == f"{internal}/TrackA"
+
+
+@pytest.mark.anyio
+async def test_orphan_left_by_takeover_is_swept_while_idle(env):
+    await env["client"].post(env["url"], json={"action": "connect"})
+    await meeting.reconcile_once()  # a completed sweep
+    # Program ingest takes over while the bot is unreachable; its /stop failure is tolerated.
+    env["agents"].stop_unreachable = True
+    response = await env["client"].post(
+        f"/workspace/events/{env['event_id']}/rooms/{env['room_id']}/program-ingest", json={"action": "enable"}
+    )
+    assert response.status_code == 200, response.text
+    assert env["key"] in env["agents"].rooms  # the old participant is still in the meeting
+
+    env["agents"].stop_unreachable = False
+    await meeting.reconcile_once()
+    assert env["key"] in env["agents"].rooms  # idle sweeps are throttled...
+    env["clock"].now += meeting.IDLE_SWEEP_SECS
+    await meeting.reconcile_once()
+    assert env["key"] not in env["agents"].rooms  # ...but never skipped for good
 
 
 @pytest.mark.anyio
