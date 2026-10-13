@@ -266,6 +266,13 @@ async with get_session() as session:
 - `configure(url)` overrides engine (used in tests).
 - `init_db()` creates all tables without Alembic (tests only).
 - `dispose()` disposes connection pool.
+## Migration 027 — managed meeting agent
+
+Room field `meeting_agent_enabled` (Boolean, default false): the durable desired
+state of the managed Jitsi floor agent. Only meaningful while `floor_source` is
+`jitsi_bot`; enabling program ingest clears it. `portal/meeting_source.py`
+reconciles it against floor-bot `/status` and restores state after a portal restart.
+
 ## Migration 025 — program floor ownership
 
 Room fields: `floor_source` (default `jitsi_bot`), nullable `program_key_hash`

@@ -6,6 +6,7 @@ Run inside the container after its normal entrypoint has started:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import os
@@ -24,8 +25,10 @@ class AudioPageHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "text/html")
         self.end_headers()
+        # The bot only streams after Jitsi reports a joined conference.
         self.wfile.write(b"""<!doctype html><title>Floor audio fixture</title>
 <script>
+window.APP = {conference: {isJoined: () => true}};
 const context = new AudioContext();
 const oscillator = context.createOscillator();
 oscillator.frequency.value = 440;
@@ -125,6 +128,9 @@ def main() -> None:
             status = bot_request("/status")["active_rooms"].get("ci-audio-1")
             assert status and status["state"] != "dead", f"Capture subprocess failed: {status}"
             if status["stage"] == "in_meeting":
+                assert (status.get("event_slug"), status.get("room_id")) == ("ci-audio", 1), status
+                expected = hashlib.sha256(b"http://127.0.0.1:8090/").hexdigest()[:16]
+                assert status.get("url_fingerprint") == expected, status
                 break
             if time.monotonic() >= deadline:
                 raise TimeoutError(f"Chromium never reached the audio page: {status}")
