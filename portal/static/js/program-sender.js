@@ -235,14 +235,15 @@ async function stop(keepState) {
   stopMeter();
   if (stream) stream.getTracks().forEach(track => track.stop());
   stream = null;
+  // keepalive lets these cleanup requests complete even when the page is unloading.
   if (resourceUrl) {
-    fetch(resourceUrl, {method: 'DELETE'}).catch(() => {});
+    fetch(resourceUrl, {method: 'DELETE', keepalive: true}).catch(() => {});
     resourceUrl = null;
   }
   // Release only a session we actually opened, bound to its secret so a stray or
   // delayed DELETE can never disconnect an encoder or a newer session.
   if (sessionActive) {
-    fetch(card.dataset.mintUrl, {method: 'DELETE', cache: 'no-store', headers: releaseHeaders()}).catch(() => {});
+    fetch(card.dataset.mintUrl, {method: 'DELETE', cache: 'no-store', keepalive: true, headers: releaseHeaders()}).catch(() => {});
     sessionActive = false;
   }
   sessionSecret = null;
@@ -274,5 +275,6 @@ if (!supported()) {
   checkAvailability();
   startButton.addEventListener('click', start);
   stopButton.addEventListener('click', () => stop(false));
-  window.addEventListener('pagehide', () => { sessionSecret = null; if (stream) stop(true); });
+  // Let stop() send the secret-bound release before the secret is scrubbed.
+  window.addEventListener('pagehide', () => { if (stream) stop(true); else sessionSecret = null; });
 }

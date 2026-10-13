@@ -291,6 +291,17 @@ async def test_stop_without_matching_secret_is_a_noop(environment):
 
 
 @pytest.mark.anyio
+async def test_stop_without_secret_header_is_a_noop(environment):
+    client, event, room, _ = environment
+    await start_session(client, event, room)
+    # No X-Program-Session header at all: the live session must be left intact.
+    stop = await client.delete(sender_url(event, room))
+    assert stop.status_code == 200
+    async with get_session() as session:
+        assert (await session.get(Room, room.id)).program_session_secret_hash is not None
+
+
+@pytest.mark.anyio
 async def test_stop_clears_reservation_so_restart_succeeds(environment):
     client, event, room, _ = environment
     data = await start_session(client, event, room)  # Mints a secret and a pending reservation.
