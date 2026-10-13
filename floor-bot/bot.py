@@ -177,12 +177,14 @@ async def run_capture():
             await page.goto(join_url, timeout=30000)
         except Exception:
             raise AgentFailure("join_failed")
-        # goto follows HTTP redirects. Refuse one that lands in another room, so the
-        # requested-URL fingerprint in /status always names the room actually joined.
-        def room_path(url):
-            return urllib.parse.urlsplit(url).path.strip("/").casefold()
+        # goto follows HTTP redirects. Refuse one that lands in another room or on another
+        # Jitsi host, so the requested-URL fingerprint in /status names the room actually
+        # joined. Scheme and port may change, which keeps http-to-https upgrades working.
+        def meeting_identity(url):
+            parts = urllib.parse.urlsplit(url)
+            return (parts.hostname or "").casefold(), parts.path.strip("/").casefold()
 
-        if room_path(page.url) != room_path(jitsi_url):
+        if meeting_identity(page.url) != meeting_identity(jitsi_url):
             raise AgentFailure("redirected")
 
         try:

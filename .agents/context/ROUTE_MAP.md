@@ -143,7 +143,9 @@ Legacy organizer requests to allowlisted event-management paths under `/admin/`,
   `GET .../status` (room coordinators and owners) delegate to the same managed
   lifecycle. Start no longer launches the transcription worker directly; the
   reconcile loop starts it once audio arrives. Stop returns 202 with
-  `cleanup_pending` when the agent could not be confirmed stopped.
+  `cleanup_pending` when the agent could not be confirmed stopped. Status keeps
+  the legacy `running`, `stage` and `bot_reachable` fields (`stage` is `unknown`
+  when the floor-bot service is unreachable).
 
 `POST /login` requires verified email and uses the `login` rate-limit bucket:
 10 attempts per normalized email per hour. There is no separate admin sign-in form.

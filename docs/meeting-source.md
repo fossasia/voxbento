@@ -16,7 +16,9 @@ and Webex need provider-specific agents and are not implied by this feature.
 2. In **Meeting source**, keep **Jitsi Meet (self-hosted)**, confirm the meeting
    URL and click **Connect meeting**.
 3. Watch the status: **Starting → Joined → Receiving audio → Processing**.
-4. Click **Disconnect** to remove the agent from the meeting and stop floor
+4. To move a connected agent to another meeting, edit the URL and click
+   **Switch meeting**; there is no need to disconnect first.
+5. Click **Disconnect** to remove the agent from the meeting and stop floor
    processing.
 
 If program ingest owns the room's floor, the button reads **Switch to meeting**.

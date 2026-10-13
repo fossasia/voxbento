@@ -35,6 +35,7 @@ from portal.websockets.manager import broadcast_transcription
 
 logger = logging.getLogger(__name__)
 AGENT_CONTROL_TIMEOUT = 10.0
+RECONCILE_INTERVAL_SECS = 2.0
 RESTART_BACKOFF_SECS = (2.0, 5.0, 10.0, 20.0, 30.0)
 # Processing this long without a fault ends the incident and refills the restart budget.
 STABLE_RESET_SECS = 60.0
@@ -138,9 +139,21 @@ async def agent_snapshot() -> dict[str, dict]:
     response.raise_for_status()
     body = response.json()
     agents = body.get("active_rooms") if isinstance(body, dict) else None
-    if not isinstance(agents, dict):
+    # Every caller reads entries with .get(); reject other shapes as ValueError, which
+    # callers treat as an unavailable service, instead of crashing the reconcile task.
+    if not isinstance(agents, dict) or not all(
+        isinstance(key, str) and isinstance(info, dict) for key, info in agents.items()
+    ):
         raise ValueError("Invalid floor-bot status")
     return agents
+
+
+async def service_reachable() -> bool:
+    try:
+        await agent_snapshot()
+    except (httpx.HTTPError, ValueError):
+        return False
+    return True
 
 
 async def start_agent(room: Room, event: Event) -> None:
@@ -491,4 +504,7 @@ async def reconcile_loop() -> None:
             await reconcile_once()
         except SQLAlchemyError:
             logger.warning("meeting_agent database_unavailable")
-        await asyncio.sleep(2)
+        except Exception as exc:  # noqa: BLE001 - the loop must outlive any single bad tick
+            # Log the type only: exception text from upstream calls may echo the meeting URL.
+            logger.error("meeting_agent reconcile_error type=%s", type(exc).__name__)
+        await asyncio.sleep(RECONCILE_INTERVAL_SECS)

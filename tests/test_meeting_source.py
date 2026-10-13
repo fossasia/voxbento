@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import logging
@@ -36,11 +37,14 @@ class FakeAgents:
         self.reachable = True
         self.fail_start = False
         self.fail_stop = False
+        self.malformed = False
 
     def handle(self, request: httpx.Request) -> httpx.Response:
         if not self.reachable:
             raise httpx.ConnectError("floor-bot down", request=request)
         if request.url.path == "/status":
+            if self.malformed:
+                return httpx.Response(200, json={"active_rooms": {"meet-test-1": ["not", "a", "mapping"]}})
             return httpx.Response(200, json={"active_rooms": self.rooms})
         body = json.loads(request.content)
         key = f"{body['event_slug']}-{body['room_id']}"
@@ -575,6 +579,52 @@ async def test_restart_reconciliation_restarts_missing_desired_agent(env):
     env["clock"].now += 60
     await meeting.reconcile_once()
     assert len(env["agents"].starts) == 1
+
+
+@pytest.mark.anyio
+async def test_malformed_agent_status_is_handled_as_unavailable(env):
+    await env["client"].post(env["url"], json={"action": "connect"})
+    env["agents"].malformed = True
+    response = await env["client"].post(env["url"], json={"action": "connect", "meeting_url": SECRET_URL})
+    assert response.status_code == 502
+    await meeting.reconcile_once()  # must not raise AttributeError
+    current = meeting.health[env["room_id"]]
+    assert current.state == "degraded" and "floor-bot service" in current.reason
+
+
+@pytest.mark.anyio
+async def test_reconcile_loop_survives_unexpected_errors(env, monkeypatch, caplog):
+    ticks = []
+
+    async def failing_tick():
+        ticks.append(len(ticks))
+        raise RuntimeError(f"upstream echoed {SECRET_URL}")
+
+    monkeypatch.setattr(meeting, "reconcile_once", failing_tick)
+    monkeypatch.setattr(meeting, "RECONCILE_INTERVAL_SECS", 0)
+    task = asyncio.create_task(meeting.reconcile_loop())
+    try:
+        for _ in range(100):
+            if len(ticks) >= 3:
+                break
+            await asyncio.sleep(0.01)
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    assert len(ticks) >= 3
+    assert "reconcile_error type=RuntimeError" in caplog.text
+    assert "meeting-secret-token" not in caplog.text
+
+
+@pytest.mark.anyio
+async def test_legacy_status_keeps_bot_reachable(env):
+    status_url = f"/api/rooms/{env['room_id']}/floor-transcription/status"
+    body = (await env["client"].get(status_url)).json()
+    assert body["bot_reachable"] is True and body["stage"] == "stopped"
+    env["agents"].reachable = False
+    body = (await env["client"].get(status_url)).json()
+    assert body["bot_reachable"] is False and body["stage"] == "unknown"
 
 
 @pytest.mark.anyio

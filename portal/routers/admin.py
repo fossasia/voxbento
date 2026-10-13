@@ -1002,8 +1002,10 @@ async def api_floor_transcription_status(room_id: int):
         if not room:
             raise HTTPException(status_code=404, detail="Invalid room")
         body = meeting_source.status(room)
+    # Keep the pre-managed response fields so existing scripts and monitors still work.
+    body["bot_reachable"] = await meeting_source.service_reachable()
     body["running"] = body["state"] in {"joined", "receiving", "processing"}
-    body["stage"] = body["state"]
+    body["stage"] = body["state"] if body["bot_reachable"] else "unknown"
     return body
 
 
