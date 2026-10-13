@@ -100,6 +100,11 @@ function stopMeter() {
   meterFill.style.width = '0%';
 }
 
+function releaseHeaders() {
+  // Bind the release to this session's secret so the server ignores a stale DELETE.
+  return sessionSecret ? {'X-Program-Session': sessionSecret} : {};
+}
+
 async function mintSession() {
   const response = await fetch(card.dataset.mintUrl, {
     method: 'POST',
@@ -160,7 +165,7 @@ async function reconnect() {
     resourceUrl = null;
   }
   if (sessionActive) {
-    try { await fetch(card.dataset.mintUrl, {method: 'DELETE', cache: 'no-store'}); } catch (error) { /* already gone */ }
+    try { await fetch(card.dataset.mintUrl, {method: 'DELETE', cache: 'no-store', headers: releaseHeaders()}); } catch (error) { /* already gone */ }
     sessionActive = false;
   }
   try {
@@ -234,9 +239,10 @@ async function stop(keepState) {
     fetch(resourceUrl, {method: 'DELETE'}).catch(() => {});
     resourceUrl = null;
   }
-  // Release only a session we actually opened, so a rejected start never disconnects an encoder.
+  // Release only a session we actually opened, bound to its secret so a stray or
+  // delayed DELETE can never disconnect an encoder or a newer session.
   if (sessionActive) {
-    fetch(card.dataset.mintUrl, {method: 'DELETE', cache: 'no-store'}).catch(() => {});
+    fetch(card.dataset.mintUrl, {method: 'DELETE', cache: 'no-store', headers: releaseHeaders()}).catch(() => {});
     sessionActive = false;
   }
   sessionSecret = null;

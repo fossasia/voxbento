@@ -188,6 +188,8 @@ async def test_revoke_also_clears_sender_session_secret(environment):
     client, event, room, _ = environment
     await client.post(f"/admin/events/{event.id}/rooms/{room.id}/program-ingest", json={"action": "enable"})
     await start_session(client, event, room)  # Now both encoder key and session secret exist.
+    async with get_session() as session:
+        (await session.get(Room, room.id)).program_session_id = str(uuid4())  # Simulate a connected publisher.
     revoke = await client.post(
         f"/admin/events/{event.id}/rooms/{room.id}/program-ingest", json={"action": "revoke"}
     )
@@ -196,6 +198,7 @@ async def test_revoke_also_clears_sender_session_secret(environment):
         stored = await session.get(Room, room.id)
         assert stored.program_session_secret_hash is None
         assert stored.program_key_hash is None
+        assert stored.program_session_id is None  # Reservation cleared so reconcile cannot keep it live.
 
 
 @pytest.mark.anyio
@@ -267,13 +270,34 @@ async def test_expired_session_secret_is_denied(environment):
 @pytest.mark.anyio
 async def test_stop_releases_only_the_sender_session(environment):
     client, event, room, _ = environment
-    await start_session(client, event, room)
-    stop = await client.delete(sender_url(event, room))
+    data = await start_session(client, event, room)
+    stop = await client.delete(sender_url(event, room), headers={"X-Program-Session": data["secret"]})
     assert stop.status_code == 200
     async with get_session() as session:
         stored = await session.get(Room, room.id)
         assert stored.program_session_secret_hash is None
         assert stored.floor_source == "program_ingest"  # Stopping does not switch the floor back.
+
+
+@pytest.mark.anyio
+async def test_stop_without_matching_secret_is_a_noop(environment):
+    client, event, room, _ = environment
+    await start_session(client, event, room)
+    # A stale or foreign DELETE (wrong/absent secret) must not release the live session.
+    stop = await client.delete(sender_url(event, room), headers={"X-Program-Session": "not-the-secret"})
+    assert stop.status_code == 200
+    async with get_session() as session:
+        assert (await session.get(Room, room.id)).program_session_secret_hash is not None
+
+
+@pytest.mark.anyio
+async def test_stop_clears_reservation_so_restart_succeeds(environment):
+    client, event, room, _ = environment
+    data = await start_session(client, event, room)  # Mints a secret and a pending reservation.
+    await client.delete(sender_url(event, room), headers={"X-Program-Session": data["secret"]})
+    # Reservation cleared on release, so an immediate restart is not rejected as pending.
+    restart = await client.post(sender_url(event, room), json={"sync_offset_ms": 0})
+    assert restart.status_code == 200
 
 
 @pytest.mark.anyio

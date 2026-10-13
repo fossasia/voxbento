@@ -456,22 +456,27 @@ async def open_sender_session(room: Room, event: Event, offset_ms: int, ttl_secs
     return secret
 
 
-async def close_sender_session(room: Room, event: Event) -> None:
-    """Release only this browser sender's session: invalidate its secret and kick it.
+async def close_sender_session(room: Room, event: Event, secret: str | None) -> None:
+    """Release only the browser session whose secret matches the one presented.
 
-    No-op kick when no browser session is active, so a rejected start or stray Stop
-    can never disconnect an external encoder that owns the floor.
+    Binding to the secret stops a delayed or foreign DELETE from clearing a newer
+    session's reservation or disconnecting an external encoder that owns the floor.
     """
-    had_session = bool(room.program_session_secret_hash)
+    if not secret or not room.program_session_secret_hash:
+        return
+    digest = await asyncio.to_thread(digest_program_secret, secret)
+    if not secrets.compare_digest(room.program_session_secret_hash, digest):
+        return
     room.program_session_secret_hash = None
     room.program_session_secret_expires_at = None
-    if had_session and room.program_session_id:
-        path = make_mediamtx_path(event.slug, room.id, "floor")
+    path = make_mediamtx_path(event.slug, room.id, "floor")
+    if room.program_session_id:
         await kick(path, MediaSource(type="webRTCSession", id=room.program_session_id))
         room.program_session_id = None
         room.program_disconnected_at = utc_now()
-        health.pop(room.id, None)
-    logger.info("program_ingest sender_session_closed room_id=%s had_session=%s", room.id, had_session)
+    # Always drop the pending reservation for the matched session so retries are not blocked.
+    health.pop(room.id, None)
+    logger.info("program_ingest sender_session_closed room_id=%s", room.id)
 
 
 async def reconcile_room(room: Room, event: Event, path: MediaPath | None) -> None:

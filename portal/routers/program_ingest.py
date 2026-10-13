@@ -7,7 +7,7 @@ import logging
 from typing import Literal
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field, ValidationError
 
@@ -135,6 +135,9 @@ async def ingest_change(request: Request, event_id: int, room_id: int, change: I
                 room.program_key_expires_at = None
                 room.program_session_secret_hash = None
                 room.program_session_secret_expires_at = None
+                # Clear the reservation too, so a failed cleanup kick cannot leave the
+                # session permitted by reconcile's live-session check.
+                room.program_session_id = None
             else:
                 try:
                     secret = await configure_source(room, event, change.action, room.program_sync_offset_ms)
@@ -198,7 +201,12 @@ async def sender_session_start(
 
 
 @router.delete(SENDER_PATH, dependencies=[Depends(require_event_owner)])
-async def sender_session_stop(request: Request, event_id: int, room_id: int) -> JSONResponse:
+async def sender_session_stop(
+    request: Request,
+    event_id: int,
+    room_id: int,
+    x_program_session: str | None = Header(default=None),
+) -> JSONResponse:
     _check_origin(request)
     async with room_lock(room_id):
         async with get_session() as session:
@@ -207,7 +215,7 @@ async def sender_session_stop(request: Request, event_id: int, room_id: int) -> 
             if not room or room.event_id != event_id or not event:
                 raise HTTPException(404, "Room not found")
             try:
-                await close_sender_session(room, event)
+                await close_sender_session(room, event, x_program_session)
             except httpx.HTTPError:
                 logger.warning("program_ingest sender_close_cleanup_pending room_id=%s", room_id)
     return JSONResponse({"stopped": True}, headers={"Cache-Control": "no-store"})
