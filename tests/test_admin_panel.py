@@ -650,19 +650,61 @@ class TestHomePage:
         assert resp.status_code == 200
         assert b"VoxBento" in resp.content
 
-    @pytest.mark.anyio
-    async def test_home_shows_events(self, seed_event):
-        async with _client() as c:
-            resp = await c.get("/")
-        assert resp.status_code == 200
-        assert b"TestCon 2026" in resp.content
+    @pytest.fixture
+    async def named_event(self):
+        from portal.database import create_booth, create_event, create_room, get_session
+
+        async with get_session() as s:
+            event = await create_event(s, slug="zephyr-2031", display_name="Zephyr Summit 2031")
+            room = await create_room(s, event_id=event.id, display_name="Quartz Hall")
+            booth = await create_booth(
+                s, event_id=event.id, room_id=room.id, language_code="ja", language_name="Zephyrese"
+            )
+        return event, booth
+
+    @staticmethod
+    def _assert_no_events(html: str):
+        for text in ("Zephyr Summit 2031", "Quartz Hall", "Zephyrese", "/listener/zephyr-2031"):
+            assert text not in html
+        for text in ("Live Dashboard", "Public Events", "Your Assigned Booths", "Enterprise-Ready"):
+            assert text not in html
 
     @pytest.mark.anyio
-    async def test_home_shows_listener_links(self, seed_event):
+    async def test_home_hides_events_from_anonymous_visitors(self, named_event):
         async with _client() as c:
             resp = await c.get("/")
         assert resp.status_code == 200
-        assert b"/listener/testcon" in resp.content
+        self._assert_no_events(resp.text)
+        assert "Make Every Event Multilingual" in resp.text
+
+    @pytest.mark.anyio
+    async def test_home_hides_events_and_booths_from_signed_in_interpreter(self, named_event):
+        from portal.database import create_user, get_session, set_booth_membership
+
+        _, booth = named_event
+        async with get_session() as s:
+            user = await create_user(s, email="interp@example.com", display_name="Interp")
+            await set_booth_membership(s, user_id=user.id, booth_id=booth.id, role="interpreter")
+        cookies = {"user_token": create_user_token(user_id=user.id, email=user.email)}
+        async with _client() as c:
+            resp = await c.get("/", cookies=cookies)
+        assert resp.status_code == 200
+        self._assert_no_events(resp.text)
+
+    @pytest.mark.anyio
+    async def test_home_hides_events_from_event_owner_and_links_to_workspace(self, named_event):
+        from portal.database import create_user, get_session, set_event_membership
+
+        event, _ = named_event
+        async with get_session() as s:
+            user = await create_user(s, email="owner@example.com", display_name="Owner")
+            await set_event_membership(s, user_id=user.id, event_id=event.id, role="event_owner")
+        cookies = {"user_token": create_user_token(user_id=user.id, email=user.email)}
+        async with _client() as c:
+            resp = await c.get("/", cookies=cookies)
+        assert resp.status_code == 200
+        self._assert_no_events(resp.text)
+        assert 'href="/workspace/"' in resp.text
 
 
 # ---------------------------------------------------------------------------
