@@ -692,6 +692,31 @@ class TestHomePage:
         self._assert_no_events(resp.text)
 
     @pytest.mark.anyio
+    async def test_home_dashboard_link_goes_to_interpreter_lobby_for_booth_only_user(self, named_event):
+        from portal.database import create_user, get_session, set_booth_membership
+
+        _, booth = named_event
+        async with get_session() as s:
+            user = await create_user(s, email="interp@example.com", display_name="Interp")
+            await set_booth_membership(s, user_id=user.id, booth_id=booth.id, role="interpreter")
+        cookies = {"user_token": create_user_token(user_id=user.id, email=user.email)}
+        async with _client() as c:
+            resp = await c.get("/", cookies=cookies)
+        assert 'href="/interpreter"' in resp.text
+        assert 'href="/account"' in resp.text
+
+    @pytest.mark.anyio
+    async def test_home_dashboard_link_stays_on_account_without_memberships(self):
+        from portal.database import create_user, get_session
+
+        async with get_session() as s:
+            user = await create_user(s, email="plain@example.com", display_name="Plain")
+        cookies = {"user_token": create_user_token(user_id=user.id, email=user.email)}
+        async with _client() as c:
+            resp = await c.get("/", cookies=cookies)
+        assert 'href="/interpreter"' not in resp.text
+
+    @pytest.mark.anyio
     async def test_home_hides_events_from_event_owner_and_links_to_workspace(self, named_event):
         from portal.database import create_user, get_session, set_event_membership
 

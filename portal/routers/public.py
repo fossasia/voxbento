@@ -15,6 +15,7 @@ from pydantic import BaseModel
 from portal.auth import get_admin_flags, get_current_user
 from portal.database import (
     get_session,
+    list_booth_memberships_for_user,
     list_memberships_for_user,
     list_room_memberships_for_user,
 )
@@ -43,10 +44,13 @@ async def home(request: Request):
                 uid = int(current_user["sub"])
                 ems = await list_memberships_for_user(session, uid)
                 room_memberships = await list_room_memberships_for_user(session, uid)
+                booth_memberships = await list_booth_memberships_for_user(session, uid)
             if any(em.role == "event_owner" for em in ems):
                 management_home = "/workspace/"
             elif any(rm.role == "room_coordinator" for rm in room_memberships):
                 management_home = "/mission-control/"
+            elif booth_memberships:
+                management_home = "/interpreter"
         except Exception as _exc:
             logging.getLogger(__name__).warning("home() DB error: %s", _exc, exc_info=True)
 
