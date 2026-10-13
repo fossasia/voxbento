@@ -27,6 +27,8 @@ implicitly. Enabling program ingest likewise stops the meeting agent.
 The URL entered here is saved as the room's Jitsi URL, which interpreters also
 use for floor monitoring. The URL can carry a Jitsi `jwt` query parameter; it is
 never logged, and status responses never include it.
+Changing the URL here or in Room Settings while the agent is connected moves the
+agent to the new meeting within a few seconds.
 
 ## States
 

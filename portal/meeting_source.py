@@ -60,6 +60,8 @@ class AgentHealth:
     reason: str = "Launching the meeting agent."
     restarts: int = 0
     failure: str = "exited"
+    # URL the running agent joined; None after a portal restart until the agent is adopted.
+    agent_url: str | None = None
     next_restart_at: float | None = None
     joined_at: float | None = None
     last_bytes: int = -1
@@ -148,6 +150,8 @@ async def stop_agent(event_slug: str, room_id: int) -> None:
 
 async def connect(room: Room, event: Event, meeting_url: str | None, confirm_source_change: bool) -> None:
     """Make the meeting agent the floor source. Caller holds the room lock and DB transaction."""
+    current = health.get(room.id)
+    running_url = current.agent_url if current and current.agent_url else agent_url(room, event)
     try:
         if meeting_url is not None:
             room.jitsi_url = validate_meeting_url(meeting_url)
@@ -165,7 +169,9 @@ async def connect(room: Room, event: Event, meeting_url: str | None, confirm_sou
     # encoder or browser sender connected. Until floor_source changes, the publish hook
     # rejects the agent's RTSP stream, so the two sources never publish at once.
     started = False
-    if not agent or agent.get("state") != "healthy":
+    # The bot reads its URL only at launch, so a changed URL needs a fresh agent.
+    target_url = agent_url(room, event)
+    if target_url != running_url or not agent or agent.get("state") != "healthy":
         try:
             await start_agent(room, event)
         except httpx.HTTPError:
@@ -181,7 +187,7 @@ async def connect(room: Room, event: Event, meeting_url: str | None, confirm_sou
                 502, "Could not switch the floor source; the meeting was not connected. Retry."
             ) from None
     room.meeting_agent_enabled = True
-    health[room.id] = AgentHealth()
+    health[room.id] = AgentHealth(agent_url=target_url)
     logger.info("meeting_agent action=connect room_id=%s", room.id)
 
 
@@ -271,6 +277,7 @@ async def _recover(room: Room, event: Event, current: AgentHealth, now: float, f
     current.restarts += 1
     current.next_restart_at = None
     await start_agent(room, event)
+    current.agent_url = agent_url(room, event)
     current.reason = f"{message} Restarting the meeting agent (attempt {current.restarts} of {limit})."
     logger.info("meeting_agent restart room_id=%s attempt=%s failure=%s", room.id, current.restarts, failure)
 
@@ -291,6 +298,20 @@ async def reconcile_room(
         else:
             failure = "missing" if not agent else str(agent.get("failure") or "exited")
         await _recover(room, event, current, now, failure)
+        return
+    target_url = agent_url(room, event)
+    if current.agent_url is None:
+        current.agent_url = target_url
+    elif current.agent_url != target_url:
+        # Room settings changed the meeting URL under a running agent: rejoin the new meeting.
+        await _stop_worker(current, booth_id)
+        await start_agent(room, event)
+        current.agent_url = target_url
+        current.joined_at = None
+        current.last_progress = None
+        current.last_bytes = -1
+        current.state, current.reason = "starting", "The meeting URL changed; joining the new meeting."
+        logger.info("meeting_agent url_changed room_id=%s", room.id)
         return
     stage = agent.get("stage")
     if stage in {"launching", "joining"}:

@@ -233,6 +233,42 @@ async def test_repeated_connect_does_not_duplicate_participant(env):
 
 
 @pytest.mark.anyio
+async def test_connect_with_new_url_moves_healthy_agent_to_new_meeting(env):
+    await env["client"].post(env["url"], json={"action": "connect", "meeting_url": "https://meet.example.org/TrackA"})
+    env["agents"].rooms[env["key"]]["stage"] = "in_meeting"
+    await meeting.reconcile_once()
+
+    for _ in range(2):  # the second identical request must not rejoin again
+        response = await env["client"].post(
+            env["url"], json={"action": "connect", "meeting_url": "https://meet.example.org/TrackB"}
+        )
+        assert response.status_code == 200
+    assert [start["jitsi_url"] for start in env["agents"].starts] == [
+        "https://meet.example.org/TrackA",
+        "https://meet.example.org/TrackB",
+    ]
+
+
+@pytest.mark.anyio
+async def test_room_settings_url_change_rejoins_new_meeting(env):
+    await env["client"].post(env["url"], json={"action": "connect", "meeting_url": "https://meet.example.org/TrackA"})
+    env["agents"].rooms[env["key"]]["stage"] = "in_meeting"
+    publish(env, 100)
+    await meeting.reconcile_once()
+    assert meeting.health[env["room_id"]].state == "processing"
+
+    async with get_session() as session:
+        (await session.get(Room, env["room_id"])).jitsi_url = "https://meet.example.org/TrackC"
+    await meeting.reconcile_once()
+
+    assert env["agents"].starts[-1]["jitsi_url"] == "https://meet.example.org/TrackC"
+    assert len(env["agents"].starts) == 2
+    current = meeting.health[env["room_id"]]
+    assert current.state == "starting" and "meeting URL changed" in current.reason
+    assert current.restarts == 0  # an owner's change is not a failure
+
+
+@pytest.mark.anyio
 async def test_connect_requires_confirmation_to_replace_program_ingest(env):
     async with get_session() as session:
         room = await session.get(Room, env["room_id"])
