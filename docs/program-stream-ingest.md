@@ -79,7 +79,7 @@ ownership (it does not silently restart the bot).
 “Use Jitsi floor bot” explicitly returns ownership; start the bot separately.
 All source changes affect VoxBento only, not the independent YouTube output.
 
-## Browser program-audio sender (#748)
+## Browser program-audio sender
 
 For venue sound desks without a WHIP encoder, the event owner can publish the floor
 directly from the room page's **Program audio sender** panel. It selects a local
