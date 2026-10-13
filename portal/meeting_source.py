@@ -44,6 +44,7 @@ FAILURES = {
     "exited": "The meeting agent process exited unexpectedly.",
     "join_failed": "The agent could not join the meeting. Check the room URL and that the meeting has no lobby or password.",
     "not_jitsi": "The room URL did not open a Jitsi meeting. Use a meeting URL on the self-hosted Jitsi server.",
+    "redirected": "The meeting URL redirects to a different room. Use the URL the meeting finally opens at.",
     "left_meeting": "The agent was removed from the meeting or the meeting ended.",
     "audio_failed": "The agent joined but could not send meeting audio to the media server.",
     "no_audio": "The agent joined but no meeting audio reached the media server.",

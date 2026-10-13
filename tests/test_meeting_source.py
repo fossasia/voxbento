@@ -488,6 +488,23 @@ async def test_failed_agent_reconnects_within_bounded_policy(env):
 
 
 @pytest.mark.anyio
+async def test_redirect_to_another_room_uses_the_bounded_policy(env):
+    url = "https://meet.example.org/TrackA"
+    await env["client"].post(env["url"], json={"action": "connect", "meeting_url": url})
+    # The bot rejects a cross-room redirect; its fingerprint still names the requested URL,
+    # so this must not look like a URL change, which would reset the budget every tick.
+    redirected = {"state": "dead", "stage": "dead", "failure": "redirected", "url_fingerprint": fingerprint(url)}
+    for _ in range(8):
+        env["agents"].rooms[env["key"]] = dict(redirected)
+        env["clock"].now += 60
+        await meeting.reconcile_once()
+    current = meeting.health[env["room_id"]]
+    assert current.state == "degraded"
+    assert "redirects to a different room" in current.reason
+    assert len(env["agents"].starts) == 1 + settings.meeting_agent_max_restarts
+
+
+@pytest.mark.anyio
 async def test_joined_without_audio_restarts_agent(env):
     await env["client"].post(env["url"], json={"action": "connect"})
     env["agents"].rooms[env["key"]]["stage"] = "in_meeting"

@@ -86,6 +86,7 @@ reconnect budget, so fixing a wrong URL recovers a room that shows **Needs atten
 |---|---|
 | The meeting agent service is unreachable | `docker compose ps floor-bot`, then `FLOOR_BOT_BASE`. |
 | The agent could not join the meeting | Open the URL in a browser. Disable the lobby and password for the floor room, or put a valid `jwt` in the URL. |
+| The meeting URL redirects to a different room | The server redirected the agent to another room. Enter the URL the meeting finally opens at; the agent refuses cross-room redirects so it never listens to the wrong meeting. |
 | The room URL did not open a Jitsi meeting | The URL points at a non-Jitsi page. Use the meeting URL on the self-hosted Jitsi server. |
 | The agent was removed from the meeting | A moderator kicked the agent or the meeting ended. Reconnect when the meeting is live. |
 | No meeting audio reached the media server | Check `docker compose logs floor-bot` for FFmpeg errors and `docker compose logs mediamtx` for the `<event>/<room>/floor` path. |

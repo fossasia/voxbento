@@ -22,7 +22,7 @@ class SubprocessManager:
         # Lifecycle stage per event_slug, updated from subprocess stdout markers.
         # Possible values: launching, joining, in_meeting, leaving, stopping, stopped, dead.
         self.room_states: Dict[str, str] = {}
-        # Last failure code reported by the subprocess (join_failed, not_jitsi, left_meeting, audio_failed).
+        # Last failure code from the subprocess (join_failed, not_jitsi, redirected, left_meeting, audio_failed).
         self.room_failures: Dict[str, str] = {}
         self.room_meta: Dict[str, dict] = {}
         self.lock = threading.Lock()
@@ -177,6 +177,13 @@ async def run_capture():
             await page.goto(join_url, timeout=30000)
         except Exception:
             raise AgentFailure("join_failed")
+        # goto follows HTTP redirects. Refuse one that lands in another room, so the
+        # requested-URL fingerprint in /status always names the room actually joined.
+        def room_path(url):
+            return urllib.parse.urlsplit(url).path.strip("/").casefold()
+
+        if room_path(page.url) != room_path(jitsi_url):
+            raise AgentFailure("redirected")
 
         try:
             await page.click("div[aria-label='Join meeting']", timeout=5000)
