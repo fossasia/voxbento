@@ -239,8 +239,9 @@ async def run_capture():
                 print(f"ffmpeg exited with code {rc}", flush=True)
 
                 if rc == 0:
+                    # A publisher never ends on its own; the media server closed the session.
                     print("ffmpeg exited cleanly", flush=True)
-                    break
+                    raise AgentFailure("audio_failed")
 
                 if attempt < max_retries:
                     print(f"Retrying ffmpeg in {retry_delay}s...", flush=True)

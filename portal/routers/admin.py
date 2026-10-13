@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pycountry
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request, status
-from fastapi.responses import RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 from sqlalchemy import select, update
@@ -975,7 +975,10 @@ async def api_stop_floor_transcription(room_id: int):
         event = await get_event_by_id(session, room.event_id)
         if not event:
             raise HTTPException(status_code=400, detail="Event not found")
-        await meeting_source.disconnect(room, event)
+        stopped = await meeting_source.disconnect(room, event)
+    if not stopped:
+        # Mirror the owner route: the agent may still be in the meeting until reconcile retries.
+        return JSONResponse({"status": "stopping", "cleanup_pending": True}, status_code=202)
     return {"status": "stopped"}
 
 

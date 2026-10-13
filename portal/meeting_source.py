@@ -59,6 +59,7 @@ class AgentHealth:
     state: str = "starting"
     reason: str = "Launching the meeting agent."
     restarts: int = 0
+    failure: str = "exited"
     next_restart_at: float | None = None
     joined_at: float | None = None
     last_bytes: int = -1
@@ -156,26 +157,42 @@ async def connect(room: Room, event: Event, meeting_url: str | None, confirm_sou
         raise HTTPException(422, str(exc)) from None
     if room.floor_source != "jitsi_bot" and not confirm_source_change:
         raise HTTPException(409, {"code": "source_conflict", "message": SOURCE_CONFLICT})
-    # Confirm the agent service is reachable before disturbing an encoder that owns the floor.
     try:
         agent = (await agent_snapshot()).get(process_key(event.slug, room.id))
     except (httpx.HTTPError, ValueError):
         raise HTTPException(502, UNREACHABLE) from None
-    if room.floor_source != "jitsi_bot":
-        try:
-            await configure_source(room, event, "disable", room.program_sync_offset_ms)
-        except httpx.HTTPError:
-            raise HTTPException(
-                502, "Could not disconnect the program encoder; the meeting was not connected. Retry."
-            ) from None
+    # Start the agent before releasing a program source: a failed start must leave the
+    # encoder or browser sender connected. Until floor_source changes, the publish hook
+    # rejects the agent's RTSP stream, so the two sources never publish at once.
+    started = False
     if not agent or agent.get("state") != "healthy":
         try:
             await start_agent(room, event)
         except httpx.HTTPError:
             raise HTTPException(502, UNREACHABLE) from None
+        started = True
+    if room.floor_source != "jitsi_bot":
+        try:
+            await configure_source(room, event, "disable", room.program_sync_offset_ms)
+        except httpx.HTTPError:
+            if started:
+                await _abandon_agent(event.slug, room.id)
+            raise HTTPException(
+                502, "Could not switch the floor source; the meeting was not connected. Retry."
+            ) from None
     room.meeting_agent_enabled = True
     health[room.id] = AgentHealth()
     logger.info("meeting_agent action=connect room_id=%s", room.id)
+
+
+async def _abandon_agent(event_slug: str, room_id: int) -> None:
+    """Stop an agent whose connect failed; the reconcile sweep retries if this stop fails."""
+    global _swept
+    try:
+        await stop_agent(event_slug, room_id)
+    except httpx.HTTPError:
+        _swept = False
+        logger.warning("meeting_agent stop_pending room_id=%s", room_id)
 
 
 async def disconnect(room: Room, event: Event) -> bool:
@@ -209,7 +226,11 @@ def status(room: Room) -> dict:
         reason = current.reason if current else "Launching the meeting agent."
     else:
         state = "stopped"
-        reason = "Program ingest (an encoder or the browser sender) owns the floor." if room.floor_source != "jitsi_bot" else ""
+        reason = (
+            "Program ingest (an encoder or the browser sender) owns the floor."
+            if room.floor_source != "jitsi_bot"
+            else ""
+        )
     return {
         "enabled": enabled,
         "state": state,
@@ -232,6 +253,7 @@ async def _recover(room: Room, event: Event, current: AgentHealth, now: float, f
     current.joined_at = None
     current.last_progress = None
     current.last_bytes = -1
+    current.failure = failure
     message = FAILURES.get(failure, FAILURES["exited"])
     limit = settings.meeting_agent_max_restarts
     if current.restarts >= limit:
@@ -259,9 +281,15 @@ async def reconcile_room(
     current = health.setdefault(room.id, AgentHealth())
     booth_id = make_booth_id(event.slug, room.id, "floor")
     now = monotonic()
-    if not agent or agent.get("state") != "healthy":
+    alive = bool(agent and agent.get("state") == "healthy")
+    # A scheduled restart proceeds even if the old agent survived a failed stop:
+    # start_agent replaces the room's process, so recovery stays bounded.
+    if not alive or current.next_restart_at is not None:
         await _stop_worker(current, booth_id)
-        failure = "missing" if not agent else str(agent.get("failure") or "exited")
+        if alive:
+            failure = current.failure
+        else:
+            failure = "missing" if not agent else str(agent.get("failure") or "exited")
         await _recover(room, event, current, now, failure)
         return
     stage = agent.get("stage")
@@ -284,7 +312,10 @@ async def reconcile_room(
     if now - (current.last_progress or current.joined_at) >= settings.meeting_agent_no_audio_secs:
         # Joined but the FFmpeg leg is not delivering media: restart the whole agent.
         await _stop_worker(current, booth_id)
-        await stop_agent(event.slug, room.id)
+        try:
+            await stop_agent(event.slug, room.id)
+        except httpx.HTTPError:
+            logger.warning("meeting_agent stop_failed room_id=%s", room.id)
         await _recover(room, event, current, now, "no_audio")
         return
     if current.last_progress is None:

@@ -28,6 +28,8 @@ class FakeAgents:
         self.starts: list[dict] = []
         self.stops: list[str] = []
         self.reachable = True
+        self.fail_start = False
+        self.fail_stop = False
 
     def handle(self, request: httpx.Request) -> httpx.Response:
         if not self.reachable:
@@ -37,6 +39,8 @@ class FakeAgents:
         body = json.loads(request.content)
         key = f"{body['event_slug']}-{body['room_id']}"
         if request.url.path == "/start":
+            if self.fail_start:
+                return httpx.Response(500)
             self.starts.append(body)
             self.rooms[key] = {
                 "event_slug": body["event_slug"],
@@ -45,6 +49,8 @@ class FakeAgents:
                 "stage": "launching",
             }
         elif request.url.path == "/stop":
+            if self.fail_stop:
+                return httpx.Response(500)
             self.stops.append(key)
             self.rooms.pop(key, None)
         return httpx.Response(200, json={})
@@ -74,10 +80,15 @@ async def env(monkeypatch):
     monkeypatch.setattr(meeting, "monotonic", clock)
     agents = FakeAgents()
     media: dict[str, dict] = {}
+    media_calls: list[str] = []
+    media_failures: set[str] = set()
 
     def transport(request: httpx.Request) -> httpx.Response:
         if request.url.host == "floor-bot":
             return agents.handle(request)
+        media_calls.append(request.url.path)
+        if any(marker in request.url.path for marker in media_failures):
+            return httpx.Response(500)
         if "/paths/list" in request.url.path:
             return httpx.Response(200, json={"items": list(media.values())})
         if "/paths/get/" in request.url.path:
@@ -122,6 +133,8 @@ async def env(monkeypatch):
                 "client": client,
                 "agents": agents,
                 "media": media,
+                "media_calls": media_calls,
+                "media_failures": media_failures,
                 "clock": clock,
                 "start": start,
                 "stop": stop,
@@ -288,6 +301,71 @@ async def test_unreachable_agent_service_leaves_floor_unchanged(env):
     room = await room_row(env["room_id"])
     assert room.floor_source == "program_ingest" and room.program_key_hash == "a" * 64
     assert not room.meeting_agent_enabled
+
+
+async def own_floor_with_live_encoder(env) -> None:
+    async with get_session() as session:
+        room = await session.get(Room, env["room_id"])
+        room.floor_source = "program_ingest"
+        room.program_key_hash = "a" * 64
+    env["media"][env["path"]] = {
+        "name": env["path"],
+        "ready": True,
+        "source": {"type": "webRTCSession", "id": "5d0f8a52-2222-4c3d-8e9f-abcdefabcdef"},
+        "tracks": ["Opus"],
+        "bytesReceived": 100,
+    }
+
+
+@pytest.mark.anyio
+async def test_failed_agent_start_keeps_program_source_connected(env):
+    await own_floor_with_live_encoder(env)
+    env["agents"].fail_start = True
+    response = await env["client"].post(env["url"], json={"action": "connect", "confirm_source_change": True})
+    assert response.status_code == 502
+    assert not any("/kick/" in path or "/config/paths/" in path for path in env["media_calls"])
+    room = await room_row(env["room_id"])
+    assert room.floor_source == "program_ingest" and room.program_key_hash == "a" * 64
+    assert not room.meeting_agent_enabled
+
+
+@pytest.mark.anyio
+async def test_failed_source_switch_stops_the_started_agent(env):
+    await own_floor_with_live_encoder(env)
+    env["media_failures"].add("/config/paths/")
+    response = await env["client"].post(env["url"], json={"action": "connect", "confirm_source_change": True})
+    assert response.status_code == 502
+    assert "meeting was not connected" in response.json()["detail"]
+    assert len(env["agents"].starts) == 1
+    assert env["agents"].stops == [env["key"]] and env["agents"].rooms == {}
+    room = await room_row(env["room_id"])
+    assert room.floor_source == "program_ingest" and not room.meeting_agent_enabled
+
+
+@pytest.mark.anyio
+async def test_no_audio_restart_stays_bounded_when_stop_fails(env):
+    await env["client"].post(env["url"], json={"action": "connect"})
+    env["agents"].rooms[env["key"]]["stage"] = "in_meeting"
+    await meeting.reconcile_once()
+    env["agents"].fail_stop = True
+    env["clock"].now += 31
+    await meeting.reconcile_once()
+    current = meeting.health[env["room_id"]]
+    assert current.state == "reconnecting" and "no meeting audio reached" in current.reason
+    # The old agent is still alive, but the scheduled restart replaces it after the backoff.
+    env["clock"].now += 60
+    await meeting.reconcile_once()
+    assert len(env["agents"].starts) == 2
+    assert meeting.health[env["room_id"]].restarts == 1
+
+
+@pytest.mark.anyio
+async def test_legacy_stop_reports_pending_cleanup(env):
+    await env["client"].post(env["url"], json={"action": "connect"})
+    env["agents"].reachable = False
+    response = await env["client"].post(f"/api/rooms/{env['room_id']}/floor-transcription/stop")
+    assert response.status_code == 202
+    assert response.json() == {"status": "stopping", "cleanup_pending": True}
 
 
 @pytest.mark.anyio
