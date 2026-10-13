@@ -270,6 +270,47 @@ def test_ws_join_receives_joined_and_state():
     assert "state" in joined
 
 
+def test_ws_join_without_language_and_unconfigured_booth_returns_error():
+    """If neither the client specifies a language nor the booth exists in DB, join must error."""
+    with client.websocket_connect("/ws/booth/unknown-booth", cookies=_ws_auth()) as ws:
+        ws.send_text(
+            json.dumps(
+                {
+                    "type": "booth:join",
+                    "display_name": "NoLangUser",
+                    "role": "interpreter",
+                    "channel_id": "unknown-booth-audio",
+                }
+            )
+        )
+        msg = json.loads(ws.receive_text())
+        assert msg["type"] == "booth:error"
+        assert "Language must be specified" in msg["message"]
+
+
+def test_ws_join_uses_db_booth_language_when_unspecified():
+    """If the client does not specify language in join, it should inherit the resolved booth language."""
+    from unittest.mock import AsyncMock, patch
+
+    with patch("portal.database.get_booth_language_name", new=AsyncMock(return_value="Japanese")):
+        with client.websocket_connect("/ws/booth/japan-booth", cookies=_ws_auth()) as ws:
+            ws.send_text(
+                json.dumps(
+                    {
+                        "type": "booth:join",
+                        "display_name": "Kenji",
+                        "role": "interpreter",
+                        "channel_id": "japan-booth-audio",
+                    }
+                )
+            )
+            msg1 = json.loads(ws.receive_text())
+            msg2 = json.loads(ws.receive_text())
+            joined = msg1 if msg1["type"] == "booth:joined" else msg2
+            assert joined["type"] == "booth:joined"
+            assert joined["state"]["language"] == "Japanese"
+
+
 def test_ws_join_rejected_without_session():
     """WebSocket join must be rejected when no session cookie is present."""
     with client.websocket_connect("/ws/booth/no-session-booth") as ws:
