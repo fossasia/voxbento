@@ -346,6 +346,45 @@ async def test_relay_follows_feed_and_is_isolated_from_language_processing(relay
 
 
 @pytest.mark.anyio
+async def test_processing_failure_never_stops_the_relay(relay_env, monkeypatch):
+    env = relay_env
+    client, event, room = env["client"], env["event"], env["rooms"][0]
+    secret = await enable_relay(client, event, room)
+    await save_destination(client, event, room)
+    await connect(env, room, secret)
+    await ingest.reconcile_once()
+    assert str(room.id) in env["relays"]
+    env["calls"].clear()
+    # Worker cap / corrupt provider key: start_transcription_worker raises ValueError.
+    env["start"].side_effect = ValueError("Maximum transcription workers reached")
+    for _ in range(2):
+        await ingest.reconcile_once()
+    health = (await client.get(ingest_url(event, room))).json()["health"]
+    assert str(room.id) in env["relays"] and ("DELETE", f"/relays/{room.id}") not in env["calls"]
+    assert health["relay"]["state"] == "live"
+    assert health["processing"]["state"] == "degraded" and health["ingest"]["state"] == "connected"
+
+
+@pytest.mark.anyio
+async def test_reconcile_failure_does_not_report_stale_live_relay(relay_env, monkeypatch):
+    env = relay_env
+    client, event, room = env["client"], env["event"], env["rooms"][0]
+    secret = await enable_relay(client, event, room)
+    await save_destination(client, event, room)
+    await connect(env, room, secret)
+    await ingest.reconcile_once()
+    assert (await client.get(ingest_url(event, room))).json()["health"]["relay"]["state"] == "live"
+
+    async def broken(*_args):
+        raise httpx.ConnectError("media control down")
+
+    monkeypatch.setattr(ingest, "reconcile_room", broken)
+    await ingest.reconcile_once()
+    relay_health = (await client.get(ingest_url(event, room))).json()["health"]["relay"]
+    assert relay_health["state"] == "degraded" and str(room.id) not in env["relays"]
+
+
+@pytest.mark.anyio
 async def test_incompatible_feed_and_missing_destination_do_not_relay(relay_env):
     env = relay_env
     client, event, room = env["client"], env["event"], env["rooms"][0]

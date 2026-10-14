@@ -208,42 +208,52 @@ card.querySelectorAll('[data-ingest-action]').forEach(button => {
   });
 });
 
-destinationForm.addEventListener('submit', async event => {
-  event.preventDefault();
-  if (!destinationForm.reportValidity()) return;
-  busy = true;
-  try {
-    const response = await fetch(card.dataset.relayUrl, {
-      method: 'PUT', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({
-        server_url: document.getElementById('program-relay-server').value,
-        stream_key: relayKey.value,
-      }),
-    });
-    await readError(response);
-    relayKey.value = '';
-  } catch (error) {
-    console.error('YouTube destination update failed', error);
-    destinationStatus.textContent = error.message;
-    busy = false;
-    return;
-  }
-  busy = false;
-  await refresh();
-});
+const destinationButtons = [document.getElementById('program-relay-save'), document.getElementById('program-relay-clear')];
+let destinationPending = false;
 
-document.getElementById('program-relay-clear').addEventListener('click', async () => {
-  if (!window.confirm('Remove the YouTube destination? The relay stops and YouTube stops receiving this room.')) return;
+// One destination change at a time: a slow save must never land after a later removal.
+async function changeDestination(request, failureLabel) {
+  if (destinationPending || busy) return;
+  destinationPending = true;
   busy = true;
+  const previous = destinationButtons.map(button => button.disabled);
+  destinationButtons.forEach(button => { button.disabled = true; });
+  let changed = false;
   try {
-    await readError(await fetch(card.dataset.relayUrl, {method: 'DELETE'}));
+    await readError(await request());
+    changed = true;
   } catch (error) {
-    console.error('YouTube destination removal failed', error);
+    console.error(failureLabel, error);
     destinationStatus.textContent = error.message;
   } finally {
     busy = false;
-    await refresh();
+    if (changed) {
+      await refresh();
+    } else {
+      destinationButtons.forEach((button, index) => { button.disabled = previous[index]; });
+    }
+    destinationPending = false;
   }
+  return changed;
+}
+
+destinationForm.addEventListener('submit', async event => {
+  event.preventDefault();
+  if (!destinationForm.reportValidity()) return;
+  const saved = await changeDestination(() => fetch(card.dataset.relayUrl, {
+    method: 'PUT', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({
+      server_url: document.getElementById('program-relay-server').value,
+      stream_key: relayKey.value,
+    }),
+  }), 'YouTube destination update failed');
+  if (saved) relayKey.value = '';
+});
+
+document.getElementById('program-relay-clear').addEventListener('click', async () => {
+  if (destinationPending || busy) return;
+  if (!window.confirm('Remove the YouTube destination? The relay stops and YouTube stops receiving this room.')) return;
+  await changeDestination(() => fetch(card.dataset.relayUrl, {method: 'DELETE'}), 'YouTube destination removal failed');
 });
 
 document.getElementById('program-reveal').addEventListener('click', () => {

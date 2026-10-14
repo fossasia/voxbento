@@ -116,7 +116,7 @@ async def list_relays() -> dict[str, dict]:
     return body["relays"]
 
 
-async def stop_relay(room_id: int) -> None:
+async def stop_relay(room_id: int, forget_health: bool = True) -> None:
     """Stop one room's relay. Callers treat failure as cleanup the reconciler retries."""
     if not settings.program_relay_enabled:
         return
@@ -124,7 +124,8 @@ async def stop_relay(room_id: int) -> None:
         f"{settings.program_relay_base}/relays/{room_id}", headers=_headers(), timeout=RELAY_CONTROL_TIMEOUT
     )
     response.raise_for_status()
-    relay_health.pop(room_id, None)
+    if forget_health:
+        relay_health.pop(room_id, None)
 
 
 async def start_relay(room_id: int, source: str, url: str) -> dict:
@@ -156,7 +157,8 @@ async def sync(wanted: dict[int, tuple[str, str]], relay_rooms: set[int]) -> Non
         return
     for relay_id in set(live) - {str(room_id) for room_id in wanted}:
         try:
-            await stop_relay(int(relay_id))
+            # A relay-mode room keeps the health explaining why its relay was stopped.
+            await stop_relay(int(relay_id), forget_health=int(relay_id) not in relay_rooms)
         except Exception:  # noqa: BLE001
             logger.warning("program_relay stop_failed room_id=%s", relay_id)
     # Rooms already relaying keep their slot; new rooms are admitted in a stable order.

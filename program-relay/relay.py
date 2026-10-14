@@ -267,6 +267,9 @@ class RelayManager:
                     self._terminate(process)
                     return
                 relay.process = process
+                # Each FFmpeg run reports out_time from zero; progress is per process.
+                relay.out_time_us = -1
+                relay.last_progress = time.monotonic()
 
             def drain_errors() -> None:
                 nonlocal last_error

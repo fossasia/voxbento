@@ -634,6 +634,23 @@ async def reconcile_room(room: Room, event: Event, path: MediaPath | None) -> tu
         current.last_bytes = path.bytesReceived
         current.last_progress = now
     relay = relay_request(room, event, path)
+    try:
+        await reconcile_processing(room, event, path, current, booth_id, now)
+    except ValueError:
+        # Worker cap, an undecryptable provider key or an invalid provider affect language
+        # processing only; the relay decision above still stands.
+        current.state, current.reason = "degraded", "Language processing could not start; retrying automatically."
+        current.processing_state, current.processing_reason = current.state, current.reason
+        current.worker_config = None
+        current.worker_started_at = None
+        logger.warning("program_ingest processing_failed room_id=%s", room.id)
+    return relay
+
+
+async def reconcile_processing(
+    room: Room, event: Event, path: MediaPath, current: IngestHealth, booth_id: str, now: float
+) -> None:
+    """Drive the floor STT worker for a connected feed and report ingest/processing health."""
     problem = None
     current.ingest_state, current.ingest_reason = "connected", "Authenticated contribution feed connected."
     if not any(codec in {"Opus", "G711", "G722", "LPCM", "MPEG-4 Audio"} for codec in path.tracks):
@@ -654,7 +671,7 @@ async def reconcile_room(room: Room, event: Event, path: MediaPath | None) -> tu
         await stop_transcription_worker(booth_id)
         current.worker_config = None
         current.worker_started_at = None
-        return relay
+        return
     current.state, current.reason = "receiving", "Audio received; starting transcription."
     current.processing_state, current.processing_reason = "starting", "Starting the transcription worker."
     api_key = get_api_key(event, ProviderEnum(room.floor_transcription_provider))
@@ -686,7 +703,6 @@ async def reconcile_room(room: Room, event: Event, path: MediaPath | None) -> tu
     elif last_audio:
         current.state, current.reason = "processing", "Decoded audio received; transcription worker active."
         current.processing_state, current.processing_reason = current.state, current.reason
-    return relay
 
 
 async def reconcile_once() -> None:
@@ -726,6 +742,11 @@ async def reconcile_once() -> None:
                 "degraded",
                 "Media control or processing unavailable; retrying automatically.",
             )
+            if room_id in relay_rooms:
+                # Not in ``wanted``, so sync stops the relay; never keep reporting a stale "live".
+                program_relay.relay_health[room_id] = program_relay.RelayHealth(
+                    "degraded", "Media control unavailable; relay paused and retrying automatically."
+                )
             # Do not log exception bodies: upstream errors may contain credentials.
             logger.warning("program_ingest reconcile_failed room_id=%s", room_id)
     if settings.program_relay_enabled:

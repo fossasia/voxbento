@@ -31,6 +31,12 @@ DESTINATION = f"rtmps://a.rtmps.youtube.com/live2/{KEY}"
 FAKE_FFMPEG = """
 import sys, time
 destination = sys.argv[-1]
+if "flaky" in destination:
+    # A short-lived push, as when the destination drops the connection.
+    for out in (50000, 100000, 150000, 200000):
+        print(f"out_time_us={out}", flush=True)
+        time.sleep(0.05)
+    sys.exit(1)
 if "reject" in destination:
     sys.stderr.write(f"[flv] Error opening output {destination}: Server returned 403 Forbidden\\n")
     sys.exit(1)
@@ -169,3 +175,12 @@ def test_rejected_destination_is_classified_and_redacted(relay_service, caplog):
     assert view["reason"] == "Destination rejected the stream key."
     assert KEY not in caplog.text and "reject-" not in caplog.text
     assert service.redact(f"error {rejecting}", [rejecting]) == "error [redacted]"
+
+
+def test_restarted_relay_reports_live_again(relay_service):
+    """Progress is per FFmpeg run: a restart must not wait to exceed the previous run's output time."""
+    client, manager = relay_service
+    flaky = f"rtmps://a.rtmps.youtube.com/live2/flaky-{KEY}"
+    assert client.put("/relays/7", json=body(destination=flaky)).status_code == 200
+    assert wait_for(lambda: manager.relays["7"].restarts >= 2)
+    assert wait_for(lambda: manager.relays["7"].state == "live", timeout=3)
