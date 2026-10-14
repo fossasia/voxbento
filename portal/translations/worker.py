@@ -5,6 +5,7 @@ import logging
 
 from portal.database import get_session
 from portal.models import DBBooth, Event, Room, TranscriptTranslation
+from portal.transcription.timing import timing_metadata
 from portal.translations.constants import OPENAI_COMPATIBLE_ENDPOINTS, TranslationProviderEnum
 from portal.translations.keys import get_translation_api_key
 from portal.translations.providers.anthropic import AnthropicProvider
@@ -119,10 +120,11 @@ class TranslationWorker:
                     async def _broadcast_source(r_id, l_code, b_id_str, u_seg_id, sq, txt, t_booth_id):
                         from portal.websockets.manager import listener_manager
                         await tts_manager.broadcast_bundle(
-                            r_id, l_code, b_id_str, b"", u_seg_id, sq, txt, txt, None
+                            r_id, l_code, b_id_str, b"", u_seg_id, sq, txt, txt, None, audio_pending=False
                         )
                         if t_booth_id:
-                            await listener_manager.broadcast(t_booth_id, {"type": "translated_caption", "status": "final", "text": txt})
+                            await listener_manager.broadcast(t_booth_id, {"type": "translated_caption", "status": "final", "text": txt,
+                                                                         "segment_id": u_seg_id, "seq": sq, **timing_metadata()})
 
                     target_booth_id = f"{event.slug}-{room.id}-{lang.language_code}"
                     tasks.append(
@@ -182,8 +184,9 @@ class TranslationWorker:
     ):
         from portal.websockets.manager import tts_manager
 
-        sem = LANGUAGE_SEMAPHORES.setdefault(lang_code, asyncio.Semaphore(2))
-        q_depth = LANGUAGE_QUEUES.setdefault(lang_code, 0)
+        queue_key = f"{booth_id_str}:{lang_code}"
+        sem = LANGUAGE_SEMAPHORES.setdefault(queue_key, asyncio.Semaphore(2))
+        q_depth = LANGUAGE_QUEUES.setdefault(queue_key, 0)
 
         if q_depth >= 15:
             logger.warning(f"[{booth_id_str}] Queue full for {lang_code}. Dropping segment {seq}.")
@@ -192,7 +195,7 @@ class TranslationWorker:
             )
             return
 
-        LANGUAGE_QUEUES[lang_code] += 1
+        LANGUAGE_QUEUES[queue_key] += 1
 
         try:
             queue_decremented = False
@@ -248,10 +251,11 @@ class TranslationWorker:
                 )
                 if target_booth_id:
                     from portal.websockets.manager import listener_manager
-                    await listener_manager.broadcast(target_booth_id, {"type": "translated_caption", "status": "final", "text": translated_text})
+                    await listener_manager.broadcast(target_booth_id, {"type": "translated_caption", "status": "final", "text": translated_text,
+                                                                      "segment_id": uuid_segment_id, "seq": seq, **timing_metadata()})
 
             # Decrement queue early so slow TTS doesn't cause new incoming segments to be dropped
-            LANGUAGE_QUEUES[lang_code] -= 1
+            LANGUAGE_QUEUES[queue_key] -= 1
             queue_decremented = True
 
             from portal.tts.worker import synthesize
@@ -264,6 +268,8 @@ class TranslationWorker:
                 synth_bytes = await asyncio.wait_for(synthesize(room.id, translated_text, lang_code), timeout=timeout_s)
                 if synth_bytes:
                     audio_bytes = synth_bytes
+                else:
+                    error = "tts_unavailable"
             except asyncio.TimeoutError:
                 logger.warning(f"[{booth_id_str}] TTS timeout for {lang_code} after {timeout_s}s.")
                 error = "tts_timeout"
@@ -283,7 +289,7 @@ class TranslationWorker:
             )
         finally:
             if not queue_decremented:
-                LANGUAGE_QUEUES[lang_code] -= 1
+                LANGUAGE_QUEUES[queue_key] -= 1
 
     async def _call_llm(
         self,

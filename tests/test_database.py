@@ -7,7 +7,9 @@ existing test suite.
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
+from unittest.mock import AsyncMock, patch
 
 import pytest
 import sqlalchemy as sa
@@ -26,6 +28,7 @@ from portal.database import (
     delete_event,
     delete_room,
     get_booth_by_id,
+    get_booth_language_name,
     get_event_by_id,
     get_event_by_slug,
     get_invite_token,
@@ -1306,8 +1309,93 @@ async def test_list_users_pages_through_created_at_ties_without_gaps(db: AsyncSe
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("unsupported_sort", ["__repr__", "unknown_field"])
+async def test_list_users_unsupported_sort_by_falls_back_to_created_at(db: AsyncSession, unsupported_sort: str):
+    base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    # Day 2, Day 0, Day 1, Day 1 (tied dates to verify id tie-breaker)
+    ids = await _create_users_joined_at(
+        db, [base + timedelta(days=2), base, base + timedelta(days=1), base + timedelta(days=1)]
+    )
+
+    users = await list_users(db, sort_by=unsupported_sort, sort_order="desc")
+
+    # In descending order: day 2 (ids[0]), day 1 tie-broken by id desc (ids[3] before ids[2]), day 0 (ids[1])
+    assert [u.id for u in users] == [ids[0], ids[3], ids[2], ids[1]]
+
+
+@pytest.mark.anyio
+async def test_list_users_valid_sort_by_column(db: AsyncSession):
+    await create_user(db, email="beta@example.com", display_name="User B")
+    await create_user(db, email="alpha@example.com", display_name="User A")
+    await db.flush()
+
+    users = await list_users(db, sort_by="email", sort_order="asc")
+    emails = [u.email for u in users]
+    assert emails.index("alpha@example.com") < emails.index("beta@example.com")
+
+
+@pytest.mark.anyio
 async def test_list_events_default_limit_does_not_break(db: AsyncSession):
     for i in range(3):
         await create_event(db, slug=f"ev-def-{i}", display_name=f"Ev {i}")
     events = await list_events(db)
     assert len(events) == 3
+
+
+# ---------------------------------------------------------------------------
+# get_booth_language_name
+# ---------------------------------------------------------------------------
+
+
+class TestGetBoothLanguageName:
+    """Unit tests for get_booth_language_name."""
+
+    @pytest.mark.anyio
+    async def test_returns_language_name_when_booth_exists(self):
+        """Verify that resolved language name is returned when booth exists."""
+        mock_session = AsyncMock()
+        mock_session.scalar.return_value = "Japanese"
+
+        @asynccontextmanager
+        async def mock_get_session():
+            """Mock database session context manager."""
+            yield mock_session
+
+        with patch("portal.database.get_session", side_effect=mock_get_session):
+            res = await get_booth_language_name("pycon2026-1-ja")
+            assert res == "Japanese"
+
+    @pytest.mark.anyio
+    async def test_returns_none_when_booth_not_found(self):
+        """Verify that None is returned when booth is not found in database."""
+        mock_session = AsyncMock()
+        mock_session.scalar.return_value = None
+
+        @asynccontextmanager
+        async def mock_get_session():
+            """Mock database session context manager."""
+            yield mock_session
+
+        with patch("portal.database.get_session", side_effect=mock_get_session):
+            res = await get_booth_language_name("pycon2026-1-ja")
+            assert res is None
+
+    @pytest.mark.anyio
+    async def test_returns_none_on_invalid_booth_id(self):
+        """Verify that None is returned when booth_id cannot be parsed."""
+        res = await get_booth_language_name("invalid-booth-id")
+        assert res is None
+
+    @pytest.mark.anyio
+    async def test_returns_none_on_db_exception(self):
+        """Verify that None is returned when database lookup raises an exception."""
+
+        @asynccontextmanager
+        async def mock_get_session():
+            """Mock database session context manager raising an exception."""
+            raise RuntimeError("DB connection error")
+            yield  # pragma: no cover
+
+        with patch("portal.database.get_session", side_effect=mock_get_session):
+            res = await get_booth_language_name("pycon2026-1-ja")
+            assert res is None
