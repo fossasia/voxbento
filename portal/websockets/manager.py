@@ -226,6 +226,8 @@ async def _handle_join(ws: WebSocket, session: Session, data: dict) -> None:
             channel_id=channel_id,
             participant_id=participant_id,
             room_id=room_id,
+            # Only this socket's own record may be re-claimed by ID.
+            reclaim=participant_id is not None and participant_id == session.participant_id,
         )
     except (ValueError, PermissionError) as exc:
         await ws.send_text(json.dumps({"type": "booth:error", "message": str(exc)}))
@@ -332,6 +334,9 @@ async def _handle_request_publish_ticket(ws: WebSocket, session: Session, data: 
             await booths.check_publish_permission(
                 session.booth_id, session.participant_id, session.language, session.channel_id
             )
+            booth = booths.get_booth_sync(session.booth_id)
+            if booth is None or not booth.broadcast_unlocked:
+                raise PermissionError("Broadcast is stopped by Mission Control.")
             # Bound to the server's booth, never to the client-supplied channel_id.
             path = booth_id_to_mediamtx_path(session.booth_id)
         except (ValueError, PermissionError) as exc:

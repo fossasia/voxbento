@@ -166,7 +166,8 @@ Server → Client: `booth:joined`, `booth:state`, `booth:chat`, `booth:error`, `
 
 Booth WHIP publishing is authenticated (#783): MediaMTX forwards the `Authorization: Bearer` ticket to
 `/internal/media-auth`, which redeems it once (`portal/booth_publish.py`, 30 s TTL, bound to the booth's
-server-derived path) and re-checks that the holder is still the active interpreter. Anonymous publishes get 401.
+server-derived path) and re-checks that the holder is still the active interpreter and that Mission Control has
+broadcast unlocked. Anonymous publishes get 401. A `booth:join` naming another socket's `participant_id` gets a fresh ID.
 
 Caption feed: `/ws/captions/{booth_id}` (no auth) — receives `caption` + `booth:state` messages.
 

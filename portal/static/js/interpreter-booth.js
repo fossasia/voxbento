@@ -1056,6 +1056,7 @@ async function toggleMicMute() {
 const PUBLISH_TICKET_TIMEOUT_MS = 5000
 let pendingPublishTicket = null
 
+/** Ask the server for a single-use WHIP ticket; resolves with the ticket string. */
 function requestPublishTicket() {
   return new Promise((resolve, reject) => {
     if (pendingPublishTicket) {
@@ -1075,6 +1076,7 @@ function requestPublishTicket() {
   })
 }
 
+/** Resolve or reject the pending ticket request from a `booth:publish-ticket` reply. */
 function settlePublishTicket(data) {
   if (!pendingPublishTicket) return
   const { resolve, reject, timer } = pendingPublishTicket
@@ -1084,6 +1086,7 @@ function settlePublishTicket(data) {
   else reject(new Error(data.error || 'Publish ticket refused'))
 }
 
+/** POST the local SDP offer to MediaMTX with a fresh publish ticket and apply the answer. */
 async function doWhipIngest(peerConnection) {
   const whipUrl = `${state.whipBase}/${encodeURIComponent(state.channelId)}/whip`
   const ticket = await requestPublishTicket()

@@ -208,7 +208,7 @@ Voxbento's server-side coordination layer rejects any attempt to activate a micr
 </TabItem>
   <TabItem value="whip-url-gating" label="Publish tickets">
 
-Before the browser can start publishing, it asks the portal for a publish ticket over its booth WebSocket. The portal issues one only to the active interpreter. The ticket is single-use, expires after 30 seconds and is bound to that booth's MediaMTX path. MediaMTX passes it to the portal's private authorization hook, which redeems it and checks again that its holder is still the active interpreter. A WHIP request without a valid ticket, such as an anonymous POST straight to MediaMTX, is refused with HTTP 401 and cannot displace the live interpreter.
+Before the browser can start publishing, it asks the portal for a publish ticket over its booth WebSocket. The portal issues one only to the active interpreter, and only while Mission Control has the booth live. The ticket is single-use, expires after 30 seconds and is bound to that booth's MediaMTX path. MediaMTX passes it to the portal's private authorization hook, which redeems it and checks again that its holder is still the active interpreter and that the booth has not been stopped. A WHIP request without a valid ticket, such as an anonymous POST straight to MediaMTX, is refused with HTTP 401 and cannot displace the live interpreter.
 
 </TabItem>
   <TabItem value="media-server" label="Media server">

@@ -35,10 +35,12 @@ _tickets: OrderedDict[str, PublishTicket] = OrderedDict()
 
 
 def _key(secret: str) -> str:
+    """Return the store key for *secret*."""
     return hashlib.sha256(secret.encode("utf-8")).hexdigest()
 
 
 def _prune(now: float) -> None:
+    """Drop expired tickets, then the oldest ones while the store is full."""
     while _tickets:
         oldest = next(iter(_tickets.values()))
         if oldest.expires_at > now and len(_tickets) < MAX_TICKETS:
@@ -75,7 +77,7 @@ def still_entitled(ticket: PublishTicket) -> bool:
     and the booth can change underneath it (handoff, kick, Mission Control stop).
     """
     booth = booths.get_booth_sync(ticket.booth_id)
-    if booth is None:
+    if booth is None or not booth.broadcast_unlocked:
         return False
     participant = booth.participants.get(ticket.participant_id)
     return bool(
@@ -92,4 +94,5 @@ async def authorize_booth_publish(path: str, secret: str) -> bool:
 
 
 def clear_tickets() -> None:
+    """Forget every outstanding ticket (tests)."""
     _tickets.clear()
