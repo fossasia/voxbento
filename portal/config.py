@@ -116,6 +116,7 @@ class Settings(BaseSettings):
     smtp_user: str = ""
     smtp_password: str = ""
     smtp_from_email: str = "noreply@voxbento.com"
+    team_email: str = "voxbento.dev@gmail.com"
     public_base_url: str = "https://voxbento.com"
 
 

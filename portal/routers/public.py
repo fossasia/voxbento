@@ -19,7 +19,7 @@ from portal.database import (
     list_memberships_for_user,
     list_room_memberships_for_user,
 )
-from portal.email_sender import send_demo_request_email
+from portal.email import send_demo_request_email
 from portal.globals import _JS_CACHE_BUST
 from portal.utils import _check_mediamtx
 
