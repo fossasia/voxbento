@@ -8,11 +8,7 @@ The Voxbento admin panel gives you full control over the hierarchy of your live 
 
 ## Accessing the Admin Panel
 
-You can reach the admin panel at `/admin/`. If you haven't already authenticated, navigate to `/admin/login` and enter the `ADMIN_PASSWORD` you configured in your environment. Successful login sets a session cookie that grants access to all admin routes.
-
-:::info
-The admin panel also accepts login via a registered user account that has been granted site-wide admin access. These users share the same panel access as the `ADMIN_PASSWORD` login.
-:::
+You can reach the admin panel at `/admin/`. If you haven't already authenticated, sign in at `/login?next=/admin/` with an account having admin privileges. Successful login sets a session cookie that grants access to admin routes.
 
 ## Dashboard Overview
 
@@ -74,6 +70,15 @@ Type the room name into the **Add Room** form — for example, `Main Stage` or `
   ### Submit
 
 Click **Add Room**. Voxbento automatically generates a Jitsi Meet URL for the room based on your configured `JITSI_DOMAIN`.
+
+## Searching Rooms
+
+On the event rooms page (`/admin/events/{event_id}/rooms/`), administrators can search and filter rooms by name:
+
+- **Server-side filtering:** The search query is matched server-side against the room's display name (`Room.display_name`).
+- **Case-insensitive matching:** Search terms match regardless of uppercase or lowercase input.
+- **Literal character matching:** Special characters, including SQL wildcards (`%`, `_`) and backslashes (`\`), are escaped so they match literally.
+- **Empty state & clear:** If no rooms match the query, a search-specific empty state message is displayed with a link to clear the search filter.
 
 ## Editing a Room
 

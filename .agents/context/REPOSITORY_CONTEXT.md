@@ -20,7 +20,7 @@ Attendees receive sub-second audio via WHEP. All coordination flows through Fast
 | Runtime | Python | 3.13.x (enforced in `pyproject.toml`) |
 | Web framework | FastAPI + uvicorn | ASGI, async throughout |
 | Media server | MediaMTX | `bluenviron/mediamtx:1` — WHIP/WHEP/RTSP/HLS |
-| Floor monitoring | Jitsi Meet | `jitsi/*:stable-9823` — self-hosted, receive-only iframe |
+| Floor monitoring | Jitsi Meet | `ghcr.io/jitsi/*:stable-11248` — rootless, read-only, self-hosted receive-only iframe |
 | DB (dev) | SQLite + aiosqlite | `sqlite+aiosqlite:///./interpretation.db` |
 | DB (prod) | PostgreSQL + asyncpg | via `DATABASE_URL` env override |
 | ORM / migrations | SQLAlchemy 2.0 async + Alembic | 8 migrations in `alembic/versions/` |
@@ -100,7 +100,7 @@ Enforced at: `portal/websockets/handlers.py` (WS `_handle_join`), `portal/router
 |---|---|---|---|
 | Participant (invite) | `session_token` | booth_id, role, event_slug, language_code | `create_participant_token()` — `/join/{token}` |
 | User (registered) | `user_token` | sub (user_id), email, display_name, is_admin, user=True | `create_user_token()` — POST /login |
-| Admin | `admin_token` | admin=True | `create_admin_token()` — POST /admin/login |
+| Admin | `user_token` | `sub`, `email`, `is_admin`, `user=True` | `create_user_token()` — POST /login (`/admin/login` redirects there) |
 
 All JWT: HS256, secret = `settings.effective_jwt_secret` (falls back to `secret_key`), expiry = `jwt_expiry_seconds` (default 86400).
 
