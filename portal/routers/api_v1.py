@@ -41,6 +41,11 @@ async def _verify_token_rbac(db: AsyncSession, token: OAuthToken, event: Event, 
     if token.event_id != event.id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event not found")
 
+    if room_id is not None:
+        room = await db.get(Room, room_id)
+        if not room or room.event_id != event.id:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Room not found")
+
     # Confidential clients manage their own RBAC
     client = await db.get(OAuthClient, token.client_id)
     if client and client.is_confidential and client.status == "active":
@@ -583,7 +588,7 @@ async def list_booths(
 
     await _verify_token_rbac(db, token, event, room_id)
 
-    result = await db.execute(select(DBBooth).where(DBBooth.room_id == room_id))
+    result = await db.execute(select(DBBooth).where(DBBooth.room_id == room_id, DBBooth.event_id == event.id))
     booths_list = result.scalars().all()
 
     return [
@@ -612,7 +617,7 @@ async def get_booth(
 
     await _verify_token_rbac(db, token, event, room_id)
 
-    result = await db.execute(select(DBBooth).where(DBBooth.room_id == room_id, DBBooth.language_code == language_code))
+    result = await db.execute(select(DBBooth).where(DBBooth.room_id == room_id, DBBooth.language_code == language_code, DBBooth.event_id == event.id))
     booth = result.scalars().first()
     if not booth:
         raise HTTPException(status_code=404, detail="Booth not found")
@@ -646,7 +651,7 @@ async def create_booth(
 
     from portal.booth_identity import make_mediamtx_path
 
-    booth = DBBooth(room_id=room_id, language_code=language_code, event_id=event.id)
+    booth = DBBooth(room_id=room_id, language_code=language_code, event_id=event.id, language_name=language_code)
     db.add(booth)
     await db.flush()
 
@@ -669,7 +674,7 @@ async def delete_booth_endpoint(
 
     await _verify_token_rbac(db, token, event, room_id)
 
-    result = await db.execute(select(DBBooth).where(DBBooth.room_id == room_id, DBBooth.language_code == language_code))
+    result = await db.execute(select(DBBooth).where(DBBooth.room_id == room_id, DBBooth.language_code == language_code, DBBooth.event_id == event.id))
     booth = result.scalars().first()
     if not booth:
         raise HTTPException(status_code=404, detail="Booth not found")
@@ -742,7 +747,7 @@ async def get_transcription_status(
     await _verify_token_rbac(db, token, event, room_id)
 
     # Collect statuses for all booths in the room
-    result = await db.execute(select(DBBooth).where(DBBooth.room_id == room_id))
+    result = await db.execute(select(DBBooth).where(DBBooth.room_id == room_id, DBBooth.event_id == event.id))
     booths_list = result.scalars().all()
 
     statuses = {}

@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from sqlalchemy import select
 
-from portal.auth import create_admin_token
+from portal.auth import create_user_token, hash_password
 from portal.config import settings
 from portal.models import DBBooth, Room, RoomTranslationLanguage
 
@@ -26,8 +26,19 @@ async def setup_db():
 
 
 @pytest.fixture
-def admin_cookie():
-    return {"admin_token": create_admin_token()}
+async def admin_cookie():
+    """A user_token for a real, active administrator; admin checks read the user's row."""
+    from portal.database import create_user, get_session
+
+    async with get_session() as s:
+        user = await create_user(
+            s,
+            email="admin@example.com",
+            display_name="Admin",
+            password_hash=hash_password("test-admin-pass"),
+            is_admin=True,
+        )
+    return {"user_token": create_user_token(user_id=user.id, email=user.email, is_admin=True)}
 
 
 @pytest.fixture

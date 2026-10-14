@@ -27,6 +27,10 @@
 
 # ── Interpretation Portal ─────────────────────────────────────────────────────
 voxbento.com {
+    # Authentication callbacks are exclusively Docker-internal.
+    handle /internal/* {
+        respond 404
+    }
 
     # ── HLS streaming ─────────────────────────────────────────────────────────
     # Browser requests: https://voxbento.com/hls/{channel}/index.m3u8
@@ -44,7 +48,7 @@ voxbento.com {
     # Match any path that ends with /whip or /whep (channel IDs use / separators
     # which Caddy normalises from %2F, e.g. fossasia-2027/de/whip).
     @whip_whep {
-        path_regexp whip_whep /(whip|whep)$
+        path_regexp whip_whep /(whip|whep)(/[^/]+)?$
     }
     handle @whip_whep {
         reverse_proxy localhost:8889

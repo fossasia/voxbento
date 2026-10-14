@@ -1,7 +1,7 @@
 """Tests for the admin panel routes (Phase 3, Step 4).
 
 Covers:
-- Admin login/logout flow
+- Admin sign-in redirect and logout flow
 - require_admin() guard (403 without cookie)
 - CRUD operations for events, rooms, booths
 - Dashboard with live status
@@ -13,17 +13,12 @@ from __future__ import annotations
 import os
 
 os.environ["BOOTH_ACCESS_TOKEN"] = ""
-os.environ["ADMIN_PASSWORD"] = "test-admin-pass"
 
 from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from portal.auth import create_admin_token, decode_token
-from portal.config import settings
-
-settings.admin_password = "test-admin-pass"
-
+from portal.auth import create_user_token, decode_token, hash_password
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -42,10 +37,30 @@ async def setup_db():
 
 
 @pytest.fixture
-def admin_cookie():
-    """Return a dict with the admin_token cookie for authenticated requests."""
-    token = create_admin_token()
-    return {"admin_token": token}
+async def seeded_admin():
+    """Create a real, active site administrator in the database."""
+    from portal.database import create_user, get_session
+
+    async with get_session() as s:
+        user = await create_user(
+            s,
+            email="admin@example.com",
+            display_name="Admin",
+            password_hash=hash_password("test-admin-pass"),
+            is_admin=True,
+        )
+    return user
+
+
+@pytest.fixture
+async def admin_cookie(seeded_admin):
+    """Return a dict with the user_token cookie for authenticated admin requests.
+
+    Authorization is checked against the database, so the token must belong to a
+    real administrator row rather than a phantom id.
+    """
+    token = create_user_token(user_id=seeded_admin.id, email="admin@example.com", is_admin=True)
+    return {"user_token": token}
 
 
 @pytest.fixture
@@ -71,6 +86,15 @@ async def seed_event():
 # ---------------------------------------------------------------------------
 
 
+def resolve_relay_attr(html: str) -> str:
+    """The relay WHEP URL the interpreter page hands the browser."""
+    import re
+
+    m = re.search(r"data-relay-whep-url='([^']*)'", html)
+    assert m, "the relay attribute is not in the page at all, so a match proves nothing"
+    return m.group(1)
+
+
 def _client():
     from httpx import ASGITransport, AsyncClient
 
@@ -85,67 +109,336 @@ def _client():
 
 
 class TestAdminLogin:
-    @pytest.mark.anyio
-    async def test_login_page_renders(self):
-        async with _client() as c:
-            resp = await c.get("/admin/login")
-        assert resp.status_code == 200
-        assert b"Admin" in resp.content
+    """Admins sign in through the shared ``/login`` page (#752)."""
+
+    @pytest.fixture(autouse=True)
+    def isolated_login_limits(self, monkeypatch):
+        import portal.rate_limit
+
+        monkeypatch.setattr(portal.rate_limit, "_rates", {})
 
     @pytest.mark.anyio
-    async def test_login_with_correct_password(self):
+    async def test_admin_login_page_redirects_to_shared_sign_in(self):
+        async with _client() as c:
+            resp = await c.get("/admin/login", follow_redirects=False)
+        assert resp.status_code == 303
+        assert resp.headers["location"] == "/login?next=/admin/"
+
+    @pytest.mark.anyio
+    async def test_admin_login_form_post_is_gone(self):
         async with _client() as c:
             resp = await c.post(
                 "/admin/login",
-                data={"password": "test-admin-pass"},
+                data={"email": "admin@example.com", "password": "test-admin-pass"},
                 follow_redirects=False,
             )
-        assert resp.status_code == 303
-        assert resp.headers["location"] == "/admin/"
-        assert "admin_token" in resp.headers.get("set-cookie", "")
+        assert resp.status_code == 405
+        assert "user_token" not in resp.headers.get("set-cookie", "")
 
     @pytest.mark.anyio
-    async def test_login_with_wrong_password(self):
+    async def test_admin_signs_in_through_shared_page(self):
+        from portal.database import create_user, get_session
+
+        async with get_session() as s:
+            admin = await create_user(
+                s,
+                email="admin@example.com",
+                display_name="Admin",
+                password_hash=hash_password("test-admin-pass"),
+                email_verified=True,
+                is_admin=True,
+            )
+
         async with _client() as c:
             resp = await c.post(
-                "/admin/login",
-                data={"password": "wrong"},
+                "/login",
+                data={"email": "admin@example.com", "password": "test-admin-pass", "next_url": "/admin/"},
+                follow_redirects=False,
+            )
+            assert resp.status_code == 303
+            assert resp.headers["location"] == "/admin/"
+            token_val = resp.cookies.get("user_token")
+            payload = decode_token(token_val)
+            assert payload["sub"] == str(admin.id)
+            assert payload["is_admin"] is True
+
+            dashboard = await c.get("/admin/", cookies={"user_token": token_val})
+        assert dashboard.status_code == 200
+
+    @pytest.mark.anyio
+    async def test_login_rejects_unverified_admin(self):
+        from portal.database import create_user, get_session
+
+        async with get_session() as session:
+            await create_user(
+                session,
+                email="unverified@example.com",
+                display_name="Unverified admin",
+                password_hash=hash_password("test-admin-pass"),
+                is_admin=True,
+                email_verified=False,
+            )
+        async with _client() as client:
+            response = await client.post(
+                "/login",
+                data={"email": "unverified@example.com", "password": "test-admin-pass", "next_url": "/admin/"},
+                follow_redirects=False,
+            )
+        assert response.status_code == 403
+        assert "Please verify your email address first." in response.text
+        assert "user_token" not in response.cookies
+
+    @pytest.mark.anyio
+    async def test_login_fails_closed_when_legacy_password_is_set(self, monkeypatch, setup_db):
+        """A removed shared secret must never regain access through the environment."""
+        monkeypatch.setenv("ADMIN_PASSWORD", "legacy-shared-secret")
+
+        async with _client() as c:
+            resp = await c.post(
+                "/login",
+                data={"email": "admin@example.com", "password": "legacy-shared-secret", "next_url": "/admin/"},
+                follow_redirects=False,
+            )
+
+        assert resp.status_code == 403
+        assert "user_token" not in resp.headers.get("set-cookie", "")
+
+    @pytest.mark.anyio
+    async def test_login_rejects_inactive_admin(self, setup_db):
+        """An administrator whose account has been deactivated cannot sign in."""
+        from portal.database import create_user, get_session, update_user_active
+
+        async with get_session() as s:
+            user = await create_user(
+                s,
+                email="inactive-admin@example.com",
+                display_name="Inactive Admin",
+                password_hash=hash_password("test-admin-pass"),
+                email_verified=True,
+                is_admin=True,
+            )
+            await update_user_active(s, user.id, is_active=False)
+
+        async with _client() as c:
+            resp = await c.post(
+                "/login",
+                data={"email": "inactive-admin@example.com", "password": "test-admin-pass", "next_url": "/admin/"},
                 follow_redirects=False,
             )
         assert resp.status_code == 403
-        assert b"Invalid password" in resp.content
+        assert "user_token" not in resp.headers.get("set-cookie", "")
 
     @pytest.mark.anyio
-    async def test_login_strips_surrounding_whitespace(self):
+    async def test_documented_break_glass_recovery_procedure(self, setup_db):
+        """Verify the documented break-glass recovery SQL procedure promotes an account safely."""
+        from sqlalchemy import text
+
+        from portal.database import create_user, get_session
+
+        async with get_session() as s:
+            await create_user(
+                s,
+                email="operator@example.com",
+                display_name="Operator",
+                password_hash=hash_password("operator-pass"),
+                email_verified=True,
+                is_admin=False,
+            )
+
         async with _client() as c:
-            resp = await c.post(
-                "/admin/login",
-                data={"password": " test-admin-pass\n"},
+            # 1. The operator can sign in, but is not yet allowed into the admin panel
+            login = await c.post(
+                "/login",
+                data={"email": "operator@example.com", "password": "operator-pass", "next_url": "/admin/"},
                 follow_redirects=False,
             )
-        assert resp.status_code == 303
-        assert resp.headers["location"] == "/admin/"
+            assert login.status_code == 303
+            token_val = login.cookies.get("user_token")
+            assert token_val is not None
+            denied = await c.get("/admin/", cookies={"user_token": token_val})
+            assert denied.status_code == 403
+
+            # 2. Execute documented break-glass recovery SQL from docs/admin-password-removal-migration.md
+            async with get_session() as s:
+                await s.execute(text("UPDATE users SET is_admin = 1 WHERE email = 'operator@example.com'"))
+                await s.commit()
+
+            # 3. Authorization follows the database, so the same session now reaches the panel
+            dashboard = await c.get("/admin/", cookies={"user_token": token_val})
+            assert dashboard.status_code == 200
 
     @pytest.mark.anyio
-    async def test_login_rejects_empty_password_when_admin_password_is_whitespace_only(self):
-        settings.admin_password = "   "
-        try:
-            async with _client() as c:
-                resp = await c.post(
-                    "/admin/login",
-                    data={"password": ""},
-                    follow_redirects=False,
-                )
-            assert resp.status_code == 403
-        finally:
-            settings.admin_password = "test-admin-pass"
+    async def test_login_preserves_password_whitespace(self, setup_db):
+        """Passwords are compared verbatim; they must not be stripped."""
+        from portal.database import create_user, get_session
+
+        async with get_session() as s:
+            await create_user(
+                s,
+                email="spacey-admin@example.com",
+                display_name="Spacey Admin",
+                password_hash=hash_password(" padded-pass "),
+                email_verified=True,
+                is_admin=True,
+            )
+
+        async with _client() as c:
+            stripped = await c.post(
+                "/login",
+                data={"email": "spacey-admin@example.com", "password": "padded-pass", "next_url": "/admin/"},
+                follow_redirects=False,
+            )
+            verbatim = await c.post(
+                "/login",
+                data={"email": "spacey-admin@example.com", "password": " padded-pass ", "next_url": "/admin/"},
+                follow_redirects=False,
+            )
+
+        # The trimmed password must not match a credential whose spaces are real.
+        assert stripped.status_code == 403
+        # The exact credential still signs in.
+        assert verbatim.status_code == 303
+        assert verbatim.headers["location"] == "/admin/"
+        assert "user_token" in verbatim.headers.get("set-cookie", "")
+
+    @pytest.mark.anyio
+    async def test_logout_clears_current_and_legacy_cookies(self):
+        """Logout must clear both the new user_token and the legacy admin_token."""
+        async with _client() as c:
+            resp = await c.get("/admin/logout", follow_redirects=False)
+
+        assert resp.status_code == 303
+        cleared = {header.split("=", 1)[0].strip().lower() for header in resp.headers.get_list("set-cookie")}
+        assert "user_token" in cleared
+        assert "admin_token" in cleared
+        assert "session_token" in cleared
 
     @pytest.mark.anyio
     async def test_logout_clears_cookie(self):
         async with _client() as c:
             resp = await c.get("/admin/logout", follow_redirects=False)
         assert resp.status_code == 303
-        assert resp.headers["location"] == "/admin/login"
+        assert resp.headers["location"] == "/login"
+
+
+class TestStaleAdminToken:
+    """Authorization must follow current database state, not the token's claims.
+
+    A ``user_token`` lives for ``jwt_expiry_seconds`` (24h by default), so if the
+    ``is_admin`` claim alone were trusted, demoting, deactivating, or deleting an
+    administrator would not revoke their access until the token expired.
+    """
+
+    @staticmethod
+    async def _make_admin(email="stale-admin@example.com"):
+        from portal.database import create_user, get_session
+
+        async with get_session() as s:
+            user = await create_user(
+                s,
+                email=email,
+                display_name="Stale Admin",
+                password_hash=hash_password("test-admin-pass"),
+                is_admin=True,
+            )
+        return user
+
+    @pytest.mark.anyio
+    async def test_active_admin_token_allowed(self, setup_db):
+        """Baseline: an active admin with a valid token can reach the dashboard."""
+        user = await self._make_admin()
+        cookie = {"user_token": create_user_token(user_id=user.id, email=user.email, is_admin=True)}
+
+        async with _client() as c:
+            resp = await c.get("/admin/", cookies=cookie)
+        assert resp.status_code == 200
+
+    @pytest.mark.anyio
+    async def test_demoted_admin_token_denied(self, setup_db):
+        """A token issued while admin, then demoted in the DB, must be denied."""
+        user = await self._make_admin()
+        cookie = {"user_token": create_user_token(user_id=user.id, email=user.email, is_admin=True)}
+
+        from sqlalchemy import update as sa_update
+
+        from portal.database import get_session
+        from portal.models import User
+
+        async with get_session() as s:
+            await s.execute(sa_update(User).where(User.id == user.id).values(is_admin=False))
+
+        async with _client() as c:
+            resp = await c.get("/admin/", cookies=cookie)
+        assert resp.status_code == 403
+
+    @pytest.mark.anyio
+    async def test_deactivated_admin_token_denied(self, setup_db):
+        """A token issued while admin, then deactivated in the DB, must be denied."""
+        user = await self._make_admin()
+        cookie = {"user_token": create_user_token(user_id=user.id, email=user.email, is_admin=True)}
+
+        from portal.database import get_session, update_user_active
+
+        async with get_session() as s:
+            await update_user_active(s, user.id, is_active=False)
+
+        async with _client() as c:
+            resp = await c.get("/admin/", cookies=cookie)
+        assert resp.status_code == 403
+
+    @pytest.mark.anyio
+    async def test_deleted_admin_token_denied(self, setup_db):
+        """A token for an administrator who no longer exists must be denied."""
+        user = await self._make_admin()
+        cookie = {"user_token": create_user_token(user_id=user.id, email=user.email, is_admin=True)}
+
+        from portal.database import delete_user, get_session
+
+        async with get_session() as s:
+            await delete_user(s, user.id)
+
+        async with _client() as c:
+            resp = await c.get("/admin/", cookies=cookie)
+        assert resp.status_code == 403
+
+    @pytest.mark.anyio
+    async def test_demoted_admin_token_denied_on_super_admin_route(self, setup_db):
+        """Super-admin-only routes (e.g. /admin/users/) also honour the demotion."""
+        user = await self._make_admin()
+        cookie = {"user_token": create_user_token(user_id=user.id, email=user.email, is_admin=True)}
+
+        from sqlalchemy import update as sa_update
+
+        from portal.database import get_session
+        from portal.models import User
+
+        async with get_session() as s:
+            await s.execute(sa_update(User).where(User.id == user.id).values(is_admin=False))
+
+        async with _client() as c:
+            resp = await c.get("/admin/users/", cookies=cookie)
+        assert resp.status_code == 403
+
+    @pytest.mark.anyio
+    async def test_event_owner_denied_on_super_admin_route(self, seed_event):
+        """A normal event owner cannot reach super-admin-only routes (e.g. /admin/users/)."""
+        event, _, _ = seed_event
+        from portal.database import create_user, get_session, set_event_membership
+
+        async with get_session() as s:
+            user = await create_user(
+                s,
+                email="event-owner-only@example.com",
+                display_name="Event Owner Only",
+                password_hash=hash_password("owner-pass"),
+                is_admin=False,
+            )
+            await set_event_membership(s, user_id=user.id, event_id=event.id, role="event_owner")
+
+        cookie = {"user_token": create_user_token(user_id=user.id, email=user.email, is_admin=False)}
+        async with _client() as c:
+            resp = await c.get("/admin/users/", cookies=cookie)
+        assert resp.status_code == 403
 
 
 # ---------------------------------------------------------------------------
@@ -175,8 +468,69 @@ class TestRequireAdmin:
     @pytest.mark.anyio
     async def test_invalid_cookie_rejected(self):
         async with _client() as c:
-            resp = await c.get("/admin/", cookies={"admin_token": "garbage"})
+            resp = await c.get("/admin/", cookies={"user_token": "garbage"})
         assert resp.status_code == 403
+
+    @pytest.mark.anyio
+    async def test_room_only_route_allowed_for_event_owner(self, seed_event):
+        """An event owner is authorized for room-only routes within their event."""
+        event, room, _ = seed_event
+        from portal.database import create_user, get_session, set_event_membership
+
+        async with get_session() as s:
+            user = await create_user(
+                s,
+                email="owner@example.com",
+                display_name="Event Owner",
+                password_hash=hash_password("owner-pass"),
+            )
+            await set_event_membership(s, user_id=user.id, event_id=event.id, role="event_owner")
+
+        cookie = {"user_token": create_user_token(user_id=user.id, email=user.email, is_admin=False)}
+        async with _client() as c:
+            resp = await c.get(f"/api/rooms/{room.id}/floor-transcription/status", cookies=cookie)
+        assert resp.status_code == 200
+
+    @pytest.mark.anyio
+    async def test_room_only_route_denied_for_other_event_owner(self, seed_event):
+        """An event owner of a different event is denied on room-only routes."""
+        _, room, _ = seed_event
+        from portal.database import create_event, create_user, get_session, set_event_membership
+
+        async with get_session() as s:
+            other_event = await create_event(s, slug="othercon", display_name="OtherCon")
+            user = await create_user(
+                s,
+                email="other-owner@example.com",
+                display_name="Other Owner",
+                password_hash=hash_password("owner-pass"),
+            )
+            await set_event_membership(s, user_id=user.id, event_id=other_event.id, role="event_owner")
+
+        cookie = {"user_token": create_user_token(user_id=user.id, email=user.email, is_admin=False)}
+        async with _client() as c:
+            resp = await c.get(f"/api/rooms/{room.id}/floor-transcription/status", cookies=cookie)
+        assert resp.status_code == 403
+
+    @pytest.mark.anyio
+    async def test_room_only_route_allowed_for_room_coordinator(self, seed_event):
+        """A room coordinator is authorized for room-only routes for their room."""
+        _, room, _ = seed_event
+        from portal.database import create_user, get_session, set_room_membership
+
+        async with get_session() as s:
+            user = await create_user(
+                s,
+                email="coord@example.com",
+                display_name="Room Coord",
+                password_hash=hash_password("coord-pass"),
+            )
+            await set_room_membership(s, user_id=user.id, room_id=room.id, role="room_coordinator")
+
+        cookie = {"user_token": create_user_token(user_id=user.id, email=user.email, is_admin=False)}
+        async with _client() as c:
+            resp = await c.get(f"/api/rooms/{room.id}/floor-transcription/status", cookies=cookie)
+        assert resp.status_code == 200
 
 
 # ---------------------------------------------------------------------------
@@ -192,19 +546,86 @@ class TestHomePage:
         assert resp.status_code == 200
         assert b"VoxBento" in resp.content
 
-    @pytest.mark.anyio
-    async def test_home_shows_events(self, seed_event):
-        async with _client() as c:
-            resp = await c.get("/")
-        assert resp.status_code == 200
-        assert b"TestCon 2026" in resp.content
+    @pytest.fixture
+    async def named_event(self):
+        from portal.database import create_booth, create_event, create_room, get_session
+
+        async with get_session() as s:
+            event = await create_event(s, slug="zephyr-2031", display_name="Zephyr Summit 2031")
+            room = await create_room(s, event_id=event.id, display_name="Quartz Hall")
+            booth = await create_booth(
+                s, event_id=event.id, room_id=room.id, language_code="ja", language_name="Zephyrese"
+            )
+        return event, booth
+
+    @staticmethod
+    def _assert_no_events(html: str):
+        for text in ("Zephyr Summit 2031", "Quartz Hall", "Zephyrese", "/listener/zephyr-2031"):
+            assert text not in html
+        for text in ("Live Dashboard", "Public Events", "Your Assigned Booths", "Enterprise-Ready"):
+            assert text not in html
 
     @pytest.mark.anyio
-    async def test_home_shows_listener_links(self, seed_event):
+    async def test_home_hides_events_from_anonymous_visitors(self, named_event):
         async with _client() as c:
             resp = await c.get("/")
         assert resp.status_code == 200
-        assert b"/listener/testcon" in resp.content
+        self._assert_no_events(resp.text)
+        assert "Make Every Event Multilingual" in resp.text
+
+    @pytest.mark.anyio
+    async def test_home_hides_events_and_booths_from_signed_in_interpreter(self, named_event):
+        from portal.database import create_user, get_session, set_booth_membership
+
+        _, booth = named_event
+        async with get_session() as s:
+            user = await create_user(s, email="interp@example.com", display_name="Interp")
+            await set_booth_membership(s, user_id=user.id, booth_id=booth.id, role="interpreter")
+        cookies = {"user_token": create_user_token(user_id=user.id, email=user.email)}
+        async with _client() as c:
+            resp = await c.get("/", cookies=cookies)
+        assert resp.status_code == 200
+        self._assert_no_events(resp.text)
+
+    @pytest.mark.anyio
+    async def test_home_dashboard_link_goes_to_interpreter_lobby_for_booth_only_user(self, named_event):
+        from portal.database import create_user, get_session, set_booth_membership
+
+        _, booth = named_event
+        async with get_session() as s:
+            user = await create_user(s, email="interp@example.com", display_name="Interp")
+            await set_booth_membership(s, user_id=user.id, booth_id=booth.id, role="interpreter")
+        cookies = {"user_token": create_user_token(user_id=user.id, email=user.email)}
+        async with _client() as c:
+            resp = await c.get("/", cookies=cookies)
+        assert 'href="/interpreter"' in resp.text
+        assert 'href="/account"' in resp.text
+
+    @pytest.mark.anyio
+    async def test_home_dashboard_link_stays_on_account_without_memberships(self):
+        from portal.database import create_user, get_session
+
+        async with get_session() as s:
+            user = await create_user(s, email="plain@example.com", display_name="Plain")
+        cookies = {"user_token": create_user_token(user_id=user.id, email=user.email)}
+        async with _client() as c:
+            resp = await c.get("/", cookies=cookies)
+        assert 'href="/interpreter"' not in resp.text
+
+    @pytest.mark.anyio
+    async def test_home_hides_events_from_event_owner_and_links_to_workspace(self, named_event):
+        from portal.database import create_user, get_session, set_event_membership
+
+        event, _ = named_event
+        async with get_session() as s:
+            user = await create_user(s, email="owner@example.com", display_name="Owner")
+            await set_event_membership(s, user_id=user.id, event_id=event.id, role="event_owner")
+        cookies = {"user_token": create_user_token(user_id=user.id, email=user.email)}
+        async with _client() as c:
+            resp = await c.get("/", cookies=cookies)
+        assert resp.status_code == 200
+        self._assert_no_events(resp.text)
+        assert 'href="/workspace/"' in resp.text
 
 
 # ---------------------------------------------------------------------------
@@ -252,6 +673,148 @@ class TestEventCRUD:
         assert event.created_at.strftime("%Y-%m-%d").encode() not in resp.content
 
     @pytest.mark.anyio
+    @pytest.mark.parametrize("search_term", ("SUMMIT", "fossasia"))
+    async def test_event_list_searches_by_slug_or_display_name_case_insensitively(
+        self, admin_cookie, seed_event, search_term
+    ):
+        from portal.database import create_event, get_session
+
+        async with get_session() as session:
+            await create_event(session, slug="community-summit-2026", display_name="FOSSASIA Community")
+
+        async with _client() as c:
+            resp = await c.get("/admin/events/", params={"search": search_term}, cookies=admin_cookie)
+
+        assert resp.status_code == 200
+        assert "FOSSASIA Community" in resp.text
+        assert "community-summit-2026" in resp.text
+        assert "testcon" not in resp.text
+        assert f'value="{search_term}"' in resp.text
+        assert '<label for="admin-event-search" class="search-label">Search events by name or slug</label>' in resp.text
+        assert 'aria-label="Search events by name or slug"' in resp.text
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize("search_term", ("", "   "))
+    async def test_event_list_empty_search_shows_all_events(self, admin_cookie, seed_event, search_term):
+        from portal.database import create_event, get_session
+
+        async with get_session() as session:
+            await create_event(session, slug="unrelated-event", display_name="Unrelated Event")
+
+        async with _client() as c:
+            resp = await c.get("/admin/events/", params={"search": search_term}, cookies=admin_cookie)
+
+        assert resp.status_code == 200
+        assert "TestCon 2026" in resp.text
+        assert "Unrelated Event" in resp.text
+        assert 'value=""' in resp.text
+        assert 'href="/admin/events/" class="btn">Clear</a>' not in resp.text
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize(
+        ("search_term", "literal_name", "near_match"),
+        [
+            ("Alpha_Beta", "Alpha_Beta", "AlphaXBeta"),
+            ("Alpha%Beta", "Alpha%Beta", "AlphaXBeta"),
+            ("Alpha\\Beta", "Alpha\\Beta", "AlphaBeta"),
+        ],
+    )
+    async def test_event_list_search_treats_like_wildcards_literally(
+        self, admin_cookie, search_term, literal_name, near_match
+    ):
+        from portal.database import create_event, get_session
+
+        async with get_session() as session:
+            await create_event(session, slug="literal-match", display_name=literal_name)
+            await create_event(session, slug="near-match", display_name=near_match)
+
+        async with _client() as c:
+            resp = await c.get("/admin/events/", params={"search": search_term}, cookies=admin_cookie)
+
+        assert resp.status_code == 200
+        assert "literal-match" in resp.text
+        assert "near-match" not in resp.text
+
+    @pytest.mark.anyio
+    async def test_event_list_pagination_url_encodes_search(self, admin_cookie):
+        from portal.database import create_event, get_session
+
+        search_term = "special&#"
+        async with get_session() as session:
+            for index in range(21):
+                await create_event(
+                    session,
+                    slug=f"special-search-{index}",
+                    display_name=f"{search_term} event {index}",
+                )
+
+        async with _client() as c:
+            resp = await c.get("/admin/events/", params={"search": search_term}, cookies=admin_cookie)
+
+        assert resp.status_code == 200
+        assert 'href="?page=2&amp;search=special%26%23"' in resp.text
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize(
+        ("event_count", "requested_page", "expected_page"),
+        [
+            pytest.param(1, 2, 1, id="single-result"),
+            pytest.param(21, 99, 2, id="last-page"),
+        ],
+    )
+    async def test_event_list_clamps_out_of_range_search_page(
+        self, admin_cookie, event_count, requested_page, expected_page
+    ):
+        from portal.database import create_event, get_session
+
+        search_term = "pagination-target"
+        async with get_session() as session:
+            for index in range(event_count):
+                await create_event(
+                    session,
+                    slug=f"{search_term}-{index}",
+                    display_name=f"Pagination Target {index}",
+                )
+
+        async with _client() as c:
+            resp = await c.get(
+                "/admin/events/",
+                params={"search": search_term, "page": requested_page},
+                cookies=admin_cookie,
+            )
+
+        assert resp.status_code == 200
+        assert f"Page {requested_page} is out of range. Showing page {expected_page}." in resp.text
+        assert f'href="?page={expected_page}&amp;search={search_term}">View page {expected_page}</a>' in resp.text
+        assert f"{search_term}-{event_count - 1}" in resp.text
+        assert "No events match search" not in resp.text
+
+    @pytest.mark.anyio
+    async def test_event_list_out_of_range_page_with_no_matches_only_shows_empty_state(self, admin_cookie, seed_event):
+        async with _client() as c:
+            resp = await c.get(
+                "/admin/events/",
+                params={"search": "no-such-event", "page": 99},
+                cookies=admin_cookie,
+            )
+
+        assert resp.status_code == 200
+        assert "No events match search" in resp.text
+        assert "Page 99 is out of range" not in resp.text
+        assert "View page" not in resp.text
+
+    @pytest.mark.anyio
+    async def test_event_list_search_with_no_matches_shows_clearable_empty_state(self, admin_cookie, seed_event):
+        async with _client() as c:
+            resp = await c.get("/admin/events/", params={"search": "no-such-event"}, cookies=admin_cookie)
+
+        assert resp.status_code == 200
+        assert "No events match search" in resp.text
+        assert 'name="search"' in resp.text
+        assert 'href="/admin/events/" class="btn">Clear</a>' in resp.text
+        assert "testcon" not in resp.text
+
+    @pytest.mark.anyio
     async def test_create_event(self, admin_cookie):
         async with _client() as c:
             resp = await c.post(
@@ -276,11 +839,93 @@ class TestEventCRUD:
         assert b"Main Hall" in resp.content
 
     @pytest.mark.anyio
+    async def test_api_settings_update_and_clear_keys(self, admin_cookie, seed_event):
+        from portal.crypto import decrypt_val
+        from portal.database import get_event_by_id, get_session
+
+        event, _, _ = seed_event
+        keys = {
+            "openai_api_key": " openai-secret ",
+            "deepgram_api_key": "deepgram-secret",
+            "nvidia_api_key": "nvidia-secret",
+            "elevenlabs_api_key": "elevenlabs-secret",
+            "translation_openai_api_key": "translation-openai-secret",
+            "openrouter_api_key": "openrouter-secret",
+            "gemini_api_key": "gemini-secret",
+            "anthropic_api_key": "anthropic-secret",
+            "groq_api_key": "groq-secret",
+        }
+        async with _client() as c:
+            response = await c.post(
+                f"/admin/events/{event.id}/api-settings",
+                cookies=admin_cookie,
+                data={"transcription_api_enabled": "1", **keys},
+                follow_redirects=False,
+            )
+        assert response.status_code == 303
+
+        async with get_session() as session:
+            updated = await get_event_by_id(session, event.id)
+            assert updated is not None
+            assert updated.transcription_api_enabled is True
+            for form_name, expected in keys.items():
+                attribute = f"encrypted_{form_name}"
+                assert decrypt_val(getattr(updated, attribute)) == expected.strip()
+
+        async with _client() as c:
+            response = await c.post(
+                f"/admin/events/{event.id}/api-settings",
+                cookies=admin_cookie,
+                data={
+                    "openai_api_key": "replacement",
+                    "clear_openai_api_key": "1",
+                    "deepgram_api_key": "   ",
+                },
+                follow_redirects=False,
+            )
+        assert response.status_code == 303
+
+        async with get_session() as session:
+            updated = await get_event_by_id(session, event.id)
+            assert updated is not None
+            assert updated.encrypted_openai_api_key is None
+            assert decrypt_val(updated.encrypted_deepgram_api_key) == "deepgram-secret"
+
+    @pytest.mark.anyio
     async def test_event_detail_shows_booth_links(self, admin_cookie, seed_event):
         event, _, _ = seed_event
         async with _client() as c:
             resp = await c.get(f"/admin/events/{event.id}/", cookies=admin_cookie)
         assert b"/interpreter/testcon/1/en" in resp.content
+
+    @pytest.mark.anyio
+    async def test_event_detail_groups_booths_by_room(self, admin_cookie, seed_event):
+        """With two rooms sharing a language, each booth row must say which room it is in."""
+        event, main_hall, _ = seed_event
+        from portal.database import create_booth, create_room, get_session
+
+        async with get_session() as s:
+            workshop = await create_room(s, event_id=event.id, display_name="Workshop B")
+            await create_booth(s, event_id=event.id, room_id=main_hall.id, language_code="de", language_name="Deutsch")
+            await create_booth(s, event_id=event.id, room_id=workshop.id, language_code="de", language_name="Deutsch")
+            await create_booth(s, event_id=event.id, room_id=workshop.id, language_code="en", language_name="English")
+
+        async with _client() as c:
+            resp = await c.get(f"/admin/events/{event.id}/", cookies=admin_cookie)
+        assert resp.status_code == 200
+        html = resp.text
+        assert "<th>Room</th>" in html
+        assert html.count("<td>Main Hall</td>") == 2
+        assert html.count("<td>Workshop B</td>") == 2
+        # Rows follow the Rooms list order, then language within a room.
+        rows = [
+            f"/interpreter/testcon/{main_hall.id}/de",
+            f"/interpreter/testcon/{main_hall.id}/en",
+            f"/interpreter/testcon/{workshop.id}/de",
+            f"/interpreter/testcon/{workshop.id}/en",
+        ]
+        positions = [html.index(f'href="{row}"') for row in rows]
+        assert positions == sorted(positions)
 
     @pytest.mark.anyio
     async def test_delete_event(self, admin_cookie, seed_event):
@@ -329,10 +974,110 @@ class TestEventCRUD:
         assert b"testcon" not in resp.content
 
     @pytest.mark.anyio
+    async def test_delete_event_rejects_a_room_coordinator(self, admin_cookie, seed_event):
+        """require_admin admits a room_coordinator for the whole event, and deleting one
+        now destroys transcripts and OAuth grant state. Match the API-key routes and
+        require an event owner."""
+        from portal.auth import create_user_token
+        from portal.database import create_room, create_user, get_session
+        from portal.models import RoomMembership
+
+        event, room, _ = seed_event
+        async with get_session() as s:
+            side = await create_room(s, event_id=event.id, display_name="Side Room")
+            carol = await create_user(s, email="carol@example.com", display_name="Carol")
+            s.add(RoomMembership(user_id=carol.id, room_id=side.id, role="room_coordinator"))
+            carol_id = carol.id
+
+        cookie = {"user_token": create_user_token(user_id=carol_id, email="carol@example.com")}
+        async with _client() as c:
+            # she really is a coordinator: her own room's page is allowed
+            allowed = await c.get(f"/admin/events/{event.id}/rooms/{side.id}/", cookies=cookie)
+            resp = await c.post(f"/admin/events/{event.id}/delete", cookies=cookie, follow_redirects=False)
+        assert allowed.status_code == 200, "fixture is wrong; she is not a coordinator"
+        assert resp.status_code == 403
+
+        from portal.database import get_event_by_id
+
+        async with get_session() as s:
+            assert await get_event_by_id(s, event.id) is not None
+
+    @pytest.mark.anyio
+    async def test_delete_event_allows_an_event_owner(self, seed_event):
+        """The tightened guard must still admit the event's own owner."""
+        from portal.auth import create_user_token
+        from portal.database import create_user, get_event_by_id, get_session
+        from portal.models import EventMembership
+
+        event, _, _ = seed_event
+        async with get_session() as s:
+            owner = await create_user(s, email="owner@example.com", display_name="Owner")
+            s.add(EventMembership(user_id=owner.id, event_id=event.id, role="event_owner"))
+            owner_id = owner.id
+
+        cookie = {"user_token": create_user_token(user_id=owner_id, email="owner@example.com")}
+        async with _client() as c:
+            legacy = await c.post(f"/admin/events/{event.id}/delete", cookies=cookie, follow_redirects=False)
+            assert legacy.status_code == 307
+            assert legacy.headers["location"] == f"/workspace/events/{event.id}/delete"
+            resp = await c.post(legacy.headers["location"], cookies=cookie, follow_redirects=False)
+        assert resp.status_code == 303
+        async with get_session() as s:
+            assert await get_event_by_id(s, event.id) is None
+
+    @pytest.mark.anyio
     async def test_event_not_found(self, admin_cookie):
         async with _client() as c:
             resp = await c.get("/admin/events/99999/", cookies=admin_cookie)
         assert resp.status_code == 404
+
+    @pytest.mark.anyio
+    async def test_delete_event_not_found(self, admin_cookie):
+        async with _client() as c:
+            resp = await c.post(
+                "/admin/events/99999/delete",
+                cookies=admin_cookie,
+                follow_redirects=False,
+            )
+        assert resp.status_code == 404
+        assert resp.json()["detail"] == "Event not found."
+
+    @pytest.mark.anyio
+    async def test_delete_event_database_error(self, admin_cookie, seed_event, monkeypatch):
+        from sqlalchemy.exc import SQLAlchemyError
+
+        from portal.database import delete_event as real_delete_event
+
+        event, _, _ = seed_event
+
+        async def mock_delete_event(session, event_id):
+            async def fail_flush():
+                raise SQLAlchemyError("Simulated DB failure")
+
+            monkeypatch.setattr(session, "flush", fail_flush)
+            return await real_delete_event(session, event_id)
+
+        monkeypatch.setattr("portal.routers.admin.delete_event", mock_delete_event)
+
+        async with _client() as c:
+            resp = await c.post(
+                f"/admin/events/{event.id}/delete",
+                cookies=admin_cookie,
+                follow_redirects=False,
+            )
+        assert resp.status_code == 303
+        assert resp.headers["location"] == "/admin/events/?error=delete_failed"
+
+        # Verify redirect page renders error message and event was not deleted
+        import re
+
+        async with _client() as c:
+            resp = await c.get("/admin/events/?error=delete_failed", cookies=admin_cookie)
+        assert resp.status_code == 200
+        assert b"Failed to delete event" in resp.content
+        assert b"The event was not deleted." in resp.content
+        assert b"testcon" in resp.content
+        assert not re.search(rb"\sstyle\s*=", resp.content, re.IGNORECASE)
 
 
 # ---------------------------------------------------------------------------
@@ -660,6 +1405,108 @@ class TestBoothCRUD:
         assert resp.status_code == 303
 
     @pytest.mark.anyio
+    async def test_delete_relay_booth_clears_the_rooms_pointer(self, admin_cookie, seed_event):
+        """The room page shows Relay Booth as None after the delete; the row must agree."""
+        from portal.database import get_room_by_id, get_session
+
+        event, room, booth = seed_event
+        async with _client() as c:
+            resp = await c.post(
+                f"/admin/events/{event.id}/rooms/{room.id}/edit",
+                data={"form_section": "relay", "relay_booth_id": str(booth.id)},
+                cookies=admin_cookie,
+                follow_redirects=False,
+            )
+            assert resp.status_code == 303
+        async with get_session() as s:
+            assert (await get_room_by_id(s, room.id)).relay_booth_id == booth.id
+
+        async with _client() as c:
+            resp = await c.post(
+                f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/delete",
+                cookies=admin_cookie,
+                follow_redirects=False,
+            )
+        assert resp.status_code == 303
+        async with get_session() as s:
+            assert (await get_room_by_id(s, room.id)).relay_booth_id is None
+
+    @pytest.mark.anyio
+    async def test_deleted_relay_booth_is_not_resurrected_by_a_reused_id(self, admin_cookie, seed_event):
+        """A new booth reusing the deleted booth's rowid must not inherit the relay slot.
+
+        Without the fix the interpreter is handed the new booth's WHEP URL, which can
+        be another room in another language, while the room page still shows None.
+        """
+        from portal.auth import create_participant_token
+        from portal.database import (
+            create_booth,
+            create_room,
+            get_room_by_id,
+            get_session,
+            list_booths_for_room,
+        )
+
+        # seed_event's booth is where the interpreter sits, so the relay booth is created
+        # after it and holds the highest booth id. Deleting the highest id is what frees it
+        # for reuse; deleting a lower one leaves max() untouched and proves nothing.
+        event, room, own = seed_event
+        async with get_session() as s:
+            relay_booth = await create_booth(
+                s, event_id=event.id, room_id=room.id, language_code="es", language_name="Spanish"
+            )
+            other_room = await create_room(s, event_id=event.id, display_name="Hall B")
+            own_id, other_room_id, relay_id = own.id, other_room.id, relay_booth.id
+        assert relay_id > own_id
+
+        async with _client() as c:
+            await c.post(
+                f"/admin/events/{event.id}/rooms/{room.id}/edit",
+                data={"form_section": "relay", "relay_booth_id": str(relay_id)},
+                cookies=admin_cookie,
+                follow_redirects=False,
+            )
+        session_cookie = {
+            "session_token": create_participant_token(
+                booth_id=own_id,
+                role="interpreter",
+                event_slug=event.slug,
+                room_id=room.id,
+                language_code="en",
+            )
+        }
+        async with _client() as c:
+            page = await c.get(f"/interpreter/{event.slug}/{room.id}/en", cookies=session_cookie)
+        assert resolve_relay_attr(page.text) != "", "relay was never configured, so nothing is proven"
+
+        async with _client() as c:
+            resp = await c.post(
+                f"/admin/events/{event.id}/rooms/{room.id}/booths/{relay_id}/delete",
+                cookies=admin_cookie,
+                follow_redirects=False,
+            )
+            assert resp.status_code == 303
+            # a booth added to the other room can take the freed rowid
+            await c.post(
+                f"/admin/events/{event.id}/rooms/{other_room_id}/booths/",
+                data={"language_code": "fr", "language_name": "French"},
+                cookies=admin_cookie,
+                follow_redirects=False,
+            )
+        async with get_session() as s:
+            new_booth = (await list_booths_for_room(s, other_room_id))[0]
+            assert (await get_room_by_id(s, room.id)).relay_booth_id is None
+        # without this the replacement never occupies the freed id and the stale-pointer
+        # path is not exercised at all
+        assert new_booth.id == relay_id, f"no rowid reuse: {new_booth.id} != {relay_id}"
+
+        async with _client() as c:
+            page = await c.get(f"/interpreter/{event.slug}/{room.id}/en", cookies=session_cookie)
+        after = resolve_relay_attr(page.text)
+        assert f"/{other_room_id}/{new_booth.language_code}/" not in after, after
+        assert not after.startswith("http"), f"still handed a relay stream: {after}"
+
+    @pytest.mark.anyio
     async def test_booth_not_found(self, admin_cookie, seed_event):
         event, room, _ = seed_event
         async with _client() as c:
@@ -677,16 +1524,17 @@ class TestBoothCRUD:
 
 class TestAdminToken:
     @pytest.mark.anyio
-    async def test_create_admin_token_has_admin_claim(self, setup_db):
-        token = create_admin_token()
+    async def test_create_user_token_has_admin_claim(self, setup_db):
+        token = create_user_token(user_id=1, email="admin@example.com", is_admin=True)
         payload = decode_token(token)
-        assert payload["admin"] is True
+        assert payload["is_admin"] is True
+        assert payload["user"] is True
         assert "exp" in payload
         assert "iat" in payload
 
     @pytest.mark.anyio
-    async def test_admin_token_is_valid_jwt(self, setup_db):
-        token = create_admin_token()
+    async def test_admin_user_token_is_valid_jwt(self, setup_db):
+        token = create_user_token(user_id=1, email="admin@example.com", is_admin=True)
         payload = decode_token(token)
         assert isinstance(payload, dict)
 
@@ -794,12 +1642,12 @@ class TestAPIKeyCRUD:
             c.cookies.set("user_token", token)
 
             # Initially empty
-            res = await c.get(f"/admin/api/events/{event_id}/api-keys")
+            res = await c.get(f"/workspace/api/events/{event_id}/api-keys")
             assert res.status_code == 200
             assert res.json() == []
 
             # Create API key
-            res = await c.post(f"/admin/api/events/{event_id}/api-keys", json={"name": "Integration Key"})
+            res = await c.post(f"/workspace/api/events/{event_id}/api-keys", json={"name": "Integration Key"})
             assert res.status_code == 200
             data = res.json()
             assert data["name"] == "Integration Key"
@@ -809,17 +1657,17 @@ class TestAPIKeyCRUD:
             key_id = data["id"]
 
             # Prevent duplicate name
-            res_dup = await c.post(f"/admin/api/events/{event_id}/api-keys", json={"name": "Integration Key"})
+            res_dup = await c.post(f"/workspace/api/events/{event_id}/api-keys", json={"name": "Integration Key"})
             assert res_dup.status_code == 400
             assert "already exists" in res_dup.json()["detail"]
 
             # Prevent blank name
-            res_blank = await c.post(f"/admin/api/events/{event_id}/api-keys", json={"name": "   "})
+            res_blank = await c.post(f"/workspace/api/events/{event_id}/api-keys", json={"name": "   "})
             assert res_blank.status_code == 400
             assert "cannot be blank" in res_blank.json()["detail"]
 
             # List keys (should contain 1)
-            res = await c.get(f"/admin/api/events/{event_id}/api-keys")
+            res = await c.get(f"/workspace/api/events/{event_id}/api-keys")
             assert res.status_code == 200
             keys = res.json()
             assert len(keys) == 1
@@ -828,16 +1676,16 @@ class TestAPIKeyCRUD:
             assert "raw_key" not in keys[0]
 
             # Revoke key
-            res_del = await c.delete(f"/admin/api/events/{event_id}/api-keys/{key_id}")
+            res_del = await c.delete(f"/workspace/api/events/{event_id}/api-keys/{key_id}")
             assert res_del.status_code == 200
 
             # List keys (should be empty again)
-            res = await c.get(f"/admin/api/events/{event_id}/api-keys")
+            res = await c.get(f"/workspace/api/events/{event_id}/api-keys")
             assert res.status_code == 200
             assert res.json() == []
 
             # Duplicate name is now allowed since the old one is revoked
-            res_remake = await c.post(f"/admin/api/events/{event_id}/api-keys", json={"name": "Integration Key"})
+            res_remake = await c.post(f"/workspace/api/events/{event_id}/api-keys", json={"name": "Integration Key"})
             assert res_remake.status_code == 200
             assert res_remake.json()["name"] == "Integration Key"
 
@@ -1166,6 +2014,31 @@ async def test_user_list_orders_same_join_time_by_newest_id(admin_cookie):
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("sort_field", ["__repr__", "unknown_field"])
+async def test_user_list_unsupported_sort_by_falls_back_to_default_ordering(admin_cookie, sort_field):
+    await _seed_users_with_join_dates()
+
+    async with _client() as c:
+        resp = await c.get(f"/admin/users/?sort_by={sort_field}", cookies=admin_cookie)
+
+    assert resp.status_code == 200
+    body = resp.text
+    assert body.index("newest@example.com") < body.index("middle@example.com") < body.index("oldest@example.com")
+
+
+@pytest.mark.anyio
+async def test_user_list_valid_sort_by_orders_correctly(admin_cookie):
+    await _seed_users_with_join_dates()
+
+    async with _client() as c:
+        resp = await c.get("/admin/users/?sort_by=email&sort_order=asc", cookies=admin_cookie)
+
+    assert resp.status_code == 200
+    body = resp.text
+    assert body.index("middle@example.com") < body.index("newest@example.com") < body.index("oldest@example.com")
+
+
+@pytest.mark.anyio
 async def test_user_list_badge_shows_total_across_pages(admin_cookie):
     from portal.database import create_user, get_session
 
@@ -1177,7 +2050,8 @@ async def test_user_list_badge_shows_total_across_pages(admin_cookie):
         resp = await c.get("/admin/users/?limit=2", cookies=admin_cookie)
 
     assert resp.status_code == 200
-    assert '<span class="badge">Total: 3 users</span>' in resp.text
+    # 3 seeded users plus the fixture's own administrator row.
+    assert '<span class="badge">Total: 4 users</span>' in resp.text
     assert "displayed" not in resp.text
 
 
@@ -1192,7 +2066,8 @@ async def test_user_list_badge_uses_singular_for_one_user(admin_cookie):
         resp = await c.get("/admin/users/", cookies=admin_cookie)
 
     assert resp.status_code == 200
-    assert '<span class="badge">Total: 1 user</span>' in resp.text
+    # The fixture's administrator row plus the one seeded user: plural "users".
+    assert '<span class="badge">Total: 2 users</span>' in resp.text
 
 
 @pytest.mark.anyio
@@ -1254,6 +2129,7 @@ async def test_admin_pages_have_a_toast_live_region(admin_cookie, seed_event):
     [
         "/admin/events/{event}/",
         "/admin/events/{event}/members/",
+        "/admin/events/{event}/api-settings/",
         "/admin/events/{event}/rooms/{room}/booths/{booth}/",
         "/admin/events/{event}/rooms/{room}/",
         "/admin/events/{event}/rooms/{room}/transcripts/",
@@ -1286,3 +2162,43 @@ async def test_admin_detail_pages_have_no_inline_styles(path, admin_cookie, seed
     # The API key modals keep style="display: none", which admin.js toggles.
     body = resp.content.replace(b'style="display: none;"', b"")
     assert not re.search(rb"\sstyle\s*=", body, re.IGNORECASE)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("seed_accounts", [False, True], ids=["empty", "all-statuses"])
+async def test_developer_accounts_page_has_no_inline_styles(seed_accounts):
+    import re
+
+    from portal.auth import create_user_token, hash_password
+    from portal.database import create_user, get_session
+    from portal.models import DeveloperAccount
+
+    async with get_session() as s:
+        admin = await create_user(
+            s, email="super@test.com", display_name="Super", password_hash=hash_password("securepass123")
+        )
+        admin.is_admin = True
+        if seed_accounts:
+            for status in ("pending", "approved", "suspended", "rejected"):
+                applicant = await create_user(
+                    s,
+                    email=f"{status}@test.com",
+                    display_name=status,
+                    password_hash=hash_password("securepass123"),
+                )
+                s.add(DeveloperAccount(user_id=applicant.id, status=status, organization_name=f"{status} org"))
+        await s.commit()
+        admin_id, admin_email = admin.id, admin.email
+
+    cookie = {"user_token": create_user_token(user_id=admin_id, email=admin_email, is_admin=True)}
+    async with _client() as c:
+        resp = await c.get("/admin/developer-accounts", cookies=cookie)
+
+    assert resp.status_code == 200
+    if seed_accounts:
+        # Every status branch rendered, so the assertion below covers all of them.
+        for label in (b"Approve", b"Reject", b"Suspend", b"Restore"):
+            assert label in resp.content
+    else:
+        assert b"No developer applications" in resp.content
+    assert not re.search(rb"\sstyle\s*=", resp.content, re.IGNORECASE)

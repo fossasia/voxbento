@@ -12,7 +12,7 @@ Before deploying, confirm that your server meets the following requirements:
 
 ### Docker & Docker Compose
 
-    Install the latest stable versions of Docker Engine and the Docker Compose plugin. Voxbento uses Compose v2 syntax (`docker compose`, not `docker-compose`).
+    Install the latest stable versions of Docker Engine and the Docker Compose plugin (Compose 2.24.0 or newer for optional environment files). Voxbento uses Compose v2 syntax (`docker compose`, not `docker-compose`).
   
   ### Public IP or Domain
 
@@ -58,25 +58,33 @@ Copy the example environment file to create your local configuration:
 
   ### Set required environment variables
 
-Open `.env` in a text editor and configure at minimum the following four variables before starting any service:
+Open `.env` in a text editor and configure at minimum the following variables before starting any service:
 
     ```bash
-    # Strong password for /admin/login
-    ADMIN_PASSWORD=your-strong-admin-password
-
     # JWT signing key — generate with: openssl rand -hex 32
     SECRET_KEY=your-64-char-random-string
 
     # API key encryption — generate with: openssl rand -hex 32
     API_KEY_ENCRYPTION_KEY=your-32-char-minimum-key
 
-    # Your server's public IP — required for WebRTC ICE
-    # Linux:  hostname -I | awk '{print $1}'
-    # macOS:  ipconfig getifaddr en0
-    DOCKER_HOST_ADDRESS=203.0.113.10
+    # Private portal-to-MediaMTX authentication — generate with: openssl rand -hex 32
+    MEDIAMTX_AUTH_HOOK_SECRET=your-64-char-random-string
+
     ```
 
-    Without `DOCKER_HOST_ADDRESS`, WebRTC ICE candidates will not be reachable from attendee browsers outside the local machine.
+    Set the existing `JVB_ADVERTISE_IPS=` entry to the server's reachable public IP before starting services:
+
+    ```bash
+    printf "Enter the server's reachable public IP: "
+    IFS= read -r jvb_advertise_ip
+    if [ -z "$jvb_advertise_ip" ]; then
+      echo "No address entered; .env was not changed." >&2
+    else
+      sed -i.bak "s|^JVB_ADVERTISE_IPS=.*|JVB_ADVERTISE_IPS=$jvb_advertise_ip|" .env && rm -f .env.bak
+    fi
+    ```
+
+    Without `JVB_ADVERTISE_IPS`, Jitsi media ICE candidates may not be reachable from browsers outside the local machine.
 
   ### Start all services
 
@@ -107,10 +115,10 @@ Open your browser and navigate to your server's address on port 8000:
 Log in to the admin panel to create events, rooms, and booths:
 
     ```
-    http://your-server-ip:8000/admin/login
+    http://your-server-ip:8000/login?next=/admin/
     ```
 
-    Enter the `ADMIN_PASSWORD` you set in `.env`.
+    Enter the email and password of an administrator account.
 
 ## Health Check
 
@@ -135,6 +143,26 @@ If `mediamtx_ok` is `false`, the portal is running but MediaMTX is not reachable
 :::info
 Database migrations run automatically on container startup. You do not need to run any migration commands manually when using Docker Compose.
 :::
+
+## Deployment preflight
+
+The production GitHub Actions workflow builds candidate images in a temporary Git
+worktree and validates the server's current `.env` and candidate Caddy configuration
+before updating the live checkout or replacing any running container. If a required
+secret is missing or unsafe, the deployment stops and the existing stack remains
+running. Old images are retained until the replacement portal passes `/healthz`,
+then dangling images are pruned. The temporary worktree is removed on exit.
+Compose always uses the `voxbento` project name to retain existing volumes and
+networks. The portal runs source and dependencies from its image, with `.env`
+loaded as container environment variables; rebuild the image to apply code changes.
+
+You can run the same configuration check manually from the deployment directory:
+
+```bash
+docker compose run --rm --no-deps portal \
+  uv run python -c \
+  "from portal.config import settings; settings.validate_production_secrets()"
+```
 
 ## Production Considerations
 
@@ -177,21 +205,17 @@ WebRTC **requires HTTPS** in production browsers — Chrome and Firefox will not
 </details>
 
 <details>
-<summary>Set DOCKER_HOST_ADDRESS for WebRTC</summary>
+<summary>Set JVB_ADVERTISE_IPS for Jitsi WebRTC</summary>
 
-WebRTC uses ICE (Interactive Connectivity Establishment) to negotiate a direct media path between the interpreter's browser and MediaMTX. For ICE to work, MediaMTX must advertise a reachable IP address in its ICE candidates.
+Jitsi uses ICE (Interactive Connectivity Establishment) to negotiate a media path between each participant's browser and Jitsi Videobridge. For this to work outside the local network, JVB must advertise a reachable IP address in its ICE candidates.
 
-  Set `DOCKER_HOST_ADDRESS` to your server's **public** IP address:
+  The required setup above sets `JVB_ADVERTISE_IPS` to your server's **public** IP address. If you change it after starting the services, recreate JVB so the running container receives the new value:
 
   ```bash
-  # Find your public IP on Linux
-  hostname -I | awk '{print $1}'
-
-  # Set in .env
-  DOCKER_HOST_ADDRESS=203.0.113.10
+  docker compose up -d --force-recreate jitsi-jvb
   ```
 
-  Without this, WebRTC audio will only work for browsers on the same machine as the server.
+  Without this, Jitsi audio/video may only work for browsers on the same network as the server.
 
 </details>
 
@@ -208,3 +232,21 @@ The `.env.example` file ships with `changeme` as the password for Jitsi's intern
   These passwords are only used internally between Jitsi services — you do not need to share them with anyone.
 
 </details>
+## Program stream ingest rollout
+
+Program ingest is opt-in (`PROGRAM_INGEST_ENABLED=true`) after migration 025 and
+coordinated deployment of the portal, MediaMTX 1.18.2 configuration and Caddy.
+Use one portal replica. Set `PUBLIC_BASE_URL` and `MEDIAMTX_WHIP_BASE` to the
+public HTTPS origin; expose HTTPS 443 and WebRTC UDP 8189. Control API 9997,
+RTSP 8554 and HTTP signalling/portal ports must remain private/loopback-bound.
+Set `MEDIAMTX_AUTH_HOOK_SECRET` to a strong random value shared by the portal and
+MediaMTX (`openssl rand -hex 32`); production startup fails when it is absent.
+Block `/internal/*` at every public reverse proxy. Never publish the auth callback.
+
+The encoder sends WHIP with Opus audio and a room-scoped bearer token. It keeps
+its independent YouTube destination; VoxBento does not relay to YouTube. See
+`docs/program-stream-ingest.md` in the repository for exact setup, supported/tested
+versions, credential rotation, synchronization, rollback and event rehearsal.
+Because program-ingest credential digests are bound to `JWT_SECRET` (or its
+`SECRET_KEY` fallback), rotate each room's ingest token after changing that server
+secret and before the next event.

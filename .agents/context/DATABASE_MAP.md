@@ -233,7 +233,7 @@ Tracks which languages the translation worker should generate for a given room o
 | 015 | `015_add_floor_tts_enabled.py` | `rooms.floor_tts_enabled` |
 | 016 | `016_add_room_audio_delay.py` | `rooms.audio_delay_ms` |
 | 017 | `017_add_tts_provider_fields.py` | `rooms.floor_tts_provider`, `rooms.floor_tts_voice` |
-| 025 | `025_add_tts_enabled.py` | `room_translation_languages.tts_enabled` |
+| 028 | `028_add_tts_enabled.py` | `room_translation_languages.tts_enabled` |
 
 Run migrations: `uv run alembic upgrade head`
 
@@ -268,3 +268,19 @@ async with get_session() as session:
 - `configure(url)` overrides engine (used in tests).
 - `init_db()` creates all tables without Alembic (tests only).
 - `dispose()` disposes connection pool.
+## Migration 027 — managed meeting agent
+
+Room field `meeting_agent_enabled` (Boolean, default false): the durable desired
+state of the managed Jitsi floor agent. Only meaningful while `floor_source` is
+`jitsi_bot`; enabling program ingest clears it. `portal/meeting_source.py`
+reconciles it against floor-bot `/status` and restores state after a portal restart.
+
+## Migration 025 — program floor ownership
+
+Room fields: `floor_source` (default `jitsi_bot`), nullable `program_key_hash`
+(PBKDF2-HMAC-SHA256 digest; never serialize), `program_key_expires_at`, `program_session_id`,
+`program_connected_at`, `program_disconnected_at`, plus `program_sync_offset_ms`
+and `floor_caption_seq` (both default 0). Source configuration uses a serialized
+transaction; the MediaMTX auth callback reserves a session before negotiation.
+Final floor sequence increments atomically and survives worker/portal restarts.
+Raw credentials are only returned at create/rotate; no YouTube keys are stored.

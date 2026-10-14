@@ -184,9 +184,15 @@ async def test_source_language_bypass(db_data, mock_broadcast):
 
     # English is the floor language: no AI booth, no bundle.
     assert not any(c.args[0].endswith("-en") for c in mock_bundle.call_args_list)
-    # Its text channel gets the original text as-is.
+    # Its text channel gets the original text as-is, tagged with the segment it belongs to.
     en_caption = next(c for c in mock_captions.call_args_list if c.args[0] == f"pipeline-test-{db_data['room'].id}-en")
-    assert en_caption.args[1] == {"type": "translated_caption", "status": "final", "text": "Hello world"}
+    assert en_caption.args[1] == {
+        "type": "translated_caption",
+        "status": "final",
+        "text": "Hello world",
+        "segment_id": "1234-uuid",
+        "seq": 1,
+    }
 
 
 @pytest.mark.anyio

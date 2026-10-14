@@ -6,6 +6,7 @@ import logging
 from portal.booth_identity import make_ai_booth_id
 from portal.database import get_session
 from portal.models import DBBooth, Event, Room, TranscriptTranslation
+from portal.transcription.timing import timing_metadata
 from portal.translations.constants import OPENAI_COMPATIBLE_ENDPOINTS, TranslationProviderEnum
 from portal.translations.keys import get_translation_api_key
 from portal.translations.providers.anthropic import AnthropicProvider
@@ -126,7 +127,15 @@ class TranslationWorker:
                     # on the source booth; repeat it for anyone subscribed to this language's text channel.
                     tasks.append(
                         listener_manager.broadcast(
-                            target_booth_id, {"type": "translated_caption", "status": "final", "text": text}
+                            target_booth_id,
+                            {
+                                "type": "translated_caption",
+                                "status": "final",
+                                "text": text,
+                                "segment_id": uuid_segment_id,
+                                "seq": seq,
+                                **timing_metadata(),
+                            },
                         )
                     )
                     continue
@@ -200,15 +209,16 @@ class TranslationWorker:
         The text goes to the language's caption channel (*target_booth_id*). When *tts_booth_id* is set,
         the text and then the synthesized audio also go to that AI booth as TTS bundles.
         """
-        sem = LANGUAGE_SEMAPHORES.setdefault(lang_code, asyncio.Semaphore(2))
-        q_depth = LANGUAGE_QUEUES.setdefault(lang_code, 0)
+        queue_key = f"{booth_id_str}:{lang_code}"
+        sem = LANGUAGE_SEMAPHORES.setdefault(queue_key, asyncio.Semaphore(2))
+        q_depth = LANGUAGE_QUEUES.setdefault(queue_key, 0)
 
         if q_depth >= 15:
             logger.warning(f"[{booth_id_str}] Queue full for {lang_code}. Dropping segment {seq}.")
             await self._send_bundle(tts_booth_id, b"", uuid_segment_id, seq, text, "", "pipeline_failed")
             return
 
-        LANGUAGE_QUEUES[lang_code] += 1
+        LANGUAGE_QUEUES[queue_key] += 1
 
         try:
             queue_decremented = False
@@ -262,11 +272,19 @@ class TranslationWorker:
                     from portal.websockets.manager import listener_manager
 
                     await listener_manager.broadcast(
-                        target_booth_id, {"type": "translated_caption", "status": "final", "text": translated_text}
+                        target_booth_id,
+                        {
+                            "type": "translated_caption",
+                            "status": "final",
+                            "text": translated_text,
+                            "segment_id": uuid_segment_id,
+                            "seq": seq,
+                            **timing_metadata(),
+                        },
                     )
 
             # Decrement queue early so slow TTS doesn't cause new incoming segments to be dropped
-            LANGUAGE_QUEUES[lang_code] -= 1
+            LANGUAGE_QUEUES[queue_key] -= 1
             queue_decremented = True
 
             if tts_booth_id is None:
@@ -282,6 +300,8 @@ class TranslationWorker:
                 synth_bytes = await asyncio.wait_for(synthesize(room.id, translated_text, lang_code), timeout=timeout_s)
                 if synth_bytes:
                     audio_bytes = synth_bytes
+                else:
+                    error = "tts_unavailable"
             except asyncio.TimeoutError:
                 logger.warning(f"[{booth_id_str}] TTS timeout for {lang_code} after {timeout_s}s.")
                 error = "tts_timeout"
@@ -297,7 +317,7 @@ class TranslationWorker:
             await self._send_bundle(tts_booth_id, b"", uuid_segment_id, seq, text, "", "pipeline_failed")
         finally:
             if not queue_decremented:
-                LANGUAGE_QUEUES[lang_code] -= 1
+                LANGUAGE_QUEUES[queue_key] -= 1
 
     async def _call_llm(
         self,

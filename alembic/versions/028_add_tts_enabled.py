@@ -1,7 +1,7 @@
 """add tts_enabled to room translation languages
 
-Revision ID: 025
-Revises: 024
+Revision ID: 028
+Revises: 027
 Create Date: 2026-09-08 21:46:15.773928
 
 """
@@ -15,8 +15,8 @@ import sqlalchemy as sa
 from alembic import op
 
 # revision identifiers, used by Alembic.
-revision: str = "025"
-down_revision: Union[str, Sequence[str], None] = "024"
+revision: str = "028"
+down_revision: Union[str, Sequence[str], None] = "027"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
