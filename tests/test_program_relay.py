@@ -396,6 +396,31 @@ async def test_processing_error_stops_running_worker_and_keeps_relay(relay_env, 
 
 
 @pytest.mark.anyio
+async def test_stuck_worker_stop_does_not_block_other_rooms_relays(relay_env):
+    env = relay_env
+    client, event = env["client"], env["event"]
+    first, second = env["rooms"]
+    for room in (first, second):
+        secret = await enable_relay(client, event, room)
+        await save_destination(client, event, room)
+        await connect(env, room, secret)
+    await ingest.reconcile_once()
+    assert set(env["relays"]) == {str(first.id), str(second.id)}
+    # The first room's worker cannot be stopped; the relay service also lost the second relay.
+    async with get_session() as session:
+        (await session.get(Room, first.id)).floor_transcription_enabled = False
+    env["stop"].side_effect = RuntimeError("worker stop failed")
+    env["relays"].pop(str(second.id))
+    await ingest.reconcile_once()
+    # Reconciliation continued past the first room, and sync restored the second relay.
+    assert set(env["relays"]) == {str(first.id), str(second.id)}
+    assert ingest.health[first.id].worker_config is not None  # retried next cycle
+    env["stop"].side_effect = None
+    await ingest.reconcile_once()
+    assert ingest.health[first.id].worker_config is None
+
+
+@pytest.mark.anyio
 async def test_reconcile_failure_does_not_report_stale_live_relay(relay_env, monkeypatch):
     env = relay_env
     client, event, room = env["client"], env["event"], env["rooms"][0]

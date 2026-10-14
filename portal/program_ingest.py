@@ -555,6 +555,22 @@ async def close_sender_session(room: Room, event: Event, secret: str | None) -> 
     logger.info("program_ingest sender_session_closed room_id=%s", room.id)
 
 
+async def stop_room_worker(current: IngestHealth, booth_id: str, room_id: int) -> bool:
+    """Stop a room's floor STT worker without ever raising.
+
+    Metadata is forgotten only after a successful stop, so a failed stop is retried next
+    cycle. A stuck worker must never abort reconciliation of later rooms or the relay sync.
+    """
+    try:
+        await stop_transcription_worker(booth_id)
+    except Exception:  # noqa: BLE001 - processing cleanup must not abort room/relay reconciliation
+        logger.warning("program_ingest processing_stop_failed room_id=%s", room_id)
+        return False
+    current.worker_config = None
+    current.worker_started_at = None
+    return True
+
+
 def relay_request(room: Room, event: Event, path: MediaPath | None) -> tuple[str, str] | None:
     """Return (source path, destination) when this room's feed should be relayed to YouTube.
 
@@ -614,9 +630,7 @@ async def reconcile_room(room: Room, event: Event, path: MediaPath | None) -> tu
         current.ingest_state, current.ingest_reason = current.state, current.reason
         current.processing_state, current.processing_reason = "idle", "No contribution feed to process."
         if now - grace_started_at >= settings.program_ingest_disconnect_grace_secs:
-            await stop_transcription_worker(booth_id)
-            current.worker_config = None
-            current.worker_started_at = None
+            await stop_room_worker(current, booth_id, room.id)
             if room.program_session_id:
                 await kick(path_name, reserved_source(room))
                 room.program_session_id = None
@@ -642,15 +656,8 @@ async def reconcile_room(room: Room, event: Event, path: MediaPath | None) -> tu
         current.state, current.reason = "degraded", "Language processing could not start; retrying automatically."
         current.processing_state, current.processing_reason = current.state, current.reason
         logger.warning("program_ingest processing_failed room_id=%s", room.id)
-        try:
-            # A worker may still run with the previous configuration; stop it before forgetting it.
-            await stop_transcription_worker(booth_id)
-        except Exception:  # noqa: BLE001 - processing cleanup must never cost the relay decision
-            # Keep worker_config so the next cycle detects the change and retries the stop.
-            logger.warning("program_ingest processing_stop_failed room_id=%s", room.id)
-        else:
-            current.worker_config = None
-            current.worker_started_at = None
+        # A worker may still run with the previous configuration; stop it before forgetting it.
+        await stop_room_worker(current, booth_id, room.id)
     return relay
 
 
@@ -675,17 +682,15 @@ async def reconcile_processing(
     if problem:
         current.state, current.reason = "degraded", problem
         current.processing_state, current.processing_reason = "degraded", problem
-        await stop_transcription_worker(booth_id)
-        current.worker_config = None
-        current.worker_started_at = None
+        await stop_room_worker(current, booth_id, room.id)
         return
     current.state, current.reason = "receiving", "Audio received; starting transcription."
     current.processing_state, current.processing_reason = "starting", "Starting the transcription worker."
     api_key = get_api_key(event, ProviderEnum(room.floor_transcription_provider))
     config = (room.floor_transcription_provider, room.floor_transcription_model, room.floor_language_code)
     if current.worker_config and current.worker_config != config:
-        await stop_transcription_worker(booth_id)
-        current.worker_started_at = None
+        if not await stop_room_worker(current, booth_id, room.id):
+            return
     await start_transcription_worker(
         event_slug=event.slug,
         language_code="floor",
@@ -704,9 +709,7 @@ async def reconcile_processing(
     if now - (last_audio or current.worker_started_at) > settings.program_ingest_stall_secs:
         current.state, current.reason = "degraded", "Audio decoder stalled or failed; restarting the processing worker."
         current.processing_state, current.processing_reason = current.state, current.reason
-        await stop_transcription_worker(booth_id)
-        current.worker_started_at = None
-        current.worker_config = None
+        await stop_room_worker(current, booth_id, room.id)
     elif last_audio:
         current.state, current.reason = "processing", "Decoded audio received; transcription worker active."
         current.processing_state, current.processing_reason = current.state, current.reason
