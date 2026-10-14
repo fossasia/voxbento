@@ -926,8 +926,8 @@ def test_ws_broadcast_unlock_authorized_user_can_toggle():
 def test_ws_broadcast_unlock_interpreter_rejected():
     """Interpreter session cannot toggle broadcast lock."""
     client.post("/api/events/broadcastdeny/booths", json={"language_code": "en", "room_id": 1, "language": "English"})
-    booth = "broadcastdeny-en"
-    channel = "broadcastdeny/en"
+    booth = "broadcastdeny-1-en"
+    channel = "broadcastdeny/1/en"
 
     with client.websocket_connect(
         f"/ws/booth/{booth}",
