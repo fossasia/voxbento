@@ -641,9 +641,16 @@ async def reconcile_room(room: Room, event: Event, path: MediaPath | None) -> tu
         # processing only; the relay decision above still stands.
         current.state, current.reason = "degraded", "Language processing could not start; retrying automatically."
         current.processing_state, current.processing_reason = current.state, current.reason
-        current.worker_config = None
-        current.worker_started_at = None
         logger.warning("program_ingest processing_failed room_id=%s", room.id)
+        try:
+            # A worker may still run with the previous configuration; stop it before forgetting it.
+            await stop_transcription_worker(booth_id)
+        except Exception:  # noqa: BLE001 - processing cleanup must never cost the relay decision
+            # Keep worker_config so the next cycle detects the change and retries the stop.
+            logger.warning("program_ingest processing_stop_failed room_id=%s", room.id)
+        else:
+            current.worker_config = None
+            current.worker_started_at = None
     return relay
 
 

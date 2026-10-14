@@ -124,6 +124,7 @@ async def relay_env(monkeypatch):
                 "calls": calls,
                 "service": service,
                 "start": start,
+                "stop": stop,
             }
     ingest.health.clear()
     ingest.failures.clear()
@@ -363,6 +364,35 @@ async def test_processing_failure_never_stops_the_relay(relay_env, monkeypatch):
     assert str(room.id) in env["relays"] and ("DELETE", f"/relays/{room.id}") not in env["calls"]
     assert health["relay"]["state"] == "live"
     assert health["processing"]["state"] == "degraded" and health["ingest"]["state"] == "connected"
+
+
+@pytest.mark.anyio
+async def test_processing_error_stops_running_worker_and_keeps_relay(relay_env, monkeypatch):
+    env = relay_env
+    client, event, room = env["client"], env["event"], env["rooms"][0]
+    secret = await enable_relay(client, event, room)
+    await save_destination(client, event, room)
+    await connect(env, room, secret)
+    await ingest.reconcile_once()
+    booth_id = f"relay-test-{room.id}-floor"
+    assert env["start"].await_count == 1 and ingest.health[room.id].worker_config
+    env["stop"].reset_mock()
+
+    def broken_settings(*_args):
+        raise ValueError("undecryptable provider key")
+
+    monkeypatch.setattr(ingest, "pipeline_problem", broken_settings)
+    # The stop itself fails first: the config is kept so the next cycle retries, relay unaffected.
+    env["stop"].side_effect = RuntimeError("worker stop failed")
+    await ingest.reconcile_once()
+    assert ingest.health[room.id].worker_config and str(room.id) in env["relays"]
+    env["stop"].side_effect = None
+    await ingest.reconcile_once()
+    env["stop"].assert_any_await(booth_id)
+    assert ingest.health[room.id].worker_config is None
+    health = (await client.get(ingest_url(event, room))).json()["health"]
+    assert health["relay"]["state"] == "live" and health["processing"]["state"] == "degraded"
+    assert str(room.id) in env["relays"]
 
 
 @pytest.mark.anyio
