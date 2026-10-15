@@ -8,9 +8,11 @@ needs a YouTube stream key. This is not an OBS replacement or a YouTube relay.
 
 V1 supports **HTTPS WHIP with a bearer token**, Opus audio, and optional video.
 Choose H.264 for broad encoder/browser compatibility. MediaMTX terminates WebRTC;
-Caddy terminates HTTPS signalling. Media never flows through FastAPI. RTMP/SRT
-encoder outputs are not supported in this version; use a WHIP-capable output or
-external distribution service, or retain the Jitsi floor bot.
+Caddy terminates HTTPS signalling. Media never flows through FastAPI. RTMP
+encoder outputs are not supported; use a WHIP-capable output or external
+distribution service, or retain the Jitsi floor bot. Authenticated SRT
+contribution is supported as a first authorization slice — see "SRT contribution
+ingest" below for its prerequisites and transport-security requirements.
 
 The integration is pinned to MediaMTX **1.18.2**. The opt-in native transport test
 uses **FFmpeg 8.1.2** (with the WHIP muxer), which is the tested reference encoder
@@ -132,8 +134,22 @@ floor path in MediaMTX). The `/internal/media-auth` hook authorizes the `srt`
 publish exactly like WHIP: canonical floor path, room/credential check, failure
 rate-limiting, and one-publisher-per-room enforcement (an SRT connection is kicked
 through MediaMTX's `srtconns` endpoint). Use bounded latency (e.g. `latency=200`)
-sized to the contribution network. Keep the SRT listener on the private media plane;
-never expose the MediaMTX API or SRT control ports at the firewall.
+sized to the contribution network.
+
+**Transport security (required).** `srtPublishPassphrase` encrypts only the SRT
+media payload, not the handshake: the streamid — and therefore the room token it
+carries — travels in cleartext in the SRT handshake, and that token is the same
+credential WHIP uses. Every SRT contribution must run over a trusted, authenticated,
+encrypted transport (a private link or VPN between encoder and gateway); never carry
+the streamid over an untrusted network. Keep the SRT listener on the private media
+plane and never expose the MediaMTX API or SRT control ports at the firewall. A
+separate, short-lived SRT-only credential that bounds this handshake exposure is a
+planned follow-up.
+
+**Audio codec.** This first slice reuses the existing floor pipeline, which
+transcribes Opus/G711/G722/LPCM. Configure the SRT encoder to send **Opus** audio;
+an AAC/MPEG-TS SRT feed authorizes but is reported as an unsupported track and
+produces no captions. AAC transcoding for SRT is a planned follow-up.
 
 ## Processing, recovery, and capacity
 
