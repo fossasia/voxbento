@@ -356,7 +356,7 @@ async def run_capture():
         monitor_task = asyncio.create_task(monitor_empty_room())
 
         async def stream_audio():
-            nonlocal ffmpeg_proc
+            nonlocal ffmpeg_proc, exit_stage
             # Retry loop: ffmpeg can exit if RTSP or PulseAudio isn't ready yet
             max_retries = 5
             retry_delay = 3

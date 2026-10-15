@@ -477,9 +477,19 @@ async def reconcile_once() -> None:
     global _last_sweep, _unreachable
     async with get_session() as session:
         rows = (await session.execute(select(Room.id, Event.slug).join(Event).where(Room.meeting_agent_enabled))).all()
+        room_states = (await session.execute(select(Room.id, Room.meeting_agent_enabled))).all()
+        existing_room_ids = {room_id for room_id, _ in room_states}
+        enabled_room_ids = {room_id for room_id, enabled in room_states if enabled}
+
     ids = [room_id for room_id, _ in rows]
-    for room_id in set(health) - set(ids):
-        health.pop(room_id, None)
+
+    for room_id in list(health):
+        current = health[room_id]
+        if room_id not in existing_room_ids or (
+            room_id not in enabled_room_ids
+            and current.reason != "The meeting agent stopped because the room remained empty."
+        ):
+            health.pop(room_id, None)
     if not rows and monotonic() - _last_sweep < IDLE_SWEEP_SECS:
         return
     try:
