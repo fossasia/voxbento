@@ -83,8 +83,11 @@ def check_hardening() -> None:
 
 def check_ffmpeg_and_ca_bundle() -> None:
     protocols = subprocess.run(["ffmpeg", "-hide_banner", "-protocols"], capture_output=True, text=True, check=True)
-    for name in ("rtmps", "tls", "rtsp"):
-        assert re.search(rf"^\s*{name}\s*$", protocols.stdout, re.M), f"FFmpeg lacks {name}"
+    for name in ("rtmps", "tls"):
+        assert re.search(rf"^\s*{name}\s*$", protocols.stdout, re.M), f"FFmpeg lacks the {name} protocol"
+    # RTSP is a demuxer (the floor source), not an entry in the protocol list.
+    demuxers = subprocess.run(["ffmpeg", "-hide_banner", "-demuxers"], capture_output=True, text=True, check=True)
+    assert re.search(r"^\s*D\S*\s+rtsp\s", demuxers.stdout, re.M), "FFmpeg lacks the RTSP demuxer"
     assert os.path.getsize(DEFAULT_CA) > 50_000, "CA bundle missing or empty"
     # Real YouTube RTMPS endpoint: the TLS handshake must verify against the image's bundle.
     youtube = subprocess.run(
