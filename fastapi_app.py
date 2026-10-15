@@ -5,6 +5,8 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse
@@ -138,6 +140,35 @@ async def custom_swagger_ui_html(request: Request, _=Depends(require_admin)):
 @app.get("/openapi.json", include_in_schema=False)
 async def get_open_api_endpoint(request: Request, _=Depends(require_admin)):
     return JSONResponse(get_openapi(title="Voxbento API", version="1.0.0", routes=app.routes))
+
+
+# Write-only secrets (e.g. the YouTube relay key) must never be echoed back by a 422.
+_REDACTED_INPUT_FIELDS = frozenset({"stream_key"})
+
+
+def _contains_secret_field(value: object) -> bool:
+    if isinstance(value, dict):
+        return any(key in _REDACTED_INPUT_FIELDS or _contains_secret_field(item) for key, item in value.items())
+    if isinstance(value, (list, tuple)):
+        return any(_contains_secret_field(item) for item in value)
+    return False
+
+
+@app.exception_handler(RequestValidationError)
+async def request_validation_exception_handler(request: Request, exc: RequestValidationError):
+    """FastAPI's default 422, minus the rejected input wherever it is or contains a secret field.
+
+    A ``missing`` error reports the whole body as its input, so the check covers the value
+    as well as the error location.
+    """
+    errors = []
+    for error in exc.errors():
+        if any(part in _REDACTED_INPUT_FIELDS for part in error.get("loc", ())) or _contains_secret_field(
+            error.get("input")
+        ):
+            error = {key: value for key, value in error.items() if key != "input"}
+        errors.append(error)
+    return JSONResponse({"detail": jsonable_encoder(errors)}, status_code=422)
 
 
 @app.exception_handler(StarletteHTTPException)

@@ -244,6 +244,25 @@ async def test_destination_encrypted_write_only_rotatable_and_revocable(relay_en
 
 
 @pytest.mark.anyio
+async def test_request_validation_errors_never_echo_the_stream_key(relay_env):
+    client, event, room = relay_env["client"], relay_env["event"], relay_env["rooms"][0]
+    long_key = "k" * 200 + "-unique-tail"
+    for payload in [
+        {"server_url": YOUTUBE_SERVER, "stream_key": long_key},  # over max_length
+        {"server_url": YOUTUBE_SERVER, "stream_key": [long_key]},  # wrong type
+        {"stream_key": long_key},  # "missing" reports the whole body as its input
+    ]:
+        response = await client.put(relay_url(event, room), json=payload)
+        assert response.status_code == 422, response.text
+        assert long_key not in response.text and "unique-tail" not in response.text
+        assert response.json()["detail"], "validation details are still reported"
+    # Other validation errors keep FastAPI's normal response, including the rejected input.
+    response = await client.post(ingest_url(event, room), json={"action": "bogus-action"})
+    assert response.status_code == 422
+    assert any(error.get("input") == "bogus-action" for error in response.json()["detail"])
+
+
+@pytest.mark.anyio
 async def test_relay_requires_operator_flag_owner_and_origin(relay_env, monkeypatch):
     client, event, room = relay_env["client"], relay_env["event"], relay_env["rooms"][0]
     put = {"server_url": YOUTUBE_SERVER, "stream_key": YOUTUBE_KEY}
