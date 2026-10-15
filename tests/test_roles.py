@@ -14,6 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 import portal.auth as auth_module
+from portal.access_policy import AccessPolicy, Principal
 from portal.auth import can_perform_role, resolve_booth_role
 from portal.booth_state import ParticipantRole
 from portal.roles import (
@@ -256,9 +257,11 @@ def test_every_role_has_a_rank():
     assert set(_ROLE_RANK) == set(ALL_ROLES)
 
 
-def test_auth_uses_the_same_rank_table():
-    """auth.py used to keep its own copy, which drifted and omitted support."""
-    assert auth_module._ROLE_RANK is _ROLE_RANK
+def test_access_policy_uses_the_shared_rank_table():
+    """AccessPolicy uses the shared role-ranking table."""
+    from portal.access_policy import _ROLE_RANK as policy_role_rank
+
+    assert policy_role_rank is _ROLE_RANK
 
 
 # ── can_perform_role ─────────────────────────────────────────────────────
@@ -344,3 +347,80 @@ async def test_an_event_owner_outranks_support():
 @pytest.mark.anyio
 async def test_support_alone_resolves_to_support():
     assert await _resolve(event_role="support") == "support"
+
+
+def test_principal_role_checks():
+    policy = AccessPolicy(
+        event_roles={1: "event_owner"},
+        room_roles={10: "room_coordinator"},
+        room_events={10: 1},
+        booth_roles={100: "interpreter"},
+        booth_scopes={100: (10, 1)},
+    )
+    principal = Principal(user_id=1, policy=policy)
+
+    assert principal.has_role("event_owner", event_id=1)
+    assert principal.has_role("room_coordinator", room_id=10)
+    assert principal.has_role("interpreter", booth_id=100)
+    assert principal.has_any_role("event_owner")
+    assert principal.has_any_role("interpreter")
+    assert principal.has_room_coordinator_in_event(1)
+
+
+def test_principal_role_checks_respect_inactive_status():
+    principal = Principal(
+        user_id=1,
+        policy=AccessPolicy(
+            event_roles={1: "event_owner"},
+            room_roles={10: "room_coordinator"},
+            room_events={10: 1},
+        ),
+        is_active=False,
+    )
+
+    assert not principal.has_role("event_owner", event_id=1)
+    assert not principal.has_any_role("event_owner")
+    assert not principal.has_room_coordinator_in_event(1)
+
+
+@pytest.mark.anyio
+async def test_resolve_principal_caches_memberships_per_request():
+    from starlette.requests import Request
+
+    from portal.auth import resolve_principal
+
+    user = SimpleNamespace(id=7, is_active=True, is_admin=False)
+    request = Request(
+        {
+            "type": "http",
+            "headers": [(b"cookie", b"user_token=valid")],
+            "state": {},
+        }
+    )
+
+    with (
+        patch("portal.auth.decode_token", return_value={"user": 7, "sub": "7"}),
+        patch("portal.database.get_user_by_id", new_callable=AsyncMock, return_value=user),
+        patch(
+            "portal.database.list_memberships_for_user",
+            new_callable=AsyncMock,
+            return_value=[],
+        ) as event_memberships,
+        patch(
+            "portal.database.list_room_memberships_for_user",
+            new_callable=AsyncMock,
+            return_value=[],
+        ) as room_memberships,
+        patch(
+            "portal.database.list_booth_memberships_for_user",
+            new_callable=AsyncMock,
+            return_value=[],
+        ) as booth_memberships,
+    ):
+        first = await resolve_principal(request, None)
+        second = await resolve_principal(request, None)
+
+    assert first is second
+    event_memberships.assert_awaited_once_with(None, 7)
+    room_memberships.assert_awaited_once_with(None, 7)
+    booth_memberships.assert_awaited_once_with(None, 7)

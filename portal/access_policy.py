@@ -1,9 +1,8 @@
-
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from portal.roles import Permission, ROLE_PERMISSIONS, _ROLE_RANK
+from portal.roles import _ROLE_RANK, ROLE_PERMISSIONS, Permission
 
 
 @dataclass
@@ -16,6 +15,26 @@ class AccessPolicy:
     room_events: dict[int, int] = field(default_factory=dict)
     booth_roles: dict[int, str] = field(default_factory=dict)
     booth_scopes: dict[int, tuple[int, int]] = field(default_factory=dict)
+
+    @classmethod
+    async def from_session(cls, session, user) -> AccessPolicy:
+        """Build a policy from the user's current database memberships."""
+        from portal.database import (
+            list_booth_memberships_for_user,
+            list_memberships_for_user,
+            list_room_memberships_for_user,
+        )
+
+        event_memberships = await list_memberships_for_user(session, user.id)
+        room_memberships = await list_room_memberships_for_user(session, user.id)
+        booth_memberships = await list_booth_memberships_for_user(session, user.id)
+
+        return cls.from_memberships(
+            user,
+            event_memberships,
+            room_memberships,
+            booth_memberships,
+        )
 
     @classmethod
     def from_memberships(
@@ -47,6 +66,19 @@ class AccessPolicy:
                 policy.room_events.setdefault(booth.room_id, booth.event_id)
 
         return policy
+
+    @staticmethod
+    def highest_ranked_role(roles: list[str]) -> str | None:
+        return max(roles, key=lambda role: _ROLE_RANK.get(role, 0), default=None)
+
+    @staticmethod
+    def can_perform_role(
+        granted_role: str | None,
+        requested_role: str,
+    ) -> bool:
+        if granted_role is None:
+            return False
+        return _ROLE_RANK.get(granted_role, -1) >= _ROLE_RANK.get(requested_role, 0)
 
     def _roles_for_scope(
         self,
@@ -87,10 +119,7 @@ class AccessPolicy:
             roles.extend(self.room_roles.values())
             roles.extend(self.booth_roles.values())
 
-        return [
-            role for role in roles
-            if role in ROLE_PERMISSIONS
-        ]
+        return [role for role in roles if role in ROLE_PERMISSIONS]
 
     def role_for(
         self,
@@ -145,16 +174,13 @@ class AccessPolicy:
 
     def has_room_coordinator_in_event(self, event_id: int) -> bool:
         return any(
-            role == "room_coordinator"
-            and self.room_events.get(room_id) == event_id
+            role == "room_coordinator" and self.room_events.get(room_id) == event_id
             for room_id, role in self.room_roles.items()
         )
 
     def has_any_role(self, role: str) -> bool:
         return (
-            role in self.event_roles.values()
-            or role in self.room_roles.values()
-            or role in self.booth_roles.values()
+            role in self.event_roles.values() or role in self.room_roles.values() or role in self.booth_roles.values()
         )
 
 
@@ -199,3 +225,24 @@ class Principal:
             room_id=room_id,
             booth_id=booth_id,
         )
+
+    def has_role(
+        self,
+        role: str,
+        *,
+        event_id: int | None = None,
+        room_id: int | None = None,
+        booth_id: int | None = None,
+    ) -> bool:
+        return self.is_active and self.policy.has_role(
+            role,
+            event_id=event_id,
+            room_id=room_id,
+            booth_id=booth_id,
+        )
+
+    def has_any_role(self, role: str) -> bool:
+        return self.is_active and self.policy.has_any_role(role)
+
+    def has_room_coordinator_in_event(self, event_id: int) -> bool:
+        return self.is_active and self.policy.has_room_coordinator_in_event(event_id)
