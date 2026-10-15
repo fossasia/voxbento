@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 
+from portal.transcription.errors import TranscriptionAuthError
 from portal.transcription.providers.base import BoothTranscriptionState, ProviderConfig, TranscriptionProvider
 
 logger = logging.getLogger(__name__)
@@ -108,7 +109,16 @@ class DeepgramProvider(TranscriptionProvider):
                     for task in pending:
                         task.cancel()
 
+            except TranscriptionAuthError:
+                raise
             except Exception as e:
+                status = getattr(getattr(e, "response", None), "status_code", None) or getattr(e, "status_code", None)
+                if status in (401, 403):
+                    raise TranscriptionAuthError(
+                        "deepgram",
+                        f"Deepgram API key was rejected ({status} during the websocket handshake).",
+                        status,
+                    ) from e
                 consecutive_errors += 1
                 logger.error(f"[{booth_id}] Deepgram connection failed ({consecutive_errors}): {e}")
                 if consecutive_errors >= 5:
