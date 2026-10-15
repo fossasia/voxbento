@@ -238,12 +238,22 @@ async def run_capture():
 
         print("BOT_STAGE:in_meeting", flush=True)
 
-        grace_seconds = float(
-            os.environ.get("BOT_EMPTY_ROOM_GRACE_SECONDS", "90")
-        )
+        try:
+            grace_seconds = max(
+                0.0,
+                float(os.environ.get("BOT_EMPTY_ROOM_GRACE_SECONDS", "90")),
+            )
+        except (TypeError, ValueError):
+            print(
+                "Invalid BOT_EMPTY_ROOM_GRACE_SECONDS; using 90 seconds.",
+                flush=True,
+            )
+            grace_seconds = 90.0
         tracker = EmptyRoomTracker(grace_seconds)
+        previous_join_count = 0
 
         async def monitor_empty_room():
+            nonlocal previous_join_count
             while True:
                 await asyncio.sleep(5)
 
@@ -262,13 +272,38 @@ async def run_capture():
                             }
                         };
 
+                        const event = window.JitsiMeetJS?.events?.conference?.USER_JOINED;
+
+                        if (c && typeof c.on === "function" && event) {
+                            window.__floorBotJoinCount ??= 0;
+
+                            if (window.__floorBotJoinListenerConference !== c) {
+                                c.on(event, () => {
+                                    window.__floorBotJoinCount += 1;
+                                });
+                                window.__floorBotJoinListenerConference = c;
+                            }
+                        }
+
                         return {
                             membersCount: getValue("membersCount"),
                             memberIds: getValue("listMembersIds"),
                             myUserId: getValue("getMyUserId"),
-                            joined: getValue("isJoined")
+                            joined: getValue("isJoined"),
+                            joinCount: window.__floorBotJoinCount ?? 0,
                         };
                     }''')
+
+                    if diagnostic.get("joined") is not True:
+                        tracker.update(None, time.monotonic())
+                        continue
+
+                    join_count = diagnostic.get("joinCount", 0)
+
+                    if join_count > previous_join_count:
+                        tracker.update(None, time.monotonic())
+
+                    previous_join_count = join_count
 
                     member_ids = diagnostic.get("memberIds")
                     my_user_id = diagnostic.get("myUserId")
@@ -312,6 +347,7 @@ async def run_capture():
                         return "left_empty_room"
 
                 except Exception as exc:
+                    tracker.update(None, time.monotonic())
                     print(
                         f"Could not inspect Jitsi participants: {exc}",
                         flush=True,
@@ -389,7 +425,13 @@ async def run_capture():
 
                 if attempt < max_retries:
                     print(f"Retrying ffmpeg in {retry_delay}s...", flush=True)
-                    await asyncio.sleep(retry_delay)
+                    done, _ = await asyncio.wait(
+                        {monitor_task},
+                        timeout=retry_delay,
+                    )
+                    if monitor_task in done:
+                        exit_stage = monitor_task.result()
+                        return
                     retry_delay = min(retry_delay * 2, 15)
                 else:
                     print("ffmpeg failed after all retries", flush=True)

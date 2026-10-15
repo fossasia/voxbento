@@ -586,6 +586,34 @@ async def test_restart_reconciliation_restarts_missing_desired_agent(env):
 
 
 @pytest.mark.anyio
+async def test_restart_reconciliation_does_not_restart_agent_that_left_empty_room(env):
+    async with get_session() as session:
+        room = await session.get(Room, env["room_id"])
+        room.meeting_agent_enabled = True
+
+    env["agents"].rooms[env["key"]] = {
+        "event_slug": "meet-test",
+        "room_id": env["room_id"],
+        "state": "stopped",
+        "stage": "left_empty_room",
+        "exit_code": 0,
+    }
+
+    await meeting.reconcile_once()
+
+    async with get_session() as session:
+        room = await session.get(Room, env["room_id"])
+        assert room.meeting_agent_enabled is False
+
+    assert env["agents"].starts == []
+    assert meeting.health[env["room_id"]].state == "stopped"
+    assert "empty" in meeting.health[env["room_id"]].reason.lower()
+    status = (await env["client"].get(env["url"])).json()
+    assert status["state"] == "stopped"
+    assert "empty" in status["reason"].lower()
+
+
+@pytest.mark.anyio
 async def test_malformed_agent_status_is_handled_as_unavailable(env):
     await env["client"].post(env["url"], json={"action": "connect"})
     env["agents"].malformed = True
