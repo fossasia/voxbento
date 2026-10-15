@@ -405,3 +405,88 @@ class TestOAuthMultiOrganizer:
             response2 = await c.post("/oauth/token", data=data)
             assert response2.status_code == 400
             assert response2.json()["error"] == "invalid_grant"
+
+    @pytest.mark.anyio
+    async def test_unrelated_token_cannot_claim_ownerless_event(self, setup_oauth_clients):
+        """
+        Ensure a token scoped to Event A cannot claim ownership of an ownerless Event B.
+        """
+        from datetime import datetime, timedelta, timezone
+
+        from portal.database import get_session
+        from portal.routers.oauth import hash_token
+
+        async with get_session() as session:
+            # Create an ownerless event
+            event_b = Event(slug="ownerless-event", display_name="Ownerless Event")
+            session.add(event_b)
+            await session.flush()
+
+            event_a = setup_oauth_clients["event"]
+            client = setup_oauth_clients["confidential_client"]
+            user = setup_oauth_clients["user"]
+
+            token_record = OAuthToken(
+                client_id=client.id,
+                user_id=user.id,
+                event_id=event_a.id,
+                scopes=["events:write"],
+                access_token_hash=hash_token("test_access_token_events_write"),
+                refresh_token_hash=hash_token("test_refresh_token_events_write"),
+                expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+            )
+            session.add(token_record)
+            await session.flush()
+            session.expunge_all()
+            await session.commit()
+
+        headers = {"Authorization": "Bearer test_access_token_events_write"}
+        async with _client() as c:
+            response = await c.post(
+                "/api/v1/events/",
+                headers=headers,
+                json={
+                    "slug": "ownerless-event",
+                    "name": "Hijacked Event",
+                    "organizer_emails": ["attacker@example.com"],
+                },
+            )
+
+        assert response.status_code == 403
+        assert "Not authorized to manage memberships" in response.json()["detail"]
+
+    @pytest.mark.anyio
+    async def test_admin_redirect_room_disambiguation(self, setup_oauth_clients):
+        """
+        Verify that room lookup by-slug resolves numeric room ID collisions properly.
+        """
+        from portal.database import get_session
+        from portal.models import Room
+
+        event = setup_oauth_clients["event"]
+        async with get_session() as session:
+            # Create Room A with id=10, eventyay_room_id="20"
+            room_a = Room(id=10, event_id=event.id, display_name="Room A", eventyay_room_id="20")
+            # Create Room B with id=20, eventyay_room_id="10"
+            room_b = Room(id=20, event_id=event.id, display_name="Room B", eventyay_room_id="10")
+            session.add(room_a)
+            session.add(room_b)
+            await session.flush()
+            session.expunge_all()
+            await session.commit()
+
+        async with _client() as c:
+            # 1. Unambiguous by-eventyay URL for eventyay_room_id="10" (which is Room B)
+            res1 = await c.get(f"/workspace/events/by-slug/{event.slug}/rooms/by-eventyay/10")
+            assert res1.status_code == 303
+            assert f"/workspace/events/{event.id}/rooms/20/" in res1.headers["location"]
+
+            # 2. Query param ?by=eventyay for eventyay_room_id="10" (Room B)
+            res2 = await c.get(f"/workspace/events/by-slug/{event.slug}/rooms/10?by=eventyay")
+            assert res2.status_code == 303
+            assert f"/workspace/events/{event.id}/rooms/20/" in res2.headers["location"]
+
+            # 3. Query param ?by=id for internal id=10 (Room A)
+            res3 = await c.get(f"/workspace/events/by-slug/{event.slug}/rooms/10?by=id")
+            assert res3.status_code == 303
+            assert f"/workspace/events/{event.id}/rooms/10/" in res3.headers["location"]

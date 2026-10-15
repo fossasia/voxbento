@@ -753,6 +753,90 @@ async def admin_create_room(request: Request, event_id: int):
     )
 
 
+@router.get("/admin/events/by-slug/{event_slug}/rooms/{room_id}/")
+@router.get("/admin/events/by-slug/{event_slug}/rooms/{room_id}")
+@router.get("/workspace/events/by-slug/{event_slug}/rooms/{room_id}/")
+@router.get("/workspace/events/by-slug/{event_slug}/rooms/{room_id}")
+async def admin_redirect_room_by_slug(request: Request, event_slug: str, room_id: str, id_type: str | None = None):
+    """Redirect by-slug room URL to canonical workspace room page."""
+    from fastapi import HTTPException
+    from sqlalchemy import select
+
+    from portal.database import get_session
+    from portal.models import Event, Room
+
+    lookup_type = id_type or request.query_params.get("by") or request.query_params.get("type")
+
+    async with get_session() as session:
+        event = (await session.execute(select(Event).where(Event.slug == event_slug))).scalars().first()
+        if not event:
+            event = (await session.execute(select(Event).where(Event.display_name == event_slug))).scalars().first()
+        if not event:
+            raise HTTPException(status_code=404, detail="Event not found")
+
+        room = None
+        if lookup_type in ("eventyay", "external"):
+            room = (
+                (
+                    await session.execute(
+                        select(Room).where(Room.eventyay_room_id == str(room_id), Room.event_id == event.id)
+                    )
+                )
+                .scalars()
+                .first()
+            )
+        elif lookup_type in ("id", "internal", "pk"):
+            if room_id.isdigit():
+                room = (
+                    (await session.execute(select(Room).where(Room.id == int(room_id), Room.event_id == event.id)))
+                    .scalars()
+                    .first()
+                )
+        else:
+            # Disambiguate when no explicit lookup type is provided
+            if not room_id.isdigit():
+                room = (
+                    (
+                        await session.execute(
+                            select(Room).where(Room.eventyay_room_id == str(room_id), Room.event_id == event.id)
+                        )
+                    )
+                    .scalars()
+                    .first()
+                )
+            else:
+                internal_room = (
+                    (await session.execute(select(Room).where(Room.id == int(room_id), Room.event_id == event.id)))
+                    .scalars()
+                    .first()
+                )
+                ext_room = (
+                    (
+                        await session.execute(
+                            select(Room).where(Room.eventyay_room_id == str(room_id), Room.event_id == event.id)
+                        )
+                    )
+                    .scalars()
+                    .first()
+                )
+                room = internal_room or ext_room
+
+        target_room_id = room.id if room else room_id
+        return safe_redirect(
+            url=f"/workspace/events/{event.id}/rooms/{target_room_id}/",
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+
+
+@router.get("/admin/events/by-slug/{event_slug}/rooms/by-eventyay/{eventyay_room_id}/")
+@router.get("/admin/events/by-slug/{event_slug}/rooms/by-eventyay/{eventyay_room_id}")
+@router.get("/workspace/events/by-slug/{event_slug}/rooms/by-eventyay/{eventyay_room_id}/")
+@router.get("/workspace/events/by-slug/{event_slug}/rooms/by-eventyay/{eventyay_room_id}")
+async def admin_redirect_room_by_eventyay_id(request: Request, event_slug: str, eventyay_room_id: str):
+    """Redirect unambiguous eventyay external room ID to canonical workspace room page."""
+    return await admin_redirect_room_by_slug(request, event_slug, eventyay_room_id, id_type="eventyay")
+
+
 @router.get("/admin/events/{event_id}/rooms/{room_id}/", dependencies=[Depends(require_admin)])
 async def admin_room_detail(request: Request, event_id: int, room_id: int):
     admin_flags = await get_admin_flags(request, event_id=event_id, room_id=room_id)
