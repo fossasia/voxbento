@@ -122,6 +122,10 @@ async def ws_captions(websocket: WebSocket, booth_id: str) -> None:
 
 @router.websocket("/ws/tts/{room_id}/{language_code}/{booth_id}")
 async def ws_tts(websocket: WebSocket, room_id: int, language_code: str, booth_id: str) -> None:
+    try:
+        await resolve_ws_auth(websocket, booth_id)
+    except WSAuthError:
+        return
     await websocket.accept()
     tts_manager.add(websocket, room_id, language_code, booth_id)
     try:
