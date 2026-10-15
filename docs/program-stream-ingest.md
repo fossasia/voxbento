@@ -112,6 +112,29 @@ machine covers connecting, live, reconnecting, no-audio, permission-denied, and
 stopped; on a transient WebRTC failure it drops the stale WHIP resource, releases the
 old session, and reconnects with a fresh one.
 
+## SRT contribution ingest (#750, first slice)
+
+Professional encoders that prefer SRT over WHIP can contribute the floor over an
+authenticated, encrypted SRT link. This first slice adds **authorization only**: the
+gateway hardening, backup takeover, YouTube egress and health telemetry in #750 are
+deferred until the RTMPS relay (#749) lands.
+
+Set `PROGRAM_INGEST_SRT_ENABLED=true` after configuring the MediaMTX SRT listener
+with per-path encryption; it is off by default. SRT reuses the room's existing
+program-ingest credential — no separate secret — so it is already room-scoped,
+rotatable and revocable from the ingest panel, and WHIP and SRT are mutually
+exclusive on the floor (one publisher at a time).
+
+The encoder publishes to `{mediamtx_srt_base}` in **caller** mode with a streamid
+that carries the canonical floor path and the room token as the stream password,
+and a path-scoped passphrase for AES encryption (set `srtPublishPassphrase` on the
+floor path in MediaMTX). The `/internal/media-auth` hook authorizes the `srt`
+publish exactly like WHIP: canonical floor path, room/credential check, failure
+rate-limiting, and one-publisher-per-room enforcement (an SRT connection is kicked
+through MediaMTX's `srtconns` endpoint). Use bounded latency (e.g. `latency=200`)
+sized to the contribution network. Keep the SRT listener on the private media plane;
+never expose the MediaMTX API or SRT control ports at the firewall.
+
 ## Processing, recovery, and capacity
 
 `WHIP → MediaMTX floor → FFmpeg (first audio track, PCM) → existing STT →

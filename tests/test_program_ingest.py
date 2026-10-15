@@ -541,3 +541,38 @@ async def test_program_final_pipeline_preserves_timing_and_multiple_languages(en
     finally:
         for lang in ["fr", "es"]:
             tts_manager._rooms.pop(tts_manager._get_key(room.id, lang, booth), None)
+
+
+def srt_credentials(room, secret, **overrides):
+    """An SRT publisher presents the room credential as the streamid password."""
+    return credentials(room, "", protocol="srt", password=secret, id="srt-conn-1", **overrides)
+
+
+@pytest.mark.anyio
+async def test_srt_floor_publish_authorized_with_room_credential(environment, monkeypatch):
+    client, event, rooms, *_ = environment
+    room = rooms[0]
+    token = await enable(client, event, room)
+    monkeypatch.setattr(settings, "program_ingest_srt_enabled", True)
+    response = await client.post("/internal/media-auth", json=srt_credentials(room, token))
+    assert response.status_code == 204
+
+
+@pytest.mark.anyio
+async def test_srt_floor_publish_denied_when_srt_disabled(environment, monkeypatch):
+    client, event, rooms, *_ = environment
+    room = rooms[0]
+    token = await enable(client, event, room)
+    monkeypatch.setattr(settings, "program_ingest_srt_enabled", False)
+    response = await client.post("/internal/media-auth", json=srt_credentials(room, token))
+    assert response.status_code == 401
+
+
+@pytest.mark.anyio
+async def test_srt_floor_publish_denied_with_wrong_credential(environment, monkeypatch):
+    client, event, rooms, *_ = environment
+    room = rooms[0]
+    await enable(client, event, room)
+    monkeypatch.setattr(settings, "program_ingest_srt_enabled", True)
+    response = await client.post("/internal/media-auth", json=srt_credentials(room, "not-the-token"))
+    assert response.status_code == 401
