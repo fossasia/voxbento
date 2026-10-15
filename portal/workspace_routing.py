@@ -24,6 +24,8 @@ _WORKSPACE_ROUTE_PATTERNS = (
     re.compile(r"/workspace/events/\d+/(?:rooms|members)/?"),
     re.compile(r"/workspace/events/\d+/members/\d+/(?:invite|delete)/?"),
     re.compile(r"/workspace/events/\d+/rooms/\d+(?:/(?:transcripts|edit|delete))?/?"),
+    re.compile(r"/workspace/events/by-slug/[^/]+/rooms/[^/]+/?"),
+    re.compile(r"/workspace/events/by-slug/[^/]+/rooms/by-eventyay/[^/]+/?"),
     re.compile(r"/workspace/events/\d+/rooms/\d+/(?:program-ingest|meeting-source)"),
     re.compile(r"/workspace/events/\d+/rooms/\d+/members(?:/\d+/(?:invite|delete))?/?"),
     re.compile(r"/workspace/events/\d+/rooms/\d+/booths/?"),

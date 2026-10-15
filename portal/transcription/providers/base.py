@@ -6,10 +6,24 @@ import wave
 from dataclasses import dataclass
 from typing import AsyncGenerator, AsyncIterator, Awaitable, Callable
 
+import httpx
+
 from portal.models import Event
 from portal.transcription.constants import ProviderEnum
 
 logger = logging.getLogger(__name__)
+
+# Statuses worth retrying; everything else (401/403/400/500…) is surfaced, not swallowed.
+TRANSIENT_STATUS_CODES = (429, 502, 503, 504)
+
+
+def is_retryable_transcription_error(exc: BaseException) -> bool:
+    """Retry transient network/HTTP failures; let auth, quota and client errors propagate."""
+    if isinstance(exc, (httpx.ReadTimeout, httpx.ConnectError)):
+        return True
+    if isinstance(exc, httpx.HTTPStatusError):
+        return exc.response.status_code in TRANSIENT_STATUS_CODES
+    return False
 
 
 def pcm_to_wav(pcm_data: bytes, sample_rate: int = 16000) -> bytes:
