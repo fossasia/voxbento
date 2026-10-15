@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import importlib.util
 import logging
+import random
+import subprocess
 import sys
 import threading
 import time
@@ -31,20 +33,44 @@ DESTINATION = f"rtmps://a.rtmps.youtube.com/live2/{KEY}"
 FAKE_FFMPEG = """
 import sys, time
 destination = sys.argv[-1]
+
+
+def report(out, size):
+    # Same shape as FFmpeg -progress: output time and bytes written to the destination.
+    print(f"out_time_us={out}", flush=True)
+    print(f"total_size={size}", flush=True)
+    print("progress=continue", flush=True)
+
+
+if "reject" in destination:
+    # The specific cause is not FFmpeg's last line; classification must still find it.
+    sys.stderr.write(f"[flv] Error opening output {destination}: Server returned 403 Forbidden\\n")
+    sys.stderr.write("Error opening output files: Input/output error\\n")
+    sys.exit(1)
 if "flaky" in destination:
     # A short-lived push, as when the destination drops the connection.
-    for out in (50000, 100000, 150000, 200000):
-        print(f"out_time_us={out}", flush=True)
+    for n in range(1, 5):
+        report(n * 50000, 13 + n * 4096)
         time.sleep(0.05)
     sys.exit(1)
-if "reject" in destination:
-    sys.stderr.write(f"[flv] Error opening output {destination}: Server returned 403 Forbidden\\n")
-    sys.exit(1)
-out = 0
+if "nobytes" in destination:
+    # FFmpeg runs and its clock advances, but nothing reaches the destination after the header.
+    out = 0
+    while True:
+        out += 50000
+        report(out, 13)
+        time.sleep(0.05)
+if "frozen" in destination:
+    # Forwards briefly, then the destination stops reading: writes block, progress stops.
+    for n in range(1, 8):
+        report(n * 50000, 13 + n * 4096)
+        time.sleep(0.05)
+    time.sleep(3600)
+out, size = 0, 13
 while True:
     out += 50000
-    print(f"out_time_us={out}", flush=True)
-    print("progress=continue", flush=True)
+    size += 4096
+    report(out, size)
     time.sleep(0.05)
 """
 
@@ -59,6 +85,8 @@ def relay_service(tmp_path):
         max_relays=1,
         ffmpeg=[sys.executable, str(fake)],
         backoff_base=0.05,
+        stall_secs=1.0,
+        start_timeout_secs=1.5,
     )
     server = ThreadingHTTPServer(("127.0.0.1", 0), service.make_handler(manager, SECRET))
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -119,6 +147,9 @@ def test_command_relays_untouched_first_video_and_audio(relay_service):
     assert argv[argv.index("-tls_verify") + 1] == "1"
     assert argv[argv.index("-ca_file") + 1] == service.DEFAULT_CA_FILE
     assert argv.index("-tls_verify") < argv.index(DESTINATION)
+    # Neither a silent source nor a destination that stops reading can block FFmpeg forever.
+    assert argv[argv.index("-timeout") + 1] == "10000000" and argv.index("-timeout") < argv.index("-i")
+    assert argv[argv.index("-rw_timeout") + 1] == "10000000" and argv.index("-rw_timeout") > argv.index("-i")
     assert KEY not in repr(relay)
 
 
@@ -184,3 +215,140 @@ def test_restarted_relay_reports_live_again(relay_service):
     assert client.put("/relays/7", json=body(destination=flaky)).status_code == 200
     assert wait_for(lambda: manager.relays["7"].restarts >= 2)
     assert wait_for(lambda: manager.relays["7"].state == "live", timeout=3)
+
+
+class Spawner:
+    """Records every FFmpeg process and can widen the window between spawn and ownership."""
+
+    def __init__(self, delay: float = 0.0):
+        self.delay = delay
+        self.processes: list[subprocess.Popen] = []
+        self.lock = threading.Lock()
+
+    def __call__(self, *args, **kwargs):
+        process = subprocess.Popen(*args, **kwargs)
+        with self.lock:
+            self.processes.append(process)
+        time.sleep(self.delay)
+        return process
+
+    def alive(self) -> list[subprocess.Popen]:
+        with self.lock:
+            return [process for process in self.processes if process.poll() is None]
+
+
+def test_live_requires_bytes_reaching_the_destination(relay_service):
+    """A running FFmpeg whose clock advances is not forwarding until output bytes grow."""
+    client, manager = relay_service
+    states = set()
+    assert client.put("/relays/7", json=body(destination=DESTINATION.replace(KEY, f"nobytes-{KEY}"))).status_code == 200
+    assert wait_for(
+        lambda: states.add(client.get("/relays").json()["relays"]["7"]["state"]) or manager.relays["7"].restarts >= 1
+    )
+    assert "live" not in states
+    view = client.get("/relays").json()["relays"]["7"]
+    assert view["reason"] == service.NOT_FORWARDING_REASON and view["bytes_out"] <= 13
+
+
+def test_destination_that_stops_consuming_is_detected_and_reconnected(relay_service):
+    client, manager = relay_service
+    assert client.put("/relays/7", json=body(destination=DESTINATION.replace(KEY, f"frozen-{KEY}"))).status_code == 200
+    assert wait_for(lambda: manager.relays["7"].state == "live")
+    first = manager.relays["7"].process
+    # Progress stops while the process is still alive; the watchdog must kill and retry it.
+    assert wait_for(lambda: manager.relays["7"].restarts >= 1, timeout=6)
+    assert first.poll() is not None
+    assert manager.relays["7"].reason in {service.STALLED_REASON, "Relaying the program feed to the destination."}
+    # The reconnect forwards again and is reported live, then stalls again.
+    assert wait_for(lambda: manager.relays["7"].state == "live" and manager.relays["7"].process is not first)
+
+
+def test_rejected_destination_classified_from_any_stderr_line(relay_service):
+    client, manager = relay_service
+    assert client.put("/relays/7", json=body(destination=DESTINATION.replace(KEY, f"reject-{KEY}"))).status_code == 200
+    assert wait_for(lambda: manager.relays["7"].restarts >= 1)
+    assert manager.relays["7"].reason == "Destination rejected the stream key."
+
+
+def test_stop_during_process_startup_leaves_no_process(relay_service):
+    _, manager = relay_service
+    spawner = Spawner(delay=0.6)
+    manager.spawn = spawner
+    assert manager.ensure("7", "relay-test/7/floor", DESTINATION, "a" * 32)[0] == 200
+    # FFmpeg exists but the supervisor has not taken ownership of it yet.
+    assert wait_for(lambda: len(spawner.processes) == 1)
+    assert manager.stop("7") is True
+    assert spawner.alive() == []
+    assert manager.snapshot() == {}
+
+
+def test_destination_change_during_startup_replaces_exactly_one_process(relay_service):
+    _, manager = relay_service
+    spawner = Spawner(delay=0.6)
+    manager.spawn = spawner
+    manager.ensure("7", "relay-test/7/floor", DESTINATION, "a" * 32)
+    assert wait_for(lambda: len(spawner.processes) == 1)
+    old = spawner.processes[0]
+    status, _ = manager.ensure("7", "relay-test/7/floor", DESTINATION.replace(KEY, "new-key-1234"), "b" * 32)
+    assert status == 200
+    # The replacement returns only after the old run is gone.
+    assert old.poll() is not None
+    assert wait_for(lambda: manager.relays["7"].state == "live")
+    assert spawner.alive() == [manager.relays["7"].process]
+    assert manager.relays["7"].fingerprint == "b" * 32
+
+
+def test_overlapping_stop_and_start_keep_one_owned_process(relay_service):
+    _, manager = relay_service
+    spawner = Spawner(delay=0.05)
+    manager.spawn = spawner
+    fingerprints = ["a" * 32, "b" * 32, "c" * 32]
+    errors: list[BaseException] = []
+
+    def churn(seed: int) -> None:
+        rng = random.Random(seed)
+        try:
+            for _ in range(12):
+                if rng.random() < 0.4:
+                    manager.stop("7")
+                else:
+                    fp = rng.choice(fingerprints)
+                    manager.ensure("7", "relay-test/7/floor", DESTINATION.replace(KEY, f"key-{fp[0]}-1234"), fp)
+                time.sleep(rng.random() * 0.05)
+        except BaseException as exc:  # noqa: BLE001 - surfaced by the assertion below
+            errors.append(exc)
+
+    threads = [threading.Thread(target=churn, args=(seed,)) for seed in range(6)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(60)
+    assert not errors and all(not thread.is_alive() for thread in threads)
+    relay = manager.relays.get("7")
+    if relay is not None:
+        assert wait_for(lambda: relay.process is not None and relay.state == "live")
+        # Whatever won the race owns the only running FFmpeg.
+        assert wait_for(lambda: spawner.alive() == [relay.process])
+    else:
+        assert wait_for(lambda: spawner.alive() == [])
+    manager.stop("7")
+    assert spawner.alive() == []
+
+
+def test_slow_startup_is_not_mistaken_for_a_stall(relay_service, tmp_path):
+    """Probe + TLS + RTMP handshakes can outlast the stall window; only the start timeout applies."""
+    client, manager = relay_service
+    slow = tmp_path / "slow_ffmpeg.py"
+    slow.write_text(
+        "import sys, time\n"
+        "time.sleep(1.2)  # longer than stall_secs (1.0), shorter than start_timeout_secs (1.5)\n"
+        "size = 13\n"
+        "while True:\n"
+        "    size += 4096\n"
+        "    print(f'total_size={size}', flush=True)\n"
+        "    time.sleep(0.05)\n"
+    )
+    manager.ffmpeg = [sys.executable, str(slow)]
+    assert client.put("/relays/7", json=body()).status_code == 200
+    assert wait_for(lambda: manager.relays["7"].state == "live", timeout=6)
+    assert manager.relays["7"].restarts == 0

@@ -32,8 +32,18 @@ SOURCE_PATH = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*/[1-9][0-9]*/floor")
 STREAM_KEY = re.compile(r"[A-Za-z0-9_-]{4,128}")
 FINGERPRINT = re.compile(r"[0-9a-f]{16,64}")
 MAX_BODY = 4096
-# FFmpeg reports progress every ~0.5 s; a relay with no output progress for this long is stalled.
+# FFmpeg reports progress every ~0.5 s. A relay whose output bytes stop growing for this long is
+# no longer forwarding (the destination stopped accepting data): kill it and reconnect.
 STALL_SECS = 15.0
+# Socket I/O timeout for the RTSP source and the RTMPS destination; a peer that stops
+# reading or answering makes FFmpeg fail instead of blocking forever.
+IO_TIMEOUT_SECS = 10.0
+STALLED_REASON = "Destination stopped accepting the stream; reconnecting."
+# A new run must connect to the source, probe it (up to a keyframe) and finish the TLS and
+# RTMP handshakes before any media flows. That is startup, not a stall, and gets its own limit.
+START_TIMEOUT_SECS = 30.0
+NOT_FORWARDING_REASON = "No media reached the destination; reconnecting."
+GENERIC_REASON = "Relay process exited; retrying."
 BACKOFF_MAX_SECS = 30.0
 # Debian's ca-certificates bundle, present in the relay image.
 DEFAULT_CA_FILE = "/etc/ssl/certs/ca-certificates.crt"
@@ -65,7 +75,7 @@ def classify(line: str) -> str:
     for pattern, reason in ERROR_CLASSES:
         if pattern.search(line):
             return reason
-    return "Relay process exited; retrying."
+    return GENERIC_REASON
 
 
 def validate_destination(destination: str, allowed_hosts: set[str], allow_insecure: bool = False) -> None:
@@ -99,6 +109,12 @@ class Relay:
     restarts: int = 0
     last_progress: float = field(default_factory=time.monotonic)
     out_time_us: int = -1
+    # Bytes FFmpeg has written to the destination in the current run. Growth is the evidence of
+    # forwarding: a blocked or rejecting destination stops it even while FFmpeg keeps running.
+    bytes_out: int = -1
+    stalled: bool = False
+    # Set once this run has forwarded media past the FLV header.
+    forwarding: bool = False
     process: subprocess.Popen | None = field(default=None, repr=False)
     stop: threading.Event = field(default_factory=threading.Event, repr=False)
     thread: threading.Thread | None = field(default=None, repr=False)
@@ -112,6 +128,7 @@ class Relay:
             "started_at": self.started_at,
             "restarts": self.restarts,
             "out_time_ms": max(self.out_time_us, 0) // 1000,
+            "bytes_out": max(self.bytes_out, 0),
         }
 
 
@@ -126,6 +143,9 @@ class RelayManager:
         backoff_base: float = 1.0,
         ca_file: str | None = DEFAULT_CA_FILE,
         tls_verify: bool = True,
+        stall_secs: float = STALL_SECS,
+        start_timeout_secs: float = START_TIMEOUT_SECS,
+        io_timeout_secs: float = IO_TIMEOUT_SECS,
     ):
         self.source_base = source_base.rstrip("/")
         self.allowed_hosts = {host.casefold() for host in allowed_hosts}
@@ -135,8 +155,13 @@ class RelayManager:
         self.backoff_base = backoff_base
         self.ca_file = ca_file
         self.tls_verify = tls_verify
+        self.stall_secs = stall_secs
+        self.start_timeout_secs = start_timeout_secs
+        self.io_timeout_secs = io_timeout_secs
         self.relays: dict[str, Relay] = {}
         self.lock = threading.Lock()
+        # Process factory; tests substitute one that widens startup races.
+        self.spawn = subprocess.Popen
 
     def tls_options(self) -> list[str]:
         # FFmpeg builds before 8.0 do not verify peers by default; an unverified push would
@@ -154,6 +179,8 @@ class RelayManager:
             "error",
             "-rtsp_transport",
             "tcp",
+            "-timeout",
+            str(int(self.io_timeout_secs * 1_000_000)),
             "-i",
             f"{self.source_base}/{relay.source}",
             # The program feed is relayed untouched: first video and first audio track only.
@@ -164,6 +191,8 @@ class RelayManager:
             "-c",
             "copy",
             *self.tls_options(),
+            "-rw_timeout",
+            str(int(self.io_timeout_secs * 1_000_000)),
             "-f",
             "flv",
             "-flvflags",
@@ -196,30 +225,34 @@ class RelayManager:
             self.relays[relay_id] = relay
             relay.thread = threading.Thread(target=self._supervise, args=(relay,), daemon=True)
             relay.thread.start()
-            logger.info("relay started relay_id=%s source=%s", relay_id, source)
-            return 200, relay.public()
+            view = relay.public()
+        # The replaced supervisor may be mid-spawn; wait until it has reaped its process so no
+        # old FFmpeg outlives a successful replacement (one owned process per room).
+        self._join(current)
+        logger.info("relay started relay_id=%s source=%s", relay_id, source)
+        return 200, view
 
     def stop(self, relay_id: str) -> bool:
         with self.lock:
             relay = self.relays.pop(relay_id, None)
             if relay:
                 self._stop_locked(relay)
-        if relay and relay.thread and relay.thread is not threading.current_thread():
-            relay.thread.join(TERMINATE_TIMEOUT_SECS + 1)
+        self._join(relay)
         if relay:
             logger.info("relay stopped relay_id=%s", relay_id)
         return relay is not None
+
+    @staticmethod
+    def _join(relay: Relay | None) -> None:
+        if relay and relay.thread and relay.thread is not threading.current_thread():
+            relay.thread.join(TERMINATE_TIMEOUT_SECS * 2 + 1)
 
     def stop_all(self) -> None:
         for relay_id in list(self.relays):
             self.stop(relay_id)
 
     def snapshot(self) -> dict[str, dict]:
-        now = time.monotonic()
         with self.lock:
-            for relay in self.relays.values():
-                if relay.state == "live" and now - relay.last_progress > STALL_SECS:
-                    relay.state, relay.reason = "stalled", "No output progress; the floor feed may have stopped."
             return {relay_id: relay.public() for relay_id, relay in self.relays.items()}
 
     def _stop_locked(self, relay: Relay) -> None:
@@ -250,9 +283,9 @@ class RelayManager:
         attempt = 0
         secrets_ = [relay.destination, relay.destination.rstrip("/").rsplit("/", 1)[-1]]
         while not relay.stop.is_set():
-            last_error = ""
+            reason = GENERIC_REASON
             try:
-                process = subprocess.Popen(  # nosec B603 - fixed argv, validated destination, no shell
+                process = self.spawn(  # nosec B603 - fixed argv, validated destination, no shell
                     self.command(relay),
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
@@ -267,28 +300,51 @@ class RelayManager:
                     self._terminate(process)
                     return
                 relay.process = process
-                # Each FFmpeg run reports out_time from zero; progress is per process.
+                # Progress is per FFmpeg run: each run reports output time and size from zero.
                 relay.out_time_us = -1
+                relay.bytes_out = -1
+                relay.stalled = False
+                relay.forwarding = False
                 relay.last_progress = time.monotonic()
 
             def drain_errors() -> None:
-                nonlocal last_error
+                # Keep the most specific classification seen; FFmpeg's last line is often generic.
+                nonlocal reason
                 assert process.stderr is not None
                 for line in process.stderr:
                     if line.strip():
-                        last_error = redact(line.strip(), secrets_)[:300]
+                        kind = classify(redact(line.strip(), secrets_))
+                        if kind != GENERIC_REASON:
+                            reason = kind
+
+            def watchdog() -> None:
+                # A destination that stops reading blocks FFmpeg's writes: bytes stop growing
+                # although the process is alive. Treat that as not forwarding and reconnect.
+                while process.poll() is None and not relay.stop.wait(0.25):
+                    limit = self.stall_secs if relay.forwarding else self.start_timeout_secs
+                    if time.monotonic() - relay.last_progress > limit:
+                        relay.stalled = True
+                        relay.state = "stalled"
+                        relay.reason = STALLED_REASON if relay.forwarding else NOT_FORWARDING_REASON
+                        self._terminate(process)
+                        return
 
             errors = threading.Thread(target=drain_errors, daemon=True)
             errors.start()
+            threading.Thread(target=watchdog, daemon=True).start()
             assert process.stdout is not None
             for line in process.stdout:
                 key, _, value = line.strip().partition("=")
                 if key == "out_time_us" and value.lstrip("-").isdigit():
-                    out_time = int(value)
-                    if out_time > relay.out_time_us:
-                        relay.out_time_us = out_time
+                    relay.out_time_us = max(relay.out_time_us, int(value))
+                elif key == "total_size" and value.isdigit() and int(value) > relay.bytes_out:
+                    first = relay.bytes_out < 0
+                    relay.bytes_out = int(value)
+                    # The first report is the FLV header; forwarding needs bytes after it.
+                    if not first:
+                        relay.forwarding = True
                         relay.last_progress = time.monotonic()
-                        if relay.state != "live":
+                        if relay.state != "live" and not relay.stalled:
                             relay.state, relay.reason = "live", "Relaying the program feed to the destination."
                             attempt = 0
             process.wait()
@@ -297,7 +353,9 @@ class RelayManager:
                 return
             attempt += 1
             relay.restarts += 1
-            relay.state, relay.reason = "retrying", classify(last_error)
+            if relay.stalled:
+                reason = STALLED_REASON if relay.forwarding else NOT_FORWARDING_REASON
+            relay.state, relay.reason = "retrying", reason
             logger.warning(
                 "relay exited relay_id=%s restarts=%s reason=%s", relay.relay_id, relay.restarts, relay.reason
             )

@@ -149,6 +149,32 @@ The relay service retries a failed push with back-off (1 s → 30 s) while it is
 If the relay service is unreachable, relay health shows *Needs attention*; ingest and
 captions continue.
 
+**What "Live" means.** The relay reports *Live* only while the bytes FFmpeg writes to the
+destination keep growing (`total_size` from FFmpeg's progress output), not merely while the
+FFmpeg process runs. Each run starts from zero, so a reconnect must forward again before it
+is reported live. Two guards keep a broken destination from looking healthy:
+
+- **Stalled destination.** If output bytes stop growing for 15 s (the destination accepted
+  the session but stopped reading, so writes block), a watchdog kills that FFmpeg run and
+  the relay reconnects. Health shows *Stalled*, then *Retrying* with "Destination stopped
+  accepting the stream".
+- **Startup timeout.** A new run must connect to the source, wait for a keyframe and
+  finish the TLS and RTMP handshakes before media flows, so the stall window does not
+  apply until it has forwarded media. A run that forwards nothing within 30 s is killed
+  and retried ("No media reached the destination").
+- **I/O timeouts.** FFmpeg runs with a 10 s socket I/O timeout on both the RTSP source
+  (`-timeout`) and the RTMPS destination (`-rw_timeout`), so a peer that stops answering
+  fails the run instead of blocking forever.
+
+A destination that closes or rejects an established session ends the FFmpeg run. The
+relay classifies the cause from FFmpeg's error output (key rejected, unreachable, TLS
+failure, …), shows *Retrying*, and is reported *Live* again only after the new run
+forwards bytes.
+
+**One process per room.** Replacing a destination or stopping a relay returns only after
+the previous supervisor has reaped its FFmpeg run, including a run that was still being
+spawned. No old process outlives a successful stop or replacement.
+
 ## Rollback
 
 1. In each relay room choose *Independent outputs* (or *Switch to Jitsi bot*) and
@@ -161,15 +187,37 @@ captions continue.
 
 ## Verification / rehearsal
 
-- Automated: `uv run pytest tests/test_program_relay.py tests/test_program_relay_service.py`
-  (auth isolation, secret handling, lifecycle, capacity, health separation, relay service
-  API/lifecycle/redaction).
-- Real media, local sink: `MEDIAMTX_TEST_BINARY=/path/to/mediamtx uv run pytest
-  tests/test_program_relay_media.py -v` (MediaMTX 1.18.2 + FFmpeg with libx264/AAC/TLS).
-  It publishes H.264/AAC over RTMPS through the real auth hook, relays to a local RTMPS
-  sink, decodes the audio branch, removes the destination and revokes the key.
-- **Operator rehearsal (required before production):** with an **unlisted** YouTube
-  event, stream for 10 minutes and confirm YouTube health, captions and TTS; rotate the
-  YouTube key and confirm the relay recovers; revoke and confirm both stop; restart the
-  portal and confirm the relay resumes without a duplicate; and deliberately stop the
-  `program-relay` container to observe the YouTube interruption you are accepting.
+CI gates (`.github/workflows/tests.yml`):
+
+- **`unit-tests`** runs `tests/test_program_relay.py` (portal control plane: auth isolation,
+  secret handling, lifecycle, capacity, health separation) and
+  `tests/test_program_relay_service.py` (relay service: control API auth, validation,
+  forwarding detection with a stand-in FFmpeg, stalled/zero-byte destinations, and
+  subprocess races: stop during startup, destination change during startup, overlapping
+  stop/start with exactly one owned process).
+- **`program-relay-media (MediaMTX 1.18.2)`** runs `tests/test_program_relay_media.py`
+  against the pinned MediaMTX binary and real FFmpeg. Every publish goes through the real
+  MediaMTX → `/internal/media-auth` callback. It checks:
+  - anonymous, wrong-room, wrong-key and expired keys are rejected;
+  - revoke kills the active RTMPS connection, and the old key cannot reconnect;
+  - H.264/AAC is relayed to a local RTMPS sink while the audio branch decodes;
+  - a sink that drops an established session is reported, retried and recovered;
+  - a sink that stops reading mid-session is not reported live, and the relay recovers.
+
+  The job sets `PROGRAM_RELAY_MEDIA_REQUIRED=1`, so a missing binary fails the job
+  instead of skipping the tests. Locally:
+  `MEDIAMTX_TEST_BINARY=/path/to/mediamtx uv run pytest tests/test_program_relay_media.py -v`.
+- **`program-relay-smoke`** builds the `program-relay` image and runs it read-only, as
+  non-root, with all capabilities dropped and `no-new-privileges`, as in
+  `docker-compose.relay.yml`. It runs `tests/program_relay_container_smoke.py` inside the
+  container and checks:
+  - FFmpeg is present with RTMPS/TLS;
+  - the CA bundle verifies YouTube's real RTMPS certificate and rejects a self-signed peer;
+  - a relay forwards H.264/AAC over verified RTMPS to a sink signed by a trusted CA;
+  - an untrusted sink is refused and the refusal is classified;
+  - stopping relays leaves no push process.
+
+**Production gate:** the unlisted-YouTube rehearsal in
+[program-relay-rehearsal.md](program-relay-rehearsal.md) must be recorded for the
+deployment before relay mode is used for an event. Local sinks cannot validate YouTube's
+acceptance of the stream, the key or event behaviour.
