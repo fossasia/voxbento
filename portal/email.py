@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import urllib.parse
 from pathlib import Path
 from typing import Any
 
@@ -35,7 +36,7 @@ async def _send_email_async(
     subject: str,
     template_name: str,
     template_body: dict[str, Any],
-) -> None:
+) -> bool:
     if not _mail_config:
         logger.warning(
             "SMTP is not configured. Would have sent email to %s (subject: %s) with context %r",
@@ -43,7 +44,7 @@ async def _send_email_async(
             subject,
             template_body,
         )
-        return
+        return True
 
     message = MessageSchema(
         subject=subject,
@@ -54,8 +55,10 @@ async def _send_email_async(
     fm = FastMail(_mail_config)
     try:
         await fm.send_message(message, template_name=template_name)
+        return True
     except Exception as exc:
         logger.error("Failed to send email to %s: %s", email_to, exc, exc_info=True)
+        return False
 
 
 async def send_verification_email(email_to: str, token: str) -> None:
@@ -68,9 +71,11 @@ async def send_verification_email(email_to: str, token: str) -> None:
     )
 
 
-async def send_magic_login_email(email_to: str, token: str) -> None:
+async def send_magic_login_email(email_to: str, token: str, next_url: str = "") -> bool:
     magic_link = f"{settings.public_base_url}/auth/magic/{token}"
-    await _send_email_async(
+    if next_url:
+        magic_link += f"?next={urllib.parse.quote(next_url)}"
+    return await _send_email_async(
         email_to=email_to,
         subject="Sign in to VoxBento",
         template_name="magic_link.html",
