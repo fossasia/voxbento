@@ -78,6 +78,32 @@ class TestTranscriptionProviders:
         finally:
             pg.shared_http_client = None
 
+    async def test_openai_process_chunk_raises_on_auth_error_without_retry(self):
+        from portal.transcription.providers.openai import OpenAIProvider
+
+        provider = OpenAIProvider()
+        config = ProviderConfig(api_key="fake")
+
+        mock_client = MagicMock()
+        mock_client.is_closed = False
+        mock_response = MagicMock()
+        mock_response.status_code = 401
+        mock_response.raise_for_status.side_effect = httpx.HTTPStatusError(
+            "unauthorized",
+            request=httpx.Request("POST", "https://api.openai.com"),
+            response=httpx.Response(401),
+        )
+        mock_client.post = AsyncMock(return_value=mock_response)
+
+        pg.shared_http_client = mock_client
+        try:
+            # A 401 must surface (not return an empty transcript) and must not be retried.
+            with pytest.raises(httpx.HTTPStatusError):
+                await provider.process_chunk(b"\x00" * 3200, "en", "whisper-1", config)
+            mock_client.post.assert_called_once()
+        finally:
+            pg.shared_http_client = None
+
     async def test_local_model_ref_counting(self):
         from portal.transcription.providers.local import (
             _active_booths_per_model,
