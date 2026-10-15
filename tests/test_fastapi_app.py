@@ -270,6 +270,56 @@ def test_ws_join_receives_joined_and_state():
     assert "state" in joined
 
 
+def test_ws_join_without_language_and_unconfigured_booth_returns_error():
+    """If neither the client specifies a language nor the booth exists in DB, join must error."""
+    with client.websocket_connect("/ws/booth/unknown-booth", cookies=_ws_auth()) as ws:
+        ws.send_text(
+            json.dumps(
+                {
+                    "type": "booth:join",
+                    "display_name": "NoLangUser",
+                    "role": "interpreter",
+                    "channel_id": "unknown-booth-audio",
+                }
+            )
+        )
+        msg = json.loads(ws.receive_text())
+        assert msg["type"] == "booth:error"
+        assert "Language must be specified" in msg["message"]
+
+
+def test_ws_join_uses_db_booth_language_when_unspecified():
+    """If the client does not specify language in join, it should inherit the resolved booth language."""
+    from unittest.mock import AsyncMock, patch
+
+    with patch("portal.database.get_booth_language_name", new=AsyncMock(return_value="Japanese")):
+        with client.websocket_connect("/ws/booth/japan-booth", cookies=_ws_auth()) as ws:
+            ws.send_text(
+                json.dumps(
+                    {
+                        "type": "booth:join",
+                        "display_name": "Kenji",
+                        "role": "interpreter",
+                        "channel_id": "japan-booth-audio",
+                    }
+                )
+            )
+            msg1 = json.loads(ws.receive_text())
+            msg2 = json.loads(ws.receive_text())
+            joined = msg1 if msg1["type"] == "booth:joined" else msg2
+            assert joined["type"] == "booth:joined"
+            assert joined["state"]["language"] == "Japanese"
+
+
+def test_ws_broadcast_unlock_rejected_when_language_unconfigured():
+    """Authorized coordinator cannot unlock broadcast if booth language is unconfigured."""
+    with client.websocket_connect("/ws/booth/unknown-unlock-booth", cookies=_ws_auth()) as ws:
+        ws.send_text(json.dumps({"type": "booth:set-broadcast-unlocked", "unlocked": True}))
+        msg = json.loads(ws.receive_text())
+        assert msg["type"] == "booth:error"
+        assert "Language must be specified or configured for this booth." in msg["message"]
+
+
 def test_ws_join_rejected_without_session():
     """WebSocket join must be rejected when no session cookie is present."""
     with client.websocket_connect("/ws/booth/no-session-booth") as ws:
@@ -876,8 +926,8 @@ def test_ws_broadcast_unlock_authorized_user_can_toggle():
 def test_ws_broadcast_unlock_interpreter_rejected():
     """Interpreter session cannot toggle broadcast lock."""
     client.post("/api/events/broadcastdeny/booths", json={"language_code": "en", "room_id": 1, "language": "English"})
-    booth = "broadcastdeny-en"
-    channel = "broadcastdeny/en"
+    booth = "broadcastdeny-1-en"
+    channel = "broadcastdeny/1/en"
 
     with client.websocket_connect(
         f"/ws/booth/{booth}",
@@ -1966,3 +2016,149 @@ def test_embed_captions_opt_in_websocket_auth():
     # Verify the booth_id produced by make_booth_id satisfies the startswith check.
     booth_id = "test-event-1-en"  # make_booth_id("test-event", 1, 1,  "en")
     assert booth_id.startswith(f"{payload['event_slug']}-")
+
+
+# ── Refactor coverage: missing event, context keys, allowlists, CSP policy ──
+
+
+def test_embed_missing_event_returns_404():
+    """A structurally valid embed token for a nonexistent event must 404 (not 500)."""
+    token = _embed_listener_token(event_slug="ghost-event")
+    res = client.get(f"/embed/ghost-event/en?token={token}")
+    assert res.status_code == 404
+    assert "event not found" in res.json()["detail"].lower()
+
+
+def test_build_embed_context_keys_and_fallbacks():
+    """_build_embed_context must expose the full key set with the documented fallbacks."""
+    from portal.routers.listener import _build_embed_context
+
+    ctx = _build_embed_context(
+        event_slug="test-event",
+        language_code="FR",
+        whep_url="https://cdn.example/whep",
+        caption_url="wss://example/ws/captions/b",
+        token="tok",
+        safe_theme="dark",
+        safe_primary="3b82f6",
+        safe_font="inter",
+        captions=True,
+        safe_custom_css=None,
+        target_lang=None,
+        headless=False,
+        postmessage_target_origin="*",
+        allowed_origins_list=[],
+        audio_delay_ms=250,
+    )
+
+    assert set(ctx.keys()) == {
+        "event_slug",
+        "language_code",
+        "whep_url",
+        "caption_url",
+        "token",
+        "theme",
+        "primary_color",
+        "font_family",
+        "captions_enabled",
+        "custom_css_url",
+        "target_lang_code",
+        "js_version",
+        "headless",
+        "postmessage_target_origin",
+        "allowed_origins_list",
+        "audio_delay_ms",
+    }
+    # font is capitalised for display
+    assert ctx["font_family"] == "Inter"
+    # target_lang=None must fall back to the lower-cased language code
+    assert ctx["target_lang_code"] == "fr"
+    assert ctx["captions_enabled"] is True
+    assert ctx["audio_delay_ms"] == 250
+    assert ctx["custom_css_url"] is None
+
+    # An explicit target_lang must win and be lower-cased
+    ctx2 = _build_embed_context(
+        event_slug="test-event",
+        language_code="FR",
+        whep_url="w",
+        caption_url="c",
+        token="t",
+        safe_theme="dark",
+        safe_primary="3b82f6",
+        safe_font="roboto",
+        captions=False,
+        safe_custom_css="https://cdn.example/x.css",
+        target_lang="ES",
+        headless=True,
+        postmessage_target_origin="*",
+        allowed_origins_list=[],
+        audio_delay_ms=0,
+    )
+    assert ctx2["target_lang_code"] == "es"
+    assert ctx2["font_family"] == "Roboto"
+
+
+def test_sanitize_embed_theme_allowlist():
+    """Only allowlisted theme/font values pass; everything else falls back to defaults."""
+    from portal.routers.listener import _DEFAULT_PRIMARY, _sanitize_embed_theme
+
+    # Valid values pass through unchanged, https custom CSS is kept.
+    assert _sanitize_embed_theme("light", "roboto", "abcdef", "https://cdn.example/x.css") == (
+        "light",
+        "roboto",
+        "abcdef",
+        "https://cdn.example/x.css",
+    )
+
+    # Invalid theme/font/color fall back; non-https custom CSS is dropped.
+    theme, font, primary, css = _sanitize_embed_theme("neon", "comic-sans", "not-a-color", "http://insecure/x.css")
+    assert theme == "dark"
+    assert font == "inter"
+    assert primary == _DEFAULT_PRIMARY
+    assert css is None
+
+    # No custom CSS supplied stays None.
+    assert _sanitize_embed_theme("dark", "inter", "3b82f6", None)[3] is None
+
+
+def test_build_embed_frame_policy_variants(monkeypatch):
+    """frame-ancestors CSP and postMessage target origin must follow embed_allowed_origins."""
+    from portal.config import settings
+    from portal.routers.listener import _build_embed_frame_policy
+
+    monkeypatch.setattr(settings, "embed_allowed_origins", "")
+    assert _build_embed_frame_policy() == ("frame-ancestors *", [], "*")
+
+    monkeypatch.setattr(settings, "embed_allowed_origins", "https://eventyay.com")
+    assert _build_embed_frame_policy() == (
+        "frame-ancestors https://eventyay.com",
+        ["https://eventyay.com"],
+        "https://eventyay.com",
+    )
+
+    monkeypatch.setattr(settings, "embed_allowed_origins", "https://a.com, https://b.com")
+    assert _build_embed_frame_policy() == (
+        "frame-ancestors https://a.com https://b.com",
+        ["https://a.com", "https://b.com"],
+        "*",
+    )
+
+
+def test_embed_rendered_html_uses_sanitized_theme_values():
+    """Sanitized theming must still flow into the rendered template after the refactor."""
+    _seed_embed_event("test-event", "en")
+    token = _embed_listener_token(event_slug="test-event")
+
+    res = client.get(
+        f"/embed/test-event/en?token={token}&theme=neon&primaryColor=zzz&font=comic-sans",
+        headers={"accept": "text/html"},
+    )
+    assert res.status_code == 200, res.text
+    assert "text/html" in res.headers["content-type"]
+    # Invalid primaryColor falls back to the default VoxBento blue in the CSS variable.
+    assert "#3b82f6" in res.text
+    # The embed-config payload still carries the delay after the refactor.
+    assert '"audio_delay_ms"' in res.text
+    # CSP header is still emitted with the sanitized policy.
+    assert "frame-ancestors" in res.headers.get("content-security-policy", "")

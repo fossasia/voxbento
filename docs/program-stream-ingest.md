@@ -76,7 +76,9 @@ token. Revocation is committed before media cleanup: if MediaMTX cannot confirm
 the disconnect, the API returns `202` with `cleanup_pending: true`, the old token
 remains invalid, and reconciliation retries cleanup. Revoke keeps program
 ownership (it does not silently restart the bot).
-“Use Jitsi floor bot” explicitly returns ownership; start the bot separately.
+“Switch to Jitsi bot” explicitly returns ownership; connect the meeting from the
+room's **Meeting source** card. Connecting the meeting while program ingest owns
+the floor asks for confirmation, then performs the same switch.
 All source changes affect VoxBento only, not the independent YouTube output.
 
 ## Browser program-audio sender
@@ -181,7 +183,7 @@ and differs by viewer/network; this is manual calibration, not frame-accurate sy
   This last external/encoder rehearsal is required before production sign-off;
   an automated local test cannot establish it.
 
-Rollback: disable/revoke room ingest and explicitly select/start the Jitsi bot,
+Rollback: disable/revoke room ingest and click **Connect meeting** in the room's Meeting source,
 then set the feature flag false. Keep the floor authentication boundary and
 private ports; do not restore anonymous public floor publishing. Migration 025
 supports downgrade, but back up first: downgrade removes program configuration

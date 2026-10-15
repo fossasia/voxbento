@@ -22,6 +22,7 @@
 
 <!-- Room Settings Form -->
 {% if is_event_owner %}
+  {% include 'admin/_meeting_source.html' %}
   {% include 'admin/_program_ingest.html' %}
   {% include 'admin/_program_sender.html' %}
 
@@ -88,16 +89,6 @@
   <div class="token-form-card token-form-card--spaced">
     <div class="card-head card-head--spaced">
       <h3>Floor Audio Transcription</h3>
-      <div class="card-head-actions">
-        {% if room.floor_transcription_enabled %}
-          <span id="bot-status-pill" class="status-pill" data-room-id="{{ room.id }}">
-            <span id="bot-status-dot" class="status-dot"></span>
-            <span id="bot-status-text">Checking…</span>
-          </span>
-          <button type="button" class="btn btn-sm btn-outline" id="start-bot-btn" onclick="startFloorTranscription({{ room.id }})">Start Bot</button>
-          <button type="button" class="btn btn-sm btn-outline btn-stop" id="stop-bot-btn" onclick="stopFloorTranscription({{ room.id }})">Stop Bot</button>
-        {% endif %}
-      </div>
     </div>
     
     <div class="form-row">
@@ -145,7 +136,7 @@
         <button type="submit" class="btn btn-primary">Save Settings</button>
       </div>
     </div>
-    <p class="form-help form-help--spaced">If enabled, listeners can select "Floor Audio" to see captions of the original floor audio. Use the Start/Stop buttons after saving to control the bot.</p>
+    <p class="form-help form-help--spaced">If enabled, listeners can select "Floor Audio" to see captions of the original floor audio. Captions start automatically once the meeting source or program ingest delivers audio.</p>
   </div>
 </form>
 
@@ -464,122 +455,6 @@
       hiddenId: 'lp_floor_translation_hidden',
     });
   });
-
-async function startFloorTranscription(roomId) {
-  const btn = document.getElementById('start-bot-btn');
-  btn.textContent = 'Starting...';
-  btn.disabled = true;
-  try {
-    const res = await fetch(`/api/rooms/${roomId}/floor-transcription/start`, { method: 'POST' });
-    if (!res.ok) {
-      const data = await res.json().catch(() => ({}));
-      setBotError("Error: " + (data.detail || "Failed to start"));
-    }
-  } catch (err) {
-    setBotError("Failed to reach server");
-  } finally {
-    btn.textContent = 'Start Bot';
-    startBotPolling(roomId, true);
-  }
-}
-
-async function stopFloorTranscription(roomId) {
-  const btn = document.getElementById('stop-bot-btn');
-  btn.textContent = 'Stopping...';
-  btn.disabled = true;
-  try {
-    const res = await fetch(`/api/rooms/${roomId}/floor-transcription/stop`, { method: 'POST' });
-    if (!res.ok) {
-      const data = await res.json().catch(() => ({}));
-      setBotError("Error: " + (data.detail || "Failed to stop"));
-    }
-  } catch (err) {
-    setBotError("Failed to reach server");
-  } finally {
-    btn.textContent = 'Stop Bot';
-    startBotPolling(roomId, true);
-  }
-}
-
-const BOT_STAGE_DISPLAY = {
-  launching: { text: 'Starting bot…', color: '#b8860b', dot: '#e0a800', pulse: true },
-  joining: { text: 'Joining meeting…', color: '#b8860b', dot: '#e0a800', pulse: true },
-  in_meeting: { text: 'In meeting · streaming', color: '#1c7c34', dot: '#28a745', pulse: false },
-  leaving: { text: 'Leaving meeting…', color: '#b8860b', dot: '#e0a800', pulse: true },
-  stopping: { text: 'Stopping…', color: '#b8860b', dot: '#e0a800', pulse: true },
-  stopped: { text: 'Stopped', color: '#666', dot: '#999', pulse: false },
-  dead: { text: 'Bot crashed', color: '#b21f2d', dot: '#dc3545', pulse: false },
-  error: { text: 'Bot crashed', color: '#b21f2d', dot: '#dc3545', pulse: false },
-  unknown: { text: 'Bot offline', color: '#b21f2d', dot: '#dc3545', pulse: false },
-};
-
-let _botPollTimer = null;
-
-function setBotError(msg) {
-  const text = document.getElementById('bot-status-text');
-  const dot = document.getElementById('bot-status-dot');
-  if (text) { text.textContent = msg; text.parentElement.style.color = '#b21f2d'; }
-  if (dot) dot.style.background = '#dc3545';
-}
-
-function applyBotStatus(stage, running) {
-  const pill = document.getElementById('bot-status-pill');
-  const text = document.getElementById('bot-status-text');
-  const dot = document.getElementById('bot-status-dot');
-  const startBtn = document.getElementById('start-bot-btn');
-  const stopBtn = document.getElementById('stop-bot-btn');
-  if (!pill || !text || !dot) return;
-
-  let info = BOT_STAGE_DISPLAY[stage];
-  if (!info) {
-    // Unknown stage (e.g. an older bot that only reports "healthy"):
-    // fall back based on whether the bot process is actually running.
-    info = running ? BOT_STAGE_DISPLAY.in_meeting : BOT_STAGE_DISPLAY.unknown;
-  }
-  text.textContent = info.text;
-  pill.style.color = info.color;
-  dot.style.background = info.dot;
-  dot.style.boxShadow = info.pulse ? `0 0 0 3px ${info.dot}33` : 'none';
-
-  const transitional = stage === 'stopping' || stage === 'leaving';
-  if (startBtn) startBtn.disabled = running || transitional;
-  if (stopBtn) stopBtn.disabled = (!running && !transitional);
-}
-
-async function pollBotStatus(roomId) {
-  try {
-    const res = await fetch(`/api/rooms/${roomId}/floor-transcription/status`);
-    if (!res.ok) { applyBotStatus('unknown', false); return; }
-    const data = await res.json();
-    const stage = data.bot_reachable ? data.stage : 'unknown';
-    applyBotStatus(stage, data.running);
-    // Slow the poll once the bot has settled into a stable state.
-    const stable = !data.running && (stage === 'stopped' || stage === 'unknown');
-    schedulePoll(roomId, stable ? 8000 : 2500);
-  } catch (err) {
-    applyBotStatus('unknown', false);
-    schedulePoll(roomId, 8000);
-  }
-}
-
-function schedulePoll(roomId, delay) {
-  if (_botPollTimer) clearTimeout(_botPollTimer);
-  _botPollTimer = setTimeout(() => pollBotStatus(roomId), delay);
-}
-
-function startBotPolling(roomId, immediate) {
-  if (_botPollTimer) clearTimeout(_botPollTimer);
-  if (immediate) {
-    pollBotStatus(roomId);
-  } else {
-    schedulePoll(roomId, 500);
-  }
-}
-
-document.addEventListener('DOMContentLoaded', function() {
-  const pill = document.getElementById('bot-status-pill');
-  if (pill) startBotPolling(pill.dataset.roomId, true);
-});
 </script>
 
 

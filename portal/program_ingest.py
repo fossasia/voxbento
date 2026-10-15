@@ -289,6 +289,18 @@ async def authorize_publish(data: MediaAuth) -> None:
         current.missing_since = None
 
 
+def pipeline_problem(room: Room, event: Event) -> str | None:
+    """Return why room settings block the canonical floor pipeline, if they do."""
+    if not room.floor_transcription_enabled or room.floor_transcription_provider == "none":
+        return "Floor transcription is disabled. Enable it in the room AI settings."
+    if not room.floor_language_code:
+        return "Select the floor source language in the room AI settings."
+    provider = ProviderEnum(room.floor_transcription_provider)
+    if provider != ProviderEnum.LOCAL and (not event.transcription_api_enabled or not get_api_key(event, provider)):
+        return "Enable the event transcription API and configure its provider key."
+    return None
+
+
 async def media_path(path: str) -> MediaPath | None:
     response = await get_http_client().get(
         f"{settings.mediamtx_api_base}/v3/paths/get/{path}", timeout=MEDIA_CONTROL_TIMEOUT
@@ -349,6 +361,7 @@ async def configure_source(room: Room, event: Event, action: str, offset_ms: int
         )
     response.raise_for_status()
     if room.floor_source == "jitsi_bot" and action == "enable":
+        room.meeting_agent_enabled = False
         try:
             response = await client.post(
                 f"{settings.floor_bot_base}/stop",
@@ -426,6 +439,7 @@ async def open_sender_session(room: Room, event: Event, offset_ms: int, ttl_secs
             raise HTTPException(409, "Another source is publishing to the floor; stop it before starting the browser sender.")
     else:
         # Explicit takeover from the Jitsi floor bot. Stop it before judging occupancy.
+        room.meeting_agent_enabled = False
         try:
             response = await get_http_client().post(
                 f"{settings.floor_bot_base}/stop",
@@ -526,10 +540,8 @@ async def reconcile_room(room: Room, event: Event, path: MediaPath | None) -> No
         problem = "No supported audio track. Configure the WHIP encoder to send Opus audio."
     elif now - current.last_progress >= settings.program_ingest_stall_secs:
         problem = "Media has stalled. Check the encoder and network."
-    elif not room.floor_transcription_enabled or room.floor_transcription_provider == "none":
-        problem = "Floor transcription is disabled. Enable it in the room AI settings."
-    elif not room.floor_language_code:
-        problem = "Select the floor source language in the room AI settings."
+    else:
+        problem = pipeline_problem(room, event)
     if problem:
         current.state, current.reason = "degraded", problem
         await stop_transcription_worker(booth_id)
@@ -537,14 +549,7 @@ async def reconcile_room(room: Room, event: Event, path: MediaPath | None) -> No
         current.worker_started_at = None
         return
     current.state, current.reason = "receiving", "Audio received; starting transcription."
-    provider = ProviderEnum(room.floor_transcription_provider)
-    api_key = get_api_key(event, provider)
-    if provider != ProviderEnum.LOCAL and (not event.transcription_api_enabled or not api_key):
-        current.state, current.reason = "degraded", "Enable the event transcription API and configure its provider key."
-        await stop_transcription_worker(booth_id)
-        current.worker_config = None
-        current.worker_started_at = None
-        return
+    api_key = get_api_key(event, ProviderEnum(room.floor_transcription_provider))
     config = (room.floor_transcription_provider, room.floor_transcription_model, room.floor_language_code)
     if current.worker_config and current.worker_config != config:
         await stop_transcription_worker(booth_id)
