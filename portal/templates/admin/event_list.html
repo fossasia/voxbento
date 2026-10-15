@@ -8,6 +8,11 @@
 {% endblock %}
 
 {% block content %}
+{% if request.query_params.get('error') == 'delete_failed' %}
+<div class="alert alert-danger alert-flash">
+  <strong>Error:</strong> Failed to delete event due to a database error. The event was not deleted.
+</div>
+{% endif %}
 <div class="toolbar">
   <div>
     <h1>Events</h1>
