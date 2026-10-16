@@ -2259,3 +2259,108 @@ def test_embed_rendered_html_uses_sanitized_theme_values():
     assert '"audio_delay_ms"' in res.text
     # CSP header is still emitted with the sanitized policy.
     assert "frame-ancestors" in res.headers.get("content-security-policy", "")
+
+
+# ── Booth Protocol Architecture & Coordination Integration Tests ───────────────
+
+
+def test_ws_booth_protocol_multi_client_coordination():
+    """Verify coordinated state broadcast across multiple clients and disconnect handling."""
+    from portal.globals import booths
+    from portal.websockets.manager import manager
+
+    booth_id = "coord-test-booth"
+    channel = f"{booth_id}-audio"
+
+    with (
+        client.websocket_connect(f"/ws/booth/{booth_id}", cookies=_ws_auth()) as ws_a,
+        client.websocket_connect(f"/ws/booth/{booth_id}", cookies=_ws_auth()) as ws_b,
+    ):
+        # A joins
+        ws_a.send_text(
+            json.dumps(
+                {
+                    "type": "booth:join",
+                    "display_name": "Alice",
+                    "role": "interpreter",
+                    "language": "French",
+                    "channel_id": channel,
+                }
+            )
+        )
+        msg_a1 = json.loads(ws_a.receive_text())
+        msg_a2 = json.loads(ws_a.receive_text())
+        types_a = {msg_a1["type"], msg_a2["type"]}
+        assert "booth:joined" in types_a
+        assert "booth:state" in types_a
+        pid_a = msg_a1["participant_id"] if msg_a1["type"] == "booth:joined" else msg_a2["participant_id"]
+
+        # B drains the broadcast sent when A joined
+        broadcast_from_a = json.loads(ws_b.receive_text())
+        assert broadcast_from_a["type"] == "booth:state"
+
+        # B joins
+        ws_b.send_text(
+            json.dumps(
+                {
+                    "type": "booth:join",
+                    "display_name": "Bob",
+                    "role": "interpreter",
+                    "language": "French",
+                    "channel_id": channel,
+                }
+            )
+        )
+        msg_b1 = json.loads(ws_b.receive_text())
+        msg_b2 = json.loads(ws_b.receive_text())
+        types_b = {msg_b1["type"], msg_b2["type"]}
+        assert "booth:joined" in types_b
+        assert "booth:state" in types_b
+        pid_b = msg_b1["participant_id"] if msg_b1["type"] == "booth:joined" else msg_b2["participant_id"]
+
+        # A receives the coordinated state update from B joining
+        broadcast_to_a = json.loads(ws_a.receive_text())
+        assert broadcast_to_a["type"] == "booth:state"
+        participants = {p["participant_id"] for p in broadcast_to_a["state"]["participants"]}
+        assert pid_a in participants and pid_b in participants
+
+        # A sends chat -> both receive booth:chat and booth:state
+        ws_a.send_text(json.dumps({"type": "booth:chat", "body": "Coordinated hello"}))
+        chat_a = json.loads(ws_a.receive_text())
+        chat_b = json.loads(ws_b.receive_text())
+        assert chat_a["type"] == "booth:chat"
+        assert chat_b["type"] == "booth:chat"
+        assert chat_a["message"]["body"] == "Coordinated hello"
+        assert chat_b["message"]["body"] == "Coordinated hello"
+
+        # Drain corresponding booth:state
+        state_after_chat_a = json.loads(ws_a.receive_text())
+        state_after_chat_b = json.loads(ws_b.receive_text())
+        assert state_after_chat_a["type"] == "booth:state"
+        assert state_after_chat_b["type"] == "booth:state"
+
+        # Reassign active interpreter: A (active) sets B active
+        ws_a.send_text(json.dumps({"type": "booth:set-active", "target_id": pid_b}))
+        active_state_a = json.loads(ws_a.receive_text())
+        active_state_b = json.loads(ws_b.receive_text())
+        assert active_state_a["type"] == "booth:state"
+        assert active_state_b["type"] == "booth:state"
+        assert active_state_a["state"]["active_interpreter_id"] == pid_b
+        assert active_state_b["state"]["active_interpreter_id"] == pid_b
+
+    # Once both have disconnected:
+    # Manager room must be cleaned up
+    assert booth_id not in manager._rooms
+    # Booth participants must be empty
+    mem_booth = booths.get_booth_sync(booth_id)
+    assert mem_booth is not None
+    assert len(mem_booth.participants) == 0
+
+
+def test_ws_booth_protocol_unknown_message_type_handling():
+    """Unknown message types must receive a structured booth:error without crashing."""
+    with client.websocket_connect("/ws/booth/err-dispatch-booth", cookies=_ws_auth()) as ws:
+        ws.send_text(json.dumps({"type": "booth:nonexistent-action", "param": 123}))
+        err = json.loads(ws.receive_text())
+        assert err["type"] == "booth:error"
+        assert "Unknown message type" in err["message"]

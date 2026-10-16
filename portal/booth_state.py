@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
-from typing import Literal
+from typing import Awaitable, Callable, Literal, Protocol
 from uuid import uuid4
 
 from portal.booth_identity import (
@@ -15,6 +15,17 @@ from portal.booth_identity import (
     validate_instance,
     validate_language_code,
 )
+
+
+class BoothEventPublisher(Protocol):
+    async def broadcast_booth(self, booth_id: str, message: dict) -> None:
+        """Broadcast a message to all connected participants in a booth."""
+        ...
+
+    async def broadcast_listeners(self, booth_id: str, message: dict) -> None:
+        """Broadcast a message to all connected listeners for a booth."""
+        ...
+
 
 ParticipantRole = Literal[
     "super_admin",
@@ -69,6 +80,7 @@ class Booth:
     participants: dict[str, Participant] = field(default_factory=dict)
     chat_messages: list[ChatMessage] = field(default_factory=list)
     ingest_status: str = "disconnected"
+    _broadcast_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         if self.event_slug and self.language_code and self.room_id is not None:
@@ -118,9 +130,17 @@ def _pick_next_interpreter(booth: Booth) -> str | None:
 
 
 class BoothRegistry:
-    def __init__(self) -> None:
+    def __init__(self, publisher: BoothEventPublisher | None = None) -> None:
         self._booths: dict[str, Booth] = {}
         self._lock = asyncio.Lock()
+        self._publisher = publisher
+
+    @property
+    def publisher(self) -> BoothEventPublisher | None:
+        return self._publisher
+
+    def set_publisher(self, publisher: BoothEventPublisher | None) -> None:
+        self._publisher = publisher
 
     def _get_or_create_booth(
         self,
@@ -222,6 +242,7 @@ class BoothRegistry:
         channel_id: str,
         participant_id: str | None = None,
         room_id: int | None = None,
+        before_broadcast: Callable[[Participant, dict], Awaitable[None]] | None = None,
     ) -> tuple[Participant, dict]:
         async with self._lock:
             booth = self._get_or_create_booth(booth_id, language, channel_id, room_id=room_id)
@@ -241,7 +262,17 @@ class BoothRegistry:
                 and booth.active_interpreter_id is None
             ):
                 booth.active_interpreter_id = participant.participant_id
-            return participant, booth.as_public_dict()
+            state = booth.as_public_dict()
+            broadcast_lock = booth._broadcast_lock
+
+        async with broadcast_lock:
+            if before_broadcast is not None:
+                await before_broadcast(participant, state)
+
+            if self._publisher is not None:
+                await self._publisher.broadcast_booth(booth_id, {"type": "booth:state", "state": state})
+
+        return participant, state
 
     async def leave_participant(self, booth_id: str, participant_id: str, language: str, channel_id: str) -> dict:
         async with self._lock:
@@ -262,7 +293,14 @@ class BoothRegistry:
             if not booth.participants:
                 booth.ingest_status = "disconnected"
                 booth.handoff_state = "idle"
-            return booth.as_public_dict()
+            state = booth.as_public_dict()
+            broadcast_lock = booth._broadcast_lock
+
+        async with broadcast_lock:
+            if self._publisher is not None:
+                await self._publisher.broadcast_booth(booth_id, {"type": "booth:state", "state": state})
+
+        return state
 
     async def set_broadcast_unlocked(
         self,
@@ -294,8 +332,48 @@ class BoothRegistry:
             asyncio.create_task(
                 _wh.enqueue_webhook("session.status_changed", {"booth_id": booth_id, "is_active": unlocked})
             )
+            state = booth.as_public_dict()
+            broadcast_lock = booth._broadcast_lock
 
-            return booth.as_public_dict()
+        async with broadcast_lock:
+            # Locking the booth must immediately stop everything tied to it: the
+            # transcription worker (which pulls audio independently of any browser)
+            # is torn down here so captions stop even if the interpreter's client is
+            # unresponsive. Publisher mic/ingest state is already reset inside
+            # set_broadcast_unlocked.
+            if not unlocked:
+                try:
+                    from portal.transcription.worker import stop_transcription_worker
+
+                    await stop_transcription_worker(booth_id)
+                except Exception as e:
+                    import logging
+
+                    logging.getLogger(__name__).warning("Failed to stop transcription on lock: %s", e)
+
+            if self._publisher is not None:
+                booth_err: Exception | None = None
+                try:
+                    await self._publisher.broadcast_booth(booth_id, {"type": "booth:state", "state": state})
+                except Exception as exc:
+                    booth_err = exc
+                    import logging
+
+                    logging.getLogger(__name__).warning("Failed to broadcast state to booth %s: %s", booth_id, exc)
+
+                try:
+                    await self._publisher.broadcast_listeners(booth_id, {"type": "booth:state", "state": state})
+                except Exception as exc:
+                    import logging
+
+                    logging.getLogger(__name__).warning("Failed to broadcast state to listeners %s: %s", booth_id, exc)
+                    if booth_err is None:
+                        booth_err = exc
+
+                if booth_err is not None:
+                    raise booth_err
+
+        return state
 
     async def set_active_interpreter(
         self,
@@ -329,7 +407,14 @@ class BoothRegistry:
                 p.mic_active = p.participant_id == target_id and p.mic_active
                 p.updated_at = utc_now_iso()
             booth.refresh_ingest_status()
-            return booth.as_public_dict()
+            state = booth.as_public_dict()
+            broadcast_lock = booth._broadcast_lock
+
+        async with broadcast_lock:
+            if self._publisher is not None:
+                await self._publisher.broadcast_booth(booth_id, {"type": "booth:state", "state": state})
+
+        return state
 
     async def initiate_handoff(
         self,
@@ -367,7 +452,14 @@ class BoothRegistry:
             is_active = booth.active_interpreter_id == requester_id
             booth.handoff_state = "offered" if is_active else "requested"
             booth.handoff_initiator_id = requester_id
-            return booth.as_public_dict()
+            state = booth.as_public_dict()
+            broadcast_lock = booth._broadcast_lock
+
+        async with broadcast_lock:
+            if self._publisher is not None:
+                await self._publisher.broadcast_booth(booth_id, {"type": "booth:state", "state": state})
+
+        return state
 
     async def accept_handoff(
         self,
@@ -424,7 +516,14 @@ class BoothRegistry:
                 p.mic_active = p.participant_id == new_active and p.mic_active
                 p.updated_at = utc_now_iso()
             booth.refresh_ingest_status()
-            return booth.as_public_dict()
+            state = booth.as_public_dict()
+            broadcast_lock = booth._broadcast_lock
+
+        async with broadcast_lock:
+            if self._publisher is not None:
+                await self._publisher.broadcast_booth(booth_id, {"type": "booth:state", "state": state})
+
+        return state
 
     async def cancel_handoff(
         self,
@@ -442,7 +541,14 @@ class BoothRegistry:
                 raise PermissionError("Only the handoff initiator can cancel.")
             booth.handoff_state = "idle"
             booth.handoff_initiator_id = None
-            return booth.as_public_dict()
+            state = booth.as_public_dict()
+            broadcast_lock = booth._broadcast_lock
+
+        async with broadcast_lock:
+            if self._publisher is not None:
+                await self._publisher.broadcast_booth(booth_id, {"type": "booth:state", "state": state})
+
+        return state
 
     async def add_chat_message(
         self,
@@ -468,7 +574,34 @@ class BoothRegistry:
             booth.chat_messages.append(message)
             if len(booth.chat_messages) > 500:
                 booth.chat_messages = booth.chat_messages[-500:]
-            return asdict(message), booth.as_public_dict()
+            msg_dict = asdict(message)
+            state = booth.as_public_dict()
+            broadcast_lock = booth._broadcast_lock
+
+        async with broadcast_lock:
+            if self._publisher is not None:
+                chat_err: Exception | None = None
+                try:
+                    await self._publisher.broadcast_booth(booth_id, {"type": "booth:chat", "message": msg_dict})
+                except Exception as exc:
+                    chat_err = exc
+                    import logging
+
+                    logging.getLogger(__name__).warning("Failed to broadcast chat to booth %s: %s", booth_id, exc)
+
+                try:
+                    await self._publisher.broadcast_booth(booth_id, {"type": "booth:state", "state": state})
+                except Exception as exc:
+                    import logging
+
+                    logging.getLogger(__name__).warning("Failed to broadcast state to booth %s: %s", booth_id, exc)
+                    if chat_err is None:
+                        chat_err = exc
+
+                if chat_err is not None:
+                    raise chat_err
+
+        return msg_dict, state
 
     async def update_participant_state(
         self,
@@ -488,7 +621,11 @@ class BoothRegistry:
                 raise ValueError("Participant does not exist in booth.")
             # Reject non-boolean flags so a truthy value like 1 or "true" cannot slip
             # past the publisher permission checks below (which compare with `is True`).
-            for name, value in (("mic_active", mic_active), ("ingest_connected", ingest_connected), ("connected", connected)):
+            for name, value in (
+                ("mic_active", mic_active),
+                ("ingest_connected", ingest_connected),
+                ("connected", connected),
+            ):
                 if value is not None and not isinstance(value, bool):
                     raise ValueError(f"{name} must be a boolean.")
             from portal.roles import Permission, has_permission
@@ -506,7 +643,14 @@ class BoothRegistry:
                 participant.connected = connected
             participant.updated_at = utc_now_iso()
             booth.refresh_ingest_status()
-            return booth.as_public_dict()
+            state = booth.as_public_dict()
+            broadcast_lock = booth._broadcast_lock
+
+        async with broadcast_lock:
+            if self._publisher is not None:
+                await self._publisher.broadcast_booth(booth_id, {"type": "booth:state", "state": state})
+
+        return state
 
     async def check_publish_permission(
         self,
@@ -558,6 +702,27 @@ class BoothRegistry:
         """
         booth_id = make_booth_id(event_slug, room_id, language_code)
         return await self.get_booth(booth_id)
+
+    async def set_ingest_overloaded(self, booth_id: str) -> dict | None:
+        """Mark a booth's ingest as overloaded and broadcast the updated state.
+
+        Called when transcription service reports provider failure or overload.
+        """
+        async with self._lock:
+            booth = self._booths.get(booth_id)
+            if booth is None:
+                return None
+            booth.ingest_status = "overloaded"
+            state = booth.as_public_dict()
+            broadcast_lock = booth._broadcast_lock
+
+        async with broadcast_lock:
+            if self._publisher is not None:
+                await self._publisher.broadcast_booth(booth_id, {"type": "booth:state", "state": state})
+
+        return state
+
+    mark_ingest_overloaded = set_ingest_overloaded
 
     async def remove_booth(self, event_slug: str, room_id: int, language_code: str) -> None:
         """Remove a booth state entirely.
