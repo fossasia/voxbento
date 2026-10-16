@@ -121,12 +121,19 @@ async def ws_captions(websocket: WebSocket, booth_id: str) -> None:
 
 
 async def _authorize_tts(websocket: WebSocket, room_id: int, language_code: str, booth_id: str) -> None:
+    """Authorize a TTS WebSocket subscription before accept.
+
+    The subscription key is (room_id, target language, source booth_id).
+    The target language may differ from the source booth language for
+    translated audio, so only the room coordinate must match exactly.
+    Credentials must still be scoped to the same event and room.
+    """
     from urllib.parse import urlparse
 
     import jwt
 
     from portal.auth import WSAuthError, decode_token, get_booth_session, resolve_booth_role
-    from portal.booth_identity import parse_booth_id
+    from portal.booth_identity import parse_booth_id, validate_language_code
     from portal.config import settings
     from portal.database import get_event_by_slug, get_session
 
@@ -135,8 +142,13 @@ async def _authorize_tts(websocket: WebSocket, room_id: int, language_code: str,
     except ValueError:
         raise WSAuthError("Invalid booth_id format.")
 
-    if room_id != actual_room or language_code != actual_lang:
-        raise WSAuthError("Mismatched room or language.")
+    if room_id != actual_room:
+        raise WSAuthError("Mismatched room.")
+
+    try:
+        target_lang = validate_language_code(language_code)
+    except ValueError:
+        raise WSAuthError("Invalid language_code.")
 
     # 1. JWT in query param
     token = websocket.query_params.get("token", "")
@@ -158,7 +170,11 @@ async def _authorize_tts(websocket: WebSocket, room_id: int, language_code: str,
         token_lang = payload.get("language_code", "")
         token_room = payload.get("room_id")
         if token_event and token_lang:
-            if token_event != event_slug or token_lang != actual_lang or (token_room is not None and str(token_room) != str(actual_room)):
+            if (
+                token_event != event_slug
+                or (token_room is not None and str(token_room) != str(actual_room))
+                or (token_lang != actual_lang and token_lang != target_lang)
+            ):
                 raise WSAuthError("Participant token scope does not match.")
             return
 
@@ -198,13 +214,20 @@ async def _authorize_tts(websocket: WebSocket, room_id: int, language_code: str,
         token_lang = payload.get("language_code", "")
         token_room = payload.get("room_id")
         if token_event and token_lang:
-            if token_event != event_slug or token_lang != actual_lang or (token_room is not None and str(token_room) != str(actual_room)):
+            if (
+                token_event != event_slug
+                or (token_room is not None and str(token_room) != str(actual_room))
+                or (token_lang != actual_lang and token_lang != target_lang)
+            ):
                 raise WSAuthError("Participant token scope does not match.")
             return
 
         if payload.get("user"):
             user_payload = {k: v for k, v in payload.items() if k != "role"}
             user_role = await resolve_booth_role(user_payload, booth_id)
+            if not user_role and target_lang != actual_lang:
+                target_booth_id = f"{event_slug}-{actual_room}-{target_lang}"
+                user_role = await resolve_booth_role(user_payload, target_booth_id)
             if user_role:
                 return
             if not websocket.cookies.get(f"listener_code_{event_slug}"):
@@ -226,6 +249,7 @@ async def _authorize_tts(websocket: WebSocket, room_id: int, language_code: str,
 
 @router.websocket("/ws/tts/{room_id}/{language_code}/{booth_id}")
 async def ws_tts(websocket: WebSocket, room_id: int, language_code: str, booth_id: str) -> None:
+    """TTS WebSocket endpoint with pre-accept authorization."""
     try:
         await _authorize_tts(websocket, room_id, language_code, booth_id)
     except WSAuthError:
