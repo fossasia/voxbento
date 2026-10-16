@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import time
+
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from portal.auth import WSAuthError, resolve_booth_role, resolve_ws_auth
