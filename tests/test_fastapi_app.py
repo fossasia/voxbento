@@ -307,7 +307,7 @@ def test_ws_role_change_closes_connection():
     from unittest.mock import AsyncMock, patch
 
     clock = iter([0.0, 6.0])
-    
+
     def fake_monotonic():
         return next(clock, 6.0)
 
@@ -336,7 +336,7 @@ def test_ws_role_recheck_database_error_keeps_connection_open():
     from unittest.mock import AsyncMock, patch
 
     clock = iter([0.0, 6.0, 12.0])
-    
+
     def fake_monotonic():
         return next(clock, 12.0)
 
