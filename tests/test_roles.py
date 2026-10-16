@@ -365,6 +365,9 @@ def test_principal_role_checks():
     assert principal.has_any_role("event_owner")
     assert principal.has_any_role("interpreter")
     assert principal.has_room_coordinator_in_event(1)
+    assert not principal.has_role("event_owner", event_id=2)
+    assert not principal.has_role("room_coordinator", room_id=11)
+    assert not principal.has_role("interpreter", booth_id=101)
 
 
 def test_principal_role_checks_respect_inactive_status():
@@ -424,3 +427,14 @@ async def test_resolve_principal_caches_memberships_per_request():
     event_memberships.assert_awaited_once_with(None, 7)
     room_memberships.assert_awaited_once_with(None, 7)
     booth_memberships.assert_awaited_once_with(None, 7)
+
+
+def test_global_admin_has_super_admin_role():
+    principal = Principal(
+        user_id=1,
+        policy=AccessPolicy(is_super_admin=True),
+    )
+
+    assert principal.has_role("super_admin")
+    assert not principal.has_role("event_owner", event_id=1)
+    assert principal.has_role("super_admin", room_id=10)

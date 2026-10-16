@@ -20,6 +20,7 @@ class Session:
     channel_id: str
     # Role derived from the bearer cookie at WS connection time — never from client data.
     granted_role: str | None = None
+    auth_payload: dict | None = None
 
 
 class ConnectionManager:
@@ -125,9 +126,15 @@ class TTSConnectionManager:
         key = self._get_key(room_id, language_code, booth_id)
         from portal.transcription.timing import timing_metadata
 
-        header = {"segment_id": segment_id, "seq": seq, "caption": caption, "translation": translation, "error": error,
-                  "audio_pending": (not audio_bytes and error is None) if audio_pending is None else audio_pending,
-                  **timing_metadata()}
+        header = {
+            "segment_id": segment_id,
+            "seq": seq,
+            "caption": caption,
+            "translation": translation,
+            "error": error,
+            "audio_pending": (not audio_bytes and error is None) if audio_pending is None else audio_pending,
+            **timing_metadata(),
+        }
         header_bytes = json.dumps(header).encode("utf-8")
         # Frame: [1-byte version][4-byte length L][L-bytes header][audio_bytes]
         frame = struct.pack(">BI", 1, len(header_bytes)) + header_bytes + audio_bytes

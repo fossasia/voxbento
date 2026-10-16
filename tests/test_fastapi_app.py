@@ -22,10 +22,20 @@ client = TestClient(app)
 def setup_db():
     import anyio
 
-    from portal.database import configure, dispose, init_db
+    from portal.database import configure, create_user, dispose, get_session, init_db
 
-    configure("sqlite+aiosqlite://")
-    anyio.run(init_db)
+    async def setup():
+        configure("sqlite+aiosqlite://")
+        await init_db()
+        async with get_session() as session:
+            await create_user(
+                session,
+                email="admin@test.com",
+                display_name="Admin",
+                is_admin=True,
+            )
+
+    anyio.run(setup)
     yield
     anyio.run(dispose)
 
@@ -1555,13 +1565,22 @@ def test_event_booth_state_does_not_load_booth_whose_room_belongs_to_another_eve
     from portal.database import create_booth, create_event, create_room, get_session
 
     async def seed() -> int:
+        from portal.models import DBBooth
+
         async with get_session() as session:
             owner = await create_event(session, slug="roomowner", display_name="Room Owner")
             borrower = await create_event(session, slug="roomborrower", display_name="Room Borrower")
             room = await create_room(session, event_id=owner.id, display_name="Main")
-            await create_booth(
-                session, event_id=borrower.id, room_id=room.id, language_code="fr", language_name="French"
+
+            session.add(
+                DBBooth(
+                    event_id=borrower.id,
+                    room_id=room.id,
+                    language_code="fr",
+                    language_name="French",
+                )
             )
+            await session.flush()
             return room.id
 
     room_id = anyio.run(seed)

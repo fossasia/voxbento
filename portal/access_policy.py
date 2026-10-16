@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from sqlalchemy import select
+
+from portal.models import Room
 from portal.roles import _ROLE_RANK, ROLE_PERMISSIONS, Permission
 
 
@@ -29,12 +32,20 @@ class AccessPolicy:
         room_memberships = await list_room_memberships_for_user(session, user.id)
         booth_memberships = await list_booth_memberships_for_user(session, user.id)
 
-        return cls.from_memberships(
+        policy = cls.from_memberships(
             user,
             event_memberships,
             room_memberships,
             booth_memberships,
         )
+
+        owned_event_ids = [membership.event_id for membership in event_memberships if membership.role == "event_owner"]
+
+        if owned_event_ids:
+            result = await session.execute(select(Room.id, Room.event_id).where(Room.event_id.in_(owned_event_ids)))
+            policy.room_events.update(dict(result.all()))
+
+        return policy
 
     @classmethod
     def from_memberships(
@@ -103,15 +114,16 @@ class AccessPolicy:
                 ]
             )
         elif room_id is not None:
-            if room_id not in self.room_events:
+            event_id = self.room_events.get(room_id)
+            if event_id is None:
                 return []
 
-            roles.extend(
-                [
-                    self.room_roles.get(room_id),
-                    self.event_roles.get(self.room_events[room_id]),
-                ]
-            )
+            roles.append(self.room_roles.get(room_id))
+
+            event_role = self.event_roles.get(event_id)
+            if event_role == "event_owner":
+                roles.append(event_role)
+
         elif event_id is not None:
             roles.append(self.event_roles.get(event_id))
         else:
@@ -166,6 +178,9 @@ class AccessPolicy:
         room_id: int | None = None,
         booth_id: int | None = None,
     ) -> bool:
+        if self.is_super_admin:
+            return role == "super_admin"
+
         return role in self._roles_for_scope(
             event_id=event_id,
             room_id=room_id,

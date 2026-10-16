@@ -183,6 +183,12 @@ async def create_event_booth(
             )
         )
         db_booth = booth_query.scalar_one_or_none()
+        room = await session.get(Room, db_room_id)
+        if room is None or room.event_id != event.id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Booth room must belong to the specified event",
+            )
         if not db_booth:
             db_booth = DBBooth(
                 event_id=event.id,
@@ -265,7 +271,7 @@ async def list_event_booths(
         # Fallback to checking API Key
         async with get_session() as session:
             key = None
-            if credentials and credentials.scheme.lower() == 'bearer':
+            if credentials and credentials.scheme.lower() == "bearer":
                 key = await verify_api_key(session, credentials.credentials)
             if not key or key.event.slug != event_slug:
                 raise orig_exc
@@ -280,9 +286,10 @@ async def list_event_booths(
         b["label"] = f"{b.get('language_name', b.get('language_code', ''))} (Human)"
 
     async with get_session() as session:
-
-        stmt = select(Event).where(Event.slug == event_slug).options(
-            selectinload(Event.rooms).selectinload(Room.translation_languages)
+        stmt = (
+            select(Event)
+            .where(Event.slug == event_slug)
+            .options(selectinload(Event.rooms).selectinload(Room.translation_languages))
         )
         event = await session.scalar(stmt)
         if event:

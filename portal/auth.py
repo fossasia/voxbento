@@ -246,8 +246,7 @@ async def require_admin(request: Request) -> None:
                 return
 
         else:
-            if principal.has_any_role("event_owner") or principal.has_any_role("room_coordinator"):
-                return
+            pass
 
     raise HTTPException(
         status_code=status.HTTP_403_FORBIDDEN,
@@ -477,14 +476,17 @@ def get_booth_session(request: Request | WebSocket) -> dict | None:
 
 
 async def _validate_ws_admin_claims(websocket: WebSocket, payload: dict) -> None:
-    if not (payload.get("is_admin") or payload.get("admin")):
+    if not payload.get("user"):
         return
 
-    if payload.get("user"):
-        user = await _current_user(payload)
-        if user is None or not user.is_admin:
-            await websocket.close(code=4003)
-            raise WSAuthError("Administrator access is no longer authorized.")
+    user = await _current_user(payload)
+    if user is None:
+        await websocket.close(code=4003)
+        raise WSAuthError("User is no longer active or authorized.")
+
+    if (payload.get("is_admin") or payload.get("admin")) and not user.is_admin:
+        await websocket.close(code=4003)
+        raise WSAuthError("Administrator access is no longer authorized.")
 
 
 async def resolve_ws_auth(websocket: WebSocket, booth_id: str) -> dict:
@@ -624,8 +626,11 @@ async def resolve_booth_role(
     roles: list[str] = []
 
     for payload in session_list:
-        if payload.get("is_admin") or payload.get("admin"):
-            if not payload.get("user"):
+        if payload.get("user"):
+            user = await _current_user(payload)
+            if user is None:
+                continue
+            if user.is_admin:
                 roles.append("super_admin")
 
         if "role" in payload:
@@ -654,16 +659,15 @@ async def resolve_booth_role(
 
         if payload.get("sub") and booth_id:
             from sqlalchemy import select
+
             from portal.booth_identity import parse_booth_id
-            from portal.models import DBBooth, Event
-
-
             from portal.database import (
                 get_session,
                 list_booth_memberships_for_user,
                 list_memberships_for_user,
                 list_room_memberships_for_user,
             )
+            from portal.models import DBBooth, Event, Room
 
             try:
                 event_slug, room_id, lang_code = parse_booth_id(booth_id)
@@ -679,9 +683,11 @@ async def resolve_booth_role(
                     stmt = (
                         select(DBBooth)
                         .join(Event)
+                        .join(Room, DBBooth.room_id == Room.id)
                         .where(
                             Event.slug == event_slug,
                             Event.deleted_at.is_(None),
+                            Room.event_id == DBBooth.event_id,
                             DBBooth.room_id == room_id,
                             DBBooth.language_code == lang_code,
                         )
@@ -689,15 +695,9 @@ async def resolve_booth_role(
                     booth = (await db_session.scalars(stmt)).first()
 
                     if booth:
-                        booth_memberships = await list_booth_memberships_for_user(
-                            db_session, user_id
-                        )
-                        room_memberships = await list_room_memberships_for_user(
-                            db_session, user_id
-                        )
-                        event_memberships = await list_memberships_for_user(
-                            db_session, user_id
-                        )
+                        booth_memberships = await list_booth_memberships_for_user(db_session, user_id)
+                        room_memberships = await list_room_memberships_for_user(db_session, user_id)
+                        event_memberships = await list_memberships_for_user(db_session, user_id)
 
                         policy = AccessPolicy()
                         policy.booth_scopes[booth.id] = (booth.room_id, booth.event_id)

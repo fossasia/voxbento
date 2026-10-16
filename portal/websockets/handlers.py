@@ -53,12 +53,17 @@ async def ws_booth(websocket: WebSocket, booth_id: str) -> None:
         language=language_name,
         channel_id=f"{booth_id}-audio",
         granted_role=ws_granted_role,
+        auth_payload=payload,
     )
     manager.add(websocket, session)
 
     try:
         while True:
             raw = await websocket.receive_text()
+            current_role = await resolve_booth_role(session.auth_payload, booth_id)
+            if current_role != session.granted_role:
+                await websocket.close(code=4003)
+                break
             try:
                 data = json.loads(raw)
             except json.JSONDecodeError:
