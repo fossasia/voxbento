@@ -382,7 +382,7 @@ async def test_ffmpeg_process_aenter_start_new_session_platform():
         # 1. POSIX platforms: start_new_session must be True
         with (
             patch.object(FfmpegProcess, "_log_stderr", new=AsyncMock()),
-            patch("portal.transcription.process.sys.platform", "linux"),
+            patch("portal.transcription.process._IS_WINDOWS", False),
         ):
             await _ORIGINAL_FFMPEG_AENTER(proc_manager)
             assert mock_exec.call_args.kwargs.get("start_new_session") is True
@@ -393,7 +393,7 @@ async def test_ffmpeg_process_aenter_start_new_session_platform():
         mock_exec.reset_mock()
         with (
             patch.object(FfmpegProcess, "_log_stderr", new=AsyncMock()),
-            patch("portal.transcription.process.sys.platform", "win32"),
+            patch("portal.transcription.process._IS_WINDOWS", True),
         ):
             await _ORIGINAL_FFMPEG_AENTER(proc_manager)
             assert "start_new_session" not in mock_exec.call_args.kwargs
@@ -404,13 +404,12 @@ async def test_ffmpeg_process_aenter_start_new_session_platform():
 @pytest.mark.anyio
 async def test_kill_windows_tree_invokes_taskkill():
     """
-    Verify _kill_windows_tree constructs proper taskkill commands for graceful (/T)
-    and forced (/F /T) termination, falling back to direct terminate/kill.
+    Verify _kill_windows_tree constructs proper taskkill command with /F /T,
+    falling back to direct kill if needed.
     """
     proc_manager = FfmpegProcess("dummy", "16000", "test_taskkill")
     mock_proc = MagicMock()
     mock_proc.pid = 5432
-    mock_proc.terminate = MagicMock()
     mock_proc.kill = MagicMock()
     proc_manager.process = mock_proc
 
@@ -421,21 +420,7 @@ async def test_kill_windows_tree_invokes_taskkill():
         "portal.transcription.process.asyncio.create_subprocess_exec",
         new=AsyncMock(return_value=mock_exec_proc),
     ) as mock_exec:
-        # Graceful tree termination
-        await proc_manager._kill_windows_tree(force=False)
-        mock_exec.assert_called_once_with(
-            "taskkill",
-            "/PID",
-            "5432",
-            "/T",
-            stdout=asyncio.subprocess.DEVNULL,
-            stderr=asyncio.subprocess.DEVNULL,
-        )
-        mock_proc.terminate.assert_called_once()
-
-        # Forceful tree termination
-        mock_exec.reset_mock()
-        await proc_manager._kill_windows_tree(force=True)
+        await proc_manager._kill_windows_tree()
         mock_exec.assert_called_once_with(
             "taskkill",
             "/F",
@@ -452,13 +437,12 @@ async def test_kill_windows_tree_invokes_taskkill():
 async def test_kill_windows_tree_reports_nonzero_exit(caplog):
     """
     Verify _kill_windows_tree reports a failed process-tree teardown when the
-    taskkill subprocess exits with a nonzero return code, while still falling
-    back to direct process termination.
+    taskkill subprocess exits with an unexpected nonzero return code, while ignoring
+    benign exit code 128 (process already exited).
     """
     proc_manager = FfmpegProcess("dummy", "16000", "test_taskkill_failure")
     mock_proc = MagicMock()
     mock_proc.pid = 7777
-    mock_proc.terminate = MagicMock()
     mock_proc.kill = MagicMock()
     proc_manager.process = mock_proc
 
@@ -472,14 +456,30 @@ async def test_kill_windows_tree_reports_nonzero_exit(caplog):
             new=AsyncMock(return_value=mock_exec_proc),
         ),
     ):
-        await proc_manager._kill_windows_tree(force=False)
+        await proc_manager._kill_windows_tree()
 
     messages = [record.getMessage() for record in caplog.records]
     assert any("taskkill" in msg and "exit code 1" in msg for msg in messages), (
         f"expected nonzero taskkill failure report, got: {messages}"
     )
-    # The fallback to direct process termination must still happen.
-    mock_proc.terminate.assert_called_once()
+    mock_proc.kill.assert_called_once()
+
+    # Verify exit code 128 (process not found / already dead) logs no warning
+    caplog.clear()
+    mock_proc.kill.reset_mock()
+    mock_exec_proc.wait = AsyncMock(return_value=128)
+    with (
+        caplog.at_level(logging.WARNING, logger="portal.transcription.process"),
+        patch(
+            "portal.transcription.process.asyncio.create_subprocess_exec",
+            new=AsyncMock(return_value=mock_exec_proc),
+        ),
+    ):
+        await proc_manager._kill_windows_tree()
+
+    warning_messages = [record.getMessage() for record in caplog.records if record.levelno >= logging.WARNING]
+    assert not warning_messages, f"expected no warning for exit code 128, got: {warning_messages}"
+    mock_proc.kill.assert_called_once()
 
 
 def _fake_kill_proc():
@@ -500,11 +500,11 @@ def _cleanup_stub_process(returncode=None, wait=None):
 
 @pytest.mark.anyio
 async def test_perform_cleanup_routes_to_windows_tree_on_win32(monkeypatch):
-    """With sys.platform == 'win32', graceful cleanup must route to _kill_windows_tree.
+    """With _IS_WINDOWS == True, cleanup must route to _kill_windows_tree.
 
-    Patching sys.platform lets this branch be exercised on POSIX CI too.
+    Patching _IS_WINDOWS lets this branch be exercised on POSIX CI too.
     """
-    monkeypatch.setattr("portal.transcription.process.sys.platform", "win32")
+    monkeypatch.setattr("portal.transcription.process._IS_WINDOWS", True)
 
     fp = FfmpegProcess("dummy", "16000", "route-win32")
     fp.process = _cleanup_stub_process(returncode=None)
@@ -518,13 +518,13 @@ async def test_perform_cleanup_routes_to_windows_tree_on_win32(monkeypatch):
     ):
         await fp._perform_cleanup()
 
-    kill_tree.assert_awaited_once_with(force=False)
+    kill_tree.assert_awaited_once()
 
 
 @pytest.mark.anyio
 async def test_perform_cleanup_escalates_to_forced_windows_kill_on_timeout(monkeypatch):
-    """When ffmpeg ignores the graceful kill, Windows cleanup must escalate to force=True."""
-    monkeypatch.setattr("portal.transcription.process.sys.platform", "win32")
+    """When ffmpeg ignores termination, Windows cleanup must call _kill_windows_tree on timeout."""
+    monkeypatch.setattr("portal.transcription.process._IS_WINDOWS", True)
 
     fp = FfmpegProcess("dummy", "16000", "escalate-win32")
     fp.termination_timeout = 0.01
@@ -543,8 +543,6 @@ async def test_perform_cleanup_escalates_to_forced_windows_kill_on_timeout(monke
         await fp._perform_cleanup()
 
     assert kill_tree.await_count == 2
-    assert kill_tree.await_args_list[0].kwargs == {"force": False}
-    assert kill_tree.await_args_list[1].kwargs == {"force": True}
 
 
 @pytest.mark.anyio
@@ -553,7 +551,6 @@ async def test_kill_windows_tree_tolerates_already_exited_process():
     fp = FfmpegProcess("dummy", "16000", "reaped-fallback")
     proc = MagicMock()
     proc.pid = 4242
-    proc.terminate = MagicMock(side_effect=ProcessLookupError())
     proc.kill = MagicMock(side_effect=ProcessLookupError())
     fp.process = proc
 
@@ -561,11 +558,9 @@ async def test_kill_windows_tree_tolerates_already_exited_process():
         "portal.transcription.process.asyncio.create_subprocess_exec",
         new=AsyncMock(return_value=_fake_kill_proc()),
     ):
-        # Must not raise, for both the graceful and the forced path.
-        await fp._kill_windows_tree(force=False)
-        await fp._kill_windows_tree(force=True)
+        # Must not raise.
+        await fp._kill_windows_tree()
 
-    proc.terminate.assert_called_once()
     proc.kill.assert_called_once()
 
 
@@ -575,7 +570,7 @@ async def test_perform_cleanup_does_not_propagate_when_process_exits_during_clea
 
     Simulates deterministic subprocess paths so this runs on POSIX CI as well.
     """
-    monkeypatch.setattr("portal.transcription.process.sys.platform", "win32")
+    monkeypatch.setattr("portal.transcription.process._IS_WINDOWS", True)
 
     fp = FfmpegProcess("dummy", "16000", "race-regression")
     fp.termination_timeout = 0.01
@@ -585,7 +580,7 @@ async def test_perform_cleanup_does_not_propagate_when_process_exits_during_clea
         returncode=None,
         wait=AsyncMock(return_value=0),
     )
-    fp.process.terminate = MagicMock(side_effect=ProcessLookupError())
+    fp.process.kill = MagicMock(side_effect=ProcessLookupError())
     fp.stderr_task = None
     with patch(
         "portal.transcription.process.asyncio.create_subprocess_exec",
@@ -617,7 +612,7 @@ async def test_perform_cleanup_swallows_process_lookup_error(monkeypatch):
     (or os.killpg on POSIX) raises because the process was already reaped, cleanup
     must complete without unwinding into the transcription worker.
     """
-    monkeypatch.setattr("portal.transcription.process.sys.platform", "win32")
+    monkeypatch.setattr("portal.transcription.process._IS_WINDOWS", True)
 
     fp = FfmpegProcess("dummy", "16000", "outer-guard")
     fp.process = _cleanup_stub_process(returncode=None, wait=AsyncMock(return_value=0))
