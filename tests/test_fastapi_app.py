@@ -279,6 +279,94 @@ def test_ws_join_receives_joined_and_state():
     assert "participant_id" in joined
     assert "state" in joined
 
+def test_ws_role_recheck_is_throttled():
+    from unittest.mock import AsyncMock, patch
+
+    with (
+        patch(
+            "portal.websockets.handlers.resolve_booth_role",
+            new=AsyncMock(return_value="event_admin"),
+        ) as resolve_role,
+        patch("portal.websockets.handlers.time.monotonic", return_value=0.0),
+    ):
+        with client.websocket_connect(
+            "/ws/booth/throttle-test-booth",
+            cookies=_ws_auth(),
+        ) as ws:
+            ws.send_text(json.dumps({"type": "unknown"}))
+            assert json.loads(ws.receive_text())["type"] == "booth:error"
+
+            ws.send_text(json.dumps({"type": "unknown"}))
+            assert json.loads(ws.receive_text())["type"] == "booth:error"
+
+    # One initial resolution; neither message triggers a recheck.
+    assert resolve_role.await_count == 1
+
+
+def test_ws_role_change_closes_connection():
+    from unittest.mock import AsyncMock, patch
+
+    clock = iter([0.0, 6.0])
+    
+    def fake_monotonic():
+        return next(clock, 6.0)
+
+    with (
+        patch(
+            "portal.websockets.handlers.resolve_booth_role",
+            new=AsyncMock(side_effect=["event_admin", "interpreter"]),
+        ) as resolve_role,
+        patch(
+            "portal.websockets.handlers._monotonic",
+            side_effect=fake_monotonic,
+        ),
+    ):
+        with client.websocket_connect(
+            "/ws/booth/role-change-test-booth",
+            cookies=_ws_auth(),
+        ) as ws:
+            ws.send_text(json.dumps({"type": "unknown"}))
+            with pytest.raises(Exception):
+                ws.receive_text()
+
+    assert resolve_role.await_count == 2
+
+
+def test_ws_role_recheck_database_error_keeps_connection_open():
+    from unittest.mock import AsyncMock, patch
+
+    clock = iter([0.0, 6.0, 12.0])
+    
+    def fake_monotonic():
+        return next(clock, 12.0)
+
+    with (
+        patch(
+            "portal.websockets.handlers.resolve_booth_role",
+            new=AsyncMock(
+                side_effect=[
+                    "event_admin",
+                    RuntimeError("temporary database failure"),
+                    "event_admin",
+                ]
+            ),
+        ) as resolve_role,
+        patch(
+            "portal.websockets.handlers._monotonic",
+            side_effect=fake_monotonic,
+        ),
+    ):
+        with client.websocket_connect(
+            "/ws/booth/role-db-error-test-booth",
+            cookies=_ws_auth(),
+        ) as ws:
+            ws.send_text(json.dumps({"type": "unknown"}))
+            assert json.loads(ws.receive_text())["type"] == "booth:error"
+
+            ws.send_text(json.dumps({"type": "unknown"}))
+            assert json.loads(ws.receive_text())["type"] == "booth:error"
+
+    assert resolve_role.await_count == 3
 
 def test_ws_join_without_language_and_unconfigured_booth_returns_error():
     """If neither the client specifies a language nor the booth exists in DB, join must error."""

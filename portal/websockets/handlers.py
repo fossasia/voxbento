@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
-
+import time
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from portal.auth import WSAuthError, resolve_booth_role, resolve_ws_auth
@@ -24,8 +24,8 @@ from portal.websockets.manager import (
 )
 
 _log = logging.getLogger(__name__)
-
-
+ROLE_RECHECK_INTERVAL = 5.0
+_monotonic = time.monotonic
 router = APIRouter()
 
 
@@ -56,14 +56,30 @@ async def ws_booth(websocket: WebSocket, booth_id: str) -> None:
         auth_payload=payload,
     )
     manager.add(websocket, session)
+    last_role_check = _monotonic()
 
     try:
         while True:
             raw = await websocket.receive_text()
-            current_role = await resolve_booth_role(session.auth_payload, booth_id)
-            if current_role != session.granted_role:
-                await websocket.close(code=4003)
-                break
+
+            now = _monotonic()
+            if now - last_role_check >= ROLE_RECHECK_INTERVAL:
+                last_role_check = now
+
+                try:
+                    current_role = await resolve_booth_role(
+                        session.auth_payload,
+                        booth_id,
+                        raise_on_error=True,
+                    )
+                except Exception:
+                    _log.exception(
+                        "Failed to recheck WebSocket booth role; keeping connection open"
+                    )
+                else:
+                    if current_role != session.granted_role:
+                        await websocket.close(code=4003)
+                        break
             try:
                 data = json.loads(raw)
             except json.JSONDecodeError:
