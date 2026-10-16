@@ -185,6 +185,23 @@ def deny(ip: str) -> None:
     raise HTTPException(401, "Publish authorization failed")
 
 
+def floor_protocol_allowed(protocol: str) -> bool:
+    """WHIP is always accepted on the floor; SRT only when the operator enables it."""
+    if protocol == "webrtc":
+        return True
+    return protocol == "srt" and settings.program_ingest_srt_enabled
+
+
+def publisher_session_id(data: MediaAuth) -> str | None:
+    """WHIP sessions are UUIDs; SRT connection ids are opaque, non-UUID strings."""
+    if data.protocol == "webrtc":
+        try:
+            return str(UUID(data.id))
+        except ValueError:
+            return None
+    return data.id or None
+
+
 async def authorize_publish(data: MediaAuth) -> None:
     """Only called by MediaMTX on the private network. Never log request data."""
     if data.action != "publish":
@@ -207,7 +224,7 @@ async def authorize_publish(data: MediaAuth) -> None:
     slug, room_id = match.groups()
     parsed_room_id = int(room_id)
     secret = data.token or data.password
-    if not settings.program_ingest_enabled or data.protocol != "webrtc" or data.query or not secret:
+    if not settings.program_ingest_enabled or not floor_protocol_allowed(data.protocol) or data.query or not secret:
         # Bot-mode RTSP is checked after loading the room; all invalid external
         # program-ingest requests fail before doing password-grade KDF work.
         presented_digest = ""
@@ -239,14 +256,13 @@ async def authorize_publish(data: MediaAuth) -> None:
                 deny(data.ip)
             if (
                 not settings.program_ingest_enabled
-                or data.protocol != "webrtc"
+                or not floor_protocol_allowed(data.protocol)
                 or data.query
                 or not credential_digest_valid(room, presented_digest)
             ):
                 deny(data.ip)
-            try:
-                session_id = str(UUID(data.id))
-            except ValueError:
+            session_id = publisher_session_id(data)
+            if session_id is None:
                 deny(data.ip)
             # A DB reservation can outlive a MediaMTX session across a process restart.
             # Clear it immediately when the path confirms that no source remains;
@@ -327,10 +343,13 @@ async def media_paths() -> dict[str, MediaPath]:
 async def kick(path: str, source: MediaSource | None) -> None:
     if source is None:
         return
-    endpoint = {"webRTCSession": "webrtcsessions", "rtspSession": "rtspsessions"}.get(source.type)
+    endpoint = {"webRTCSession": "webrtcsessions", "rtspSession": "rtspsessions", "srtConn": "srtconns"}.get(
+        source.type
+    )
     if endpoint is None:
         raise HTTPException(409, "Unsupported existing floor publisher; stop it before switching source")
-    session_id = str(UUID(source.id))
+    # WHIP/RTSP ids are UUIDs; an SRT connection id is an opaque MediaMTX identifier.
+    session_id = source.id if source.type == "srtConn" else str(UUID(source.id))
     response = await get_http_client().post(
         f"{settings.mediamtx_api_base}/v3/{endpoint}/kick/{session_id}", timeout=MEDIA_CONTROL_TIMEOUT
     )
