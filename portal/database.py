@@ -333,9 +333,6 @@ async def create_booth(
     language_code: str,
     language_name: str,
 ) -> DBBooth:
-    room = await session.get(Room, room_id)
-    if room is None or room.event_id != event_id:
-        raise ValueError("Booth room must belong to the specified event")
 
     booth = DBBooth(
         event_id=event_id,

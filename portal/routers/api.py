@@ -183,12 +183,6 @@ async def create_event_booth(
             )
         )
         db_booth = booth_query.scalar_one_or_none()
-        room = await session.get(Room, db_room_id)
-        if room is None or room.event_id != event.id:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Booth room must belong to the specified event",
-            )
         if not db_booth:
             db_booth = DBBooth(
                 event_id=event.id,
