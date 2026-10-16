@@ -1,0 +1,108 @@
+{% extends "base.html" %}
+{% block title %}Sign In Successful — Voxbento{% endblock %}
+
+{% block content %}
+<div style="max-width: 480px; margin: 80px auto; text-align: center; background: #fff; padding: 40px 20px; border-radius: 12px; box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.05); border: 1px solid #e2e8f0;">
+  <div style="width: 64px; height: 64px; background: #22c55e; color: white; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 32px; margin: 0 auto 20px;">✓</div>
+  <h2 style="margin-top: 0; color: #0f172a;">Successfully Signed In</h2>
+  <p style="color: #64748b; font-size: 16px; margin-bottom: 24px;">You are now logged into VoxBento.</p>
+
+  <div id="status-banner" style="display: flex; align-items: center; justify-content: center; gap: 10px; color: #1e40af; font-weight: 500; padding: 14px 18px; background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 8px; line-height: 1.6; margin-bottom: 20px; text-align: left;">
+    <span style="font-size: 20px;">ℹ️</span>
+    <div>
+      <div style="font-weight: 600; color: #1e3a8a;">Session synchronized</div>
+      <div style="color: #3b82f6; font-size: 14px;">Please return to your original tab to continue authorizing. If you are not redirected automatically, <a id="manual-redirect-link" href="#" target="voxbento_oauth" style="color: #1d4ed8; text-decoration: underline; font-weight: 600; cursor: pointer;">click here</a>.</div>
+    </div>
+  </div>
+</div>
+
+<script>
+  let authChannel = null;
+  if (typeof BroadcastChannel !== 'undefined') {
+      authChannel = new BroadcastChannel('voxbento_auth');
+      authChannel.postMessage('logged_in');
+  }
+
+  (function() {
+      function getSafeRedirectUrl(rawUrl) {
+          if (!rawUrl || typeof rawUrl !== 'string') return '';
+          const trimmed = rawUrl.trim();
+          const lower = trimmed.toLowerCase();
+          if (trimmed.startsWith('//') || lower.startsWith('javascript:') || lower.startsWith('data:') || lower.startsWith('vbscript:')) {
+              return '';
+          }
+          try {
+              const parsed = new URL(trimmed, window.location.origin);
+              if (parsed.origin === window.location.origin &&
+                  (parsed.protocol === 'http:' || parsed.protocol === 'https:') &&
+                  parsed.pathname.startsWith('/oauth/authorize') &&
+                  !parsed.pathname.startsWith('//')) {
+                  return parsed.href;
+              }
+          } catch (e) {}
+          return '';
+      }
+
+      const rawTarget = {{ (next_url or "") | tojson }};
+      const targetUrl = getSafeRedirectUrl(rawTarget);
+
+      if (authChannel && targetUrl) {
+          authChannel.postMessage({ type: 'logged_in', url: targetUrl });
+      }
+
+      function openAuthPopup() {
+          if (!targetUrl) return null;
+          try {
+              const parsed = new URL(targetUrl, window.location.origin);
+              if (parsed.origin !== window.location.origin || !parsed.pathname.startsWith('/oauth/authorize')) {
+                  console.error('Invalid targetUrl origin or path:', targetUrl);
+                  return null;
+              }
+          } catch (e) {
+              console.error('Malformed targetUrl:', e);
+              return null;
+          }
+          const width = 600;
+          const height = 700;
+          const left = window.screen.width ? Math.round((window.screen.width - width) / 2) : 100;
+          const top = window.screen.height ? Math.round((window.screen.height - height) / 2) : 100;
+          const features = `width=${width},height=${height},top=${top},left=${left},status=yes,toolbar=no,menubar=no,location=yes,resizable=yes,scrollbars=yes`;
+
+          let popup = null;
+          try {
+              popup = window.open(targetUrl, 'voxbento_oauth', features);
+              if (popup) {
+                  popup.focus();
+              }
+          } catch (e) {
+              console.error('Error opening popup:', e);
+          }
+          return popup;
+      }
+
+      if (targetUrl) {
+          const manualLink = document.getElementById('manual-redirect-link');
+          if (manualLink) {
+              manualLink.href = targetUrl;
+              manualLink.addEventListener('click', function(e) {
+                  e.preventDefault();
+                  if (authChannel) {
+                      authChannel.postMessage({ type: 'logged_in', url: targetUrl });
+                      authChannel.postMessage('focus_popup');
+                  }
+                  openAuthPopup();
+                  try { window.close(); } catch (err) {}
+              });
+          }
+
+          if (authChannel) {
+              authChannel.postMessage({ type: 'logged_in', url: targetUrl });
+              authChannel.postMessage('focus_popup');
+          }
+          setTimeout(function() {
+              try { window.close(); } catch (e) {}
+          }, 1500);
+      }
+  })();
+</script>
+{% endblock %}

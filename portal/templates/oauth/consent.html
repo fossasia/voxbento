@@ -2,37 +2,259 @@
 
 {% block title %}Authorize Application — Voxbento{% endblock %}
 
+{% block head %}
+<script>
+  if (typeof BroadcastChannel !== 'undefined') {
+      const authChannel = new BroadcastChannel('voxbento_auth');
+      authChannel.onmessage = (e) => {
+          if (e.data === 'focus_popup') {
+              try { window.focus(); } catch (err) {}
+          }
+      };
+  }
+</script>
+<style>
+  body {
+    background-color: #f8fafc;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  .auth-wrapper {
+    max-width: 480px;
+    margin: 60px auto;
+    padding: 0 20px;
+  }
+  .auth-logos {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-bottom: 30px;
+    gap: 15px;
+  }
+  .auth-logo-box {
+    width: 64px;
+    height: 64px;
+    border-radius: 50%;
+    background: #fff;
+    border: 1px solid #e2e8f0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+    overflow: hidden;
+  }
+  .auth-logo-box img {
+    max-width: 36px;
+    max-height: 36px;
+    object-fit: contain;
+  }
+  .auth-connector {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    color: #cbd5e1;
+  }
+  .auth-connector-line {
+    width: 20px;
+    height: 2px;
+    background: #cbd5e1;
+  }
+  .auth-check {
+    width: 32px;
+    height: 32px;
+    background: #22c55e;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: white;
+    font-size: 16px;
+  }
+  .auth-title {
+    text-align: center;
+    font-size: 24px;
+    font-weight: 600;
+    color: #0f172a;
+    margin-bottom: 30px;
+  }
+  .auth-card-modern {
+    background: #fff;
+    border: 1px solid #e2e8f0;
+    border-radius: 12px;
+    overflow: hidden;
+    box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.05);
+  }
+  .auth-card-header {
+    padding: 20px;
+    border-bottom: 1px solid #e2e8f0;
+    display: flex;
+    align-items: center;
+    gap: 15px;
+  }
+  .auth-card-header .client-logo {
+    width: 40px;
+    height: 40px;
+    border-radius: 8px;
+    background: #fff;
+    border: 1px solid #e2e8f0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: bold;
+    color: #0284c7;
+    font-size: 20px;
+  }
+  .auth-card-header .client-logo img {
+    max-width: 24px;
+    max-height: 24px;
+  }
+  .auth-card-header-text h3 {
+    margin: 0 0 4px 0;
+    font-size: 16px;
+    color: #0f172a;
+  }
+  .auth-card-header-text p {
+    margin: 0;
+    font-size: 14px;
+    color: #64748b;
+  }
+  .auth-permissions {
+    padding: 20px;
+    border-bottom: 1px solid #e2e8f0;
+  }
+  .perm-group {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    margin-bottom: 14px;
+  }
+  .perm-group:last-child {
+    margin-bottom: 0;
+  }
+  .perm-icon {
+    color: #475569;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+  }
+  .perm-text h4 {
+    margin: 0;
+    font-size: 14px;
+    font-weight: 500;
+    color: #0f172a;
+    line-height: 1.4;
+  }
+  .auth-actions {
+    padding: 20px;
+    display: flex;
+    gap: 10px;
+    background: #f8fafc;
+  }
+  .auth-actions button {
+    flex: 1;
+    padding: 10px 16px;
+    border-radius: 6px;
+    font-weight: 500;
+    font-size: 14px;
+    cursor: pointer;
+    transition: all 0.2s;
+  }
+  .btn-deny {
+    background: #fff;
+    border: 1px solid #cbd5e1;
+    color: #475569;
+  }
+  .btn-deny:hover {
+    background: #f1f5f9;
+    border-color: #94a3b8;
+  }
+  .btn-approve {
+    background: #0ea5e9;
+    border: 1px solid #0284c7;
+    color: white;
+  }
+  .btn-approve:hover {
+    background: #0284c7;
+  }
+</style>
+{% endblock %}
+
 {% block content %}
-<div class="auth-container">
-  <div class="auth-card">
-    <div class="auth-header text-center">
-      <h2>Authorize Application</h2>
-      <p><strong>{{ client.name }}</strong> wants to access your VoxBento account for the event <strong>{{ event.display_name }}</strong>.</p>
+<div class="auth-wrapper">
+  
+  <div class="auth-logos">
+    <div class="auth-logo-box">
+      <img src="{{ url_for('static', path='img/eventyay-icon.svg') }}" alt="Eventyay Logo">
+    </div>
+    <div class="auth-connector">
+      <div class="auth-connector-line"></div>
+      <div class="auth-check">✓</div>
+      <div class="auth-connector-line"></div>
+    </div>
+    <div class="auth-logo-box">
+      <img src="{{ url_for('static', path='img/icon_only.png') }}" alt="VoxBento Logo">
+    </div>
+  </div>
+
+  <h1 class="auth-title">Authorize {{ client.name }}</h1>
+
+  <div class="auth-card-modern">
+    <div class="auth-card-header">
+      <div class="client-logo">
+        <img src="{{ url_for('static', path='img/eventyay-icon.svg') }}" alt="Eventyay Logo">
+      </div>
+      <div class="auth-card-header-text">
+        <h3>{{ client.name }}</h3>
+        <p>wants to access your <strong>{{ event.display_name }}</strong> event account</p>
+        {% if current_user_email %}
+        <p style="margin-top: 6px; font-size: 13px; color: #0284c7;">
+          Signed in as <strong>{{ current_user_email }}</strong>
+          {% if switch_url %}
+            <span style="color: #cbd5e1; margin: 0 4px;">•</span>
+            <a href="{{ switch_url }}" style="color: #ef4444; text-decoration: underline; font-weight: 500;">Switch account</a>
+          {% endif %}
+        </p>
+        {% endif %}
+      </div>
     </div>
 
-    <div class="auth-body">
-      <h4>Requested Permissions:</h4>
-      <ul class="permission-list">
-        {% for scope_id, scope_desc in scopes %}
-        <li><strong>{{ scope_id }}</strong>: {{ scope_desc }}</li>
-        {% endfor %}
-      </ul>
-
-      <form method="POST" action="/oauth/authorize" class="auth-form mt-4">
-        <input type="hidden" name="client_id" value="{{ client.client_id }}">
-        <input type="hidden" name="redirect_uri" value="{{ redirect_uri }}">
-        <input type="hidden" name="state" value="{{ state }}">
-        <input type="hidden" name="code_challenge" value="{{ code_challenge }}">
-        <input type="hidden" name="code_challenge_method" value="{{ code_challenge_method }}">
-        <input type="hidden" name="event_id" value="{{ event.id }}">
-        <input type="hidden" name="scope" value="{{ scope_string }}">
-        
-        <div class="form-actions d-flex justify-content-between">
-          <button type="submit" name="action" value="deny" class="btn btn-outline">Cancel</button>
-          <button type="submit" name="action" value="approve" class="btn btn-primary">Authorize</button>
+    <div class="auth-permissions">
+      {% for scope_id, scope_desc in scopes %}
+      <div class="perm-group">
+        <div class="perm-icon">
+          {% if "event" in scope_id %}
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect><line x1="16" y1="2" x2="16" y2="6"></line><line x1="8" y1="2" x2="8" y2="6"></line><line x1="3" y1="10" x2="21" y2="10"></line></svg>
+          {% elif "room" in scope_id or "booth" in scope_id %}
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 2 7 12 12 22 7 12 2"></polygon><polyline points="2 17 12 22 22 17"></polyline><polyline points="2 12 12 17 22 12"></polyline></svg>
+          {% elif "session" in scope_id or "transcript" in scope_id %}
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"></path><path d="M19 10v2a7 7 0 0 1-14 0v-2"></path><line x1="12" y1="19" x2="12" y2="23"></line><line x1="8" y1="23" x2="16" y2="23"></line></svg>
+          {% elif "listener" in scope_id or "user" in scope_id %}
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="9" cy="7" r="4"></circle><path d="M23 21v-2a4 4 0 0 0-3-3.87"></path><path d="M16 3.13a4 4 0 0 1 0 7.75"></path></svg>
+          {% else %}
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 14 14"></polyline></svg>
+          {% endif %}
         </div>
-      </form>
+        <div class="perm-text">
+          <h4>{{ scope_desc }}</h4>
+        </div>
+      </div>
+      {% endfor %}
     </div>
+
+    <form method="POST" action="/oauth/authorize" class="m-0">
+      <input type="hidden" name="client_id" value="{{ client.client_id }}">
+      <input type="hidden" name="redirect_uri" value="{{ redirect_uri }}">
+      <input type="hidden" name="state" value="{{ state }}">
+      <input type="hidden" name="code_challenge" value="{{ code_challenge }}">
+      <input type="hidden" name="code_challenge_method" value="{{ code_challenge_method }}">
+      <input type="hidden" name="event_id" value="{{ event.id }}">
+      <input type="hidden" name="scope" value="{{ scope_string }}">
+      
+      <div class="auth-actions">
+        <button type="submit" name="action" value="deny" class="btn-deny">Cancel</button>
+        <button type="submit" name="action" value="approve" class="btn-approve">Authorize {{ client.name }}</button>
+      </div>
+    </form>
   </div>
 </div>
 {% endblock %}
