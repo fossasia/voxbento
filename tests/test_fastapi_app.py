@@ -1488,6 +1488,103 @@ def test_event_booth_state_does_not_autocreate():
     assert res.json()["booths"] == []
 
 
+def test_event_booth_state_loads_booth_missing_from_memory():
+    """A booth that is in the database but not in memory (e.g. after a restart) still loads."""
+    import anyio
+
+    from portal.globals import booths
+
+    created = client.post("/api/events/restarted/booths", json={"language_code": "fr", "language": "French"}).json()
+    room_id = created["room_id"]
+    anyio.run(booths.remove_booth, "restarted", room_id, "fr")
+
+    res = client.get(f"/api/events/restarted/booths/fr/state?room_id={room_id}")
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["booth_id"] == f"restarted-{room_id}-fr"
+    assert body["language"] == "French"
+    assert body["participants"] == []
+
+
+def test_event_booth_state_does_not_load_booth_from_other_event():
+    """The database fallback only finds booths of the event in the URL."""
+    import anyio
+
+    from portal.globals import booths
+
+    created = client.post("/api/events/ownerevent/booths", json={"language_code": "fr", "language": "French"}).json()
+    room_id = created["room_id"]
+    anyio.run(booths.remove_booth, "ownerevent", room_id, "fr")
+
+    res = client.get(f"/api/events/otherevent/booths/fr/state?room_id={room_id}")
+    assert res.status_code == 404
+    assert anyio.run(booths.get_booth_for_event, "otherevent", room_id, "fr") is None
+
+
+def test_event_booth_state_does_not_load_booth_of_deleted_event():
+    """A booth of a deleted event is not loaded back from the database."""
+    from datetime import datetime, timezone
+
+    import anyio
+    from sqlalchemy import update
+
+    from portal.database import get_session
+    from portal.globals import booths
+    from portal.models import Event
+
+    created = client.post("/api/events/deletedevent/booths", json={"language_code": "fr", "language": "French"}).json()
+    room_id = created["room_id"]
+    anyio.run(booths.remove_booth, "deletedevent", room_id, "fr")
+
+    async def mark_deleted() -> None:
+        async with get_session() as session:
+            await session.execute(
+                update(Event).where(Event.slug == "deletedevent").values(deleted_at=datetime.now(timezone.utc))
+            )
+
+    anyio.run(mark_deleted)
+
+    res = client.get(f"/api/events/deletedevent/booths/fr/state?room_id={room_id}")
+    assert res.status_code == 404
+
+
+def test_event_booth_state_does_not_load_booth_whose_room_belongs_to_another_event():
+    """A booth row pointing at another event's room is not loaded."""
+    import anyio
+
+    from portal.database import create_booth, create_event, create_room, get_session
+
+    async def seed() -> int:
+        async with get_session() as session:
+            owner = await create_event(session, slug="roomowner", display_name="Room Owner")
+            borrower = await create_event(session, slug="roomborrower", display_name="Room Borrower")
+            room = await create_room(session, event_id=owner.id, display_name="Main")
+            await create_booth(
+                session, event_id=borrower.id, room_id=room.id, language_code="fr", language_name="French"
+            )
+            return room.id
+
+    room_id = anyio.run(seed)
+
+    res = client.get(f"/api/events/roomborrower/booths/fr/state?room_id={room_id}")
+    assert res.status_code == 404
+
+
+def test_event_booth_state_loads_booth_missing_from_memory_with_uppercase_url():
+    """The database fallback normalises the event slug and language code like the in-memory lookup."""
+    import anyio
+
+    from portal.globals import booths
+
+    created = client.post("/api/events/casecheck/booths", json={"language_code": "fr", "language": "French"}).json()
+    room_id = created["room_id"]
+    anyio.run(booths.remove_booth, "casecheck", room_id, "fr")
+
+    res = client.get(f"/api/events/CaseCheck/booths/FR/state?room_id={room_id}")
+    assert res.status_code == 200, res.text
+    assert res.json()["booth_id"] == f"casecheck-{room_id}-fr"
+
+
 def test_event_booth_whip_url_active_interpreter():
     """Event-scoped WHIP URL returns URL for active interpreter."""
     client.post("/api/events/whipevent/booths", json={"language_code": "en", "room_id": 1, "language": "English"})

@@ -887,7 +887,7 @@ async def admin_room_transcripts(request: Request, event_id: int, room_id: int):
         if event is None:
             raise HTTPException(status_code=404, detail="Event not found.")
         room = await get_room_by_id(session, room_id)
-        if room is None:
+        if room is None or room.event_id != event_id:
             raise HTTPException(status_code=404, detail="Room not found.")
         booths = await list_booths_for_room(session, room_id)
     admin_flags = await get_admin_flags(request, event_id=event_id, room_id=room_id)
@@ -1770,6 +1770,11 @@ async def api_admin_get_transcripts(
     from portal.database import get_session
 
     async with get_session() as session:
+        # require_admin only checks access to event_id, so the room must belong to it.
+        room = await get_room_by_id(session, room_id)
+        if room is None or room.event_id != event_id:
+            raise HTTPException(status_code=404, detail="Room not found.")
+
         if target_lang:
             stmt = (
                 select(TranscriptTranslation)
