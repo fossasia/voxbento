@@ -25,7 +25,7 @@
     <form id="email-form" class="login-form">
       <input type="hidden" id="next_url" value="{{ next_url|default('', true) }}" />
       <label for="email">Email</label>
-      <input type="email" id="email" name="email" placeholder="you@example.com" value="{{ email|default('', true) }}" required autofocus />
+      <input type="email" id="email" name="email" placeholder="you@example.com" value="{{ email or prefill_email or '' }}" required autofocus />
       <button type="submit" id="continue-btn" class="btn btn-primary">Continue</button>
     </form>
 
@@ -100,7 +100,7 @@ document.addEventListener("DOMContentLoaded", () => {
       const res = await fetch("/api/auth/check-email", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: currentEmail })
+        body: JSON.stringify({ email: currentEmail, next_url: document.getElementById('next_url').value })
       });
       const data = await res.json();
       
@@ -127,6 +127,9 @@ document.addEventListener("DOMContentLoaded", () => {
         passwordForm.classList.remove("hidden");
         magicDivider.classList.remove("hidden");
         document.getElementById("password").focus();
+      } else {
+        // Auto trigger magic link sending for passwordless user
+        magicLinkBtn.click();
       }
 
     } catch (err) {
@@ -145,14 +148,18 @@ document.addEventListener("DOMContentLoaded", () => {
       const res = await fetch("/api/auth/magic-link", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: currentEmail })
+        body: JSON.stringify({ email: currentEmail, next_url: document.getElementById('next_url').value })
       });
       
       if (res.ok) {
+        const magicData = await res.json();
         passwordForm.classList.add("hidden");
         magicDivider.classList.add("hidden");
         magicLinkBtn.classList.add("hidden");
         showSuccess("We've sent a magic link to your email. Please check your inbox.");
+        if (magicData.poll_id && window.startMagicPoll) {
+          window.startMagicPoll(magicData.poll_id);
+        }
       } else {
         const data = await res.json();
         showError(data.detail || "Failed to send magic link");
@@ -175,7 +182,7 @@ document.addEventListener("DOMContentLoaded", () => {
       const res = await fetch("/api/auth/forgot-password", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: currentEmail })
+        body: JSON.stringify({ email: currentEmail, next_url: document.getElementById('next_url').value })
       });
       
       if (res.ok) {
@@ -189,4 +196,70 @@ document.addEventListener("DOMContentLoaded", () => {
   });
 });
 </script>
+
+<script>
+  (function() {
+      function getSafeRedirectUrl(rawUrl) {
+          if (!rawUrl || typeof rawUrl !== 'string') return '';
+          const trimmed = rawUrl.trim();
+          const lower = trimmed.toLowerCase();
+          if (trimmed.startsWith('//') || lower.startsWith('javascript:') || lower.startsWith('data:') || lower.startsWith('vbscript:')) {
+              return '';
+          }
+          try {
+              const parsed = new URL(trimmed, window.location.origin);
+              if (parsed.origin === window.location.origin &&
+                  (parsed.protocol === 'http:' || parsed.protocol === 'https:') &&
+                  !parsed.pathname.startsWith('//')) {
+                  return parsed.href;
+              }
+          } catch (e) {}
+          return '';
+      }
+
+      function redirectToNext(customUrl) {
+          const nextInput = document.getElementById('next_url');
+          let target = customUrl || (nextInput ? nextInput.value : '');
+          if (!target || target === 'None') {
+              const urlParams = new URLSearchParams(window.location.search);
+              target = urlParams.get('next') || '';
+          }
+          const safeTarget = getSafeRedirectUrl(target);
+          if (safeTarget) {
+              window.location.href = safeTarget;
+          } else {
+              window.location.reload();
+          }
+      }
+
+      window.startMagicPoll = function(pollId) {
+          if (!pollId) return;
+
+          if (typeof BroadcastChannel !== 'undefined') {
+              const authChannel = new BroadcastChannel('voxbento_auth');
+              authChannel.onmessage = (e) => {
+                  const isLogin = e.data === 'logged_in' || (e.data && e.data.type === 'logged_in');
+                  if (isLogin) {
+                      const url = e.data && e.data.url ? e.data.url : null;
+                      redirectToNext(url);
+                  }
+              };
+          }
+
+          const magicTimer = setInterval(async () => {
+              try {
+                  const res = await fetch('/api/auth/magic-poll?poll_id=' + encodeURIComponent(pollId));
+                  if (res.ok) {
+                      const data = await res.json();
+                      if (data && data.authenticated) {
+                          clearInterval(magicTimer);
+                          redirectToNext();
+                      }
+                  }
+              } catch (err) {}
+          }, 1000);
+      };
+  })();
+</script>
+
 {% endblock %}

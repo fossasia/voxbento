@@ -126,6 +126,22 @@ async def test_standby_interpreter_cannot_mark_ingest_connected():
 
 
 @pytest.mark.anyio
+async def test_update_state_rejects_non_boolean_flag():
+    registry = BoothRegistry()
+    interpreter = await join(registry, "Interpreter A")
+
+    # A truthy non-boolean (e.g. 1 or "true") must not slip past the publisher checks.
+    with pytest.raises(ValueError):
+        await registry.update_participant_state(
+            "hall-1-fr",
+            interpreter.participant_id,
+            "French",
+            "hall-1-fr-audio",
+            mic_active=1,
+        )
+
+
+@pytest.mark.anyio
 async def test_coordinator_can_assign_active_interpreter():
     registry = BoothRegistry()
     await join(registry, "Interpreter A")
