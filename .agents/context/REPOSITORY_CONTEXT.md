@@ -53,6 +53,7 @@ Attendees receive sub-second audio via WHEP. All coordination flows through Fast
 | `portal/static/js/interpreter-booth.js` | Interpreter UI — WebRTC/WHIP, WebSocket, Jitsi, mic controls |
 | `portal/static/js/whep-listener.js` | Listener WHEP client — RTCPeerConnection, auto-reconnect |
 | `portal/static/js/admin.js` | Admin panel helpers |
+| `portal/static/js/nav-toggle.js` | Hamburger toggle for the admin/developer header nav (breakpoint owned by `admin.css`) |
 | `portal/templates/` | Jinja2 HTML (base, booth, listener, auth, admin/) |
 | `mediamtx.yml` | MediaMTX config — WHIP/WHEP paths, RTSP, Control API |
 | `docker-compose.yml` | portal + mediamtx + jitsi-web/prosody/jicofo/jvb |

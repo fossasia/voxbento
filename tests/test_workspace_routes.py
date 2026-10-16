@@ -427,7 +427,7 @@ async def test_regular_user_navigation_omits_management_dashboard():
     assert '<span class="max-sm:hidden">Dashboard</span>' not in home.text
     assert 'href="/account"' in home.text
     assert account.status_code == 200
-    nav_html = account.text.split('<nav class="header-nav">')[1].split("</nav>")[0]
+    nav_html = account.text.split('<nav class="header-nav"', 1)[1].split("</nav>", 1)[0]
     assert nav_html.count("My Account") == 1
 
 
