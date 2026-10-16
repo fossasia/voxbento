@@ -216,6 +216,11 @@ Manual browser check:
 - `uv.lock` is the source of truth for all Python dependencies.
 - Docker images: `bluenviron/mediamtx:1.18.2`, `ghcr.io/jitsi/*:stable-11248`
 
+Meeting source: `portal/meeting_source.py` owns the managed Jitsi agent lifecycle
+(desired state `rooms.meeting_agent_enabled`, migration 027, bounded restarts,
+restart reconciliation); `portal/routers/meeting_source.py` owns its owner controls.
+Never log or return the meeting URL. Read `docs/meeting-source.md` first.
+
 Program ingest: `portal/program_ingest.py` owns floor authorization/reconciliation;
 `portal/routers/program_ingest.py` owns private media auth and event-owner controls.
 Migration 025 adds protected credentials, source ownership and persistent floor

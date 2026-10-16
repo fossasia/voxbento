@@ -6,7 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from portal.auth import create_embed_token, create_listener_token, security
-from portal.booth_identity import make_booth_id, make_mediamtx_path
+from portal.booth_identity import make_booth_id, make_mediamtx_path, validate_event_slug, validate_language_code
 from portal.config import settings
 from portal.database import (
     create_invite_token,
@@ -334,6 +334,35 @@ async def event_booth_state(
             room_id = 1
 
     state = await booths.get_booth_for_event(event_slug, room_id, language_code)
+    if state is None:
+        # Booth state lives in memory, so it is empty after a restart and for
+        # booths added in the admin UI. Load booths that exist in the database
+        # instead of failing the booth page; unknown booths still get a 404.
+        # Match the in-memory lookup: normalised coordinates, live events only,
+        # and the room must belong to the event.
+        slug = validate_event_slug(event_slug)
+        code = validate_language_code(language_code)
+        async with get_session() as session:
+            stmt = (
+                select(DBBooth)
+                .join(Event, Event.id == DBBooth.event_id)
+                .join(Room, Room.id == DBBooth.room_id)
+                .where(
+                    Event.slug == slug,
+                    Event.deleted_at.is_(None),
+                    Room.event_id == Event.id,
+                    DBBooth.room_id == room_id,
+                    DBBooth.language_code == code,
+                )
+            )
+            db_booth = await session.scalar(stmt)
+        if db_booth is not None:
+            state = await booths.snapshot(
+                booth_id=make_booth_id(slug, room_id, code),
+                language=db_booth.language_name,
+                channel_id=make_mediamtx_path(slug, room_id, code),
+                room_id=room_id,
+            )
     if state is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

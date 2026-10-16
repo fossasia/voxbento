@@ -6,6 +6,7 @@ Voxbento is a real-time interpretation platform for live events. It provides a b
 
 Interpreters stream live audio via WebRTC/WHIP → MediaMTX → WHEP (WebRTC playback).
 Booth coordination (who is active, relay handoff, chat) runs over WebSocket.
+Administrators can find hosted events in `/admin/events/` by searching either the event name or slug. Search treats `%` and `_` literally, pagination URL-encodes reserved characters, blank searches show all events, and out-of-range pages open the last filtered page.
 
 Rooms can optionally add a listener-side audio synchronization delay for WHEP playback. The default is `0` ms, which keeps the existing low-latency HTML audio path unchanged. Organizers can set values such as `1000`, `2000`, `5000`, or `8000` ms when a room's livestream video, captions, embedded player, or other external media is delayed and translated audio needs to line up with it. The delay is applied in the listener browser only; MediaMTX, WHIP, WHEP, and RTP packets are not changed. Within the organizer workspace, organizers can manage and search rooms by name within each event using server-side, case-insensitive filtering.
 
@@ -133,6 +134,16 @@ VoxBento Local is our sovereign, 100% on-device AI meeting intelligence and inte
 - **Download**: Visit [`/local`](https://voxbento.org/local) for platform-detected desktop packages (.dmg, .exe, .deb, .AppImage).
 - **Source Code & Releases**: Built at [github.com/ArnavBallinCode/voxa](https://github.com/ArnavBallinCode/voxa).
 - **Air-Gapped & Sovereign**: Whisper live transcription and Qwen 3.5 structured meeting minutes run completely on-device via Apple Metal and NVIDIA CUDA acceleration.
+# Meeting source
+
+Event owners can connect a room's self-hosted Jitsi meeting from the room page:
+confirm the meeting URL and click **Connect meeting**. VoxBento runs a managed,
+listen-only agent, reports its lifecycle (starting, joined, receiving audio,
+processing, reconnecting, needs attention, stopped), restarts it within a bounded
+policy and starts floor captions, translation and TTS once audio arrives. It never
+replaces program ingest without confirmation. Apply migration 027 and rebuild the
+`floor-bot` image. See [workflow, recovery, troubleshooting and rehearsal](docs/meeting-source.md).
+
 # Program stream ingest
 
 Event owners can add VoxBento as a second **HTTPS WHIP** destination alongside

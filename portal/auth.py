@@ -227,8 +227,6 @@ async def require_admin(request: Request) -> None:
             return
 
         user_id = principal["user_id"]
-        if not user_id:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required.")
 
         from portal.database import list_memberships_for_user, list_room_memberships_for_user
 
@@ -295,8 +293,6 @@ async def require_event_owner(request: Request) -> None:
             return
 
         user_id = principal["user_id"]
-        if not user_id:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required.")
 
         from portal.database import list_memberships_for_user
 
@@ -308,15 +304,12 @@ async def require_event_owner(request: Request) -> None:
             from portal.database import get_room_by_id
 
             room = await get_room_by_id(db_session, room_id)
-            if room is not None and any(
-                (m.event_id == room.event_id and m.role == "event_owner" for m in memberships)
-            ):
+            if room is not None and any((m.event_id == room.event_id and m.role == "event_owner" for m in memberships)):
                 return
         else:
             if any((m.role == "event_owner" for m in memberships)):
                 return
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required.")
-
 
 
 async def get_admin_flags(request: Request, event_id: int | None = None, room_id: int | None = None) -> dict[str, bool]:
@@ -460,6 +453,23 @@ async def require_user(request: Request) -> dict:
     return user
 
 
+def get_booth_sessions(request: Request | WebSocket) -> dict[str, dict]:
+    """Return decoded JWT payloads for all valid session cookies:
+    'user_token' (registered user) and/or 'session_token' (invite link).
+    """
+    sessions: dict[str, dict] = {}
+    for cookie_name in ("user_token", "session_token"):
+        cookie = request.cookies.get(cookie_name, "")
+        if not cookie:
+            continue
+        try:
+            payload = decode_token(cookie)
+            sessions[cookie_name] = payload
+        except jwt.InvalidTokenError:
+            continue
+    return sessions
+
+
 def get_booth_session(request: Request | WebSocket) -> dict | None:
     """Return decoded JWT payload from either user_token (registered user) or session_token (invite link).
 
@@ -528,8 +538,25 @@ async def resolve_ws_auth(websocket: WebSocket, booth_id: str) -> dict:
         if payload.get("role") or payload.get("is_admin") or payload.get("admin"):
             return payload
 
+    sessions = get_booth_sessions(websocket)
+    user_sess = sessions.get("user_token")
+    invite_sess = sessions.get("session_token")
+    if user_sess and (user_sess.get("is_admin") or user_sess.get("admin")):
+        payload = user_sess
+    elif user_sess and invite_sess:
+        user_role = await resolve_booth_role(user_sess, booth_id)
+        invite_role = await resolve_booth_role(invite_sess, booth_id)
+        if _ROLE_RANK.get(user_role or "", 0) >= _ROLE_RANK.get(invite_role or "", 0):
+            payload = user_sess
+        else:
+            payload = invite_sess
+    elif invite_sess:
+        payload = invite_sess
+    else:
+        payload = user_sess or {}
+
     if not settings.booth_access_token:
-        return get_booth_session(websocket) or {}
+        return payload
 
     # Origin Check for Cookie fallback
     origin = websocket.headers.get("origin")
@@ -545,7 +572,6 @@ async def resolve_ws_auth(websocket: WebSocket, booth_id: str) -> dict:
             raise WSAuthError("Origin mismatch.")
 
     # Cookie Fallback
-    payload = get_booth_session(websocket)
     if not payload:
         await websocket.close(code=4001)
         raise WSAuthError("Missing WebSocket token and session cookie.")
@@ -556,7 +582,7 @@ async def resolve_ws_auth(websocket: WebSocket, booth_id: str) -> dict:
 
     token_event = payload.get("event_slug", "")
     if payload.get("role") == "listener":
-        if not token_event or not booth_id.startswith(f"{token_event}-"):
+        if not token_event or not (booth_id.startswith(f"{token_event}-") or booth_id.startswith(f"{token_event}/")):
             await websocket.close(code=4003)
             raise WSAuthError("Listener cookie event_slug does not match booth_id.")
         return payload
@@ -583,68 +609,108 @@ async def resolve_ws_auth(websocket: WebSocket, booth_id: str) -> dict:
     return payload
 
 
-async def resolve_booth_role(payload: dict | None, booth_id: str | None = None) -> str | None:
-    """Extract the role claim from a booth session payload.
+async def resolve_booth_role(
+    sessions: list[dict] | dict | None,
+    booth_id: str | None = None,
+) -> str | None:
+    """Extract the highest applicable role claim from session payloads.
 
-    - Invite tokens carry a ``role`` claim directly.
-    - User tokens without an explicit role will check the database for
-      BoothMembership, RoomMembership, and EventMembership.
-    - If no DB membership exists, is_admin users default to 'super_admin'.
+    Accepts a list of session payloads (or a single session payload dict) and
+    iterates over them to evaluate:
+    - User account memberships in the database (BoothMembership, RoomMembership, EventMembership).
+    - Administrator privilege ('super_admin').
+    - Scoped invitation role claims.
+
+    The highest privilege among all valid grants wins.
     """
-    if payload is None:
+    if not sessions:
         return None
 
-    roles = []
-    if "role" in payload:
-        roles.append(payload["role"])
-    if payload.get("sub") and booth_id:
-        from sqlalchemy import select
+    session_list: list[dict] = (
+        [sessions] if isinstance(sessions, dict) else [s for s in sessions if isinstance(s, dict)]
+    )
+    if not session_list:
+        return None
 
-        from portal.booth_identity import parse_booth_id
-        from portal.database import (
-            get_session,
-            list_booth_memberships_for_user,
-            list_memberships_for_user,
-            list_room_memberships_for_user,
-        )
-        from portal.models import DBBooth, Event
+    roles: list[str] = []
 
-        try:
-            event_slug, room_id, lang_code = parse_booth_id(booth_id)
-            async with get_session() as db_session:
-                stmt = (
-                    select(DBBooth)
-                    .join(Event)
-                    .where(
-                        Event.slug == event_slug,
-                        Event.deleted_at.is_(None),
-                        DBBooth.room_id == room_id,
-                        DBBooth.language_code == lang_code,
+    for sess in session_list:
+        # 1. Admin claim
+        if sess.get("is_admin") or sess.get("admin"):
+            roles.append("super_admin")
+
+        # 2. Direct role claim (e.g. invite token or mock payload)
+        if "role" in sess:
+            role = sess["role"]
+            scope_matches = True
+            token_event = sess.get("event_slug")
+            token_lang = sess.get("language_code")
+            token_room = sess.get("room_id")
+            if booth_id and (token_event or token_lang):
+                from portal.booth_identity import parse_booth_id
+
+                try:
+                    actual_event, actual_room, actual_lang = parse_booth_id(booth_id)
+                    if token_event and token_event != actual_event:
+                        scope_matches = False
+                    if token_lang and token_lang != actual_lang:
+                        scope_matches = False
+                    if token_room is not None and str(token_room) != str(actual_room):
+                        scope_matches = False
+                except ValueError:
+                    scope_matches = False
+            if scope_matches:
+                roles.append(role)
+
+        # 3. Database memberships for registered user session
+        if sess.get("sub") and booth_id:
+            from sqlalchemy import select
+
+            from portal.booth_identity import parse_booth_id
+            from portal.database import (
+                get_session,
+                list_booth_memberships_for_user,
+                list_memberships_for_user,
+                list_room_memberships_for_user,
+            )
+            from portal.models import DBBooth, Event
+
+            try:
+                event_slug, room_id, lang_code = parse_booth_id(booth_id)
+                uid_int = int(sess["sub"])
+                async with get_session() as db_session:
+                    stmt = (
+                        select(DBBooth)
+                        .join(Event)
+                        .where(
+                            Event.slug == event_slug,
+                            Event.deleted_at.is_(None),
+                            DBBooth.room_id == room_id,
+                            DBBooth.language_code == lang_code,
+                        )
                     )
-                )
-                booth = (await db_session.scalars(stmt)).first()
-                if booth:
-                    bms = await list_booth_memberships_for_user(db_session, int(payload["sub"]))
-                    for bm in bms:
-                        if bm.booth_id == booth.id:
-                            roles.append(bm.role)
-                            break
-                    rms = await list_room_memberships_for_user(db_session, int(payload["sub"]))
-                    for rm in rms:
-                        if rm.room_id == booth.room_id:
-                            roles.append(rm.role)
-                            break
-                    memberships = await list_memberships_for_user(db_session, int(payload["sub"]))
-                    for m in memberships:
-                        if m.event_id == booth.event_id:
-                            roles.append(m.role)
-                            break
-        except ValueError:
-            pass
-        except Exception:
-            logger.exception("Failed to resolve booth role from database")
-    if payload.get("is_admin") or payload.get("admin"):
-        roles.append("super_admin")
+                    booth = (await db_session.scalars(stmt)).first()
+                    if booth:
+                        bms = await list_booth_memberships_for_user(db_session, uid_int)
+                        for bm in bms:
+                            if bm.booth_id == booth.id:
+                                roles.append(bm.role)
+                                break
+                        rms = await list_room_memberships_for_user(db_session, uid_int)
+                        for rm in rms:
+                            if rm.room_id == booth.room_id:
+                                roles.append(rm.role)
+                                break
+                        memberships = await list_memberships_for_user(db_session, uid_int)
+                        for m in memberships:
+                            if m.event_id == booth.event_id:
+                                roles.append(m.role)
+                                break
+            except ValueError:
+                pass
+            except Exception:
+                logger.exception("Failed to resolve booth role from database")
+
     if not roles:
         return None
     return max(roles, key=lambda r: _ROLE_RANK.get(r, 0))

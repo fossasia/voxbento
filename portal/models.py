@@ -124,6 +124,7 @@ class Room(Base):
     floor_transcription_model: Mapped[str] = mapped_column(String(40), default="tiny", server_default=sa.text("'tiny'"))
     floor_language_code: Mapped[str | None] = mapped_column(String(10), nullable=True, default=None)
     floor_source: Mapped[str] = mapped_column(String(20), default="jitsi_bot", server_default="jitsi_bot")
+    meeting_agent_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
     program_key_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     program_key_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # Short-lived credential for the first-party browser sender, kept separate from the encoder key.

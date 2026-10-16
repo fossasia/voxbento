@@ -486,6 +486,11 @@ class BoothRegistry:
             participant = booth.participants.get(participant_id)
             if participant is None:
                 raise ValueError("Participant does not exist in booth.")
+            # Reject non-boolean flags so a truthy value like 1 or "true" cannot slip
+            # past the publisher permission checks below (which compare with `is True`).
+            for name, value in (("mic_active", mic_active), ("ingest_connected", ingest_connected), ("connected", connected)):
+                if value is not None and not isinstance(value, bool):
+                    raise ValueError(f"{name} must be a boolean.")
             from portal.roles import Permission, has_permission
 
             wants_publisher_state = mic_active is True or ingest_connected is True

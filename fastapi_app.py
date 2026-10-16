@@ -12,7 +12,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from portal import program_ingest
+from portal import meeting_source, program_ingest
 from portal.auth import require_admin
 from portal.config import settings
 from portal.routers.admin import router as admin_router
@@ -23,6 +23,7 @@ from portal.routers.demo import router as demo_router
 from portal.routers.developer import router as developer_router
 from portal.routers.interpreter import router as interpreter_router
 from portal.routers.listener import router as listener_router
+from portal.routers.meeting_source import router as meeting_source_router
 from portal.routers.oauth import router as oauth_router
 from portal.routers.program_ingest import router as program_ingest_router
 from portal.routers.public import router as public_router
@@ -68,6 +69,7 @@ async def lifespan(app: FastAPI):
     # portal.webhooks.worker.webhook_worker_loop is respected.
     webhook_task = asyncio.create_task(_webhook_worker_mod.webhook_worker_loop())
     ingest_task = asyncio.create_task(program_ingest.reconcile_loop()) if settings.program_ingest_enabled else None
+    meeting_task = asyncio.create_task(meeting_source.reconcile_loop())
 
     dg.track_task(asyncio.create_task(_gen()))
 
@@ -77,6 +79,9 @@ async def lifespan(app: FastAPI):
     import contextlib
 
     webhook_task.cancel()
+    meeting_task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await meeting_task
     if ingest_task:
         ingest_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
@@ -137,8 +142,33 @@ async def get_open_api_endpoint(request: Request, _=Depends(require_admin)):
 
 @app.exception_handler(StarletteHTTPException)
 async def http_exception_handler(request: Request, exc: StarletteHTTPException):
-    if "text/html" in request.headers.get("accept", ""):
-        if exc.status_code == 403:
+    headers = dict(exc.headers) if exc.headers else None
+    location = exc.headers.get("Location") if exc.headers else None
+
+    if location and exc.status_code in (301, 302, 303, 307, 308):
+        from portal.utils import safe_redirect
+
+        return safe_redirect(url=location, status_code=exc.status_code)
+
+    is_api = "/api/" in request.url.path or request.url.path.startswith("/api")
+    if "text/html" in request.headers.get("accept", "") and not is_api:
+        if exc.status_code in (401, 403):
+            import urllib.parse
+
+            from fastapi import status
+
+            from portal.auth import get_current_user
+            from portal.utils import safe_redirect
+
+            if not request.url.path.startswith("/embed/"):
+                user = await get_current_user(request)
+                if not user:
+                    next_url = request.url.path
+                    if request.url.query:
+                        next_url += f"?{request.url.query}"
+                    return safe_redirect(
+                        f"/login?next={urllib.parse.quote(next_url)}", status_code=status.HTTP_303_SEE_OTHER
+                    )
             return templates.TemplateResponse(
                 request, "403.html", {"request": request, "detail": exc.detail}, status_code=403
             )
@@ -154,7 +184,7 @@ async def http_exception_handler(request: Request, exc: StarletteHTTPException):
             return templates.TemplateResponse(
                 request, "500.html", {"request": request, "detail": exc.detail}, status_code=exc.status_code
             )
-    return JSONResponse({"detail": exc.detail}, status_code=exc.status_code)
+    return JSONResponse({"detail": exc.detail}, status_code=exc.status_code, headers=headers)
 
 
 @app.exception_handler(Exception)
@@ -190,6 +220,7 @@ app.include_router(api_v1_router)
 
 app.include_router(admin_router)
 app.include_router(program_ingest_router)
+app.include_router(meeting_source_router)
 
 app.include_router(demo_router)
 

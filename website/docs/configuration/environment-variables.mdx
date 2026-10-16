@@ -74,6 +74,8 @@ These variables configure how Voxbento talks to MediaMTX and other local Docker 
 | `MEDIAMTX_API_BASE` | `http://localhost:9997` | MediaMTX Control API URL. |
 | `MEDIAMTX_RTSP_BASE` | `rtsp://mediamtx:8554` | Internal RTSP URL for floor audio transcription. |
 | `FLOOR_BOT_BASE` | `http://floor-bot:8080` | URL for the floor-bot container. |
+| `MEETING_AGENT_MAX_RESTARTS` | `5` | Automatic meeting-agent restarts per incident before the room reports **Needs attention**. |
+| `MEETING_AGENT_NO_AUDIO_SECS` | `45` | Seconds a joined agent may go without delivering audio to MediaMTX before it is restarted. |
 | `JITSI_INTERNAL_BASE` | `https://jitsi-web:8443` in Compose | Internal HTTPS URL used by the floor bot. Jitsi `stable-11146` and newer listen on the unprivileged container port `8443`. |
 
 ## Jitsi Internal Auth Variables
