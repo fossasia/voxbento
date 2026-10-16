@@ -242,6 +242,20 @@ manual synchronization, not shared encoder timecode.
 See the repository's `docs/program-stream-ingest.md` for rollout, security limits,
 encoder compatibility, capacity and the required two-destination rehearsal.
 
+### RTMPS relay mode
+
+A room can choose relay mode instead: the encoder sends a single RTMPS stream
+(H.264 + AAC) to MediaMTX on the same canonical floor path, authorized per room by
+the same callback with a stream key bound to the RTMPS transport. A dedicated
+`program-relay` service pulls the floor over private RTSP and pushes it with
+`ffmpeg -c copy` to the room's YouTube RTMPS destination, while the existing
+pipeline consumes the audio. The portal reconciler drives the relay service over an
+authenticated control API and stops relays on revoke, source switch, destination
+removal or restart; it enforces a fail-closed relay cap. The YouTube key is
+Fernet-encrypted at rest and write-only. Ingest, relay and language-processing
+health are reported separately. Relay mode puts VoxBento in the YouTube path, so
+the independent WHIP mode remains the default. See `docs/program-relay.md`.
+
 ## Production deployment
 
 Production deployment builds and validates a separate candidate checkout before

@@ -5,6 +5,8 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse
@@ -140,10 +142,64 @@ async def get_open_api_endpoint(request: Request, _=Depends(require_admin)):
     return JSONResponse(get_openapi(title="Voxbento API", version="1.0.0", routes=app.routes))
 
 
+# Write-only secrets (e.g. the YouTube relay key) must never be echoed back by a 422.
+_REDACTED_INPUT_FIELDS = frozenset({"stream_key"})
+
+
+def _contains_secret_field(value: object) -> bool:
+    if isinstance(value, dict):
+        return any(key in _REDACTED_INPUT_FIELDS or _contains_secret_field(item) for key, item in value.items())
+    if isinstance(value, (list, tuple)):
+        return any(_contains_secret_field(item) for item in value)
+    return False
+
+
+@app.exception_handler(RequestValidationError)
+async def request_validation_exception_handler(request: Request, exc: RequestValidationError):
+    """FastAPI's default 422, minus the rejected input wherever it is or contains a secret field.
+
+    A ``missing`` error reports the whole body as its input, so the check covers the value
+    as well as the error location.
+    """
+    errors = []
+    for error in exc.errors():
+        if any(part in _REDACTED_INPUT_FIELDS for part in error.get("loc", ())) or _contains_secret_field(
+            error.get("input")
+        ):
+            error = {key: value for key, value in error.items() if key != "input"}
+        errors.append(error)
+    return JSONResponse({"detail": jsonable_encoder(errors)}, status_code=422)
+
+
 @app.exception_handler(StarletteHTTPException)
 async def http_exception_handler(request: Request, exc: StarletteHTTPException):
-    if "text/html" in request.headers.get("accept", ""):
-        if exc.status_code == 403:
+    headers = dict(exc.headers) if exc.headers else None
+    location = exc.headers.get("Location") if exc.headers else None
+
+    if location and exc.status_code in (301, 302, 303, 307, 308):
+        from portal.utils import safe_redirect
+
+        return safe_redirect(url=location, status_code=exc.status_code)
+
+    is_api = "/api/" in request.url.path or request.url.path.startswith("/api")
+    if "text/html" in request.headers.get("accept", "") and not is_api:
+        if exc.status_code in (401, 403):
+            import urllib.parse
+
+            from fastapi import status
+
+            from portal.auth import get_current_user
+            from portal.utils import safe_redirect
+
+            if not request.url.path.startswith("/embed/"):
+                user = await get_current_user(request)
+                if not user:
+                    next_url = request.url.path
+                    if request.url.query:
+                        next_url += f"?{request.url.query}"
+                    return safe_redirect(
+                        f"/login?next={urllib.parse.quote(next_url)}", status_code=status.HTTP_303_SEE_OTHER
+                    )
             return templates.TemplateResponse(
                 request, "403.html", {"request": request, "detail": exc.detail}, status_code=403
             )
@@ -159,7 +215,7 @@ async def http_exception_handler(request: Request, exc: StarletteHTTPException):
             return templates.TemplateResponse(
                 request, "500.html", {"request": request, "detail": exc.detail}, status_code=exc.status_code
             )
-    return JSONResponse({"detail": exc.detail}, status_code=exc.status_code)
+    return JSONResponse({"detail": exc.detail}, status_code=exc.status_code, headers=headers)
 
 
 @app.exception_handler(Exception)

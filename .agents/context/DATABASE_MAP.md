@@ -266,6 +266,14 @@ async with get_session() as session:
 - `configure(url)` overrides engine (used in tests).
 - `init_db()` creates all tables without Alembic (tests only).
 - `dispose()` disposes connection pool.
+## Migration 028 — RTMPS relay mode (#749)
+
+Room fields: `program_ingest_mode` (`whip` default | `rtmps_relay`; binds the program
+key to its transport), nullable `program_relay_server` (normalized allow-listed RTMPS
+URL), `program_relay_key_enc` (Fernet ciphertext of the YouTube stream key; write-only,
+never serialize or log) and `program_relay_updated_at`. Helpers live in
+`portal/program_relay.py` (`store_destination`, `clear_destination`, `destination`).
+
 ## Migration 027 — managed meeting agent
 
 Room field `meeting_agent_enabled` (Boolean, default false): the durable desired
@@ -281,4 +289,5 @@ Room fields: `floor_source` (default `jitsi_bot`), nullable `program_key_hash`
 and `floor_caption_seq` (both default 0). Source configuration uses a serialized
 transaction; the MediaMTX auth callback reserves a session before negotiation.
 Final floor sequence increments atomically and survives worker/portal restarts.
-Raw credentials are only returned at create/rotate; no YouTube keys are stored.
+Raw credentials are only returned at create/rotate. YouTube keys exist only in
+relay mode, encrypted (migration 028).

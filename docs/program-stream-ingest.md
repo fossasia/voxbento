@@ -2,7 +2,9 @@
 
 Keep streaming directly to YouTube; add VoxBento as a second destination.
 VoxBento consumes the organizer's copy, not a YouTube watch/embed URL. It never
-needs a YouTube stream key. This is not an OBS replacement or a YouTube relay.
+needs a YouTube stream key. This is not an OBS replacement or a YouTube relay; for a
+single-output RTMPS workflow where VoxBento relays to YouTube, see
+[RTMPS ingest with YouTube relay](program-relay.md).
 
 ## Transport and rollout
 
