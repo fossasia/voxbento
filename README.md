@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="portal/static/img/wordmark.png" alt="VoxBento" width="420" />
+  <img src="https://github.com/user-attachments/assets/4521a23a-f99c-445d-96ee-dd98a4b66d5d" alt="VoxBento" width="420" />
 </p>
 
 <p align="center">
