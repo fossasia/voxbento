@@ -5,7 +5,7 @@ import logging
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
-from portal.auth import WSAuthError, resolve_booth_role, resolve_ws_auth
+from portal.auth import WSAuthError, resolve_booth_role, resolve_ws_auth, ws_bearer_subprotocol
 from portal.globals import booths
 from portal.websockets.manager import (
     Session,
@@ -41,7 +41,7 @@ async def ws_booth(websocket: WebSocket, booth_id: str) -> None:
         return
 
     ws_granted_role = await resolve_booth_role(payload, booth_id)
-    await websocket.accept()
+    await websocket.accept(subprotocol=ws_bearer_subprotocol(websocket))
 
     from portal.database import get_booth_language_name
 
@@ -109,7 +109,7 @@ async def ws_captions(websocket: WebSocket, booth_id: str) -> None:
         await resolve_ws_auth(websocket, booth_id)
     except WSAuthError:
         return
-    await websocket.accept()
+    await websocket.accept(subprotocol=ws_bearer_subprotocol(websocket))
     listener_manager.add(websocket, booth_id)
     try:
         while True:
@@ -120,14 +120,22 @@ async def ws_captions(websocket: WebSocket, booth_id: str) -> None:
         listener_manager.remove(websocket, booth_id)
 
 
-@router.websocket("/ws/tts/{room_id}/{language_code}/{booth_id}")
-async def ws_tts(websocket: WebSocket, room_id: int, language_code: str, booth_id: str) -> None:
-    await websocket.accept()
-    tts_manager.add(websocket, room_id, language_code, booth_id)
+@router.websocket("/ws/tts/{booth_id}")
+async def ws_tts(websocket: WebSocket, booth_id: str) -> None:
+    """WebSocket endpoint for an AI booth's synthesized audio (``{event_slug}-{room_id}-ai-{language_code}``).
+
+    Uses the same authentication as ``/ws/captions/{booth_id}``.
+    """
+    try:
+        await resolve_ws_auth(websocket, booth_id)
+    except WSAuthError:
+        return
+    await websocket.accept(subprotocol=ws_bearer_subprotocol(websocket))
+    tts_manager.add(websocket, booth_id)
     try:
         while True:
             await websocket.receive_text()
     except WebSocketDisconnect:
         pass
     finally:
-        tts_manager.remove(websocket, room_id, language_code, booth_id)
+        tts_manager.remove(websocket, booth_id)

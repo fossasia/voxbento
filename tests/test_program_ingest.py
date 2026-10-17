@@ -13,6 +13,7 @@ import pytest
 from fastapi_app import app
 from portal import program_ingest as ingest
 from portal.auth import create_user_token
+from portal.booth_identity import make_ai_booth_id
 from portal.config import settings
 from portal.database import configure, create_user, dispose, get_session, init_db
 from portal.models import Event, Room, RoomTranslationLanguage, TranscriptSegment
@@ -492,8 +493,13 @@ async def test_program_final_pipeline_preserves_timing_and_multiple_languages(en
         saved.floor_translation_enabled = True
         saved.floor_translation_provider = "local"
         saved.floor_translation_model = "test"
+        saved.floor_tts_enabled = True
         for code, name in [("fr", "French"), ("es", "Spanish")]:
-            session.add(RoomTranslationLanguage(room_id=room.id, language_code=code, language_name=name, enabled=True))
+            session.add(
+                RoomTranslationLanguage(
+                    room_id=room.id, language_code=code, language_name=name, enabled=True, tts_enabled=True
+                )
+            )
     from portal.translations.worker import TranslationWorker
 
     monkeypatch.setattr(TranslationWorker, "_call_llm", AsyncMock(return_value="translated"))
@@ -509,7 +515,7 @@ async def test_program_final_pipeline_preserves_timing_and_multiple_languages(en
     booth = f"program-test-{room.id}-floor"
     listener = Listener()
     for lang in ["fr", "es"]:
-        tts_manager._rooms[tts_manager._get_key(room.id, lang, booth)] = {listener}
+        tts_manager._rooms[make_ai_booth_id(event.slug, room.id, lang)] = {listener}
     try:
         callback = AsyncMock()
         aggregator = CaptionAggregator(callback, room.id)
@@ -540,4 +546,4 @@ async def test_program_final_pipeline_preserves_timing_and_multiple_languages(en
         await asyncio.sleep(0.05)
     finally:
         for lang in ["fr", "es"]:
-            tts_manager._rooms.pop(tts_manager._get_key(room.id, lang, booth), None)
+            tts_manager._rooms.pop(make_ai_booth_id(event.slug, room.id, lang), None)

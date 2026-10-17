@@ -874,6 +874,7 @@ code { font-family: var(--font-mono); font-size: 0.85em; background: var(--color
 .btn.btn-modal-dismiss { padding: 0.5rem 2rem; border-radius: 6px; }
 
 .form-row--spaced { margin-bottom: 1rem; }
+.form-row--top { align-items: flex-start; }
 .form-row--spaced .form-group--grow { flex: 1; }
 .form-group--align-end { align-self: flex-end; }
 .transcript-viewer { background: #f9fafb; border: 1px solid #e5e7eb; border-radius: 6px; padding: 1rem; max-height: 600px; overflow-y: auto; }

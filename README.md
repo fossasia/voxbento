@@ -19,6 +19,8 @@ Rooms can optionally add a listener-side audio synchronization delay for WHEP pl
 
 The workspace and admin surfaces share the same management implementation and authorization checks. This URL separation does not change OAuth authorization, token refresh, reconnect, or disconnect behavior for Eventyay integrations.
 
+Rooms can also offer AI-voiced languages next to human interpreters. In a room's settings, enable floor transcription, translation and TTS, pick a TTS provider (Deepgram Aura or self-hosted Supertonic), and choose the TTS target languages. Each one becomes an AI booth that listeners can pick on the listener page; languages that already have a human booth, and the floor language, are left out. Eventyay can set the same thing through room sync by sending `ai_languages` next to `target_languages` in `PUT /api/v1/events/{slug}/rooms/{id}`.
+
 ---
 
 ## How it works

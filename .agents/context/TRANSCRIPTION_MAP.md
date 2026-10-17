@@ -60,11 +60,13 @@ Jitsi Meet Floor Conference
         │
         ▼
    TTS Worker (tts/worker.py)
-   Reads 'final' translated segments → buffers punctuation → routes to TTS provider
+   Reads 'final' floor translations for TTS-enabled languages that have a listener
+   → buffers punctuation → routes to TTS provider
    (Deepgram Aura cloud WebSocket OR Supertonic self-hosted in-process ONNX)
         │
         ▼
-   broadcast_tts() (WebSocket /ws/tts/{room_id}) -> AudioScheduler -> Web Audio API
+   broadcast_tts() (WebSocket /ws/tts/{booth_id}, booth_id = {event_slug}-{room_id}-ai-{lang})
+     -> AudioScheduler -> Web Audio API
    Client uses a jitter-buffered playback queue (audio-scheduler.js) to schedule
    each audio segment seamlessly after the previous one ends, with comfort noise
    during gaps. See portal/static/js/audio-scheduler.js.
