@@ -15,6 +15,7 @@ from portal.websockets.manager import (
     _handle_initiate_handoff,
     _handle_join,
     _handle_leave,
+    _handle_request_publish_ticket,
     _handle_set_active,
     _handle_set_broadcast_unlocked,
     _handle_update_state,
@@ -76,6 +77,8 @@ async def ws_booth(websocket: WebSocket, booth_id: str) -> None:
                 await _handle_set_active(websocket, session, data)
             elif msg_type == "booth:update-state":
                 await _handle_update_state(websocket, session, data)
+            elif msg_type == "booth:request-publish-ticket":
+                await _handle_request_publish_ticket(websocket, session, data)
             elif msg_type == "booth:set-broadcast-unlocked":
                 await _handle_set_broadcast_unlocked(websocket, session, data)
             elif msg_type == "booth:initiate-handoff":

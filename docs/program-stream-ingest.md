@@ -43,9 +43,9 @@ Operator rollout (not an automatic deployment):
    consistent with the existing BoothRegistry. Horizontal scaling needs shared
    coordination; it is not supported by this feature.
 
-The HTTP authentication policy changes only floor publishing: interpreter paths
-retain their existing publishing behavior. This is **not a general authorization
-redesign for interpreter WHIP**. Every public floor publish is room/token checked;
+The same callback also authorizes interpreter booth paths (#783): the active
+interpreter's browser presents a single-use ticket issued over the booth
+WebSocket, so anonymous booth publishes are refused. Every public floor publish is room/token checked;
 bot RTSP publishing is allowed only from private addresses while `jitsi_bot` owns
 the floor. Read access remains the existing public listener model. Do not expose
 the callback behind another proxy without equivalent blocking and private ports.

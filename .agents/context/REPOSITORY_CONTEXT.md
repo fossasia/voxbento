@@ -117,11 +117,12 @@ Client → Server messages:
 | `booth:chat` | `_handle_chat` | Appends message; broadcasts `booth:chat` + `booth:state` |
 | `booth:set-active` | `_handle_set_active` | Changes active interpreter (room_coordinator/current-active only) |
 | `booth:update-state` | `_handle_update_state` | Updates mic_active / ingest_connected flags |
+| `booth:request-publish-ticket` | `_handle_request_publish_ticket` | Replies `booth:publish-ticket` with a single-use WHIP ticket (active interpreter, broadcast unlocked) |
 | `booth:initiate-handoff` | `_handle_initiate_handoff` | Initiates interpreter handoff |
 | `booth:accept-handoff` | `_handle_accept_handoff` | Accepts interpreter handoff |
 | `booth:cancel-handoff` | `_handle_cancel_handoff` | Cancels interpreter handoff |
 
-Server → Client broadcasts: `booth:joined`, `booth:state`, `booth:chat`, `booth:error`
+Server → Client broadcasts: `booth:joined`, `booth:state`, `booth:chat`, `booth:error`; direct reply: `booth:publish-ticket`
 
 Role is NEVER trusted from client data — always read from the server-side `Session.granted_role` derived from cookies at connect time.
 
