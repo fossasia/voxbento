@@ -153,3 +153,14 @@ pipeline without the Jitsi bot. Operator activation is required and defaults off
 Revocation invalidates a room token before attempting MediaMTX cleanup, so a
 temporary control-plane failure cannot restore an old credential.
 See [setup, security, synchronization and verification](docs/program-stream-ingest.md).
+
+## RTMPS ingest with YouTube relay
+
+Optionally, a room can instead receive **one RTMPS stream** (H.264 + AAC) and
+VoxBento relays it unchanged to YouTube while feeding captions, translation and
+TTS — no second encoder output. This puts VoxBento in the YouTube delivery path,
+so the independent WHIP mode stays the default. The YouTube stream key is
+encrypted at rest and write-only; RTMPS publishers are authenticated per room; a
+dedicated `program-relay` container moves the media. Enable it with
+`docker-compose.relay.yml` and migration 028. See
+[architecture, encoder setup, security, capacity and rollback](docs/program-relay.md).

@@ -134,6 +134,12 @@ class Room(Base):
     program_connected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     program_disconnected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     program_sync_offset_ms: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    # "whip" keeps the independent dual-output model; "rtmps_relay" puts VoxBento in the YouTube path (#749).
+    program_ingest_mode: Mapped[str] = mapped_column(String(20), default="whip", server_default="whip")
+    program_relay_server: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    # Fernet-encrypted YouTube stream key; write-only from the API, never returned or logged.
+    program_relay_key_enc: Mapped[str | None] = mapped_column(Text, nullable=True)
+    program_relay_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     floor_caption_seq: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
 
     # Translation Settings
