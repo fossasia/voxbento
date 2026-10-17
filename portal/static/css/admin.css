@@ -587,7 +587,53 @@ code { font-family: var(--font-mono); font-size: 0.85em; background: var(--color
 .actions-cell {
   display: flex;
   gap: 6px;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
+  align-items: center;
+  white-space: nowrap;
+}
+.actions-col {
+  white-space: nowrap;
+}
+.data-table-container {
+  width: 100%;
+  max-width: 100%;
+  overflow-x: auto;
+  border-radius: var(--radius);
+  margin-bottom: 20px;
+}
+.data-table.users-table {
+  width: 100%;
+  margin-bottom: 0;
+}
+.data-table.users-table th,
+.data-table.users-table td {
+  padding: 10px 8px;
+}
+.data-table.users-table th:first-child,
+.data-table.users-table td:first-child {
+  padding-left: 14px;
+  width: 32px;
+  text-align: center;
+}
+.data-table.users-table th.actions-col,
+.data-table.users-table td.actions-cell {
+  width: 1%;
+  white-space: nowrap;
+  padding-right: 14px;
+}
+.data-table.users-table .actions-cell {
+  display: flex;
+  gap: 4px;
+  flex-wrap: nowrap;
+  align-items: center;
+  white-space: nowrap;
+}
+.data-table.users-table .actions-cell .btn {
+  min-height: 28px;
+  padding: 4px 8px;
+  font-size: 0.77rem;
+  border-radius: 6px;
+  line-height: 1.2;
 }
 .btn-warning {
   background: var(--color-warning);
@@ -840,6 +886,7 @@ code { font-family: var(--font-mono); font-size: 0.85em; background: var(--color
 .user-facts { width: 100%; border-radius: 8px; }
 .user-facts td.user-facts-label { font-weight: 500; }
 .user-facts td.user-facts-label--wide { width: 200px; }
+.user-facts-action { display: flex; align-items: center; gap: 12px; flex-wrap: nowrap; }
 
 /* ── Admin room pages ───────────────────────────────────────────────────────
    Classes for the styles that used to sit in style attributes on the room
