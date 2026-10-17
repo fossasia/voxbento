@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -17,6 +18,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from portal import meeting_source, program_ingest
 from portal.auth import require_admin
 from portal.config import settings
+from portal.rate_limit import auth_rate_limiter, token_rate_limiter
 from portal.routers.admin import router as admin_router
 from portal.routers.api import router as api_router
 from portal.routers.api_v1 import router as api_v1_router
@@ -38,6 +40,17 @@ from portal.workspace_routing import WorkspaceRoutingMiddleware
 _BASE_DIR = Path(__file__).resolve().parent
 
 templates = Jinja2Templates(directory=str(_BASE_DIR / "portal" / "templates"))
+
+
+async def _rate_limit_cleanup_loop(interval_seconds: float = 300.0) -> None:
+    """Periodically purge expired rate limit entries to prevent unbounded memory growth."""
+    while True:
+        await asyncio.sleep(interval_seconds)
+        for name, limiter in (("auth", auth_rate_limiter), ("token", token_rate_limiter)):
+            try:
+                await limiter.cleanup()
+            except Exception:
+                logging.exception("Rate limit cleanup error (%s)", name)
 
 
 @asynccontextmanager
@@ -63,13 +76,12 @@ async def lifespan(app: FastAPI):
         finally:
             dg._generating = False
 
-    import asyncio
-
     import portal.webhooks.worker as _webhook_worker_mod
 
     # Reference via module attribute so test-time monkey-patching of
     # portal.webhooks.worker.webhook_worker_loop is respected.
     webhook_task = asyncio.create_task(_webhook_worker_mod.webhook_worker_loop())
+    rate_limit_cleanup_task = asyncio.create_task(_rate_limit_cleanup_loop())
     ingest_task = asyncio.create_task(program_ingest.reconcile_loop()) if settings.program_ingest_enabled else None
     meeting_task = asyncio.create_task(meeting_source.reconcile_loop())
 
@@ -78,18 +90,13 @@ async def lifespan(app: FastAPI):
     logging.getLogger("uvicorn.access").addFilter(_UvicornTokenRedactor())
     logging.getLogger("uvicorn.access").addFilter(_HealthCheckFilter())
     yield
-    import contextlib
 
-    webhook_task.cancel()
-    meeting_task.cancel()
-    with contextlib.suppress(asyncio.CancelledError):
-        await meeting_task
+    tasks_to_cancel = [webhook_task, rate_limit_cleanup_task, meeting_task]
     if ingest_task:
-        ingest_task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await ingest_task
-    with contextlib.suppress(asyncio.CancelledError):
-        await webhook_task
+        tasks_to_cancel.append(ingest_task)
+    for task in tasks_to_cancel:
+        task.cancel()
+    await asyncio.gather(*tasks_to_cancel, return_exceptions=True)
 
     if pg.shared_http_client:
         await pg.shared_http_client.aclose()
