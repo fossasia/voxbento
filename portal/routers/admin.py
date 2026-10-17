@@ -16,7 +16,7 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 from sqlalchemy import select, update
-from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from portal import meeting_source
@@ -542,6 +542,7 @@ async def admin_setup_add_booth(request: Request, event_id: int):
     room_id_str = form.get("room_id", "").strip()
     language_code = form.get("language_code", "").strip().lower()
     language_name = form.get("language_name", "").strip()
+    error = None
     if room_id_str and language_code:
         if not language_name:
             lang = pycountry.languages.get(alpha_2=language_code)
@@ -555,12 +556,19 @@ async def admin_setup_add_booth(request: Request, event_id: int):
                     language_code=language_code,
                     language_name=language_name,
                 )
+        except IntegrityError:
+            error = "duplicate_language"
         except Exception as e:
             logger.warning(f"Error creating booth in setup wizard: {e}")
 
-    redirect_url = management_url(request, f"events/{event_id}/setup/booths")
+    query = {}
     if room_id_str:
-        redirect_url += f"?room_id={room_id_str}"
+        query["room_id"] = room_id_str
+    if error:
+        query["error"] = error
+    redirect_url = management_url(request, f"events/{event_id}/setup/booths")
+    if query:
+        redirect_url += f"?{urllib.parse.urlencode(query)}"
 
     return safe_redirect(url=redirect_url, status_code=status.HTTP_303_SEE_OTHER)
 
@@ -1193,15 +1201,18 @@ async def admin_create_booth(request: Request, event_id: int, room_id: int):
             url=management_url(request, f"events/{event_id}/rooms/{room_id}/booths/"),
             status_code=status.HTTP_303_SEE_OTHER,
         )
+    redirect_path = f"events/{event_id}/rooms/{room_id}/booths/"
     try:
         async with get_session() as session:
             await create_booth(
                 session, event_id=event_id, room_id=room_id, language_code=language_code, language_name=language_name
             )
+    except IntegrityError:
+        redirect_path += "?error=duplicate_language"
     except Exception as e:
         logger.warning(f"Error creating booth: {e}")
     return safe_redirect(
-        url=management_url(request, f"events/{event_id}/rooms/{room_id}/booths/"),
+        url=management_url(request, redirect_path),
         status_code=status.HTTP_303_SEE_OTHER,
     )
 
