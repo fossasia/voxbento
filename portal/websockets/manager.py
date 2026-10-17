@@ -326,7 +326,12 @@ async def _handle_set_broadcast_unlocked(ws: WebSocket, session: Session, data: 
             json.dumps({"type": "booth:error", "message": "Language must be specified or configured for this booth."})
         )
         return
-    unlocked = bool(data.get("unlocked"))
+    unlocked = data.get("unlocked")
+    # bool() would turn "false" into True and a missing field into False, so a
+    # malformed message could put the booth live or stop it by accident.
+    if not isinstance(unlocked, bool):
+        await ws.send_text(json.dumps({"type": "booth:error", "message": "unlocked must be a boolean."}))
+        return
     try:
         state = await booths.set_broadcast_unlocked(session.booth_id, unlocked, session.language, session.channel_id)
         # Locking the booth must immediately stop everything tied to it: the

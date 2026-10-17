@@ -923,6 +923,30 @@ def test_ws_broadcast_unlock_authorized_user_can_toggle():
     assert msg["state"]["broadcast_unlocked"] is True
 
 
+@pytest.mark.parametrize("payload", [{"unlocked": "false"}, {"unlocked": 1}, {}])
+def test_ws_broadcast_unlock_rejects_non_boolean(payload):
+    """A non-boolean or missing unlocked value is rejected and leaves the booth as it was."""
+    booth = "broadcastbad-en"
+    channel = "broadcastbad/en"
+
+    with client.websocket_connect(f"/ws/booth/{booth}", cookies=_ws_auth()) as ws:
+        _pid, _state = _ws_join(ws, "Coord", "room_coordinator", "English", channel)
+
+        ws.send_text(json.dumps({"type": "booth:set-broadcast-unlocked", "unlocked": True}))
+        assert json.loads(ws.receive_text())["state"]["broadcast_unlocked"] is True
+
+        ws.send_text(json.dumps({"type": "booth:set-broadcast-unlocked", **payload}))
+        msg = json.loads(ws.receive_text())
+        assert msg == {"type": "booth:error", "message": "unlocked must be a boolean."}
+
+        # The booth is still live: a valid chat round-trip returns the unchanged state.
+        ws.send_text(json.dumps({"type": "booth:chat", "body": "still live?"}))
+        assert json.loads(ws.receive_text())["type"] == "booth:chat"
+        state = json.loads(ws.receive_text())["state"]
+
+    assert state["broadcast_unlocked"] is True
+
+
 def test_ws_broadcast_unlock_interpreter_rejected():
     """Interpreter session cannot toggle broadcast lock."""
     client.post("/api/events/broadcastdeny/booths", json={"language_code": "en", "room_id": 1, "language": "English"})
