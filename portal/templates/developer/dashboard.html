@@ -26,7 +26,17 @@
         <h1 class="dev-page-title">Developer Dashboard</h1>
         <p class="dev-page-subtitle">Manage your API integrations and OAuth clients.</p>
       </div>
-      
+
+      {% if form_error %}
+      <div class="dev-notice dev-notice--danger dev-notice--form-error" role="alert">
+        <svg class="dev-notice-icon" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>
+        <div>
+          <h3 class="dev-notice-title">Nothing was saved</h3>
+          <p class="dev-notice-text">{{ form_error }}</p>
+        </div>
+      </div>
+      {% endif %}
+
       {% if not account %}
       <div class="create-panel">
         <div class="dev-panel-head">
@@ -38,7 +48,7 @@
             <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
             <div class="field">
               <label for="organization_name" class="dev-label">Organization / Project Name</label>
-              <input type="text" id="organization_name" name="organization_name" required autofocus placeholder="e.g. Eventyay Interpretation Plugin" class="dev-input" />
+              <input type="text" id="organization_name" name="organization_name" required maxlength="200" autofocus placeholder="e.g. Eventyay Interpretation Plugin" class="dev-input" />
               <span class="hint dev-hint">What is the name of the app or organization requesting access?</span>
             </div>
             <div class="form-actions dev-form-actions">
@@ -205,12 +215,12 @@
           <div class="custom-modal-body">
             <div class="field">
               <label for="app_name">App Name</label>
-              <input type="text" id="app_name" name="app_name" required placeholder="e.g. Eventyay Plugin" />
+              <input type="text" id="app_name" name="app_name" required maxlength="200" placeholder="e.g. Eventyay Plugin" />
             </div>
             <div class="field dev-field--spaced">
               <label for="redirect_uris">Authorized Redirect URIs</label>
               <input type="text" id="redirect_uris" name="redirect_uris" required placeholder="e.g. https://eventyay.com/callback" />
-              <span class="hint">Comma-separated list of strict exact-match redirect URLs.</span>
+              <span class="hint">Comma-separated list of strict exact-match redirect URLs. Each must be an https:// URL (http:// is accepted for localhost only).</span>
             </div>
           </div>
           <div class="custom-modal-footer">
