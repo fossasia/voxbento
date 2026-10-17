@@ -138,7 +138,6 @@ async def get_rooms(
         {
             "id": r.id,
             "display_name": r.display_name,
-            "is_active": r.is_active,
             "created_at": r.created_at.isoformat(),
         }
         for r in rooms

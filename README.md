@@ -7,6 +7,7 @@
 </p>
 
 <p align="center">
+  <a href="https://voxbento.com"><img src="https://img.shields.io/badge/live-voxbento.com-2ea44f" alt="Documentation"></a>
   <a href="https://docs.voxbento.com"><img src="https://img.shields.io/badge/docs-docs.voxbento.com-1f6feb" alt="Documentation"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-2ea44f" alt="License: Apache 2.0"></a>
 </p>
