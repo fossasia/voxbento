@@ -18,6 +18,7 @@ from portal.websockets.manager import (
     _handle_set_active,
     _handle_set_broadcast_unlocked,
     _handle_update_state,
+    broadcast_booth_state,
     listener_manager,
     manager,
     tts_manager,
@@ -99,19 +100,26 @@ async def ws_booth(websocket: WebSocket, booth_id: str) -> None:
                 session.language,
                 session.channel_id,
             )
-            await manager.broadcast(session.booth_id, {"type": "booth:state", "state": state})
+            await broadcast_booth_state(session.booth_id, state)
 
 
 @router.websocket("/ws/captions/{booth_id}")
 async def ws_captions(websocket: WebSocket, booth_id: str) -> None:
     """WebSocket endpoint for live captions. Listener tokens are limited to their own event"""
+    # Accept before authenticating so a rejection reaches the browser as a 4001/4003
+    # close. Closing before accept fails the handshake with HTTP 403, which browsers
+    # report as 1006, and the listener page would keep retrying. Rejected sockets are
+    # closed by resolve_ws_auth and never registered.
+    await websocket.accept()
     try:
         await resolve_ws_auth(websocket, booth_id)
     except WSAuthError:
         return
-    await websocket.accept()
     listener_manager.add(websocket, booth_id)
     try:
+        # Tell a newly connected listener whether the booth is already live, so
+        # it doesn't have to wait for the next state change to start playback.
+        await listener_manager.send_booth_state(websocket, booth_id)
         while True:
             await websocket.receive_text()
     except WebSocketDisconnect:
