@@ -1,5 +1,6 @@
 <section id='program-ingest' class='token-form-card token-form-card--spaced program-ingest-card'
-  data-url='{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/program-ingest'>
+  data-url='{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/program-ingest'
+  data-relay-url='{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/program-relay'>
   <div class='program-ingest-head'>
     <div>
       <p class='program-ingest-eyebrow'>Live source</p>
@@ -9,12 +10,45 @@
     <span id='program-state-badge' class='program-state-badge' data-state='loading'>Checking status</span>
   </div>
 
-  <div class='program-signal-path' aria-label='OBS sends a WHIP stream to VoxBento, which produces captions, translations, and speech'>
+  <div class='program-signal-path' data-mode-panel='whip' aria-label='OBS sends a WHIP stream to VoxBento, which produces captions, translations, and speech'>
     <span class='program-signal-node'>OBS</span>
     <span class='program-signal-arrow' aria-hidden='true'>→</span>
     <span class='program-signal-node program-signal-node--active'>VoxBento</span>
     <span class='program-signal-arrow' aria-hidden='true'>→</span>
     <span class='program-signal-output'>Captions · Translation · TTS</span>
+  </div>
+  <div class='program-signal-path' data-mode-panel='rtmps_relay' hidden aria-label='OBS sends one RTMPS stream to VoxBento, which relays it to YouTube and produces captions, translations, and speech'>
+    <span class='program-signal-node'>OBS</span>
+    <span class='program-signal-arrow' aria-hidden='true'>→</span>
+    <span class='program-signal-node program-signal-node--active'>VoxBento RTMPS</span>
+    <span class='program-signal-arrow' aria-hidden='true'>→</span>
+    <span class='program-signal-output'>YouTube + Captions · Translation · TTS</span>
+  </div>
+
+  <fieldset class='program-mode-picker'>
+    <legend>Delivery mode</legend>
+    <label class='program-mode-option'>
+      <input type='radio' name='program-mode' value='whip' checked>
+      <span>
+        <strong>Independent outputs</strong>
+        <small>OBS streams to YouTube itself and sends a second WHIP output here. A VoxBento outage never touches YouTube.</small>
+      </span>
+    </label>
+    <label class='program-mode-option'>
+      <input type='radio' name='program-mode' value='rtmps_relay' id='program-mode-relay'>
+      <span>
+        <strong>VoxBento relays to YouTube</strong>
+        <small>OBS sends one RTMPS stream here; VoxBento forwards it to YouTube unchanged. One output, one upload.</small>
+      </span>
+    </label>
+  </fieldset>
+
+  <div id='program-relay-risk' class='program-ingest-warning program-relay-risk' role='note' hidden>
+    <span class='program-ingest-warning-icon' aria-hidden='true'>!</span>
+    <div>
+      <strong>Relay mode puts VoxBento in your YouTube delivery path</strong>
+      <p>If VoxBento or its relay gateway goes down, your YouTube broadcast is interrupted. Rehearse with an unlisted YouTube event first. If failure isolation matters more than a single output, choose <em>Independent outputs</em>.</p>
+    </div>
   </div>
 
   <div id='program-warning' class='program-ingest-warning' role='alert' hidden>
@@ -31,45 +65,79 @@
         <span class='program-step'>1</span>
         <div>
           <h4>Connect OBS</h4>
-          <p>Choose <strong>WHIP</strong> in OBS, then paste this endpoint and the room token.</p>
+          <p data-mode-panel='whip'>Choose <strong>WHIP</strong> in OBS, then paste this endpoint and the room token.</p>
+          <p data-mode-panel='rtmps_relay' hidden>Choose <strong>Custom…</strong> in OBS, then paste this server and the stream key. Send H.264 video and AAC audio.</p>
         </div>
       </div>
 
-      <label for='program-endpoint'>WHIP server URL</label>
-      <div class='program-copy-field'>
-        <input id='program-endpoint' class='input' readonly>
-        <button type='button' class='btn btn-outline' id='program-copy-endpoint'>Copy URL</button>
+      <div data-mode-panel='whip'>
+        <label for='program-endpoint'>WHIP server URL</label>
+        <div class='program-copy-field'>
+          <input id='program-endpoint' class='input' readonly>
+          <button type='button' class='btn btn-outline' id='program-copy-endpoint'>Copy URL</button>
+        </div>
+      </div>
+      <div data-mode-panel='rtmps_relay' hidden>
+        <label for='program-rtmps-server'>RTMPS server</label>
+        <div class='program-copy-field'>
+          <input id='program-rtmps-server' class='input' readonly placeholder='Ask the operator to set PROGRAM_RTMPS_PUBLIC_BASE'>
+          <button type='button' class='btn btn-outline' id='program-copy-rtmps'>Copy server</button>
+        </div>
       </div>
 
       <div class='program-primary-action'>
         <button type='button' class='btn btn-primary' data-ingest-action='enable'>Enable ingest and create token</button>
-        <p>The token is room-specific and shown only once.</p>
+        <p>The credential is room-specific and shown only once.</p>
       </div>
 
       <form id='program-secret-panel' class='program-secret-panel' hidden>
         <div class='program-secret-head'>
           <div>
-            <label for='program-secret'>Bearer token</label>
-            <p>Paste this into OBS as the Bearer Token. It expires in 30 days.</p>
+            <label for='program-secret' id='program-secret-label'>Bearer token</label>
+            <p id='program-secret-help'>Paste this into OBS as the Bearer Token. It expires in 30 days.</p>
           </div>
           <span>Shown once</span>
         </div>
         <div class='program-copy-field'>
           <input id='program-secret' class='input' type='password' readonly autocomplete='off'>
           <button type='button' class='btn btn-outline' id='program-reveal'>Show</button>
-          <button type='button' class='btn btn-outline' id='program-copy'>Copy token</button>
+          <button type='button' class='btn btn-outline' id='program-copy'>Copy</button>
         </div>
+      </form>
+
+      <form id='program-relay-destination' class='program-relay-destination' data-mode-panel='rtmps_relay' hidden>
+        <div class='program-section-head'>
+          <span class='program-step'>2</span>
+          <div>
+            <h4>YouTube destination</h4>
+            <p id='program-destination-status' role='status' aria-live='polite'>Not configured.</p>
+          </div>
+        </div>
+        <label for='program-relay-server'>YouTube RTMPS server URL</label>
+        <input id='program-relay-server' class='input' type='url' required placeholder='rtmps://a.rtmps.youtube.com/live2' value='rtmps://a.rtmps.youtube.com/live2' autocomplete='off'>
+        <label for='program-relay-key'>YouTube stream key</label>
+        <input id='program-relay-key' class='input' type='password' required autocomplete='off' placeholder='Write-only — never shown again'>
+        <div class='program-relay-actions'>
+          <button type='submit' class='btn btn-primary' id='program-relay-save'>Save destination</button>
+          <button type='button' class='btn btn-outline program-revoke-button' id='program-relay-clear'>Remove destination</button>
+        </div>
+        <p class='program-relay-note'>The key is encrypted at rest and cannot be read back. Save a new key to rotate it.</p>
       </form>
     </div>
 
     <aside class='program-ingest-monitor' aria-labelledby='program-monitor-title'>
       <div class='program-section-head'>
-        <span class='program-step'>2</span>
+        <span class='program-step' id='program-monitor-step'>2</span>
         <div>
           <h4 id='program-monitor-title'>Monitor the feed</h4>
           <p id='program-status' role='status' aria-live='polite'>Loading ingest status…</p>
         </div>
       </div>
+      <ul class='program-health-list' aria-label='Health by stage'>
+        <li><span>Contribution ingest</span><b class='program-health-chip' id='program-health-ingest' data-state='loading'>…</b><small id='program-health-ingest-reason'></small></li>
+        <li data-mode-panel='rtmps_relay' hidden><span>YouTube relay</span><b class='program-health-chip' id='program-health-relay' data-state='loading'>…</b><small id='program-health-relay-reason'></small></li>
+        <li><span>Language processing</span><b class='program-health-chip' id='program-health-processing' data-state='loading'>…</b><small id='program-health-processing-reason'></small></li>
+      </ul>
       <dl class='program-ingest-facts'>
         <div><dt>Audio / video</dt><dd id='program-codecs'>—</dd></div>
         <div><dt>Last connected</dt><dd id='program-connected'>Never</dd></div>

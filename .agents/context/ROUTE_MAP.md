@@ -129,6 +129,22 @@ Legacy organizer requests to allowlisted event-management paths under `/admin/`,
   `portal/routers/program_ingest.py` owns both routes.
 - Existing floor-bot start/stop returns 409 while program ingest owns the room.
 
+## Program relay routes (#749)
+
+- `POST .../program-ingest` also accepts `mode` (`whip` | `rtmps_relay`) on enable;
+  relay-mode enable/rotate responses add `stream_key` (`floor?key=<secret>`). Status
+  adds `mode`, `relay_available`, `rtmps_server`, write-only `destination`
+  (`configured`, `server_url`, `updated_at`) and `health.{ingest,relay,processing}`.
+- `PUT/DELETE /workspace/events/{event_id}/rooms/{room_id}/program-relay`: event-owner,
+  origin-checked. PUT `{server_url, stream_key}` validates RTMPS + allow-listed host and
+  stores the key encrypted (422 invalid, 409 relay disabled). DELETE clears it and stops
+  the relay (202 + `cleanup_pending` if the relay service is unreachable).
+- `/internal/media-auth` accepts `protocol: rtmp` only for relay-mode rooms with query
+  exactly `key=<secret>`; WHIP is refused for relay-mode rooms.
+- `program-relay` service (private, `Authorization: Bearer $PROGRAM_RELAY_CONTROL_SECRET`):
+  `GET /relays`, `PUT /relays/{room_id}` `{source, destination, fingerprint}`,
+  `DELETE /relays/{room_id}`, unauthenticated `GET /healthz`.
+
 ## Meeting source routes (#747)
 
 - `GET/POST /workspace/events/{event_id}/rooms/{room_id}/meeting-source`:

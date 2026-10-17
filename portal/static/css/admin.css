@@ -1163,17 +1163,54 @@ code { font-family: var(--font-mono); font-size: 0.85em; background: var(--color
 .program-revoke-button:not(:disabled) { border-color: #fecaca; color: var(--color-danger); }
 .program-revoke-button:not(:disabled):hover { border-color: #fca5a5; background: #fef2f2; }
 
+/* RTMPS relay mode (#749). Mode panels toggle with [hidden]; flex/grid rules must not override it. */
+.program-ingest-card [hidden] { display: none !important; }
+.program-mode-picker { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 18px 26px 0; padding: 0; border: 0; }
+.program-mode-picker legend { margin-bottom: 8px; color: var(--color-text-secondary); font-size: 0.75rem; font-weight: 650; }
+.program-ingest-card .program-mode-option { display: flex; align-items: flex-start; gap: 10px; margin: 0; padding: 12px 14px; border: 1px solid var(--color-border-strong); border-radius: 10px; background: var(--color-surface); color: var(--color-text); cursor: pointer; }
+.program-mode-option:has(input:checked) { border-color: var(--color-primary-border); background: var(--color-primary-subtle); }
+.program-mode-option:has(input:disabled) { cursor: not-allowed; opacity: 0.6; }
+.program-mode-option input { margin-top: 3px; }
+.program-mode-option strong { display: block; font-size: 0.85rem; }
+.program-mode-option small { display: block; margin-top: 2px; color: var(--color-text-secondary); font-size: 0.75rem; font-weight: 500; line-height: 1.4; }
+.program-relay-risk { border-color: #fecaca; background: #fef2f2; color: #7f1d1d; }
+.program-relay-risk p { color: #991b1b; }
+.program-relay-risk .program-ingest-warning-icon { background: var(--color-danger); }
+.program-relay-destination { margin-top: 22px; padding-top: 18px; border-top: 1px dashed var(--color-border); }
+.program-relay-destination .input { width: 100%; height: 40px; margin-bottom: 10px; padding: 8px 11px; border: 1px solid var(--color-border-strong); border-radius: 8px; background: var(--color-surface); color: var(--color-text); font-family: var(--font-mono); font-size: 0.78rem; }
+.program-relay-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.program-relay-note { margin-top: 8px; color: var(--color-text-secondary); font-size: 0.72rem; }
+.program-health-list { display: grid; gap: 1px; margin: 0 0 12px; padding: 0; overflow: hidden; border: 1px solid var(--color-border); border-radius: 9px; background: var(--color-border); list-style: none; }
+.program-health-list li { display: grid; grid-template-columns: 1fr auto; gap: 2px 8px; padding: 9px 11px; background: var(--color-surface); }
+.program-health-list span { color: var(--color-text); font-size: 0.78rem; font-weight: 650; }
+.program-health-list small { grid-column: 1 / -1; color: var(--color-text-secondary); font-size: 0.7rem; line-height: 1.35; }
+.program-health-chip { padding: 1px 8px; border-radius: 999px; background: var(--color-surface-2); color: var(--color-text-secondary); font-size: 0.68rem; font-weight: 750; }
+.program-health-chip[data-state='connected'],
+.program-health-chip[data-state='live'],
+.program-health-chip[data-state='processing'] { background: #f0fdf4; color: #166534; }
+.program-health-chip[data-state='starting'],
+.program-health-chip[data-state='waiting'] { background: var(--color-primary-subtle); color: var(--color-primary-active); }
+.program-health-chip[data-state='degraded'],
+.program-health-chip[data-state='retrying'],
+.program-health-chip[data-state='stalled'],
+.program-health-chip[data-state='disconnected'],
+.program-health-chip[data-state='unconfigured'] { background: #fffbeb; color: #92400e; }
+.program-health-chip[data-state='capacity'],
+.program-health-chip[data-state='failed'] { background: #fef2f2; color: var(--color-danger); }
+
 @media (max-width: 780px) {
   .program-ingest-layout { grid-template-columns: 1fr; gap: 18px; }
   .program-sync-control,
   .program-secondary-actions { align-items: stretch; flex-direction: column; }
   .program-sync-action { grid-template-columns: minmax(0, 1fr) auto; }
+  .program-mode-picker { grid-template-columns: 1fr; }
 }
 
 @media (max-width: 520px) {
   .program-ingest-head { flex-direction: column; gap: 12px; padding: 20px; }
   .program-signal-path { padding-inline: 20px; }
-  .program-ingest-warning { margin-inline: 20px; }
+  .program-ingest-warning,
+  .program-mode-picker { margin-inline: 20px; }
   .program-ingest-layout { padding: 20px; }
   .program-copy-field { flex-wrap: wrap; }
   .program-copy-field .btn { flex: 1; }
