@@ -18,9 +18,12 @@
     <h1>Events</h1>
     <p class="text-secondary">Everything you host lives here.</p>
   </div>
+  {% if can_host or is_super_admin %}
   <a href="{{ management_prefix }}/setup" class="btn btn-primary">+ New event</a>
+  {% endif %}
 </div>
 
+{% if can_host or is_super_admin %}
 <details class="create-panel">
   <summary>Quick create (advanced)</summary>
   <div class="create-body">
@@ -33,6 +36,7 @@
     </form>
   </div>
 </details>
+{% endif %}
 
 <div class="search-bar">
   <form method="get" action="{{ management_prefix }}/events/" class="search-form">

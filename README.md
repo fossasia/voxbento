@@ -1,129 +1,32 @@
-# Voxbento
+<p align="center">
+  <img src="https://github.com/user-attachments/assets/4521a23a-f99c-445d-96ee-dd98a4b66d5d" alt="VoxBento" width="420" />
+</p>
 
-Voxbento is a real-time interpretation platform for live events. It provides a browser-first, zero-install experience for simultaneous interpreters, allowing them to monitor the main floor video via Jitsi and broadcast translated audio to attendees with low latency.
+<p align="center">
+  Browser-first, real-time interpretation for live events.
+</p>
 
-**Official Documentation:** [docs.voxbento.com](https://docs.voxbento.com)
+<p align="center">
+  <a href="https://voxbento.com"><img src="https://img.shields.io/badge/live-voxbento.com-2ea44f" alt="Documentation"></a>
+  <a href="https://docs.voxbento.com"><img src="https://img.shields.io/badge/docs-docs.voxbento.com-1f6feb" alt="Documentation"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-2ea44f" alt="License: Apache 2.0"></a>
+</p>
 
-Interpreters stream live audio via WebRTC/WHIP → MediaMTX → WHEP (WebRTC playback).
-Booth coordination (who is active, relay handoff, chat) runs over WebSocket.
-Administrators can find hosted events in `/admin/events/` by searching either the event name or slug. Search treats `%` and `_` literally, pagination URL-encodes reserved characters, blank searches show all events, and out-of-range pages open the last filtered page.
+VoxBento is a real-time interpretation platform for live events. Interpreters monitor the floor in Jitsi and publish translated audio from the browser, while attendees listen with low-latency WebRTC playback.
 
-Rooms can optionally add a listener-side audio synchronization delay for WHEP playback. The default is `0` ms, which keeps the existing low-latency HTML audio path unchanged. Organizers can set values such as `1000`, `2000`, `5000`, or `8000` ms when a room's livestream video, captions, embedded player, or other external media is delayed and translated audio needs to line up with it. The delay is applied in the listener browser only; MediaMTX, WHIP, WHEP, and RTP packets are not changed. Within the organizer workspace, organizers can manage and search rooms by name within each event using server-side, case-insensitive filtering.
+**Quick links:** [Documentation](https://docs.voxbento.com) · [Contributing](CONTRIBUTING.md) · [VoxBento Local](https://voxbento.com/local)
 
-## Management dashboards
+### Why VoxBento
 
-- Event owners manage event configuration at `/workspace/`.
-- Room coordinators use `/mission-control/`, which limits them to their assigned rooms.
-- System administrators use `/admin/` for instance-wide administration.
-- Existing organizer bookmarks under `/admin/events/...` redirect to the matching `/workspace/events/...` URL. HTTP methods and query strings are preserved, so old forms and filtered room-list bookmarks continue to work.
-
-The workspace and admin surfaces share the same management implementation and authorization checks. This URL separation does not change OAuth authorization, token refresh, reconnect, or disconnect behavior for Eventyay integrations.
-
----
-
-## How it works
-
-```
-Interpreter browser
-  │  iframe → Jitsi Meet (Monitor conference floor video/audio)
-  │  mic → RTCPeerConnection → WHIP POST
-  ▼
-MediaMTX :8889 (WHIP ingest + WHEP)   Python is never in the audio path
-  │  WebRTC termination + remux
-  └──► WHEP :8889 ←── attendees connect via WebRTC (sub-second latency)
-
-Interpreter / Coordinator browser
-  │  WebSocket /ws/booth/{booth_id}
-  ▼
-FastAPI portal :8000 (coordination, state, JWT, REST)
-  │
-  ├──► Background Transcription (ffmpeg → Deepgram/OpenAI/Local)
-  └──► Background Translation (Groq/Anthropic/Gemini)
-
-Floor Audio Bot (floor-bot)
-  │  Headless Chromium → Joins Jitsi Meeting
-  └──► ffmpeg → RTSP → MediaMTX → Transcription/Translation
-```
-
+- **Browser-first workflow:** No native install needed for interpreter booths.
+- **Low-latency delivery:** WebRTC-based broadcast path for live interpretation.
+- **Built for operations:** Role-based booth coordination for organizers and interpreters.
 
 ---
 
 ## Setup
 
-### Prerequisites
-
-| Dependency | Version | Purpose |
-|-----------|---------|---------|
-| Python | 3.13+ | FastAPI portal |
-| [uv](https://github.com/astral-sh/uv) | latest | Python package manager |
-| [MediaMTX](https://github.com/bluenviron/mediamtx/releases) | 1.x | WebRTC/HLS audio server |
-| Docker & Docker Compose | latest | Jitsi stack (or full Docker setup) |
-
-### Option 1 — Docker Compose (everything in containers)
-
-The portal runs code from its image; rebuild to apply changes. Production updates
-validate a separate candidate checkout before replacing services; see the
-[deployment guide](website/docs/configuration/deployment.mdx#deployment-preflight).
-
-All services (portal, MediaMTX, Jitsi) start with one command:
-
-```bash
-git clone https://github.com/fossasia/voxbento.git
-cd voxbento
-
-# Configure environment
-cp .env.example .env
-
-# Required for API key encryption: set your encryption key (must be 32 characters or longer)
-echo "API_KEY_ENCRYPTION_KEY=$(openssl rand -hex 32)" >> .env
-
-# Required for MediaMTX-to-portal publish authorization
-echo "MEDIAMTX_AUTH_HOOK_SECRET=$(openssl rand -hex 32)" >> .env
-
-# Required for Jitsi video: set the IP JVB advertises to browsers
-# macOS:  ipconfig getifaddr en0
-# Linux:  hostname -I | awk '{print $1}'
-echo 'JVB_ADVERTISE_IPS=192.168.1.x' >> .env
-
-docker compose up --build
-```
-
-Open http://localhost:8000 — all services are running.
-
 For detailed API documentation, environment variables, and configuration, visit [docs.voxbento.com](https://docs.voxbento.com). Native development setup details can also be found in [CONTRIBUTING.md](CONTRIBUTING.md).
-
----
-
-## Upgrade Notes
-
-### Admin login migration
-
-The legacy shared `ADMIN_PASSWORD` login has been removed. Before upgrading,
-ensure two active, email-verified administrator accounts can sign in with their own credentials,
-then remove that variable from all deployment configuration. See the
-[operator migration guide](docs/admin-password-removal-migration.md) for the
-rollout and break-glass recovery procedure.
-
-Admin login requires verified email and shares the normal login limit of 10 attempts
-per email address per hour.
-
-### Single sign-in page
-
-Admins, organizers and attendees all sign in at `/login`. The separate admin form is
-gone: `/admin/login` now redirects to `/login?next=/admin/`, so update bookmarks or
-scripts that posted to it. Entering an email that has no account continues to
-`/register` with the email filled in.
-
-### API Key Encryption & Rotation
-A mandatory environment variable `API_KEY_ENCRYPTION_KEY` securely encrypts third-party API keys in the database. 
-- You must generate a secure key (e.g., using `openssl rand -hex 32`) and add it to your `.env` file before starting the application. 
-- **Rotation**: To rotate keys without breaking existing database entries, provide a comma-separated list of keys. Voxbento will encrypt new tokens using the *first* key, but will use *all* keys to attempt decryption.
-
-### Optional NVIDIA Transcription
-NVIDIA Riva support is now an optional dependency to reduce the default installation footprint. If you intend to run NVIDIA transcription models, you must explicitly install the optional package:
-```bash
-uv pip install -e .[nvidia]
-```
 
 ---
 
@@ -134,33 +37,3 @@ VoxBento Local is our sovereign, 100% on-device AI meeting intelligence and inte
 - **Download**: Visit [`/local`](https://voxbento.org/local) for platform-detected desktop packages (.dmg, .exe, .deb, .AppImage).
 - **Source Code & Releases**: Built at [github.com/ArnavBallinCode/voxa](https://github.com/ArnavBallinCode/voxa).
 - **Air-Gapped & Sovereign**: Whisper live transcription and Qwen 3.5 structured meeting minutes run completely on-device via Apple Metal and NVIDIA CUDA acceleration.
-# Meeting source
-
-Event owners can connect a room's self-hosted Jitsi meeting from the room page:
-confirm the meeting URL and click **Connect meeting**. VoxBento runs a managed,
-listen-only agent, reports its lifecycle (starting, joined, receiving audio,
-processing, reconnecting, needs attention, stopped), restarts it within a bounded
-policy and starts floor captions, translation and TTS once audio arrives. It never
-replaces program ingest without confirmation. Apply migration 027 and rebuild the
-`floor-bot` image. See [workflow, recovery, troubleshooting and rehearsal](docs/meeting-source.md).
-
-# Program stream ingest
-
-Event owners can add VoxBento as a second **HTTPS WHIP** destination alongside
-YouTube. Their encoder remains the production tool; no YouTube key is needed.
-Room-scoped tokens feed the existing floor transcription, translation and TTS
-pipeline without the Jitsi bot. Operator activation is required and defaults off.
-Revocation invalidates a room token before attempting MediaMTX cleanup, so a
-temporary control-plane failure cannot restore an old credential.
-See [setup, security, synchronization and verification](docs/program-stream-ingest.md).
-
-## RTMPS ingest with YouTube relay
-
-Optionally, a room can instead receive **one RTMPS stream** (H.264 + AAC) and
-VoxBento relays it unchanged to YouTube while feeding captions, translation and
-TTS — no second encoder output. This puts VoxBento in the YouTube delivery path,
-so the independent WHIP mode stays the default. The YouTube stream key is
-encrypted at rest and write-only; RTMPS publishers are authenticated per room; a
-dedicated `program-relay` container moves the media. Enable it with
-`docker-compose.relay.yml` and migration 028. See
-[architecture, encoder setup, security, capacity and rollback](docs/program-relay.md).

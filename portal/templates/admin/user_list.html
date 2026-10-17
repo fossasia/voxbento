@@ -14,6 +14,50 @@
   <span class="badge">Total: {{ total_users }} user{{ 's' if total_users != 1 }}</span>
 </div>
 
+{% if request.query_params.get('error') %}
+<div class="alert alert-danger alert-flash">
+  <strong>Error:</strong>
+  {% set err = request.query_params.get('error') %}
+  {% if err == 'already_admin' %}
+    User is already an administrator.
+  {% elif err == 'already_host' %}
+    User already has hosting access.
+  {% elif err == 'inactive_user' %}
+    Cannot invite or modify an inactive user.
+  {% elif err == 'invalid_email' %}
+    Please enter a valid email address.
+  {% elif err == 'stub_user' %}
+    Stub users cannot be granted hosting directly. Send an invitation instead.
+  {% elif err == 'admin_user' %}
+    Cannot modify hosting access for administrators.
+  {% elif err == 'invite_not_found' %}
+    Invitation not found or has expired.
+  {% elif err == 'already_host' %}
+    This user already has hosting access enabled.
+  {% else %}
+    {{ err }}
+  {% endif %}
+</div>
+{% endif %}
+{% if request.query_params.get('success') %}
+  {% set succ = request.query_params.get('success') %}
+  <div class="alert alert-success">
+    {% if succ == 'invite_sent' %}
+      Invitation sent successfully.
+    {% elif succ == 'invite_resent' %}
+      Invitation resent successfully.
+    {% elif succ == 'invite_cancelled' %}
+      Invitation cancelled.
+    {% elif succ == 'hosting_granted' %}
+      Hosting access granted.
+    {% elif succ == 'hosting_revoked' %}
+      Hosting access revoked.
+    {% else %}
+      Action completed successfully.
+    {% endif %}
+  </div>
+{% endif %}
+
 {% macro sortable_header(column, label) %}
   {% set new_sort_order = 'desc' if sort_by == column and sort_order == 'asc' else 'asc' %}
   <th>
@@ -27,6 +71,19 @@
     </a>
   </th>
 {% endmacro %}
+
+<details class="create-panel">
+  <summary>Invite Organizer</summary>
+  <div class="create-body">
+    <p class="text-secondary create-hint">Send an email invitation granting hosting access to create events. If the recipient does not have an account, they will be guided to set a password and claim hosting access.</p>
+    <form method="post" action="/admin/users/invite" class="inline-form">
+      <input type="email" name="email" placeholder="organizer@example.com" required />
+      <input type="text" name="display_name" placeholder="Display Name (optional)" />
+      <button type="submit" class="btn btn-primary">Send Invitation</button>
+      <button type="button" class="btn btn-outline" onclick="this.closest('details').removeAttribute('open'); return false;">Cancel</button>
+    </form>
+  </div>
+</details>
 
 <div class="search-bar">
   <form method="get" action="/admin/users/" class="search-form">
@@ -42,17 +99,19 @@
 </div>
 
 {% if users %}
-<table class="data-table">
+<div class="data-table-container">
+<table class="data-table users-table">
   <thead>
     <tr>
       <th>#</th>
       {{ sortable_header('email', 'Email') }}
       {{ sortable_header('display_name', 'Display Name') }}
-      {{ sortable_header('is_admin', 'Admin') }}
+      <th>Admin</th>
+      <th>Hosting</th>
       {{ sortable_header('email_verified', '2FA Status') }}
       {{ sortable_header('is_active', 'Status') }}
       {{ sortable_header('created_at', 'Joined') }}
-      <th>Actions</th>
+      <th class="actions-col">Actions</th>
     </tr>
   </thead>
   <tbody>
@@ -64,8 +123,29 @@
       <td>
         {% if user.is_admin %}
         <span class="badge badge-role badge-event_admin">Admin</span>
-{% else %}
+        {% else %}
         <span class="muted">—</span>
+        {% endif %}
+      </td>
+      <td>
+        {% if user.can_host %}
+        <span class="badge badge-valid">Host</span>
+        {% else %}
+          {% if user.hosting_requested_at %}
+          <span class="badge badge-role" title="Requested {{ user.hosting_requested_at.strftime('%b %d, %Y') }}">Requested</span>
+          {% endif %}
+          {% if token_map and user.id in token_map and not token_map[user.id].is_used %}
+            {% set tok = token_map[user.id] %}
+            {% if tok.is_expired %}
+            <span class="badge badge-used">Expired</span>
+            {% else %}
+            <span class="badge badge-warning">Pending</span>
+            {% endif %}
+          {% elif not user.hosting_requested_at and user.hosting_revoked_at %}
+          <span class="badge badge-used" title="Revoked {{ user.hosting_revoked_at.strftime('%b %d, %Y') }}">Revoked</span>
+          {% elif not user.hosting_requested_at %}
+          <span class="muted">—</span>
+          {% endif %}
         {% endif %}
       </td>
       <td>
@@ -78,12 +158,41 @@
       <td>
         {% if user.is_active %}
         <span class="status-live">● Active</span>
-{% else %}
+        {% else %}
         <span class="status-offline">○ Inactive</span>
         {% endif %}
       </td>
       <td>{{ user.created_at.strftime('%b %d, %Y') if user.created_at else '—' }}</td>
       <td class="actions-cell">
+        {% if user.can_host %}
+          {% if not user.is_admin and user.is_active %}
+          <form method="post" action="/admin/users/{{ user.id }}/hosting" class="inline-form">
+            <input type="hidden" name="action" value="revoke">
+            <button type="submit" class="btn btn-sm btn-warning">Revoke Hosting</button>
+          </form>
+          {% endif %}
+        {% elif token_map and user.id in token_map and not token_map[user.id].is_used %}
+        {% set tok = token_map[user.id] %}
+        <form method="post" action="/admin/users/invite/{{ tok.id }}/resend" class="inline-form">
+          <button type="submit" class="btn btn-sm btn-outline" title="Resend invitation email">Resend</button>
+        </form>
+        <form method="post" action="/admin/users/invite/{{ tok.id }}/cancel" class="inline-form"
+              data-confirm="Cancel invitation for {{ user.email }}?">
+          <button type="submit" class="btn btn-sm btn-danger" title="Cancel invitation">Cancel</button>
+        </form>
+        {% elif not user.is_admin and user.is_active %}
+          {% if user.password_hash %}
+          <form method="post" action="/admin/users/{{ user.id }}/hosting" class="inline-form">
+            <input type="hidden" name="action" value="grant">
+            <button type="submit" class="btn btn-sm btn-primary">Grant Hosting</button>
+          </form>
+          {% else %}
+          <form method="post" action="/admin/users/invite" class="inline-form">
+            <input type="hidden" name="email" value="{{ user.email }}">
+            <button type="submit" class="btn btn-sm btn-primary" title="Send hosting invitation email">Invite</button>
+          </form>
+          {% endif %}
+        {% endif %}
         <form method="post" action="/admin/users/{{ user.id }}/toggle-active" class="inline-form">
           <button type="submit" class="btn btn-sm {{ 'btn-warning' if user.is_active else 'btn-success' }}">
             {{ 'Deactivate' if user.is_active else 'Activate' }}
@@ -98,6 +207,7 @@
     {% endfor %}
   </tbody>
 </table>
+</div>
   {% include 'admin/pagination.html' %}
 {% else %}
 <div class="empty-state">

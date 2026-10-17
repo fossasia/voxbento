@@ -1,27 +1,29 @@
 from __future__ import annotations
 
 import logging
-
-# We assume templates is initialized in fastapi_app and imported here, or
-# we initialize it here. Usually, Jinja2Templates is shared or re-initialized.
-# To avoid circular imports, let's re-initialize it.
+import re
 from pathlib import Path
 
-from fastapi import APIRouter, Request
-from fastapi.responses import PlainTextResponse, Response
+from fastapi import APIRouter, Request, status
+from fastapi.responses import JSONResponse, PlainTextResponse, Response
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 
-from portal.auth import get_admin_flags, get_current_user
+from portal.auth import get_admin_flags, get_current_user, resolve_request_principal
 from portal.database import (
     get_session,
+    get_user_by_id,
     list_booth_memberships_for_user,
     list_memberships_for_user,
     list_room_memberships_for_user,
 )
 from portal.email_sender import send_demo_request_email
 from portal.globals import _JS_CACHE_BUST
-from portal.utils import _check_mediamtx
+from portal.models import utc_now
+from portal.rate_limit import check_rate_limit
+from portal.utils import _check_mediamtx, get_client_ip
+
+logger = logging.getLogger(__name__)
 
 _BASE_DIR = Path(__file__).resolve().parent.parent
 templates = Jinja2Templates(directory=str(_BASE_DIR / "templates"))
@@ -42,10 +44,11 @@ async def home(request: Request):
         try:
             async with get_session() as session:
                 uid = int(current_user["sub"])
+                db_user = await get_user_by_id(session, uid)
                 ems = await list_memberships_for_user(session, uid)
                 room_memberships = await list_room_memberships_for_user(session, uid)
                 booth_memberships = await list_booth_memberships_for_user(session, uid)
-            if any(em.role == "event_owner" for em in ems):
+            if (db_user and db_user.can_host) or any(em.role == "event_owner" for em in ems):
                 management_home = "/workspace/"
             elif any(rm.role == "room_coordinator" for rm in room_memberships):
                 management_home = "/mission-control/"
@@ -225,13 +228,61 @@ class DemoRequestModel(BaseModel):
     industry: str | None = None
     companySize: str | None = None
     languageSupport: str | None = None
+    notes: str | None = None
 
 
 @router.post("/api/request-demo")
-async def request_demo(data: DemoRequestModel):
+async def request_demo(request: Request, data: DemoRequestModel):
+    client_ip = get_client_ip(request)
+
+    # 1. Strip potential header injection characters (\r, \n)
+    def clean(s: str | None) -> str:
+        if not s:
+            return ""
+        return re.sub(r"[\r\n]+", " ", s).strip()
+
+    email = clean(data.email).lower()
+    if not email or "@" not in email:
+        return JSONResponse({"ok": False, "detail": "Invalid email address."}, status_code=status.HTTP_400_BAD_REQUEST)
+
+    # 2. Rate limits: 20/hour per IP, 3/hour per email
+    if not check_rate_limit("demo_request_ip", client_ip, max_requests=20, window_seconds=3600):
+        return JSONResponse({"ok": False, "detail": "Too many requests. Please try again later."}, status_code=status.HTTP_429_TOO_MANY_REQUESTS)
+
+    if not check_rate_limit("demo_request_email", email, max_requests=3, window_seconds=3600):
+        return JSONResponse({"ok": False, "detail": "Too many requests for this email. Please try again later."}, status_code=status.HTTP_429_TOO_MANY_REQUESTS)
+
+    # 3. Server-side user identification (ignore client-provided user_id/source)
+    user_id = None
+    is_authenticated = False
+    async with get_session() as session:
+        principal = await resolve_request_principal(request, session)
+        user = principal["user"]
+        if user is not None:
+            user_id = user.id
+            is_authenticated = True
+            if user.hosting_requested_at is None:
+                user.hosting_requested_at = utc_now()
+                await session.flush()
+
+    cleaned_data = {
+        "email": email,
+        "firstName": clean(data.firstName),
+        "lastName": clean(data.lastName),
+        "phoneNumber": clean(data.phoneNumber),
+        "companyName": clean(data.companyName),
+        "country": clean(data.country),
+        "industry": clean(data.industry),
+        "companySize": clean(data.companySize),
+        "languageSupport": clean(data.languageSupport),
+        "notes": clean(data.notes),
+        "user_id": user_id,
+        "source": "account" if is_authenticated else "home",
+    }
+
     try:
-        await send_demo_request_email(data.model_dump())
+        await send_demo_request_email(cleaned_data)
         return {"ok": True}
     except Exception as e:
-        logging.getLogger(__name__).error(f"Error processing demo request: {e}", exc_info=True)
+        logger.error(f"Error processing demo request: {e}", exc_info=True)
         return {"ok": False, "detail": "An internal error occurred while processing the request."}

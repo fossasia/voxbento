@@ -81,6 +81,54 @@ async def seed_event():
     return event, room, booth
 
 
+@pytest.fixture
+async def room_scope_events():
+    """Two event rooms with an owner scoped only to the first event."""
+    from portal.database import (
+        create_booth,
+        create_event,
+        create_invite_token,
+        create_room,
+        create_user,
+        get_session,
+        set_booth_membership,
+        set_event_membership,
+        set_room_membership,
+    )
+
+    async with get_session() as s:
+        event_a = await create_event(s, slug="scope-a", display_name="Event A")
+        event_b = await create_event(s, slug="scope-b", display_name="Event B")
+        room_a = await create_room(s, event_id=event_a.id, display_name="A room")
+        room_b = await create_room(s, event_id=event_b.id, display_name="B room")
+        booth_a = await create_booth(
+            s, event_id=event_a.id, room_id=room_a.id, language_code="en", language_name="English"
+        )
+        booth_b = await create_booth(
+            s, event_id=event_b.id, room_id=room_b.id, language_code="fr", language_name="French"
+        )
+        invite_b = await create_invite_token(s, booth_id=booth_b.id, role="interpreter")
+        owner = await create_user(s, email="scope-owner@example.com", display_name="Owner A")
+        member = await create_user(s, email="scope-member@example.com", display_name="Interpreter B")
+        coordinator = await create_user(s, email="scope-coordinator@example.com", display_name="Coordinator A")
+        await set_event_membership(s, user_id=owner.id, event_id=event_a.id, role="event_owner")
+        booth_membership = await set_booth_membership(s, user_id=member.id, booth_id=booth_b.id, role="interpreter")
+        await set_room_membership(s, user_id=coordinator.id, room_id=room_a.id, role="room_coordinator")
+
+        return {
+            "event_a": event_a.id,
+            "event_b": event_b.id,
+            "room_a": room_a.id,
+            "room_b": room_b.id,
+            "booth_a": booth_a.id,
+            "booth_b": booth_b.id,
+            "invite_b": invite_b.token,
+            "booth_membership_b": booth_membership.id,
+            "owner_cookie": {"user_token": create_user_token(user_id=owner.id, email=owner.email)},
+            "coordinator_cookie": {"user_token": create_user_token(user_id=coordinator.id, email=coordinator.email)},
+        }
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -1308,6 +1356,101 @@ class TestRoomCRUD:
                 follow_redirects=False,
             )
         assert resp.status_code == 303
+
+    @pytest.mark.anyio
+    async def test_delete_room_rejects_cross_event_target_without_deleting_dependents(self, room_scope_events):
+        from portal.database import get_room_by_id, get_session
+        from portal.models import BoothMembership, DBBooth, InviteToken
+
+        scope = room_scope_events
+        async with _client() as c:
+            resp = await c.post(
+                f"/workspace/events/{scope['event_a']}/rooms/{scope['room_b']}/delete",
+                cookies=scope["owner_cookie"],
+                follow_redirects=False,
+            )
+        assert resp.status_code == 404
+        async with get_session() as s:
+            assert await get_room_by_id(s, scope["room_b"]) is not None
+            assert await s.get(DBBooth, scope["booth_b"]) is not None
+            assert await s.get(InviteToken, scope["invite_b"]) is not None
+            assert await s.get(BoothMembership, scope["booth_membership_b"]) is not None
+
+    @pytest.mark.anyio
+    async def test_delete_room_allows_own_event_and_preserves_other_event(self, room_scope_events):
+        from portal.database import get_room_by_id, get_session
+        from portal.models import DBBooth
+
+        scope = room_scope_events
+        async with _client() as c:
+            resp = await c.post(
+                f"/workspace/events/{scope['event_a']}/rooms/{scope['room_a']}/delete",
+                cookies=scope["owner_cookie"],
+                follow_redirects=False,
+            )
+        assert resp.status_code == 303
+        assert resp.headers["location"] == f"/workspace/events/{scope['event_a']}/rooms/"
+        async with get_session() as s:
+            assert await get_room_by_id(s, scope["room_a"]) is None
+            assert await s.get(DBBooth, scope["booth_a"]) is None
+            assert await get_room_by_id(s, scope["room_b"]) is not None
+            assert await s.get(DBBooth, scope["booth_b"]) is not None
+
+    @pytest.mark.anyio
+    async def test_delete_room_rejects_foreign_event_owner(self, room_scope_events):
+        from portal.database import get_room_by_id, get_session
+
+        scope = room_scope_events
+        async with _client() as c:
+            resp = await c.post(
+                f"/workspace/events/{scope['event_b']}/rooms/{scope['room_b']}/delete",
+                cookies=scope["owner_cookie"],
+                follow_redirects=False,
+            )
+        assert resp.status_code == 403
+        async with get_session() as s:
+            assert await get_room_by_id(s, scope["room_b"]) is not None
+
+    @pytest.mark.anyio
+    async def test_delete_room_returns_404_for_nonexistent_room(self, room_scope_events):
+        scope = room_scope_events
+        async with _client() as c:
+            resp = await c.post(
+                f"/workspace/events/{scope['event_a']}/rooms/99999/delete",
+                cookies=scope["owner_cookie"],
+                follow_redirects=False,
+            )
+        assert resp.status_code == 404
+
+    @pytest.mark.anyio
+    async def test_delete_room_rejects_super_admin_event_mismatch(self, admin_cookie, room_scope_events):
+        from portal.database import get_room_by_id, get_session
+
+        scope = room_scope_events
+        async with _client() as c:
+            resp = await c.post(
+                f"/admin/events/{scope['event_a']}/rooms/{scope['room_b']}/delete",
+                cookies=admin_cookie,
+                follow_redirects=False,
+            )
+        assert resp.status_code == 404
+        async with get_session() as s:
+            assert await get_room_by_id(s, scope["room_b"]) is not None
+
+    @pytest.mark.anyio
+    async def test_delete_room_preserves_legacy_coordinator_access(self, room_scope_events):
+        from portal.database import get_room_by_id, get_session
+
+        scope = room_scope_events
+        async with _client() as c:
+            resp = await c.post(
+                f"/admin/events/{scope['event_a']}/rooms/{scope['room_a']}/delete",
+                cookies=scope["coordinator_cookie"],
+                follow_redirects=False,
+            )
+        assert resp.status_code == 303
+        async with get_session() as s:
+            assert await get_room_by_id(s, scope["room_a"]) is None
 
 
 # ---------------------------------------------------------------------------
