@@ -227,8 +227,6 @@ async def require_admin(request: Request) -> None:
             return
 
         user_id = principal["user_id"]
-        if not user_id:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required.")
 
         from portal.database import list_memberships_for_user, list_room_memberships_for_user
 
@@ -295,8 +293,6 @@ async def require_event_owner(request: Request) -> None:
             return
 
         user_id = principal["user_id"]
-        if not user_id:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required.")
 
         from portal.database import list_memberships_for_user
 

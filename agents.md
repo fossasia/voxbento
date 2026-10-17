@@ -91,7 +91,7 @@ VoxBento is a production-grade **browser-first interpretation booth console** fo
 
 1. **One active publisher per language channel.** MediaMTX enforces `overridePublisher: yes`; Python enforces via `BoothRegistry`.
 2. **Interpreter mic audio never routes to `AudioContext.destination`.** No local loopback.
-3. **Interpreter ingest remains browser-only WHIP.** Explicit exception: room-scoped Program Stream Ingest (#690) accepts authenticated HTTPS WHIP from an external encoder. No YouTube pulling/relay or public RTMP/SRT. Floor ownership is `jitsi_bot` or `program_ingest`; never last-publisher-wins.
+3. **Interpreter ingest remains browser-only WHIP.** Explicit exception: room-scoped Program Stream Ingest (#690) accepts authenticated HTTPS WHIP from an external encoder, and its operator-enabled relay mode (#749) accepts room-authenticated RTMPS (never plaintext RTMP) and pushes it to an allow-listed YouTube RTMPS destination from the dedicated `program-relay` service. No YouTube pulling, no unauthenticated or plaintext RTMP, no SRT. Floor ownership is `jitsi_bot` or `program_ingest`; never last-publisher-wins.
 4. **Jitsi is monitoring only** — receive-only iframe. Not the ingest transport.
 5. **No framework.** Frontend is plain ES modules in `portal/static/js/`. No Vue, React, jQuery, inline `<script>` blocks.
 6. **No Flask, Socket.IO, aiortc.**
@@ -226,6 +226,13 @@ Program ingest: `portal/program_ingest.py` owns floor authorization/reconciliati
 Migration 025 adds protected credentials, source ownership and persistent floor
 sequence. One portal replica; program media never traverses Python. Read
 `docs/program-stream-ingest.md` before changing this boundary or deploying it.
+
+Program relay (#749): `portal/program_relay.py` owns the YouTube destination
+(Fernet-encrypted, write-only), relay health and convergence of the `program-relay`
+service (`program-relay/relay.py`, the media plane; `docker-compose.relay.yml`);
+migration 028 adds `program_ingest_mode`, which binds the program key to WHIP or RTMPS.
+Never log, return or forward FFmpeg text containing the destination. Read
+`docs/program-relay.md` before changing relay mode.
 
 ---
 

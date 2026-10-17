@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Form, HTTPException, Request
+from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import select, update
@@ -28,6 +28,7 @@ from portal.models import (
     OAuthToken,
 )
 from portal.rate_limit import auth_rate_limiter, token_rate_limiter
+from portal.utils import safe_redirect
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["oauth"])
@@ -116,14 +117,19 @@ async def authorize_get(
     code_challenge: str = "",
     code_challenge_method: str = "",
     event: str = "",
+    login_hint: str = "",
     user: dict | None = Depends(get_current_user),
     db: AsyncSession = Depends(get_db_session),
 ):
+    path_query = f"{request.url.path}?{request.url.query}" if request.url.query else request.url.path
+    next_url = urllib.parse.quote(path_query)
+
     if user is None:
-        # User is not logged in, redirect to login with 'next' parameter
-        path_query = f"{request.url.path}?{request.url.query}" if request.url.query else request.url.path
-        next_url = urllib.parse.quote(path_query)
-        return RedirectResponse(url=f"/login?next={next_url}", status_code=303)
+        login_url = f"/login?next={next_url}"
+        if login_hint:
+            login_url += f"&email={urllib.parse.quote(login_hint)}"
+        return safe_redirect(url=login_url, status_code=status.HTTP_303_SEE_OTHER)
+
 
     if response_type != "code":
         raise HTTPException(status_code=400, detail="Unsupported response_type. Only 'code' is supported.")
@@ -188,6 +194,9 @@ async def authorize_get(
             "code_challenge": code_challenge,
             "code_challenge_method": code_challenge_method,
             "scope_string": " ".join(effective_scopes),
+            "current_user_email": user.get("email", "") if user else "",
+            "switch_url": f"/login?switch=1&next={next_url}"
+            + (f"&email={urllib.parse.quote(login_hint)}" if login_hint else ""),
         },
     )
 
@@ -234,9 +243,10 @@ async def authorize_post(
     if not effective_scopes:
         raise HTTPException(status_code=403, detail="Forbidden")
 
-    # Save consent — handle race conditions with a savepoint
+    # Save consent — handle race conditions with separate savepoints
     from sqlalchemy.exc import IntegrityError
 
+    # 1. Manage consent grant in its own savepoint
     try:
         async with db.begin_nested():
             consent = OAuthConsentGrant(
@@ -245,7 +255,7 @@ async def authorize_post(
             db.add(consent)
             await db.flush()
     except IntegrityError:
-        # Another request inserted it concurrently. Just update the scopes.
+        # Consent grant already exists. Update the scopes.
         await db.execute(
             update(OAuthConsentGrant)
             .where(
@@ -255,6 +265,41 @@ async def authorize_post(
             )
             .values(scopes=effective_scopes)
         )
+
+    # 2. Manage event membership for authorizing user outside the consent savepoint
+    try:
+        async with db.begin_nested():
+            mem_res = await db.execute(
+                select(EventMembership).where(
+                    EventMembership.user_id == int(user["sub"]),
+                    EventMembership.event_id == event_id,
+                )
+            )
+            existing_mem = mem_res.scalars().first()
+            if existing_mem:
+                # Upgrade existing lower role (e.g. room_coordinator) to event_owner if confidential client
+                if client.is_confidential and existing_mem.role not in ("event_owner", "super_admin", "owner"):
+                    existing_mem.role = "event_owner"
+            else:
+                # Only grant event_owner if event currently has no owners (initial setup)
+                # or if client is confidential and user was verified by the platform
+                existing_owners = (
+                    (
+                        await db.execute(
+                            select(EventMembership).where(
+                                EventMembership.event_id == event_id,
+                                EventMembership.role.in_(("event_owner", "super_admin", "owner")),
+                            )
+                        )
+                    )
+                    .scalars()
+                    .all()
+                )
+                if not existing_owners or client.is_confidential:
+                    db.add(EventMembership(user_id=int(user["sub"]), event_id=event_id, role="event_owner"))
+            await db.flush()
+    except IntegrityError:
+        pass
 
     # Generate authorization code
     code = generate_token()
