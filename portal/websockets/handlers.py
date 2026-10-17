@@ -47,18 +47,34 @@ async def ws_booth(websocket: WebSocket, booth_id: str) -> None:
 
     language_name = await get_booth_language_name(booth_id)
 
+    user_id: int | None = None
+    if payload:
+        sub = payload.get("sub")
+        if sub is not None:
+            try:
+                user_id = int(sub)
+            except (ValueError, TypeError):
+                pass
+
     session = Session(
         booth_id=booth_id,
         participant_id=None,
         language=language_name,
         channel_id=f"{booth_id}-audio",
         granted_role=ws_granted_role,
+        user_id=user_id,
     )
     manager.add(websocket, session)
 
     try:
         while True:
             raw = await websocket.receive_text()
+            if session.revoked:
+                await websocket.send_text(
+                    json.dumps({"type": "booth:error", "message": "Session authorization has been revoked."})
+                )
+                await websocket.close(code=4003)
+                break
             try:
                 data = json.loads(raw)
             except json.JSONDecodeError:

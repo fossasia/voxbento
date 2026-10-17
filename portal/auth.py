@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from portal.config import settings
 from portal.database import get_db_session
 from portal.models import User
-from portal.roles import _ROLE_RANK
+from portal.roles import _ROLE_RANK, ALL_ROLES
 
 logger = logging.getLogger(__name__)
 
@@ -784,9 +784,10 @@ async def resolve_booth_role(
             except Exception:
                 logger.exception("Failed to resolve booth role from database")
 
-    if not roles:
+    valid_roles = [r for r in roles if r in ALL_ROLES]
+    if not valid_roles:
         return None
-    return max(roles, key=lambda r: _ROLE_RANK.get(r, 0))
+    return max(valid_roles, key=lambda r: _ROLE_RANK.get(r, 0))
 
 
 def can_perform_role(granted_role: str | None, requested_role: str) -> bool:

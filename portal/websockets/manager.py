@@ -10,6 +10,7 @@ from fastapi import WebSocket, WebSocketDisconnect
 import portal.webhooks.worker as _wh_worker
 from portal.auth import can_perform_role
 from portal.globals import booths
+from portal.roles import ALL_ROLES
 
 
 @dataclass
@@ -20,6 +21,8 @@ class Session:
     channel_id: str
     # Role derived from the bearer cookie at WS connection time — never from client data.
     granted_role: str | None = None
+    user_id: int | None = None
+    revoked: bool = False
 
 
 class ConnectionManager:
@@ -44,10 +47,62 @@ class ConnectionManager:
     def get_session(self, ws: WebSocket) -> Session | None:
         return self._sessions.get(id(ws))
 
+    def revoke_session(self, ws: WebSocket) -> None:
+        """Revoke authorization for a connected socket so it receives no further broadcasts."""
+        session = self._sessions.get(id(ws))
+        if session is not None:
+            session.granted_role = None
+            session.revoked = True
+
+    async def close_session(self, ws: WebSocket, code: int = 4003, reason: str = "Authorization revoked") -> None:
+        """Revoke authorization and disconnect the socket."""
+        self.revoke_session(ws)
+        try:
+            await ws.close(code=code, reason=reason)
+        except Exception:
+            pass
+        self.remove(ws)
+
+    def revoke_user_sessions(self, user_id: int, booth_id: str | None = None) -> list[WebSocket]:
+        """Revoke authorization for all active sessions of a user (optionally scoped to a booth)."""
+        revoked: list[WebSocket] = []
+        for room_sockets in self._rooms.values():
+            for ws in list(room_sockets):
+                session = self._sessions.get(id(ws))
+                if session is not None and session.user_id == user_id:
+                    if booth_id is None or session.booth_id == booth_id:
+                        session.granted_role = None
+                        session.revoked = True
+                        revoked.append(ws)
+        return revoked
+
+    async def close_user_sessions(
+        self, user_id: int, booth_id: str | None = None, code: int = 4003, reason: str = "Authorization revoked"
+    ) -> None:
+        """Revoke authorization and disconnect all active sessions of a user."""
+        for ws in self.revoke_user_sessions(user_id, booth_id):
+            try:
+                await ws.close(code=code, reason=reason)
+            except Exception:
+                pass
+            self.remove(ws)
+
     async def broadcast(self, booth_id: str, message: dict) -> None:
+        """Send *message* to booth members authorized for *booth_id*.
+
+        Sockets are added to the room at WebSocket-connect time so late
+        joiners observe membership changes, but delivery is limited to
+        sockets whose session carries a supported role granted for this booth.
+        A socket with no booth role (unauthenticated, holding only another
+        booth's invitation, an unsupported role, or revoked) stays connected
+        yet receives nothing.
+        """
         payload = json.dumps(message)
         dead: list[WebSocket] = []
         for ws in list(self._rooms.get(booth_id, set())):
+            session = self._sessions.get(id(ws))
+            if session is None or session.revoked or session.granted_role not in ALL_ROLES:
+                continue
             try:
                 await ws.send_text(payload)
             except (WebSocketDisconnect, RuntimeError, OSError):
@@ -342,7 +397,12 @@ async def _handle_set_broadcast_unlocked(ws: WebSocket, session: Session, data: 
             except Exception as e:
                 logging.getLogger(__name__).warning(f"Failed to stop transcription on lock: {e}")
         await manager.broadcast(session.booth_id, {"type": "booth:state", "state": state})
-        await listener_manager.broadcast(session.booth_id, {"type": "booth:state", "state": state})
+        listener_state = {
+            "booth_id": state.get("booth_id"),
+            "broadcast_unlocked": state.get("broadcast_unlocked"),
+            "ingest_status": state.get("ingest_status"),
+        }
+        await listener_manager.broadcast(session.booth_id, {"type": "booth:state", "state": listener_state})
     except Exception as exc:
         await ws.send_text(json.dumps({"type": "booth:error", "message": str(exc)}))
 
