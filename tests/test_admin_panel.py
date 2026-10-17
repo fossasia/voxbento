@@ -1519,6 +1519,27 @@ class TestBoothCRUD:
         assert "That room already has a booth for that language." in page.text
 
     @pytest.mark.anyio
+    async def test_create_booth_in_missing_room_is_not_reported_as_duplicate(self, admin_cookie, seed_event):
+        event, _, _ = seed_event
+        async with _client() as c:
+            booths_page = await c.post(
+                f"/admin/events/{event.id}/rooms/9999/booths/",
+                data={"language_code": "en", "language_name": "English"},
+                cookies=admin_cookie,
+                follow_redirects=False,
+            )
+            wizard = await c.post(
+                f"/admin/events/{event.id}/setup/booths",
+                data={"room_id": "9999", "language_code": "en"},
+                cookies=admin_cookie,
+                follow_redirects=False,
+            )
+        assert booths_page.status_code == 303
+        assert "duplicate_language" not in booths_page.headers["location"]
+        assert wizard.status_code == 303
+        assert "duplicate_language" not in wizard.headers["location"]
+
+    @pytest.mark.anyio
     async def test_booth_detail(self, admin_cookie, seed_event):
         event, room, booth = seed_event
         async with _client() as c:

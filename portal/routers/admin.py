@@ -16,7 +16,7 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 from sqlalchemy import select, update
-from sqlalchemy.exc import IntegrityError, SQLAlchemyError
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from portal import meeting_source
@@ -86,6 +86,7 @@ from portal.models import (
     TOKEN_TYPE_MAGIC_LINK,
     AuthToken,
     BoothTranslationLanguage,
+    DBBooth,
     Event,
     RoomTranslationLanguage,
     TranscriptSegment,
@@ -160,6 +161,13 @@ def _slugify(text: str) -> str:
     """Derive a URL-safe event slug from free text."""
     slug = re.sub(r"[^a-z0-9]+", "-", text.strip().lower())
     return slug.strip("-")
+
+
+async def _room_has_booth_language(session: AsyncSession, room_id: int, language_code: str) -> bool:
+    existing = await session.scalar(
+        select(DBBooth.id).where(DBBooth.room_id == room_id, DBBooth.language_code == language_code)
+    )
+    return existing is not None
 
 
 async def _management_event_ids(request: Request, user_id: int | None) -> set[int] | None:
@@ -548,16 +556,18 @@ async def admin_setup_add_booth(request: Request, event_id: int):
             lang = pycountry.languages.get(alpha_2=language_code)
             language_name = lang.name if lang else language_code.upper()
         try:
+            room_id = int(room_id_str)
             async with get_session() as session:
-                await create_booth(
-                    session,
-                    event_id=event_id,
-                    room_id=int(room_id_str),
-                    language_code=language_code,
-                    language_name=language_name,
-                )
-        except IntegrityError:
-            error = "duplicate_language"
+                if await _room_has_booth_language(session, room_id, language_code):
+                    error = "duplicate_language"
+                else:
+                    await create_booth(
+                        session,
+                        event_id=event_id,
+                        room_id=room_id,
+                        language_code=language_code,
+                        language_name=language_name,
+                    )
         except Exception as e:
             logger.warning(f"Error creating booth in setup wizard: {e}")
 
@@ -1204,11 +1214,16 @@ async def admin_create_booth(request: Request, event_id: int, room_id: int):
     redirect_path = f"events/{event_id}/rooms/{room_id}/booths/"
     try:
         async with get_session() as session:
-            await create_booth(
-                session, event_id=event_id, room_id=room_id, language_code=language_code, language_name=language_name
-            )
-    except IntegrityError:
-        redirect_path += "?error=duplicate_language"
+            if await _room_has_booth_language(session, room_id, language_code):
+                redirect_path += "?error=duplicate_language"
+            else:
+                await create_booth(
+                    session,
+                    event_id=event_id,
+                    room_id=room_id,
+                    language_code=language_code,
+                    language_name=language_name,
+                )
     except Exception as e:
         logger.warning(f"Error creating booth: {e}")
     return safe_redirect(
