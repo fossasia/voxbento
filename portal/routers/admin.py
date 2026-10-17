@@ -1112,6 +1112,9 @@ async def api_floor_transcription_status(room_id: int):
 @router.post("/admin/events/{event_id}/rooms/{room_id}/delete", dependencies=[Depends(require_admin)])
 async def admin_delete_room(request: Request, event_id: int, room_id: int):
     async with get_session() as session:
+        room = await get_room_by_id(session, room_id)
+        if room is None or room.event_id != event_id:
+            raise HTTPException(status_code=404, detail="Room not found.")
         await delete_room(session, room_id)
     return safe_redirect(
         url=management_url(request, f"events/{event_id}/rooms/"), status_code=status.HTTP_303_SEE_OTHER

@@ -18,6 +18,7 @@ Rooms can optionally add a listener-side audio synchronization delay for WHEP pl
 - Existing organizer bookmarks under `/admin/events/...` redirect to the matching `/workspace/events/...` URL. HTTP methods and query strings are preserved, so old forms and filtered room-list bookmarks continue to work.
 
 The workspace and admin surfaces share the same management implementation and authorization checks. This URL separation does not change OAuth authorization, token refresh, reconnect, or disconnect behavior for Eventyay integrations.
+Deleting a room from an event workspace verifies that the room belongs to the event in the URL. A missing room or mismatched event/room pair returns 404 without deleting rooms, booths, or their invite and membership records.
 
 ---
 
