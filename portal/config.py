@@ -130,5 +130,10 @@ class Settings(BaseSettings):
     smtp_from_email: str = "noreply@voxbento.com"
     public_base_url: str = "https://voxbento.com"
 
+    @property
+    def is_https(self) -> bool:
+        """Whether browsers reach the portal over HTTPS (Secure cookies, HSTS)."""
+        return urlparse(self.public_base_url).scheme == "https"
+
 
 settings = Settings()

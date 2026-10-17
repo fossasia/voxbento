@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from portal.config import Settings
 
 
@@ -25,3 +27,11 @@ def test_legacy_admin_password_environment_variable_is_ignored(monkeypatch):
     settings = Settings(_env_file=None)
 
     assert "admin_password" not in type(settings).model_fields
+
+
+@pytest.mark.parametrize(
+    ("public_base_url", "expected"),
+    [("https://voxbento.com", True), ("HTTPS://voxbento.com", True), ("http://localhost:8000", False)],
+)
+def test_is_https_reads_the_public_base_url_scheme(public_base_url, expected):
+    assert Settings(public_base_url=public_base_url).is_https is expected

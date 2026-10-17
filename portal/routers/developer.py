@@ -12,6 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from portal.auth import require_user
+from portal.config import settings
 from portal.database import get_db_session
 from portal.models import DeveloperAccount, OAuthAuditLog, OAuthClient, WebhookSubscription
 
@@ -61,7 +62,7 @@ async def developer_dashboard(
         },
     )
     if should_set_cookie:
-        response.set_cookie("dashboard_csrf", csrf_token, httponly=True, samesite="lax")
+        response.set_cookie("dashboard_csrf", csrf_token, httponly=True, samesite="lax", secure=settings.is_https)
     return response
 
 

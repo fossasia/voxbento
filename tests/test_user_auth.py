@@ -299,6 +299,26 @@ class TestUserLogin:
         assert "user_token" in resp.headers.get("set-cookie", "")
 
     @pytest.mark.anyio
+    @pytest.mark.parametrize(
+        ("public_base_url", "secure"), [("https://voxbento.com", True), ("http://localhost:8000", False)]
+    )
+    async def test_login_cookie_secure_follows_public_base_url(self, setup_db, monkeypatch, public_base_url, secure):
+        from portal.config import settings
+
+        monkeypatch.setattr(settings, "public_base_url", public_base_url)
+        await _create_test_user(email="secure@example.com", password="securepass123")
+        async with _client() as c:
+            resp = await c.post(
+                "/login",
+                data={"email": "secure@example.com", "password": "securepass123"},
+                follow_redirects=False,
+            )
+        assert resp.status_code == 303
+        cookie = resp.headers["set-cookie"]
+        assert cookie.startswith("user_token=")
+        assert ("; secure" in cookie.lower()) is secure
+
+    @pytest.mark.anyio
     async def test_login_with_wrong_password(self, setup_db):
         await _create_test_user(email="login@example.com", password="securepass123")
         async with _client() as c:

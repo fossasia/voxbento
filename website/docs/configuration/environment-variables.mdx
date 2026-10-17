@@ -31,6 +31,7 @@ These variables control JWT token behavior and legacy endpoint access.
 | --- | --- | --- |
 | `JWT_SECRET` | _(falls back to `SECRET_KEY`)_ | A separate JWT signing secret. Leave this empty to reuse `SECRET_KEY` for JWT signing — the recommended approach unless you need independent rotation. |
 | `JWT_EXPIRY_SECONDS` | `86400` | Session token lifetime in seconds. The default is 24 hours. Reduce this value for higher-security deployments or increase it for longer interpreter sessions. |
+| `PUBLIC_BASE_URL` | `https://voxbento.com` | Public origin browsers use to reach the portal, used for invite, magic-link and email links. An `https://` value marks auth cookies `Secure` and enables HSTS. Set it to an `http://` origin for deployments served over plain HTTP, otherwise browsers drop the login cookies. |
 | `BOOTH_ACCESS_TOKEN` | _(none)_ | Static bearer token for the legacy `/api/auth/token` endpoint. Only set this if you are integrating an older client that cannot use the standard invite-token flow. |
 
 ## Media Server Variables

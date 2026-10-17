@@ -137,6 +137,7 @@ async def join_via_invite(request: Request, token: str) -> RedirectResponse:
         httponly=True,
         secure=_is_cookie_secure(request),
         samesite="lax",
+        secure=settings.is_https,
         max_age=settings.jwt_expiry_seconds,
     )
     return response
@@ -243,6 +244,7 @@ async def verify_email_route(request: Request, token: str, background_tasks: Bac
                 httponly=True,
                 secure=_is_cookie_secure(request),
                 samesite="lax",
+                secure=settings.is_https,
                 max_age=settings.jwt_expiry_seconds,
             )
             return response
@@ -317,6 +319,7 @@ async def user_login_submit(request: Request):
         httponly=True,
         secure=_is_cookie_secure(request),
         samesite="lax",
+        secure=settings.is_https,
         max_age=settings.jwt_expiry_seconds,
     )
     return response
@@ -540,6 +543,7 @@ async def redeem_magic_link(request: Request, token: str, background_tasks: Back
                 httponly=True,
                 secure=_is_cookie_secure(request),
                 samesite="lax",
+                secure=settings.is_https,
                 max_age=settings.jwt_expiry_seconds,
             )
             return response
@@ -646,6 +650,7 @@ async def reset_password_submit(request: Request, token: str):
         httponly=True,
         secure=_is_cookie_secure(request),
         samesite="lax",
+        secure=settings.is_https,
         max_age=settings.jwt_expiry_seconds,
     )
     return response

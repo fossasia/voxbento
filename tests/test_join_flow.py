@@ -297,6 +297,7 @@ class TestJoinRoute:
 
         cookie = resp.cookies.get("session_token")
         assert cookie is not None
+        assert "secure" in resp.headers["set-cookie"].lower()
 
         payload = decode_token(cookie)
         assert payload["role"] == "room_coordinator"
