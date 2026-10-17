@@ -233,7 +233,8 @@ class TestAdminLogin:
                 follow_redirects=False,
             )
         assert response.status_code == 403
-        assert "Please verify your email address first." in response.text
+        assert "Invalid email or password." in response.text
+        assert "Please verify your email address first." not in response.text
         assert "user_token" not in response.cookies
 
     @pytest.mark.anyio
