@@ -290,7 +290,6 @@ async def list_rooms_for_event(
     return list(result.scalars().all())
 
 
-
 async def delete_room(session: AsyncSession, room_id: int) -> bool:
     room = await get_room_by_id(session, room_id)
     if room is None:
@@ -334,6 +333,7 @@ async def create_booth(
     language_code: str,
     language_name: str,
 ) -> DBBooth:
+
     booth = DBBooth(
         event_id=event_id,
         room_id=room_id,

@@ -22,10 +22,20 @@ client = TestClient(app)
 def setup_db():
     import anyio
 
-    from portal.database import configure, dispose, init_db
+    from portal.database import configure, create_user, dispose, get_session, init_db
 
-    configure("sqlite+aiosqlite://")
-    anyio.run(init_db)
+    async def setup():
+        configure("sqlite+aiosqlite://")
+        await init_db()
+        async with get_session() as session:
+            await create_user(
+                session,
+                email="admin@test.com",
+                display_name="Admin",
+                is_admin=True,
+            )
+
+    anyio.run(setup)
     yield
     anyio.run(dispose)
 
@@ -269,6 +279,94 @@ def test_ws_join_receives_joined_and_state():
     assert "participant_id" in joined
     assert "state" in joined
 
+def test_ws_role_recheck_is_throttled():
+    from unittest.mock import AsyncMock, patch
+
+    with (
+        patch(
+            "portal.websockets.handlers.resolve_booth_role",
+            new=AsyncMock(return_value="event_admin"),
+        ) as resolve_role,
+        patch("portal.websockets.handlers.time.monotonic", return_value=0.0),
+    ):
+        with client.websocket_connect(
+            "/ws/booth/throttle-test-booth",
+            cookies=_ws_auth(),
+        ) as ws:
+            ws.send_text(json.dumps({"type": "unknown"}))
+            assert json.loads(ws.receive_text())["type"] == "booth:error"
+
+            ws.send_text(json.dumps({"type": "unknown"}))
+            assert json.loads(ws.receive_text())["type"] == "booth:error"
+
+    # One initial resolution; neither message triggers a recheck.
+    assert resolve_role.await_count == 1
+
+
+def test_ws_role_change_closes_connection():
+    from unittest.mock import AsyncMock, patch
+
+    clock = iter([0.0, 6.0])
+
+    def fake_monotonic():
+        return next(clock, 6.0)
+
+    with (
+        patch(
+            "portal.websockets.handlers.resolve_booth_role",
+            new=AsyncMock(side_effect=["event_admin", "interpreter"]),
+        ) as resolve_role,
+        patch(
+            "portal.websockets.handlers._monotonic",
+            side_effect=fake_monotonic,
+        ),
+    ):
+        with client.websocket_connect(
+            "/ws/booth/role-change-test-booth",
+            cookies=_ws_auth(),
+        ) as ws:
+            ws.send_text(json.dumps({"type": "unknown"}))
+            with pytest.raises(Exception):
+                ws.receive_text()
+
+    assert resolve_role.await_count == 2
+
+
+def test_ws_role_recheck_database_error_keeps_connection_open():
+    from unittest.mock import AsyncMock, patch
+
+    clock = iter([0.0, 6.0, 12.0])
+
+    def fake_monotonic():
+        return next(clock, 12.0)
+
+    with (
+        patch(
+            "portal.websockets.handlers.resolve_booth_role",
+            new=AsyncMock(
+                side_effect=[
+                    "event_admin",
+                    RuntimeError("temporary database failure"),
+                    "event_admin",
+                ]
+            ),
+        ) as resolve_role,
+        patch(
+            "portal.websockets.handlers._monotonic",
+            side_effect=fake_monotonic,
+        ),
+    ):
+        with client.websocket_connect(
+            "/ws/booth/role-db-error-test-booth",
+            cookies=_ws_auth(),
+        ) as ws:
+            ws.send_text(json.dumps({"type": "unknown"}))
+            assert json.loads(ws.receive_text())["type"] == "booth:error"
+
+            ws.send_text(json.dumps({"type": "unknown"}))
+            assert json.loads(ws.receive_text())["type"] == "booth:error"
+
+    assert resolve_role.await_count == 3
 
 def test_ws_join_without_language_and_unconfigured_booth_returns_error():
     """If neither the client specifies a language nor the booth exists in DB, join must error."""
@@ -1555,13 +1653,22 @@ def test_event_booth_state_does_not_load_booth_whose_room_belongs_to_another_eve
     from portal.database import create_booth, create_event, create_room, get_session
 
     async def seed() -> int:
+        from portal.models import DBBooth
+
         async with get_session() as session:
             owner = await create_event(session, slug="roomowner", display_name="Room Owner")
             borrower = await create_event(session, slug="roomborrower", display_name="Room Borrower")
             room = await create_room(session, event_id=owner.id, display_name="Main")
-            await create_booth(
-                session, event_id=borrower.id, room_id=room.id, language_code="fr", language_name="French"
+
+            session.add(
+                DBBooth(
+                    event_id=borrower.id,
+                    room_id=room.id,
+                    language_code="fr",
+                    language_name="French",
+                )
             )
+            await session.flush()
             return room.id
 
     room_id = anyio.run(seed)

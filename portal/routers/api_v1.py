@@ -670,7 +670,11 @@ async def get_booth(
 
     await _verify_token_rbac(db, token, event, room_id)
 
-    result = await db.execute(select(DBBooth).where(DBBooth.room_id == room_id, DBBooth.language_code == language_code, DBBooth.event_id == event.id))
+    result = await db.execute(
+        select(DBBooth).where(
+            DBBooth.room_id == room_id, DBBooth.language_code == language_code, DBBooth.event_id == event.id
+        )
+    )
     booth = result.scalars().first()
     if not booth:
         raise HTTPException(status_code=404, detail="Booth not found")
@@ -697,6 +701,13 @@ async def create_booth(
         raise HTTPException(status_code=404, detail="Event not found")
 
     await _verify_token_rbac(db, token, event, room_id)
+
+    room = await db.get(Room, room_id)
+    if room is None or room.event_id != event.id:
+        raise HTTPException(
+            status_code=404,
+            detail="Room not found for this event",
+        )
 
     result = await db.execute(select(DBBooth).where(DBBooth.room_id == room_id, DBBooth.language_code == language_code))
     if result.scalars().first():
@@ -727,7 +738,11 @@ async def delete_booth_endpoint(
 
     await _verify_token_rbac(db, token, event, room_id)
 
-    result = await db.execute(select(DBBooth).where(DBBooth.room_id == room_id, DBBooth.language_code == language_code, DBBooth.event_id == event.id))
+    result = await db.execute(
+        select(DBBooth).where(
+            DBBooth.room_id == room_id, DBBooth.language_code == language_code, DBBooth.event_id == event.id
+        )
+    )
     booth = result.scalars().first()
     if not booth:
         raise HTTPException(status_code=404, detail="Booth not found")
