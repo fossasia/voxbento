@@ -1849,6 +1849,32 @@ class TestListenerTokenAPI:
             settings.booth_access_token = ""
 
     @pytest.mark.anyio
+    async def test_ws_tts_rejects_cross_event_token(self, setup_db):
+        """The TTS broadcast WS must enforce resolve_ws_auth like the captions WS."""
+        import os
+
+        from starlette.testclient import TestClient
+        from starlette.websockets import WebSocketDisconnect
+
+        from portal.auth import create_listener_token
+        from portal.config import settings
+
+        os.environ["BOOTH_ACCESS_TOKEN"] = "test-booth-token"
+        settings.booth_access_token = "test-booth-token"
+        try:
+            token_event_a = create_listener_token(event_slug="event-a")
+            from fastapi_app import app as fastapi_app
+
+            tc = TestClient(app=fastapi_app)
+            with pytest.raises(WebSocketDisconnect) as exc_info:
+                with tc.websocket_connect(f"/ws/tts/1/english/event-b-english?token={token_event_a}") as ws:
+                    ws.receive_text()
+            assert exc_info.value.code == 4003
+        finally:
+            os.environ["BOOTH_ACCESS_TOKEN"] = ""
+            settings.booth_access_token = ""
+
+    @pytest.mark.anyio
     async def test_listener_token_correct_event_ws_captions_accepted(self, setup_db):
         """A listener JWT scoped to event-a is accepted on event-a's captions WS."""
         import os
