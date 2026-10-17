@@ -117,7 +117,7 @@ asyncio.run(main())
 
 ### IC-05: Admin login fails
 
-**Symptoms:** `/admin/login` with correct account credentials → still shows error.
+**Symptoms:** `/login` with correct account credentials → still shows error, or the admin panel returns 403 after sign-in.
 
 **Diagnosis:**
 1. Confirm the user is active, has a password, and has `is_admin=True` or an appropriate membership.

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import math
 import re
@@ -11,23 +12,24 @@ from pathlib import Path
 
 import pycountry
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request, status
-from fastapi.responses import RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 from sqlalchemy import select, update
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from portal import meeting_source
 from portal.auth import (
-    create_user_token,
     get_accessible_event_ids,
     get_admin_flags,
     get_current_user,
     require_admin,
     require_event_owner,
+    require_hosting_access,
     require_room_event_access,
     require_super_admin,
     require_user,
-    verify_password,
 )
 from portal.booth_identity import make_booth_id, make_mediamtx_path, validate_event_slug, validate_language_code
 from portal.config import settings
@@ -38,7 +40,7 @@ from portal.database import (
     create_api_key,
     create_auth_token,
     create_booth,
-    create_event,
+    create_event_with_owner,
     create_invite_token,
     create_room,
     create_user,
@@ -77,35 +79,52 @@ from portal.database import (
     set_room_membership,
     update_user_active,
 )
-from portal.email import send_role_invite_email
-from portal.globals import _JS_CACHE_BUST, booths, get_http_client
+from portal.email import send_hosting_granted_email, send_hosting_invite_email, send_role_invite_email
+from portal.globals import _JS_CACHE_BUST, booths
 from portal.models import (
+    TOKEN_TYPE_HOSTING_INVITE,
+    TOKEN_TYPE_MAGIC_LINK,
+    AuthToken,
     BoothTranslationLanguage,
+    Event,
     RoomTranslationLanguage,
     TranscriptSegment,
     TranscriptTranslation,
     User,
     utc_now,
 )
+from portal.program_ingest import room_lock
 from portal.rate_limit import check_rate_limit
 from portal.transcription import ALLOWED_MODELS, ProviderConfig, ProviderEnum, get_api_key
 from portal.transcription.worker import start_transcription_worker, stop_transcription_worker
 from portal.translations.constants import TRANSLATION_MODELS, TranslationProviderEnum
-from portal.utils import _check_mediamtx, _make_jitsi_url, safe_redirect
+from portal.utils import _check_mediamtx, _make_jitsi_url, get_client_ip, safe_redirect, verify_same_origin
 from portal.websockets.manager import broadcast_transcription
 from portal.workspace_routing import management_template_context, management_url
 
 _BASE_DIR = Path(__file__).resolve().parent.parent
 
+logger = logging.getLogger(__name__)
 templates = Jinja2Templates(
     directory=str(_BASE_DIR / "templates"),
     context_processors=[management_template_context],
 )
 
 
+def _apply_api_key_updates(
+    event: Event,
+    updates: tuple[tuple[str, str | None, bool | None], ...],
+) -> None:
+    for attribute, value, clear in updates:
+        if clear:
+            setattr(event, attribute, None)
+        elif value and (trimmed_value := value.strip()):
+            setattr(event, attribute, encrypt_val(trimmed_value))
+
+
 async def _send_admin_invite(session, user: User, role_name: str, context_name: str, target_url: str):
     token_val = secrets.token_hex(32)
-    await create_auth_token(session, jti=token_val, user_id=user.id, token_type="magic_link")
+    await create_auth_token(session, jti=token_val, user_id=user.id, token_type=TOKEN_TYPE_MAGIC_LINK)
     invite_url = f"{settings.public_base_url}/auth/magic/{token_val}?next={urllib.parse.quote(target_url)}"
     await send_role_invite_email(user.email, invite_url, role_name, context_name)
 
@@ -152,18 +171,6 @@ async def _management_event_ids(request: Request, user_id: int | None) -> set[in
     async with get_session() as session:
         memberships = await list_memberships_for_user(session, user_id)
     return {membership.event_id for membership in memberships if membership.role == "event_owner"}
-
-
-async def _assign_creator_as_event_owner(request: Request, session: AsyncSession, event_id: int) -> None:
-    """Keep a newly created event reachable from its creator's workspace."""
-    current_user = await get_current_user(request)
-    if current_user and current_user.get("sub"):
-        await set_event_membership(
-            session,
-            user_id=int(current_user["sub"]),
-            event_id=event_id,
-            role="event_owner",
-        )
 
 
 @router.get("/mission-control/")
@@ -260,102 +267,14 @@ async def mission_control_grid(request: Request, event_slug: str, user=Depends(r
 
 
 @router.get("/admin/login")
-async def admin_login_page(request: Request):
-    user = await get_current_user(request)
-    if user:
-        if user.get("is_admin"):
-            return safe_redirect(url="/admin/", status_code=status.HTTP_303_SEE_OTHER)
-        user_id = int(user["sub"]) if user.get("sub") else None
-        if user_id:
-            async with get_session() as session:
-                memberships = await list_memberships_for_user(session, user_id)
-                room_memberships = await list_room_memberships_for_user(session, user_id)
-                if any(m.role == "event_owner" for m in memberships) or any(
-                    rm.role == "room_coordinator" for rm in room_memberships
-                ):
-                    return safe_redirect(url="/admin/", status_code=status.HTTP_303_SEE_OTHER)
-    return templates.TemplateResponse(request=request, name="admin/login.html", context={})
-
-
-@router.post("/admin/login")
-async def admin_login_submit(request: Request):
-    form = await request.form()
-    email = (form.get("email", "") or "").strip().lower()
-    # Passwords are compared verbatim: never strip them. Leading/trailing
-    # whitespace may be part of the stored credential (matches /login).
-    password = form.get("password", "") or ""
-
-    if not email or not password:
-        return templates.TemplateResponse(
-            request=request,
-            name="admin/login.html",
-            context={"error": "Invalid email or password.", "email": email},
-            status_code=status.HTTP_403_FORBIDDEN,
-        )
-
-    if not check_rate_limit("login", email, max_requests=10, window_seconds=3600):
-        return templates.TemplateResponse(
-            request=request,
-            name="admin/login.html",
-            context={"error": "Too many attempts. Try again later.", "email": email},
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-        )
-
-    async with get_session() as session:
-        user = await get_user_by_email(session, email)
-        if (
-            user is None
-            or not user.is_active
-            or not user.password_hash
-            or not verify_password(password, user.password_hash)
-        ):
-            return templates.TemplateResponse(
-                request=request,
-                name="admin/login.html",
-                context={"error": "Invalid email or password.", "email": email},
-                status_code=status.HTTP_403_FORBIDDEN,
-            )
-
-        if not user.email_verified:
-            return templates.TemplateResponse(
-                request=request,
-                name="admin/login.html",
-                context={"error": "Please verify your email address first.", "email": email},
-                status_code=status.HTTP_403_FORBIDDEN,
-            )
-
-        has_admin_access = user.is_admin
-        if not has_admin_access:
-            memberships = await list_memberships_for_user(session, user.id)
-            room_memberships = await list_room_memberships_for_user(session, user.id)
-            has_admin_access = any(m.role == "event_owner" for m in memberships) or any(
-                rm.role == "room_coordinator" for rm in room_memberships
-            )
-
-        if not has_admin_access:
-            return templates.TemplateResponse(
-                request=request,
-                name="admin/login.html",
-                context={"error": "Access denied. Admin privileges required.", "email": email},
-                status_code=status.HTTP_403_FORBIDDEN,
-            )
-
-    token = create_user_token(
-        user_id=user.id,
-        email=user.email,
-        display_name=user.display_name,
-        is_admin=user.is_admin,
-    )
-    response = safe_redirect(url="/admin/", status_code=status.HTTP_303_SEE_OTHER)
-    response.set_cookie(
-        key="user_token", value=token, httponly=True, samesite="lax", max_age=settings.jwt_expiry_seconds
-    )
-    return response
+async def admin_login_page():
+    """Retired admin sign-in page; everyone signs in through ``/login``."""
+    return safe_redirect(url="/login?next=/admin/", status_code=status.HTTP_303_SEE_OTHER)
 
 
 @router.get("/admin/logout")
 async def admin_logout():
-    response = safe_redirect(url="/admin/login", status_code=status.HTTP_303_SEE_OTHER)
+    response = safe_redirect(url="/login", status_code=status.HTTP_303_SEE_OTHER)
     response.delete_cookie("admin_token")
     response.delete_cookie("user_token")
     response.delete_cookie("session_token")
@@ -414,35 +333,71 @@ async def admin_dashboard(request: Request, page: int = 1):
 
 
 @router.get("/admin/events/", dependencies=[Depends(require_admin)])
-async def admin_event_list(request: Request, page: int = 1):
+async def admin_event_list(request: Request, page: int = 1, search: str | None = None):
+    requested_page = page
+    search = (search or "").strip() or None
     admin_flags = await get_admin_flags(request)
     user = await get_current_user(request)
     user_id = int(user["sub"]) if user and user.get("sub") else None
     allowed_event_ids = await _management_event_ids(request, user_id)
     limit = 20
-    offset = (page - 1) * limit
     async with get_session() as session:
-        total_events = await count_events(session, allowed_event_ids=allowed_event_ids)
-        events = await list_events(session, limit=limit, offset=offset, allowed_event_ids=allowed_event_ids)
-    total_pages = max(1, math.ceil(total_events / limit))
+        total_events = await count_events(session, allowed_event_ids=allowed_event_ids, search=search)
+        total_pages = max(1, math.ceil(total_events / limit))
+        page = min(max(page, 1), total_pages)
+        offset = (page - 1) * limit
+        events = await list_events(
+            session, limit=limit, offset=offset, allowed_event_ids=allowed_event_ids, search=search
+        )
     return templates.TemplateResponse(
         request=request,
         name="admin/event_list.html",
-        context={"events": events, "page": page, "total_pages": total_pages, **admin_flags},
+        context={
+            "events": events,
+            "page": page,
+            "requested_page": requested_page,
+            "total_pages": total_pages,
+            "total_events": total_events,
+            "search": search,
+            **admin_flags,
+        },
     )
 
 
-@router.post("/admin/events/", dependencies=[Depends(require_admin)])
-async def admin_create_event(request: Request):
+@router.post("/admin/events/", dependencies=[Depends(require_hosting_access)])
+async def admin_create_event(request: Request, principal: dict = Depends(require_hosting_access)):
     form = await request.form()
     slug = form.get("slug", "").strip()
     display_name = form.get("display_name", "").strip()
     if not slug or not display_name:
         return safe_redirect(url=management_url(request, "events/"), status_code=status.HTTP_303_SEE_OTHER)
+
+    try:
+        slug = validate_event_slug(slug)
+    except ValueError:
+        return safe_redirect(url=management_url(request, "events/"), status_code=status.HTTP_303_SEE_OTHER)
+
     try:
         async with get_session() as session:
-            event = await create_event(session, slug=slug, display_name=display_name)
-            await _assign_creator_as_event_owner(request, session, event.id)
+            # Read-only slug pre-check before consuming rate limit
+            if await get_event_by_slug(session, slug) is not None:
+                return safe_redirect(url=management_url(request, "events/"), status_code=status.HTTP_303_SEE_OTHER)
+
+            client_ip = get_client_ip(request)
+            if not check_rate_limit("event_create", client_ip, max_requests=10, window_seconds=60):
+                raise HTTPException(
+                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                    detail="Too many events created. Please try again later.",
+                )
+
+            await create_event_with_owner(
+                session,
+                slug=slug,
+                display_name=display_name,
+                owner_user_id=principal["user_id"],
+            )
+    except HTTPException:
+        raise
     except Exception:
         return safe_redirect(url=management_url(request, "events/"), status_code=status.HTTP_303_SEE_OTHER)
     return safe_redirect(url=management_url(request, "events/"), status_code=status.HTTP_303_SEE_OTHER)
@@ -453,14 +408,16 @@ async def admin_create_event(request: Request):
 # ---------------------------------------------------------------------------
 
 
-@router.get("/admin/setup", dependencies=[Depends(require_admin)])
+@router.get("/admin/setup", dependencies=[Depends(require_hosting_access)])
 async def admin_setup_start(request: Request):
     admin_flags = await get_admin_flags(request)
+    if not getattr(request.state, "is_workspace", False) and not admin_flags.get("is_super_admin"):
+        return safe_redirect("/workspace/setup")
     return templates.TemplateResponse(request=request, name="admin/wizard_event.html", context={**admin_flags})
 
 
-@router.post("/admin/setup", dependencies=[Depends(require_admin)])
-async def admin_setup_create_event(request: Request):
+@router.post("/admin/setup", dependencies=[Depends(require_hosting_access)])
+async def admin_setup_create_event(request: Request, principal: dict = Depends(require_hosting_access)):
     form = await request.form()
     display_name = form.get("display_name", "").strip()
     raw_slug = form.get("slug", "").strip()
@@ -486,6 +443,7 @@ async def admin_setup_create_event(request: Request):
             status_code=status.HTTP_400_BAD_REQUEST,
         )
     async with get_session() as session:
+        # Read-only slug pre-check before consuming rate limit
         if await get_event_by_slug(session, slug) is not None:
             return templates.TemplateResponse(
                 request=request,
@@ -497,8 +455,26 @@ async def admin_setup_create_event(request: Request):
                 },
                 status_code=status.HTTP_400_BAD_REQUEST,
             )
-        event = await create_event(session, slug=slug, display_name=display_name)
-        await _assign_creator_as_event_owner(request, session, event.id)
+
+        client_ip = get_client_ip(request)
+        if not check_rate_limit("event_create", client_ip, max_requests=10, window_seconds=60):
+            return templates.TemplateResponse(
+                request=request,
+                name="admin/wizard_event.html",
+                context={
+                    "error": "Rate limit exceeded. Please wait a moment before creating another event.",
+                    "display_name": display_name,
+                    "slug": slug,
+                },
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            )
+
+        event = await create_event_with_owner(
+            session,
+            slug=slug,
+            display_name=display_name,
+            owner_user_id=principal["user_id"],
+        )
         event_id = event.id
     return safe_redirect(
         url=management_url(request, f"events/{event_id}/setup/rooms"),
@@ -727,42 +703,24 @@ async def admin_event_api_settings_post(
             raise HTTPException(status_code=404, detail="Event not found.")
         event.transcription_api_enabled = bool(transcription_api_enabled)
         try:
-            if clear_openai_api_key:
-                event.encrypted_openai_api_key = None
-            elif openai_api_key and openai_api_key.strip():
-                event.encrypted_openai_api_key = encrypt_val(openai_api_key.strip())
-            if clear_deepgram_api_key:
-                event.encrypted_deepgram_api_key = None
-            elif deepgram_api_key and deepgram_api_key.strip():
-                event.encrypted_deepgram_api_key = encrypt_val(deepgram_api_key.strip())
-            if clear_nvidia_api_key:
-                event.encrypted_nvidia_api_key = None
-            elif nvidia_api_key and nvidia_api_key.strip():
-                event.encrypted_nvidia_api_key = encrypt_val(nvidia_api_key.strip())
-            if clear_elevenlabs_api_key:
-                event.encrypted_elevenlabs_api_key = None
-            elif elevenlabs_api_key and elevenlabs_api_key.strip():
-                event.encrypted_elevenlabs_api_key = encrypt_val(elevenlabs_api_key.strip())
-            if clear_translation_openai_api_key:
-                event.encrypted_translation_openai_api_key = None
-            elif translation_openai_api_key and translation_openai_api_key.strip():
-                event.encrypted_translation_openai_api_key = encrypt_val(translation_openai_api_key.strip())
-            if clear_openrouter_api_key:
-                event.encrypted_openrouter_api_key = None
-            elif openrouter_api_key and openrouter_api_key.strip():
-                event.encrypted_openrouter_api_key = encrypt_val(openrouter_api_key.strip())
-            if clear_gemini_api_key:
-                event.encrypted_gemini_api_key = None
-            elif gemini_api_key and gemini_api_key.strip():
-                event.encrypted_gemini_api_key = encrypt_val(gemini_api_key.strip())
-            if clear_anthropic_api_key:
-                event.encrypted_anthropic_api_key = None
-            elif anthropic_api_key and anthropic_api_key.strip():
-                event.encrypted_anthropic_api_key = encrypt_val(anthropic_api_key.strip())
-            if clear_groq_api_key:
-                event.encrypted_groq_api_key = None
-            elif groq_api_key and groq_api_key.strip():
-                event.encrypted_groq_api_key = encrypt_val(groq_api_key.strip())
+            _apply_api_key_updates(
+                event,
+                (
+                    ("encrypted_openai_api_key", openai_api_key, clear_openai_api_key),
+                    ("encrypted_deepgram_api_key", deepgram_api_key, clear_deepgram_api_key),
+                    ("encrypted_nvidia_api_key", nvidia_api_key, clear_nvidia_api_key),
+                    ("encrypted_elevenlabs_api_key", elevenlabs_api_key, clear_elevenlabs_api_key),
+                    (
+                        "encrypted_translation_openai_api_key",
+                        translation_openai_api_key,
+                        clear_translation_openai_api_key,
+                    ),
+                    ("encrypted_openrouter_api_key", openrouter_api_key, clear_openrouter_api_key),
+                    ("encrypted_gemini_api_key", gemini_api_key, clear_gemini_api_key),
+                    ("encrypted_anthropic_api_key", anthropic_api_key, clear_anthropic_api_key),
+                    ("encrypted_groq_api_key", groq_api_key, clear_groq_api_key),
+                ),
+            )
         except (ValueError, RuntimeError) as e:
             raise HTTPException(status_code=400, detail=f"API Key encryption failed: {e}")
         await session.flush()
@@ -774,8 +732,20 @@ async def admin_event_api_settings_post(
 
 @router.post("/admin/events/{event_id}/delete", dependencies=[Depends(require_event_owner)])
 async def admin_delete_event(request: Request, event_id: int):
-    async with get_session() as session:
-        await delete_event(session, event_id)
+    """Delete an event by ID, returning 404 if missing or redirecting with an error alert on database failure."""
+    try:
+        async with get_session() as session:
+            deleted = await delete_event(session, event_id)
+            if not deleted:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event not found.")
+    except HTTPException:
+        raise
+    except SQLAlchemyError as e:
+        logger.error(f"Failed to delete event {event_id}: {e}")
+        return safe_redirect(
+            url=management_url(request, "events/?error=delete_failed"),
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
     return safe_redirect(url=management_url(request, "events/"), status_code=status.HTTP_303_SEE_OTHER)
 
 
@@ -819,6 +789,90 @@ async def admin_create_room(request: Request, event_id: int):
     return safe_redirect(
         url=management_url(request, f"events/{event_id}/rooms/"), status_code=status.HTTP_303_SEE_OTHER
     )
+
+
+@router.get("/admin/events/by-slug/{event_slug}/rooms/{room_id}/")
+@router.get("/admin/events/by-slug/{event_slug}/rooms/{room_id}")
+@router.get("/workspace/events/by-slug/{event_slug}/rooms/{room_id}/")
+@router.get("/workspace/events/by-slug/{event_slug}/rooms/{room_id}")
+async def admin_redirect_room_by_slug(request: Request, event_slug: str, room_id: str, id_type: str | None = None):
+    """Redirect by-slug room URL to canonical workspace room page."""
+    from fastapi import HTTPException
+    from sqlalchemy import select
+
+    from portal.database import get_session
+    from portal.models import Event, Room
+
+    lookup_type = id_type or request.query_params.get("by") or request.query_params.get("type")
+
+    async with get_session() as session:
+        event = (await session.execute(select(Event).where(Event.slug == event_slug))).scalars().first()
+        if not event:
+            event = (await session.execute(select(Event).where(Event.display_name == event_slug))).scalars().first()
+        if not event:
+            raise HTTPException(status_code=404, detail="Event not found")
+
+        room = None
+        if lookup_type in ("eventyay", "external"):
+            room = (
+                (
+                    await session.execute(
+                        select(Room).where(Room.eventyay_room_id == str(room_id), Room.event_id == event.id)
+                    )
+                )
+                .scalars()
+                .first()
+            )
+        elif lookup_type in ("id", "internal", "pk"):
+            if room_id.isdigit():
+                room = (
+                    (await session.execute(select(Room).where(Room.id == int(room_id), Room.event_id == event.id)))
+                    .scalars()
+                    .first()
+                )
+        else:
+            # Disambiguate when no explicit lookup type is provided
+            if not room_id.isdigit():
+                room = (
+                    (
+                        await session.execute(
+                            select(Room).where(Room.eventyay_room_id == str(room_id), Room.event_id == event.id)
+                        )
+                    )
+                    .scalars()
+                    .first()
+                )
+            else:
+                internal_room = (
+                    (await session.execute(select(Room).where(Room.id == int(room_id), Room.event_id == event.id)))
+                    .scalars()
+                    .first()
+                )
+                ext_room = (
+                    (
+                        await session.execute(
+                            select(Room).where(Room.eventyay_room_id == str(room_id), Room.event_id == event.id)
+                        )
+                    )
+                    .scalars()
+                    .first()
+                )
+                room = internal_room or ext_room
+
+        target_room_id = room.id if room else room_id
+        return safe_redirect(
+            url=f"/workspace/events/{event.id}/rooms/{target_room_id}/",
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+
+
+@router.get("/admin/events/by-slug/{event_slug}/rooms/by-eventyay/{eventyay_room_id}/")
+@router.get("/admin/events/by-slug/{event_slug}/rooms/by-eventyay/{eventyay_room_id}")
+@router.get("/workspace/events/by-slug/{event_slug}/rooms/by-eventyay/{eventyay_room_id}/")
+@router.get("/workspace/events/by-slug/{event_slug}/rooms/by-eventyay/{eventyay_room_id}")
+async def admin_redirect_room_by_eventyay_id(request: Request, event_slug: str, eventyay_room_id: str):
+    """Redirect unambiguous eventyay external room ID to canonical workspace room page."""
+    return await admin_redirect_room_by_slug(request, event_slug, eventyay_room_id, id_type="eventyay")
 
 
 @router.get("/admin/events/{event_id}/rooms/{room_id}/", dependencies=[Depends(require_admin)])
@@ -871,7 +925,7 @@ async def admin_room_transcripts(request: Request, event_id: int, room_id: int):
         if event is None:
             raise HTTPException(status_code=404, detail="Event not found.")
         room = await get_room_by_id(session, room_id)
-        if room is None:
+        if room is None or room.event_id != event_id:
             raise HTTPException(status_code=404, detail="Room not found.")
         booths = await list_booths_for_room(session, room_id)
     admin_flags = await get_admin_flags(request, event_id=event_id, room_id=room_id)
@@ -961,7 +1015,6 @@ async def get_translation_models():
     return TRANSLATION_MODELS
 
 
-logger = logging.getLogger(__name__)
 MAX_AUDIO_DELAY_MS = 10_000
 
 
@@ -1034,90 +1087,46 @@ async def admin_delete_api_key(request: Request, event_id: int, key_id: int):
         return {"success": True}
 
 
+# Legacy room-scoped API retained for coordinators and scripts. It drives the
+# same managed meeting agent as the room page, so the reconcile loop owns retries
+# and starts the floor worker once audio arrives.
 @router.post("/api/rooms/{room_id}/floor-transcription/start", dependencies=[Depends(require_room_event_access)])
 async def api_start_floor_transcription(room_id: int):
-    async with get_session() as session:
+    async with room_lock(room_id), get_session() as session:
         room = await get_room_by_id(session, room_id)
         if not room or not room.floor_transcription_enabled:
             raise HTTPException(status_code=400, detail="Floor transcription not enabled or invalid room")
+        if room.floor_source == "program_ingest":
+            raise HTTPException(
+                status_code=409,
+                detail="Program ingest owns the floor; transcription starts automatically when audio arrives",
+            )
         if room.floor_transcription_provider == "none":
             raise HTTPException(status_code=400, detail="Cannot start transcription with 'none' provider")
         event = await get_event_by_id(session, room.event_id)
         if not event:
             raise HTTPException(status_code=400, detail="Event not found")
-        event_slug = event.slug
-        clean_name = re.sub("[^a-zA-Z0-9]+", "", room.display_name)
-        room_id_str = f"Voxbento-{event.slug}-{clean_name}"
-        if room.jitsi_url:
-            jitsi_url = room.jitsi_url
-            parsed = urllib.parse.urlparse(room.jitsi_url)
-            internal_parsed = urllib.parse.urlparse(settings.effective_jitsi_internal_base)
-            base_parsed = urllib.parse.urlparse(settings.effective_jitsi_base_url)
-            if parsed.netloc in ("jitsi.voxbento.com", base_parsed.netloc) or parsed.netloc.startswith(
-                ("localhost", "127.0.0.1")
-            ):
-                parsed = parsed._replace(scheme=internal_parsed.scheme, netloc=internal_parsed.netloc)
-                jitsi_url = urllib.parse.urlunparse(parsed)
-            else:
-                jitsi_url = room.jitsi_url
-        else:
-            jitsi_url = f"{settings.effective_jitsi_internal_base}/{room_id_str}"
-    try:
-        client = get_http_client()
-        resp = await client.post(
-            f"{settings.floor_bot_base}/start",
-            json={
-                "event_slug": event_slug,
-                "room_id": room_id,
-                "jitsi_url": jitsi_url,
-                "mediamtx_rtsp_base": settings.mediamtx_rtsp_base,
-            },
-            timeout=10.0,
-        )
-        resp.raise_for_status()
-    except Exception as e:
-        logger.error(f"Failed to start floor-bot: {e}")
-        raise HTTPException(status_code=502, detail="Bot service connection failed or access was revoked upstream.")
-    try:
-        api_key = get_api_key(event, ProviderEnum(room.floor_transcription_provider))
-        config = ProviderConfig(api_key=api_key)
-        await start_transcription_worker(
-            event_slug=event_slug,
-            language_code="floor",
-            booth_id=make_booth_id(event_slug, room_id, "floor"),
-            broadcast_callback=broadcast_transcription,
-            provider=room.floor_transcription_provider,
-            model_size=room.floor_transcription_model,
-            config=config,
-            transcription_language=room.floor_language_code,
-            room_id=room_id,
-        )
-    except Exception as e:
-        logger.error(f"Failed to start transcription worker: {e}")
-        client = get_http_client()
-        await client.post(f"{settings.floor_bot_base}/stop", json={"event_slug": event_slug, "room_id": room_id})
-        raise HTTPException(status_code=500, detail=f"Failed to start transcription worker: {e}")
+        await meeting_source.connect(room, event, None, confirm_source_change=False)
     return {"status": "started"}
 
 
 @router.post("/api/rooms/{room_id}/floor-transcription/stop", dependencies=[Depends(require_room_event_access)])
 async def api_stop_floor_transcription(room_id: int):
-    async with get_session() as session:
+    async with room_lock(room_id), get_session() as session:
         room = await get_room_by_id(session, room_id)
         if not room:
             raise HTTPException(status_code=400, detail="Invalid room")
+        if room.floor_source == "program_ingest":
+            raise HTTPException(
+                status_code=409, detail="Revoke or disable program ingest in the room settings to stop its floor source"
+            )
         event = await get_event_by_id(session, room.event_id)
         if not event:
             raise HTTPException(status_code=400, detail="Event not found")
-        event_slug = event.slug
-    try:
-        client = get_http_client()
-        await client.post(
-            f"{settings.floor_bot_base}/stop", json={"event_slug": event_slug, "room_id": room_id}, timeout=15.0
-        )
-    except Exception as e:
-        logger.error(f"Failed to stop floor-bot: {e}")
-    await stop_transcription_worker(make_booth_id(event_slug, room_id, "floor"))
+        stopped = await meeting_source.disconnect(room, event)
+    if not stopped:
+        # Mirror the owner route: the agent may still be in the meeting until reconcile retries.
+        return JSONResponse({"status": "stopping", "cleanup_pending": True}, status_code=202)
     return {"status": "stopped"}
 
 
@@ -1130,25 +1139,12 @@ async def api_floor_transcription_status(room_id: int):
         event = await get_event_by_id(session, room.event_id)
         if not event:
             raise HTTPException(status_code=404, detail="Event not found")
-        event_slug = event.slug
-    running = False
-    stage = "stopped"
-    bot_reachable = True
-    try:
-        client = get_http_client()
-        resp = await client.get(f"{settings.floor_bot_base}/status", timeout=5.0)
-        resp.raise_for_status()
-        data = resp.json()
-        process_key = f"{event_slug}-{room_id}"
-        info = (data.get("active_rooms") or {}).get(process_key)
-        if info:
-            stage = info.get("stage", info.get("state", "unknown"))
-            running = info.get("state") == "healthy"
-    except Exception as e:
-        logger.error(f"Failed to query floor-bot status: {e}")
-        bot_reachable = False
-        stage = "unknown"
-    return {"running": running, "stage": stage, "bot_reachable": bot_reachable}
+        body = meeting_source.status(room)
+    # Keep the pre-managed fields with their original meaning (raw bot stage such as
+    # launching, in_meeting or dead) so existing scripts and monitors keep working;
+    # the managed lifecycle is reported separately in "state".
+    body["bot_reachable"], body["stage"], body["running"] = await meeting_source.bot_stage(event.slug, room.id)
+    return body
 
 
 @router.post("/admin/events/{event_id}/rooms/{room_id}/delete", dependencies=[Depends(require_admin)])
@@ -1597,6 +1593,23 @@ async def admin_users(
         users = await list_users(
             session, limit=limit, offset=offset, search=search, sort_by=sort_by, sort_order=sort_order
         )
+        user_ids = [u.id for u in users]
+        token_map = {}
+        if user_ids:
+            stmt = (
+                select(AuthToken)
+                .where(
+                    AuthToken.user_id.in_(user_ids),
+                    AuthToken.token_type == TOKEN_TYPE_HOSTING_INVITE,
+                    AuthToken.used_at.is_(None),
+                )
+                .order_by(AuthToken.created_at.desc())
+            )
+            tokens = (await session.execute(stmt)).scalars().all()
+            for tok in tokens:
+                if tok.user_id not in token_map:
+                    token_map[tok.user_id] = tok
+
     total_pages = max(1, math.ceil(total_users / limit))
     return templates.TemplateResponse(
         request=request,
@@ -1610,11 +1623,212 @@ async def admin_users(
             "search": search,
             "sort_by": sort_by,
             "sort_order": sort_order,
+            "token_map": token_map,
             "is_super_admin": True,
             "is_event_owner": True,
             "is_room_coordinator": True,
         },
     )
+
+
+@router.post("/admin/users/invite", dependencies=[Depends(require_super_admin)])
+@router.post("/admin/users/invite/", dependencies=[Depends(require_super_admin)])
+async def admin_invite_user(request: Request):
+    if not verify_same_origin(request):
+        raise HTTPException(status_code=400, detail="Invalid request origin.")
+
+    form = await request.form()
+    raw_email = form.get("email", "").strip().lower()
+    display_name = form.get("display_name", "").strip()
+
+    if not raw_email or "@" not in raw_email or "." not in raw_email.split("@")[-1]:
+        raise HTTPException(status_code=400, detail="Invalid email address.")
+
+    async with get_session() as session:
+        user = await get_user_by_email(session, raw_email)
+        if user is not None:
+            if user.is_admin:
+                raise HTTPException(status_code=400, detail="User is already an administrator.")
+            if not user.is_active:
+                raise HTTPException(status_code=400, detail="Cannot invite inactive user.")
+            if user.can_host:
+                accept_header = request.headers.get("accept", "")
+                if "text/html" in accept_header:
+                    return safe_redirect(url="/admin/users/?error=already_host", status_code=status.HTTP_303_SEE_OTHER)
+                raise HTTPException(status_code=400, detail="User already has hosting access.")
+            target_user = user
+        else:
+            stub_name = display_name or raw_email.split("@")[0]
+            target_user = User(
+                email=raw_email,
+                display_name=stub_name,
+                password_hash=None,
+                email_verified=False,
+                can_host=False,
+                is_active=True,
+            )
+            session.add(target_user)
+            await session.flush()
+
+        delete_stmt = (
+            select(AuthToken)
+            .where(
+                AuthToken.user_id == target_user.id,
+                AuthToken.token_type == TOKEN_TYPE_HOSTING_INVITE,
+                AuthToken.used_at.is_(None),
+            )
+        )
+        existing_tokens = (await session.execute(delete_stmt)).scalars().all()
+        for et in existing_tokens:
+            await session.delete(et)
+        await session.flush()
+
+        raw_token = secrets.token_urlsafe(32)
+        token_digest = hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+
+        await create_auth_token(
+            session,
+            user_id=target_user.id,
+            token_type=TOKEN_TYPE_HOSTING_INVITE,
+            jti=token_digest,
+            expires_in_seconds=7 * 86400,
+        )
+
+        user_email = target_user.email
+        has_password = bool(target_user.password_hash)
+
+    invite_url = f"{settings.public_base_url.rstrip('/')}/invite/accept/{raw_token}"
+    await send_hosting_invite_email(user_email, invite_url, is_existing_user=has_password)
+    return safe_redirect(url="/admin/users/?success=invite_sent", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@router.post("/admin/users/{user_id}/hosting", dependencies=[Depends(require_super_admin)])
+@router.post("/admin/users/{user_id}/hosting/", dependencies=[Depends(require_super_admin)])
+async def admin_toggle_user_hosting(request: Request, user_id: int):
+    if not verify_same_origin(request):
+        raise HTTPException(status_code=400, detail="Invalid request origin.")
+
+    form = await request.form()
+    action = form.get("action")
+
+    from portal.auth import resolve_principal
+
+    async with get_session() as session:
+        principal = await resolve_principal(request, session)
+        admin_user_id = principal["user_id"]
+
+        user = await get_user_by_id(session, user_id)
+        if user is None:
+            raise HTTPException(status_code=404, detail="User not found.")
+        if user.is_admin:
+            raise HTTPException(status_code=400, detail="Cannot modify hosting access for administrators.")
+
+        if action == "grant":
+            new_can_host = True
+            user.hosting_revoked_at = None
+            user.hosting_requested_at = None
+        elif action == "revoke":
+            new_can_host = False
+            user.hosting_revoked_at = utc_now()
+            user.hosting_requested_at = None
+        else:
+            new_can_host = not user.can_host
+            user.hosting_revoked_at = None if new_can_host else utc_now()
+            user.hosting_requested_at = None
+
+        if new_can_host and not user.is_active:
+            raise HTTPException(status_code=400, detail="Cannot grant hosting access to inactive users.")
+
+        if new_can_host and not user.password_hash:
+            raise HTTPException(status_code=400, detail="Stub users cannot be granted hosting directly. Send an invitation instead.")
+
+        user.can_host = new_can_host
+
+        # Pending tokens deleted on both grant and revoke (Review 7 A5)
+        delete_stmt = (
+            select(AuthToken)
+            .where(
+                AuthToken.user_id == user.id,
+                AuthToken.token_type == TOKEN_TYPE_HOSTING_INVITE,
+                AuthToken.used_at.is_(None),
+            )
+        )
+        existing_tokens = (await session.execute(delete_stmt)).scalars().all()
+        for et in existing_tokens:
+            await session.delete(et)
+
+        logger.info(
+            "Admin %s updated hosting access for user %d (%s): can_host=%s",
+            admin_user_id,
+            user.id,
+            user.email,
+            new_can_host,
+        )
+
+        user_email = user.email
+
+    if new_can_host:
+        login_url = f"{settings.public_base_url.rstrip('/')}/workspace/"
+        await send_hosting_granted_email(user_email, login_url)
+
+    referrer = request.headers.get("referer", "")
+    if f"/admin/users/{user_id}" in referrer:
+        return safe_redirect(url=f"/admin/users/{user_id}/", status_code=status.HTTP_303_SEE_OTHER)
+    return safe_redirect(url=f"/admin/users/?success=hosting_{'granted' if new_can_host else 'revoked'}", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@router.post("/admin/users/invite/{token_id}/cancel", dependencies=[Depends(require_super_admin)])
+@router.post("/admin/users/invite/{token_id}/cancel/", dependencies=[Depends(require_super_admin)])
+async def admin_cancel_invite(request: Request, token_id: int):
+    if not verify_same_origin(request):
+        raise HTTPException(status_code=400, detail="Invalid request origin.")
+
+    async with get_session() as session:
+        tok_stmt = select(AuthToken).where(AuthToken.id == token_id, AuthToken.token_type == TOKEN_TYPE_HOSTING_INVITE)
+        tok = (await session.execute(tok_stmt)).scalar_one_or_none()
+        if tok:
+            await session.delete(tok)
+
+    return safe_redirect(url="/admin/users/?success=invite_cancelled", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@router.post("/admin/users/invite/{token_id}/resend", dependencies=[Depends(require_super_admin)])
+@router.post("/admin/users/invite/{token_id}/resend/", dependencies=[Depends(require_super_admin)])
+async def admin_resend_invite(request: Request, token_id: int):
+    if not verify_same_origin(request):
+        raise HTTPException(status_code=400, detail="Invalid request origin.")
+
+    async with get_session() as session:
+        tok_stmt = select(AuthToken).where(AuthToken.id == token_id, AuthToken.token_type == TOKEN_TYPE_HOSTING_INVITE)
+        old_tok = (await session.execute(tok_stmt)).scalar_one_or_none()
+        if old_tok is None:
+            raise HTTPException(status_code=404, detail="Invitation not found.")
+
+        user = await get_user_by_id(session, old_tok.user_id)
+        if user is None or not user.is_active:
+            raise HTTPException(status_code=400, detail="User is inactive or not found.")
+
+        user_id = user.id
+        user_email = user.email
+        has_password = bool(user.password_hash)
+
+        await session.delete(old_tok)
+        await session.flush()
+
+        raw_token = secrets.token_urlsafe(32)
+        token_digest = hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
+
+        await create_auth_token(
+            session,
+            user_id=user_id,
+            token_type=TOKEN_TYPE_HOSTING_INVITE,
+            jti=token_digest,
+            expires_in_seconds=7 * 86400,
+        )
+
+    invite_url = f"{settings.public_base_url.rstrip('/')}/invite/accept/{raw_token}"
+    await send_hosting_invite_email(user_email, invite_url, is_existing_user=has_password)
+    return safe_redirect(url="/admin/users/?success=invite_resent", status_code=status.HTTP_303_SEE_OTHER)
 
 
 @router.post("/admin/users/{user_id}/toggle-active", dependencies=[Depends(require_super_admin)])
@@ -1642,6 +1856,20 @@ async def admin_user_detail(request: Request, user_id: int):
         events = await list_events(session)
         memberships = await list_memberships_for_user(session, user_id)
         event_owner_map = {m.event_id: m for m in memberships if m.role == "event_owner"}
+
+        pending_token = None
+        if not user.can_host:
+            tok_stmt = (
+                select(AuthToken)
+                .where(
+                    AuthToken.user_id == user_id,
+                    AuthToken.token_type == TOKEN_TYPE_HOSTING_INVITE,
+                    AuthToken.used_at.is_(None),
+                )
+                .order_by(AuthToken.created_at.desc())
+            )
+            pending_token = (await session.execute(tok_stmt)).scalars().first()
+
     return templates.TemplateResponse(
         request=request,
         name="admin/user_detail.html",
@@ -1649,6 +1877,7 @@ async def admin_user_detail(request: Request, user_id: int):
             "user_detail": user,
             "events": events,
             "event_owner_map": event_owner_map,
+            "pending_token": pending_token,
             "is_super_admin": True,
             "is_event_owner": True,
             "is_room_coordinator": True,
@@ -1812,6 +2041,11 @@ async def api_admin_get_transcripts(
     from portal.database import get_session
 
     async with get_session() as session:
+        # require_admin only checks access to event_id, so the room must belong to it.
+        room = await get_room_by_id(session, room_id)
+        if room is None or room.event_id != event_id:
+            raise HTTPException(status_code=404, detail="Room not found.")
+
         if target_lang:
             stmt = (
                 select(TranscriptTranslation)

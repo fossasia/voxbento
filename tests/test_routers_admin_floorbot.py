@@ -67,15 +67,15 @@ async def _set_membership(user_id, event_id=None, room_id=None, role="event_owne
 
 
 @pytest.mark.anyio
-@patch('portal.routers.admin.start_transcription_worker')
-@patch('portal.routers.admin.stop_transcription_worker')
+@patch('portal.meeting_source.start_transcription_worker')
+@patch('portal.meeting_source.stop_transcription_worker')
 async def test_event_owner_can_start_stop_status(mock_stop, mock_start, client, setup_db):
     user = await _create_user()
     ev, rm = await _create_event_room()
     await _set_membership(user.id, event_id=ev.id, role="event_owner")
     token = create_user_token(user_id=user.id, email=user.email)
 
-    with patch("portal.routers.admin.get_http_client") as mock_http:
+    with patch("portal.meeting_source.get_http_client") as mock_http:
         from unittest.mock import AsyncMock
 
         mock_resp = MagicMock()
@@ -100,20 +100,22 @@ async def test_event_owner_can_start_stop_status(mock_stop, mock_start, client, 
 
 
 @pytest.mark.anyio
-@patch('portal.routers.admin.start_transcription_worker')
-@patch('portal.routers.admin.stop_transcription_worker')
+@patch('portal.meeting_source.start_transcription_worker')
+@patch('portal.meeting_source.stop_transcription_worker')
 async def test_room_coordinator_can_start_stop(mock_stop, mock_start, client, setup_db):
     user = await _create_user()
     ev, rm = await _create_event_room()
     await _set_membership(user.id, room_id=rm.id, role="room_coordinator")
     token = create_user_token(user_id=user.id, email=user.email)
 
-    with patch("portal.routers.admin.get_http_client") as mock_http:
+    with patch("portal.meeting_source.get_http_client") as mock_http:
         from unittest.mock import AsyncMock
 
         mock_resp = MagicMock()
+        mock_resp.json.return_value = {"active_rooms": {}}
         mock_client = AsyncMock()
         mock_client.post = AsyncMock(return_value=mock_resp)
+        mock_client.get = AsyncMock(return_value=mock_resp)
         mock_http.return_value = mock_client
         r = await client.post(f"/api/rooms/{rm.id}/floor-transcription/start", cookies={"user_token": token})
         assert r.status_code == 200
@@ -143,8 +145,8 @@ async def test_cross_event_leak_gets_403(client, setup_db):
 
 
 @pytest.mark.anyio
-@patch('portal.routers.admin.start_transcription_worker')
-@patch('portal.routers.admin.stop_transcription_worker')
+@patch('portal.meeting_source.start_transcription_worker')
+@patch('portal.meeting_source.stop_transcription_worker')
 async def test_super_admin_does_no_extra_query(mock_stop, mock_start, client, setup_db):
     user = await _create_user(is_admin=True)
     ev, rm = await _create_event_room()
@@ -152,12 +154,14 @@ async def test_super_admin_does_no_extra_query(mock_stop, mock_start, client, se
 
     # We will assert that only 2 queries happen in the dependency (fetch user, etc)
     # The short circuit means we shouldn't hit the `RoomMembership` OR query
-    with patch("portal.routers.admin.get_http_client") as mock_http:
+    with patch("portal.meeting_source.get_http_client") as mock_http:
         from unittest.mock import AsyncMock
 
         mock_resp = MagicMock()
+        mock_resp.json.return_value = {"active_rooms": {}}
         mock_client = AsyncMock()
         mock_client.post = AsyncMock(return_value=mock_resp)
+        mock_client.get = AsyncMock(return_value=mock_resp)
         mock_http.return_value = mock_client
         r = await client.post(f"/api/rooms/{rm.id}/floor-transcription/start", cookies={"user_token": token})
         assert r.status_code == 200
@@ -208,7 +212,7 @@ async def test_downstream_failure_returns_502(client, setup_db):
     await _set_membership(user.id, event_id=ev.id, role="event_owner")
     token = create_user_token(user_id=user.id, email=user.email)
 
-    with patch("portal.routers.admin.get_http_client") as mock_http:
+    with patch("portal.meeting_source.get_http_client") as mock_http:
         from unittest.mock import AsyncMock
 
         from httpx import HTTPStatusError, Request, Response
@@ -216,13 +220,16 @@ async def test_downstream_failure_returns_502(client, setup_db):
         err = HTTPStatusError(
             "Error", request=Request("POST", "http://test"), response=Response(401, json={"detail": "Eventyay Revoked"})
         )
+        status_resp = MagicMock()
+        status_resp.json.return_value = {"active_rooms": {}}
         mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=status_resp)
         mock_client.post = AsyncMock(side_effect=err)
         mock_http.return_value = mock_client
 
         r = await client.post(f"/api/rooms/{rm.id}/floor-transcription/start", cookies={"user_token": token})
         assert r.status_code == 502
-        assert "Bot service connection failed or access was revoked upstream." in r.text
+        assert "meeting agent service is unreachable" in r.text
 
 
 @pytest.mark.anyio

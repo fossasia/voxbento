@@ -32,11 +32,31 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1")
 
+# Maps each EventAPIKeysUpdate field name to its corresponding encrypted
+# attribute on the Event model.  Adding a new provider only requires one
+# new entry here.
+_API_KEY_FIELDS: list[tuple[str, str]] = [
+    ("openai_api_key",             "encrypted_openai_api_key"),
+    ("deepgram_api_key",           "encrypted_deepgram_api_key"),
+    ("nvidia_api_key",             "encrypted_nvidia_api_key"),
+    ("elevenlabs_api_key",         "encrypted_elevenlabs_api_key"),
+    ("translation_openai_api_key", "encrypted_translation_openai_api_key"),
+    ("openrouter_api_key",         "encrypted_openrouter_api_key"),
+    ("gemini_api_key",             "encrypted_gemini_api_key"),
+    ("anthropic_api_key",          "encrypted_anthropic_api_key"),
+    ("groq_api_key",               "encrypted_groq_api_key"),
+]
+
 
 async def _verify_token_rbac(db: AsyncSession, token: OAuthToken, event: Event, room_id: int | None = None) -> None:
     """Ensure the OAuth token is valid for this event, AND the underlying user still has RBAC permissions."""
     if token.event_id != event.id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event not found")
+
+    if room_id is not None:
+        room = await db.get(Room, room_id)
+        if not room or room.event_id != event.id:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Room not found")
 
     # Confidential clients manage their own RBAC
     client = await db.get(OAuthClient, token.client_id)
@@ -128,6 +148,87 @@ async def get_rooms(
 class EventCreate(BaseModel):
     slug: str
     name: str
+    organizer_emails: list[str] = Field(default_factory=list)
+
+    @field_validator("organizer_emails")
+    @classmethod
+    def validate_organizer_emails(cls, v: list[str]) -> list[str]:
+        cleaned = []
+        for e in v:
+            val = e.strip().lower()
+            if not val:
+                continue
+            if "@" not in val or "." not in val.split("@")[-1] or val.startswith("@") or val.endswith("."):
+                raise ValueError(f"Invalid organizer email address: {e}")
+            cleaned.append(val)
+        return cleaned
+
+
+async def _ensure_event_memberships(
+    db: AsyncSession, event_id: int, user_id: int | None, organizer_emails: list[str]
+) -> None:
+    from sqlalchemy.exc import IntegrityError
+
+    from portal.models import EventMembership, User
+
+    async def _upsert_member(uid: int, role: str = "event_owner") -> None:
+        try:
+            async with db.begin_nested():
+                mem_res = await db.execute(
+                    select(EventMembership).where(
+                        EventMembership.user_id == uid,
+                        EventMembership.event_id == event_id,
+                    )
+                )
+                existing = mem_res.scalars().first()
+                if existing:
+                    if existing.role != role:
+                        existing.role = role
+                else:
+                    db.add(EventMembership(user_id=uid, event_id=event_id, role=role))
+                await db.flush()
+        except IntegrityError:
+            try:
+                async with db.begin_nested():
+                    mem_res = await db.execute(
+                        select(EventMembership).where(
+                            EventMembership.user_id == uid,
+                            EventMembership.event_id == event_id,
+                        )
+                    )
+                    existing = mem_res.scalars().first()
+                    if existing and existing.role != role:
+                        existing.role = role
+                        await db.flush()
+            except IntegrityError:
+                pass
+
+    if user_id:
+        await _upsert_member(user_id, "event_owner")
+
+    for email_raw in organizer_emails:
+        email = email_raw.strip().lower()
+        if not email or "@" not in email:
+            continue
+        user_res = await db.execute(select(User).where(User.email == email))
+        user_obj = user_res.scalars().first()
+        if not user_obj:
+            try:
+                async with db.begin_nested():
+                    user_obj = User(
+                        email=email,
+                        display_name=email.split("@")[0],
+                        is_active=True,
+                        email_verified=False,
+                    )
+                    db.add(user_obj)
+                    await db.flush()
+            except IntegrityError:
+                user_res = await db.execute(select(User).where(User.email == email))
+                user_obj = user_res.scalars().first()
+
+        if user_obj:
+            await _upsert_member(user_obj.id, "event_owner")
 
 
 @router.post("/events/", status_code=status.HTTP_201_CREATED)
@@ -152,12 +253,37 @@ async def create_event(
     existing_event = result.scalars().first()
 
     if existing_event:
+        # Verify caller is authorized to modify memberships on this existing event
+        is_authorized = False
+        if token.event_id == existing_event.id:
+            is_authorized = True
+        elif token.user_id:
+            user_mem = (
+                (
+                    await db.execute(
+                        select(EventMembership).where(
+                            EventMembership.user_id == token.user_id,
+                            EventMembership.event_id == existing_event.id,
+                            EventMembership.role.in_(("event_owner", "super_admin", "owner")),
+                        )
+                    )
+                )
+                .scalars()
+                .first()
+            )
+            if user_mem:
+                is_authorized = True
+
+        if not is_authorized:
+            raise HTTPException(status_code=403, detail="Not authorized to manage memberships for this event.")
+
         if existing_event.deleted_at is None:
             # Update the display name if the event already exists (e.g. from OAuth auto-provisioning)
             if existing_event.display_name != payload.name:
                 existing_event.display_name = payload.name
                 db.add(existing_event)
                 await db.flush()
+            await _ensure_event_memberships(db, existing_event.id, token.user_id, payload.organizer_emails)
             return {"id": existing_event.id, "slug": existing_event.slug, "name": existing_event.display_name}
         existing_event.deleted_at = None
         existing_event.display_name = payload.name
@@ -169,7 +295,7 @@ async def create_event(
         db.add(event)
         await db.flush()
 
-        db.add(EventMembership(user_id=token.user_id, event_id=event.id, role="event_owner"))
+        await _ensure_event_memberships(db, event.id, token.user_id, payload.organizer_emails)
 
         client_res = await db.execute(select(OAuthClient).where(OAuthClient.id == token.client_id))
         client = client_res.scalars().first()
@@ -515,7 +641,7 @@ async def list_booths(
 
     await _verify_token_rbac(db, token, event, room_id)
 
-    result = await db.execute(select(DBBooth).where(DBBooth.room_id == room_id))
+    result = await db.execute(select(DBBooth).where(DBBooth.room_id == room_id, DBBooth.event_id == event.id))
     booths_list = result.scalars().all()
 
     return [
@@ -544,7 +670,7 @@ async def get_booth(
 
     await _verify_token_rbac(db, token, event, room_id)
 
-    result = await db.execute(select(DBBooth).where(DBBooth.room_id == room_id, DBBooth.language_code == language_code))
+    result = await db.execute(select(DBBooth).where(DBBooth.room_id == room_id, DBBooth.language_code == language_code, DBBooth.event_id == event.id))
     booth = result.scalars().first()
     if not booth:
         raise HTTPException(status_code=404, detail="Booth not found")
@@ -578,7 +704,7 @@ async def create_booth(
 
     from portal.booth_identity import make_mediamtx_path
 
-    booth = DBBooth(room_id=room_id, language_code=language_code, event_id=event.id)
+    booth = DBBooth(room_id=room_id, language_code=language_code, event_id=event.id, language_name=language_code)
     db.add(booth)
     await db.flush()
 
@@ -601,7 +727,7 @@ async def delete_booth_endpoint(
 
     await _verify_token_rbac(db, token, event, room_id)
 
-    result = await db.execute(select(DBBooth).where(DBBooth.room_id == room_id, DBBooth.language_code == language_code))
+    result = await db.execute(select(DBBooth).where(DBBooth.room_id == room_id, DBBooth.language_code == language_code, DBBooth.event_id == event.id))
     booth = result.scalars().first()
     if not booth:
         raise HTTPException(status_code=404, detail="Booth not found")
@@ -674,7 +800,7 @@ async def get_transcription_status(
     await _verify_token_rbac(db, token, event, room_id)
 
     # Collect statuses for all booths in the room
-    result = await db.execute(select(DBBooth).where(DBBooth.room_id == room_id))
+    result = await db.execute(select(DBBooth).where(DBBooth.room_id == room_id, DBBooth.event_id == event.id))
     booths_list = result.scalars().all()
 
     statuses = {}
@@ -763,32 +889,11 @@ async def update_event_api_keys(
 
     await _verify_token_rbac(db, token, event)
 
-    if payload.openai_api_key is not None:
-        event.encrypted_openai_api_key = encrypt_val(payload.openai_api_key) if payload.openai_api_key else None
-    if payload.deepgram_api_key is not None:
-        event.encrypted_deepgram_api_key = encrypt_val(payload.deepgram_api_key) if payload.deepgram_api_key else None
-    if payload.nvidia_api_key is not None:
-        event.encrypted_nvidia_api_key = encrypt_val(payload.nvidia_api_key) if payload.nvidia_api_key else None
-    if payload.elevenlabs_api_key is not None:
-        event.encrypted_elevenlabs_api_key = (
-            encrypt_val(payload.elevenlabs_api_key) if payload.elevenlabs_api_key else None
-        )
-    if payload.translation_openai_api_key is not None:
-        event.encrypted_translation_openai_api_key = (
-            encrypt_val(payload.translation_openai_api_key) if payload.translation_openai_api_key else None
-        )
-    if payload.openrouter_api_key is not None:
-        event.encrypted_openrouter_api_key = (
-            encrypt_val(payload.openrouter_api_key) if payload.openrouter_api_key else None
-        )
-    if payload.gemini_api_key is not None:
-        event.encrypted_gemini_api_key = encrypt_val(payload.gemini_api_key) if payload.gemini_api_key else None
-    if payload.anthropic_api_key is not None:
-        event.encrypted_anthropic_api_key = (
-            encrypt_val(payload.anthropic_api_key) if payload.anthropic_api_key else None
-        )
-    if payload.groq_api_key is not None:
-        event.encrypted_groq_api_key = encrypt_val(payload.groq_api_key) if payload.groq_api_key else None
+    payload_data = payload.model_dump()
+    for payload_field, event_attr in _API_KEY_FIELDS:
+        value = payload_data[payload_field]
+        if value is not None:
+            setattr(event, event_attr, encrypt_val(value) if value else None)
 
     await db.commit()
     return {"status": "ok"}

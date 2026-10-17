@@ -91,6 +91,9 @@ async def _ensure_mediamtx_path(channel_id: str) -> None:
         "alwaysAvailableTracks": [{"codec": "Opus"}],
         "overridePublisher": True,
     }
+    # Floor publishers are selected explicitly, never by a last-publisher-wins race.
+    if channel_id.endswith("/floor"):
+        body = {"alwaysAvailable": False, "overridePublisher": False}
     try:
         client = get_http_client()
         r = await client.post(
@@ -163,3 +166,31 @@ async def _resolve_whip_url(booth_id: str, participant_id: str, language: str, c
     await _ensure_mediamtx_path(channel_id)
     whip_url = f"{settings.mediamtx_whip_base}/{channel_id}/whip"
     return {"whip_url": whip_url, "channel_id": channel_id, "booth_id": booth_id}
+
+
+def verify_same_origin(request: Request) -> bool:
+    """Validate that the request Origin or Referer matches the request Host header.
+
+    Protects state-changing POST endpoints against CSRF.
+    """
+    origin = request.headers.get("origin")
+    referer = request.headers.get("referer")
+    host = request.headers.get("host")
+
+    target_url = origin or referer
+    if not target_url:
+        return False
+
+    parsed = urlparse(target_url)
+    if not parsed.netloc:
+        return False
+
+    return parsed.netloc.lower() == (host or "").lower()
+
+
+def get_client_ip(request: Request) -> str:
+    """Extract client IP address from headers or connection."""
+    x_forwarded_for = request.headers.get("x-forwarded-for")
+    if x_forwarded_for:
+        return x_forwarded_for.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"

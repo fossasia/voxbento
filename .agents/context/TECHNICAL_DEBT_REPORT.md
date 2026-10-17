@@ -28,7 +28,7 @@
 ---
 
 ### TD-04: [RESOLVED] Shared `ADMIN_PASSWORD` login
-**File:** `portal/config.py` + `portal/routers/auth.py` POST `/admin/login`
+**File:** `portal/config.py` + `portal/routers/auth.py` POST `/login`
 **Resolution:** The shared environment-variable fallback was removed. Admin access now uses authenticated registered users and the `is_admin` flag or scoped memberships. See `docs/admin-password-removal-migration.md` for rollout and recovery guidance.
 
 ---

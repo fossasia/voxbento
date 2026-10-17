@@ -1,17 +1,24 @@
 from __future__ import annotations
 
+import asyncio
+import hashlib
+import logging
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import APIRouter, BackgroundTasks, Body, HTTPException, Request, status
+import jwt
+import sqlalchemy as sa
+from fastapi import APIRouter, BackgroundTasks, Body, HTTPException, Request, Response, status
 from fastapi.responses import RedirectResponse
 from fastapi.templating import Jinja2Templates
+from sqlalchemy.exc import DBAPIError, OperationalError
 
 from portal.auth import (
     create_participant_token,
     create_token,
     create_user_token,
+    decode_token,
     get_current_user,
     hash_password,
     require_user,
@@ -21,6 +28,7 @@ from portal.config import settings
 from portal.database import (
     create_auth_token,
     create_user,
+    get_auth_token,
     get_session,
     get_user_by_email,
     get_user_by_id,
@@ -34,14 +42,59 @@ from portal.database import (
 from portal.email import send_magic_login_email, send_password_reset_email, send_verification_email
 from portal.email_sender import send_delayed_onboarding_email
 from portal.globals import _JS_CACHE_BUST
+from portal.models import TOKEN_TYPE_HOSTING_INVITE, AuthToken, utc_now
 from portal.rate_limit import check_rate_limit
 from portal.schemas.auth import TokenRequest, TokenResponse
-from portal.utils import safe_redirect
+from portal.utils import safe_redirect, verify_same_origin
 
 _BASE_DIR = Path(__file__).resolve().parent.parent
 templates = Jinja2Templates(directory=str(_BASE_DIR / "templates"))
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
+
+# In-memory registry for ephemeral magic link polling sessions:
+#   poll_id -> {token_jti, nonce_hash, user_id, expires_at, consumed, created_at}
+#
+# Architectural Note on Multi-Worker / Clustered Environments:
+# The core authentication security state (magic token cryptographic validity, expiration,
+# user active status, and single-use `used_at` timestamp) is strictly persisted and validated
+# in the database (`AuthToken` table).
+# This `_magic_polls` registry is strictly an ephemeral 15-minute handshake cache for cross-context
+# polling fallback (/api/auth/magic-poll). In modern browsers, authentication synchronizes
+# immediately client-side via BroadcastChannel('voxbento_auth') without touching the server poll.
+# Because VoxBento currently runs as a single Uvicorn container instance without a multi-worker
+# cluster or Redis layer, this in-memory dictionary avoids unnecessary database migrations and I/O overhead.
+# If VoxBento is scaled horizontally to multi-worker processes or multi-replica deployments
+# without sticky sessions in the future, this ephemeral poll state should be backed by Redis
+# or persisted to the database.
+_magic_polls: dict[str, dict] = {}
+
+
+def _is_cookie_secure(request: Request) -> bool:
+    if request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https":
+        return True
+    return bool(settings.public_base_url.startswith("https://") and not settings.debug)
+
+
+def _cleanup_expired_polls():
+    import time
+
+    now = time.time()
+    expired = [k for k, v in _magic_polls.items() if now - v.get("created_at", 0) > 900]
+    for k in expired:
+        _magic_polls.pop(k, None)
+
+
+def set_auth_cookie(response: Response, token: str) -> None:
+    """Set the user authentication cookie with standard settings."""
+    response.set_cookie(
+        key="user_token",
+        value=token,
+        httponly=True,
+        samesite="lax",
+        max_age=settings.jwt_expiry_seconds,
+    )
 
 
 @router.post("/api/auth/token", response_model=TokenResponse)
@@ -53,7 +106,7 @@ async def get_token(body: Annotated[TokenRequest | None, Body()] = None) -> Toke
 
 
 @router.get("/join/{token}")
-async def join_via_invite(token: str) -> RedirectResponse:
+async def join_via_invite(request: Request, token: str) -> RedirectResponse:
     """Validate an invite token, issue a JWT cookie, and redirect to the booth."""
     async with get_session() as session:
         try:
@@ -82,6 +135,7 @@ async def join_via_invite(token: str) -> RedirectResponse:
         key="session_token",
         value=jwt_token,
         httponly=True,
+        secure=_is_cookie_secure(request),
         samesite="lax",
         max_age=settings.jwt_expiry_seconds,
     )
@@ -187,6 +241,7 @@ async def verify_email_route(request: Request, token: str, background_tasks: Bac
                 key="user_token",
                 value=jwt_token,
                 httponly=True,
+                secure=_is_cookie_secure(request),
                 samesite="lax",
                 max_age=settings.jwt_expiry_seconds,
             )
@@ -196,12 +251,15 @@ async def verify_email_route(request: Request, token: str, background_tasks: Bac
 
 
 @router.get("/login")
-async def user_login_page(request: Request, next: str = ""):
-    current_user = await get_current_user(request)
-    if current_user:
-        redirect_to = next if next and next.startswith("/") and not next.startswith("//") else "/account"
-        return safe_redirect(url=redirect_to, status_code=status.HTTP_303_SEE_OTHER)
-    return templates.TemplateResponse(request=request, name="login.html", context={"next_url": next})
+async def user_login_page(request: Request, next: str = "", email: str = "", switch: bool = False):
+    if not switch:
+        current_user = await get_current_user(request)
+        if current_user:
+            redirect_to = next if next and next.startswith("/") and not next.startswith("//") else "/account"
+            return safe_redirect(url=redirect_to, status_code=status.HTTP_303_SEE_OTHER)
+    return templates.TemplateResponse(
+        request=request, name="login.html", context={"next_url": next, "email": email, "prefill_email": email}
+    )
 
 
 @router.post("/login")
@@ -257,35 +315,180 @@ async def user_login_submit(request: Request):
         key="user_token",
         value=jwt_token,
         httponly=True,
+        secure=_is_cookie_secure(request),
         samesite="lax",
         max_age=settings.jwt_expiry_seconds,
     )
     return response
 
 
+@router.get("/api/auth/status")
+async def get_auth_status(request: Request):
+    user = await get_current_user(request)
+    if user:
+        return {"authenticated": True, "email": user.get("email"), "user_id": user.get("sub")}
+    return {"authenticated": False}
+
+
 @router.post("/api/auth/magic-link")
 async def request_magic_link(request: Request):
+    import hashlib
+    import secrets
+    import time
+    from datetime import datetime, timedelta, timezone
+
+    from fastapi.responses import JSONResponse
+
     data = await request.json()
     email = data.get("email", "").strip().lower()
+    next_url = data.get("next_url", "")
 
     if not check_rate_limit("magic_link", email, max_requests=5, window_seconds=3600):
         raise HTTPException(status_code=429, detail="Too many requests")
 
+    _cleanup_expired_polls()
+    poll_id = secrets.token_hex(32)
+    poll_nonce = secrets.token_hex(32)
+    nonce_hash = hashlib.sha256(poll_nonce.encode()).hexdigest()
+
     async with get_session() as session:
         user = await get_user_by_email(session, email)
         if user:
-            import secrets
-
             token_val = secrets.token_hex(32)
-            await create_auth_token(
+            auth_tok = await create_auth_token(
                 session,
                 jti=token_val,
                 user_id=user.id,
                 token_type="magic_link",  # nosec B105
             )
-            await send_magic_login_email(email, token_val)
 
-    return {"status": "ok"}
+            # Bind poll to requesting browser and token expiry
+            expires_at = (
+                auth_tok.expires_at
+                if hasattr(auth_tok, "expires_at") and auth_tok.expires_at
+                else datetime.now(timezone.utc) + timedelta(minutes=15)
+            )
+            _magic_polls[poll_id] = {
+                "token_jti": token_val,
+                "nonce_hash": nonce_hash,
+                "user_id": user.id,
+                "expires_at": expires_at,
+                "consumed": False,
+                "created_at": time.time(),
+            }
+            sent = await send_magic_login_email(email, token_val, next_url)
+            if not sent:
+                _magic_polls.pop(poll_id, None)
+                logger.error("Failed to deliver magic link email to %s", email)
+
+    resp = JSONResponse({"status": "ok", "poll_id": poll_id})
+    resp.set_cookie(
+        key="poll_verifier",
+        value=f"{poll_id}:{poll_nonce}",
+        httponly=True,
+        secure=_is_cookie_secure(request),
+        samesite="lax",
+        max_age=900,
+    )
+    return resp
+
+
+@router.get("/api/auth/magic-poll")
+async def poll_magic_link(request: Request, poll_id: str = ""):
+    """Poll magic link authentication state for cross-context fallback.
+
+    Note: Same-browser authentication synchronizes client-side via BroadcastChannel.
+    This endpoint serves as an ephemeral polling fallback backed by `_magic_polls`.
+    In multi-worker or clustered deployments without sticky sessions, an external
+    shared store (e.g. Redis or database-backed polling state) would be required.
+    """
+    from fastapi.responses import JSONResponse
+
+    if not poll_id or len(poll_id) != 64:
+        return {"authenticated": False}
+
+    _cleanup_expired_polls()
+    poll_entry = _magic_polls.get(poll_id)
+    if not poll_entry or poll_entry.get("consumed"):
+        return {"authenticated": False}
+
+    # 1. Bind poll capability to the browser that requested the link via cookie
+    cookie_verifier = request.cookies.get("poll_verifier", "")
+    if not cookie_verifier or ":" not in cookie_verifier:
+        return {"authenticated": False}
+
+    c_poll_id, c_nonce = cookie_verifier.split(":", 1)
+    if c_poll_id != poll_id:
+        return {"authenticated": False}
+
+    import hashlib
+
+    expected_nonce_hash = poll_entry.get("nonce_hash") or poll_entry.get("secret_hash")
+    if hashlib.sha256(c_nonce.encode()).hexdigest() != expected_nonce_hash:
+        return {"authenticated": False}
+
+    # 2. Reject expired magic-link tokens before issuing a JWT
+    from datetime import datetime, timezone
+
+    now_utc = datetime.now(timezone.utc)
+    exp = poll_entry.get("expires_at")
+    if exp:
+        exp_utc = exp.replace(tzinfo=timezone.utc) if exp.tzinfo is None else exp
+        if exp_utc < now_utc:
+            _magic_polls.pop(poll_id, None)
+            return {"authenticated": False}
+
+    from sqlalchemy import select
+
+    from portal.models import AuthToken
+
+    async with get_session() as session:
+        result = await session.execute(select(AuthToken).where(AuthToken.jti == poll_entry["token_jti"]))
+        matched = result.scalars().first()
+
+        if not matched or not matched.used_at:
+            return {"authenticated": False}
+
+        # Check token expiration on DB record as well
+        if matched.expires_at:
+            matched_exp = (
+                matched.expires_at.replace(tzinfo=timezone.utc)
+                if matched.expires_at.tzinfo is None
+                else matched.expires_at
+            )
+            if matched_exp < now_utc:
+                _magic_polls.pop(poll_id, None)
+                return {"authenticated": False}
+
+        user = await get_user_by_id(session, matched.user_id)
+        if not user or not user.is_active:
+            return {"authenticated": False}
+
+        # 3. Single-use: Mark consumed and remove from active poll registry
+        poll_entry["consumed"] = True
+        _magic_polls.pop(poll_id, None)
+
+        jwt_token = create_user_token(
+            user_id=user.id, email=user.email, display_name=user.display_name, is_admin=user.is_admin
+        )
+        response = JSONResponse(
+            {
+                "authenticated": True,
+                "email": user.email,
+                "user_id": user.id,
+            }
+        )
+        response.set_cookie(
+            key="user_token",
+            value=jwt_token,
+            httponly=True,
+            secure=_is_cookie_secure(request),
+            samesite="lax",
+            max_age=settings.jwt_expiry_seconds,
+        )
+        # Clear poll_verifier cookie as authentication is complete
+        response.delete_cookie("poll_verifier")
+        return response
 
 
 @router.get("/auth/magic/{token}")
@@ -305,12 +508,37 @@ async def redeem_magic_link(request: Request, token: str, background_tasks: Back
             jwt_token = create_user_token(
                 user_id=user.id, email=user.email, display_name=user.display_name, is_admin=user.is_admin
             )
-            redirect_to = next if next and next.startswith("/") and not next.startswith("//") else "/account"
-            response = safe_redirect(url=redirect_to, status_code=status.HTTP_303_SEE_OTHER)
+
+            from urllib.parse import urlparse
+
+            def _is_local_oauth_path(u: str | None) -> bool:
+                if not u or not isinstance(u, str):
+                    return False
+                try:
+                    parsed = urlparse(u)
+                    if parsed.scheme or parsed.netloc:
+                        return False
+                    return parsed.path.startswith("/oauth/authorize") and not u.startswith("//")
+                except Exception:
+                    return False
+
+            if _is_local_oauth_path(next):
+                response = templates.TemplateResponse(
+                    request=request, name="magic_success.html", context={"next_url": next}
+                )
+            else:
+                redirect_to = (
+                    next
+                    if next and next.startswith("/") and not next.startswith("//") and not urlparse(next).netloc
+                    else "/account"
+                )
+                response = safe_redirect(url=redirect_to, status_code=status.HTTP_303_SEE_OTHER)
+
             response.set_cookie(
                 key="user_token",
                 value=jwt_token,
                 httponly=True,
+                secure=_is_cookie_secure(request),
                 samesite="lax",
                 max_age=settings.jwt_expiry_seconds,
             )
@@ -346,6 +574,24 @@ async def forgot_password_request(request: Request):
 
 @router.get("/auth/reset/{token}")
 async def reset_password_page(request: Request, token: str):
+    async with get_session() as session:
+        tok = await get_auth_token(session, token)
+        error = None
+        if tok is None or tok.token_type != "password_reset":
+            error = "Invalid reset link."
+        elif tok.is_expired:
+            error = "This reset link has expired."
+        elif tok.is_used:
+            error = "This reset link has already been used."
+
+        if error:
+            return templates.TemplateResponse(
+                request=request,
+                name="reset_password.html",
+                context={"token": token, "error": error, "token_invalid": True},
+                status_code=status.HTTP_400_BAD_REQUEST,
+            )
+
     return templates.TemplateResponse(request=request, name="reset_password.html", context={"token": token})
 
 
@@ -359,35 +605,56 @@ async def reset_password_submit(request: Request, token: str):
             request=request,
             name="reset_password.html",
             context={"token": token, "error": "Password must be at least 8 characters"},
+            status_code=status.HTTP_400_BAD_REQUEST,
         )
 
-    async with get_session() as session:
-        try:
-            auth_token = await redeem_auth_token(session, token, "password_reset")
+    try:
+        async with get_session() as session:
+            try:
+                auth_token = await redeem_auth_token(session, token, "password_reset")
+            except ValueError as e:
+                return templates.TemplateResponse(
+                    request=request,
+                    name="reset_password.html",
+                    context={"token": token, "error": str(e), "token_invalid": True},
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                )
+
             pw_hash = hash_password(password)
             user = await update_user(session, auth_token.user_id, password_hash=pw_hash)
-
+            if user is None:
+                raise ValueError("User not found.")
             jwt_token = create_user_token(
                 user_id=user.id, email=user.email, display_name=user.display_name, is_admin=user.is_admin
             )
-            response = safe_redirect(url="/account", status_code=status.HTTP_303_SEE_OTHER)
-            response.set_cookie(
-                key="user_token",
-                value=jwt_token,
-                httponly=True,
-                samesite="lax",
-                max_age=settings.jwt_expiry_seconds,
-            )
-            return response
-        except ValueError as e:
-            return templates.TemplateResponse(
-                request=request, name="reset_password.html", context={"token": token, "error": str(e)}
-            )
+    except Exception:
+        logger.exception("Failed to complete password reset for token")
+        return templates.TemplateResponse(
+            request=request,
+            name="reset_password.html",
+            context={
+                "token": token,
+                "error": "An error occurred while resetting your password. Please try again.",
+            },
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        )
+
+    response = safe_redirect(url="/account", status_code=status.HTTP_303_SEE_OTHER)
+    response.set_cookie(
+        key="user_token",
+        value=jwt_token,
+        httponly=True,
+        secure=_is_cookie_secure(request),
+        samesite="lax",
+        max_age=settings.jwt_expiry_seconds,
+    )
+    return response
 
 
 @router.get("/logout")
-async def user_logout(request: Request):
-    response = safe_redirect(url="/", status_code=status.HTTP_303_SEE_OTHER)
+async def user_logout(request: Request, next: str = "/"):
+    target = next if next and next.startswith("/") and not next.startswith("//") else "/"
+    response = safe_redirect(url=target, status_code=status.HTTP_303_SEE_OTHER)
     response.delete_cookie("user_token")
     response.delete_cookie("session_token")
     response.delete_cookie("admin_token")
@@ -416,7 +683,11 @@ async def account_page(request: Request):
         for m in room_memberships
         if m.role == "room_coordinator" and m.room and m.room.event
     }
+    has_owned_events = any(m.role == "event_owner" for m in event_memberships)
+    is_hosting_revoked = bool(user.hosting_revoked_at is not None)
+
     for m in event_memberships:
+        is_disabled = False
         if m.event is None:
             link = "#"
         elif m.role == "event_owner":
@@ -432,6 +703,7 @@ async def account_page(request: Request):
                 "type": "Event",
                 "role": m.role,
                 "created_at": m.created_at,
+                "is_disabled": is_disabled,
             }
         )
     for m in room_memberships:
@@ -450,7 +722,11 @@ async def account_page(request: Request):
             if m.booth and m.booth.event and m.booth.room
             else "—"
         )
-        link_str = f"/interpreter/{m.booth.event.slug}/{m.booth.language_code}" if m.booth and m.booth.event else "#"
+        link_str = (
+            f"/interpreter/{m.booth.event.slug}/{m.booth.room_id}/{m.booth.language_code}"
+            if m.booth and m.booth.event
+            else "#"
+        )
         unified_memberships.append(
             {"context": context_str, "link": link_str, "type": "Booth", "role": m.role, "created_at": m.created_at}
         )
@@ -460,7 +736,7 @@ async def account_page(request: Request):
     if user.is_admin:
         management_home = "/admin/"
         management_label = "Admin Panel"
-    elif any(m.role == "event_owner" for m in event_memberships):
+    elif user.can_host or has_owned_events:
         management_home = "/workspace/"
         management_label = "Organizer Workspace"
     elif any(m.role == "room_coordinator" for m in room_memberships):
@@ -478,6 +754,7 @@ async def account_page(request: Request):
             "memberships": unified_memberships,
             "management_home": management_home,
             "management_label": management_label,
+            "is_hosting_revoked": is_hosting_revoked,
         },
     )
 
@@ -515,3 +792,205 @@ async def remove_password_api(request: Request):
         await update_user(session, user.id, password_hash=None)
 
     return {"status": "ok"}
+
+
+def _extract_cookie_user_id(request: Request) -> str | None:
+    cookie = request.cookies.get("user_token")
+    if not cookie:
+        return None
+    try:
+        payload = decode_token(cookie)
+        sub = payload.get("sub")
+        return str(sub) if sub is not None else None
+    except jwt.PyJWTError:
+        return None
+    except Exception as exc:
+        logger.debug("Unexpected error decoding user_token cookie: %s", exc)
+        return None
+
+
+@router.get("/invite/accept/{token}")
+async def invite_accept_page(request: Request, token: str):
+    """Render the invitation acceptance page for a hosting access token."""
+    token_digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    async with get_session() as session:
+        tok = await get_auth_token(session, token_digest)
+        if tok is None or tok.token_type != TOKEN_TYPE_HOSTING_INVITE or tok.is_expired or tok.is_used:
+            return templates.TemplateResponse(
+                request=request,
+                name="accept_invite.html",
+                context={"valid": False, "error_message": "This invitation link is invalid or has expired."},
+            )
+        user = tok.user
+        if user is None or not user.is_active:
+            return templates.TemplateResponse(
+                request=request,
+                name="accept_invite.html",
+                context={"valid": False, "error_message": "This account is inactive or invalid."},
+            )
+
+        if user.password_hash and not user.email_verified:
+            return templates.TemplateResponse(
+                request=request,
+                name="accept_invite.html",
+                context={
+                    "valid": False,
+                    "error_message": "Please verify your email address first before accepting this invitation.",
+                },
+            )
+
+        is_signed_in_as_user = _extract_cookie_user_id(request) == str(user.id)
+        has_password = bool(user.password_hash)
+
+        return templates.TemplateResponse(
+            request=request,
+            name="accept_invite.html",
+            context={
+                "valid": True,
+                "token": token,
+                "email": user.email,
+                "display_name": user.display_name,
+                "is_signed_in_as_user": is_signed_in_as_user,
+                "has_password": has_password,
+            },
+        )
+
+
+@router.post("/invite/accept/{token}")
+async def invite_accept_submit(request: Request, token: str):
+    """Redeem a hosting invitation token, setting password if new, and granting can_host."""
+    if not verify_same_origin(request):
+        raise HTTPException(status_code=400, detail="Invalid request origin.")
+
+    token_digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    form = await request.form()
+    submitted_password = form.get("password", "")
+
+    try:
+        async with get_session() as session:
+            tok_stmt = (
+                sa.select(AuthToken)
+                .options(sa.orm.joinedload(AuthToken.user))
+                .where(
+                    AuthToken.jti == token_digest,
+                    AuthToken.token_type == TOKEN_TYPE_HOSTING_INVITE,
+                )
+            )
+            tok_res = await session.execute(tok_stmt)
+            tok = tok_res.scalar_one_or_none()
+
+            if tok is None or tok.is_used or tok.is_expired:
+                raise HTTPException(status_code=400, detail="Invalid or expired invite token.")
+
+            user = tok.user
+            if user is None or not user.is_active:
+                raise HTTPException(status_code=403, detail="Account is deactivated.")
+
+            is_signed_in_as_user = _extract_cookie_user_id(request) == str(user.id)
+            has_existing_password = bool(user.password_hash)
+
+            if has_existing_password and not user.email_verified:
+                raise HTTPException(
+                    status_code=400,
+                    detail="Please verify your email address before accepting this invitation.",
+                )
+
+            if is_signed_in_as_user:
+                # User is already signed in as this account; no password entry or creation needed
+                pass
+            elif has_existing_password:
+                if not submitted_password or not verify_password(submitted_password, user.password_hash):
+                    raise HTTPException(status_code=400, detail="Invalid password.")
+            else:
+                raw_confirm = form.get("password_confirm", "")
+                display_name = form.get("display_name", "").strip()
+                if len(submitted_password) < 8:
+                    raise HTTPException(status_code=400, detail="Password must be at least 8 characters.")
+                if submitted_password != raw_confirm:
+                    raise HTTPException(status_code=400, detail="Passwords do not match.")
+                user.password_hash = hash_password(submitted_password)
+                user.email_verified = True
+                if display_name:
+                    user.display_name = display_name
+
+            # Claim the token with an atomic conditional update
+            now = utc_now()
+            claim_stmt = (
+                sa.update(AuthToken)
+                .where(
+                    AuthToken.id == tok.id,
+                    AuthToken.used_at.is_(None),
+                )
+                .values(used_at=now)
+                .execution_options(synchronize_session=False)
+            )
+            claim_res = await session.execute(claim_stmt)
+            if claim_res.rowcount != 1:
+                raise HTTPException(status_code=400, detail="Invalid or expired invite token.")
+
+            # Perform account activation and hosting grant in the same transaction
+            user.can_host = True
+            user.hosting_revoked_at = None
+            user.hosting_requested_at = None
+
+            # Delete any other pending hosting_invite tokens for this user
+            delete_stmt = (
+                sa.delete(AuthToken)
+                .where(
+                    AuthToken.user_id == user.id,
+                    AuthToken.token_type == TOKEN_TYPE_HOSTING_INVITE,
+                    AuthToken.id != tok.id,
+                )
+                .execution_options(synchronize_session=False)
+            )
+            await session.execute(delete_stmt)
+            await session.flush()
+
+            user_id = user.id
+            email = user.email
+            display_name = user.display_name
+            is_admin = user.is_admin
+
+    except (OperationalError, DBAPIError) as exc:
+        err_msg = str(exc).lower()
+        if "busy" in err_msg or "locked" in err_msg or "snapshot" in err_msg:
+            # Re-read token in a fresh transaction to verify whether it was actually claimed
+            # by a concurrent winner or if this is an unrelated transient SQLite lock.
+            try:
+                for _ in range(5):
+                    async with get_session() as check_session:
+                        tok_check = (
+                            await check_session.execute(
+                                sa.select(AuthToken).where(
+                                    AuthToken.jti == token_digest,
+                                    AuthToken.token_type == TOKEN_TYPE_HOSTING_INVITE,
+                                )
+                            )
+                        ).scalar_one_or_none()
+                        if tok_check is not None and (tok_check.used_at is not None or tok_check.is_used):
+                            logger.warning("Concurrent redemption race lost on token: %s", exc)
+                            raise HTTPException(status_code=400, detail="Invalid or expired invite token.")
+                    await asyncio.sleep(0.05)
+            except HTTPException:
+                raise
+            except (OperationalError, DBAPIError) as check_err:
+                logger.debug("Failed to re-check token redemption status after lock contention: %s", check_err)
+            logger.warning("Transient database lock during token redemption: %s", exc)
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Service temporarily unavailable, please retry.",
+            )
+        raise
+
+    if is_signed_in_as_user:
+        return safe_redirect("/workspace/")
+
+    jwt_token = create_user_token(
+        user_id=user_id,
+        email=email,
+        display_name=display_name,
+        is_admin=is_admin,
+    )
+    response = safe_redirect("/workspace/")
+    set_auth_cookie(response, jwt_token)
+    return response
