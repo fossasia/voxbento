@@ -58,7 +58,8 @@
         <a href="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ rd.room.id }}/booths/" class="btn btn-sm">Booths</a>
         <form method="post" action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ rd.room.id }}/delete" class="inline-delete"
               data-confirm="Delete room '{{ rd.room.display_name }}'? This will remove all booths in this room.">
-          <button type="submit" class="btn btn-sm btn-danger">Delete</button>
+          <button type="submit" class="btn btn-sm btn-danger" title="Delete '{{ rd.room.display_name }}' and all its booths"
+                  aria-label="Delete '{{ rd.room.display_name }}' and all its booths">Delete</button>
         </form>
       </td>
     </tr>
