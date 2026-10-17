@@ -120,6 +120,23 @@ function upgradeSelects() {
       attributeFilter: ["disabled"],
     });
 
+    ["value", "selectedIndex"].forEach((prop) => {
+      const native = Object.getOwnPropertyDescriptor(
+        HTMLSelectElement.prototype,
+        prop,
+      );
+      Object.defineProperty(select, prop, {
+        configurable: true,
+        get() {
+          return native.get.call(this);
+        },
+        set(newValue) {
+          native.set.call(this, newValue);
+          updateUI();
+        },
+      });
+    });
+
     select.addEventListener("change", updateUI);
     updateUI();
 
