@@ -135,4 +135,11 @@ document.addEventListener("DOMContentLoaded", () => {
     link.addEventListener("click", closeMobileMenu);
   });
 
+  document.getElementById("mobile-request-demo-btn")?.addEventListener("click", () => {
+    closeMobileMenu();
+    if (typeof window.openDemoModal === "function") {
+      window.openDemoModal();
+    }
+  });
+
 });
