@@ -9,6 +9,7 @@ from sqlalchemy import select, update
 
 from portal.database import get_session
 from portal.models import Room
+from portal.tasks import track_task
 from portal.transcription.timing import SegmentTiming, segment_timing, timing_metadata
 
 logger = logging.getLogger(__name__)
@@ -188,7 +189,7 @@ class CaptionAggregator:
                 except Exception as e:
                     logger.error(f"[{booth_id}] _save_and_translate failed: {e}", exc_info=True)
 
-            asyncio.create_task(_save_and_translate())
+            track_task(asyncio.create_task(_save_and_translate()))
 
     async def handle_clear(self, booth_id: str):
         """Called when silence is explicitly detected or a turn ends."""

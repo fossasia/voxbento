@@ -15,6 +15,7 @@ from portal.booth_identity import (
     validate_instance,
     validate_language_code,
 )
+from portal.tasks import track_task
 
 ParticipantRole = Literal[
     "super_admin",
@@ -291,8 +292,10 @@ class BoothRegistry:
 
             import portal.webhooks.worker as _wh
 
-            asyncio.create_task(
-                _wh.enqueue_webhook("session.status_changed", {"booth_id": booth_id, "is_active": unlocked})
+            track_task(
+                asyncio.create_task(
+                    _wh.enqueue_webhook("session.status_changed", {"booth_id": booth_id, "is_active": unlocked})
+                )
             )
 
             return booth.as_public_dict()
