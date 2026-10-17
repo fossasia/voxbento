@@ -29,7 +29,9 @@
         <a href="/developer">Developer API</a>
         <a href="/account">Account</a>
         <a href="/" target="_blank">Portal Home</a>
+        {% if can_host or is_super_admin %}
         <a href="{{ management_prefix }}/setup" class="btn btn-sm btn-primary">+ New event</a>
+        {% endif %}
         <a href="{{ '/logout' if is_workspace else '/admin/logout' }}" class="nav-logout">Logout</a>
       </nav>
     </header>

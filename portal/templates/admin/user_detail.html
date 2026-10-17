@@ -57,6 +57,66 @@
             </form>
           </td>
         </tr>
+        <tr>
+          <td class="user-facts-label">Event Hosting</td>
+          <td>
+            {% if user_detail.is_admin %}
+              <div class="user-facts-action">
+                <span class="badge badge-valid">Allowed</span>
+                <span class="muted">(Administrators can always host events)</span>
+              </div>
+            {% elif user_detail.can_host %}
+              <div class="user-facts-action">
+                <form method="post" action="/admin/users/{{ user_detail.id }}/hosting" class="inline-form">
+                  <input type="hidden" name="action" value="revoke">
+                  <button type="submit" class="btn btn-sm btn-warning">Revoke Hosting</button>
+                </form>
+                <span class="badge badge-valid">Allowed</span>
+              </div>
+            {% elif pending_token %}
+              <div class="user-facts-action">
+                <form method="post" action="/admin/users/invite/{{ pending_token.id }}/resend" class="inline-form">
+                  <button type="submit" class="btn btn-sm btn-outline" title="Resend invitation email">Resend</button>
+                </form>
+                <form method="post" action="/admin/users/invite/{{ pending_token.id }}/cancel" class="inline-form"
+                      data-confirm="Cancel invitation for {{ user_detail.email }}?">
+                  <button type="submit" class="btn btn-sm btn-danger" title="Cancel invitation">Cancel</button>
+                </form>
+                <span class="badge badge-warning">Pending</span>
+                {% if user_detail.hosting_requested_at %}
+                  <span class="badge badge-role">Requested {{ user_detail.hosting_requested_at.strftime('%b %d, %Y') }}</span>
+                {% endif %}
+              </div>
+            {% elif not user_detail.password_hash %}
+              <div class="user-facts-action">
+                <form method="post" action="/admin/users/invite" class="inline-form">
+                  <input type="hidden" name="email" value="{{ user_detail.email }}">
+                  <button type="submit" class="btn btn-sm btn-primary">Invite Organizer</button>
+                </form>
+                <span class="badge badge-warning">Stub Account</span>
+                <span class="muted">(Must accept invitation to activate hosting)</span>
+                {% if user_detail.hosting_requested_at %}
+                  <span class="badge badge-role">Requested {{ user_detail.hosting_requested_at.strftime('%b %d, %Y') }}</span>
+                {% elif user_detail.hosting_revoked_at %}
+                  <span class="badge badge-used">Revoked</span>
+                {% endif %}
+              </div>
+            {% else %}
+              <div class="user-facts-action">
+                <form method="post" action="/admin/users/{{ user_detail.id }}/hosting" class="inline-form">
+                  <input type="hidden" name="action" value="grant">
+                  <button type="submit" class="btn btn-sm btn-primary">Grant Hosting</button>
+                </form>
+                <span class="badge badge-used">
+                  {{ 'Revoked' if user_detail.hosting_revoked_at else 'Not Allowed' }}
+                </span>
+                {% if user_detail.hosting_requested_at %}
+                  <span class="badge badge-role">Requested {{ user_detail.hosting_requested_at.strftime('%b %d, %Y') }}</span>
+                {% endif %}
+              </div>
+            {% endif %}
+          </td>
+        </tr>
       </tbody>
     </table>
   </div>

@@ -23,6 +23,15 @@
 </header>
 
 <main class="admin-main account-main">
+  {% if request.query_params.get('error') == 'hosting_revoked' %}
+  <div class="account-alert-banner">
+    Your hosting access has been revoked. You cannot create new events until hosting access is restored.
+  </div>
+  {% elif request.query_params.get('error') == 'hosting_access_required' %}
+  <div class="account-alert-banner">
+    Hosting access is required to create events. You can request access below.
+  </div>
+  {% endif %}
   <div class="account-page-header">
     <h1 class="account-page-title">My Account</h1>
     <p class="account-page-subtitle">Manage your profile, roles, and security settings.</p>
@@ -91,17 +100,22 @@
         </thead>
         <tbody>
           {% for m in memberships %}
-          <tr class="account-row">
+          <tr class="account-row {% if m.is_disabled %}account-row--disabled{% endif %}">
             <td class="account-td--scope">{{ m.type }}</td>
             <td class="account-td--context">
-              {% if m.link != '#' %}
+              {% if m.link != '#' and not m.is_disabled %}
               <a href="{{ m.link }}" class="account-link">{{ m.context }} &rarr;</a>
               {% else %}
-              {{ m.context }}
+              <span class="account-context-disabled">
+                {{ m.context }}
+                {% if m.is_disabled %}
+                <span class="account-sub-badge">Access Suspended</span>
+                {% endif %}
+              </span>
               {% endif %}
             </td>
             <td>
-              <span class="badge badge-role badge-{{ m.role }} account-badge">{{ m.role }}</span>
+              <span class="badge badge-role badge-{{ m.role }} account-badge {% if m.is_disabled %}badge-disabled{% endif %}">{{ m.role }}</span>
             </td>
             <td class="account-td--since">
               {{ m.created_at.strftime('%b %d, %Y') if m.created_at else '—' }}
@@ -116,6 +130,77 @@
       <p>You have not been assigned a role for any event, room, or booth yet.</p>
     </div>
     {% endif %}
+  </div>
+
+  <div class="account-section">
+    <div class="account-section-head">
+      <h2 class="account-section-title">Event Hosting</h2>
+      <p class="account-section-text">Create and manage your own multilingual events.</p>
+    </div>
+    
+    <div class="account-hosting-card">
+      {% if user.is_admin %}
+      <div class="security-row">
+        <div>
+          <h3 class="security-title">Global Administrator</h3>
+          <p class="security-text">As a <strong>Super Admin</strong>, you have full access to host and manage events.</p>
+        </div>
+        <a href="/workspace/" class="btn btn-primary">Go to My Events &rarr;</a>
+      </div>
+      {% elif user.can_host %}
+      <div class="security-row">
+        <div>
+          <h3 class="security-title">Hosting Access Active</h3>
+          <p class="security-text">You have active <strong>Hosting Access</strong>. You can create events, configure rooms, and invite participants.</p>
+        </div>
+        <a href="/workspace/" class="btn btn-primary">Go to My Events &rarr;</a>
+      </div>
+      {% elif is_hosting_revoked %}
+      <div class="security-row">
+        <div>
+          <h3 class="security-title">Hosting Access Revoked</h3>
+          <p class="security-text">Your hosting access has been revoked. Your existing events are preserved, but you cannot create new events until hosting is restored.</p>
+        </div>
+        {% if not user.hosting_requested_at %}
+        <button type="button" class="btn btn-primary" onclick="openDemoModal()">Re-request Hosting Access</button>
+        {% endif %}
+      </div>
+      {% if user.hosting_requested_at %}
+      <div class="account-hosting-banner account-hosting-banner--spaced">
+        <div class="account-hosting-banner-content">
+          <div>
+            <p class="account-hosting-banner-title">
+              Hosting re-request submitted on {{ user.hosting_requested_at.strftime('%b %d, %Y') }}.
+            </p>
+            <p class="account-hosting-banner-text">
+              Our administration team is reviewing your request to restore hosting access.
+            </p>
+          </div>
+          <button type="button" class="btn btn-outline btn-sm" onclick="openDemoModal()">Re-request Hosting Access</button>
+        </div>
+      </div>
+      {% endif %}
+      {% else %}
+        {% if user.hosting_requested_at %}
+        <div class="account-hosting-banner">
+          <p class="account-hosting-banner-title">
+            Hosting request submitted on {{ user.hosting_requested_at.strftime('%b %d, %Y') }}.
+          </p>
+          <p class="account-hosting-banner-text">
+            Our administration team is reviewing your request. You'll receive an email as soon as hosting is enabled.
+          </p>
+        </div>
+        {% else %}
+        <div class="security-row">
+          <div>
+            <h3 class="security-title">Organizer Access</h3>
+            <p class="security-text">Only authorized organizers can create events. If you'd like to host your own events on VoxBento, request hosting access from the team.</p>
+          </div>
+          <button type="button" class="btn btn-primary" onclick="openDemoModal()">Request Hosting Access</button>
+        </div>
+        {% endif %}
+      {% endif %}
+    </div>
   </div>
 
   <div>
@@ -239,4 +324,5 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 });
 </script>
+{% include "_demo_modal.html" %}
 {% endblock %}
