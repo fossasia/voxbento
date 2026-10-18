@@ -9,9 +9,9 @@ import pytest
 from fastapi.testclient import TestClient
 
 from fastapi_app import app
-from portal.auth import create_user_token
+from portal.auth import create_participant_token, create_user_token
 from portal.config import settings
-from portal.database import create_event, create_room, create_user, get_session, set_event_membership
+from portal.database import create_api_key, create_event, create_room, create_user, get_session, set_event_membership
 from portal.models import DBBooth
 from portal.utils import _require_access
 
@@ -117,6 +117,84 @@ def test_numeric_external_room_id_uses_explicit_external_route(monkeypatch):
             headers={"Authorization": "Bearer master-token"},
         )
         assert response.status_code == 204
+    finally:
+        anyio.run(dispose)
+
+
+def test_event_api_key_can_delete_only_its_event_booth(monkeypatch):
+    dispose = _setup_database()
+    try:
+        async def seed():
+            async with get_session() as session:
+                event = await create_event(session, slug="key-delete", display_name="Key Delete")
+                other = await create_event(session, slug="other-key-delete", display_name="Other")
+                room = await create_room(session, event_id=event.id, display_name="Main", eventyay_room_id="42")
+                other_room = await create_room(session, event_id=other.id, display_name="Other", eventyay_room_id="42")
+                session.add_all(
+                    [
+                        DBBooth(event_id=event.id, room_id=room.id, language_code="en", language_name="English"),
+                        DBBooth(event_id=other.id, room_id=other_room.id, language_code="en", language_name="English"),
+                    ]
+                )
+                _, raw_key = await create_api_key(session, event.id, name="Delete key")
+                await session.commit()
+                return raw_key
+
+        raw_key = anyio.run(seed)
+        monkeypatch.setattr(settings, "booth_access_token", "configured-master-token")
+        monkeypatch.setattr(settings, "debug", False)
+        headers = {"Authorization": f"Bearer {raw_key}"}
+
+        allowed = client.delete("/api/events/key-delete/eventyay-rooms/42/booths/en", headers=headers)
+        assert allowed.status_code == 204, allowed.text
+
+        missing = client.delete("/api/events/other-key-delete/eventyay-rooms/42/booths/en")
+        assert missing.status_code == 403, missing.text
+
+        invalid = client.delete(
+            "/api/events/other-key-delete/eventyay-rooms/42/booths/en",
+            headers={"Authorization": "Bearer invalid-api-key"},
+        )
+        assert invalid.status_code == 403, invalid.text
+
+        denied = client.delete("/api/events/other-key-delete/eventyay-rooms/42/booths/en", headers=headers)
+        assert denied.status_code == 403, denied.text
+    finally:
+        anyio.run(dispose)
+
+
+def test_invalid_bearer_cannot_fall_back_to_participant_cookie(monkeypatch):
+    dispose = _setup_database()
+    try:
+        async def seed():
+            async with get_session() as session:
+                event = await create_event(session, slug="cookie-scope", display_name="Cookie Scope")
+                room = await create_room(session, event_id=event.id, display_name="Main")
+                session.add(DBBooth(event_id=event.id, room_id=room.id, language_code="en", language_name="English"))
+                await session.commit()
+                return room.id
+
+        room_id = anyio.run(seed)
+        participant = create_participant_token(
+            booth_id=1,
+            role="interpreter",
+            event_slug="cookie-scope",
+            room_id=room_id,
+            language_code="en",
+        )
+        monkeypatch.setattr(settings, "booth_access_token", "configured-master-token")
+        monkeypatch.setattr(settings, "debug", False)
+        path = f"/api/events/cookie-scope/booths/en/state?room_id={room_id}"
+        cookie = {"session_token": participant}
+
+        allowed = client.get(path, cookies=cookie)
+        assert allowed.status_code == 200, allowed.text
+
+        rejected = client.get(path, cookies=cookie, headers={"Authorization": "Bearer malformed"})
+        assert rejected.status_code == 403, rejected.text
+
+        malformed = client.get(path, cookies=cookie, headers={"Authorization": "Basic not-a-bearer"})
+        assert malformed.status_code == 403, malformed.text
     finally:
         anyio.run(dispose)
 
