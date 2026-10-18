@@ -190,6 +190,11 @@ def test_invalid_bearer_cannot_fall_back_to_participant_cookie(monkeypatch):
         allowed = client.get(path, cookies=cookie)
         assert allowed.status_code == 200, allowed.text
 
+        unauthorized_user = create_user_token(user_id=999, email="not-a-member@example.com")
+        mixed_cookies = {**cookie, "user_token": unauthorized_user}
+        participant_fallback = client.get(path, cookies=mixed_cookies)
+        assert participant_fallback.status_code == 200, participant_fallback.text
+
         rejected = client.get(path, cookies=cookie, headers={"Authorization": "Bearer malformed"})
         assert rejected.status_code == 403, rejected.text
 

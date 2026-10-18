@@ -170,6 +170,28 @@ async def _verify_resource_access(
             return
     if payload is None:
         payload = get_booth_session(request)
+    if credentials is None and payload and payload.get("user") and request.cookies.get("session_token"):
+        try:
+            await _verify_event_access(session, request, event.id, room_id=room_id)
+        except HTTPException:
+            try:
+                participant_payload = decode_token(request.cookies["session_token"])
+            except pyjwt.InvalidTokenError:
+                raise
+            if participant_payload.get("user"):
+                raise
+            payload = participant_payload
+        else:
+            return
+    if credentials is None and payload and not payload.get("user") and request.cookies.get("user_token"):
+        try:
+            await _verify_event_access(session, request, event.id, room_id=room_id)
+        except HTTPException:
+            # A user cookie without membership must not prevent a valid,
+            # independently scoped participant session from being used.
+            pass
+        else:
+            return
     if payload and payload.get("user") and not settings.debug:
         await _verify_event_access(
             session, request, event.id, room_id=room_id, credentials=credentials, token=token
@@ -504,8 +526,11 @@ async def event_booth_state(
     credentials: HTTPAuthorizationCredentials | None = Depends(security),
 ) -> dict:
     """Event-scoped booth state — never auto-creates a booth."""
-    slug = validate_event_slug(event_slug)
-    code = validate_language_code(language_code)
+    try:
+        slug = validate_event_slug(event_slug)
+        code = validate_language_code(language_code)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     if room_id is None:
         async with get_session() as session:
             ev = await get_event_by_slug(session, slug)
