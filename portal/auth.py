@@ -31,7 +31,11 @@ def verify_password(password: str, password_hash: str) -> bool:
 
 def create_token() -> str:
     now = datetime.now(timezone.utc)
-    payload = {"iat": now, "exp": now + timedelta(seconds=settings.jwt_expiry_seconds)}
+    payload = {
+        "iat": now,
+        "exp": now + timedelta(seconds=settings.jwt_expiry_seconds),
+        "purpose": "legacy_api",
+    }
     return jwt.encode(payload, settings.effective_jwt_secret, algorithm="HS256")
 
 

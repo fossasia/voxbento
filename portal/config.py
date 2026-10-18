@@ -104,7 +104,8 @@ class Settings(BaseSettings):
                 "MEDIAMTX_AUTH_HOOK_SECRET is not set. Configure the same random value for "
                 "the portal and MediaMTX. Generate one with: openssl rand -hex 32"
             )
-        if self.booth_access_token.strip() in {"", "change-me", "secret", "your-secret-key"}:
+        booth_access_token = self.booth_access_token.strip()
+        if booth_access_token in {"", "change-me", "secret", "your-secret-key"} or len(booth_access_token) < 32:
             raise RuntimeError(
                 "BOOTH_ACCESS_TOKEN is not configured with a strong value. "
                 "Set a secret access token before exposing legacy API endpoints in production. "

@@ -42,3 +42,31 @@ def test_production_requires_booth_access_token():
         assert "BOOTH_ACCESS_TOKEN" in str(exc)
     else:
         raise AssertionError("empty BOOTH_ACCESS_TOKEN must fail production validation")
+
+
+def test_production_rejects_known_placeholder_and_short_booth_tokens():
+    for token in ("change-me", "secret", "short-token"):
+        settings = Settings(
+            _env_file=None,
+            debug=False,
+            secret_key="a-secure-secret-key-that-is-long-enough",
+            mediamtx_auth_hook_secret="a-secure-hook-secret",
+            booth_access_token=token,
+        )
+        try:
+            settings.validate_production_secrets()
+        except RuntimeError as exc:
+            assert "BOOTH_ACCESS_TOKEN" in str(exc)
+        else:
+            raise AssertionError(f"weak BOOTH_ACCESS_TOKEN {token!r} must fail production validation")
+
+
+def test_production_accepts_long_booth_access_token():
+    settings = Settings(
+        _env_file=None,
+        debug=False,
+        secret_key="a-secure-secret-key-that-is-long-enough",
+        mediamtx_auth_hook_secret="a-secure-hook-secret",
+        booth_access_token="b" * 32,
+    )
+    settings.validate_production_secrets()

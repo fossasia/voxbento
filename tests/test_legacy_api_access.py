@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 import anyio
+import pytest
 from fastapi.testclient import TestClient
 
 from fastapi_app import app
@@ -10,8 +13,44 @@ from portal.auth import create_user_token
 from portal.config import settings
 from portal.database import create_event, create_room, create_user, get_session, set_event_membership
 from portal.models import DBBooth
+from portal.utils import _require_access
 
 client = TestClient(app)
+
+
+def _request():
+    from starlette.requests import Request
+
+    return Request({"type": "http", "method": "GET", "path": "/", "headers": [], "query_string": b""})
+
+
+def test_missing_booth_token_allows_development_access(monkeypatch):
+    monkeypatch.setattr(settings, "booth_access_token", "")
+    monkeypatch.setattr(settings, "debug", True)
+
+    _require_access(_request(), None)
+
+
+def test_missing_booth_token_rejects_production_access(monkeypatch):
+    from fastapi import HTTPException
+
+    monkeypatch.setattr(settings, "booth_access_token", "")
+    monkeypatch.setattr(settings, "debug", False)
+
+    with pytest.raises(HTTPException, match="BOOTH_ACCESS_TOKEN"):
+        _require_access(_request(), None)
+
+
+def test_configured_booth_token_allows_legacy_access(monkeypatch):
+    from fastapi.security import HTTPAuthorizationCredentials
+
+    monkeypatch.setattr(settings, "booth_access_token", "test-booth-token")
+    monkeypatch.setattr(settings, "debug", False)
+
+    _require_access(
+        _request(),
+        HTTPAuthorizationCredentials(scheme="Bearer", credentials="test-booth-token"),
+    )
 
 
 def _setup_database():
@@ -78,5 +117,47 @@ def test_numeric_external_room_id_uses_explicit_external_route(monkeypatch):
             headers={"Authorization": "Bearer master-token"},
         )
         assert response.status_code == 204
+    finally:
+        anyio.run(dispose)
+
+
+def test_auth_token_flow_authorizes_legacy_event_api(monkeypatch):
+    dispose = _setup_database()
+    try:
+        monkeypatch.setattr(settings, "booth_access_token", "a" * 32)
+        monkeypatch.setattr(settings, "debug", False)
+        response = client.post("/api/auth/token", json={"token": "a" * 32})
+        assert response.status_code == 200, response.text
+        jwt_token = response.json()["access_token"]
+
+        list_response = client.get(
+            "/api/events/token-flow-event/booths", headers={"Authorization": f"Bearer {jwt_token}"}
+        )
+        assert list_response.status_code == 200, list_response.text
+        assert list_response.json()["booths"] == []
+    finally:
+        anyio.run(dispose)
+
+
+def test_soft_deleted_event_cannot_create_or_list_booths(monkeypatch):
+    dispose = _setup_database()
+    try:
+        async def seed():
+            async with get_session() as session:
+                event = await create_event(session, slug="deleted-event", display_name="Deleted")
+                event.deleted_at = datetime.now(timezone.utc)
+                await session.commit()
+
+        anyio.run(seed)
+        monkeypatch.setattr(settings, "booth_access_token", "a" * 32)
+        monkeypatch.setattr(settings, "debug", False)
+        headers = {"Authorization": "Bearer " + "a" * 32}
+        create_response = client.post(
+            "/api/events/deleted-event/booths", json={"language_code": "en"}, headers=headers
+        )
+        assert create_response.status_code == 404
+        list_response = client.get("/api/events/deleted-event/booths", headers=headers)
+        assert list_response.status_code == 200
+        assert list_response.json()["booths"] == []
     finally:
         anyio.run(dispose)
