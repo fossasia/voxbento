@@ -121,10 +121,17 @@ def _require_access(
     credentials: HTTPAuthorizationCredentials | None,
     token_query: str | None = None,
 ) -> None:
-    """Allow request if access token is unset, or if a valid JWT or legacy token is provided."""
+    """Allow request with a valid credential, or anonymously in debug mode."""
     if not settings.booth_access_token:
+        if not settings.debug:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="BOOTH_ACCESS_TOKEN is not configured on this server.",
+            )
         return
     if credentials is not None:
+        if credentials.credentials == settings.booth_access_token:
+            return
         try:
             payload = decode_token(credentials.credentials)
             if payload.get("role") == "listener":

@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import jwt as pyjwt
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
+from sqlalchemy.orm.exc import ObjectDeletedError, StaleDataError
 
-from portal.auth import create_embed_token, create_listener_token, security
+from portal.auth import create_embed_token, create_listener_token, decode_token, security
 from portal.booth_identity import make_booth_id, make_mediamtx_path, validate_event_slug, validate_language_code
 from portal.config import settings
 from portal.database import (
@@ -13,12 +16,13 @@ from portal.database import (
     delete_booth,
     get_event_by_slug,
     get_session,
+    get_user_by_id,
     list_rooms_for_event,
     log_usage_metric,
     verify_api_key,
 )
 from portal.globals import booths
-from portal.models import DBBooth, Event, Room
+from portal.models import DBBooth, Event, EventMembership, Room, RoomMembership
 from portal.rate_limit import check_rate_limit
 from portal.schemas.booth import CreateBoothRequest
 from portal.transcription import ProviderConfig, ProviderEnum, get_api_key
@@ -28,6 +32,80 @@ from portal.websockets.manager import broadcast_transcription
 
 router = APIRouter(prefix="/api")
 bearer_scheme = HTTPBearer(auto_error=False)
+
+
+async def _verify_event_access(
+    session: AsyncSession,
+    request: Request,
+    event_id: int | None,
+    *,
+    room_id: int | None = None,
+    credentials: HTTPAuthorizationCredentials | None = None,
+    token: str = "",
+) -> None:
+    """Authorize a legacy API operation against its event and optional room."""
+    configured_token = settings.booth_access_token
+    if configured_token and (
+        (credentials is not None and credentials.credentials == configured_token) or token == configured_token
+    ):
+        return
+
+    user_token = request.cookies.get("user_token", "")
+    if credentials is not None and credentials.credentials != configured_token:
+        user_token = credentials.credentials
+
+    if user_token:
+        try:
+            payload = decode_token(user_token)
+        except pyjwt.InvalidTokenError:
+            if credentials is not None and credentials.scheme.lower() == "bearer":
+                api_key = await verify_api_key(session, credentials.credentials)
+                if api_key is not None and event_id is not None and api_key.event_id == event_id:
+                    return
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid auth token.")
+        if not payload.get("user"):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Participant tokens cannot use this API.")
+
+        try:
+            user_id = int(payload.get("sub", ""))
+        except (TypeError, ValueError):
+            user_id = 0
+        user = await get_user_by_id(session, user_id)
+        if user is None or not user.is_active:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid or inactive user.")
+        if user.is_admin:
+            return
+
+        if event_id is not None:
+            is_event_owner = await session.scalar(
+                select(EventMembership.id).where(
+                    EventMembership.user_id == user.id,
+                    EventMembership.event_id == event_id,
+                    EventMembership.role == "event_owner",
+                )
+            )
+            if is_event_owner:
+                return
+            if room_id is not None:
+                is_room_coordinator = await session.scalar(
+                    select(RoomMembership.id).where(
+                        RoomMembership.user_id == user.id,
+                        RoomMembership.room_id == room_id,
+                        RoomMembership.role == "room_coordinator",
+                    )
+                )
+                if is_room_coordinator:
+                    return
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Event access required.")
+
+    if not configured_token and settings.debug:
+        return
+    if not configured_token:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="BOOTH_ACCESS_TOKEN is not configured on this server.",
+        )
+    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid or missing auth token.")
 
 
 @router.post("/v1/tokens/listener", status_code=status.HTTP_201_CREATED)
@@ -74,12 +152,13 @@ async def delete_booth_by_language(
 ):
     """Delete a booth from an event."""
     _require_access(request, credentials, token)
-
     booth_id = make_booth_id(event_slug, room_id, language_code)
-    await stop_transcription_worker(booth_id)
-
-    # Delete from DB
+    room_db_id = room_id
     async with get_session() as session:
+        event = await session.scalar(select(Event).where(Event.slug == event_slug))
+        if not event:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event not found")
+        await _verify_event_access(session, request, event.id, room_id=room_id, credentials=credentials, token=token)
         stmt = (
             select(DBBooth)
             .join(Event)
@@ -87,10 +166,13 @@ async def delete_booth_by_language(
         )
         db_booth = await session.scalar(stmt)
         if db_booth:
-            await delete_booth(session, db_booth.id)
+            try:
+                await delete_booth(session, db_booth.id)
+            except (StaleDataError, ObjectDeletedError):
+                pass
 
-    # Remove from in memory state
-    await booths.remove_booth(event_slug, room_id, language_code)
+    await stop_transcription_worker(booth_id)
+    await booths.remove_booth(event_slug, room_db_id, language_code)
 
 
 @router.post("/events/{event_slug}/booths", status_code=status.HTTP_201_CREATED)
@@ -106,13 +188,12 @@ async def create_event_booth(
     Returns the booth state including derived booth_id, MediaMTX path,
     WHIP URL, and WHEP URL.
     """
-    _require_access(request, credentials, token)
-
     async with get_session() as session:
         # Get or Create Event
         event_query = await session.execute(select(Event).where(Event.slug == event_slug))
         event = event_query.scalar_one_or_none()
         if not event:
+            await _verify_event_access(session, request, None, credentials=credentials, token=token)
             try:
                 event = Event(slug=event_slug, display_name=event_slug.title())
             except ValueError as exc:
@@ -146,6 +227,15 @@ async def create_event_booth(
             elif room.display_name != display_name:
                 room.display_name = display_name
                 await session.flush()
+
+        await _verify_event_access(
+            session,
+            request,
+            event.id,
+            room_id=room.id,
+            credentials=credentials,
+            token=token,
+        )
 
         db_room_id = room.id
 
@@ -211,9 +301,14 @@ async def create_event_booth(
 
 
 @router.delete(
+    "/events/{event_slug}/eventyay-rooms/{eventyay_room_id}/booths/{language_code}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+@router.delete(
     "/events/{event_slug}/rooms/{eventyay_room_id}/booths/{language_code}", status_code=status.HTTP_204_NO_CONTENT
 )
 async def delete_event_booth(
+    request: Request,
     event_slug: str,
     eventyay_room_id: str,
     language_code: str,
@@ -221,8 +316,9 @@ async def delete_event_booth(
     credentials: HTTPAuthorizationCredentials | None = Depends(security),
 ):
     """Delete a booth provisioned via API."""
-    _require_access(credentials, token)
-
+    _require_access(request, credentials, token)
+    booth_id = ""
+    room_id = 0
     async with get_session() as session:
         # Find the event
         event_query = await session.execute(select(Event).where(Event.slug == event_slug))
@@ -238,6 +334,10 @@ async def delete_event_booth(
         if not room:
             raise HTTPException(status_code=404, detail="Room not found")
 
+        await _verify_event_access(session, request, event.id, room_id=room.id, credentials=credentials, token=token)
+        room_id = room.id
+        booth_id = make_booth_id(event_slug, room.id, language_code)
+
         # Find the booth
         booth_query = await session.execute(
             select(DBBooth).where(
@@ -247,8 +347,13 @@ async def delete_event_booth(
         booth = booth_query.scalar_one_or_none()
 
         if booth:
-            await session.delete(booth)
-            await session.flush()
+            try:
+                await delete_booth(session, booth.id)
+            except (StaleDataError, ObjectDeletedError):
+                pass
+
+    await stop_transcription_worker(booth_id)
+    await booths.remove_booth(event_slug, room_id, language_code)
 
 
 @router.get("/events/{event_slug}/booths")
@@ -259,16 +364,12 @@ async def list_event_booths(
     credentials: HTTPAuthorizationCredentials | None = Depends(security),
 ) -> dict:
     """List all booths for an event."""
-    try:
-        _require_access(request, credentials, token)
-    except HTTPException as orig_exc:
-        # Fallback to checking API Key
-        async with get_session() as session:
-            key = None
-            if credentials and credentials.scheme.lower() == 'bearer':
-                key = await verify_api_key(session, credentials.credentials)
-            if not key or key.event.slug != event_slug:
-                raise orig_exc
+    async with get_session() as session:
+        event = await session.scalar(select(Event).where(Event.slug == event_slug))
+        if not event:
+            await _verify_event_access(session, request, None, credentials=credentials, token=token)
+            return {"event_slug": event_slug, "booths": []}
+        await _verify_event_access(session, request, event.id, credentials=credentials, token=token)
 
     booth_list = await booths.list_booths_for_event(event_slug)
     for b in booth_list:

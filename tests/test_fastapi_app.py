@@ -1827,6 +1827,7 @@ def test_strong_secret_passes_production():
         secret_key="a-strong-random-secret-0123456789abcdef",
         jwt_secret="",
         mediamtx_auth_hook_secret="media-hook-secret",
+        booth_access_token="booth-access-secret-0123456789abcdef",
     )
     s.validate_production_secrets()  # must not raise
 
