@@ -28,6 +28,8 @@ VoxBento is a real-time interpretation platform for live events. Interpreters mo
 
 For detailed API documentation, environment variables, and configuration, visit [docs.voxbento.com](https://docs.voxbento.com). Native development setup details can also be found in [CONTRIBUTING.md](CONTRIBUTING.md).
 
+In production, configure `BOOTH_ACCESS_TOKEN` with `openssl rand -hex 32` before using the protected legacy `/api/events/...` endpoints. This credential, and the legacy API JWT issued from it, have global scope across the applicable protected legacy event endpoints rather than being limited to one event. Treat it as highly sensitive and share it only with trusted integrations; it does not grant access to unrelated application routes or remove their separate authorization checks. Local debug-mode development may leave it unset.
+
 ---
 
 ## VoxBento Local (Desktop App)

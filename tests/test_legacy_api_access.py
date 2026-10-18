@@ -288,3 +288,34 @@ def test_soft_deleted_event_cannot_create_or_list_booths(monkeypatch):
         assert list_response.json()["booths"] == []
     finally:
         anyio.run(dispose)
+
+
+def test_global_booth_token_does_not_inherit_participant_cookie_scope(monkeypatch):
+    dispose = _setup_database()
+    try:
+        async def seed():
+            async with get_session() as session:
+                event = await create_event(session, slug="global-cookie", display_name="Global Cookie")
+                room = await create_room(session, event_id=event.id, display_name="Main")
+                session.add(DBBooth(event_id=event.id, room_id=room.id, language_code="en", language_name="English"))
+                await session.commit()
+                return room.id
+
+        room_id = anyio.run(seed)
+        participant = create_participant_token(
+            booth_id=1,
+            role="interpreter",
+            event_slug="another-event",
+            room_id=999,
+            language_code="de",
+        )
+        monkeypatch.setattr(settings, "booth_access_token", "configured-master-token")
+        monkeypatch.setattr(settings, "debug", False)
+        response = client.get(
+            f"/api/events/global-cookie/booths/en/state?room_id={room_id}",
+            headers={"Authorization": "Bearer configured-master-token"},
+            cookies={"session_token": participant},
+        )
+        assert response.status_code == 200, response.text
+    finally:
+        anyio.run(dispose)

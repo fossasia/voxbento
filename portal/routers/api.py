@@ -162,7 +162,14 @@ async def _verify_resource_access(
     if credentials is None and request.headers.get("authorization"):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid auth token.")
     payload = None
-    if credentials is not None and credentials.credentials != settings.booth_access_token:
+    is_global_credential = bool(
+        settings.booth_access_token
+        and (
+            (credentials is not None and credentials.credentials == settings.booth_access_token)
+            or token == settings.booth_access_token
+        )
+    )
+    if credentials is not None and not is_global_credential:
         try:
             payload = decode_token(credentials.credentials)
         except pyjwt.InvalidTokenError:
@@ -178,7 +185,7 @@ async def _verify_resource_access(
                 require_booth_management=require_booth_management,
             )
             return None
-    if payload is None:
+    if payload is None and not is_global_credential:
         payload = get_booth_session(request)
     if credentials is None and payload and payload.get("user") and request.cookies.get("session_token"):
         try:
@@ -220,14 +227,15 @@ async def _verify_resource_access(
         )
     else:
         _require_access(request, credentials, token, session_payload=payload)
-    _verify_participant_scope(
-        request,
-        credentials,
-        event_slug=event.slug,
-        room_id=room_id,
-        language_code=language_code,
-        session_payload=payload,
-    )
+    if not is_global_credential:
+        _verify_participant_scope(
+            request,
+            credentials,
+            event_slug=event.slug,
+            room_id=room_id,
+            language_code=language_code,
+            session_payload=payload,
+        )
     return payload
 
 
