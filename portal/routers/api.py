@@ -119,6 +119,7 @@ def _verify_participant_scope(
     event_slug: str,
     room_id: int,
     language_code: str,
+    session_payload: dict | None = None,
 ) -> None:
     """Prevent a participant JWT from being replayed against another booth."""
     payload = None
@@ -128,7 +129,7 @@ def _verify_participant_scope(
         except pyjwt.InvalidTokenError:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid auth token.")
     if payload is None:
-        payload = get_booth_session(request)
+        payload = session_payload if session_payload is not None else get_booth_session(request)
     if not payload or payload.get("user") or payload.get("purpose") == "legacy_api":
         return
     if payload.get("event_slug") != event_slug:
@@ -203,9 +204,14 @@ async def _verify_resource_access(
             session, request, event.id, room_id=room_id, credentials=credentials, token=token
         )
     else:
-        _require_access(request, credentials, token)
+        _require_access(request, credentials, token, session_payload=payload)
     _verify_participant_scope(
-        request, credentials, event_slug=event.slug, room_id=room_id, language_code=language_code
+        request,
+        credentials,
+        event_slug=event.slug,
+        room_id=room_id,
+        language_code=language_code,
+        session_payload=payload,
     )
 
 
@@ -267,9 +273,9 @@ async def delete_booth_by_language(
         db_booth = await session.scalar(stmt)
         if db_booth:
             try:
-                await delete_booth(session, db_booth.id)
+                async with session.begin_nested():
+                    await delete_booth(session, db_booth.id)
             except (StaleDataError, ObjectDeletedError):
-                await session.rollback()
                 pass
 
     try:
@@ -453,9 +459,9 @@ async def delete_event_booth(
 
         if booth:
             try:
-                await delete_booth(session, booth.id)
+                async with session.begin_nested():
+                    await delete_booth(session, booth.id)
             except (StaleDataError, ObjectDeletedError):
-                await session.rollback()
                 pass
 
     try:

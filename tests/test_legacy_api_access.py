@@ -195,6 +195,17 @@ def test_invalid_bearer_cannot_fall_back_to_participant_cookie(monkeypatch):
         participant_fallback = client.get(path, cookies=mixed_cookies)
         assert participant_fallback.status_code == 200, participant_fallback.text
 
+        other_room_participant = create_participant_token(
+            booth_id=1,
+            role="interpreter",
+            event_slug="cookie-scope",
+            room_id=room_id + 1,
+            language_code="en",
+        )
+        wrong_room_cookies = {"session_token": other_room_participant, "user_token": unauthorized_user}
+        wrong_room = client.get(path, cookies=wrong_room_cookies)
+        assert wrong_room.status_code == 403, wrong_room.text
+
         rejected = client.get(path, cookies=cookie, headers={"Authorization": "Bearer malformed"})
         assert rejected.status_code == 403, rejected.text
 

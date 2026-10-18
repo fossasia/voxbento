@@ -120,6 +120,7 @@ def _require_access(
     request: Request,
     credentials: HTTPAuthorizationCredentials | None,
     token_query: str | None = None,
+    session_payload: dict | None = None,
 ) -> None:
     """Allow request with a valid credential, or anonymously in debug mode."""
     if not settings.booth_access_token:
@@ -147,7 +148,7 @@ def _require_access(
     # Cookie Fallback
     from portal.auth import get_booth_session
 
-    payload = get_booth_session(request)
+    payload = session_payload if session_payload is not None else get_booth_session(request)
     if payload:
         if payload.get("role") == "listener":
             raise HTTPException(
