@@ -43,7 +43,7 @@ async def _verify_event_access(
     credentials: HTTPAuthorizationCredentials | None = None,
     token: str = "",
     require_booth_management: bool = False,
-) -> None:
+) -> dict | None:
     """Authorize a legacy API operation against its event and optional room."""
     if credentials is None and request.headers.get("authorization"):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid auth token.")
@@ -157,7 +157,7 @@ async def _verify_resource_access(
     credentials: HTTPAuthorizationCredentials | None,
     token: str,
     require_booth_management: bool = False,
-) -> None:
+) -> dict | None:
     """Apply user membership checks while retaining scoped participant access."""
     if credentials is None and request.headers.get("authorization"):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid auth token.")
@@ -177,7 +177,7 @@ async def _verify_resource_access(
                 token=token,
                 require_booth_management=require_booth_management,
             )
-            return
+            return None
     if payload is None:
         payload = get_booth_session(request)
     if credentials is None and payload and payload.get("user") and request.cookies.get("session_token"):
@@ -192,7 +192,7 @@ async def _verify_resource_access(
                 raise
             payload = participant_payload
         else:
-            return
+            return payload
     if credentials is None and payload and not payload.get("user") and request.cookies.get("user_token"):
         try:
             await _verify_event_access(session, request, event.id, room_id=room_id)
@@ -201,8 +201,8 @@ async def _verify_resource_access(
             # independently scoped participant session from being used.
             pass
         else:
-            return
-    if payload and payload.get("user") and not settings.debug:
+            return payload
+    if payload and payload.get("user") and not (settings.debug and payload.get("is_admin")):
         await _verify_event_access(
             session,
             request,
@@ -228,6 +228,7 @@ async def _verify_resource_access(
         language_code=language_code,
         session_payload=payload,
     )
+    return payload
 
 
 @router.post("/v1/tokens/listener", status_code=status.HTTP_201_CREATED)
@@ -665,7 +666,7 @@ async def event_booth_whip_url(
         event = await get_event_by_slug(session, event_slug)
         if event is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event not found")
-        await _verify_resource_access(
+        auth_payload = await _verify_resource_access(
             session,
             request,
             event,
@@ -674,6 +675,11 @@ async def event_booth_whip_url(
             credentials=credentials,
             token=token,
         )
+        if auth_payload and not auth_payload.get("user") and auth_payload.get("purpose") != "legacy_api":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Participant credentials cannot request an unbound WHIP URL.",
+            )
 
     booth_id = make_booth_id(event_slug, room_id, language_code)
     channel_id = make_mediamtx_path(event_slug, room_id, language_code)
