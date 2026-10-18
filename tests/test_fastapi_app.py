@@ -907,6 +907,37 @@ def _ws_join(ws, display_name: str, role: str, language: str, channel_id: str) -
     return joined["participant_id"], state_msg["state"]
 
 
+@pytest.mark.parametrize(
+    ("raw_frame", "expected_error"),
+    [
+        ("[]", "Message must be a JSON object."),
+        ("null", "Message must be a JSON object."),
+        ("0", "Message must be a JSON object."),
+        ("true", "Message must be a JSON object."),
+        ('"hello"', "Message must be a JSON object."),
+        ("{}", "Unknown message type: "),
+        ("{oops", "Invalid JSON."),
+    ],
+)
+def test_ws_invalid_frame_keeps_active_interpreter_connected(raw_frame: str, expected_error: str):
+    booth_id = "shape-test-booth"
+    with client.websocket_connect(f"/ws/booth/{booth_id}", cookies=_ws_auth()) as ws:
+        participant_id, initial_state = _ws_join(ws, "Alice", "interpreter", "English", f"{booth_id}-audio")
+        assert initial_state["active_interpreter_id"] == participant_id
+
+        ws.send_text(raw_frame)
+        assert json.loads(ws.receive_text()) == {"type": "booth:error", "message": expected_error}
+
+        ws.send_text(json.dumps({"type": "booth:chat", "body": "Still connected"}))
+        responses = [json.loads(ws.receive_text()), json.loads(ws.receive_text())]
+        assert {message["type"] for message in responses} == {"booth:chat", "booth:state"}
+        chat = next(message for message in responses if message["type"] == "booth:chat")
+        state = next(message["state"] for message in responses if message["type"] == "booth:state")
+        assert chat["message"]["body"] == "Still connected"
+        assert state["active_interpreter_id"] == participant_id
+        assert [person["participant_id"] for person in state["participants"]] == [participant_id]
+
+
 def test_ws_broadcast_unlock_authorized_user_can_toggle():
     """Authorized coordinator/admin session can toggle broadcast lock."""
     client.post("/api/events/broadcastok/booths", json={"language_code": "en", "room_id": 1, "language": "English"})

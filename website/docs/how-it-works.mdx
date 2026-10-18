@@ -81,6 +81,8 @@ Event management and system administration use separate public URL namespaces:
 
 Both namespaces use the same underlying management handlers, so the route split does not duplicate event-management behavior. Existing organizer bookmarks under `/admin/events/...` receive a temporary redirect to the corresponding workspace URL with their query string and HTTP method preserved. The OAuth routes remain under `/oauth/...`; shared-organizer authorization and token lifecycle behavior are therefore unchanged.
 
+Room deletion checks that the requested room belongs to the event specified in the workspace URL before removing it and its dependent booths, invites, and memberships. An unknown room or a room from another event returns HTTP 404 without deleting any data.
+
 ## The Transcription & Translation Pipeline
 
 When live captions or translations are enabled, Voxbento spawns background workers to process the audio in real-time. This pipeline supports both **Booth Audio** (interpreters) and **Floor Audio** (the main conference).

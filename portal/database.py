@@ -70,6 +70,8 @@ def _get_engine():
             def set_sqlite_pragma(dbapi_connection, connection_record):
                 cursor = dbapi_connection.cursor()
                 cursor.execute("PRAGMA foreign_keys=ON")
+                cursor.execute("PRAGMA busy_timeout=5000")
+                cursor.execute("PRAGMA journal_mode=WAL")
                 cursor.close()
 
         _async_session_factory = async_sessionmaker(_engine, expire_on_commit=False)
@@ -99,6 +101,8 @@ def configure(url: str, *, echo: bool = False) -> None:
         def set_sqlite_pragma(dbapi_connection, connection_record):
             cursor = dbapi_connection.cursor()
             cursor.execute("PRAGMA foreign_keys=ON")
+            cursor.execute("PRAGMA busy_timeout=5000")
+            cursor.execute("PRAGMA journal_mode=WAL")
             cursor.close()
 
     _async_session_factory = async_sessionmaker(_engine, expire_on_commit=False)
@@ -151,11 +155,28 @@ async def drop_db() -> None:
 # ---------------------------------------------------------------------------
 
 
-async def create_event(session: AsyncSession, *, slug: str, display_name: str) -> Event:
+async def create_event(
+    session: AsyncSession,
+    *,
+    slug: str,
+    display_name: str,
+    owner_user_id: int | None = None,
+) -> Event:
     ev = Event(slug=slug, display_name=display_name)
     session.add(ev)
     await session.flush()
+    if owner_user_id is not None:
+        membership = EventMembership(
+            event_id=ev.id,
+            user_id=owner_user_id,
+            role="event_owner",
+        )
+        session.add(membership)
+        await session.flush()
     return ev
+
+
+create_event_with_owner = create_event
 
 
 async def get_event_by_slug(session: AsyncSession, slug: str) -> Event | None:
@@ -518,6 +539,9 @@ async def create_user(
     email_verified: bool = False,
     is_admin: bool = False,
     is_active: bool = True,
+    can_host: bool = False,
+    hosting_requested_at: datetime | None = None,
+    hosting_revoked_at: datetime | None = None,
 ) -> User:
     user = User(
         email=email.strip().lower(),
@@ -526,6 +550,9 @@ async def create_user(
         email_verified=email_verified,
         is_admin=is_admin,
         is_active=is_active,
+        can_host=can_host,
+        hosting_requested_at=hosting_requested_at,
+        hosting_revoked_at=hosting_revoked_at,
     )
     session.add(user)
     await session.flush()
@@ -839,11 +866,13 @@ async def revoke_invite_token(session: AsyncSession, token_str: str) -> InviteTo
 async def create_auth_token(
     session: AsyncSession,
     *,
-    jti: str,
     user_id: int,
     token_type: str,
+    jti: str | None = None,
     expires_in_seconds: int = 900,
 ) -> AuthToken:
+    if jti is None:
+        jti = generate_token()
     expires_at = datetime.now(tz=timezone.utc) + timedelta(seconds=expires_in_seconds)
     tok = AuthToken(
         jti=jti,

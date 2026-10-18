@@ -4,7 +4,8 @@ MEDIAMTX_TEST_BINARY=/path/to/mediamtx uv run pytest tests/test_program_relay_me
 Requires MediaMTX 1.18.2 and FFmpeg (libx264, AAC, TLS) on PATH. CI runs this module in the
 ``program-relay-media`` job against the pinned MediaMTX release. The local MediaMTX instance
 doubles as the RTMPS sink standing in for YouTube; nothing leaves the machine. Every
-publish goes through the real MediaMTX -> /internal/media-auth callback, never a mock.
+VoxBento publish goes through the real MediaMTX -> /internal/media-auth callback, never a
+mock; only the stand-in sink/ path is excluded, as YouTube is outside the portal's authority.
 """
 
 from __future__ import annotations
@@ -316,6 +317,10 @@ authHTTPAddress: http://127.0.0.1:{ports["http"]}/internal/media-auth?key={HOOK_
 authHTTPExclude:
   - action: api
   - action: read
+  # sink/ stands in for YouTube, an external destination the portal never authorizes.
+  # VoxBento paths stay behind the callback (booth paths need a ticket since #783).
+  - action: publish
+    path: '~^sink/'
 api: yes
 apiAddress: 127.0.0.1:{ports["api"]}
 rtspAddress: 127.0.0.1:{ports["rtsp"]}
