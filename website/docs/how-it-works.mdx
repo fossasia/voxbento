@@ -164,7 +164,7 @@ Manages the booth. Assigns which interpreter is active, initiates handoffs, and 
 
   ### Listener
 
-    Receives the interpreted audio stream from MediaMTX via WHEP or HLS. Listeners connect to the event's public listener page and choose a language — no login required by default.
+    Receives the interpreted audio stream from MediaMTX via WHEP or HLS. Listeners connect to the event's public listener page and choose a language — no login required by default. A link can preselect the room and language with `room` and `lang` query parameters (for example `/listener/pycon2026?room=1&lang=hi`); unknown values fall back to the normal choice, and an event with a single room opens with that room selected.
   
 
 ## Live Captions
