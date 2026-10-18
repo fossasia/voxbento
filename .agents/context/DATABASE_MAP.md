@@ -127,6 +127,7 @@ Properties: `is_expired` (compares UTC), `is_used` (used_at is not None).
 | `is_active` | Boolean | Default True; deactivated users cannot login |
 | `is_admin` | Boolean | Default False; grants full admin panel access |
 | `created_at` | DateTime(tz) | UTC |
+| `onboarding_email_due_at` | DateTime(tz) | Nullable; set on first email verification, cleared by `portal.email.onboarding_email_loop` when the welcome email is sent |
 
 ---
 

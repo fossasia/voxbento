@@ -66,6 +66,7 @@ async def lifespan(app: FastAPI):
 
     import asyncio
 
+    import portal.email as _email_mod
     import portal.webhooks.worker as _webhook_worker_mod
 
     # Reference via module attribute so test-time monkey-patching of
@@ -73,6 +74,7 @@ async def lifespan(app: FastAPI):
     webhook_task = asyncio.create_task(_webhook_worker_mod.webhook_worker_loop())
     ingest_task = asyncio.create_task(program_ingest.reconcile_loop()) if settings.program_ingest_enabled else None
     meeting_task = asyncio.create_task(meeting_source.reconcile_loop())
+    onboarding_task = asyncio.create_task(_email_mod.onboarding_email_loop())
 
     dg.track_task(asyncio.create_task(_gen()))
 
@@ -83,8 +85,11 @@ async def lifespan(app: FastAPI):
 
     webhook_task.cancel()
     meeting_task.cancel()
+    onboarding_task.cancel()
     with contextlib.suppress(asyncio.CancelledError):
         await meeting_task
+    with contextlib.suppress(asyncio.CancelledError):
+        await onboarding_task
     if ingest_task:
         ingest_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):

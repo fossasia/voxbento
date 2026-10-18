@@ -786,14 +786,25 @@ async def test_admin_users_table_layout_and_flash_alerts():
 @pytest.mark.anyio
 async def test_send_demo_request_email_renders_html():
     """Verify send_demo_request_email renders the neo-brutalist HTML template and sends html subtype."""
-    from portal.email_sender import send_demo_request_email
+    from fastapi_mail import ConnectionConfig, FastMail
 
-    sent_messages = []
+    import portal.email as email_mod
 
-    with patch("portal.email_sender.FastMail.send_message", new_callable=AsyncMock) as mock_send, \
-         patch("portal.email_sender.settings.smtp_host", "localhost"):
-        mock_send.side_effect = lambda msg: sent_messages.append(msg)
-        await send_demo_request_email({
+    config = ConnectionConfig(
+        MAIL_USERNAME="",
+        MAIL_PASSWORD="",
+        MAIL_FROM="noreply@voxbento.com",
+        MAIL_PORT=587,
+        MAIL_SERVER="localhost",
+        MAIL_STARTTLS=True,
+        MAIL_SSL_TLS=False,
+        USE_CREDENTIALS=False,
+        SUPPRESS_SEND=1,
+        TEMPLATE_FOLDER=str(email_mod._TEMPLATE_DIR),
+    )
+
+    with patch.object(email_mod, "_mail_config", config), FastMail(config).record_messages() as outbox:
+        await email_mod.send_demo_request_email({
             "email": "applicant@example.com",
             "firstName": "Jane",
             "lastName": "Doe",
@@ -807,17 +818,18 @@ async def test_send_demo_request_email_renders_html():
             "user_id": 42,
         })
 
-    assert len(sent_messages) == 1
-    msg = sent_messages[0]
-    assert msg.subject == "New Demo Request from applicant@example.com"
-    assert any("voxbento.dev@gmail.com" in str(r) for r in msg.recipients)
-    assert "html" in str(msg.subtype)
-    assert "Jane Doe" in msg.body
-    assert "applicant@example.com" in msg.body
-    assert "Tech Corp" in msg.body
-    assert "Education" in msg.body
-    assert "Review in Admin Panel" in msg.body
-    assert "/admin/users/42/" in msg.body
+    assert len(outbox) == 1
+    msg = outbox[0]
+    assert msg["Subject"] == "New Demo Request from applicant@example.com"
+    assert "voxbento.dev@gmail.com" in msg["To"]
+    html_part = next(part for part in msg.walk() if part.get_content_type() == "text/html")
+    body = html_part.get_payload(decode=True).decode()
+    assert "Jane Doe" in body
+    assert "applicant@example.com" in body
+    assert "Tech Corp" in body
+    assert "Education" in body
+    assert "Review in Admin Panel" in body
+    assert "/admin/users/42/" in body
 
 
 @pytest.mark.anyio
