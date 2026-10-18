@@ -154,7 +154,7 @@ async def _verify_token_rbac(
     from portal.models import User
 
     user = await db.get(User, token.user_id)
-    if user and getattr(user, "is_admin", False):
+    if user and getattr(user, "is_admin", False) and getattr(user, "is_active", True):
         return resolved_room
 
     scope = await load_membership_scope(db, token.user_id)
