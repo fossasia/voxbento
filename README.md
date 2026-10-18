@@ -24,7 +24,7 @@ VoxBento is a real-time interpretation platform for live events. Interpreters mo
 
 ### Listener links
 
-Attendees listen at `/listener/{event_slug}`. Add `room` and `lang` to open a room and language directly, for example `/listener/pycon2026?room=1&lang=hi`, which works well behind a QR code on a room door or slide. Unknown values are ignored, an event with one room opens with that room selected, and the address bar updates as listeners switch, so it can be copied as a link to that audio. Join codes still apply.
+Attendees listen at `/listener/{event_slug}`. Add `room` and `lang` to open a room and language directly, for example `/listener/pycon2026?room=1&lang=hi`, which works well behind a QR code on a room door or slide. Unknown values are ignored, an event with one room opens with that room selected, and the address bar updates as listeners switch, so it can be copied as a link to that audio. Join codes still apply, and the join code is removed from the address bar so a copied link never shares it.
 
 ---
 

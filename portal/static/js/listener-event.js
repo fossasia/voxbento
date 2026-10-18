@@ -1091,6 +1091,7 @@ function selectOption(select, matches) {
 
 function syncListenerLink() {
   var url = new URL(window.location.href);
+  url.searchParams.delete("code");
   url.searchParams.delete("room");
   url.searchParams.delete("lang");
   if (roomSelect.value) {
