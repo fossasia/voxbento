@@ -98,6 +98,39 @@ def test_user_cannot_create_or_list_booths_for_another_event(monkeypatch):
         anyio.run(dispose)
 
 
+def test_room_coordinator_cannot_manage_booths(monkeypatch):
+    dispose = _setup_database()
+    try:
+        async def seed():
+            async with get_session() as session:
+                event = await create_event(session, slug="coordinator-event", display_name="Coordinator")
+                room = await create_room(session, event_id=event.id, display_name="Main")
+                user = await create_user(
+                    session,
+                    email="coordinator@example.com",
+                    display_name="Coordinator",
+                    password_hash="hash",
+                )
+                from portal.database import set_room_membership
+
+                await set_room_membership(session, user_id=user.id, room_id=room.id, role="room_coordinator")
+                await session.commit()
+                return user.id, room.id
+
+        user_id, room_id = anyio.run(seed)
+        monkeypatch.setattr(settings, "booth_access_token", "configured-master-token")
+        monkeypatch.setattr(settings, "debug", False)
+        token = create_user_token(user_id=user_id, email="coordinator@example.com")
+        response = client.post(
+            "/api/events/coordinator-event/booths",
+            json={"language_code": "en", "room_id": room_id},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert response.status_code == 403, response.text
+    finally:
+        anyio.run(dispose)
+
+
 def test_numeric_external_room_id_uses_explicit_external_route(monkeypatch):
     dispose = _setup_database()
     try:
