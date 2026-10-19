@@ -732,6 +732,9 @@ code { font-family: var(--font-mono); font-size: 0.85em; background: var(--color
 .download-progress[hidden] {
   display: none;
 }
+#download-csv-btn[hidden] {
+  display: none;
+}
 .custom-modal-overlay.active {
   opacity: 1;
   pointer-events: auto;
