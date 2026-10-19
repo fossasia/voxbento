@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import secrets
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Annotated
@@ -12,7 +13,7 @@ import sqlalchemy as sa
 from fastapi import APIRouter, BackgroundTasks, Body, HTTPException, Request, Response, status
 from fastapi.responses import RedirectResponse
 from fastapi.templating import Jinja2Templates
-from sqlalchemy.exc import DBAPIError, OperationalError
+from sqlalchemy.exc import DBAPIError, IntegrityError, OperationalError
 
 from portal.auth import (
     create_participant_token,
@@ -37,6 +38,8 @@ from portal.database import (
     list_room_memberships_for_user,
     redeem_auth_token,
     redeem_invite_token,
+    revoke_auth_token,
+    revoke_auth_tokens,
     update_user,
 )
 from portal.email import send_magic_login_email, send_password_reset_email, send_verification_email
@@ -52,6 +55,57 @@ templates = Jinja2Templates(directory=str(_BASE_DIR / "templates"))
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+# Hash of a fixed throwaway value; it is only used when no stored password
+# exists, and the user-state checks below still reject the login.
+_DUMMY_PASSWORD_HASH = "$2b$12$OEvt/xgDNq5iYebPcyO6L.ntTqE5qjv39rH/iPdAnvHg33d2vcG4e"
+
+
+async def _queue_verification_email(
+    session,
+    background_tasks: BackgroundTasks,
+    email: str,
+    user_id: int,
+    *,
+    revoke_existing: bool,
+) -> None:
+    """Create a verification token and defer email delivery until after the response."""
+    if revoke_existing:
+        await revoke_auth_tokens(session, user_id=user_id, token_type="verification")
+    token_val = secrets.token_hex(32)
+    await create_auth_token(session, jti=token_val, user_id=user_id, token_type="verification")  # nosec B105
+    background_tasks.add_task(
+        _deliver_verification_email,
+        email,
+        token_val,
+        user_id,
+        revoke_existing,
+    )
+
+
+async def _deliver_verification_email(email: str, token: str, user_id: int, revoke_existing: bool) -> None:
+    """Deliver a verification email and finalize token replacement after delivery."""
+    delivered = await send_verification_email(email, token)
+    async with get_session() as session:
+        if delivered and revoke_existing:
+            await revoke_auth_tokens(
+                session,
+                user_id=user_id,
+                token_type="verification",
+                exclude_jti=token,
+            )
+        elif not delivered:
+            await revoke_auth_token(session, jti=token)
+
+
+def _registration_success(request: Request, email: str) -> object:
+    """Render the account-neutral registration confirmation page."""
+    return templates.TemplateResponse(
+        request=request,
+        name="register_success.html",
+        context={"email": email},
+    )
+
 
 # In-memory registry for ephemeral magic link polling sessions:
 #   poll_id -> {token_jti, nonce_hash, user_id, expires_at, consumed, created_at}
@@ -148,11 +202,11 @@ async def check_email_api(request: Request):
     email = data.get("email", "").strip().lower()
     if not email:
         raise HTTPException(status_code=422, detail="Email required")
-    async with get_session() as session:
-        user = await get_user_by_email(session, email)
-    if user:
-        return {"exists": True, "has_password": user.password_hash is not None}
-    return {"exists": False, "has_password": False}
+    # Do not turn this unauthenticated endpoint into an account-enumeration
+    # oracle. These constant legacy fields keep older login pages on the
+    # authentication path without exposing real account state; they are
+    # compatibility sentinels, not facts about this email address.
+    return {"status": "ok", "exists": True, "has_password": True}
 
 
 @router.get("/register")
@@ -164,7 +218,7 @@ async def register_page(request: Request):
 
 
 @router.post("/register")
-async def register_submit(request: Request):
+async def register_submit(request: Request, background_tasks: BackgroundTasks):
     form = await request.form()
     email = form.get("email", "").strip().lower()
     display_name = form.get("display_name", "").strip()
@@ -185,37 +239,64 @@ async def register_submit(request: Request):
         errors.append("Passwords do not match.")
 
     if not errors:
+        # Run the expensive password work for every valid submission, even
+        # when the address already exists. The result is only persisted for a
+        # newly-created account.
+        pw_hash = hash_password(password_raw) if password else None
         async with get_session() as session:
             existing = await get_user_by_email(session, email)
             if existing:
-                errors.append("An account with this email already exists.")
-            else:
-                pw_hash = hash_password(password_raw) if password else None
-                user = await create_user(
-                    session,
-                    email=email,
-                    display_name=display_name,
-                    password_hash=pw_hash,
-                    email_verified=False,
-                )
+                if not existing.email_verified and check_rate_limit(
+                    "verification_email", email, max_requests=1, window_seconds=900
+                ):
+                    if existing.is_active:
+                        # A password on an unverified account may have been
+                        # chosen by an earlier registrant. Do not let email
+                        # verification activate those credentials; the owner
+                        # can use the resulting magic-link session to set a
+                        # new password.
+                        existing.password_hash = None
+                        await _queue_verification_email(
+                            session,
+                            background_tasks,
+                            email,
+                            existing.id,
+                            revoke_existing=False,
+                        )
+                return _registration_success(request, email)
 
-                # Send verification email
-                import secrets
+            try:
+                async with session.begin_nested():
+                    user = await create_user(
+                        session,
+                        email=email,
+                        display_name=display_name,
+                        password_hash=pw_hash,
+                        email_verified=False,
+                    )
+            except IntegrityError:
+                # Another request may have created this address after the
+                # lookup. Preserve the same neutral response on the losing
+                # request instead of surfacing a unique-constraint error.
+                existing = await get_user_by_email(session, email)
+                if existing is None:
+                    raise
+                if not existing.email_verified and check_rate_limit(
+                    "verification_email", email, max_requests=1, window_seconds=900
+                ):
+                    if existing.is_active:
+                        existing.password_hash = None
+                        await _queue_verification_email(
+                            session,
+                            background_tasks,
+                            email,
+                            existing.id,
+                            revoke_existing=False,
+                        )
+                return _registration_success(request, email)
 
-                token_val = secrets.token_hex(32)
-                await create_auth_token(
-                    session,
-                    jti=token_val,
-                    user_id=user.id,
-                    token_type="verification",  # nosec B105
-                )
-                await send_verification_email(email, token_val)
-
-                return templates.TemplateResponse(
-                    request=request,
-                    name="register_success.html",
-                    context={"email": email},
-                )
+            await _queue_verification_email(session, background_tasks, email, user.id, revoke_existing=True)
+            return _registration_success(request, email)
 
     return templates.TemplateResponse(
         request=request,
@@ -230,6 +311,9 @@ async def verify_email_route(request: Request, token: str, background_tasks: Bac
     async with get_session() as session:
         try:
             auth_token = await redeem_auth_token(session, token, "verification")
+            user = await get_user_by_id(session, auth_token.user_id)
+            if user is None or not user.is_active:
+                raise ValueError("Invalid verification link.")
             user = await update_user(session, auth_token.user_id, email_verified=True)
             background_tasks.add_task(send_delayed_onboarding_email, user.email, user.display_name)
 
@@ -280,29 +364,13 @@ async def user_login_submit(request: Request):
     async with get_session() as session:
         user = await get_user_by_email(session, email)
 
-    if user is None or not user.password_hash or not verify_password(password, user.password_hash):
+    password_hash = user.password_hash if user and user.password_hash else _DUMMY_PASSWORD_HASH
+    password_valid = verify_password(password, password_hash)
+    if user is None or not user.password_hash or not password_valid or not user.is_active or not user.email_verified:
         return templates.TemplateResponse(
             request=request,
             name="login.html",
             context={"error": "Invalid email or password.", "email": email, "next_url": next_url},
-            status_code=status.HTTP_403_FORBIDDEN,
-        )
-    if not user.is_active:
-        return templates.TemplateResponse(
-            request=request,
-            name="login.html",
-            context={
-                "error": "Your account has been deactivated. Contact an admin.",
-                "email": email,
-                "next_url": next_url,
-            },
-            status_code=status.HTTP_403_FORBIDDEN,
-        )
-    if not user.email_verified:
-        return templates.TemplateResponse(
-            request=request,
-            name="login.html",
-            context={"error": "Please verify your email address first.", "email": email, "next_url": next_url},
             status_code=status.HTTP_403_FORBIDDEN,
         )
 

@@ -31,7 +31,11 @@ def verify_password(password: str, password_hash: str) -> bool:
 
 def create_token() -> str:
     now = datetime.now(timezone.utc)
-    payload = {"iat": now, "exp": now + timedelta(seconds=settings.jwt_expiry_seconds)}
+    payload = {
+        "iat": now,
+        "exp": now + timedelta(seconds=settings.jwt_expiry_seconds),
+        "purpose": "legacy_api",
+    }
     return jwt.encode(payload, settings.effective_jwt_secret, algorithm="HS256")
 
 
@@ -468,6 +472,8 @@ async def get_current_user(request: Request) -> dict | None:
     except jwt.InvalidTokenError:
         return None
     if not payload.get("user"):
+        return None
+    if await _current_user(payload) is None:
         return None
     return payload
 

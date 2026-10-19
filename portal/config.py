@@ -104,6 +104,13 @@ class Settings(BaseSettings):
                 "MEDIAMTX_AUTH_HOOK_SECRET is not set. Configure the same random value for "
                 "the portal and MediaMTX. Generate one with: openssl rand -hex 32"
             )
+        booth_access_token = self.booth_access_token.strip()
+        if booth_access_token in {"", "change-me", "secret", "your-secret-key"} or len(booth_access_token) < 32:
+            raise RuntimeError(
+                "BOOTH_ACCESS_TOKEN is not configured with a strong value. "
+                "Set a secret access token before exposing legacy API endpoints in production. "
+                "Generate one with: openssl rand -hex 32"
+            )
         if self.program_relay_enabled and len(self.program_relay_control_secret) < 32:
             raise RuntimeError(
                 "PROGRAM_RELAY_ENABLED requires PROGRAM_RELAY_CONTROL_SECRET (at least 32 characters), "

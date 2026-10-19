@@ -61,9 +61,9 @@ async def _send_email_async(
         return False
 
 
-async def send_verification_email(email_to: str, token: str) -> None:
+async def send_verification_email(email_to: str, token: str) -> bool:
     verification_link = f"{settings.public_base_url}/auth/verify/{token}"
-    await _send_email_async(
+    return await _send_email_async(
         email_to=email_to,
         subject="Verify your VoxBento account",
         template_name="verification.html",

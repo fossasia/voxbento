@@ -25,10 +25,13 @@ from portal.transcription.worker import active_workers
 
 
 @pytest.fixture(autouse=True)
-def setup_db():
+def setup_db(monkeypatch):
     configure("sqlite+aiosqlite://")
     import anyio
 
+    from portal.config import settings
+
+    monkeypatch.setattr(settings, "debug", True)
     anyio.run(init_db)
     yield
     anyio.run(dispose)
