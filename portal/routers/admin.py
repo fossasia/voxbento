@@ -789,6 +789,7 @@ async def admin_delete_event(request: Request, event_id: int):
 async def admin_room_list(request: Request, event_id: int, search: str | None = Query(None)):
     search_q = (search or "").strip()
     search_val = search_q if search_q else None
+    admin_flags = await get_admin_flags(request, event_id=event_id)
     async with get_session() as session:
         event = await get_event_by_id(session, event_id)
         if event is None:
@@ -801,7 +802,7 @@ async def admin_room_list(request: Request, event_id: int, search: str | None = 
     return templates.TemplateResponse(
         request=request,
         name="admin/room_list.html",
-        context={"event": event, "room_data": room_data, "search": search_val or ""},
+        context={"event": event, "room_data": room_data, "search": search_val or "", **admin_flags},
     )
 
 
@@ -1958,6 +1959,7 @@ async def admin_toggle_user_event_owner(request: Request, user_id: int, event_id
 
 @router.get("/admin/events/{event_id}/members/", dependencies=[Depends(require_admin)])
 async def admin_event_members(request: Request, event_id: int):
+    admin_flags = await get_admin_flags(request, event_id=event_id)
     async with get_session() as session:
         event = await get_event_by_id(session, event_id)
         if event is None:
@@ -1968,7 +1970,13 @@ async def admin_event_members(request: Request, event_id: int):
     return templates.TemplateResponse(
         request=request,
         name="admin/event_members.html",
-        context={"event": event, "memberships": memberships, "membership_map": membership_map, "users": users},
+        context={
+            "event": event,
+            "memberships": memberships,
+            "membership_map": membership_map,
+            "users": users,
+            **admin_flags,
+        },
     )
 
 

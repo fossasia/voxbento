@@ -8,6 +8,11 @@ import Tabs from "@theme/Tabs";
 import TabItem from "@theme/TabItem";
 
 
+## Legacy API authentication
+
+Trusted integrations can exchange the production `BOOTH_ACCESS_TOKEN` at `/api/auth/token` for a legacy API JWT. The credential and resulting JWT have global scope across the applicable protected `/api/events/...` endpoints, not event-specific scope, so operators should generate the credential with `openssl rand -hex 32` and share it only with trusted integrations. This global credential does not grant access to unrelated application routes or bypass separate authorization checks; participant tokens, user JWTs, and event-scoped API keys remain subject to their own event, room, and language scopes.
+
+
 Voxbento is built on a single guiding principle: the audio path should be as short and as direct as possible. Rather than routing interpreter microphone audio through application servers, Voxbento sends audio straight from the interpreter's browser to MediaMTX — an open-source media server — and from there straight to each listener's browser. The Voxbento coordination portal sits alongside that path to handle coordination, but it never touches the audio itself.
 
 ## The Interpretation Pipeline

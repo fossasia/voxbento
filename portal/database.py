@@ -311,7 +311,6 @@ async def list_rooms_for_event(
     return list(result.scalars().all())
 
 
-
 async def delete_room(session: AsyncSession, room_id: int) -> bool:
     room = await get_room_by_id(session, room_id)
     if room is None:
@@ -597,7 +596,13 @@ async def get_user_by_id(session: AsyncSession, user_id: int) -> User | None:
 async def count_users(session: AsyncSession, search: str | None = None) -> int:
     stmt = select(func.count(User.id))
     if search:
-        stmt = stmt.where(or_(User.email.ilike(f"%{search}%"), User.display_name.ilike(f"%{search}%")))
+        search_pattern = f"%{escape_event_search_term(search)}%"
+        stmt = stmt.where(
+            or_(
+                User.email.ilike(search_pattern, escape="\\"),
+                User.display_name.ilike(search_pattern, escape="\\"),
+            )
+        )
     result = await session.execute(stmt)
     return result.scalar_one()
 
@@ -625,7 +630,13 @@ async def list_users(
     stmt = select(User)
 
     if search:
-        stmt = stmt.where(or_(User.email.ilike(f"%{search}%"), User.display_name.ilike(f"%{search}%")))
+        search_pattern = f"%{escape_event_search_term(search)}%"
+        stmt = stmt.where(
+            or_(
+                User.email.ilike(search_pattern, escape="\\"),
+                User.display_name.ilike(search_pattern, escape="\\"),
+            )
+        )
 
     sort_column = _USER_SORT_COLUMNS.get(sort_by, User.created_at)
     # Tie-break on id so rows sharing a sort value keep a stable order across pages.
@@ -883,6 +894,35 @@ async def create_auth_token(
     session.add(tok)
     await session.flush()
     return tok
+
+
+async def revoke_auth_token(session: AsyncSession, *, jti: str) -> None:
+    """Invalidate one unused auth token by its identifier."""
+    await session.execute(
+        sa.update(AuthToken)
+        .where(AuthToken.jti == jti, AuthToken.used_at.is_(None))
+        .values(used_at=datetime.now(tz=timezone.utc))
+    )
+    await session.flush()
+
+
+async def revoke_auth_tokens(
+    session: AsyncSession,
+    *,
+    user_id: int,
+    token_type: str,
+    exclude_jti: str | None = None,
+) -> None:
+    """Invalidate unused auth tokens, optionally preserving one token."""
+    conditions = [
+        AuthToken.user_id == user_id,
+        AuthToken.token_type == token_type,
+        AuthToken.used_at.is_(None),
+    ]
+    if exclude_jti is not None:
+        conditions.append(AuthToken.jti != exclude_jti)
+    await session.execute(sa.update(AuthToken).where(*conditions).values(used_at=datetime.now(tz=timezone.utc)))
+    await session.flush()
 
 
 async def get_auth_token(session: AsyncSession, jti: str) -> AuthToken | None:

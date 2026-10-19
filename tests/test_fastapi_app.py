@@ -19,11 +19,13 @@ client = TestClient(app)
 
 
 @pytest.fixture(autouse=True)
-def setup_db():
+def setup_db(monkeypatch):
     import anyio
 
+    from portal.config import settings
     from portal.database import configure, dispose, init_db
 
+    monkeypatch.setattr(settings, "debug", True)
     configure("sqlite+aiosqlite://")
     anyio.run(init_db)
     yield
@@ -90,6 +92,26 @@ def test_token_redactor_handles_split_args():
         lineno=0,
         msg='%s - "%s %s HTTP/%s" %d',
         args=("127.0.0.1:1234", "GET", "/embed/test-event/en?token=secretjwt123", "1.1", 200),
+        exc_info=None,
+    )
+    _UvicornTokenRedactor().filter(record)
+    output = record.getMessage()
+    assert "secretjwt123" not in output
+    assert "[REDACTED]" in output
+
+
+def test_token_redactor_handles_legacy_api_query_credentials():
+    import logging
+
+    from fastapi_app import _UvicornTokenRedactor
+
+    record = logging.LogRecord(
+        name="uvicorn.access",
+        level=logging.INFO,
+        pathname="",
+        lineno=0,
+        msg='GET /api/events/demo/booths?access_token=secretjwt123&room_id=1',
+        args=(),
         exc_info=None,
     )
     _UvicornTokenRedactor().filter(record)
@@ -1827,6 +1849,7 @@ def test_strong_secret_passes_production():
         secret_key="a-strong-random-secret-0123456789abcdef",
         jwt_secret="",
         mediamtx_auth_hook_secret="media-hook-secret",
+        booth_access_token="booth-access-secret-0123456789abcdef",
     )
     s.validate_production_secrets()  # must not raise
 
