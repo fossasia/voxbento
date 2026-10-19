@@ -8,7 +8,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from fastapi_app import app
-from portal.auth import create_admin_token, create_user_token
+from portal.auth import create_user_token
 from portal.database import (
     configure,
     create_event,
@@ -25,7 +25,6 @@ from portal.database import (
 from portal.workspace_routing import legacy_admin_to_workspace_path, workspace_to_admin_path
 
 os.environ["BOOTH_ACCESS_TOKEN"] = ""
-os.environ["ADMIN_PASSWORD"] = "test-admin-pass"
 
 
 @pytest.fixture(autouse=True)
@@ -62,6 +61,10 @@ def client():
             "/api/admin/events/1/rooms/2/transcripts/en",
         ),
         ("/api/workspace/providers/translation/models", "/api/admin/providers/translation/models"),
+        (
+            "/workspace/events/1/rooms/2/booths/3/tokens/" + "a1b2c3d4" * 8 + "/revoke",
+            "/admin/events/1/rooms/2/booths/3/tokens/" + "a1b2c3d4" * 8 + "/revoke",
+        ),
     ],
 )
 @pytest.mark.anyio
@@ -82,6 +85,10 @@ async def test_workspace_route_inventory_maps_only_known_route_families(workspac
         "/workspace/models/supertonic/future-route",
         "/api/workspace/events/1/not-a-route",
         "/api/workspace/providers/future-route",
+        "/workspace/events/1/rooms/2/booths/3/tokens/not-hex!/revoke",
+        "/workspace/events/1/rooms/2/booths/3/tokens/abc123/revoke",
+        "/workspace/events/1/rooms/2/booths/3/tokens/" + "A1B2C3D4" * 8 + "/revoke",
+        "/workspace/events/1/rooms/2/booths/3/tokens/" + "a1b2c3d4" * 8 + "0/revoke",
     ],
 )
 @pytest.mark.anyio
@@ -149,16 +156,57 @@ async def test_workspace_form_submission_stays_in_workspace_namespace(organizer)
 
 @pytest.mark.anyio
 async def test_super_admin_retains_admin_namespace(organizer):
+    async with get_session() as s:
+        admin_user = await create_user(
+            s,
+            email="superadmin@test.com",
+            display_name="Super Admin",
+            password_hash="hash",
+            is_admin=True,
+        )
+    cookies = {"user_token": create_user_token(user_id=admin_user.id, email=admin_user.email, is_admin=True)}
     async with client() as http:
         response = await http.get(
             f"/admin/events/{organizer['event_id']}/",
-            cookies={"admin_token": create_admin_token()},
+            cookies=cookies,
             follow_redirects=False,
         )
 
     assert response.status_code == 200
     assert f"/admin/events/{organizer['event_id']}/rooms/" in response.text
     assert f"/workspace/events/{organizer['event_id']}/rooms/" not in response.text
+
+
+@pytest.mark.parametrize("page", ["rooms/", "members/"])
+@pytest.mark.anyio
+async def test_super_admin_nav_is_complete_on_event_pages(organizer, page):
+    async with get_session() as s:
+        admin_user = await create_user(
+            s,
+            email="nav-pages-admin@test.com",
+            display_name="Super Admin",
+            password_hash="hash",
+            is_admin=True,
+        )
+    cookies = {"user_token": create_user_token(user_id=admin_user.id, email=admin_user.email, is_admin=True)}
+    async with client() as http:
+        response = await http.get(f"/admin/events/{organizer['event_id']}/{page}", cookies=cookies)
+
+    assert response.status_code == 200
+    assert 'href="/mission-control/"' in response.text
+    assert 'href="/admin/users/"' in response.text
+    assert 'href="/admin/developer-accounts"' in response.text
+
+
+@pytest.mark.parametrize("page", ["rooms/", "members/"])
+@pytest.mark.anyio
+async def test_event_owner_nav_links_mission_control_on_event_pages(organizer, page):
+    async with client() as http:
+        response = await http.get(f"/workspace/events/{organizer['event_id']}/{page}", cookies=organizer["cookies"])
+
+    assert response.status_code == 200
+    assert 'href="/mission-control/"' in response.text
+    assert 'href="/admin/users/"' not in response.text
 
 
 @pytest.mark.anyio
@@ -359,6 +407,18 @@ async def test_room_coordinator_navigation_uses_mission_control(organizer):
 
 
 @pytest.mark.anyio
+async def test_mission_control_titles_name_the_brand_once(organizer):
+    async with client() as http:
+        event_list = await http.get("/mission-control/", cookies=organizer["cookies"])
+        grid = await http.get("/mission-control/shared-event/", cookies=organizer["cookies"])
+
+    assert event_list.status_code == 200
+    assert "<title>Mission Control Events — Voxbento</title>" in event_list.text
+    assert grid.status_code == 200
+    assert "<title>Mission Control - Shared Event — Voxbento</title>" in grid.text
+
+
+@pytest.mark.anyio
 async def test_workspace_event_list_omits_coordinator_only_events(organizer):
     async with get_session() as session:
         coordinator_event = await create_event(
@@ -405,10 +465,18 @@ async def test_regular_user_navigation_omits_management_dashboard():
 
 @pytest.mark.anyio
 async def test_admin_token_navigation_points_to_admin():
-    admin_cookies = {"admin_token": create_admin_token()}
+    async with get_session() as s:
+        admin_user = await create_user(
+            s,
+            email="nav_superadmin@test.com",
+            display_name="Super Admin",
+            password_hash="hash",
+            is_admin=True,
+        )
+    cookies = {"user_token": create_user_token(user_id=admin_user.id, email=admin_user.email, is_admin=True)}
 
     async with client() as http:
-        home = await http.get("/", cookies=admin_cookies)
+        home = await http.get("/", cookies=cookies)
 
     assert home.status_code == 200
     assert 'href="/admin/"' in home.text

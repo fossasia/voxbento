@@ -8,12 +8,13 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy import select
 from sqlalchemy.orm import joinedload
 
-from portal.auth import get_booth_session, resolve_booth_role
+from portal.auth import get_booth_sessions, resolve_booth_role
 from portal.booth_identity import make_booth_id, make_mediamtx_path
 from portal.config import settings
 from portal.database import get_booth_by_id, get_session, list_booth_memberships_for_user
 from portal.globals import _JS_CACHE_BUST, booths
 from portal.models import DBBooth, Event
+from portal.roles import _ROLE_RANK
 from portal.utils import _ensure_mediamtx_path, _make_jitsi_url, safe_redirect
 
 router = APIRouter()
@@ -26,67 +27,78 @@ templates = Jinja2Templates(directory=str(_BASE_DIR / "templates"))
 @router.get("/interpreter")
 async def interpreter_landing_page(request: Request) -> Any:
     """Central lobby for interpreters to run pre-flight checks and view assigned booths."""
-    payload = get_booth_session(request)
-    if payload is None:
+    sessions = get_booth_sessions(request)
+    if not sessions:
         return safe_redirect(url="/login?next=/interpreter", status_code=status.HTTP_303_SEE_OTHER)
-    my_booths = []
-    if "event_slug" in payload and "language_code" in payload and "room_id" in payload:
-        bid = make_booth_id(payload["event_slug"], payload["room_id"], payload["language_code"])
-        mem_booth = booths.get_booth_sync(bid)
-        is_live = mem_booth is not None and mem_booth.ingest_status == "connected"
-        async with get_session() as session:
-            stmt = (
-                select(DBBooth)
-                .options(joinedload(DBBooth.event), joinedload(DBBooth.room))
-                .join(Event)
-                .where(
-                    Event.slug == payload["event_slug"],
-                    DBBooth.room_id == payload["room_id"],
-                    DBBooth.language_code == payload["language_code"],
-                )
-            )
-            res = await session.execute(stmt)
-            b = res.scalar_one_or_none()
-            event_name = b.event.display_name if b and b.event else payload["event_slug"]
-            language_name = b.language_name if b else payload["language_code"]
-            room_name = b.room.display_name if b and b.room else ""
-        my_booths.append(
-            {
-                "booth_id": bid,
-                "is_live": is_live,
-                "event_name": event_name,
-                "language_name": language_name,
-                "room_name": room_name,
-                "room_id": payload.get("room_id"),
-                "event_slug": payload["event_slug"],
-                "language_code": payload["language_code"],
-                "role": payload.get("role", "interpreter"),
-            }
-        )
-    elif payload.get("sub") and payload.get("user"):
+
+    booths_by_id: dict[str, dict[str, Any]] = {}
+
+    user_sess = sessions.get("user_token")
+    invite_sess = sessions.get("session_token")
+
+    if user_sess and user_sess.get("sub"):
         try:
-            uid = int(payload["sub"])
+            uid = int(user_sess["sub"])
             async with get_session() as session:
                 bms = await list_booth_memberships_for_user(session, uid)
                 for bm in bms:
                     bid = make_booth_id(bm.booth.event.slug, bm.booth.room_id, bm.booth.language_code)
                     mem_booth = booths.get_booth_sync(bid)
                     is_live = mem_booth is not None and mem_booth.ingest_status == "connected"
-                    my_booths.append(
-                        {
-                            "booth_id": bid,
-                            "is_live": is_live,
-                            "event_name": bm.booth.event.display_name,
-                            "language_name": bm.booth.language_name,
-                            "room_name": bm.booth.room.display_name if bm.booth.room else "",
-                            "room_id": bm.booth.room_id,
-                            "event_slug": bm.booth.event.slug,
-                            "language_code": bm.booth.language_code,
-                            "role": bm.role,
-                        }
-                    )
+                    booths_by_id[bid] = {
+                        "booth_id": bid,
+                        "is_live": is_live,
+                        "event_name": bm.booth.event.display_name,
+                        "language_name": bm.booth.language_name,
+                        "room_name": bm.booth.room.display_name if bm.booth.room else "",
+                        "room_id": bm.booth.room_id,
+                        "event_slug": bm.booth.event.slug,
+                        "language_code": bm.booth.language_code,
+                        "role": bm.role,
+                    }
         except ValueError:
             pass
+
+    if invite_sess and "event_slug" in invite_sess and "language_code" in invite_sess and "room_id" in invite_sess:
+        bid = make_booth_id(invite_sess["event_slug"], invite_sess["room_id"], invite_sess["language_code"])
+        invite_role = invite_sess.get("role", "interpreter")
+        if bid in booths_by_id:
+            existing_role = booths_by_id[bid]["role"]
+            if _ROLE_RANK.get(invite_role, 0) > _ROLE_RANK.get(existing_role, 0):
+                booths_by_id[bid]["role"] = invite_role
+        else:
+            mem_booth = booths.get_booth_sync(bid)
+            is_live = mem_booth is not None and mem_booth.ingest_status == "connected"
+            async with get_session() as session:
+                stmt = (
+                    select(DBBooth)
+                    .options(joinedload(DBBooth.event), joinedload(DBBooth.room))
+                    .join(Event)
+                    .where(
+                        Event.slug == invite_sess["event_slug"],
+                        Event.deleted_at.is_(None),
+                        DBBooth.room_id == invite_sess["room_id"],
+                        DBBooth.language_code == invite_sess["language_code"],
+                    )
+                )
+                res = await session.execute(stmt)
+                b = res.scalar_one_or_none()
+                event_name = b.event.display_name if b and b.event else invite_sess["event_slug"]
+                language_name = b.language_name if b else invite_sess["language_code"]
+                room_name = b.room.display_name if b and b.room else ""
+            booths_by_id[bid] = {
+                "booth_id": bid,
+                "is_live": is_live,
+                "event_name": event_name,
+                "language_name": language_name,
+                "room_name": room_name,
+                "room_id": invite_sess.get("room_id"),
+                "event_slug": invite_sess["event_slug"],
+                "language_code": invite_sess["language_code"],
+                "role": invite_role,
+            }
+
+    my_booths = list(booths_by_id.values())
     return templates.TemplateResponse(
         request=request, name="interpreter_landing.html", context={"my_booths": my_booths, "js_version": _JS_CACHE_BUST}
     )
@@ -101,20 +113,19 @@ async def interpreter_booth_by_identity(
     Requires a valid session_token (invite link) or user_token (registered user).
     The granted role is passed to the template so the client cannot self-promote.
     """
-    payload = get_booth_session(request)
-    if payload is None:
+    sessions = get_booth_sessions(request)
+    if not sessions:
         return safe_redirect(
             url=f"/login?next=/interpreter/{event_slug}/{room_id}/{language_code}",
             status_code=status.HTTP_303_SEE_OTHER,
         )
     booth_id = make_booth_id(event_slug, room_id, language_code)
-    granted_role = await resolve_booth_role(payload, booth_id)
+    granted_role = await resolve_booth_role(list(sessions.values()), booth_id)
     if granted_role is None:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="You do not have a role assigned for this event. Ask an admin to assign you one.",
         )
-    booth_id = make_booth_id(event_slug, room_id, language_code)
     mediamtx_path = make_mediamtx_path(event_slug, room_id, language_code)
     channel_id = mediamtx_path
     display_language = language or language_code.upper()
@@ -128,6 +139,7 @@ async def interpreter_booth_by_identity(
             .join(Event)
             .options(joinedload(DBBooth.room))
             .where(Event.slug == event_slug)
+            .where(Event.deleted_at.is_(None))
             .where(DBBooth.room_id == room_id)
             .where(DBBooth.language_code == language_code)
         )
@@ -145,7 +157,8 @@ async def interpreter_booth_by_identity(
                     relay_language_name = relay_b.language_name
     default_jitsi_url = _make_jitsi_url(settings.effective_jitsi_base_url, settings.default_jitsi_room)
     final_jitsi_url = room_jitsi_url or default_jitsi_url
-    display_name = payload.get("display_name", "") or payload.get("email", "")
+    user_sess = sessions.get("user_token", {})
+    display_name = user_sess.get("display_name", "") or user_sess.get("email", "")
     return templates.TemplateResponse(
         request=request,
         name="interpreter_booth.html",

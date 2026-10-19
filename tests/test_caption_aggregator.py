@@ -23,7 +23,10 @@ class TestCaptionAggregator:
         await aggregator.handle_partial("booth-1", "Hello world")
 
         assert len(received) == 1
-        assert received[0] == ("booth-1", {"type": "caption", "status": "partial", "text": "Hello world"})
+        assert received[0][0] == "booth-1"
+        assert received[0][1]["status"] == "partial"
+        assert received[0][1]["text"] == "Hello world"
+        assert received[0][1]["segment_id"]
 
     async def test_handle_partial_ignores_whitespace_only_text(self):
         received = []

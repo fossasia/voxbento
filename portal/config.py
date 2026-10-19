@@ -32,6 +32,21 @@ class Settings(BaseSettings):
     mediamtx_api_base: str = "http://localhost:9997"
     mediamtx_rtsp_base: str = "rtsp://mediamtx:8554"
     floor_bot_base: str = "http://floor-bot:8080"
+    meeting_agent_max_restarts: int = 5  # Automatic agent restarts per incident before reporting degraded.
+    meeting_agent_no_audio_secs: float = 45.0
+    mediamtx_auth_hook_secret: str = ""
+    program_ingest_enabled: bool = False  # Enable only with the authenticated MediaMTX configuration.
+    program_ingest_max_rooms: int = 10
+    program_ingest_disconnect_grace_secs: float = 15.0
+    program_ingest_stall_secs: float = 30.0
+    program_sender_session_ttl_secs: int = 150  # Browser sender publish window; long enough to negotiate, short enough to expire.
+    # RTMPS ingest with YouTube relay (#749). Off unless the operator deploys docker-compose.relay.yml.
+    program_relay_enabled: bool = False
+    program_rtmps_public_base: str = ""  # e.g. rtmps://voxbento.com:1936 (MediaMTX RTMPS listener)
+    program_relay_base: str = "http://program-relay:8090"
+    program_relay_control_secret: str = ""
+    program_relay_max: int = 4
+    program_relay_allowed_hosts: str = "a.rtmps.youtube.com,b.rtmps.youtube.com"
 
     @property
     def effective_jitsi_base_url(self) -> str:
@@ -65,9 +80,6 @@ class Settings(BaseSettings):
     # Database — SQLite for dev, PostgreSQL for prod
     database_url: str = "sqlite+aiosqlite:///./interpretation.db"
 
-    # Admin panel — simple password guard (Phase 3 Step 7 will add proper auth)
-    admin_password: str = ""
-
     @property
     def effective_jwt_secret(self) -> str:
         return self.jwt_secret or self.secret_key
@@ -86,6 +98,23 @@ class Settings(BaseSettings):
                 "SECRET_KEY (or JWT_SECRET) is set to a known-weak default value. "
                 "Set a strong random value before running in production. "
                 "Generate one with: openssl rand -hex 32"
+            )
+        if not self.mediamtx_auth_hook_secret:
+            raise RuntimeError(
+                "MEDIAMTX_AUTH_HOOK_SECRET is not set. Configure the same random value for "
+                "the portal and MediaMTX. Generate one with: openssl rand -hex 32"
+            )
+        booth_access_token = self.booth_access_token.strip()
+        if booth_access_token in {"", "change-me", "secret", "your-secret-key"} or len(booth_access_token) < 32:
+            raise RuntimeError(
+                "BOOTH_ACCESS_TOKEN is not configured with a strong value. "
+                "Set a secret access token before exposing legacy API endpoints in production. "
+                "Generate one with: openssl rand -hex 32"
+            )
+        if self.program_relay_enabled and len(self.program_relay_control_secret) < 32:
+            raise RuntimeError(
+                "PROGRAM_RELAY_ENABLED requires PROGRAM_RELAY_CONTROL_SECRET (at least 32 characters), "
+                "shared with the program-relay service. Generate one with: openssl rand -hex 32"
             )
 
     # Transcription Settings

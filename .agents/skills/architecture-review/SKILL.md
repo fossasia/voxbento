@@ -59,7 +59,7 @@ description: Use this skill to evaluate proposed architecture changes against Vo
 - Role enforcement: role is always from `session.granted_role`, never from client `data['role']`.
 
 ### Does this change auth?
-- Three separate token types exist (`session_token`, `user_token`, `admin_token`). Do not conflate.
+- Two token types exist (`session_token`, `user_token`). Do not conflate their scopes.
 - All tokens use HS256 with `settings.effective_jwt_secret`.
 - WebSocket auth: cookies are read at connect time and stored in `Session.granted_role`.
 

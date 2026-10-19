@@ -1,7 +1,7 @@
 # VoxBento — Route Map
 
 > All HTTP and WebSocket routes are now modularized in `portal/routers/` and `portal/websockets/`.
-> Auth column: `user` = user_token cookie; `admin` = admin_token cookie; `session` = session_token cookie; `open` = no auth required; `token/Bearer` = optional legacy token guard.
+> Auth column: `user` = user_token cookie; `session` = session_token cookie; `open` = no auth required; `token/Bearer` = optional legacy token guard.
 
 ---
 
@@ -9,7 +9,7 @@
 
 | Method | Path | Auth | Template | Notes |
 |---|---|---|---|---|
-| GET | `/` | open | `home.html` | Lists events + booth statuses; personalised if logged in |
+| GET | `/` | open | `home.html` | Landing page; no event or booth lists; navbar links personalised if logged in |
 | GET | `/local` | open | `local.html` | VoxBento Local desktop console download page with client OS detection & release links |
 | GET | `/healthz` | open | — | JSON: `{ok, server, mediamtx_ok}` |
 | GET | `/register` | open | `register.html` | Redirects to `/account` if already logged in |
@@ -36,13 +36,13 @@
 
 | Method | Path | Auth | Returns | Notes |
 |---|---|---|---|---|
-| POST | `/api/auth/token` | token (body) | `{access_token, token_type}` | Issues bearer JWT if BOOTH_ACCESS_TOKEN matches |
-| GET | `/api/booth/{booth_id}/state` | token/Bearer | booth state dict | Legacy; auto-creates booth in memory |
-| GET | `/api/booth/{booth_id}/whip-url` | token/Bearer | `{whip_url, channel_id, booth_id}` | Layer-2 active-interpreter enforcement |
-| POST | `/api/events/{event_slug}/booths` | token/Bearer | booth state + whip/whep URLs | Creates in-memory booth; returns 201 |
-| GET | `/api/events/{event_slug}/booths` | token/Bearer | `{event_slug, booths:[…]}` | Lists all in-memory booths for event |
-| GET | `/api/events/{event_slug}/booths/{language_code}/state` | token/Bearer | booth state dict | 404 if booth not in memory |
-| GET | `/api/events/{event_slug}/booths/{language_code}/whip-url` | token/Bearer | `{whip_url, channel_id, booth_id}` | Validates event ownership first |
+| POST | `/api/auth/token` | `BOOTH_ACCESS_TOKEN` (body) | `{access_token, token_type}` | Issues a globally scoped legacy API JWT; production requires the credential |
+| GET | `/api/booth/{booth_id}/state` | configured token/Bearer | booth state dict | Legacy; protected in production |
+| GET | `/api/booth/{booth_id}/whip-url` | configured token/Bearer | `{whip_url, channel_id, booth_id}` | Layer-2 active-interpreter enforcement |
+| POST | `/api/events/{event_slug}/booths` | configured token/Bearer | booth state + whip/whep URLs | Creates in-memory booth; returns 201; production protected |
+| GET | `/api/events/{event_slug}/booths` | configured token/Bearer | `{event_slug, booths:[…]}` | Lists all in-memory booths for event; production protected |
+| GET | `/api/events/{event_slug}/booths/{language_code}/state` | configured token/Bearer | booth state dict | 404 if booth not in memory; production protected |
+| GET | `/api/events/{event_slug}/booths/{language_code}/whip-url` | configured token/Bearer | `{whip_url, channel_id, booth_id}` | Validates event ownership first; production protected |
 | GET | `/api/interpreter/status/{channel_id:path}` | open | `{channel_id, state, reachable}` | MediaMTX reachability (preflight check) |
 
 ---
@@ -59,17 +59,16 @@
 
 ## Management Surfaces (`/workspace/*` and `/admin/*`)
 
-`/workspace/*` is the canonical event-management surface for event owners. Room coordinators use `/mission-control/*`, which filters the operational view to their assigned rooms. `/admin/*` is reserved for super admins, apart from legacy room-scoped coordinator handlers retained for compatibility. The paths in the table below name the shared `/admin` handler routes; current event-management paths have explicit event-owner mappings formed by replacing `/admin` with `/workspace`. Likewise, the listed `/api/admin/providers/...` and `/api/admin/events/...` routes have explicit `/api/workspace/...` event-owner mappings. New admin routes are not exposed through the workspace unless they are added to that allowlist.
+`/workspace/*` is the canonical event-management surface for event owners. Room coordinators use `/mission-control/*`, which filters the operational view to their assigned rooms. `/admin/*` is reserved for super admins, apart from legacy room-scoped coordinator handlers retained for compatibility. All admin and workspace routes require a `user_token` with `is_admin=True`, or the appropriate `event_owner` / `room_coordinator` membership for scoped routes. The paths in the table below name the shared `/admin` handler routes; current event-management paths have explicit event-owner mappings formed by replacing `/admin` with `/workspace`. Likewise, the listed `/api/admin/providers/...` and `/api/admin/events/...` routes have explicit `/api/workspace/...` event-owner mappings. New admin routes are not exposed through the workspace unless they are added to that allowlist.
 
 Legacy organizer requests to allowlisted event-management paths under `/admin/`, `/admin/events...`, `/admin/setup...`, or their management API equivalents receive a `307` redirect to the matching workspace URL. The redirect preserves the HTTP method and query string. System-only and unknown routes, including `/admin/users/`, `/admin/developer-accounts`, and `/admin/login`, have no workspace equivalent. OAuth routes under `/oauth/*` are unchanged. General workspace entry points such as the dashboard and setup require ownership of at least one event; routes containing `{event_id}` require ownership of that specific event.
 
 | Method | Path | Template | Notes |
 |---|---|---|---|
-| GET | `/admin/login` | `admin/login.html` | Redirects to `/admin/` if already admin |
-| POST | `/admin/login` | — | Sets `admin_token` cookie → `/admin/` |
-| GET | `/admin/logout` | — | Deletes `admin_token` → `/admin/login` |
+| GET | `/admin/login` | — | `303` → `/login?next=/admin/` (admins use the shared sign-in page) |
+| GET | `/admin/logout` | — | Deletes session cookies → `/login` |
 | GET | `/admin/` or `/workspace/` | `admin/dashboard.html` | System-wide events for super admins; accessible events for organizers |
-| GET | `/admin/events/` | `admin/event_list.html` | — |
+| GET | `/admin/events/` | `admin/event_list.html` | Search by event slug or display name with `?search=`; blank queries show all events; `%` and `_` are literal; pagination URL-encodes the term and clamps out-of-range pages |
 | POST | `/admin/events/` | — | Creates event (slug + display_name) |
 | GET | `/admin/events/{event_id}/` | `admin/event_detail.html` | Event + rooms + booths |
 | GET | `/admin/events/{event_id}/api-settings/` | `admin/api_settings.html` | View encrypted API keys |
@@ -79,7 +78,7 @@ Legacy organizer requests to allowlisted event-management paths under `/admin/`,
 | POST | `/admin/events/{event_id}/rooms/` | — | Creates room; auto-generates Jitsi URL |
 | GET | `/admin/events/{event_id}/rooms/{room_id}/` | `admin/room_detail.html` | Room + booths |
 | POST | `/admin/events/{event_id}/rooms/{room_id}/edit` | — | Updates jitsi_url + relay_booth_id |
-| POST | `/admin/events/{event_id}/rooms/{room_id}/delete` | — | Deletes room |
+| POST | `/admin/events/{event_id}/rooms/{room_id}/delete` | — | Deletes room and dependent data only if room belongs to path event; 404 on missing/mismatched room |
 | GET | `/admin/events/{event_id}/rooms/{room_id}/booths/` | `admin/booth_list.html` | — |
 | POST | `/admin/events/{event_id}/rooms/{room_id}/booths/` | — | Creates DBBooth |
 | GET | `/admin/events/{event_id}/rooms/{room_id}/booths/{booth_id}/` | `admin/booth_detail.html` | DB + live state, tokens, members |
@@ -115,3 +114,55 @@ Legacy organizer requests to allowlisted event-management paths under `/admin/`,
 | `portal/websockets/manager.py` | `ws_booth` and `ws_captions` endpoints |
 | `portal/websockets/handlers.py` | Specific `_handle_*` logic for WS messages |
 | `fastapi_app.py` | Application lifespan, router include aggregation |
+
+## Program ingest routes (#690)
+
+- `POST /internal/media-auth`: private MediaMTX callback only, blocked by Caddy;
+  requires the shared `MEDIAMTX_AUTH_HOOK_SECRET`, then checks canonical floor
+  identity, source mode, digest, expiry, capacity and per-IP failure rate. Other
+  legacy interpreter paths are unchanged.
+- `GET/POST /workspace/events/{event_id}/rooms/{room_id}/program-ingest`:
+  event-owner controls/status, mapped to shared `/admin/...` handlers. No-store;
+  rotate/enable responses reveal a new token once. POST supports enable, rotate,
+  revoke, disable and sync. Revoke returns 202 with `cleanup_pending` when the
+  credential is invalidated but MediaMTX cleanup must be retried.
+  `portal/routers/program_ingest.py` owns both routes.
+- Existing floor-bot start/stop returns 409 while program ingest owns the room.
+
+## Program relay routes (#749)
+
+- `POST .../program-ingest` also accepts `mode` (`whip` | `rtmps_relay`) on enable;
+  relay-mode enable/rotate responses add `stream_key` (`floor?key=<secret>`). Status
+  adds `mode`, `relay_available`, `rtmps_server`, write-only `destination`
+  (`configured`, `server_url`, `updated_at`) and `health.{ingest,relay,processing}`.
+- `PUT/DELETE /workspace/events/{event_id}/rooms/{room_id}/program-relay`: event-owner,
+  origin-checked. PUT `{server_url, stream_key}` validates RTMPS + allow-listed host and
+  stores the key encrypted (422 invalid, 409 relay disabled). DELETE clears it and stops
+  the relay (202 + `cleanup_pending` if the relay service is unreachable).
+- `/internal/media-auth` accepts `protocol: rtmp` only for relay-mode rooms with query
+  exactly `key=<secret>`; WHIP is refused for relay-mode rooms.
+- `program-relay` service (private, `Authorization: Bearer $PROGRAM_RELAY_CONTROL_SECRET`):
+  `GET /relays`, `PUT /relays/{room_id}` `{source, destination, fingerprint}`,
+  `DELETE /relays/{room_id}`, unauthenticated `GET /healthz`.
+
+## Meeting source routes (#747)
+
+- `GET/POST /workspace/events/{event_id}/rooms/{room_id}/meeting-source`:
+  event-owner status and controls, mapped to shared `/admin/...` handlers in
+  `portal/routers/meeting_source.py`. POST `{action: connect|disconnect,
+  meeting_url?, confirm_source_change?}`. Connect returns 422 for an invalid URL,
+  409 `{code: source_conflict}` while program ingest owns the floor (retry with
+  `confirm_source_change: true`), and 502 when the floor-bot service is
+  unreachable. Disconnect returns 202 with `cleanup_pending` if the agent stop
+  must be retried. Responses never include the meeting URL.
+- `POST /api/rooms/{room_id}/floor-transcription/start|stop` and
+  `GET .../status` (room coordinators and owners) delegate to the same managed
+  lifecycle. Start no longer launches the transcription worker directly; the
+  reconcile loop starts it once audio arrives. Stop returns 202 with
+  `cleanup_pending` when the agent could not be confirmed stopped. Status keeps
+  the legacy `running`, `stage` and `bot_reachable` fields with their original
+  meaning: `stage` is the raw floor-bot stage (`launching`, `in_meeting`, `dead`, …;
+  `unknown` when the service is unreachable); the managed lifecycle is in `state`.
+
+`POST /login` requires verified email and uses the `login` rate-limit bucket:
+10 attempts per normalized email per hour. There is no separate admin sign-in form.

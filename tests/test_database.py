@@ -7,7 +7,9 @@ existing test suite.
 
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
+from unittest.mock import AsyncMock, patch
 
 import pytest
 import sqlalchemy as sa
@@ -17,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 # Because portal.database uses a module-level engine tied to settings,
 # we import the functions and call them with our test session.
 from portal.database import (
+    count_users,
     create_booth,
     create_event,
     create_invite_token,
@@ -26,6 +29,7 @@ from portal.database import (
     delete_event,
     delete_room,
     get_booth_by_id,
+    get_booth_language_name,
     get_event_by_id,
     get_event_by_slug,
     get_invite_token,
@@ -1261,6 +1265,23 @@ async def test_list_users_pagination(db: AsyncSession):
     assert users[0].email == "u1@test.com"
 
 
+@pytest.mark.anyio
+async def test_user_search_matches_wildcard_characters_literally(db: AsyncSession):
+    await create_user(db, email="ann_lee@test.com", display_name="Ann Lee", password_hash="x")
+    await create_user(db, email="annxlee@test.com", display_name="Annx Lee", password_hash="x")
+    await create_user(db, email="sale@test.com", display_name="50% off", password_hash="x")
+
+    users = await list_users(db, search="ann_lee")
+    assert [u.email for u in users] == ["ann_lee@test.com"]
+    assert await count_users(db, search="ann_lee") == 1
+
+    users = await list_users(db, search="50%")
+    assert [u.email for u in users] == ["sale@test.com"]
+    assert await count_users(db, search="%") == 1
+
+    assert await count_users(db, search="Lee") == 2
+
+
 async def _create_users_joined_at(db: AsyncSession, joined: list[datetime]) -> list[int]:
     ids = []
     for i, created_at in enumerate(joined):
@@ -1306,8 +1327,93 @@ async def test_list_users_pages_through_created_at_ties_without_gaps(db: AsyncSe
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("unsupported_sort", ["__repr__", "unknown_field"])
+async def test_list_users_unsupported_sort_by_falls_back_to_created_at(db: AsyncSession, unsupported_sort: str):
+    base = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    # Day 2, Day 0, Day 1, Day 1 (tied dates to verify id tie-breaker)
+    ids = await _create_users_joined_at(
+        db, [base + timedelta(days=2), base, base + timedelta(days=1), base + timedelta(days=1)]
+    )
+
+    users = await list_users(db, sort_by=unsupported_sort, sort_order="desc")
+
+    # In descending order: day 2 (ids[0]), day 1 tie-broken by id desc (ids[3] before ids[2]), day 0 (ids[1])
+    assert [u.id for u in users] == [ids[0], ids[3], ids[2], ids[1]]
+
+
+@pytest.mark.anyio
+async def test_list_users_valid_sort_by_column(db: AsyncSession):
+    await create_user(db, email="beta@example.com", display_name="User B")
+    await create_user(db, email="alpha@example.com", display_name="User A")
+    await db.flush()
+
+    users = await list_users(db, sort_by="email", sort_order="asc")
+    emails = [u.email for u in users]
+    assert emails.index("alpha@example.com") < emails.index("beta@example.com")
+
+
+@pytest.mark.anyio
 async def test_list_events_default_limit_does_not_break(db: AsyncSession):
     for i in range(3):
         await create_event(db, slug=f"ev-def-{i}", display_name=f"Ev {i}")
     events = await list_events(db)
     assert len(events) == 3
+
+
+# ---------------------------------------------------------------------------
+# get_booth_language_name
+# ---------------------------------------------------------------------------
+
+
+class TestGetBoothLanguageName:
+    """Unit tests for get_booth_language_name."""
+
+    @pytest.mark.anyio
+    async def test_returns_language_name_when_booth_exists(self):
+        """Verify that resolved language name is returned when booth exists."""
+        mock_session = AsyncMock()
+        mock_session.scalar.return_value = "Japanese"
+
+        @asynccontextmanager
+        async def mock_get_session():
+            """Mock database session context manager."""
+            yield mock_session
+
+        with patch("portal.database.get_session", side_effect=mock_get_session):
+            res = await get_booth_language_name("pycon2026-1-ja")
+            assert res == "Japanese"
+
+    @pytest.mark.anyio
+    async def test_returns_none_when_booth_not_found(self):
+        """Verify that None is returned when booth is not found in database."""
+        mock_session = AsyncMock()
+        mock_session.scalar.return_value = None
+
+        @asynccontextmanager
+        async def mock_get_session():
+            """Mock database session context manager."""
+            yield mock_session
+
+        with patch("portal.database.get_session", side_effect=mock_get_session):
+            res = await get_booth_language_name("pycon2026-1-ja")
+            assert res is None
+
+    @pytest.mark.anyio
+    async def test_returns_none_on_invalid_booth_id(self):
+        """Verify that None is returned when booth_id cannot be parsed."""
+        res = await get_booth_language_name("invalid-booth-id")
+        assert res is None
+
+    @pytest.mark.anyio
+    async def test_returns_none_on_db_exception(self):
+        """Verify that None is returned when database lookup raises an exception."""
+
+        @asynccontextmanager
+        async def mock_get_session():
+            """Mock database session context manager raising an exception."""
+            raise RuntimeError("DB connection error")
+            yield  # pragma: no cover
+
+        with patch("portal.database.get_session", side_effect=mock_get_session):
+            res = await get_booth_language_name("pycon2026-1-ja")
+            assert res is None

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import urllib.parse
 from pathlib import Path
 from typing import Any
 
@@ -35,15 +36,15 @@ async def _send_email_async(
     subject: str,
     template_name: str,
     template_body: dict[str, Any],
-) -> None:
+) -> bool:
     if not _mail_config:
         logger.warning(
-            "SMTP is not configured. Would have sent email to %s (subject: %s) with context %r",
+            "SMTP is not configured. Would have sent email to %s (subject: %s, template: %s)",
             email_to,
             subject,
-            template_body,
+            template_name,
         )
-        return
+        return True
 
     message = MessageSchema(
         subject=subject,
@@ -54,13 +55,15 @@ async def _send_email_async(
     fm = FastMail(_mail_config)
     try:
         await fm.send_message(message, template_name=template_name)
+        return True
     except Exception as exc:
         logger.error("Failed to send email to %s: %s", email_to, exc, exc_info=True)
+        return False
 
 
-async def send_verification_email(email_to: str, token: str) -> None:
+async def send_verification_email(email_to: str, token: str) -> bool:
     verification_link = f"{settings.public_base_url}/auth/verify/{token}"
-    await _send_email_async(
+    return await _send_email_async(
         email_to=email_to,
         subject="Verify your VoxBento account",
         template_name="verification.html",
@@ -68,9 +71,11 @@ async def send_verification_email(email_to: str, token: str) -> None:
     )
 
 
-async def send_magic_login_email(email_to: str, token: str) -> None:
+async def send_magic_login_email(email_to: str, token: str, next_url: str = "") -> bool:
     magic_link = f"{settings.public_base_url}/auth/magic/{token}"
-    await _send_email_async(
+    if next_url:
+        magic_link += f"?next={urllib.parse.quote(next_url)}"
+    return await _send_email_async(
         email_to=email_to,
         subject="Sign in to VoxBento",
         template_name="magic_link.html",
@@ -97,5 +102,28 @@ async def send_role_invite_email(email_to: str, invite_url: str, role_name: str,
             "role_name": role_name,
             "context_name": context_name,
             "invite_url": invite_url,
+        },
+    )
+
+
+async def send_hosting_invite_email(email_to: str, invite_url: str, is_existing_user: bool = False) -> None:
+    await _send_email_async(
+        email_to=email_to,
+        subject="You've been invited to host events on VoxBento",
+        template_name="hosting_invite.html",
+        template_body={
+            "invite_url": invite_url,
+            "is_existing_user": is_existing_user,
+        },
+    )
+
+
+async def send_hosting_granted_email(email_to: str, login_url: str) -> None:
+    await _send_email_async(
+        email_to=email_to,
+        subject="Hosting access granted on VoxBento",
+        template_name="hosting_granted.html",
+        template_body={
+            "login_url": login_url,
         },
     )

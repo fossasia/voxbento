@@ -16,7 +16,6 @@ These variables must be set before running Voxbento in any non-trivial environme
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `ADMIN_PASSWORD` | _(none)_ | Password for the admin panel at `/admin/login`. Leave empty to disable admin login entirely. Required to access all admin features. |
 | `SECRET_KEY` | `change-me` | JWT signing key used to sign and verify session tokens. Use 64 or more random characters in production. Never use the default value in a live deployment. |
 | `API_KEY_ENCRYPTION_KEY` | _(none)_ | 32-character minimum key used to encrypt third-party API keys (e.g. cloud transcription credentials) at rest in the database. Required if you use any cloud transcription provider. |
 
@@ -32,7 +31,7 @@ These variables control JWT token behavior and legacy endpoint access.
 | --- | --- | --- |
 | `JWT_SECRET` | _(falls back to `SECRET_KEY`)_ | A separate JWT signing secret. Leave this empty to reuse `SECRET_KEY` for JWT signing — the recommended approach unless you need independent rotation. |
 | `JWT_EXPIRY_SECONDS` | `86400` | Session token lifetime in seconds. The default is 24 hours. Reduce this value for higher-security deployments or increase it for longer interpreter sessions. |
-| `BOOTH_ACCESS_TOKEN` | _(none)_ | Static bearer token for the legacy `/api/auth/token` endpoint. Only set this if you are integrating an older client that cannot use the standard invite-token flow. |
+| `BOOTH_ACCESS_TOKEN` | _(none)_ | Required in production for the legacy `/api/auth/token` endpoint and protected legacy `/api/events/...` routes. Generate it with `openssl rand -hex 32`; it has global scope across those legacy endpoints, so share it only with trusted integrations. It may be empty for local debug-mode development. |
 
 ## Media Server Variables
 
@@ -75,6 +74,8 @@ These variables configure how Voxbento talks to MediaMTX and other local Docker 
 | `MEDIAMTX_API_BASE` | `http://localhost:9997` | MediaMTX Control API URL. |
 | `MEDIAMTX_RTSP_BASE` | `rtsp://mediamtx:8554` | Internal RTSP URL for floor audio transcription. |
 | `FLOOR_BOT_BASE` | `http://floor-bot:8080` | URL for the floor-bot container. |
+| `MEETING_AGENT_MAX_RESTARTS` | `5` | Automatic meeting-agent restarts per incident before the room reports **Needs attention**. |
+| `MEETING_AGENT_NO_AUDIO_SECS` | `45` | Seconds a joined agent may go without delivering audio to MediaMTX before it is restarted. |
 | `JITSI_INTERNAL_BASE` | `https://jitsi-web:8443` in Compose | Internal HTTPS URL used by the floor bot. Jitsi `stable-11146` and newer listen on the unprivileged container port `8443`. |
 
 ## Jitsi Internal Auth Variables
