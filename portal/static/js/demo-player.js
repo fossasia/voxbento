@@ -73,6 +73,14 @@ function setupDemo(manifest) {
         if (!audioEls.has(lang.code)) {
             const a = new Audio(lang.audio_url);
             a.preload = "auto";
+
+            a.addEventListener("ended", () => {
+                if (activeCode !== lang.code) return;
+
+                setPlayState(false);
+                stopCaptionTimer();
+            });
+
             audioEls.set(lang.code, a);
         }
         langSegments.set(lang.code, lang.segments || []);
