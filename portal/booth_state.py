@@ -15,6 +15,7 @@ from portal.booth_identity import (
     validate_instance,
     validate_language_code,
 )
+from portal.tasks import track_task
 
 ParticipantRole = Literal[
     "super_admin",
@@ -291,8 +292,10 @@ class BoothRegistry:
 
             import portal.webhooks.worker as _wh
 
-            asyncio.create_task(
-                _wh.enqueue_webhook("session.status_changed", {"booth_id": booth_id, "is_active": unlocked})
+            track_task(
+                asyncio.create_task(
+                    _wh.enqueue_webhook("session.status_changed", {"booth_id": booth_id, "is_active": unlocked})
+                )
             )
 
             return booth.as_public_dict()
@@ -486,6 +489,11 @@ class BoothRegistry:
             participant = booth.participants.get(participant_id)
             if participant is None:
                 raise ValueError("Participant does not exist in booth.")
+            # Reject non-boolean flags so a truthy value like 1 or "true" cannot slip
+            # past the publisher permission checks below (which compare with `is True`).
+            for name, value in (("mic_active", mic_active), ("ingest_connected", ingest_connected), ("connected", connected)):
+                if value is not None and not isinstance(value, bool):
+                    raise ValueError(f"{name} must be a boolean.")
             from portal.roles import Permission, has_permission
 
             wants_publisher_state = mic_active is True or ingest_connected is True

@@ -36,13 +36,13 @@
 
 | Method | Path | Auth | Returns | Notes |
 |---|---|---|---|---|
-| POST | `/api/auth/token` | token (body) | `{access_token, token_type}` | Issues bearer JWT if BOOTH_ACCESS_TOKEN matches |
-| GET | `/api/booth/{booth_id}/state` | token/Bearer | booth state dict | Legacy; auto-creates booth in memory |
-| GET | `/api/booth/{booth_id}/whip-url` | token/Bearer | `{whip_url, channel_id, booth_id}` | Layer-2 active-interpreter enforcement |
-| POST | `/api/events/{event_slug}/booths` | token/Bearer | booth state + whip/whep URLs | Creates in-memory booth; returns 201 |
-| GET | `/api/events/{event_slug}/booths` | token/Bearer | `{event_slug, booths:[…]}` | Lists all in-memory booths for event |
-| GET | `/api/events/{event_slug}/booths/{language_code}/state` | token/Bearer | booth state dict | 404 if booth not in memory |
-| GET | `/api/events/{event_slug}/booths/{language_code}/whip-url` | token/Bearer | `{whip_url, channel_id, booth_id}` | Validates event ownership first |
+| POST | `/api/auth/token` | `BOOTH_ACCESS_TOKEN` (body) | `{access_token, token_type}` | Issues a globally scoped legacy API JWT; production requires the credential |
+| GET | `/api/booth/{booth_id}/state` | configured token/Bearer | booth state dict | Legacy; protected in production |
+| GET | `/api/booth/{booth_id}/whip-url` | configured token/Bearer | `{whip_url, channel_id, booth_id}` | Layer-2 active-interpreter enforcement |
+| POST | `/api/events/{event_slug}/booths` | configured token/Bearer | booth state + whip/whep URLs | Creates in-memory booth; returns 201; production protected |
+| GET | `/api/events/{event_slug}/booths` | configured token/Bearer | `{event_slug, booths:[…]}` | Lists all in-memory booths for event; production protected |
+| GET | `/api/events/{event_slug}/booths/{language_code}/state` | configured token/Bearer | booth state dict | 404 if booth not in memory; production protected |
+| GET | `/api/events/{event_slug}/booths/{language_code}/whip-url` | configured token/Bearer | `{whip_url, channel_id, booth_id}` | Validates event ownership first; production protected |
 | GET | `/api/interpreter/status/{channel_id:path}` | open | `{channel_id, state, reachable}` | MediaMTX reachability (preflight check) |
 
 ---
@@ -78,7 +78,7 @@ Legacy organizer requests to allowlisted event-management paths under `/admin/`,
 | POST | `/admin/events/{event_id}/rooms/` | — | Creates room; auto-generates Jitsi URL |
 | GET | `/admin/events/{event_id}/rooms/{room_id}/` | `admin/room_detail.html` | Room + booths |
 | POST | `/admin/events/{event_id}/rooms/{room_id}/edit` | — | Updates jitsi_url + relay_booth_id |
-| POST | `/admin/events/{event_id}/rooms/{room_id}/delete` | — | Deletes room |
+| POST | `/admin/events/{event_id}/rooms/{room_id}/delete` | — | Deletes room and dependent data only if room belongs to path event; 404 on missing/mismatched room |
 | GET | `/admin/events/{event_id}/rooms/{room_id}/booths/` | `admin/booth_list.html` | — |
 | POST | `/admin/events/{event_id}/rooms/{room_id}/booths/` | — | Creates DBBooth |
 | GET | `/admin/events/{event_id}/rooms/{room_id}/booths/{booth_id}/` | `admin/booth_detail.html` | DB + live state, tokens, members |
@@ -128,6 +128,22 @@ Legacy organizer requests to allowlisted event-management paths under `/admin/`,
   credential is invalidated but MediaMTX cleanup must be retried.
   `portal/routers/program_ingest.py` owns both routes.
 - Existing floor-bot start/stop returns 409 while program ingest owns the room.
+
+## Program relay routes (#749)
+
+- `POST .../program-ingest` also accepts `mode` (`whip` | `rtmps_relay`) on enable;
+  relay-mode enable/rotate responses add `stream_key` (`floor?key=<secret>`). Status
+  adds `mode`, `relay_available`, `rtmps_server`, write-only `destination`
+  (`configured`, `server_url`, `updated_at`) and `health.{ingest,relay,processing}`.
+- `PUT/DELETE /workspace/events/{event_id}/rooms/{room_id}/program-relay`: event-owner,
+  origin-checked. PUT `{server_url, stream_key}` validates RTMPS + allow-listed host and
+  stores the key encrypted (422 invalid, 409 relay disabled). DELETE clears it and stops
+  the relay (202 + `cleanup_pending` if the relay service is unreachable).
+- `/internal/media-auth` accepts `protocol: rtmp` only for relay-mode rooms with query
+  exactly `key=<secret>`; WHIP is refused for relay-mode rooms.
+- `program-relay` service (private, `Authorization: Bearer $PROGRAM_RELAY_CONTROL_SECRET`):
+  `GET /relays`, `PUT /relays/{room_id}` `{source, destination, fingerprint}`,
+  `DELETE /relays/{room_id}`, unauthenticated `GET /healthz`.
 
 ## Meeting source routes (#747)
 

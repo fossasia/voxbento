@@ -8,6 +8,11 @@ import Tabs from "@theme/Tabs";
 import TabItem from "@theme/TabItem";
 
 
+## Legacy API authentication
+
+Trusted integrations can exchange the production `BOOTH_ACCESS_TOKEN` at `/api/auth/token` for a legacy API JWT. The credential and resulting JWT have global scope across the applicable protected `/api/events/...` endpoints, not event-specific scope, so operators should generate the credential with `openssl rand -hex 32` and share it only with trusted integrations. This global credential does not grant access to unrelated application routes or bypass separate authorization checks; participant tokens, user JWTs, and event-scoped API keys remain subject to their own event, room, and language scopes.
+
+
 Voxbento is built on a single guiding principle: the audio path should be as short and as direct as possible. Rather than routing interpreter microphone audio through application servers, Voxbento sends audio straight from the interpreter's browser to MediaMTX — an open-source media server — and from there straight to each listener's browser. The Voxbento coordination portal sits alongside that path to handle coordination, but it never touches the audio itself.
 
 ## The Interpretation Pipeline
@@ -80,6 +85,8 @@ Event management and system administration use separate public URL namespaces:
 - `/admin/...` is reserved for `super_admin` users and contains system-wide views such as user and developer-account management.
 
 Both namespaces use the same underlying management handlers, so the route split does not duplicate event-management behavior. Existing organizer bookmarks under `/admin/events/...` receive a temporary redirect to the corresponding workspace URL with their query string and HTTP method preserved. The OAuth routes remain under `/oauth/...`; shared-organizer authorization and token lifecycle behavior are therefore unchanged.
+
+Room deletion checks that the requested room belongs to the event specified in the workspace URL before removing it and its dependent booths, invites, and memberships. An unknown room or a room from another event returns HTTP 404 without deleting any data.
 
 ## The Transcription & Translation Pipeline
 
@@ -241,6 +248,20 @@ manual synchronization, not shared encoder timecode.
 
 See the repository's `docs/program-stream-ingest.md` for rollout, security limits,
 encoder compatibility, capacity and the required two-destination rehearsal.
+
+### RTMPS relay mode
+
+A room can choose relay mode instead: the encoder sends a single RTMPS stream
+(H.264 + AAC) to MediaMTX on the same canonical floor path, authorized per room by
+the same callback with a stream key bound to the RTMPS transport. A dedicated
+`program-relay` service pulls the floor over private RTSP and pushes it with
+`ffmpeg -c copy` to the room's YouTube RTMPS destination, while the existing
+pipeline consumes the audio. The portal reconciler drives the relay service over an
+authenticated control API and stops relays on revoke, source switch, destination
+removal or restart; it enforces a fail-closed relay cap. The YouTube key is
+Fernet-encrypted at rest and write-only. Ingest, relay and language-processing
+health are reported separately. Relay mode puts VoxBento in the YouTube path, so
+the independent WHIP mode remains the default. See `docs/program-relay.md`.
 
 ## Production deployment
 

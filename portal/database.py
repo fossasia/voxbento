@@ -70,6 +70,8 @@ def _get_engine():
             def set_sqlite_pragma(dbapi_connection, connection_record):
                 cursor = dbapi_connection.cursor()
                 cursor.execute("PRAGMA foreign_keys=ON")
+                cursor.execute("PRAGMA busy_timeout=5000")
+                cursor.execute("PRAGMA journal_mode=WAL")
                 cursor.close()
 
         _async_session_factory = async_sessionmaker(_engine, expire_on_commit=False)
@@ -99,6 +101,8 @@ def configure(url: str, *, echo: bool = False) -> None:
         def set_sqlite_pragma(dbapi_connection, connection_record):
             cursor = dbapi_connection.cursor()
             cursor.execute("PRAGMA foreign_keys=ON")
+            cursor.execute("PRAGMA busy_timeout=5000")
+            cursor.execute("PRAGMA journal_mode=WAL")
             cursor.close()
 
     _async_session_factory = async_sessionmaker(_engine, expire_on_commit=False)
@@ -151,11 +155,28 @@ async def drop_db() -> None:
 # ---------------------------------------------------------------------------
 
 
-async def create_event(session: AsyncSession, *, slug: str, display_name: str) -> Event:
+async def create_event(
+    session: AsyncSession,
+    *,
+    slug: str,
+    display_name: str,
+    owner_user_id: int | None = None,
+) -> Event:
     ev = Event(slug=slug, display_name=display_name)
     session.add(ev)
     await session.flush()
+    if owner_user_id is not None:
+        membership = EventMembership(
+            event_id=ev.id,
+            user_id=owner_user_id,
+            role="event_owner",
+        )
+        session.add(membership)
+        await session.flush()
     return ev
+
+
+create_event_with_owner = create_event
 
 
 async def get_event_by_slug(session: AsyncSession, slug: str) -> Event | None:
@@ -288,7 +309,6 @@ async def list_rooms_for_event(
 
     result = await session.execute(query)
     return list(result.scalars().all())
-
 
 
 async def delete_room(session: AsyncSession, room_id: int) -> bool:
@@ -518,6 +538,9 @@ async def create_user(
     email_verified: bool = False,
     is_admin: bool = False,
     is_active: bool = True,
+    can_host: bool = False,
+    hosting_requested_at: datetime | None = None,
+    hosting_revoked_at: datetime | None = None,
 ) -> User:
     user = User(
         email=email.strip().lower(),
@@ -526,6 +549,9 @@ async def create_user(
         email_verified=email_verified,
         is_admin=is_admin,
         is_active=is_active,
+        can_host=can_host,
+        hosting_requested_at=hosting_requested_at,
+        hosting_revoked_at=hosting_revoked_at,
     )
     session.add(user)
     await session.flush()
@@ -570,7 +596,13 @@ async def get_user_by_id(session: AsyncSession, user_id: int) -> User | None:
 async def count_users(session: AsyncSession, search: str | None = None) -> int:
     stmt = select(func.count(User.id))
     if search:
-        stmt = stmt.where(or_(User.email.ilike(f"%{search}%"), User.display_name.ilike(f"%{search}%")))
+        search_pattern = f"%{escape_event_search_term(search)}%"
+        stmt = stmt.where(
+            or_(
+                User.email.ilike(search_pattern, escape="\\"),
+                User.display_name.ilike(search_pattern, escape="\\"),
+            )
+        )
     result = await session.execute(stmt)
     return result.scalar_one()
 
@@ -598,7 +630,13 @@ async def list_users(
     stmt = select(User)
 
     if search:
-        stmt = stmt.where(or_(User.email.ilike(f"%{search}%"), User.display_name.ilike(f"%{search}%")))
+        search_pattern = f"%{escape_event_search_term(search)}%"
+        stmt = stmt.where(
+            or_(
+                User.email.ilike(search_pattern, escape="\\"),
+                User.display_name.ilike(search_pattern, escape="\\"),
+            )
+        )
 
     sort_column = _USER_SORT_COLUMNS.get(sort_by, User.created_at)
     # Tie-break on id so rows sharing a sort value keep a stable order across pages.
@@ -839,11 +877,13 @@ async def revoke_invite_token(session: AsyncSession, token_str: str) -> InviteTo
 async def create_auth_token(
     session: AsyncSession,
     *,
-    jti: str,
     user_id: int,
     token_type: str,
+    jti: str | None = None,
     expires_in_seconds: int = 900,
 ) -> AuthToken:
+    if jti is None:
+        jti = generate_token()
     expires_at = datetime.now(tz=timezone.utc) + timedelta(seconds=expires_in_seconds)
     tok = AuthToken(
         jti=jti,
@@ -854,6 +894,35 @@ async def create_auth_token(
     session.add(tok)
     await session.flush()
     return tok
+
+
+async def revoke_auth_token(session: AsyncSession, *, jti: str) -> None:
+    """Invalidate one unused auth token by its identifier."""
+    await session.execute(
+        sa.update(AuthToken)
+        .where(AuthToken.jti == jti, AuthToken.used_at.is_(None))
+        .values(used_at=datetime.now(tz=timezone.utc))
+    )
+    await session.flush()
+
+
+async def revoke_auth_tokens(
+    session: AsyncSession,
+    *,
+    user_id: int,
+    token_type: str,
+    exclude_jti: str | None = None,
+) -> None:
+    """Invalidate unused auth tokens, optionally preserving one token."""
+    conditions = [
+        AuthToken.user_id == user_id,
+        AuthToken.token_type == token_type,
+        AuthToken.used_at.is_(None),
+    ]
+    if exclude_jti is not None:
+        conditions.append(AuthToken.jti != exclude_jti)
+    await session.execute(sa.update(AuthToken).where(*conditions).values(used_at=datetime.now(tz=timezone.utc)))
+    await session.flush()
 
 
 async def get_auth_token(session: AsyncSession, jti: str) -> AuthToken | None:

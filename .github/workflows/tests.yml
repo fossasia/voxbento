@@ -85,6 +85,138 @@ jobs:
           docker rm -f floor-bot-ci floor-bot-mtx || true
           docker network rm floor-bot-ci || true
 
+  # Real-media gate for RTMPS relay mode (#749): the pinned MediaMTX release calls the real
+  # /internal/media-auth hook; nothing is mocked between the encoder, MediaMTX and the relay.
+  program-relay-media:
+    name: program-relay-media (MediaMTX 1.18.2)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      API_KEY_ENCRYPTION_KEY: "ci-test-encryption-key-must-be-32-chars-long"
+      PROGRAM_RELAY_MEDIA_REQUIRED: "1"
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Set up Python 3.13
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+
+      - name: Install FFmpeg (libx264, AAC, TLS)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ffmpeg
+          ffmpeg -hide_banner -protocols | grep -qw rtmps
+          ffmpeg -hide_banner -encoders | grep -qw libx264
+
+      - name: Install pinned MediaMTX 1.18.2
+        run: |
+          mkdir -p "$RUNNER_TEMP/mediamtx"
+          curl -fsSL https://github.com/bluenviron/mediamtx/releases/download/v1.18.2/mediamtx_v1.18.2_linux_amd64.tar.gz \
+            | tar -xz -C "$RUNNER_TEMP/mediamtx"
+          "$RUNNER_TEMP/mediamtx/mediamtx" --version | grep -qx v1.18.2
+          echo "MEDIAMTX_TEST_BINARY=$RUNNER_TEMP/mediamtx/mediamtx" >> "$GITHUB_ENV"
+
+      - name: Sync dependencies (including dev)
+        run: uv sync --all-groups
+
+      - name: RTMPS auth, revoke, forwarding and destination-failure tests
+        run: uv run pytest tests/test_program_relay_media.py -v
+
+  # Builds the program-relay image and runs it with the production hardening from
+  # docker-compose.relay.yml: TLS verification, CA bundle, forwarding and cleanup.
+  program-relay-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      RELAY_CONTROL_SECRET: ci-program-relay-control-secret-0123456789abcdef
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Build program-relay image
+        run: docker build --platform linux/amd64 -t voxbento-program-relay-ci ./program-relay
+
+      - name: Create a CI CA, a CA-signed sink cert and an untrusted self-signed cert
+        run: |
+          CERTS="$RUNNER_TEMP/relay-certs"
+          mkdir -p "$CERTS/trusted" "$CERTS/untrusted"
+          openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 1 \
+            -subj "/CN=VoxBento CI CA" -keyout "$CERTS/ca.key" -out "$CERTS/ca.crt"
+          openssl req -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -subj "/CN=mtx" \
+            -keyout "$CERTS/trusted/server.key" -out "$RUNNER_TEMP/mtx.csr"
+          printf 'subjectAltName=DNS:mtx\nbasicConstraints=CA:FALSE\nextendedKeyUsage=serverAuth\n' > "$RUNNER_TEMP/mtx.ext"
+          openssl x509 -req -in "$RUNNER_TEMP/mtx.csr" -CA "$CERTS/ca.crt" -CAkey "$CERTS/ca.key" \
+            -CAcreateserial -days 1 -extfile "$RUNNER_TEMP/mtx.ext" -out "$CERTS/trusted/server.crt"
+          openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 1 \
+            -subj "/CN=mtx-untrusted" -addext "subjectAltName=DNS:mtx-untrusted" \
+            -keyout "$CERTS/untrusted/server.key" -out "$CERTS/untrusted/server.crt"
+          chmod -R a+rX "$CERTS"
+          cat > "$RUNNER_TEMP/mediamtx.yml" <<'YML'
+          logLevel: info
+          api: yes
+          apiAddress: :9997
+          authInternalUsers:
+            - user: any
+              pass:
+              ips: []
+              permissions:
+                - action: publish
+                - action: read
+                - action: api
+          rtspTransports: [tcp]
+          rtmp: yes
+          rtmpEncryption: strict
+          rtmpsAddress: :1936
+          rtmpServerKey: /certs/server.key
+          rtmpServerCert: /certs/server.crt
+          webrtc: no
+          hls: no
+          srt: no
+          paths:
+            all_others:
+          YML
+
+      - name: Start MediaMTX sinks and the hardened relay
+        run: |
+          docker network create relay-ci
+          for name in mtx mtx-untrusted; do
+            dir=trusted; [ "$name" = mtx-untrusted ] && dir=untrusted
+            docker run -d --name "$name" --network relay-ci \
+              -v "$RUNNER_TEMP/relay-certs/$dir:/certs:ro" \
+              -v "$RUNNER_TEMP/mediamtx.yml:/mediamtx.yml:ro" \
+              bluenviron/mediamtx:1.18.2
+          done
+          docker run -d --name relay --network relay-ci \
+            --read-only --tmpfs /tmp --cap-drop ALL --security-opt no-new-privileges:true \
+            -e RELAY_CONTROL_SECRET -e RELAY_SOURCE_BASE=rtsp://mtx:8554 \
+            -e RELAY_ALLOWED_HOSTS=mtx,mtx-untrusted -e RELAY_CA_FILE=/ci-ca/ca.crt \
+            -v "$RUNNER_TEMP/relay-certs/ca.crt:/ci-ca/ca.crt:ro" \
+            -v "$PWD/tests/program_relay_container_smoke.py:/smoke/program_relay_container_smoke.py:ro" \
+            voxbento-program-relay-ci
+          sleep 3
+          docker ps
+
+      - name: Verify FFmpeg, CA bundle, verified forwarding and lifecycle in the container
+        run: docker exec -e RELAY_CONTROL_SECRET relay python /smoke/program_relay_container_smoke.py
+
+      - name: Dump program-relay logs on failure
+        if: failure()
+        run: |
+          docker logs relay || true
+          docker logs mtx || true
+          docker logs mtx-untrusted || true
+
+      - name: Remove program-relay smoke containers
+        if: always()
+        run: |
+          docker rm -f relay mtx mtx-untrusted || true
+          docker network rm relay-ci || true
+
   # ── 1. Unit tests + lint (fast, no Docker) ───────────────────
   unit-tests:
     runs-on: ubuntu-latest
@@ -141,7 +273,7 @@ jobs:
       MEDIAMTX_API_PORT: 9997
       JITSI_HTTP_PORT: 8080
       SECRET_KEY: ci-test-secret-key-not-for-production
-      BOOTH_ACCESS_TOKEN: ci-test-token
+      BOOTH_ACCESS_TOKEN: ci-test-token-generated-with-openssl-rand-hex-32
       JVB_ADVERTISE_IPS: 127.0.0.1
       JITSI_DOMAIN: localhost:8080
       MEDIAMTX_WHIP_BASE: http://localhost:8889

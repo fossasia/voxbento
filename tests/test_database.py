@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 # Because portal.database uses a module-level engine tied to settings,
 # we import the functions and call them with our test session.
 from portal.database import (
+    count_users,
     create_booth,
     create_event,
     create_invite_token,
@@ -1262,6 +1263,23 @@ async def test_list_users_pagination(db: AsyncSession):
     users = await list_users(db, limit=3, offset=1)
     assert len(users) == 3
     assert users[0].email == "u1@test.com"
+
+
+@pytest.mark.anyio
+async def test_user_search_matches_wildcard_characters_literally(db: AsyncSession):
+    await create_user(db, email="ann_lee@test.com", display_name="Ann Lee", password_hash="x")
+    await create_user(db, email="annxlee@test.com", display_name="Annx Lee", password_hash="x")
+    await create_user(db, email="sale@test.com", display_name="50% off", password_hash="x")
+
+    users = await list_users(db, search="ann_lee")
+    assert [u.email for u in users] == ["ann_lee@test.com"]
+    assert await count_users(db, search="ann_lee") == 1
+
+    users = await list_users(db, search="50%")
+    assert [u.email for u in users] == ["sale@test.com"]
+    assert await count_users(db, search="%") == 1
+
+    assert await count_users(db, search="Lee") == 2
 
 
 async def _create_users_joined_at(db: AsyncSession, joined: list[datetime]) -> list[int]:

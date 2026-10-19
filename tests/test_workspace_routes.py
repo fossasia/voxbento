@@ -177,6 +177,38 @@ async def test_super_admin_retains_admin_namespace(organizer):
     assert f"/workspace/events/{organizer['event_id']}/rooms/" not in response.text
 
 
+@pytest.mark.parametrize("page", ["rooms/", "members/"])
+@pytest.mark.anyio
+async def test_super_admin_nav_is_complete_on_event_pages(organizer, page):
+    async with get_session() as s:
+        admin_user = await create_user(
+            s,
+            email="nav-pages-admin@test.com",
+            display_name="Super Admin",
+            password_hash="hash",
+            is_admin=True,
+        )
+    cookies = {"user_token": create_user_token(user_id=admin_user.id, email=admin_user.email, is_admin=True)}
+    async with client() as http:
+        response = await http.get(f"/admin/events/{organizer['event_id']}/{page}", cookies=cookies)
+
+    assert response.status_code == 200
+    assert 'href="/mission-control/"' in response.text
+    assert 'href="/admin/users/"' in response.text
+    assert 'href="/admin/developer-accounts"' in response.text
+
+
+@pytest.mark.parametrize("page", ["rooms/", "members/"])
+@pytest.mark.anyio
+async def test_event_owner_nav_links_mission_control_on_event_pages(organizer, page):
+    async with client() as http:
+        response = await http.get(f"/workspace/events/{organizer['event_id']}/{page}", cookies=organizer["cookies"])
+
+    assert response.status_code == 200
+    assert 'href="/mission-control/"' in response.text
+    assert 'href="/admin/users/"' not in response.text
+
+
 @pytest.mark.anyio
 async def test_workspace_api_uses_workspace_namespace(organizer):
     async with client() as http:
@@ -372,6 +404,18 @@ async def test_room_coordinator_navigation_uses_mission_control(organizer):
     assert 'href="/mission-control/">Mission Control</a>' in account.text
     assert 'href="/mission-control/shared-event/"' in account.text
     assert f'href="/workspace/events/{organizer["event_id"]}/"' not in account.text
+
+
+@pytest.mark.anyio
+async def test_mission_control_titles_name_the_brand_once(organizer):
+    async with client() as http:
+        event_list = await http.get("/mission-control/", cookies=organizer["cookies"])
+        grid = await http.get("/mission-control/shared-event/", cookies=organizer["cookies"])
+
+    assert event_list.status_code == 200
+    assert "<title>Mission Control Events — Voxbento</title>" in event_list.text
+    assert grid.status_code == 200
+    assert "<title>Mission Control - Shared Event — Voxbento</title>" in grid.text
 
 
 @pytest.mark.anyio

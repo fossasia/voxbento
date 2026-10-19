@@ -276,8 +276,53 @@ body:has(.login-page) .portal-footer {
 .account-link { color: #3b82f6; text-decoration: none; transition: color 0.2s; }
 .account-link:hover { color: #2563eb; }
 
-.account-empty { text-align: center; padding: 3rem 2rem; background: var(--color-surface); border: 1px dashed var(--color-border-strong); border-radius: 12px; }
 .account-empty p { color: var(--color-text-secondary); font-size: 0.95rem; margin: 0; }
+
+.account-row--disabled {
+  opacity: 0.6;
+  background-color: #f8fafc;
+}
+.account-row--disabled td {
+  color: #64748b;
+}
+.account-context-disabled {
+  color: #64748b;
+  font-weight: 500;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.account-sub-badge {
+  font-size: 0.725rem;
+  font-weight: 600;
+  color: #dc2626;
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+.badge-disabled {
+  background: #e2e8f0 !important;
+  color: #64748b !important;
+  border: 1px solid #cbd5e1 !important;
+}
+
+.account-hosting-card { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 12px; padding: 32px; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05); }
+.account-hosting-card .security-text { max-width: 480px; line-height: 1.5; }
+.account-hosting-card .btn { white-space: nowrap; }
+.account-hosting-banner { background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 8px; padding: 16px 20px; }
+.account-hosting-banner--spaced { margin-top: 16px; }
+.account-hosting-banner-content { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; }
+.account-hosting-banner-title { margin: 0; color: #1e40af; font-weight: 600; font-size: 0.95rem; }
+.account-hosting-banner-text { margin: 6px 0 0 0; color: #1e3a8a; font-size: 0.875rem; line-height: 1.5; }
+.login-prompt { margin-bottom: 20px; line-height: 1.5; }
+.login-prompt p { margin: 0 0 8px 0; }
+.login-prompt p:last-child { margin-bottom: 0; }
+.login-footer--spaced { margin-top: 24px; }
+.login-link--spaced { margin-top: 12px; display: inline-block; }
+.login-link--forgot { margin-top: 8px; display: inline-block; }
+.btn-submit--spaced { margin-top: 12px; }
+.account-alert-banner { margin-bottom: 24px; padding: 16px 20px; border: 2px solid #ef4444; border-radius: 8px; background: #fef2f2; color: #b91c1c; font-weight: 600; }
 
 .security-card { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 12px; padding: 32px; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05); }
 .security-row { display: flex; justify-content: space-between; align-items: flex-start; flex-wrap: wrap; gap: 1rem; }

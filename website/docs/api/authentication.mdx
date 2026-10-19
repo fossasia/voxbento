@@ -78,6 +78,8 @@ const { access_token } = await response.json();
 
 :::info
 The `BOOTH_ACCESS_TOKEN` is provided by the Voxbento platform. Ensure you have the correct credentials before attempting to authenticate.
+
+This is a global legacy API credential. The JWT issued by `/api/auth/token` has global scope across the applicable protected legacy `/api/events/...` endpoints; it is not restricted to a single event. Treat the credential and issued JWT as highly sensitive, and share them only with trusted integrations. This scope does not grant access to every application route or bypass separate authorization checks.
 :::
 
 ## Using the Token
@@ -118,10 +120,17 @@ While external integrations use the Bearer tokens described above, the Voxbento 
 
 ### The Token Hierarchy
 
-Voxbento issues cookies evaluated in the following order of precedence:
+Voxbento issues two HTTP-only JWT cookies, and booth-facing paths consider
+both of them together:
 
 1. **`user_token`**: Issued when a registered user logs in (via `/login`). It contains claims about their identity (`sub`) and whether they have site-wide admin rights (`is_admin=True`).
-2. **`session_token`**: Issued when a user clicks a magic invite link (`/join/{token}`). It is scoped to a specific `event_slug` and `booth_id` with a specific role.
+2. **`session_token`**: Issued when a user clicks a magic invite link (`/join/{token}`). It is scoped to a specific `event_slug`, `room_id`, and `language_code` with a specific role.
+
+A logged-in user who redeems an invite keeps both cookies. The interpreter
+lobby lists the union of their database memberships and their invite grant,
+and booth pages resolve access from all valid sessions at once, so the login
+session never hides ("shadows") the invite. Invite role claims only apply to
+the booth they are scoped to (matching event, room, and language).
 
 ### Role Resolution (`resolve_booth_role`)
 

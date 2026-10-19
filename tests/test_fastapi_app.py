@@ -19,11 +19,13 @@ client = TestClient(app)
 
 
 @pytest.fixture(autouse=True)
-def setup_db():
+def setup_db(monkeypatch):
     import anyio
 
+    from portal.config import settings
     from portal.database import configure, dispose, init_db
 
+    monkeypatch.setattr(settings, "debug", True)
     configure("sqlite+aiosqlite://")
     anyio.run(init_db)
     yield
@@ -90,6 +92,26 @@ def test_token_redactor_handles_split_args():
         lineno=0,
         msg='%s - "%s %s HTTP/%s" %d',
         args=("127.0.0.1:1234", "GET", "/embed/test-event/en?token=secretjwt123", "1.1", 200),
+        exc_info=None,
+    )
+    _UvicornTokenRedactor().filter(record)
+    output = record.getMessage()
+    assert "secretjwt123" not in output
+    assert "[REDACTED]" in output
+
+
+def test_token_redactor_handles_legacy_api_query_credentials():
+    import logging
+
+    from fastapi_app import _UvicornTokenRedactor
+
+    record = logging.LogRecord(
+        name="uvicorn.access",
+        level=logging.INFO,
+        pathname="",
+        lineno=0,
+        msg='GET /api/events/demo/booths?access_token=secretjwt123&room_id=1',
+        args=(),
         exc_info=None,
     )
     _UvicornTokenRedactor().filter(record)
@@ -907,6 +929,37 @@ def _ws_join(ws, display_name: str, role: str, language: str, channel_id: str) -
     return joined["participant_id"], state_msg["state"]
 
 
+@pytest.mark.parametrize(
+    ("raw_frame", "expected_error"),
+    [
+        ("[]", "Message must be a JSON object."),
+        ("null", "Message must be a JSON object."),
+        ("0", "Message must be a JSON object."),
+        ("true", "Message must be a JSON object."),
+        ('"hello"', "Message must be a JSON object."),
+        ("{}", "Unknown message type: "),
+        ("{oops", "Invalid JSON."),
+    ],
+)
+def test_ws_invalid_frame_keeps_active_interpreter_connected(raw_frame: str, expected_error: str):
+    booth_id = "shape-test-booth"
+    with client.websocket_connect(f"/ws/booth/{booth_id}", cookies=_ws_auth()) as ws:
+        participant_id, initial_state = _ws_join(ws, "Alice", "interpreter", "English", f"{booth_id}-audio")
+        assert initial_state["active_interpreter_id"] == participant_id
+
+        ws.send_text(raw_frame)
+        assert json.loads(ws.receive_text()) == {"type": "booth:error", "message": expected_error}
+
+        ws.send_text(json.dumps({"type": "booth:chat", "body": "Still connected"}))
+        responses = [json.loads(ws.receive_text()), json.loads(ws.receive_text())]
+        assert {message["type"] for message in responses} == {"booth:chat", "booth:state"}
+        chat = next(message for message in responses if message["type"] == "booth:chat")
+        state = next(message["state"] for message in responses if message["type"] == "booth:state")
+        assert chat["message"]["body"] == "Still connected"
+        assert state["active_interpreter_id"] == participant_id
+        assert [person["participant_id"] for person in state["participants"]] == [participant_id]
+
+
 def test_ws_broadcast_unlock_authorized_user_can_toggle():
     """Authorized coordinator/admin session can toggle broadcast lock."""
     client.post("/api/events/broadcastok/booths", json={"language_code": "en", "room_id": 1, "language": "English"})
@@ -926,8 +979,8 @@ def test_ws_broadcast_unlock_authorized_user_can_toggle():
 def test_ws_broadcast_unlock_interpreter_rejected():
     """Interpreter session cannot toggle broadcast lock."""
     client.post("/api/events/broadcastdeny/booths", json={"language_code": "en", "room_id": 1, "language": "English"})
-    booth = "broadcastdeny-en"
-    channel = "broadcastdeny/en"
+    booth = "broadcastdeny-1-en"
+    channel = "broadcastdeny/1/en"
 
     with client.websocket_connect(
         f"/ws/booth/{booth}",
@@ -1488,6 +1541,103 @@ def test_event_booth_state_does_not_autocreate():
     assert res.json()["booths"] == []
 
 
+def test_event_booth_state_loads_booth_missing_from_memory():
+    """A booth that is in the database but not in memory (e.g. after a restart) still loads."""
+    import anyio
+
+    from portal.globals import booths
+
+    created = client.post("/api/events/restarted/booths", json={"language_code": "fr", "language": "French"}).json()
+    room_id = created["room_id"]
+    anyio.run(booths.remove_booth, "restarted", room_id, "fr")
+
+    res = client.get(f"/api/events/restarted/booths/fr/state?room_id={room_id}")
+    assert res.status_code == 200, res.text
+    body = res.json()
+    assert body["booth_id"] == f"restarted-{room_id}-fr"
+    assert body["language"] == "French"
+    assert body["participants"] == []
+
+
+def test_event_booth_state_does_not_load_booth_from_other_event():
+    """The database fallback only finds booths of the event in the URL."""
+    import anyio
+
+    from portal.globals import booths
+
+    created = client.post("/api/events/ownerevent/booths", json={"language_code": "fr", "language": "French"}).json()
+    room_id = created["room_id"]
+    anyio.run(booths.remove_booth, "ownerevent", room_id, "fr")
+
+    res = client.get(f"/api/events/otherevent/booths/fr/state?room_id={room_id}")
+    assert res.status_code == 404
+    assert anyio.run(booths.get_booth_for_event, "otherevent", room_id, "fr") is None
+
+
+def test_event_booth_state_does_not_load_booth_of_deleted_event():
+    """A booth of a deleted event is not loaded back from the database."""
+    from datetime import datetime, timezone
+
+    import anyio
+    from sqlalchemy import update
+
+    from portal.database import get_session
+    from portal.globals import booths
+    from portal.models import Event
+
+    created = client.post("/api/events/deletedevent/booths", json={"language_code": "fr", "language": "French"}).json()
+    room_id = created["room_id"]
+    anyio.run(booths.remove_booth, "deletedevent", room_id, "fr")
+
+    async def mark_deleted() -> None:
+        async with get_session() as session:
+            await session.execute(
+                update(Event).where(Event.slug == "deletedevent").values(deleted_at=datetime.now(timezone.utc))
+            )
+
+    anyio.run(mark_deleted)
+
+    res = client.get(f"/api/events/deletedevent/booths/fr/state?room_id={room_id}")
+    assert res.status_code == 404
+
+
+def test_event_booth_state_does_not_load_booth_whose_room_belongs_to_another_event():
+    """A booth row pointing at another event's room is not loaded."""
+    import anyio
+
+    from portal.database import create_booth, create_event, create_room, get_session
+
+    async def seed() -> int:
+        async with get_session() as session:
+            owner = await create_event(session, slug="roomowner", display_name="Room Owner")
+            borrower = await create_event(session, slug="roomborrower", display_name="Room Borrower")
+            room = await create_room(session, event_id=owner.id, display_name="Main")
+            await create_booth(
+                session, event_id=borrower.id, room_id=room.id, language_code="fr", language_name="French"
+            )
+            return room.id
+
+    room_id = anyio.run(seed)
+
+    res = client.get(f"/api/events/roomborrower/booths/fr/state?room_id={room_id}")
+    assert res.status_code == 404
+
+
+def test_event_booth_state_loads_booth_missing_from_memory_with_uppercase_url():
+    """The database fallback normalises the event slug and language code like the in-memory lookup."""
+    import anyio
+
+    from portal.globals import booths
+
+    created = client.post("/api/events/casecheck/booths", json={"language_code": "fr", "language": "French"}).json()
+    room_id = created["room_id"]
+    anyio.run(booths.remove_booth, "casecheck", room_id, "fr")
+
+    res = client.get(f"/api/events/CaseCheck/booths/FR/state?room_id={room_id}")
+    assert res.status_code == 200, res.text
+    assert res.json()["booth_id"] == f"casecheck-{room_id}-fr"
+
+
 def test_event_booth_whip_url_active_interpreter():
     """Event-scoped WHIP URL returns URL for active interpreter."""
     client.post("/api/events/whipevent/booths", json={"language_code": "en", "room_id": 1, "language": "English"})
@@ -1699,6 +1849,7 @@ def test_strong_secret_passes_production():
         secret_key="a-strong-random-secret-0123456789abcdef",
         jwt_secret="",
         mediamtx_auth_hook_secret="media-hook-secret",
+        booth_access_token="booth-access-secret-0123456789abcdef",
     )
     s.validate_production_secrets()  # must not raise
 
