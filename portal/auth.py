@@ -469,6 +469,8 @@ async def get_current_user(request: Request) -> dict | None:
         return None
     if not payload.get("user"):
         return None
+    if await _current_user(payload) is None:
+        return None
     return payload
 
 
