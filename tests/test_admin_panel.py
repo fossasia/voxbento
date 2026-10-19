@@ -233,7 +233,8 @@ class TestAdminLogin:
                 follow_redirects=False,
             )
         assert response.status_code == 403
-        assert "Please verify your email address first." in response.text
+        assert "Invalid email or password." in response.text
+        assert "Please verify your email address first." not in response.text
         assert "user_token" not in response.cookies
 
     @pytest.mark.anyio
@@ -2118,6 +2119,21 @@ async def test_user_list_explicit_ascending_sort_still_works(admin_cookie):
     # Header flips to the ascending indicator and the next click goes back to descending.
     assert re.search(r'Joined\s*<span class="sort-indicator">▲</span>', body)
     assert re.search(r'<a href="\?sort_by=created_at&sort_order=desc[^"]*" class="sort-link">', body)
+
+
+@pytest.mark.anyio
+async def test_user_list_sort_links_encode_the_search_term(admin_cookie):
+    from portal.database import create_user, get_session
+
+    async with get_session() as s:
+        await create_user(s, email="rnd@example.com", display_name="Team %26 a&b# R&D")
+
+    async with _client() as c:
+        resp = await c.get("/admin/users/", params={"search": "%26 a&b#"}, cookies=admin_cookie)
+
+    assert resp.status_code == 200
+    assert 'href="?sort_by=email&sort_order=asc&search=%2526%20a%26b%23&limit=' in resp.text
+    assert "&search=%26 a&amp;b#" not in resp.text
 
 
 @pytest.mark.anyio

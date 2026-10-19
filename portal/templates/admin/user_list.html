@@ -61,7 +61,7 @@
 {% macro sortable_header(column, label) %}
   {% set new_sort_order = 'desc' if sort_by == column and sort_order == 'asc' else 'asc' %}
   <th>
-    <a href="?sort_by={{ column }}&sort_order={{ new_sort_order }}{% if search %}&search={{ search }}{% endif %}{% if limit %}&limit={{ limit }}{% endif %}" class="sort-link">
+    <a href="?sort_by={{ column }}&sort_order={{ new_sort_order }}{% if search %}&search={{ search|urlencode }}{% endif %}{% if limit %}&limit={{ limit }}{% endif %}" class="sort-link">
       {{ label }}
       {% if sort_by == column %}
         <span class="sort-indicator">{% if sort_order == 'asc' %}▲{% else %}▼{% endif %}</span>
