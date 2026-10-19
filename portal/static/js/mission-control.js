@@ -198,6 +198,8 @@ function renderCard(boothId) {
     isDisabled = true;
   }
 
+  const focusedId = card.contains(document.activeElement) ? document.activeElement.id : '';
+
   card.innerHTML = '';
 
   const headerDiv = document.createElement('div');
@@ -324,6 +326,10 @@ function renderCard(boothId) {
   btn.addEventListener('click', () => {
     setBroadcastLive(boothId, !isLive);
   });
+
+  if (focusedId) {
+    document.getElementById(focusedId)?.focus({ preventScroll: true });
+  }
 }
 
 // ---------------------------------------------------------------------------
