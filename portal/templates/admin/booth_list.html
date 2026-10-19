@@ -20,6 +20,10 @@
   </div>
 </div>
 
+{% if request.query_params.get('error') == 'duplicate_language' %}
+<div class="alert alert-danger">{{ room.display_name }} already has a booth for that language.</div>
+{% endif %}
+
 <div class="form-card">
   <h3>Add an interpretation booth</h3>
   <p class="form-card-hint">Each booth is one language channel. Use a two-letter code (ISO 639-1), e.g. <code>en</code>, <code>fr</code>, <code>zh</code>.</p>
