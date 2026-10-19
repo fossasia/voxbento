@@ -321,7 +321,7 @@ window.adminAPIKeys = {
       document.getElementById('api-key-name').value = '';
     }
     
-    modal.style.display = 'flex';
+    modal.hidden = false;
     void modal.offsetWidth; // force reflow
     modal.classList.add('active');
   },
@@ -336,7 +336,7 @@ window.adminAPIKeys = {
     
     modal.classList.remove('active');
     setTimeout(() => {
-      modal.style.display = 'none';
+      modal.hidden = true;
     }, 200);
   },
 

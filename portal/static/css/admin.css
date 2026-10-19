@@ -727,6 +727,11 @@ code { font-family: var(--font-mono); font-size: 0.85em; background: var(--color
   pointer-events: none;
   transition: opacity 0.2s ease;
 }
+.custom-modal-overlay[hidden],
+.model-modal-overlay[hidden],
+.download-progress[hidden] {
+  display: none;
+}
 .custom-modal-overlay.active {
   opacity: 1;
   pointer-events: auto;
@@ -903,13 +908,13 @@ code { font-family: var(--font-mono); font-size: 0.85em; background: var(--color
 .btn-outline.btn-stop,
 .btn-outline.btn-stop:hover { border-color: #dc3545; color: #dc3545; }
 
-.download-progress { align-items: center; gap: 0.75rem; }
+.download-progress { display: flex; align-items: center; gap: 0.75rem; }
 .download-speed { font-size: 0.8rem; color: #666; }
 .download-percent { font-size: 0.85rem; font-weight: 600; color: #0056b3; min-width: 40px; }
 .progress-track { width: 100px; height: 8px; background: #eee; border-radius: 4px; overflow: hidden; position: relative; }
 .progress-fill { position: absolute; top: 0; left: 0; height: 100%; width: 0%; background: #0056b3; transition: width 0.3s ease; }
 
-.model-modal-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 9999; align-items: center; justify-content: center; }
+.model-modal-overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 9999; display: flex; align-items: center; justify-content: center; }
 .model-modal { background: white; padding: 2rem; border-radius: 8px; max-width: 400px; text-align: center; box-shadow: 0 4px 12px rgba(0,0,0,0.15); }
 .model-modal h3 { margin-top: 0; }
 .model-modal p { color: #666; margin-bottom: 1.5rem; }
