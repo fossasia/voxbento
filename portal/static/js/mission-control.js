@@ -12,7 +12,7 @@
 const config = window.MISSION_CONTROL_CONFIG;
 const roomsContainer = document.getElementById('rooms-container');
 
-/** @type {Map<string, {state:object, ws:WebSocket|null, whep:object|null, audioElement:HTMLAudioElement|null, currentVolume:number}>} */
+/** @type {Map<string, {state:object, ws:WebSocket|null, whep:object|null, audioElement:HTMLAudioElement|null, currentVolume:number, pendingFocusId:string}>} */
 const boothMap = new Map();
 
 function init() {
@@ -68,6 +68,7 @@ function init() {
       whep: null,
       audioElement: null,
       currentVolume: 0,
+      pendingFocusId: '',
     });
     renderCard(b.booth_id);
     connectWs(b.booth_id);
@@ -198,7 +199,14 @@ function renderCard(boothId) {
     isDisabled = true;
   }
 
-  const focusedId = card.contains(document.activeElement) ? document.activeElement.id : '';
+  const active = document.activeElement;
+  let focusedId = '';
+  if (card.contains(active)) {
+    focusedId = active.id;
+  } else if (active === document.body) {
+    focusedId = entry.pendingFocusId;
+  }
+  entry.pendingFocusId = '';
 
   card.innerHTML = '';
 
@@ -327,8 +335,11 @@ function renderCard(boothId) {
     setBroadcastLive(boothId, !isLive);
   });
 
-  if (focusedId) {
-    document.getElementById(focusedId)?.focus({ preventScroll: true });
+  const focusTarget = focusedId ? document.getElementById(focusedId) : null;
+  if (focusTarget && !focusTarget.disabled) {
+    focusTarget.focus({ preventScroll: true });
+  } else if (focusTarget) {
+    entry.pendingFocusId = focusedId;
   }
 }
 
