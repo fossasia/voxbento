@@ -18,6 +18,14 @@
       </div>
       <nav class="header-nav">
         <a href="{{ management_prefix }}/" class="{{ 'is-active' if _path == '/admin/' else '' }}">Dashboard</a>
+        {% if is_super_admin|default(false) %}
+        <a href="/admin/hosting-access/" class="nav-with-count {{ 'is-active' if _path.startswith('/admin/hosting-access') else '' }}">
+          Hosting access
+          {% if open_hosting_requests|default(0) %}
+          <span class="nav-count">{{ open_hosting_requests }}<span class="visually-hidden"> open requests</span></span>
+          {% endif %}
+        </a>
+        {% endif %}
         <a href="{{ management_prefix }}/events/" class="{{ 'is-active' if _path.startswith('/admin/events') or _path.startswith('/admin/setup') else '' }}">Events</a>
         {% if is_super_admin|default(false) or is_event_owner|default(false) or is_room_coordinator|default(false) %}
         <a href="/mission-control/" class="{{ 'is-active' if _path.startswith('/mission-control') else '' }}">Mission Control</a>

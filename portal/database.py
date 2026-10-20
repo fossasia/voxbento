@@ -20,7 +20,7 @@ import logging
 import secrets
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import sqlalchemy as sa
 from sqlalchemy import func, or_, select
@@ -29,6 +29,7 @@ from sqlalchemy.orm import joinedload, selectinload
 
 from portal.config import settings
 from portal.models import (
+    HOSTING_REQUEST_OPEN,
     AuthToken,
     Base,
     BoothMembership,
@@ -36,6 +37,7 @@ from portal.models import (
     Event,
     EventAPIKey,
     EventMembership,
+    HostingRequest,
     InviteToken,
     Room,
     RoomMembership,
@@ -667,6 +669,96 @@ async def delete_user(session: AsyncSession, user_id: int) -> bool:
     await session.delete(user)
     await session.flush()
     return True
+
+
+# ---------------------------------------------------------------------------
+# HostingRequest CRUD
+# ---------------------------------------------------------------------------
+
+
+async def create_hosting_request(
+    session: AsyncSession,
+    *,
+    user_id: int,
+    organization: str,
+    event_name: str,
+    languages: str,
+    event_starts_on: date | None = None,
+    event_ends_on: date | None = None,
+    message: str = "",
+) -> HostingRequest:
+    hosting_request = HostingRequest(
+        user_id=user_id,
+        organization=organization,
+        event_name=event_name,
+        languages=languages,
+        event_starts_on=event_starts_on,
+        event_ends_on=event_ends_on,
+        message=message,
+    )
+    session.add(hosting_request)
+    await session.flush()
+    return hosting_request
+
+
+async def get_hosting_request(session: AsyncSession, request_id: int) -> HostingRequest | None:
+    stmt = select(HostingRequest).options(joinedload(HostingRequest.user)).where(HostingRequest.id == request_id)
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
+async def get_open_hosting_request(session: AsyncSession, user_id: int) -> HostingRequest | None:
+    stmt = select(HostingRequest).options(joinedload(HostingRequest.user)).where(
+        HostingRequest.user_id == user_id,
+        HostingRequest.status == HOSTING_REQUEST_OPEN,
+    )
+    return (await session.execute(stmt)).scalars().first()
+
+
+async def list_open_hosting_requests(session: AsyncSession) -> list[HostingRequest]:
+    """Open hosting requests, newest first, with the requesting user loaded."""
+    stmt = (
+        select(HostingRequest)
+        .options(joinedload(HostingRequest.user))
+        .where(HostingRequest.status == HOSTING_REQUEST_OPEN)
+        .order_by(HostingRequest.created_at.desc(), HostingRequest.id.desc())
+    )
+    return list((await session.execute(stmt)).scalars().all())
+
+
+async def count_open_hosting_requests(session: AsyncSession) -> int:
+    stmt = select(func.count(HostingRequest.id)).where(HostingRequest.status == HOSTING_REQUEST_OPEN)
+    return (await session.execute(stmt)).scalar_one()
+
+
+async def close_hosting_request(
+    session: AsyncSession,
+    hosting_request: HostingRequest,
+    *,
+    status: str,
+    decided_by_user_id: int | None,
+    decline_reason: str | None = None,
+) -> None:
+    """Record the outcome of an open request and clear the user's pending flag."""
+    hosting_request.status = status
+    hosting_request.decided_by_user_id = decided_by_user_id
+    hosting_request.decided_at = utc_now()
+    hosting_request.decline_reason = decline_reason
+    if hosting_request.user is not None:
+        hosting_request.user.hosting_requested_at = None
+    await session.flush()
+
+
+async def close_open_hosting_request(
+    session: AsyncSession,
+    user_id: int,
+    *,
+    status: str,
+    decided_by_user_id: int | None,
+) -> None:
+    """Close the user's open request, if any, when access is decided elsewhere."""
+    hosting_request = await get_open_hosting_request(session, user_id)
+    if hosting_request is not None:
+        await close_hosting_request(session, hosting_request, status=status, decided_by_user_id=decided_by_user_id)
 
 
 # ---------------------------------------------------------------------------

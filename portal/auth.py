@@ -167,11 +167,12 @@ async def resolve_request_principal(request: Request, db_session: AsyncSession) 
             "owned_event_ids": set(),
             "coordinated_event_ids": set(),
             "coordinated_room_ids": set(),
+            "open_hosting_requests": 0,
         }
         request.state.principal = principal
         return principal
 
-    from portal.database import list_memberships_for_user, list_room_memberships_for_user
+    from portal.database import count_open_hosting_requests, list_memberships_for_user, list_room_memberships_for_user
 
     memberships = await list_memberships_for_user(db_session, user.id)
     rms = await list_room_memberships_for_user(db_session, user.id)
@@ -194,6 +195,8 @@ async def resolve_request_principal(request: Request, db_session: AsyncSession) 
         "owned_event_ids": owned_event_ids,
         "coordinated_event_ids": coordinated_event_ids,
         "coordinated_room_ids": coordinated_room_ids,
+        # Shown as the count on the Admin "Hosting access" menu item.
+        "open_hosting_requests": await count_open_hosting_requests(db_session) if user.is_admin else 0,
     }
     request.state.principal = principal
     request.state.user = user

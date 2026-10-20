@@ -17,7 +17,9 @@
 | GET | `/login` | open | `login.html` | Redirects to `/account` or `?next=` if logged in |
 | POST | `/login` | open | `login.html` | Verifies bcrypt, sets `user_token` cookie |
 | GET | `/logout` | open | — | Deletes `user_token` cookie → `/` |
-| GET | `/account` | user | `account.html` | Shows profile + event memberships |
+| GET | `/account` | user | `account.html` | Shows profile + event memberships; Hosting events section shows Request access / Request sent (waiting for review) / has access |
+| GET | `/account/hosting-request` | user | `account_hosting_request.html` | Hosting access request form (#768); redirects to `/account` for hosts, Admins and people with an open request |
+| POST | `/account/hosting-request` | user + same-origin | `account_hosting_request.html` | Validates, saves `HostingRequest`, emails `HOSTING_REQUESTS_EMAIL` → `/account?success=hosting_request_sent`; 400 re-renders the form with errors |
 | GET | `/join/{token}` | open | — | Validates invite token, sets `session_token` → booth or listener |
 
 ---
@@ -97,6 +99,10 @@ Legacy organizer requests to allowlisted event-management paths under `/admin/`,
 | POST | `/admin/users/{user_id}/delete` | — | Deletes user |
 | POST | `/admin/users/{user_id}/toggle-admin` | — | Flips `is_admin` |
 | POST | `/admin/users/{user_id}/events/{event_id}/toggle-admin` | — | Grants/revokes `event_owner` membership |
+| GET | `/admin/hosting-access/` | `admin/hosting_access.html` | "People with access" tab: hosts and pending hosting invitations, events owned, Remove access / Cancel invitation (#768) |
+| GET | `/admin/hosting-access/requests/` | `admin/hosting_access.html` | "Requests" tab: open hosting requests, newest first |
+| POST | `/admin/hosting-access/requests/{request_id}/grant` | — | Same-origin; sets `can_host`, closes request as `granted`, emails the person |
+| POST | `/admin/hosting-access/requests/{request_id}/decline` | — | Same-origin; `reason` required (≤1000 chars), closes request as `declined`, emails the reason |
 
 ---
 

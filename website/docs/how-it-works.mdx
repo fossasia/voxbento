@@ -203,6 +203,23 @@ memberships allow. Operators should maintain at least two active administrator
 accounts; the [admin-login migration guide](https://github.com/fossasia/voxbento/blob/dev/docs/admin-password-removal-migration.md)
 documents the controlled recovery procedure.
 
+## Hosting access requests
+
+Creating events requires hosting access (`users.can_host`). Signed-in users without
+it request access from `/account/hosting-request`; the form is pre-filled with
+their name and email and stores a row in `hosting_requests` linked to their
+account. A partial unique index allows only one open request per user. Each new
+request emails the team address in `HOSTING_REQUESTS_EMAIL`, and the Account page
+shows the request as waiting for review until it is handled.
+
+Admins see open requests on the **Requests** tab of `/admin/hosting-access/`; the
+"Hosting access" menu item shows how many are open. Granting sets `can_host`,
+closes the request as `granted` and sends the "hosting access granted" email.
+Declining requires a reason, closes the request as `declined` and emails the
+reason to the person, who can then send a new request. Granting hosting access
+any other way (the user page toggle or an accepted hosting invitation) also
+closes an open request.
+
 ## Security Layers
 
 Publishing audio to a booth is protected by three independent enforcement layers:

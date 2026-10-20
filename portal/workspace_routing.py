@@ -87,22 +87,25 @@ async def should_redirect_organizer(request: Request) -> bool:
         return principal["can_host"] or bool(principal["owned_event_ids"])
 
 
-def management_template_context(request: Request) -> dict[str, str | bool]:
+def management_template_context(request: Request) -> dict[str, str | bool | int]:
     """Expose the externally visible management namespace to Jinja templates."""
     is_workspace = getattr(request.state, "is_workspace", False)
     principal = getattr(request.state, "principal", None)
     if principal:
         can_host = bool(principal.get("can_host", False))
         is_super_admin = bool(principal.get("is_super_admin", False))
+        open_hosting_requests = int(principal.get("open_hosting_requests", 0))
     else:
         can_host = False
         is_super_admin = False
+        open_hosting_requests = 0
     return {
         "management_prefix": WORKSPACE_PREFIX if is_workspace else ADMIN_PREFIX,
         "management_api_prefix": "/api/workspace" if is_workspace else "/api/admin",
         "is_workspace": is_workspace,
         "can_host": can_host,
         "is_super_admin": is_super_admin,
+        "open_hosting_requests": open_hosting_requests,
     }
 
 

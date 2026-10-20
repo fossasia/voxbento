@@ -2,27 +2,26 @@
 
 {% block title %}My Account — Voxbento{% endblock %}
 
+{% block body_class %} class="account-area"{% endblock %}
+
 {% block head %}
 <link rel="stylesheet" href="{{ url_for('static', path='css/auth.css') }}" />
+<link rel="stylesheet" href="{{ url_for('static', path='css/account-area.css') }}" />
 {% endblock %}
 
 {% block content %}
-<header class="portal-home-header">
-  <a class="brand account-brand" href="/">
-    <img src="{{ url_for('static', path='img/app_icon.png') }}" alt="VoxBento Icon" class="account-brand-icon" />
-    <span class="account-brand-name">VoxBento</span>
-  </a>
-  <nav class="header-nav">
-    <a href="/account">My Account</a>
-    <a href="/developer">Developer API</a>
-    {% if management_home != "/account" %}
-    <a href="{{ management_home }}">{{ management_label }}</a>
-    {% endif %}
-    <a href="/logout">Logout</a>
-  </nav>
-</header>
+{% include "_account_header.html" %}
 
 <main class="admin-main account-main">
+  {% if hosting_request_sent %}
+  <div class="aa-notice" role="status">
+    <svg class="aa-notice-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10" /><path d="m8 12 3 3 5-6" /></svg>
+    <div>
+      <p class="aa-notice-title">Your request was sent</p>
+      <p class="aa-notice-text">We'll email you at {{ user.email }} once the VoxBento team has reviewed it.</p>
+    </div>
+  </div>
+  {% endif %}
   {% if request.query_params.get('error') == 'hosting_revoked' %}
   <div class="account-alert-banner">
     Your hosting access has been revoked. You cannot create new events until hosting access is restored.
@@ -132,76 +131,38 @@
     {% endif %}
   </div>
 
-  <div class="account-section">
-    <div class="account-section-head">
-      <h2 class="account-section-title">Event Hosting</h2>
-      <p class="account-section-text">Create and manage your own multilingual events.</p>
+  <section class="aa-card aa-section{{ ' aa-card--highlight' if open_hosting_request else '' }}" aria-labelledby="hosting-events-title">
+    <div class="aa-card-head">
+      <h2 class="aa-card-title" id="hosting-events-title">Hosting events</h2>
     </div>
-    
-    <div class="account-hosting-card">
-      {% if user.is_admin %}
-      <div class="security-row">
+    <div class="aa-card-body">
+      {% if user.is_admin or user.can_host %}
+      <div class="aa-status-row">
         <div>
-          <h3 class="security-title">Global Administrator</h3>
-          <p class="security-text">As a <strong>Super Admin</strong>, you have full access to host and manage events.</p>
+          <p class="aa-status-title">You have hosting access</p>
+          <p class="aa-status-text">You can create events, set up rooms and booths, and invite your team.</p>
         </div>
-        <a href="/workspace/" class="btn btn-primary">Go to My Events &rarr;</a>
+        <a href="/workspace/" class="aa-btn">Go to My events</a>
       </div>
-      {% elif user.can_host %}
-      <div class="security-row">
-        <div>
-          <h3 class="security-title">Hosting Access Active</h3>
-          <p class="security-text">You have active <strong>Hosting Access</strong>. You can create events, configure rooms, and invite participants.</p>
-        </div>
-        <a href="/workspace/" class="btn btn-primary">Go to My Events &rarr;</a>
-      </div>
-      {% elif is_hosting_revoked %}
-      <div class="security-row">
-        <div>
-          <h3 class="security-title">Hosting Access Revoked</h3>
-          <p class="security-text">Your hosting access has been revoked. Your existing events are preserved, but you cannot create new events until hosting is restored.</p>
-        </div>
-        {% if not user.hosting_requested_at %}
-        <button type="button" class="btn btn-primary" onclick="openDemoModal()">Re-request Hosting Access</button>
-        {% endif %}
-      </div>
-      {% if user.hosting_requested_at %}
-      <div class="account-hosting-banner account-hosting-banner--spaced">
-        <div class="account-hosting-banner-content">
-          <div>
-            <p class="account-hosting-banner-title">
-              Hosting re-request submitted on {{ user.hosting_requested_at.strftime('%b %d, %Y') }}.
-            </p>
-            <p class="account-hosting-banner-text">
-              Our administration team is reviewing your request to restore hosting access.
-            </p>
-          </div>
-          <button type="button" class="btn btn-outline btn-sm" onclick="openDemoModal()">Re-request Hosting Access</button>
-        </div>
-      </div>
-      {% endif %}
+      {% elif open_hosting_request %}
+      <p class="aa-status-title">Request sent <span class="aa-pill aa-pill--waiting">Waiting for review</span></p>
+      <p class="aa-status-text">You asked for hosting access on {{ open_hosting_request.created_at.strftime('%b %d, %Y') }}. The VoxBento team will get back to you by email.</p>
       {% else %}
-        {% if user.hosting_requested_at %}
-        <div class="account-hosting-banner">
-          <p class="account-hosting-banner-title">
-            Hosting request submitted on {{ user.hosting_requested_at.strftime('%b %d, %Y') }}.
-          </p>
-          <p class="account-hosting-banner-text">
-            Our administration team is reviewing your request. You'll receive an email as soon as hosting is enabled.
-          </p>
+      <div class="aa-status-row">
+        <div>
+          {% if is_hosting_revoked %}
+          <p class="aa-status-title">Hosting access was removed</p>
+          <p class="aa-status-text">Your existing events are kept, but you can't create new ones. Request access again to tell the VoxBento team about your next event.</p>
+          {% else %}
+          <p class="aa-status-title">Want to host your event on VoxBento?</p>
+          <p class="aa-status-text">Hosting access lets you create your own events and invite coordinators and interpreters. The VoxBento team reviews each request.</p>
+          {% endif %}
         </div>
-        {% else %}
-        <div class="security-row">
-          <div>
-            <h3 class="security-title">Organizer Access</h3>
-            <p class="security-text">Only authorized organizers can create events. If you'd like to host your own events on VoxBento, request hosting access from the team.</p>
-          </div>
-          <button type="button" class="btn btn-primary" onclick="openDemoModal()">Request Hosting Access</button>
-        </div>
-        {% endif %}
+        <a href="/account/hosting-request" class="aa-btn aa-btn--primary">Request access</a>
+      </div>
       {% endif %}
     </div>
-  </div>
+  </section>
 
   <div>
     <div class="account-section-head">
@@ -324,5 +285,4 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 });
 </script>
-{% include "_demo_modal.html" %}
 {% endblock %}

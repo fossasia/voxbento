@@ -14,6 +14,7 @@ from fastapi import APIRouter, BackgroundTasks, Body, HTTPException, Request, Re
 from fastapi.responses import RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.exc import DBAPIError, IntegrityError, OperationalError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from portal.auth import (
     create_participant_token,
@@ -23,13 +24,17 @@ from portal.auth import (
     get_current_user,
     hash_password,
     require_user,
+    resolve_request_principal,
     verify_password,
 )
 from portal.config import settings
 from portal.database import (
+    close_open_hosting_request,
     create_auth_token,
+    create_hosting_request,
     create_user,
     get_auth_token,
+    get_open_hosting_request,
     get_session,
     get_user_by_email,
     get_user_by_id,
@@ -42,10 +47,16 @@ from portal.database import (
     revoke_auth_tokens,
     update_user,
 )
-from portal.email import send_magic_login_email, send_password_reset_email, send_verification_email
+from portal.email import (
+    send_hosting_request_notification,
+    send_magic_login_email,
+    send_password_reset_email,
+    send_verification_email,
+)
 from portal.email_sender import send_delayed_onboarding_email
 from portal.globals import _JS_CACHE_BUST
-from portal.models import TOKEN_TYPE_HOSTING_INVITE, AuthToken, utc_now
+from portal.hosting_requests import format_event_dates, parse_hosting_request_form
+from portal.models import HOSTING_REQUEST_GRANTED, TOKEN_TYPE_HOSTING_INVITE, AuthToken, User, utc_now
 from portal.rate_limit import check_rate_limit
 from portal.schemas.auth import TokenRequest, TokenResponse
 from portal.utils import safe_redirect, verify_same_origin
@@ -744,6 +755,7 @@ async def account_page(request: Request):
         event_memberships = await list_memberships_for_user(session, user.id)
         room_memberships = await list_room_memberships_for_user(session, user.id)
         booth_memberships = await list_booth_memberships_for_user(session, user.id)
+        open_hosting_request = await get_open_hosting_request(session, user.id)
 
     unified_memberships = []
     coordinated_event_slugs = {
@@ -823,8 +835,102 @@ async def account_page(request: Request):
             "management_home": management_home,
             "management_label": management_label,
             "is_hosting_revoked": is_hosting_revoked,
+            "open_hosting_request": open_hosting_request,
+            "hosting_request_sent": request.query_params.get("success") == "hosting_request_sent",
         },
     )
+
+
+HOSTING_REQUEST_PATH = "/account/hosting-request"
+HOSTING_REQUEST_FIELDS = ("organization", "event_name", "event_starts_on", "event_ends_on", "languages", "message")
+
+
+def render_hosting_request_form(
+    request: Request,
+    user: User,
+    *,
+    values: dict[str, str] | None = None,
+    errors: dict[str, str] | None = None,
+    status_code: int = status.HTTP_200_OK,
+):
+    return templates.TemplateResponse(
+        request=request,
+        name="account_hosting_request.html",
+        context={"user": user, "values": values or {}, "errors": errors or {}},
+        status_code=status_code,
+    )
+
+
+async def load_hosting_requester(request: Request, session: AsyncSession) -> tuple[User | None, Response | None]:
+    """Return the signed-in user who may request hosting access, or the redirect to send instead."""
+    principal = await resolve_request_principal(request, session)
+    user = principal["user"]
+    if user is None:
+        return None, safe_redirect(url=f"/login?next={HOSTING_REQUEST_PATH}", status_code=status.HTTP_303_SEE_OTHER)
+    if user.is_admin or user.can_host or await get_open_hosting_request(session, user.id) is not None:
+        return None, safe_redirect(url="/account", status_code=status.HTTP_303_SEE_OTHER)
+    return user, None
+
+
+@router.get(HOSTING_REQUEST_PATH)
+async def hosting_request_page(request: Request):
+    """Show the hosting access request form to a signed-in user without hosting access."""
+    async with get_session() as session:
+        user, redirect = await load_hosting_requester(request, session)
+    if redirect is not None:
+        return redirect
+    return render_hosting_request_form(request, user)
+
+
+@router.post(HOSTING_REQUEST_PATH)
+async def submit_hosting_request(request: Request):
+    """Save a hosting access request for the signed-in user and notify the team."""
+    if not verify_same_origin(request):
+        raise HTTPException(status_code=400, detail="Invalid request origin.")
+
+    form = await request.form()
+    cleaned, errors = parse_hosting_request_form(form)
+
+    try:
+        async with get_session() as session:
+            user, redirect = await load_hosting_requester(request, session)
+            if redirect is not None:
+                return redirect
+            if errors:
+                values = {key: str(form.get(key, "")) for key in HOSTING_REQUEST_FIELDS}
+                return render_hosting_request_form(
+                    request, user, values=values, errors=errors, status_code=status.HTTP_400_BAD_REQUEST
+                )
+            hosting_request = await create_hosting_request(
+                session,
+                user_id=user.id,
+                organization=cleaned.organization,
+                event_name=cleaned.event_name,
+                event_starts_on=cleaned.event_starts_on,
+                event_ends_on=cleaned.event_ends_on,
+                languages=cleaned.languages,
+                message=cleaned.message,
+            )
+            user.hosting_requested_at = hosting_request.created_at
+            requester_name = user.display_name
+            requester_email = user.email
+    except IntegrityError:
+        # A concurrent submission already opened this user's one request.
+        return safe_redirect(url="/account", status_code=status.HTTP_303_SEE_OTHER)
+
+    logger.info("Hosting access request %d opened by user %d", hosting_request.id, hosting_request.user_id)
+    await send_hosting_request_notification(
+        settings.hosting_requests_email,
+        requester_name=requester_name,
+        requester_email=requester_email,
+        organization=cleaned.organization,
+        event_name=cleaned.event_name,
+        event_dates=format_event_dates(cleaned.event_starts_on, cleaned.event_ends_on),
+        languages=cleaned.languages,
+        message=cleaned.message,
+        review_url=f"{settings.public_base_url.rstrip('/')}/admin/hosting-access/requests/",
+    )
+    return safe_redirect(url="/account?success=hosting_request_sent", status_code=status.HTTP_303_SEE_OTHER)
 
 
 @router.post("/api/auth/set-password")
@@ -1000,6 +1106,9 @@ async def invite_accept_submit(request: Request, token: str):
             user.can_host = True
             user.hosting_revoked_at = None
             user.hosting_requested_at = None
+            await close_open_hosting_request(
+                session, user.id, status=HOSTING_REQUEST_GRANTED, decided_by_user_id=None
+            )
 
             # Delete any other pending hosting_invite tokens for this user
             delete_stmt = (

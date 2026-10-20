@@ -9,7 +9,7 @@
     <link rel="stylesheet" href="{{ url_for('static', path='css/interpreter.css') }}?v=6" />
     {% block head %}{% endblock %}
   </head>
-  <body>
+  <body{% block body_class %}{% endblock %}>
 
     <main class="portal-main">{% block content %}{% endblock %}</main>
     

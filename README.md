@@ -24,6 +24,18 @@ VoxBento is a real-time interpretation platform for live events. Interpreters mo
 
 ---
 
+## Hosting access
+
+Only people with hosting access can create events. A signed-in user without it
+selects **Request access** on their Account page and fills in a short form
+(organization, event name and dates, languages, optional message). The team inbox
+in `HOSTING_REQUESTS_EMAIL` (default `voxbento.dev@gmail.com`) is emailed about
+each new request. Admins review requests under **Admin → Hosting access → Requests**:
+**Grant access** gives the person hosting access straight away, **Decline** asks for
+a reason that is emailed to them. A person has at most one open request at a time.
+
+---
+
 ## Setup
 
 For detailed API documentation, environment variables, and configuration, visit [docs.voxbento.com](https://docs.voxbento.com). Native development setup details can also be found in [CONTRIBUTING.md](CONTRIBUTING.md).

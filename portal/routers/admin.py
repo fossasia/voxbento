@@ -7,6 +7,7 @@ import math
 import re
 import secrets
 import urllib.parse
+from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
 
@@ -15,9 +16,10 @@ from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request, sta
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import joinedload
 
 from portal import meeting_source
 from portal.auth import (
@@ -30,11 +32,14 @@ from portal.auth import (
     require_room_event_access,
     require_super_admin,
     require_user,
+    resolve_principal,
 )
 from portal.booth_identity import make_booth_id, make_mediamtx_path, validate_event_slug, validate_language_code
 from portal.config import settings
 from portal.crypto import encrypt_val
 from portal.database import (
+    close_hosting_request,
+    close_open_hosting_request,
     count_events,
     count_users,
     create_api_key,
@@ -53,6 +58,7 @@ from portal.database import (
     get_db_session,
     get_event_by_id,
     get_event_by_slug,
+    get_hosting_request,
     get_room_by_id,
     get_session,
     get_user_by_email,
@@ -65,6 +71,7 @@ from portal.database import (
     list_memberships_for_event,
     list_memberships_for_room,
     list_memberships_for_user,
+    list_open_hosting_requests,
     list_room_memberships_for_user,
     list_rooms_for_event,
     list_tokens_for_booth,
@@ -79,15 +86,26 @@ from portal.database import (
     set_room_membership,
     update_user_active,
 )
-from portal.email import send_hosting_granted_email, send_hosting_invite_email, send_role_invite_email
+from portal.email import (
+    send_hosting_granted_email,
+    send_hosting_invite_email,
+    send_hosting_request_declined_email,
+    send_role_invite_email,
+)
 from portal.globals import _JS_CACHE_BUST, booths
+from portal.hosting_requests import DECLINE_REASON_MAX, format_event_dates, multi_line
 from portal.models import (
+    HOSTING_REQUEST_DECLINED,
+    HOSTING_REQUEST_GRANTED,
+    HOSTING_REQUEST_OPEN,
     TOKEN_TYPE_HOSTING_INVITE,
     TOKEN_TYPE_MAGIC_LINK,
     AuthToken,
     BoothTranslationLanguage,
     DBBooth,
     Event,
+    EventMembership,
+    HostingRequest,
     RoomTranslationLanguage,
     TranscriptSegment,
     TranscriptTranslation,
@@ -1699,7 +1717,10 @@ async def admin_invite_user(request: Request):
             if user.can_host:
                 accept_header = request.headers.get("accept", "")
                 if "text/html" in accept_header:
-                    return safe_redirect(url="/admin/users/?error=already_host", status_code=status.HTTP_303_SEE_OTHER)
+                    return safe_redirect(
+                        url=hosting_return_url(request, "/admin/users/", "error=already_host"),
+                        status_code=status.HTTP_303_SEE_OTHER,
+                    )
                 raise HTTPException(status_code=400, detail="User already has hosting access.")
             target_user = user
         else:
@@ -1744,7 +1765,7 @@ async def admin_invite_user(request: Request):
 
     invite_url = f"{settings.public_base_url.rstrip('/')}/invite/accept/{raw_token}"
     await send_hosting_invite_email(user_email, invite_url, is_existing_user=has_password)
-    return safe_redirect(url="/admin/users/?success=invite_sent", status_code=status.HTTP_303_SEE_OTHER)
+    return safe_redirect(url=hosting_return_url(request, "/admin/users/", "success=invite_sent"), status_code=status.HTTP_303_SEE_OTHER)
 
 
 @router.post("/admin/users/{user_id}/hosting", dependencies=[Depends(require_super_admin)])
@@ -1788,6 +1809,10 @@ async def admin_toggle_user_hosting(request: Request, user_id: int):
             raise HTTPException(status_code=400, detail="Stub users cannot be granted hosting directly. Send an invitation instead.")
 
         user.can_host = new_can_host
+        if new_can_host:
+            await close_open_hosting_request(
+                session, user.id, status=HOSTING_REQUEST_GRANTED, decided_by_user_id=admin_user_id
+            )
 
         # Pending tokens deleted on both grant and revoke (Review 7 A5)
         delete_stmt = (
@@ -1819,7 +1844,8 @@ async def admin_toggle_user_hosting(request: Request, user_id: int):
     referrer = request.headers.get("referer", "")
     if f"/admin/users/{user_id}" in referrer:
         return safe_redirect(url=f"/admin/users/{user_id}/", status_code=status.HTTP_303_SEE_OTHER)
-    return safe_redirect(url=f"/admin/users/?success=hosting_{'granted' if new_can_host else 'revoked'}", status_code=status.HTTP_303_SEE_OTHER)
+    outcome = f"success=hosting_{'granted' if new_can_host else 'revoked'}"
+    return safe_redirect(url=hosting_return_url(request, "/admin/users/", outcome), status_code=status.HTTP_303_SEE_OTHER)
 
 
 @router.post("/admin/users/invite/{token_id}/cancel", dependencies=[Depends(require_super_admin)])
@@ -1834,7 +1860,10 @@ async def admin_cancel_invite(request: Request, token_id: int):
         if tok:
             await session.delete(tok)
 
-    return safe_redirect(url="/admin/users/?success=invite_cancelled", status_code=status.HTTP_303_SEE_OTHER)
+    return safe_redirect(
+        url=hosting_return_url(request, "/admin/users/", "success=invite_cancelled"),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
 
 
 @router.post("/admin/users/invite/{token_id}/resend", dependencies=[Depends(require_super_admin)])
@@ -1874,6 +1903,185 @@ async def admin_resend_invite(request: Request, token_id: int):
     invite_url = f"{settings.public_base_url.rstrip('/')}/invite/accept/{raw_token}"
     await send_hosting_invite_email(user_email, invite_url, is_existing_user=has_password)
     return safe_redirect(url="/admin/users/?success=invite_resent", status_code=status.HTTP_303_SEE_OTHER)
+
+
+HOSTING_ACCESS_URL = "/admin/hosting-access/"
+HOSTING_REQUESTS_URL = "/admin/hosting-access/requests/"
+
+
+def hosting_return_url(request: Request, default: str, query: str) -> str:
+    """Send hosting actions taken from the Hosting access page back to it."""
+    referrer = request.headers.get("referer", "")
+    base = HOSTING_ACCESS_URL if "/admin/hosting-access/" in referrer else default
+    return f"{base}?{query}"
+
+
+@dataclass(frozen=True)
+class HostingAccessEntry:
+    user: User
+    events_owned: int
+    pending_invite: AuthToken | None
+
+
+async def list_hosting_access_entries(session: AsyncSession) -> list[HostingAccessEntry]:
+    """People with hosting access, then people with a pending hosting invitation."""
+    hosts = (
+        await session.execute(
+            select(User)
+            .where(User.can_host.is_(True), User.is_admin.is_(False))
+            .order_by(func.lower(User.display_name), User.id)
+        )
+    ).scalars().all()
+    invites = (
+        await session.execute(
+            select(AuthToken)
+            .options(joinedload(AuthToken.user))
+            .join(User, User.id == AuthToken.user_id)
+            .where(
+                AuthToken.token_type == TOKEN_TYPE_HOSTING_INVITE,
+                AuthToken.used_at.is_(None),
+                AuthToken.expires_at > utc_now(),
+                User.can_host.is_(False),
+            )
+            .order_by(AuthToken.created_at.desc())
+        )
+    ).scalars().all()
+    latest_invites: dict[int, AuthToken] = {}
+    for tok in invites:
+        latest_invites.setdefault(tok.user_id, tok)
+
+    user_ids = [u.id for u in hosts] + list(latest_invites)
+    owned_counts: dict[int, int] = {}
+    if user_ids:
+        rows = await session.execute(
+            select(EventMembership.user_id, func.count(EventMembership.id))
+            .where(EventMembership.user_id.in_(user_ids), EventMembership.role == "event_owner")
+            .group_by(EventMembership.user_id)
+        )
+        owned_counts = dict(rows.all())
+
+    entries = [HostingAccessEntry(user=u, events_owned=owned_counts.get(u.id, 0), pending_invite=None) for u in hosts]
+    entries.extend(
+        HostingAccessEntry(user=tok.user, events_owned=owned_counts.get(tok.user_id, 0), pending_invite=tok)
+        for tok in latest_invites.values()
+    )
+    return entries
+
+
+def render_hosting_access(
+    request: Request,
+    *,
+    tab: str,
+    entries: list[HostingAccessEntry],
+    hosting_requests: list[HostingRequest],
+):
+    return templates.TemplateResponse(
+        request=request,
+        name="admin/hosting_access.html",
+        context={
+            "tab": tab,
+            "entries": entries,
+            "hosting_requests": hosting_requests,
+            "open_hosting_requests": len(hosting_requests),
+            "format_event_dates": format_event_dates,
+            "decline_reason_max": DECLINE_REASON_MAX,
+            "is_super_admin": True,
+            "is_event_owner": True,
+            "is_room_coordinator": True,
+        },
+    )
+
+
+@router.get("/admin/hosting-access/", dependencies=[Depends(require_super_admin)])
+async def admin_hosting_access(request: Request):
+    """People with hosting access and pending hosting invitations (super admin only)."""
+    async with get_session() as session:
+        entries = await list_hosting_access_entries(session)
+        hosting_requests = await list_open_hosting_requests(session)
+    return render_hosting_access(request, tab="people", entries=entries, hosting_requests=hosting_requests)
+
+
+@router.get("/admin/hosting-access/requests/", dependencies=[Depends(require_super_admin)])
+async def admin_hosting_requests(request: Request):
+    """Open hosting access requests, newest first (super admin only)."""
+    async with get_session() as session:
+        hosting_requests = await list_open_hosting_requests(session)
+    return render_hosting_access(request, tab="requests", entries=[], hosting_requests=hosting_requests)
+
+
+@router.post("/admin/hosting-access/requests/{request_id}/grant", dependencies=[Depends(require_super_admin)])
+async def admin_grant_hosting_request(request: Request, request_id: int):
+    """Grant hosting access to the requester and close the request."""
+    if not verify_same_origin(request):
+        raise HTTPException(status_code=400, detail="Invalid request origin.")
+
+    async with get_session() as session:
+        principal = await resolve_principal(request, session)
+        hosting_request = await get_hosting_request(session, request_id)
+        if hosting_request is None or hosting_request.status != HOSTING_REQUEST_OPEN:
+            return safe_redirect(url=f"{HOSTING_REQUESTS_URL}?error=request_not_found", status_code=status.HTTP_303_SEE_OTHER)
+        user = hosting_request.user
+        if not user.is_active:
+            return safe_redirect(url=f"{HOSTING_REQUESTS_URL}?error=inactive_user", status_code=status.HTTP_303_SEE_OTHER)
+
+        user.can_host = True
+        user.hosting_revoked_at = None
+        await close_hosting_request(
+            session, hosting_request, status=HOSTING_REQUEST_GRANTED, decided_by_user_id=principal["user_id"]
+        )
+        pending_invites = (
+            await session.execute(
+                select(AuthToken).where(
+                    AuthToken.user_id == user.id,
+                    AuthToken.token_type == TOKEN_TYPE_HOSTING_INVITE,
+                    AuthToken.used_at.is_(None),
+                )
+            )
+        ).scalars().all()
+        for tok in pending_invites:
+            await session.delete(tok)
+        user_email = user.email
+        logger.info(
+            "Admin %s granted hosting request %d for user %d", principal["user_id"], hosting_request.id, user.id
+        )
+
+    await send_hosting_granted_email(user_email, f"{settings.public_base_url.rstrip('/')}/workspace/")
+    return safe_redirect(url=f"{HOSTING_REQUESTS_URL}?success=request_granted", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@router.post("/admin/hosting-access/requests/{request_id}/decline", dependencies=[Depends(require_super_admin)])
+async def admin_decline_hosting_request(request: Request, request_id: int):
+    """Decline a hosting request and tell the requester why."""
+    if not verify_same_origin(request):
+        raise HTTPException(status_code=400, detail="Invalid request origin.")
+
+    form = await request.form()
+    reason = multi_line(form.get("reason"))
+    if not reason or len(reason) > DECLINE_REASON_MAX:
+        return safe_redirect(url=f"{HOSTING_REQUESTS_URL}?error=decline_reason", status_code=status.HTTP_303_SEE_OTHER)
+
+    async with get_session() as session:
+        principal = await resolve_principal(request, session)
+        hosting_request = await get_hosting_request(session, request_id)
+        if hosting_request is None or hosting_request.status != HOSTING_REQUEST_OPEN:
+            return safe_redirect(url=f"{HOSTING_REQUESTS_URL}?error=request_not_found", status_code=status.HTTP_303_SEE_OTHER)
+        await close_hosting_request(
+            session,
+            hosting_request,
+            status=HOSTING_REQUEST_DECLINED,
+            decided_by_user_id=principal["user_id"],
+            decline_reason=reason,
+        )
+        user_email = hosting_request.user.email
+        logger.info(
+            "Admin %s declined hosting request %d for user %d",
+            principal["user_id"],
+            hosting_request.id,
+            hosting_request.user_id,
+        )
+
+    await send_hosting_request_declined_email(user_email, reason, f"{settings.public_base_url.rstrip('/')}/account")
+    return safe_redirect(url=f"{HOSTING_REQUESTS_URL}?success=request_declined", status_code=status.HTTP_303_SEE_OTHER)
 
 
 @router.post("/admin/users/{user_id}/toggle-active", dependencies=[Depends(require_super_admin)])

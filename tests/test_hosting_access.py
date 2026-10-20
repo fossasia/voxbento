@@ -421,7 +421,7 @@ async def test_invite_cancel_and_resend():
 
 @pytest.mark.anyio
 async def test_demo_request_hosting_rate_limit_and_user_flag():
-    """Demo request enforces rate limits, strips CRLF, ignores spoofed user_id, updates hosting_requested_at."""
+    """Demo request enforces rate limits, strips CRLF, ignores spoofed user_id, leaves hosting_requested_at alone."""
     async with get_session() as session:
         user = await create_user(
             session,
@@ -459,13 +459,12 @@ async def test_demo_request_hosting_rate_limit_and_user_flag():
             assert called_info["user_id"] == user_id
             assert called_info["source"] == "account"
 
-            # DB flag updated
+            # Hosting access is requested from the Account page form, not the demo form
             async with get_session() as session:
                 u1 = await get_user_by_id(session, user_id)
-                assert u1.hosting_requested_at is not None
-                initial_timestamp = u1.hosting_requested_at
+                assert u1.hosting_requested_at is None
 
-            # 2. Second submission should succeed but NOT overwrite timestamp
+            # 2. Second submission should succeed
             res2 = await http.post(
                 "/api/request-demo",
                 json={
@@ -481,7 +480,7 @@ async def test_demo_request_hosting_rate_limit_and_user_flag():
 
             async with get_session() as session:
                 u2 = await get_user_by_id(session, user_id)
-                assert u2.hosting_requested_at == initial_timestamp
+                assert u2.hosting_requested_at is None
 
             # 3. Third submission
             res3 = await http.post(
@@ -626,17 +625,17 @@ async def test_new_event_button_visibility():
     token_host = create_user_token(user_id=host_id, email="host_btn@example.com")
 
     async with client() as http:
-        # Non-host on account page sees no Organizer Workspace nav link and sees Request Hosting Access
+        # Non-host on account page sees no Organizer Workspace nav link and sees Request access
         res_nh_account = await http.get("/account", cookies={"user_token": token_non_host})
         assert res_nh_account.status_code == 200
-        assert "Request Hosting Access" in res_nh_account.text
+        assert 'href="/account/hosting-request"' in res_nh_account.text
         assert 'href="/workspace/">Organizer Workspace</a>' not in res_nh_account.text
 
         # Host on account page sees Organizer Workspace and Go to My Events
         res_h_account = await http.get("/account", cookies={"user_token": token_host})
         assert res_h_account.status_code == 200
         assert 'href="/workspace/">Organizer Workspace</a>' in res_h_account.text
-        assert "Go to My Events" in res_h_account.text
+        assert "Go to My events" in res_h_account.text
 
         # Host on workspace sees + New event button
         res_h_events = await http.get("/workspace/events/", cookies={"user_token": token_host})
@@ -667,9 +666,9 @@ async def test_new_event_button_visibility():
         assert "account-row--disabled" not in res_rev_account.text
         assert "Access Suspended" not in res_rev_account.text
         assert f'href="/workspace/events/{event_id}/"' in res_rev_account.text
-        # 2. Event Hosting card shows Hosting Access Revoked with Re-request button
-        assert "Hosting Access Revoked" in res_rev_account.text
-        assert "Re-request Hosting Access" in res_rev_account.text
+        # 2. Hosting events card says access was removed and offers Request access again
+        assert "Hosting access was removed" in res_rev_account.text
+        assert 'href="/account/hosting-request"' in res_rev_account.text
 
         # 3. Can access their already created event (NOT blocked)
         res_ev = await http.get(f"/workspace/events/{event_id}/", cookies={"user_token": token_revoked}, follow_redirects=False)
