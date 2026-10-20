@@ -11,58 +11,59 @@ Voxbento uses a role-based permission system that lets you grant each participan
 Voxbento defines five roles, ordered from most to least privileged:
 
 ```text
-super_admin > event_owner > room_coordinator > interpreter
+super_admin > event_owner > room_coordinator > interpreter > support > listener
 ```
 
 | Role | Description |
 | --- | --- |
 | **super\_admin** | Site-wide admin access. Can manage all events, users, and system settings. |
-| **event\_owner** | Full control over a specific event — manages booths, generates tokens, and can go live. |
-| **room\_room_coordinator** | Can go live, reassign the active interpreter, and manage handoffs during a session across a room. |
-| **interpreter** | Can go live (publish audio via WHIP) and participate in booth chat. |
+| **event\_owner** | Full control over a specific event — manages rooms, booths, generates tokens, and can go live. |
+| **room\_coordinator** | Can go live, reassign the active interpreter, and manage handoffs during a session across a room. |
+| **interpreter** | Can go live (publish audio via WHIP) when designated active and participate in booth chat. |
+| **support** | View-only access to booth status and monitoring feeds without chat or broadcast privileges. |
+| **listener** | Attendee role: connects to public audio streams via WHEP or HLS and receives live captions. |
 
 ## Permission Matrix
 
 The table below shows which actions each role can perform within a booth or event:
 
-| Permission | super\_admin | event\_owner | room\_room_coordinator | interpreter |
-| --- | :-: | :-: | :-: | :-: |
-| Go Live (publish audio) | ✓ | ✓ | ✓ | ✓ |
-| Set Active Interpreter | ✓ | ✓ | ✓ | — |
-| Chat | ✓ | ✓ | ✓ | ✓ |
-| Manage Booths | ✓ | ✓ | — | — |
-| Manage Events | ✓ | — | — | — |
+| Permission | super\_admin | event\_owner | room\_coordinator | interpreter | support | listener |
+| --- | :-: | :-: | :-: | :-: | :-: | :-: |
+| Go Live (publish audio) | ✓ | ✓ | ✓ | ✓ (active only) | — | — |
+| Set Active Interpreter | ✓ | ✓ | ✓ | — | — | — |
+| Chat | ✓ | ✓ | ✓ | ✓ | — | — |
+| Manage Booths | ✓ | ✓ | — | — | — | — |
+| Manage Events | ✓ | — | — | — | — | — |
 
-## Event-Scoped Roles
+## Role Scopes and Boundaries
 
-Roles in Voxbento are always **per-event**, not global. A user you assign as an interpreter for `pycon2026` has no special permissions on any other event. This design lets you safely reuse the same user accounts across multiple events without worrying about permission bleed.
+Permissions in Voxbento are scoped according to privilege level:
+- **`super_admin`**: Site-wide platform authority (`User.is_admin = True`), with global access across all events and settings.
+- **`event_owner`**: Event-scoped (`EventMembership`), granting administrative and configuration control across all rooms and booths within that specific event.
+- **`room_coordinator`**: Room-scoped (`RoomMembership`), conferring operational authority in Mission Control and floor source controls for assigned rooms.
+- **`interpreter` / `support`**: Booth-scoped (`BoothMembership`) or assigned across rooms/events.
 
-:::tip
-For interpreters who cover multiple events, assigning them at the event level saves time versus booth-by-booth assignment. Event-level roles apply to all booths within that event.
-:::
+Cross-event permission isolation applies to event- and room-scoped assignments: an organizer or interpreter assigned to `pycon2026` has no special permissions on any other event. This design lets you safely reuse the same user accounts across multiple events without permission bleed.
 
 ## Assigning Event-Level Roles
 
-Use event-level role assignment when a user needs access to an entire event — for example, an event owner who manages multiple rooms, or an interpreter who will work across several booths.
+Use event-level role assignment when a user needs co-ownership of an entire event.
 
-### Open the admin panel
+### Open the admin or workspace panel
 
-Sign in at `/login` and navigate to `/admin/events/`.
-  ### Open the event
+Sign in at `/login` and navigate to your event.
+### Open the event
 
 Click the event you want to manage.
-  ### Go to Manage Members
+### Go to Manage Members
 
-Click **Manage Members** on the event detail page, or navigate to `/admin/events/{event_id}/members/`.
-  ### Enter the user's email
+Click **Manage Members** on the event detail page (`/workspace/events/{event_id}/members/` or `/admin/...`).
+### Enter the user's email
 
 In the **Assign Member** form, type the registered email address of the user you want to add.
-  ### Select a role
+### Assign Role
 
-Choose the appropriate role from the dropdown — currently only `event_owner` is assigned here.
-  ### Submit
-
-Click **Assign Role**. The user now appears in the members list and gains the selected permissions for the entire event.
+Click **Assign Role**. The user is granted `event_owner` permissions for this event and can manage its rooms and booths.
 
 ## Assigning Room-Level Roles
 
@@ -116,25 +117,9 @@ The change takes effect immediately. The user loses the associated permissions o
 
 ## User Admin Flags
 
-The **Users** page at `/admin/users/` lists all registered users and exposes account-level controls that are separate from event roles:
+The **Users** page at `/admin/users/` lists all registered accounts and exposes in-place access switches:
 
-<details>
-<summary>Admin badge</summary>
-
-Users with the **Admin** badge have site-wide admin panel access. You can toggle this flag from the user detail page at `/admin/users/{user_id}/` using the **Toggle Admin** action.
-
-</details>
-
-<details>
-<summary>Active / Deactivated status</summary>
-
-The **Status** column shows whether a user can log in. Clicking **Deactivate** immediately prevents the user from authenticating. Click **Activate** to restore access. Deactivated users who are already logged in will be rejected on their next authenticated request.
-
-</details>
-
-<details>
-<summary>Deleting a user</summary>
-
-Clicking **Delete** on the user detail page permanently removes the account and all associated memberships. This cannot be undone. Consider deactivating the account instead if you may need to restore access later.
-
-</details>
+- **Hosting access**: Allows the user to create new events and become an event owner.
+- **Admin**: Grants site-wide super administrator permissions (guarded against self-demotion or removal of the last admin).
+- **Active / Deactivated**: Disables login access immediately without deleting the account.
+- **Email verified**: Toggles whether the account's email has completed verification, which is required for password sign-in.
