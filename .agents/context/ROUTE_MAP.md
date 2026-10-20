@@ -97,12 +97,12 @@
 | GET | `/admin/events/{event_id}/members/` | `admin/event_members.html` | EventMembership list |
 | POST | `/admin/events/{event_id}/members/` | — | Upserts EventMembership by email + role |
 | POST | `/admin/events/{event_id}/members/{membership_id}/delete` | — | Removes EventMembership |
-| GET | `/admin/users/` | `admin/user_list.html` | Paginated; `sort_by`/`sort_order` query params, defaults to `created_at` desc (newest first) |
-| GET | `/admin/users/{user_id}/` | `admin/user_detail.html` | User + event admin assignments |
-| POST | `/admin/users/{user_id}/toggle-active` | — | Flips `is_active` |
-| POST | `/admin/users/{user_id}/delete` | — | Deletes user |
-| POST | `/admin/users/{user_id}/toggle-admin` | — | Flips `is_admin` |
-| POST | `/admin/users/{user_id}/events/{event_id}/toggle-admin` | — | Grants/revokes `event_owner` membership |
+| GET | `/admin/users/` | `admin/user_list.html` | Users (#765): `search` (name or email), `show` (`all`, `admins`, `hosting`, `deactivated`, `unverified`), sortable User/Joined (`sort_by`/`sort_order`, default `created_at` desc), pagination; on/off switches for Hosting access, Admin and Active per row (`static/js/admin-users.js`) |
+| GET | `/admin/users/{user_id}/` | `admin/user_detail.html` | User page (#765): Platform access (hosting, Admin), Roles in events (read-only; owners manage them), Events owned, Account facts, Danger zone |
+| POST | `/admin/users/{user_id}/access` | — | Same-origin; form `field` (`hosting`/`admin`/`active`) + `value` (`true`/`false`). JSON `{ok, field, value, message}` when `Accept: application/json`, else `303` back with `?notice=`/`?error=`. Rules in `portal/user_admin.py`: no changing your own Admin or Active status, at least one active Admin always remains, hosting only for active accounts that are set up, Admins always host |
+| POST | `/admin/users/{user_id}/toggle-active` | — | Older form endpoint; same-origin; flips Active through the same rules |
+| POST | `/admin/users/{user_id}/toggle-admin` | — | Older form endpoint; same-origin; flips Admin through the same rules |
+| POST | `/admin/users/{user_id}/delete` | — | Same-origin; `confirm_email` must equal the account's email; never your own account or the last active Admin; deletes the user and all their roles |
 | GET | `/admin/hosting-access/` | `admin/hosting_access.html` | "People with access" tab: hosts and pending hosting invitations, events owned, Remove access / Cancel invitation (#768) |
 | GET | `/admin/hosting-access/requests/` | `admin/hosting_access.html` | "Requests" tab: open hosting requests, newest first |
 | POST | `/admin/hosting-access/requests/{request_id}/grant` | — | Same-origin; sets `can_host`, closes request as `granted`, emails the person |

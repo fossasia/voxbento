@@ -595,15 +595,17 @@ class TestEventDetailMembersLink:
 class TestUserListNoGlobalRole:
     @pytest.mark.anyio
     async def test_user_list_no_role_dropdown(self, setup_db, admin_cookie):
-        await _create_test_user()
+        user = await _create_test_user()
         async with _client() as c:
             resp = await c.get("/admin/users/", cookies=admin_cookie)
+            detail = await c.get(f"/admin/users/{user.id}/", cookies=admin_cookie)
         assert resp.status_code == 200
         # Should NOT have role-change form or super_admin option
         assert b"super_admin" not in resp.content
         assert b"role-select" not in resp.content
-        # Should say roles are per-event
-        assert b"per event" in resp.content.lower() or b"per-event" in resp.content.lower()
+        # Event roles belong to each event's owners (#765)
+        assert b"Roles are given and removed by each event's owners, not from here." in detail.content
+        assert b"toggle-owner" not in detail.content
 
 
 # ---------------------------------------------------------------------------

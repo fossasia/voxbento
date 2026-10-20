@@ -565,7 +565,12 @@ async def test_deleting_user_removes_their_requests():
     user_id, token = await make_user()
     async with client() as http:
         await submit(http, token)
-        await http.post(f"/admin/users/{user_id}/delete", headers=SAME_ORIGIN, cookies={"user_token": admin_token})
+        await http.post(
+            f"/admin/users/{user_id}/delete",
+            data={"confirm_email": "priya@example.org"},
+            headers=SAME_ORIGIN,
+            cookies={"user_token": admin_token},
+        )
         page = await http.get("/admin/hosting-access/requests/", cookies={"user_token": admin_token})
     assert page.status_code == 200
     assert await open_requests() == []
