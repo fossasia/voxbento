@@ -16,11 +16,13 @@ Before exposing your Voxbento instance to the internet, verify each of the follo
 
 - Generate `SECRET_KEY` with `openssl rand -hex 32` — never use the default `change-me` value
 - Generate `API_KEY_ENCRYPTION_KEY` with `openssl rand -hex 32` — required if you store any third-party API credentials
+- Set `BOOTH_ACCESS_TOKEN` to a strong random value (`openssl rand -hex 32`) before production startup. Legacy API routes fail closed when it is missing outside debug mode.
+- Use `Authorization: Bearer <token>` rather than `?token=`; query-string credentials are redacted from access logs but can still leak through browser history and intermediaries.
 - Change `JVB_AUTH_PASSWORD` and `JICOFO_AUTH_PASSWORD` from `changeme` to strong random values
 - Never commit `.env` to source control — add it to `.gitignore` and use environment variable injection in your deployment platform instead
 
 :::warning
-The default `SECRET_KEY` value is `change-me`, which is publicly known. Any deployment that ships with this value can have its JWT session tokens forged by anyone who knows it. Generate a new key before accepting any user sessions.
+The default `SECRET_KEY` value is `change-me`, which is publicly known. Any deployment that ships with this value can have its JWT session tokens forged by anyone who knows it. Generate a new key before accepting any user sessions. `BOOTH_ACCESS_TOKEN` must also be non-empty and private in production.
 :::
 
 ## TLS and HTTPS

@@ -16,11 +16,15 @@ conf = ConnectionConfig(
     MAIL_FROM=settings.smtp_from_email,
     MAIL_PORT=settings.smtp_port,
     MAIL_SERVER=settings.smtp_host or "localhost",
-    MAIL_STARTTLS=True,
-    MAIL_SSL_TLS=False,
-    USE_CREDENTIALS=bool(settings.smtp_user),
+    MAIL_STARTTLS=True if settings.smtp_port == 587 else False,
+    MAIL_SSL_TLS=True if settings.smtp_port == 465 else False,
+    USE_CREDENTIALS=bool(settings.smtp_user and settings.smtp_password),
     VALIDATE_CERTS=True,
 )
+
+
+_BASE_DIR = Path(__file__).resolve().parent
+templates = Jinja2Templates(directory=str(_BASE_DIR / "templates"))
 
 
 async def send_demo_request_email(form_data: Dict[str, Any]) -> None:
@@ -30,22 +34,30 @@ async def send_demo_request_email(form_data: Dict[str, Any]) -> None:
 
     subject = f"New Demo Request from {form_data.get('email', 'Unknown')}"
 
-    body = f"""
-    New Demo Request:
+    user_id = form_data.get("user_id")
+    admin_url = (
+        f"{settings.public_base_url.rstrip('/')}/admin/users/{user_id}/"
+        if user_id
+        else f"{settings.public_base_url.rstrip('/')}/admin/users/"
+    )
 
-    Email: {form_data.get("email")}
-    First Name: {form_data.get("firstName")}
-    Last Name: {form_data.get("lastName")}
-    Phone Number: {form_data.get("phoneNumber")}
-    Company Name: {form_data.get("companyName")}
-    Country: {form_data.get("country")}
-    Industry: {form_data.get("industry")}
-    Company Size: {form_data.get("companySize")}
-    Language Support Needed For: {form_data.get("languageSupport")}
-    """
+    template_context = {
+        **form_data,
+        "admin_url": admin_url,
+    }
+
+    try:
+        template = templates.get_template("email/demo_request.html")
+        html_body = template.render(template_context)
+    except Exception as e:
+        logger.error(f"Failed to render demo request template: {e}")
+        html_body = f"<pre>New Demo Request:\n\n{form_data}</pre>"
 
     message = MessageSchema(
-        subject=subject, recipients=["voxbento.dev@gmail.com"], body=body, subtype=MessageType.plain
+        subject=subject,
+        recipients=["voxbento.dev@gmail.com"],
+        body=html_body,
+        subtype=MessageType.html,
     )
 
     fm = FastMail(conf)
@@ -54,10 +66,6 @@ async def send_demo_request_email(form_data: Dict[str, Any]) -> None:
         logger.info(f"Demo request email sent for {form_data.get('email')}")
     except Exception as e:
         logger.error(f"Failed to send demo request email: {e}")
-
-
-_BASE_DIR = Path(__file__).resolve().parent
-templates = Jinja2Templates(directory=str(_BASE_DIR / "templates"))
 
 
 async def send_delayed_onboarding_email(email_address: str, display_name: str) -> None:

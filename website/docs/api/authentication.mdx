@@ -78,6 +78,8 @@ const { access_token } = await response.json();
 
 :::info
 The `BOOTH_ACCESS_TOKEN` is provided by the Voxbento platform. Ensure you have the correct credentials before attempting to authenticate.
+
+This is a global legacy API credential. The JWT issued by `/api/auth/token` has global scope across the applicable protected legacy `/api/events/...` endpoints; it is not restricted to a single event. Treat the credential and issued JWT as highly sensitive, and share them only with trusted integrations. This scope does not grant access to every application route or bypass separate authorization checks.
 :::
 
 ## Using the Token

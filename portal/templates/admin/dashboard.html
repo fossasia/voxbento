@@ -8,20 +8,28 @@
   {% set ns.booths = ns.booths + ed.total_booths %}
 {% endfor %}
 
-<div class="hub-header">
+  <div class="hub-header">
   <div>
     <h1>Dashboard</h1>
     <p>Manage your events, rooms and interpretation booths.</p>
   </div>
+  {% if can_host or is_super_admin %}
   <a href="{{ management_prefix }}/setup" class="btn btn-primary btn-lg">+ New event</a>
+  {% endif %}
 </div>
 
 {% if not event_data %}
 <div class="empty-state">
   <div class="empty-state-icon">🎧</div>
+  {% if can_host or is_super_admin %}
   <h2 class="empty-state-title empty-state-title--lg">Let's set up your first event</h2>
   <p class="empty-state-text--narrow">Create an event, add rooms and language booths, and invite your team — all in a few guided steps.</p>
   <a href="{{ management_prefix }}/setup" class="btn btn-primary btn-lg">Create your first event &rarr;</a>
+  {% else %}
+  <h2 class="empty-state-title empty-state-title--lg">No events yet</h2>
+  <p class="empty-state-text--narrow">You do not have hosting access to create events. Ask an administrator or request access from your account page.</p>
+  <a href="/account" class="btn btn-primary btn-lg">Request Hosting Access &rarr;</a>
+  {% endif %}
 </div>
 {% else %}
 <div class="stat-cards">
