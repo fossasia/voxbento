@@ -23,7 +23,7 @@ from contextlib import asynccontextmanager
 from datetime import date, datetime, timedelta, timezone
 
 import sqlalchemy as sa
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import joinedload, selectinload
 
@@ -1150,14 +1150,18 @@ async def get_api_keys_for_event(session: AsyncSession, event_id: int) -> list[E
 
 
 async def revoke_api_key(session: AsyncSession, key_id: int, event_id: int) -> bool:
-    stmt = select(EventAPIKey).where(EventAPIKey.id == key_id, EventAPIKey.event_id == event_id)
+    stmt = (
+        update(EventAPIKey)
+        .where(
+            EventAPIKey.id == key_id,
+            EventAPIKey.event_id == event_id,
+            EventAPIKey.active.is_(True),
+        )
+        .values(active=False)
+    )
     result = await session.execute(stmt)
-    key = result.scalar_one_or_none()
-    if key:
-        key.active = False
-        await session.flush()
-        return True
-    return False
+    await session.flush()
+    return result.rowcount == 1
 
 
 async def verify_api_key(session: AsyncSession, raw_key: str) -> EventAPIKey | None:

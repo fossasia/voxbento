@@ -58,10 +58,41 @@ STALL_SECS = 3.0
 IO_TIMEOUT_SECS = 8.0
 
 
+_RESERVED_PORTS: set[int] = set()
+
+
+def free_ports(*names: str) -> dict[str, int]:
+    """Allocate distinct, unreserved ephemeral ports for the named services."""
+    sockets: list[socket.socket] = []
+    result: dict[str, int] = {}
+    try:
+        for name in names:
+            while True:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                sock.bind(("127.0.0.1", 0))
+                port = sock.getsockname()[1]
+                if port not in _RESERVED_PORTS:
+                    _RESERVED_PORTS.add(port)
+                    sockets.append(sock)
+                    result[name] = port
+                    break
+                sock.close()
+    finally:
+        for sock in sockets:
+            sock.close()
+    return result
+
+
 def free_port() -> int:
-    with socket.socket() as sock:
-        sock.bind(("127.0.0.1", 0))
-        return sock.getsockname()[1]
+    while True:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            sock.bind(("127.0.0.1", 0))
+            port = sock.getsockname()[1]
+            if port not in _RESERVED_PORTS:
+                _RESERVED_PORTS.add(port)
+                return port
 
 
 def self_signed(directory: Path) -> tuple[Path, Path]:
@@ -139,14 +170,21 @@ class FreezingProxy:
         self.tasks: set[asyncio.Task] = set()
 
     async def start(self) -> int:
-        sock = socket.socket()
-        # A small receive window makes the sender block quickly once we stop reading.
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4096)
-        sock.bind(("127.0.0.1", 0))
+        while True:
+            sock = socket.socket()
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            # A small receive window makes the sender block quickly once we stop reading.
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4096)
+            sock.bind(("127.0.0.1", 0))
+            port = sock.getsockname()[1]
+            if port not in _RESERVED_PORTS:
+                _RESERVED_PORTS.add(port)
+                break
+            sock.close()
         sock.listen()
         sock.setblocking(False)
         self.server = await asyncio.start_server(self._handle, sock=sock)
-        return sock.getsockname()[1]
+        return port
 
     def freeze(self) -> None:
         for session in self.sessions:
@@ -280,7 +318,7 @@ async def native(tmp_path, monkeypatch):
     assert os.environ.get("MEDIAMTX_TEST_BINARY"), "Set MEDIAMTX_TEST_BINARY to a MediaMTX 1.18.2 binary"
     configure(f"sqlite+aiosqlite:///{tmp_path}/test.db")
     await init_db()
-    ports = {name: free_port() for name in ("http", "api", "rtsp", "rtmps", "relay")}
+    ports = free_ports("http", "api", "rtsp", "rtmps", "relay")
     for name, value in {
         "program_ingest_enabled": True,
         "mediamtx_auth_hook_secret": HOOK_SECRET,

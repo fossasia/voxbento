@@ -1972,7 +1972,12 @@ async def apply_user_access(request: Request, user_id: int, field: str, value: b
             user = await get_user_by_id(session, user_id)
             if user is None:
                 raise UserAdminError("not_found", 404)
-            value = not {"hosting": user.can_host, "admin": user.is_admin, "active": user.is_active}[field]
+            value = not {
+                "hosting": user.can_host,
+                "admin": user.is_admin,
+                "active": user.is_active,
+                "verified": user.email_verified,
+            }[field]
         change = await set_user_access(session, actor_id=actor_id, user_id=user_id, field=field, value=value)
     if change.changed and field == "hosting" and value:
         await send_hosting_granted_email(change.email, f"{settings.public_base_url.rstrip('/')}/workspace/")

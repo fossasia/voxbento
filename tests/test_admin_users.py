@@ -112,7 +112,7 @@ async def test_list_layout_search_and_show_filter(admin):
     assert "<h1>Users</h1>" in html
     assert "Everyone with a VoxBento account." in html
     assert '<span class="ul-count">4 users</span>' in html
-    for header in ("Hosting access", "Admin", "Active"):
+    for header in ("Hosting access", "Admin", "Active", "Verified"):
         assert f'<th scope="col" class="ul-center">{header}</th>' in html
     assert "Email not verified</span>" in html
 
@@ -127,7 +127,7 @@ async def test_list_layout_search_and_show_filter(admin):
 @pytest.mark.anyio
 async def test_switch_states_and_safeguards(admin):
     host = await make_user("wiki@example.org", "Wikimania team", can_host=True)
-    stub = await make_user("new@example.org", "New person", password=False)
+    stub = await make_user("new@example.org", "New person", password=False, email_verified=False)
     off = await make_user("test@example.org", "Test account", is_active=False)
     async with client() as http:
         html = (await http.get("/admin/users/", cookies=admin["cookies"])).text
@@ -140,6 +140,9 @@ async def test_switch_states_and_safeguards(admin):
     )
     assert "You can&#39;t change your own Admin status" in switch(html, "admin", admin["id"])
     assert "You can&#39;t deactivate your own account" in switch(html, "active", admin["id"])
+    assert "You can&#39;t unverify your own email address" in switch(html, "verified", admin["id"])
+    assert 'aria-checked="true"' in switch(html, "verified", host)
+    assert 'aria-checked="false"' in switch(html, "verified", stub)
     # Accounts that aren't set up or are deactivated can't be granted access from the list.
     assert "disabled" in switch(html, "hosting", stub)
     assert "disabled" in switch(html, "hosting", off) and "disabled" in switch(html, "admin", off)
@@ -210,6 +213,7 @@ async def test_admin_and_active_switches(admin):
     [
         ("admin", False, 403, "You can't change your own Admin status."),
         ("active", False, 403, "You can't deactivate your own account."),
+        ("verified", False, 403, "You can't unverify your own email address."),
         ("hosting", True, 400, "Admins can always create events."),
     ],
 )
@@ -229,7 +233,7 @@ async def test_last_active_admin_is_protected(admin):
     # self rules catch first; the rule itself is a backstop for any other caller.
     from portal.user_admin import UserAdminError, delete_user_account, set_user_access
 
-    for field in ("admin", "active"):
+    for field in ("admin", "active", "verified"):
         with pytest.raises(UserAdminError) as exc:
             async with get_session() as session:
                 await set_user_access(session, actor_id=None, user_id=admin["id"], field=field, value=False)
@@ -244,6 +248,33 @@ async def test_last_active_admin_is_protected(admin):
     async with client() as http:
         res = await set_access(http, cookies_for(other, "ops@example.org", True), admin["id"], "admin", False)
     assert res.json()["ok"] is True
+
+
+@pytest.mark.anyio
+async def test_verified_switch(admin):
+    user_id = await make_user("unverified@example.org", "Unverified Person", email_verified=False)
+    async with client() as http:
+        on = await set_access(http, admin["cookies"], user_id, "verified", True)
+        detail_after_on = await http.get(f"/admin/users/{user_id}/", cookies=admin["cookies"])
+        off = await set_access(http, admin["cookies"], user_id, "verified", False)
+        detail_after_off = await http.get(f"/admin/users/{user_id}/", cookies=admin["cookies"])
+    assert on.json() == {
+        "ok": True,
+        "field": "verified",
+        "value": True,
+        "message": "Unverified Person's email was marked as verified.",
+    }
+    assert "Mark unverified" in detail_after_on.text
+    assert off.json() == {
+        "ok": True,
+        "field": "verified",
+        "value": False,
+        "message": "Unverified Person's email was marked as not verified.",
+    }
+    assert "Mark verified" in detail_after_off.text
+    async with get_session() as session:
+        user = await get_user_by_id(session, user_id)
+        assert user.email_verified is False
 
 
 @pytest.mark.anyio

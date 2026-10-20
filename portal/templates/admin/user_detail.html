@@ -87,6 +87,22 @@
           {% endif %}
         </div>
       </div>
+      <div class="ud-row">
+        <div class="ud-row-text">
+          <p class="ud-row-title">Email verification</p>
+          <p class="ud-row-desc">Allows this person to sign in with their password.</p>
+          {% if is_self %}<p class="ud-row-note">You can't unverify your own email address.</p>
+          {% elif is_last_admin and u.email_verified %}<p class="ud-row-note">VoxBento needs at least one active Admin.</p>{% endif %}
+        </div>
+        <div class="ud-row-action">
+          <span class="ud-state{{ ' ud-state--on' if u.email_verified else '' }}">{{ 'Verified' if u.email_verified else 'Not verified' }}</span>
+          {% if u.email_verified %}
+            {{ access_form('verified', false, 'Mark unverified', confirm='Mark ' ~ u.display_name ~ '’s email as not verified? They will not be able to sign in until verified.', disabled=is_self or (is_last_admin and u.email_verified)) }}
+          {% else %}
+            {{ access_form('verified', true, 'Mark verified') }}
+          {% endif %}
+        </div>
+      </div>
     </section>
 
     {# ── Roles in events ── #}

@@ -2070,6 +2070,12 @@ class TestAPIKeyCRUD:
             # Revoke key
             res_del = await c.delete(f"/workspace/api/events/{event_id}/api-keys/{key_id}")
             assert res_del.status_code == 200
+            assert res_del.json() == {"success": True}
+
+            # Repeated revoke of the same key returns 404
+            res_del_again = await c.delete(f"/workspace/api/events/{event_id}/api-keys/{key_id}")
+            assert res_del_again.status_code == 404
+            assert res_del_again.json()["detail"] == "API Key not found or already revoked"
 
             # List keys (should be empty again)
             res = await c.get(f"/workspace/api/events/{event_id}/api-keys")
@@ -2080,6 +2086,44 @@ class TestAPIKeyCRUD:
             res_remake = await c.post(f"/workspace/api/events/{event_id}/api-keys", json={"name": "Integration Key"})
             assert res_remake.status_code == 200
             assert res_remake.json()["name"] == "Integration Key"
+
+    @pytest.mark.anyio
+    async def test_concurrent_api_key_revocation(self, setup_db):
+        import asyncio
+
+        from portal.auth import create_user_token
+        from portal.database import create_event, create_user, get_session, set_event_membership
+
+        async with get_session() as session:
+            event = await create_event(session, slug="event-concur-api", display_name="Event Concur API")
+            user = await create_user(session, email="concuradmin@example.com", display_name="Concur Admin")
+            await set_event_membership(session, user_id=user.id, event_id=event.id, role="event_owner")
+            event_id = event.id
+            user_id = user.id
+            user_email = user.email
+
+        token = create_user_token(user_id=user_id, email=user_email)
+
+        async with _client() as c:
+            c.cookies.set("user_token", token)
+
+            # Create an active key
+            res = await c.post(f"/workspace/api/events/{event_id}/api-keys", json={"name": "Race Key"})
+            assert res.status_code == 200
+            key_id = res.json()["id"]
+
+            # Overlapping concurrent revoke requests
+            req1 = c.delete(f"/workspace/api/events/{event_id}/api-keys/{key_id}")
+            req2 = c.delete(f"/workspace/api/events/{event_id}/api-keys/{key_id}")
+            res1, res2 = await asyncio.gather(req1, req2)
+
+            status_codes = sorted([res1.status_code, res2.status_code])
+            assert status_codes == [200, 404]
+
+            success_res = res1 if res1.status_code == 200 else res2
+            error_res = res1 if res1.status_code == 404 else res2
+            assert success_res.json() == {"success": True}
+            assert error_res.json()["detail"] == "API Key not found or already revoked"
 
     @pytest.mark.anyio
     async def test_hmac_sha256_hashing(self, setup_db):
