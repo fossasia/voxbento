@@ -65,6 +65,7 @@
           <th scope="col" class="ul-center">Hosting access</th>
           <th scope="col" class="ul-center">Admin</th>
           <th scope="col" class="ul-center">Active</th>
+          <th scope="col" class="ul-center">Verified</th>
           {{ sort_header('created_at', 'Joined') }}
           <th scope="col"><span class="visually-hidden">Open</span></th>
         </tr>
@@ -81,7 +82,7 @@
             {% if pending_invite and not pending_invite.is_expired %}
             <span class="ul-tag ul-tag--pending">Invitation pending</span>
             {% elif not u.email_verified %}
-            <span class="ul-tag">Email not verified</span>
+            <span class="ul-tag" data-unverified-tag>Email not verified</span>
             {% endif %}
           </td>
           <td class="ul-center">
@@ -116,6 +117,16 @@
             {% else %}
               {{ access_switch(u, 'active', u.is_active, 'Active', '', '',
                    'Deactivate ' ~ u.display_name ~ '? They are signed out and can no longer sign in until reactivated.') }}
+            {% endif %}
+          </td>
+          <td class="ul-center">
+            {% if is_self %}
+              {{ access_switch(u, 'verified', u.email_verified, 'Verified', "You can't unverify your own email address") }}
+            {% elif is_last_admin and u.email_verified %}
+              {{ access_switch(u, 'verified', true, 'Verified', 'VoxBento needs at least one active Admin') }}
+            {% else %}
+              {{ access_switch(u, 'verified', u.email_verified, 'Verified', '', '',
+                   'Mark ' ~ u.display_name ~ '’s email as not verified? They will not be able to sign in until verified.') }}
             {% endif %}
           </td>
           <td class="ul-joined">{{ u.created_at.strftime('%b %d, %Y') if u.created_at else '—' }}</td>

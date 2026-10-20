@@ -19,13 +19,14 @@ from portal.models import HOSTING_REQUEST_GRANTED, TOKEN_TYPE_HOSTING_INVITE, Au
 
 logger = logging.getLogger(__name__)
 
-FIELDS = ("hosting", "admin", "active")
+FIELDS = ("hosting", "admin", "active", "verified")
 
 ERROR_MESSAGES = {
     "not_found": "This account no longer exists.",
     "invalid": "Unknown change.",
     "self_admin": "You can't change your own Admin status.",
     "self_active": "You can't deactivate your own account.",
+    "self_verified": "You can't unverify your own email address.",
     "self_delete": "You can't delete your own account.",
     "last_admin": "VoxBento needs at least one active Admin.",
     "admin_hosting": "Admins can always create events.",
@@ -66,6 +67,8 @@ class AccessChange:
             "admin_off": f"{name} is no longer an Admin.",
             "active_on": f"{name}'s account was reactivated.",
             "active_off": f"{name}'s account was deactivated and signed out.",
+            "verified_on": f"{name}'s email was marked as verified.",
+            "verified_off": f"{name}'s email was marked as not verified.",
         }[self.notice]
 
 
@@ -101,7 +104,12 @@ async def set_user_access(
     if user is None:
         raise UserAdminError("not_found", 404)
 
-    current = {"hosting": user.can_host, "admin": user.is_admin, "active": user.is_active}[field]
+    current = {
+        "hosting": user.can_host,
+        "admin": user.is_admin,
+        "active": user.is_active,
+        "verified": user.email_verified,
+    }[field]
     changed = bool(current) != value
 
     if changed:
@@ -128,6 +136,12 @@ async def set_user_access(
             if not value and await is_last_active_admin(session, user):
                 raise UserAdminError("last_admin")
             user.is_admin = value
+        elif field == "verified":
+            if user.id == actor_id and not value:
+                raise UserAdminError("self_verified", 403)
+            if not value and await is_last_active_admin(session, user):
+                raise UserAdminError("last_admin")
+            user.email_verified = value
         else:
             if user.id == actor_id:
                 raise UserAdminError("self_active", 403)

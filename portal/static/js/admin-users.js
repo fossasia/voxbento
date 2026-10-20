@@ -50,6 +50,24 @@ function syncHostingSwitch(row, isAdmin) {
   }
 }
 
+function syncVerifiedTag(row, isVerified) {
+  let tag = row.querySelector('[data-unverified-tag]');
+  if (isVerified) {
+    if (tag) tag.remove();
+  } else {
+    if (!tag && !row.querySelector('.ul-tag--pending')) {
+      const email = row.querySelector('.ul-email');
+      if (email) {
+        tag = document.createElement('span');
+        tag.className = 'ul-tag';
+        tag.dataset.unverifiedTag = '';
+        tag.textContent = 'Email not verified';
+        email.after(tag);
+      }
+    }
+  }
+}
+
 async function onToggle(event) {
   event.preventDefault();
   const form = event.currentTarget;
@@ -74,6 +92,7 @@ async function onToggle(event) {
     if (form.dataset.field === 'hosting') row.dataset.canHost = String(turningOn);
     if (form.dataset.field === 'admin') syncHostingSwitch(row, turningOn);
     if (form.dataset.field === 'active') row.classList.toggle('is-deactivated', !turningOn);
+    if (form.dataset.field === 'verified') syncVerifiedTag(row, turningOn);
     announce(data.message);
   } catch (err) {
     setSwitch(form, !turningOn);
