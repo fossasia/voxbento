@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import os
-import re
 
 import pytest
 from httpx import ASGITransport, AsyncClient
 
 from fastapi_app import app
 from portal.database import configure, create_auth_token, create_user, dispose, get_session, init_db
+from portal.globals import _JS_CACHE_BUST
 
 os.environ["BOOTH_ACCESS_TOKEN"] = ""
 
@@ -37,8 +37,8 @@ async def test_magic_success_has_no_inline_script_or_style():
     assert resp.status_code == 200, resp.text
     body = resp.text
     assert "Successfully Signed In" in body
-    assert re.search(r'<script type="module" src="[^"]*/js/magic-success\.js', body)
-    assert "css/auth.css" in body
+    assert f'<script type="module" src="http://test/static/js/magic-success.js?v={_JS_CACHE_BUST}"></script>' in body
+    assert f'<link rel="stylesheet" href="http://test/static/css/auth.css?v={_JS_CACHE_BUST}" />' in body
     # base.html's shared toast script is out of scope; check only this template's content block.
     content = body.split('<main class="portal-main">')[1].split("</main>")[0]
     assert "<script" not in content
