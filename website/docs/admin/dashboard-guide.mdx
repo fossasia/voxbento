@@ -1,41 +1,44 @@
 ---
-title: "Mission Control Dashboard Guide"
+title: "Voxbento Management Surfaces: Admin, Workspace, and Mission Control"
 sidebarTitle: "Dashboard Guide"
-description: "A visual map of the Voxbento Admin Panel, explaining the navigation, event summaries, and health diagnostics."
+description: "A guide to Voxbento management navigation: System Admin (/admin), Event Workspace (/workspace), and Mission Control (/mission-control)."
 ---
 
-The Voxbento Admin Panel (often referred to as Mission Control) is the central hub for managing your interpretation infrastructure. Depending on your role (`super_admin` or `event_owner`), your view of the dashboard will be tailored to what you have permission to manage.
+Voxbento organizes its management interfaces into clear, privilege-scoped surfaces:
 
-*(TODO: Add `admin_dashboard.png` screenshot here)*
-![Mission Control Dashboard](/img/admin_dashboard.png)
+- **`/admin/...`** — Reserved for `super_admin` users. Central hub for global platform administration, registered users, hosting access reviews, and developer application approvals.
+- **`/workspace/...`** — The Event Workspace for `event_owner` users. Houses **My events**, event/room/booth configuration, invite tokens, members, and API settings.
+- **`/mission-control/...`** — The operational console for `room_coordinator` users to oversee active broadcasts, monitor audio status, and conduct interpreter handoffs.
 
-## 1. Global Navigation (Sidebar)
+## 1. Global Header and Navigation
 
-The left sidebar is your primary navigation tool. 
+Every signed-in page renders a unified header with area links and a user profile menu:
 
-- **Dashboard**: The home screen, showing at-a-glance metrics for all your events.
-- **Events**: The master list of all events. `super_admin` users will see an "Add Event" button here.
-- **Users**: (Restricted to `super_admin`). Manage registered accounts and grant site-wide admin privileges.
-- **API Settings**: Manage the global API keys for Transcription providers (like OpenAI or Deepgram).
+- **My events (`/workspace/`)**: Lists every event you participate in or own with direct action links ("Event owner", "Room coordinator", "Enter booth"). Users with hosting access or admin rights see the **New event** button.
+- **Hosting access (`/admin/hosting-access/`)**: (Admins only). Review and approve/decline event hosting access requests, with a badge showing the number of open requests.
+- **Users (`/admin/users/`)**: (Admins only). Search and filter registered accounts, toggling **Hosting access**, **Admin**, **Active**, and **Verified** status directly in-place.
+- **Developer API**: Direct access to registered OAuth applications and webhook management for approved developer accounts.
+- **Account (`/account`)**: Manage display name, hosting access requests, developer status, and password sign-in settings.
 
 ## 2. Event Summary Cards
 
-On the main dashboard, each event you have access to is displayed as a summary card.
+On the main dashboard and My events pages, each event is displayed as an actionable card:
 
-- **Live Booths Metric**: Shows a real-time count of how many booths currently have an `active_interpreter` broadcasting audio.
-- **Rooms & Booths Count**: A quick summary of the total configured infrastructure for that event.
-- **Manage Button**: Clicking this takes you deep into the event's configuration page to add rooms or configure language channels.
+- **Live Booths Metric**: Real-time count of booths currently broadcasting audio.
+- **Rooms & Booths Count**: Overview of configured stages and language channels.
+- **Action Buttons**: Direct links to **Manage event** (`/workspace/events/{id}`), **Mission Control** (`/mission-control/`), or **Enter booth**.
 
 ## 3. System Health Diagnostics
 
-At the top of the dashboard, you will see a critical health indicator for the media server.
+At the top of the dashboard, critical health status is displayed:
 
-- **MediaMTX Reachable (Green)**: The backend portal can successfully communicate with the MediaMTX ingest server. WHIP and WHEP streams will work normally.
-- **MediaMTX Unreachable (Red)**: The portal cannot connect to the media server. **Interpreters will not be able to go live.** If you see this, contact your system administrator to check the Docker container status.
+- **MediaMTX Reachable (Green)**: The portal communicates normally with the MediaMTX media server. WHIP ingest and WHEP playback are functional.
+- **MediaMTX Unreachable (Red)**: The portal cannot contact MediaMTX. **Interpreters will not be able to go live.** Check container status.
 
-## Role Differences in the UI
+## Role-Based Access Scoping
 
-Voxbento strictly enforces what you can see and click based on your role:
+Voxbento enforces role separation at every route:
 
-- **`super_admin`**: Can see the "Users" tab, can click "Add Event", and sees every event on the platform.
-- **`event_owner`**: The "Users" tab is hidden. The "Add Event" button is hidden. You will only see the summary cards for events that you have been explicitly assigned to manage.
+- **`super_admin`**: Full system-wide visibility. Access to `/admin/*`, user management, and hosting access approval.
+- **`event_owner`**: Manages assigned events in `/workspace/*`, creating rooms, booths, API keys, and invite tokens.
+- **`room_coordinator`**: Scoped operational oversight via `/mission-control/*` for assigned rooms and stages.

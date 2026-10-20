@@ -57,8 +57,9 @@
 | Path | Auth | Protocol |
 |---|---|---|
 | `/ws/booth/{booth_id}` | optional JWT via `?token=` + cookies (`session_token` or `user_token`) | See WebSocket Protocol in `REPOSITORY_CONTEXT.md` |
-| `/ws/captions/{booth_id}` | open (no auth) | Receives `booth:state`, `caption` messages; listener captions feed |
-| `/ws/tts/{room_id}` | open (no auth) | Receives raw PCM 16-bit 24kHz binary audio for synthesized translated speech |
+| `/ws/captions/{booth_id}` | open (no auth) | Receives `booth:state`, `caption` messages; listener captions feed. Supports `{event_slug}-{room_id}-{language_code}` or `floor-{room_id}` |
+| `/ws/translations/{channel_id}` | open (no auth) | Receives translated caption segments in real time |
+| `/ws/tts/{room_id}/{language_code}/{booth_id}` | pre-authorized (JWT query param, session token, or listener join code cookie) | Receives raw PCM 16-bit 24kHz binary audio for synthesized translated speech |
 
 ---
 
@@ -102,7 +103,7 @@
 | POST | `/admin/events/{event_id}/members/{membership_id}/delete` | — | Removes EventMembership |
 | GET | `/admin/users/` | `admin/user_list.html` | Users (#765): `search` (name or email), `show` (`all`, `admins`, `hosting`, `deactivated`, `unverified`), sortable User/Joined (`sort_by`/`sort_order`, default `created_at` desc), pagination; on/off switches for Hosting access, Admin and Active per row (`static/js/admin-users.js`) |
 | GET | `/admin/users/{user_id}/` | `admin/user_detail.html` | User page (#765): Platform access (hosting, Admin), Roles in events (read-only; owners manage them), Events owned, Account facts, Danger zone |
-| POST | `/admin/users/{user_id}/access` | — | Same-origin; form `field` (`hosting`/`admin`/`active`) + `value` (`true`/`false`). JSON `{ok, field, value, message}` when `Accept: application/json`, else `303` back with `?notice=`/`?error=`. Rules in `portal/user_admin.py`: no changing your own Admin or Active status, at least one active Admin always remains, hosting only for active accounts that are set up, Admins always host |
+| POST | `/admin/users/{user_id}/access` | — | Same-origin; form `field` (`hosting`/`admin`/`active`/`verified`) + `value` (`true`/`false`). JSON `{ok, field, value, message}` when `Accept: application/json`, else `303` back with `?notice=`/`?error=`. Rules in `portal/user_admin.py`: no changing your own Admin or Active status, at least one active Admin always remains, hosting only for active accounts that are set up, Admins always host |
 | POST | `/admin/users/{user_id}/toggle-active` | — | Older form endpoint; same-origin; flips Active through the same rules |
 | POST | `/admin/users/{user_id}/toggle-admin` | — | Older form endpoint; same-origin; flips Admin through the same rules |
 | POST | `/admin/users/{user_id}/delete` | — | Same-origin; `confirm_email` must equal the account's email; never your own account or the last active Admin; deletes the user and all their roles |

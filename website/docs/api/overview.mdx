@@ -28,7 +28,7 @@ The tables below list every REST and WebSocket endpoint exposed by the Voxbento 
 
 | Endpoint | Method | Auth | Description |
 | --- | --- | --- | --- |
-| `/api/auth/token` | `POST` | Open | Issue a bearer JWT |
+| `/api/auth/token` | `POST` | Open | Issue a legacy bearer JWT |
 | `/api/booth/{booth_id}/state` | `GET` | Bearer | Get booth state (legacy, no event scope) |
 | `/api/booth/{booth_id}/whip-url` | `GET` | Bearer | Get WHIP URL for the active interpreter |
 | `/api/events/{event_slug}/booths` | `POST` | Bearer | Create an in-memory booth for an event |
@@ -36,13 +36,20 @@ The tables below list every REST and WebSocket endpoint exposed by the Voxbento 
 | `/api/events/{event_slug}/booths/{language_code}/state` | `GET` | Bearer | Get event-scoped booth state |
 | `/api/events/{event_slug}/booths/{language_code}/whip-url` | `GET` | Bearer | Get event-scoped WHIP URL |
 | `/api/interpreter/status/{channel_id}` | `GET` | Open | Check MediaMTX stream reachability |
+| `/api/v1/events/{event_slug}` | `GET` | Bearer | Retrieve event details via REST API v1 |
+| `/api/v1/events/{event_slug}/rooms` | `GET` | Bearer | List event rooms and configurations |
+| `/api/v1/events/{event_slug}/rooms/{room_id}/booths` | `GET` | Bearer | List booths configured for a specific room |
+| `/api/v1/events/{event_slug}/rooms/{room_id}/status` | `GET` | Bearer | Operational status of room media and transcription |
+| `/api/v1/events/{event_slug}/rooms/{room_id}/booths/{language_code}/transcripts/export` | `GET` | Bearer | Export transcript segments |
 
 ### WebSocket Endpoints
 
 | Endpoint | Auth | Description |
 | --- | --- | --- |
-| `/ws/booth/{booth_id}` | Optional JWT via `?token=` query parameter | Real-time booth coordination — join, leave, chat, and state updates |
-| `/ws/captions/{booth_id}` | Open (no auth required) | Live caption feed for listeners |
+| `/ws/booth/{booth_id}` | Optional JWT via `?token=` query parameter or session cookie | Real-time booth coordination — join, leave, chat, handoffs, and publish tickets |
+| `/ws/captions/{booth_id}` | Open (no auth required) | Live caption feed for listeners (booth or floor channel) |
+| `/ws/translations/{channel_id}` | Open (no auth required) | Real-time translated text broadcast |
+| `/ws/tts/{room_id}/{language_code}/{booth_id}` | Pre-authorized (token or join code) | Direct-push synthetic PCM audio stream |
 
 ## The Captions WebSocket Broadcast
 

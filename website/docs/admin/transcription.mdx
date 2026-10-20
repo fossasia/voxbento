@@ -146,10 +146,10 @@ Listeners receive captions by connecting to the captions WebSocket:
 /ws/captions/{booth_id}
 ```
 
-For example:
+For booth captions, `{booth_id}` uses the `{event_slug}-{room_id}-{language_code}` format (e.g. `pycon2026-14-en`). For floor stage captions, the channel is `floor-{room_id}` (e.g. `floor-14`).
 
 ```text
-wss://voxbento.com/ws/captions/pycon2026-en
+wss://voxbento.com/ws/captions/pycon2026-14-en
 ```
 
 This endpoint requires no authentication and sends JSON messages in the following format:
@@ -196,3 +196,21 @@ This endpoint requires no authentication and sends JSON messages in the followin
 
 
 Your listener UI can subscribe to this WebSocket and render captions in real time with no additional backend work required.
+
+## Live Translations & Direct Push TTS
+
+Beyond transcription, Voxbento provides a synchronized AI translation and synthetic speech pipeline for floor sessions:
+
+### Translations WebSocket
+Subscribers receive real-time sentence-by-sentence translated text:
+```text
+/ws/translations/{channel_id}
+```
+Translated segments include target language markers and sentence IDs. Translations can be customized using room **AI Interpreter Persona**, **Interpretation Style**, and uploaded **Vocabulary Glossaries** (see [AI Interpretation](./ai-interpretation.mdx)).
+
+### Direct Push Text-to-Speech (TTS)
+When "Floor Audio TTS (Direct Push)" is enabled for a room, translated segments are synthesized into natural speech via **Deepgram Aura** or self-hosted **Supertonic ONNX**. Attendees receive raw PCM 24 kHz audio via:
+```text
+/ws/tts/{room_id}/{language_code}/{booth_id}
+```
+Subscriptions are authorized before acceptance and scheduled through `audio-scheduler.js` in the browser for continuous, seamless playback.
