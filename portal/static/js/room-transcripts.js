@@ -63,7 +63,21 @@ function renderTable(rows) {
 }
 
 function csvCell(value) {
-  return `"${String(value ?? '').replace(/"/g, '""')}"`;
+  let text = String(value ?? '');
+  // Spreadsheet apps evaluate cells starting with these prefixes even inside quotes.
+  if (/^[=+\-@\t\r]/.test(text)) {
+    text = `'${text}`;
+  }
+  return `"${text.replace(/"/g, '""')}"`;
+}
+
+function clearDownload() {
+  if (downloadUrl) {
+    URL.revokeObjectURL(downloadUrl);
+    downloadUrl = '';
+  }
+  downloadBtn.hidden = true;
+  downloadBtn.removeAttribute('href');
 }
 
 function updateCsvDownload(rows) {
@@ -94,7 +108,7 @@ async function fetchTranscripts() {
     const rows = await response.json();
     if (!Array.isArray(rows) || rows.length === 0) {
       setPlaceholder('No transcripts recorded for this channel yet.');
-      downloadBtn.hidden = true;
+      clearDownload();
       return;
     }
 
@@ -104,6 +118,7 @@ async function fetchTranscripts() {
   } catch (error) {
     console.error('Failed to load room transcripts', error);
     setPlaceholder(`Error: ${error.message}`, 'danger-text transcript-placeholder');
+    clearDownload();
   }
 }
 
@@ -114,7 +129,7 @@ if (container && select && refreshBtn && downloadBtn) {
       fetchTranscripts();
     } else {
       setPlaceholder('Select a channel above to view its transcripts.');
-      downloadBtn.hidden = true;
+      clearDownload();
     }
   });
 
