@@ -23,10 +23,10 @@ Design decisions
 from __future__ import annotations
 
 import secrets
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 import sqlalchemy as sa
-from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, validates
 
 from portal.booth_identity import make_mediamtx_path, validate_event_slug, validate_language_code
@@ -441,6 +441,11 @@ class User(Base):
         back_populates="user",
         cascade="all, delete-orphan",
     )
+    hosting_requests: Mapped[list["HostingRequest"]] = relationship(
+        back_populates="user",
+        cascade="all, delete-orphan",
+        foreign_keys="HostingRequest.user_id",
+    )
 
     @validates("email")
     def _validate_email(self, _key: str, value: str) -> str:
@@ -451,6 +456,55 @@ class User(Base):
 
     def __repr__(self) -> str:
         return f"<User id={self.id} email={self.email!r}>"
+
+
+# ---------------------------------------------------------------------------
+# HostingRequest
+# ---------------------------------------------------------------------------
+
+HOSTING_REQUEST_OPEN = "open"
+HOSTING_REQUEST_GRANTED = "granted"
+HOSTING_REQUEST_DECLINED = "declined"
+
+
+class HostingRequest(Base):
+    """A signed-in user's request for hosting access, reviewed by an Admin.
+
+    A user has at most one open request; granted and declined requests are
+    kept for the record but no longer listed.
+    """
+
+    __tablename__ = "hosting_requests"
+    __table_args__ = (
+        Index(
+            "uq_hosting_requests_open_user",
+            "user_id",
+            unique=True,
+            sqlite_where=sa.text("status = 'open'"),
+            postgresql_where=sa.text("status = 'open'"),
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    organization: Mapped[str] = mapped_column(String(200))
+    event_name: Mapped[str] = mapped_column(String(200))
+    event_starts_on: Mapped[date | None] = mapped_column(Date, nullable=True, default=None)
+    event_ends_on: Mapped[date | None] = mapped_column(Date, nullable=True, default=None)
+    languages: Mapped[str] = mapped_column(String(500))
+    message: Mapped[str] = mapped_column(Text, default="")
+    status: Mapped[str] = mapped_column(String(16), default=HOSTING_REQUEST_OPEN, index=True)
+    decline_reason: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
+    decided_by_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True, default=None
+    )
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+    user: Mapped[User] = relationship(back_populates="hosting_requests", foreign_keys=[user_id])
+
+    def __repr__(self) -> str:
+        return f"<HostingRequest id={self.id} user_id={self.user_id} status={self.status!r}>"
 
 
 # ---------------------------------------------------------------------------

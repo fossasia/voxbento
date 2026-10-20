@@ -18,6 +18,7 @@ from portal import meeting_source, program_ingest
 from portal.auth import require_admin
 from portal.config import settings
 from portal.exceptions import RedirectRequired
+from portal.globals import asset_version_context
 from portal.routers.admin import router as admin_router
 from portal.routers.api import router as api_router
 from portal.routers.api_v1 import router as api_v1_router
@@ -38,7 +39,7 @@ from portal.workspace_routing import WorkspaceRoutingMiddleware
 
 _BASE_DIR = Path(__file__).resolve().parent
 
-templates = Jinja2Templates(directory=str(_BASE_DIR / "portal" / "templates"))
+templates = Jinja2Templates(directory=str(_BASE_DIR / "portal" / "templates"), context_processors=[asset_version_context])
 
 
 @asynccontextmanager

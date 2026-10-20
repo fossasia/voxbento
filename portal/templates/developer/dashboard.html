@@ -4,22 +4,15 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Developer Dashboard — VoxBento</title>
-    <link rel="stylesheet" href="{{ url_for('static', path='css/fonts.css') }}" />
-    <link rel="stylesheet" href="{{ url_for('static', path='css/admin.css') }}" />
-    <link rel="stylesheet" href="{{ url_for('static', path='css/developer.css') }}" />
+    <link rel="stylesheet" href="{{ url_for('static', path='css/fonts.css') }}?v={{ asset_version }}" />
+    <link rel="stylesheet" href="{{ url_for('static', path='css/admin.css') }}?v={{ asset_version }}" />
+    <link rel="stylesheet" href="{{ url_for('static', path='css/developer.css') }}?v={{ asset_version }}" />
+    <link rel="stylesheet" href="{{ url_for('static', path='css/app-header.css') }}?v={{ asset_version }}" />
+    <script type="module" src="{{ url_for('static', path='js/user-menu.js') }}?v={{ asset_version }}"></script>
   </head>
   <body>
-    <header class="admin-header">
-      <div class="header-left">
-        <a class="brand" href="/">VoxBento</a>
-        <span class="header-badge">Developers</span>
-      </div>
-      <nav class="header-nav">
-        <a href="/account">My Account</a>
-        <a href="/admin/">Admin Panel</a>
-        <a href="/">Portal Home</a>
-      </nav>
-    </header>
+    {% from "_app_header.html" import app_header with context %}
+    {{ app_header() }}
 
     <main class="admin-main dev-main">
       <div class="dev-page-header">

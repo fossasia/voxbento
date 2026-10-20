@@ -18,6 +18,7 @@ from sqlalchemy.orm import selectinload
 
 from portal.auth import get_current_user, require_user
 from portal.database import get_db_session
+from portal.globals import asset_version_context
 from portal.models import (
     Event,
     EventMembership,
@@ -34,7 +35,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["oauth"])
 
 _BASE_DIR = Path(__file__).resolve().parent.parent
-templates = Jinja2Templates(directory=str(_BASE_DIR / "templates"))
+templates = Jinja2Templates(directory=str(_BASE_DIR / "templates"), context_processors=[asset_version_context])
 
 VALID_SCOPES = {
     "events:read": "Read event information",
