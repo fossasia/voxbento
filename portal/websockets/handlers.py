@@ -65,6 +65,12 @@ async def ws_booth(websocket: WebSocket, booth_id: str) -> None:
                 await websocket.send_text(json.dumps({"type": "booth:error", "message": "Invalid JSON."}))
                 continue
 
+            if not isinstance(data, dict):
+                await websocket.send_text(
+                    json.dumps({"type": "booth:error", "message": "Message must be a JSON object."})
+                )
+                continue
+
             msg_type = data.get("type", "")
             if msg_type == "booth:join":
                 await _handle_join(websocket, session, data)

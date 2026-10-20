@@ -118,8 +118,166 @@ class TestRegistration:
                     "password_confirm": "securepass123",
                 },
             )
-        assert resp.status_code == 422
-        assert b"already exists" in resp.content
+        assert resp.status_code == 200
+        assert b"eligible for registration" in resp.content
+        assert b"already exists" not in resp.content
+
+    @pytest.mark.anyio
+    async def test_duplicate_unverified_registration_refreshes_once(self, setup_db, monkeypatch):
+        from sqlalchemy import select
+
+        import portal.routers.auth as auth_router
+        from portal.database import create_auth_token, create_user, get_session
+        from portal.models import AuthToken
+
+        sent_tokens = []
+
+        async def fake_send_verification_email(email, token):
+            sent_tokens.append((email, token))
+            return True
+
+        monkeypatch.setattr(auth_router, "send_verification_email", fake_send_verification_email)
+
+        async with get_session() as session:
+            user = await create_user(
+                session,
+                email="unverified-duplicate@example.com",
+                display_name="Unverified",
+                email_verified=False,
+            )
+            await create_auth_token(
+                session,
+                jti="old-verification-token",
+                user_id=user.id,
+                token_type="verification",
+            )
+
+        form = {
+            "email": "unverified-duplicate@example.com",
+            "display_name": "Another Name",
+            "password": "securepass123",
+            "password_confirm": "securepass123",
+        }
+        async with _client() as c:
+            first = await c.post("/register", data=form)
+            second = await c.post("/register", data=form)
+
+        assert first.status_code == second.status_code == 200
+        assert b"eligible for registration" in first.content
+        assert b'href="/login"' in first.content
+        assert len(sent_tokens) == 1
+
+        async with get_session() as session:
+            tokens = list(
+                (await session.execute(select(AuthToken).where(AuthToken.user_id == user.id).order_by(AuthToken.id)))
+                .scalars()
+                .all()
+            )
+        assert len(tokens) == 2
+        assert tokens[0].used_at is None
+        assert sum(token.used_at is None for token in tokens) == 2
+
+    @pytest.mark.anyio
+    async def test_duplicate_registration_cannot_activate_preexisting_password(self, setup_db, monkeypatch):
+        import portal.routers.auth as auth_router
+        from portal.database import create_user, get_session, get_user_by_email
+
+        sent_tokens = []
+
+        async def fake_send_delayed_onboarding_email(_email, _display_name):
+            return None
+
+        async def fake_send_verification_email(_email, token):
+            sent_tokens.append(token)
+            return True
+
+        monkeypatch.setattr(auth_router, "send_verification_email", fake_send_verification_email)
+        monkeypatch.setattr(auth_router, "send_delayed_onboarding_email", fake_send_delayed_onboarding_email)
+
+        async with get_session() as session:
+            await create_user(
+                session,
+                email="preclaimed@example.com",
+                display_name="Earlier registrant",
+                password_hash=hash_password("attacker-password"),
+                email_verified=False,
+                is_active=True,
+            )
+
+        async with _client() as c:
+            registration = await c.post(
+                "/register",
+                data={
+                    "email": "preclaimed@example.com",
+                    "display_name": "Email owner",
+                    "password": "owner-password",
+                    "password_confirm": "owner-password",
+                },
+            )
+            verification = await c.get(f"/auth/verify/{sent_tokens[0]}", follow_redirects=False)
+            login = await c.post(
+                "/login",
+                data={"email": "preclaimed@example.com", "password": "attacker-password"},
+            )
+
+        assert registration.status_code == 200
+        assert verification.status_code == 303
+        assert login.status_code == 403
+
+        async with get_session() as session:
+            user = await get_user_by_email(session, "preclaimed@example.com")
+        assert user is not None
+        assert user.email_verified is True
+        assert user.password_hash is None
+
+    @pytest.mark.anyio
+    async def test_duplicate_registration_preserves_old_token_when_resend_fails(self, setup_db, monkeypatch):
+        from sqlalchemy import select
+
+        import portal.routers.auth as auth_router
+        from portal.database import create_auth_token, create_user, get_session
+        from portal.models import AuthToken
+
+        async def fake_send_verification_email(_email, _token):
+            return False
+
+        monkeypatch.setattr(auth_router, "send_verification_email", fake_send_verification_email)
+
+        async with get_session() as session:
+            user = await create_user(
+                session,
+                email="unverified-delivery-failure@example.com",
+                display_name="Unverified",
+                email_verified=False,
+            )
+            await create_auth_token(
+                session,
+                jti="delivered-verification-token",
+                user_id=user.id,
+                token_type="verification",
+            )
+
+        async with _client() as c:
+            response = await c.post(
+                "/register",
+                data={
+                    "email": "unverified-delivery-failure@example.com",
+                    "display_name": "Another Name",
+                    "password": "securepass123",
+                    "password_confirm": "securepass123",
+                },
+            )
+
+        assert response.status_code == 200
+        async with get_session() as session:
+            tokens = list(
+                (await session.execute(select(AuthToken).where(AuthToken.user_id == user.id).order_by(AuthToken.id)))
+                .scalars()
+                .all()
+            )
+        assert len(tokens) == 2
+        assert tokens[0].used_at is None
+        assert tokens[1].used_at is not None
 
     @pytest.mark.anyio
     async def test_register_rejects_mismatched_password_confirm(self, setup_db):
@@ -268,6 +426,46 @@ class TestRegistration:
 
 
 # ---------------------------------------------------------------------------
+# Email discovery privacy
+# ---------------------------------------------------------------------------
+
+
+class TestEmailDiscoveryPrivacy:
+    @pytest.mark.anyio
+    async def test_check_email_has_the_same_neutral_response_for_every_account_state(self, setup_db):
+        await _create_test_user(email="password@example.com", password="securepass123")
+        await _create_test_user(email="passwordless@example.com", password=None)
+
+        async with _client() as c:
+            responses = [
+                await c.post("/api/auth/check-email", json={"email": email})
+                for email in (
+                    "password@example.com",
+                    "passwordless@example.com",
+                    "unknown@example.com",
+                )
+            ]
+
+        assert [response.status_code for response in responses] == [200, 200, 200]
+        assert [response.json() for response in responses] == [
+            {"status": "ok", "exists": True, "has_password": True},
+            {"status": "ok", "exists": True, "has_password": True},
+            {"status": "ok", "exists": True, "has_password": True},
+        ]
+
+    @pytest.mark.anyio
+    async def test_login_page_does_not_branch_on_account_state(self, setup_db):
+        async with _client() as c:
+            response = await c.get("/login")
+
+        assert response.status_code == 200
+        assert b"data.exists" not in response.content
+        assert b"data.has_password" not in response.content
+        assert b'id="register-link"' in response.content
+        assert b"/register?email=" not in response.content
+
+
+# ---------------------------------------------------------------------------
 # Login
 # ---------------------------------------------------------------------------
 
@@ -323,6 +521,42 @@ class TestUserLogin:
                 },
             )
         assert resp.status_code == 403
+        assert b"Invalid email or password" in resp.content
+
+    @pytest.mark.anyio
+    async def test_login_with_passwordless_account_uses_generic_error(self, setup_db):
+        await _create_test_user(email="passwordless-login@example.com", password=None)
+        async with _client() as c:
+            resp = await c.post(
+                "/login",
+                data={
+                    "email": "passwordless-login@example.com",
+                    "password": "whatever",
+                },
+            )
+        assert resp.status_code == 403
+        assert b"Invalid email or password" in resp.content
+        assert b"Please verify" not in resp.content
+
+    @pytest.mark.anyio
+    async def test_passwordless_account_rejected_even_if_dummy_verification_succeeds(self, setup_db, monkeypatch):
+        import portal.routers.auth as auth_router
+
+        await _create_test_user(email="passwordless-dummy@example.com", password=None)
+        monkeypatch.setattr(auth_router, "verify_password", lambda _password, _password_hash: True)
+
+        async with _client() as c:
+            resp = await c.post(
+                "/login",
+                data={
+                    "email": "passwordless-dummy@example.com",
+                    "password": "any-password",
+                },
+            )
+
+        assert resp.status_code == 403
+        assert b"Invalid email or password" in resp.content
+        assert "user_token" not in resp.headers.get("set-cookie", "")
 
     @pytest.mark.anyio
     async def test_login_deactivated_user_rejected(self, setup_db):
@@ -340,7 +574,57 @@ class TestUserLogin:
                 },
             )
         assert resp.status_code == 403
-        assert b"deactivated" in resp.content
+        assert b"Invalid email or password" in resp.content
+        assert b"Your account has been deactivated" not in resp.content
+
+    @pytest.mark.anyio
+    async def test_deactivated_user_cookie_is_not_authenticated(self, setup_db):
+        from portal.database import get_session, update_user_active
+
+        user = await _create_test_user(email="stale-cookie@example.com")
+        token = create_user_token(user_id=user.id, email=user.email, is_admin=user.is_admin)
+        async with get_session() as session:
+            await update_user_active(session, user.id, is_active=False)
+
+        async with _client() as c:
+            response = await c.get("/api/auth/status", cookies={"user_token": token})
+
+        assert response.status_code == 200
+        assert response.json() == {"authenticated": False}
+
+
+class TestEmailVerification:
+    @pytest.mark.anyio
+    async def test_inactive_user_cannot_verify_or_receive_a_session(self, setup_db):
+        from portal.database import create_auth_token, create_user, get_auth_token, get_session, get_user_by_email
+
+        async with get_session() as session:
+            user = await create_user(
+                session,
+                email="inactive-unverified@example.com",
+                display_name="Inactive",
+                email_verified=False,
+                is_active=False,
+            )
+            await create_auth_token(
+                session,
+                jti="inactive-verification-token",
+                user_id=user.id,
+                token_type="verification",
+            )
+
+        async with _client() as c:
+            response = await c.get("/auth/verify/inactive-verification-token", follow_redirects=False)
+
+        assert response.status_code == 400
+        assert "user_token" not in response.headers.get("set-cookie", "")
+        async with get_session() as session:
+            user_after = await get_user_by_email(session, "inactive-unverified@example.com")
+            token_after = await get_auth_token(session, "inactive-verification-token")
+        assert user_after is not None
+        assert user_after.email_verified is False
+        assert token_after is not None
+        assert token_after.is_used is False
 
 
 # ---------------------------------------------------------------------------
@@ -614,11 +898,11 @@ class TestAccountPage:
         link = f"/interpreter/zephyr-2031/{room.id}/ja"
 
         async with _client() as c:
-            account = await c.get("/account", cookies={"user_token": token})
+            my_events = await c.get("/workspace/", cookies={"user_token": token})
             booth_page = await c.get(link, follow_redirects=False)
 
-        assert f'href="{link}"' in account.text
-        assert 'href="/interpreter/zephyr-2031/ja"' not in account.text
+        assert f'href="{link}"' in my_events.text
+        assert 'href="/interpreter/zephyr-2031/ja"' not in my_events.text
         assert booth_page.status_code == 303
         assert booth_page.headers["location"].startswith(f"/login?next={link}")
 
@@ -644,9 +928,7 @@ class TestAdminUserManagement:
         assert b"user3@example.com" in resp.content
         assert b"User Three" in resp.content
         assert b"user1@example.com" not in resp.content
-        assert b"<th>#</th>" in resp.content
-        # Row number must be 1, NOT the database primary key.
-        assert b"<td>1</td>" in resp.content
+        # Database ids are never shown as row numbers.
         assert f"<td>{u3.id}</td>".encode() not in resp.content
 
         # On page 2 with limit=1 (descending), the middle user gets row index 2.
@@ -654,7 +936,7 @@ class TestAdminUserManagement:
             resp2 = await c.get("/admin/users/?sort_by=created_at&sort_order=desc&limit=1&page=2", cookies=admin_cookie)
         assert resp2.status_code == 200
         assert b"user2@example.com" in resp2.content
-        assert b"<td>2</td>" in resp2.content
+        assert b"user3@example.com" not in resp2.content
         assert b"limit=1" in resp2.content
 
     @pytest.mark.anyio
@@ -672,7 +954,7 @@ class TestAdminUserManagement:
         async with _client() as c:
             resp = await c.get(f"/admin/users/{user.id}/", cookies=admin_cookie)
         assert resp.status_code == 200
-        assert user.created_at.strftime("%b %d, %Y, %H:%M UTC").encode() in resp.content
+        assert user.created_at.strftime("%b %d, %Y").encode() in resp.content
         assert user.created_at.strftime("%Y-%m-%d").encode() not in resp.content
 
     @pytest.mark.anyio
@@ -711,6 +993,7 @@ class TestAdminUserManagement:
             resp = await c.post(
                 f"/admin/users/{user.id}/toggle-active",
                 cookies=admin_cookie,
+                headers={"origin": "http://test"},
                 follow_redirects=False,
             )
         assert resp.status_code == 303
@@ -726,7 +1009,9 @@ class TestAdminUserManagement:
         async with _client() as c:
             resp = await c.post(
                 f"/admin/users/{user.id}/delete",
+                data={"confirm_email": user.email},
                 cookies=admin_cookie,
+                headers={"origin": "http://test"},
                 follow_redirects=False,
             )
         assert resp.status_code == 303

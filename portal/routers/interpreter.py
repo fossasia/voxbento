@@ -12,7 +12,7 @@ from portal.auth import get_booth_sessions, resolve_booth_role
 from portal.booth_identity import make_booth_id, make_mediamtx_path
 from portal.config import settings
 from portal.database import get_booth_by_id, get_session, list_booth_memberships_for_user
-from portal.globals import _JS_CACHE_BUST, booths
+from portal.globals import _JS_CACHE_BUST, asset_version_context, booths
 from portal.models import DBBooth, Event
 from portal.roles import _ROLE_RANK
 from portal.utils import _ensure_mediamtx_path, _make_jitsi_url, safe_redirect
@@ -21,7 +21,7 @@ router = APIRouter()
 
 _BASE_DIR = Path(__file__).resolve().parent.parent
 
-templates = Jinja2Templates(directory=str(_BASE_DIR / "templates"))
+templates = Jinja2Templates(directory=str(_BASE_DIR / "templates"), context_processors=[asset_version_context])
 
 
 @router.get("/interpreter")

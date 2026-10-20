@@ -535,10 +535,11 @@ class TestAccountMemberships:
         async with get_session() as s:
             await set_event_membership(s, user_id=user.id, event_id=event.id, role="interpreter")
         token = create_user_token(user_id=user.id, email=user.email, is_admin=user.is_admin)
+        # Roles moved from the Account page to My events (#767).
         async with _client() as c:
-            resp = await c.get("/account", cookies={"user_token": token})
+            resp = await c.get("/workspace/", cookies={"user_token": token})
         assert resp.status_code == 200
-        assert b"interpreter" in resp.content
+        assert b'<li class="me-role">Interpreter</li>' in resp.content
         assert b"TestCon 2026" in resp.content
 
     @pytest.mark.anyio
@@ -546,9 +547,9 @@ class TestAccountMemberships:
         user = await _create_test_user(email="lonely@test.com", display_name="Lonely")
         token = create_user_token(user_id=user.id, email=user.email, is_admin=user.is_admin)
         async with _client() as c:
-            resp = await c.get("/account", cookies={"user_token": token})
+            resp = await c.get("/workspace/", cookies={"user_token": token})
         assert resp.status_code == 200
-        assert b"not been assigned" in resp.content
+        assert b"No events yet" in resp.content
 
     @pytest.mark.anyio
     async def test_account_page_has_no_inline_styles(self, setup_db):
@@ -594,15 +595,17 @@ class TestEventDetailMembersLink:
 class TestUserListNoGlobalRole:
     @pytest.mark.anyio
     async def test_user_list_no_role_dropdown(self, setup_db, admin_cookie):
-        await _create_test_user()
+        user = await _create_test_user()
         async with _client() as c:
             resp = await c.get("/admin/users/", cookies=admin_cookie)
+            detail = await c.get(f"/admin/users/{user.id}/", cookies=admin_cookie)
         assert resp.status_code == 200
         # Should NOT have role-change form or super_admin option
         assert b"super_admin" not in resp.content
         assert b"role-select" not in resp.content
-        # Should say roles are per-event
-        assert b"per event" in resp.content.lower() or b"per-event" in resp.content.lower()
+        # Event roles belong to each event's owners (#765)
+        assert b"Roles are given and removed by each event's owners, not from here." in detail.content
+        assert b"toggle-owner" not in detail.content
 
 
 # ---------------------------------------------------------------------------
@@ -760,12 +763,12 @@ class TestEndToEndAdminWorkflow:
             revoked = await get_invite_token(s, token_str)
         assert revoked.is_used is True
 
-        # 9. Verify Alice's account page shows the membership
+        # 9. Verify Alice's My events page shows the membership
         user_token = create_user_token(user_id=alice.id, email=alice.email, is_admin=alice.is_admin)
         async with _client() as c:
-            resp = await c.get("/account", cookies={"user_token": user_token})
+            resp = await c.get("/workspace/", cookies={"user_token": user_token})
         assert resp.status_code == 200
-        assert b"event_owner" in resp.content
+        assert b'<li class="me-role">Event owner</li>' in resp.content
         assert b"E2E Event" in resp.content
 
         # 10. Remove membership

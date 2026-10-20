@@ -20,7 +20,7 @@ from portal.database import (
     list_booths_for_event,
     list_rooms_for_event,
 )
-from portal.globals import _JS_CACHE_BUST
+from portal.globals import _JS_CACHE_BUST, asset_version_context
 from portal.utils import _ensure_mediamtx_path
 
 # Allowlists for embed theming params — no free-text values accepted.
@@ -30,7 +30,7 @@ _PRIMARY_COLOR_RE = re.compile(r"^[0-9a-fA-F]{3,6}$")
 _DEFAULT_PRIMARY = "3b82f6"  # VoxBento blue
 
 _BASE_DIR = Path(__file__).resolve().parent.parent
-templates = Jinja2Templates(directory=str(_BASE_DIR / "templates"))
+templates = Jinja2Templates(directory=str(_BASE_DIR / "templates"), context_processors=[asset_version_context])
 
 router = APIRouter()
 

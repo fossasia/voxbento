@@ -9,7 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from portal.auth import require_oauth_scope
-from portal.booth_identity import make_booth_id, make_mediamtx_path
+from portal.booth_identity import make_booth_id, make_mediamtx_path, validate_language_code
 from portal.database import get_db_session
 from portal.globals import booths
 from portal.models import (
@@ -31,6 +31,21 @@ from portal.transcription.worker import active_workers, start_transcription_work
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1")
+
+# Maps each EventAPIKeysUpdate field name to its corresponding encrypted
+# attribute on the Event model.  Adding a new provider only requires one
+# new entry here.
+_API_KEY_FIELDS: list[tuple[str, str]] = [
+    ("openai_api_key",             "encrypted_openai_api_key"),
+    ("deepgram_api_key",           "encrypted_deepgram_api_key"),
+    ("nvidia_api_key",             "encrypted_nvidia_api_key"),
+    ("elevenlabs_api_key",         "encrypted_elevenlabs_api_key"),
+    ("translation_openai_api_key", "encrypted_translation_openai_api_key"),
+    ("openrouter_api_key",         "encrypted_openrouter_api_key"),
+    ("gemini_api_key",             "encrypted_gemini_api_key"),
+    ("anthropic_api_key",          "encrypted_anthropic_api_key"),
+    ("groq_api_key",               "encrypted_groq_api_key"),
+]
 
 
 async def _verify_token_rbac(db: AsyncSession, token: OAuthToken, event: Event, room_id: int | None = None) -> None:
@@ -123,7 +138,6 @@ async def get_rooms(
         {
             "id": r.id,
             "display_name": r.display_name,
-            "is_active": r.is_active,
             "created_at": r.created_at.isoformat(),
         }
         for r in rooms
@@ -346,8 +360,8 @@ async def delete_event(
 
 
 class RoomUpsert(BaseModel):
-    name: str | None = None
-    description: str | None = None
+    name: str | None = Field(None, min_length=1, max_length=200)
+    description: str | None = Field(None, max_length=1000)
     enabled: bool | None = None
     target_languages: list[str] | None = None
     enable_transcription: bool | None = None
@@ -371,6 +385,19 @@ class RoomUpsert(BaseModel):
         if v == "":
             return None
         return v
+
+    @field_validator("target_languages")
+    @classmethod
+    def check_language_codes(cls, codes: list[str] | None) -> list[str] | None:
+        if codes is None:
+            return None
+        validated = []
+        for code in codes:
+            normalised = validate_language_code(code)
+            if normalised == "floor":
+                raise ValueError("'floor' is not a valid booth language for a room.")
+            validated.append(normalised)
+        return validated
 
 
 def _apply_floor_settings(room, payload_dict: dict):
@@ -874,32 +901,11 @@ async def update_event_api_keys(
 
     await _verify_token_rbac(db, token, event)
 
-    if payload.openai_api_key is not None:
-        event.encrypted_openai_api_key = encrypt_val(payload.openai_api_key) if payload.openai_api_key else None
-    if payload.deepgram_api_key is not None:
-        event.encrypted_deepgram_api_key = encrypt_val(payload.deepgram_api_key) if payload.deepgram_api_key else None
-    if payload.nvidia_api_key is not None:
-        event.encrypted_nvidia_api_key = encrypt_val(payload.nvidia_api_key) if payload.nvidia_api_key else None
-    if payload.elevenlabs_api_key is not None:
-        event.encrypted_elevenlabs_api_key = (
-            encrypt_val(payload.elevenlabs_api_key) if payload.elevenlabs_api_key else None
-        )
-    if payload.translation_openai_api_key is not None:
-        event.encrypted_translation_openai_api_key = (
-            encrypt_val(payload.translation_openai_api_key) if payload.translation_openai_api_key else None
-        )
-    if payload.openrouter_api_key is not None:
-        event.encrypted_openrouter_api_key = (
-            encrypt_val(payload.openrouter_api_key) if payload.openrouter_api_key else None
-        )
-    if payload.gemini_api_key is not None:
-        event.encrypted_gemini_api_key = encrypt_val(payload.gemini_api_key) if payload.gemini_api_key else None
-    if payload.anthropic_api_key is not None:
-        event.encrypted_anthropic_api_key = (
-            encrypt_val(payload.anthropic_api_key) if payload.anthropic_api_key else None
-        )
-    if payload.groq_api_key is not None:
-        event.encrypted_groq_api_key = encrypt_val(payload.groq_api_key) if payload.groq_api_key else None
+    payload_data = payload.model_dump()
+    for payload_field, event_attr in _API_KEY_FIELDS:
+        value = payload_data[payload_field]
+        if value is not None:
+            setattr(event, event_attr, encrypt_val(value) if value else None)
 
     await db.commit()
     return {"status": "ok"}
