@@ -135,6 +135,8 @@ class Settings(BaseSettings):
     smtp_user: str = ""
     smtp_password: str = ""
     smtp_from_email: str = "noreply@voxbento.com"
+    # Team inbox notified of each new hosting access request.
+    hosting_requests_email: str = "voxbento.dev@gmail.com"
     public_base_url: str = "https://voxbento.com"
 
 

@@ -3,7 +3,7 @@
 
 {% block breadcrumb %}
 <nav class="breadcrumb">
-  <a href="{{ management_prefix }}/">Dashboard</a> <span>/</span> <span class="breadcrumb-current" aria-current="page">Events</span>
+  <a href="{{ management_prefix }}/">{{ 'My events' if is_workspace else 'Dashboard' }}</a> <span>/</span> <span class="breadcrumb-current" aria-current="page">Events</span>
 </nav>
 {% endblock %}
 

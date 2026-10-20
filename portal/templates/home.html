@@ -117,48 +117,38 @@
 
         <!-- Hero Section -->
         <section
-            class="relative max-w-7xl mx-auto px-6 pt-12 pb-24 lg:pt-20 lg:pb-32 flex flex-col lg:flex-row items-center gap-12 animate-fade-in-up">
+            class="relative max-w-7xl mx-auto px-6 pt-12 pb-24 lg:pt-20 lg:pb-32 flex flex-col lg:flex-row items-center gap-8 lg:gap-12 animate-fade-in-up">
             <!-- Left Text -->
-            <div class="flex-1 text-center lg:text-left z-10">
+            <div class="flex-1 lg:flex-[1.15] text-center lg:text-left z-10">
                 <div class="mb-6 inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full border-2 border-[#0d0f10] bg-white shadow-[2px_2px_0px_#0d0f10] text-xs font-bold text-[#0d0f10]">
                     <span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
                     <span>NEW: VoxBento Local for macOS, Windows & Linux</span>
                     <a href="/local" class="text-brand-600 hover:underline flex items-center gap-0.5 font-extrabold ml-1">Download &rarr;</a>
                 </div>
                 <h1
-                    class="text-[2.75rem] md:text-6xl lg:text-7xl font-extrabold tracking-tight text-[#0d0f10] mb-8 leading-[1.1] flex flex-col items-center lg:items-start text-center lg:text-left w-full">
-                    <div class="relative w-full text-[#2563eb]">
-                        <!-- Invisible spacer to perfectly preserve layout size for the longest word without CLS -->
-                        <span class="opacity-0 pointer-events-none select-none block w-full"
-                            aria-hidden="true">Conference Interpretation</span>
-                        <span id="rotator-capability"
-                            class="absolute bottom-0 left-0 block w-full transition-all duration-700 ease-[cubic-bezier(0.25,1,0.5,1)] opacity-100 translate-y-0 blur-0">Interpretation</span>
-                    </div>
+                    class="text-[2.75rem] md:text-6xl lg:text-7xl font-extrabold tracking-tight text-[#0d0f10] mb-8 leading-[1.15] flex flex-col items-center lg:items-start text-center lg:text-left w-full">
+                    <span id="rotator-capability"
+                        class="text-[#2563eb] transition-all duration-700 ease-[cubic-bezier(0.25,1,0.5,1)] opacity-100 translate-y-0 blur-0 min-h-[1.15em] inline-block">Interpretation</span>
                     <span class="block text-[#0d0f10] my-1 lg:my-2">Built for</span>
-                    <div class="relative w-full text-[#2563eb]">
-                        <!-- Invisible spacer to perfectly preserve layout size for the longest word without CLS -->
-                        <span class="opacity-0 pointer-events-none select-none block w-full"
-                            aria-hidden="true">Educational Institutions</span>
-                        <span id="rotator-audience"
-                            class="absolute top-0 left-0 block w-full transition-all duration-700 ease-[cubic-bezier(0.25,1,0.5,1)] opacity-100 translate-y-0 blur-0">Enterprise</span>
-                    </div>
+                    <span id="rotator-audience"
+                        class="text-[#2563eb] transition-all duration-700 ease-[cubic-bezier(0.25,1,0.5,1)] opacity-100 translate-y-0 blur-0 min-h-[1.15em] inline-block">Enterprise</span>
                 </h1>
                 <p class="text-lg text-[#0d0f10] opacity-80 mb-10 max-w-xl mx-auto lg:mx-0 leading-relaxed font-bold">
                     VoxBento helps organizations communicate across languages with real-time interpretation, AI voice
                     translation, speech-to-text, captions, subtitles, dubbing, and accessibility services — all from a
                     single platform.
                 </p>
-                <div class="flex flex-col sm:flex-row items-center gap-4 justify-center lg:justify-start">
+                <div class="grid grid-cols-1 sm:grid-cols-3 gap-2.5 sm:gap-3 w-full max-w-xl lg:max-w-none">
                     <a href="{% if current_user %}{{ management_home }}{% else %}/register{% endif %}"
-                        class="brutal-btn brutal-btn-primary w-full sm:w-auto text-center">
-                        Start Hosting Free
+                        class="brutal-btn brutal-btn-primary w-full text-center whitespace-nowrap !px-2 sm:!px-2.5 xl:!px-4 !py-3.5 text-xs md:text-sm tracking-normal">
+                        Start Hosting
                     </a>
-                    <a href="/local" class="brutal-btn brutal-btn-secondary w-full sm:w-auto text-center flex items-center justify-center gap-2 !bg-[#fbbf24] !text-[#0d0f10]">
-                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
-                        Download Desktop App
+                    <a href="/local" class="brutal-btn brutal-btn-secondary w-full text-center flex items-center justify-center gap-1.5 !bg-[#fbbf24] !text-[#0d0f10] whitespace-nowrap !px-2 sm:!px-2.5 xl:!px-4 !py-3.5 text-xs md:text-sm tracking-normal">
+                        <svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
+                        Download App
                     </a>
-                    <a href="#interactive-demo" class="brutal-btn brutal-btn-outline w-full sm:w-auto text-center">
-                        View Interactive Demo
+                    <a href="#interactive-demo" class="brutal-btn brutal-btn-outline w-full text-center whitespace-nowrap !px-2 sm:!px-2.5 xl:!px-4 !py-3.5 text-xs md:text-sm tracking-normal">
+                        Interactive Demo
                     </a>
                 </div>
             </div>

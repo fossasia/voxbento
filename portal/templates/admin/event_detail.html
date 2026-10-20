@@ -3,7 +3,7 @@
 
 {% block breadcrumb %}
 <nav class="breadcrumb">
-  <a href="{{ management_prefix }}/">Dashboard</a> <span>/</span>
+  <a href="{{ management_prefix }}/">{{ 'My events' if is_workspace else 'Dashboard' }}</a> <span>/</span>
   <a href="{{ management_prefix }}/events/">Events</a> <span>/</span>
   <span class="breadcrumb-current" aria-current="page">{{ event.display_name }}</span>
 </nav>
@@ -96,7 +96,7 @@
 </div>
 
 <!-- API Key Create Modal -->
-<div id="api-key-modal" class="custom-modal-overlay" style="display: none;">
+<div id="api-key-modal" class="custom-modal-overlay" hidden>
   <div class="custom-modal custom-modal--sm">
     <div class="custom-modal-header">
       <h3 class="custom-modal-title">Generate API Key</h3>
@@ -117,7 +117,7 @@
 </div>
 
 <!-- API Key Success Modal -->
-<div id="api-key-success-modal" class="custom-modal-overlay" style="display: none;">
+<div id="api-key-success-modal" class="custom-modal-overlay" hidden>
   <div class="custom-modal custom-modal--md">
     <div class="custom-modal-header">
       <h3 class="custom-modal-title">API Key Generated</h3>
@@ -140,7 +140,7 @@
 </div>
 
 <!-- API Key Revoke Modal -->
-<div id="api-key-revoke-modal" class="custom-modal-overlay" style="display: none;">
+<div id="api-key-revoke-modal" class="custom-modal-overlay" hidden>
   <div class="custom-modal custom-modal--sm">
     <div class="custom-modal-header">
       <h3 class="custom-modal-title custom-modal-title--danger">Revoke API Key</h3>

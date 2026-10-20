@@ -18,6 +18,7 @@ from sqlalchemy.orm import selectinload
 
 from portal.auth import get_current_user, require_user
 from portal.database import get_db_session
+from portal.globals import asset_version_context
 from portal.models import (
     Event,
     EventMembership,
@@ -34,7 +35,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["oauth"])
 
 _BASE_DIR = Path(__file__).resolve().parent.parent
-templates = Jinja2Templates(directory=str(_BASE_DIR / "templates"))
+templates = Jinja2Templates(directory=str(_BASE_DIR / "templates"), context_processors=[asset_version_context])
 
 VALID_SCOPES = {
     "events:read": "Read event information",
@@ -57,6 +58,22 @@ def generate_token() -> str:
 
 def hash_token(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
+
+
+def is_absolute_http_url(uri: str) -> bool:
+    """Whether ``uri`` is an absolute http(s) URL with a host.
+
+    Clients registered before redirect URIs were validated can hold any string.
+    Redirecting to one that is relative or uses another scheme (``javascript:``)
+    would send the authorization response somewhere other than the client.
+    """
+    try:
+        parts = urllib.parse.urlsplit(uri)
+        # Reading .port is what raises ValueError for a malformed or out-of-range port.
+        hostname, _port = parts.hostname, parts.port
+    except ValueError:
+        return False
+    return parts.scheme in ("http", "https") and bool(hostname)
 
 
 def verify_pkce(code_verifier: str, code_challenge: str, method: str) -> bool:
@@ -130,7 +147,6 @@ async def authorize_get(
             login_url += f"&email={urllib.parse.quote(login_hint)}"
         return safe_redirect(url=login_url, status_code=status.HTTP_303_SEE_OTHER)
 
-
     if response_type != "code":
         raise HTTPException(status_code=400, detail="Unsupported response_type. Only 'code' is supported.")
     if code_challenge_method != "S256":
@@ -148,7 +164,7 @@ async def authorize_get(
     if not client or client.status != "active":
         raise HTTPException(status_code=400, detail="Invalid or inactive client_id.")
 
-    if redirect_uri not in client.redirect_uris:
+    if redirect_uri not in client.redirect_uris or not is_absolute_http_url(redirect_uri):
         raise HTTPException(status_code=400, detail="Invalid redirect_uri.")
 
     # 2. Validate Event
@@ -222,7 +238,7 @@ async def authorize_post(
 
     # Use the canonical registered redirect URI value for all redirects.
     validated_redirect_uri = next((uri for uri in client.redirect_uris if uri == redirect_uri), None)
-    if not validated_redirect_uri:
+    if not validated_redirect_uri or not is_absolute_http_url(validated_redirect_uri):
         raise HTTPException(status_code=400, detail="Invalid client or redirect URI.")
 
     if action == "deny":

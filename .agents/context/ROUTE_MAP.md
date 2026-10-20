@@ -17,7 +17,12 @@
 | GET | `/login` | open | `login.html` | Redirects to `/account` or `?next=` if logged in |
 | POST | `/login` | open | `login.html` | Verifies bcrypt, sets `user_token` cookie |
 | GET | `/logout` | open | — | Deletes `user_token` cookie → `/` |
-| GET | `/account` | user | `account.html` | Shows profile + event memberships |
+| GET | `/account` | user | `account.html` | Account (#767): Profile (display name), Hosting events (Request access / Request sent / has access), Developer API (apply / pending / approved / rejected / suspended), Sign-in (change, set or remove password). Roles live on My events (`/workspace/`) |
+| POST | `/account/profile` | user + same-origin | — | Changes `display_name` (whitespace collapsed, 1–200 chars, no control characters) → `/account?success=profile_saved`, or `?error=display_name` |
+| POST | `/api/auth/set-password` | user | — | JSON `{password, current_password}`; `current_password` is required when the user already has a password (403 otherwise); min 8 chars |
+| POST | `/api/auth/remove-password` | user | — | JSON `{password}`; verifies it, then clears `password_hash` so the user signs in with email links only |
+| GET | `/account/hosting-request` | user | `account_hosting_request.html` | Hosting access request form (#768); redirects to `/account` for hosts, Admins and people with an open request |
+| POST | `/account/hosting-request` | user + same-origin | `account_hosting_request.html` | Validates, saves `HostingRequest`, emails `HOSTING_REQUESTS_EMAIL` → `/account?success=hosting_request_sent`; 400 re-renders the form with errors |
 | GET | `/join/{token}` | open | — | Validates invite token, sets `session_token` → booth or listener |
 
 ---
@@ -61,13 +66,14 @@
 
 `/workspace/*` is the canonical event-management surface for event owners. Room coordinators use `/mission-control/*`, which filters the operational view to their assigned rooms. `/admin/*` is reserved for super admins, apart from legacy room-scoped coordinator handlers retained for compatibility. All admin and workspace routes require a `user_token` with `is_admin=True`, or the appropriate `event_owner` / `room_coordinator` membership for scoped routes. The paths in the table below name the shared `/admin` handler routes; current event-management paths have explicit event-owner mappings formed by replacing `/admin` with `/workspace`. Likewise, the listed `/api/admin/providers/...` and `/api/admin/events/...` routes have explicit `/api/workspace/...` event-owner mappings. New admin routes are not exposed through the workspace unless they are added to that allowlist.
 
-Legacy organizer requests to allowlisted event-management paths under `/admin/`, `/admin/events...`, `/admin/setup...`, or their management API equivalents receive a `307` redirect to the matching workspace URL. The redirect preserves the HTTP method and query string. System-only and unknown routes, including `/admin/users/`, `/admin/developer-accounts`, and `/admin/login`, have no workspace equivalent. OAuth routes under `/oauth/*` are unchanged. General workspace entry points such as the dashboard and setup require ownership of at least one event; routes containing `{event_id}` require ownership of that specific event.
+`/workspace/` itself is **My events** (#766): its own route, open to every signed-in user, not mapped onto the admin dashboard. Legacy organizer requests to `/admin/` still redirect there. Legacy organizer requests to allowlisted event-management paths under `/admin/events...`, `/admin/setup...`, or their management API equivalents receive a `307` redirect to the matching workspace URL. The redirect preserves the HTTP method and query string. System-only and unknown routes, including `/admin/users/`, `/admin/developer-accounts`, and `/admin/login`, have no workspace equivalent. OAuth routes under `/oauth/*` are unchanged. General workspace entry points such as the dashboard and setup require ownership of at least one event; routes containing `{event_id}` require ownership of that specific event.
 
 | Method | Path | Template | Notes |
 |---|---|---|---|
 | GET | `/admin/login` | — | `303` → `/login?next=/admin/` (admins use the shared sign-in page) |
 | GET | `/admin/logout` | — | Deletes session cookies → `/login` |
-| GET | `/admin/` or `/workspace/` | `admin/dashboard.html` | System-wide events for super admins; accessible events for organizers |
+| GET | `/admin/` | `admin/dashboard.html` | System-wide events for super admins |
+| GET | `/workspace/` | `admin/my_events.html` | **My events** (#766): every event the user has a role in, once per event, with roles in plain language and Manage event / Open Mission Control / Enter booth buttons; New event for hosting access and Admins; `303` → `/login?next=/workspace/` when signed out |
 | GET | `/admin/events/` | `admin/event_list.html` | Search by event slug or display name with `?search=`; blank queries show all events; `%` and `_` are literal; pagination URL-encodes the term and clamps out-of-range pages |
 | POST | `/admin/events/` | — | Creates event (slug + display_name) |
 | GET | `/admin/events/{event_id}/` | `admin/event_detail.html` | Event + rooms + booths |
@@ -78,6 +84,9 @@ Legacy organizer requests to allowlisted event-management paths under `/admin/`,
 | POST | `/admin/events/{event_id}/rooms/` | — | Creates room; auto-generates Jitsi URL |
 | GET | `/admin/events/{event_id}/rooms/{room_id}/` | `admin/room_detail.html` | Room + booths |
 | POST | `/admin/events/{event_id}/rooms/{room_id}/edit` | — | Updates jitsi_url + relay_booth_id |
+| POST | `/admin/events/{event_id}/rooms/{room_id}/ai-vocabulary/upload` | — | Upload CSV glossary entries for room AI interpretation |
+| GET | `/admin/events/{event_id}/rooms/{room_id}/ai-vocabulary/export` | — | Export room AI interpretation glossary as CSV |
+| POST | `/admin/events/{event_id}/rooms/{room_id}/ai-vocabulary/delete` | — | Delete specific entry or clear all room glossary entries |
 | POST | `/admin/events/{event_id}/rooms/{room_id}/delete` | — | Deletes room and dependent data only if room belongs to path event; 404 on missing/mismatched room |
 | GET | `/admin/events/{event_id}/rooms/{room_id}/booths/` | `admin/booth_list.html` | — |
 | POST | `/admin/events/{event_id}/rooms/{room_id}/booths/` | — | Creates DBBooth |
@@ -91,12 +100,16 @@ Legacy organizer requests to allowlisted event-management paths under `/admin/`,
 | GET | `/admin/events/{event_id}/members/` | `admin/event_members.html` | EventMembership list |
 | POST | `/admin/events/{event_id}/members/` | — | Upserts EventMembership by email + role |
 | POST | `/admin/events/{event_id}/members/{membership_id}/delete` | — | Removes EventMembership |
-| GET | `/admin/users/` | `admin/user_list.html` | Paginated; `sort_by`/`sort_order` query params, defaults to `created_at` desc (newest first) |
-| GET | `/admin/users/{user_id}/` | `admin/user_detail.html` | User + event admin assignments |
-| POST | `/admin/users/{user_id}/toggle-active` | — | Flips `is_active` |
-| POST | `/admin/users/{user_id}/delete` | — | Deletes user |
-| POST | `/admin/users/{user_id}/toggle-admin` | — | Flips `is_admin` |
-| POST | `/admin/users/{user_id}/events/{event_id}/toggle-admin` | — | Grants/revokes `event_owner` membership |
+| GET | `/admin/users/` | `admin/user_list.html` | Users (#765): `search` (name or email), `show` (`all`, `admins`, `hosting`, `deactivated`, `unverified`), sortable User/Joined (`sort_by`/`sort_order`, default `created_at` desc), pagination; on/off switches for Hosting access, Admin and Active per row (`static/js/admin-users.js`) |
+| GET | `/admin/users/{user_id}/` | `admin/user_detail.html` | User page (#765): Platform access (hosting, Admin), Roles in events (read-only; owners manage them), Events owned, Account facts, Danger zone |
+| POST | `/admin/users/{user_id}/access` | — | Same-origin; form `field` (`hosting`/`admin`/`active`) + `value` (`true`/`false`). JSON `{ok, field, value, message}` when `Accept: application/json`, else `303` back with `?notice=`/`?error=`. Rules in `portal/user_admin.py`: no changing your own Admin or Active status, at least one active Admin always remains, hosting only for active accounts that are set up, Admins always host |
+| POST | `/admin/users/{user_id}/toggle-active` | — | Older form endpoint; same-origin; flips Active through the same rules |
+| POST | `/admin/users/{user_id}/toggle-admin` | — | Older form endpoint; same-origin; flips Admin through the same rules |
+| POST | `/admin/users/{user_id}/delete` | — | Same-origin; `confirm_email` must equal the account's email; never your own account or the last active Admin; deletes the user and all their roles |
+| GET | `/admin/hosting-access/` | `admin/hosting_access.html` | "People with access" tab: hosts and pending hosting invitations, events owned, Remove access / Cancel invitation (#768) |
+| GET | `/admin/hosting-access/requests/` | `admin/hosting_access.html` | "Requests" tab: open hosting requests, newest first |
+| POST | `/admin/hosting-access/requests/{request_id}/grant` | — | Same-origin; sets `can_host`, closes request as `granted`, emails the person |
+| POST | `/admin/hosting-access/requests/{request_id}/decline` | — | Same-origin; `reason` required (≤1000 chars), closes request as `declined`, emails the reason |
 
 ---
 
