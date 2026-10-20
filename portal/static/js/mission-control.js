@@ -355,4 +355,13 @@ function showToast(msg, type = 'info') {
   setTimeout(() => t.remove(), 4000);
 }
 
+document.addEventListener('focusin', (e) => {
+  boothMap.forEach((entry, boothId) => {
+    const card = document.getElementById(`mc-card-${boothId}`);
+    if (!card || !card.contains(e.target)) {
+      entry.pendingFocusId = '';
+    }
+  });
+});
+
 document.addEventListener('DOMContentLoaded', init);
