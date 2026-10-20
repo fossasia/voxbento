@@ -12,6 +12,9 @@ const roomId = container?.dataset.roomId;
 
 let currentLanguageCode = '';
 let downloadUrl = '';
+// Monotonic id for in-flight requests, so a slow response for a previously
+// selected channel cannot overwrite the table or the CSV of the current one.
+let requestSequence = 0;
 
 function setPlaceholder(text, className = 'muted transcript-placeholder') {
   if (!container) return;
@@ -21,8 +24,8 @@ function setPlaceholder(text, className = 'muted transcript-placeholder') {
   container.replaceChildren(placeholder);
 }
 
-function transcriptsUrl() {
-  return `/api/admin/events/${eventId}/rooms/${roomId}/transcripts/${currentLanguageCode}`;
+function transcriptsUrl(languageCode) {
+  return `/api/admin/events/${eventId}/rooms/${roomId}/transcripts/${languageCode}`;
 }
 
 function renderTable(rows) {
@@ -80,7 +83,7 @@ function clearDownload() {
   downloadBtn.removeAttribute('href');
 }
 
-function updateCsvDownload(rows) {
+function updateCsvDownload(rows, languageCode) {
   if (!downloadBtn) return;
 
   const lines = ['Time,Text', ...rows.map((row) => `${csvCell(row.created_at)},${csvCell(row.text)}`)];
@@ -90,22 +93,30 @@ function updateCsvDownload(rows) {
   downloadUrl = URL.createObjectURL(blob);
 
   downloadBtn.href = downloadUrl;
-  downloadBtn.download = `transcripts_${currentLanguageCode.replace(/[^a-zA-Z0-9_-]/g, '_')}.csv`;
+  // Name the file after the channel the rows came from, not the current selection.
+  downloadBtn.download = `transcripts_${languageCode.replace(/[^a-zA-Z0-9_-]/g, '_')}.csv`;
   downloadBtn.hidden = false;
 }
 
 async function fetchTranscripts() {
   if (!currentLanguageCode || !container) return;
 
+  const languageCode = currentLanguageCode;
+  const requestId = ++requestSequence;
+  const isCurrentRequest = () => requestId === requestSequence && languageCode === currentLanguageCode;
+
   setPlaceholder('Loading...');
+  // A previous channel's CSV must not stay downloadable while this one loads.
+  clearDownload();
 
   try {
-    const response = await fetch(transcriptsUrl());
+    const response = await fetch(transcriptsUrl(languageCode));
     if (!response.ok) {
       throw new Error(`Failed to fetch transcripts (${response.status})`);
     }
 
     const rows = await response.json();
+    if (!isCurrentRequest()) return;
     if (!Array.isArray(rows) || rows.length === 0) {
       setPlaceholder('No transcripts recorded for this channel yet.');
       clearDownload();
@@ -113,9 +124,10 @@ async function fetchTranscripts() {
     }
 
     renderTable(rows);
-    updateCsvDownload(rows);
+    updateCsvDownload(rows, languageCode);
     container.scrollTop = container.scrollHeight;
   } catch (error) {
+    if (!isCurrentRequest()) return;
     console.error('Failed to load room transcripts', error);
     setPlaceholder(`Error: ${error.message}`, 'danger-text transcript-placeholder');
     clearDownload();
