@@ -55,7 +55,11 @@ def downgrade() -> None:
     # Passwordless (magic-link only) accounts have a NULL password_hash. Revising
     # back to 017 restores NOT NULL, so give those rows an unusable hash first;
     # otherwise the batch table copy fails with an integrity error.
-    op.execute(f"UPDATE users SET password_hash = '{UNUSABLE_PASSWORD_HASH}' WHERE password_hash IS NULL")
+    op.execute(
+        sa.text("UPDATE users SET password_hash = :hash WHERE password_hash IS NULL").bindparams(
+            hash=UNUSABLE_PASSWORD_HASH
+        )
+    )
     with op.batch_alter_table("users") as batch_op:
         batch_op.alter_column("password_hash", existing_type=sa.VARCHAR(length=200), nullable=False)
     op.drop_column("users", "email_verified")
