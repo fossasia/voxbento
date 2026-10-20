@@ -509,3 +509,63 @@ async def test_migration_030_creates_and_drops_hosting_requests():
         assert "hosting_requests" not in tables
     finally:
         os.remove(db_path)
+
+
+@pytest.mark.anyio
+async def test_granted_person_can_create_events():
+    _, admin_token = await make_user("admin@example.org", display_name="Hong", is_admin=True)
+    _, token = await make_user()
+    async with client() as http:
+        before = await http.get("/workspace/setup", cookies={"user_token": token}, follow_redirects=False)
+        assert before.status_code == 303
+        assert before.headers["location"] == "/account?error=hosting_access_required"
+
+        await submit(http, token)
+        hr = (await open_requests())[0]
+        with patch("portal.routers.admin.send_hosting_granted_email", new_callable=AsyncMock):
+            await http.post(
+                f"/admin/hosting-access/requests/{hr.id}/grant",
+                headers=SAME_ORIGIN,
+                cookies={"user_token": admin_token},
+            )
+
+        # Same session cookie: access applies without signing out.
+        after = await http.get("/workspace/setup", cookies={"user_token": token}, follow_redirects=False)
+        assert after.status_code == 200
+
+
+@pytest.mark.anyio
+async def test_grant_refused_for_deactivated_requester():
+    _, admin_token = await make_user("admin@example.org", display_name="Hong", is_admin=True)
+    user_id, token = await make_user()
+    async with client() as http:
+        await submit(http, token)
+    async with get_session() as session:
+        user = await get_user_by_id(session, user_id)
+        user.is_active = False
+    hr = (await open_requests())[0]
+    async with client() as http:
+        with patch("portal.routers.admin.send_hosting_granted_email", new_callable=AsyncMock) as granted:
+            res = await http.post(
+                f"/admin/hosting-access/requests/{hr.id}/grant",
+                headers=SAME_ORIGIN,
+                cookies={"user_token": admin_token},
+                follow_redirects=False,
+            )
+    assert res.headers["location"] == "/admin/hosting-access/requests/?error=inactive_user"
+    granted.assert_not_awaited()
+    async with get_session() as session:
+        assert (await get_user_by_id(session, user_id)).can_host is False
+    assert len(await open_requests()) == 1
+
+
+@pytest.mark.anyio
+async def test_deleting_user_removes_their_requests():
+    _, admin_token = await make_user("admin@example.org", display_name="Hong", is_admin=True)
+    user_id, token = await make_user()
+    async with client() as http:
+        await submit(http, token)
+        await http.post(f"/admin/users/{user_id}/delete", headers=SAME_ORIGIN, cookies={"user_token": admin_token})
+        page = await http.get("/admin/hosting-access/requests/", cookies={"user_token": admin_token})
+    assert page.status_code == 200
+    assert await open_requests() == []
