@@ -217,6 +217,22 @@ rejected/suspended. **Sign-in** changes the password (the current one is
 required), sets a first password, or removes it so the person signs in with
 email links only. Event, room and booth roles are listed on My events instead.
 
+## Admin Users pages
+
+`/admin/users/` lists every account with a search, a **Show** filter (All users,
+Admins, Hosting access, Deactivated, Email not verified) and on/off switches for
+**Hosting access**, **Admin** and **Active** in each row, changed in place without a
+page reload. Each switch posts to `/admin/users/{id}/access`; if the server refuses
+a change, the switch flips back and the reason is shown. `/admin/users/{id}/` shows
+the person's platform access, their roles in events (read-only, since each event's
+owners manage roles), the events they own, account facts and a danger zone.
+Deleting an account requires typing its email address.
+
+`portal/user_admin.py` holds the rules every path follows: an Admin can't change
+their own Admin or Active status or delete themselves, VoxBento always keeps at
+least one active Admin, and hosting access is only granted to active accounts that
+have finished setting up (others get an invitation instead).
+
 ## Administrative access
 
 Administrative access is tied to registered user accounts rather than a shared

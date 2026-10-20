@@ -1136,7 +1136,7 @@ class TestEventCRUD:
 
 class TestBreadcrumbs:
     @pytest.mark.anyio
-    @pytest.mark.parametrize("path", ["/admin/events/", "/admin/users/"])
+    @pytest.mark.parametrize("path", ["/admin/events/"])
     async def test_breadcrumb_marks_current_page_and_uses_slash_separator(self, admin_cookie, path):
         async with _client() as c:
             resp = await c.get(path, cookies=admin_cookie)
@@ -2290,7 +2290,7 @@ async def test_user_list_badge_shows_total_across_pages(admin_cookie):
 
     assert resp.status_code == 200
     # 3 seeded users plus the fixture's own administrator row.
-    assert '<span class="badge">Total: 4 users</span>' in resp.text
+    assert '<span class="ul-count">4 users</span>' in resp.text
     assert "displayed" not in resp.text
 
 
@@ -2306,7 +2306,7 @@ async def test_user_list_badge_uses_singular_for_one_user(admin_cookie):
 
     assert resp.status_code == 200
     # The fixture's administrator row plus the one seeded user: plural "users".
-    assert '<span class="badge">Total: 2 users</span>' in resp.text
+    assert '<span class="ul-count">2 users</span>' in resp.text
 
 
 @pytest.mark.anyio

@@ -34,6 +34,8 @@ developer app and **Admin** for Admins. **My events** (`/workspace/`) lists ever
 event the person has a role in, with a button to where they work. **Account**
 (`/account`) holds the person's display name, hosting and developer access, and
 sign-in settings (change, set or remove a password).
+Admins manage accounts at **Admin → Users**: search and filter everyone, and turn
+hosting access, Admin and Active on or off right from the list.
 
 ## Hosting access
 

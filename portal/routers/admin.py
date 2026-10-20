@@ -16,7 +16,7 @@ from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request, sta
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
-from sqlalchemy import func, select, update
+from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
@@ -38,8 +38,10 @@ from portal.booth_identity import make_booth_id, make_mediamtx_path, validate_ev
 from portal.config import settings
 from portal.crypto import encrypt_val
 from portal.database import (
+    USER_FILTERS,
+    USER_SORT_COLUMNS,
     close_hosting_request,
-    close_open_hosting_request,
+    count_active_admins,
     count_events,
     count_users,
     create_api_key,
@@ -52,18 +54,20 @@ from portal.database import (
     delete_booth,
     delete_event,
     delete_room,
-    delete_user,
     get_api_keys_for_event,
     get_booth_by_id,
     get_db_session,
+    get_developer_account,
     get_event_by_id,
     get_event_by_slug,
     get_hosting_request,
+    get_open_hosting_request,
     get_room_by_id,
     get_session,
     get_user_by_email,
     get_user_by_id,
     list_all_booths_for_events,
+    list_booth_memberships_for_user,
     list_booths_for_event,
     list_booths_for_room,
     list_events,
@@ -84,7 +88,6 @@ from portal.database import (
     set_booth_membership,
     set_event_membership,
     set_room_membership,
-    update_user_active,
 )
 from portal.email import (
     send_hosting_granted_email,
@@ -112,12 +115,15 @@ from portal.models import (
     User,
     utc_now,
 )
-from portal.my_events import list_my_events
+from portal.my_events import ROLE_LABELS, list_my_events
 from portal.program_ingest import room_lock
 from portal.rate_limit import check_rate_limit
 from portal.transcription import ALLOWED_MODELS, ProviderConfig, ProviderEnum, get_api_key
 from portal.transcription.worker import start_transcription_worker, stop_transcription_worker
 from portal.translations.constants import TRANSLATION_MODELS, TranslationProviderEnum
+from portal.user_admin import ERROR_MESSAGES as USER_ADMIN_ERRORS
+from portal.user_admin import FIELDS as USER_ACCESS_FIELDS
+from portal.user_admin import AccessChange, UserAdminError, delete_user_account, is_last_active_admin, set_user_access
 from portal.user_menu import resolve_user_menu, user_menu_context
 from portal.utils import _check_mediamtx, _make_jitsi_url, get_client_ip, safe_redirect, verify_same_origin
 from portal.websockets.manager import broadcast_transcription
@@ -1664,21 +1670,45 @@ async def admin_transcription_settings(
     )
 
 
+USER_SHOW_OPTIONS = (
+    ("all", "All users"),
+    ("admins", "Admins"),
+    ("hosting", "Hosting access"),
+    ("deactivated", "Deactivated"),
+    ("unverified", "Email not verified"),
+)
+
+
 @router.get("/admin/users/", dependencies=[Depends(require_super_admin)])
 async def admin_users(
     request: Request,
     page: int = 1,
     limit: int = 50,
     search: str | None = None,
+    show: str = "all",
     sort_by: str = "created_at",
     sort_order: str = "desc",
 ):
-    """List all registered users (super admin only), newest first by default."""
-    offset = (page - 1) * limit
+    """Everyone with a VoxBento account, newest first, with inline access toggles (#765)."""
+    search = (search or "").strip() or None
+    if show not in USER_FILTERS:
+        show = "all"
+    if sort_by not in USER_SORT_COLUMNS:
+        sort_by = "created_at"
+    sort_order = "asc" if sort_order == "asc" else "desc"
+    limit = min(max(limit, 1), 200)
     async with get_session() as session:
-        total_users = await count_users(session, search=search)
+        total_users = await count_users(session, search=search, show=show)
+        total_pages = max(1, math.ceil(total_users / limit))
+        page = min(max(page, 1), total_pages)
         users = await list_users(
-            session, limit=limit, offset=offset, search=search, sort_by=sort_by, sort_order=sort_order
+            session,
+            limit=limit,
+            offset=(page - 1) * limit,
+            search=search,
+            show=show,
+            sort_by=sort_by,
+            sort_order=sort_order,
         )
         user_ids = [u.id for u in users]
         token_map = {}
@@ -1692,12 +1722,10 @@ async def admin_users(
                 )
                 .order_by(AuthToken.created_at.desc())
             )
-            tokens = (await session.execute(stmt)).scalars().all()
-            for tok in tokens:
-                if tok.user_id not in token_map:
-                    token_map[tok.user_id] = tok
+            for tok in (await session.execute(stmt)).scalars().all():
+                token_map.setdefault(tok.user_id, tok)
+        active_admin_count = await count_active_admins(session)
 
-    total_pages = max(1, math.ceil(total_users / limit))
     return templates.TemplateResponse(
         request=request,
         name="admin/user_list.html",
@@ -1708,14 +1736,107 @@ async def admin_users(
             "limit": limit,
             "total_pages": total_pages,
             "search": search,
+            "show": show,
+            "show_options": USER_SHOW_OPTIONS,
             "sort_by": sort_by,
             "sort_order": sort_order,
             "token_map": token_map,
+            "current_user_id": request.state.principal["user_id"],
+            "active_admin_count": active_admin_count,
+            "notice": user_notice(request),
             "is_super_admin": True,
             "is_event_owner": True,
             "is_room_coordinator": True,
         },
     )
+
+
+def user_notice(request: Request) -> tuple[str, str] | None:
+    """("success" | "error", message) for a change made without JavaScript."""
+    error = request.query_params.get("error")
+    if error in USER_ADMIN_ERRORS:
+        return "error", USER_ADMIN_ERRORS[error]
+    if error in LEGACY_USER_ERRORS:
+        return "error", LEGACY_USER_ERRORS[error]
+    notice = request.query_params.get("notice") or request.query_params.get("success")
+    if notice in USER_NOTICES:
+        return "success", USER_NOTICES[notice]
+    return None
+
+
+# Codes still sent by the invitation and hosting endpoints.
+LEGACY_USER_ERRORS = {
+    "already_host": "This person already has hosting access.",
+    "already_admin": "This person is already an Admin.",
+    "invalid_email": "Enter a valid email address.",
+    "invite_not_found": "That invitation was not found or has expired.",
+}
+
+
+USER_NOTICES = {
+    "hosting_on": "Hosting access granted.",
+    "hosting_off": "Hosting access removed. Existing events are kept.",
+    "admin_on": "This person is now an Admin.",
+    "admin_off": "This person is no longer an Admin.",
+    "active_on": "The account was reactivated.",
+    "active_off": "The account was deactivated and signed out.",
+    "deleted": "The account was deleted.",
+    "invite_sent": "Invitation sent successfully.",
+    "invite_resent": "Invitation resent.",
+    "invite_cancelled": "Invitation cancelled.",
+    "hosting_granted": "Hosting access granted.",
+    "hosting_revoked": "Hosting access removed. Existing events are kept.",
+}
+
+
+def wants_json(request: Request) -> bool:
+    return "application/json" in request.headers.get("accept", "")
+
+
+def user_action_redirect(request: Request, user_id: int, query: str) -> RedirectResponse:
+    """Send a plain form post back to the page it came from."""
+    referrer = request.headers.get("referer", "")
+    base = f"/admin/users/{user_id}/" if f"/admin/users/{user_id}/" in referrer else "/admin/users/"
+    return safe_redirect(url=f"{base}?{query}", status_code=status.HTTP_303_SEE_OTHER)
+
+
+async def apply_user_access(request: Request, user_id: int, field: str, value: bool | None) -> AccessChange:
+    """Run one access change for the signed-in Admin; value None flips the current state."""
+    async with get_session() as session:
+        actor_id = request.state.principal["user_id"]
+        if value is None:
+            user = await get_user_by_id(session, user_id)
+            if user is None:
+                raise UserAdminError("not_found", 404)
+            value = not {"hosting": user.can_host, "admin": user.is_admin, "active": user.is_active}[field]
+        change = await set_user_access(session, actor_id=actor_id, user_id=user_id, field=field, value=value)
+    if change.changed and field == "hosting" and value:
+        await send_hosting_granted_email(change.email, f"{settings.public_base_url.rstrip('/')}/workspace/")
+    return change
+
+
+@router.post("/admin/users/{user_id}/access", dependencies=[Depends(require_super_admin)])
+async def admin_set_user_access(request: Request, user_id: int):
+    """Turn hosting access, Admin or the account on or off (users list toggles and user page buttons)."""
+    if not verify_same_origin(request):
+        raise HTTPException(status_code=400, detail="Invalid request origin.")
+    form = await request.form()
+    field = form.get("field")
+    raw_value = form.get("value")
+    if field not in USER_ACCESS_FIELDS or raw_value not in ("true", "false"):
+        error = UserAdminError("invalid")
+    else:
+        try:
+            change = await apply_user_access(request, user_id, field, raw_value == "true")
+        except UserAdminError as exc:
+            error = exc
+        else:
+            if wants_json(request):
+                return JSONResponse({"ok": True, "field": change.field, "value": change.value, "message": change.message})
+            return user_action_redirect(request, user_id, f"notice={change.notice}")
+    if wants_json(request):
+        return JSONResponse({"ok": False, "detail": error.message}, status_code=error.status_code)
+    return user_action_redirect(request, user_id, f"error={error.code}")
 
 
 @router.post("/admin/users/invite", dependencies=[Depends(require_super_admin)])
@@ -1795,80 +1916,21 @@ async def admin_invite_user(request: Request):
 @router.post("/admin/users/{user_id}/hosting", dependencies=[Depends(require_super_admin)])
 @router.post("/admin/users/{user_id}/hosting/", dependencies=[Depends(require_super_admin)])
 async def admin_toggle_user_hosting(request: Request, user_id: int):
+    """Grant or remove hosting access (used by the Hosting access page)."""
     if not verify_same_origin(request):
         raise HTTPException(status_code=400, detail="Invalid request origin.")
-
     form = await request.form()
     action = form.get("action")
-
-    from portal.auth import resolve_principal
-
-    async with get_session() as session:
-        principal = await resolve_principal(request, session)
-        admin_user_id = principal["user_id"]
-
-        user = await get_user_by_id(session, user_id)
-        if user is None:
-            raise HTTPException(status_code=404, detail="User not found.")
-        if user.is_admin:
-            raise HTTPException(status_code=400, detail="Cannot modify hosting access for administrators.")
-
-        if action == "grant":
-            new_can_host = True
-            user.hosting_revoked_at = None
-            user.hosting_requested_at = None
-        elif action == "revoke":
-            new_can_host = False
-            user.hosting_revoked_at = utc_now()
-            user.hosting_requested_at = None
-        else:
-            new_can_host = not user.can_host
-            user.hosting_revoked_at = None if new_can_host else utc_now()
-            user.hosting_requested_at = None
-
-        if new_can_host and not user.is_active:
-            raise HTTPException(status_code=400, detail="Cannot grant hosting access to inactive users.")
-
-        if new_can_host and not user.password_hash:
-            raise HTTPException(status_code=400, detail="Stub users cannot be granted hosting directly. Send an invitation instead.")
-
-        user.can_host = new_can_host
-        if new_can_host:
-            await close_open_hosting_request(
-                session, user.id, status=HOSTING_REQUEST_GRANTED, decided_by_user_id=admin_user_id
-            )
-
-        # Pending tokens deleted on both grant and revoke (Review 7 A5)
-        delete_stmt = (
-            select(AuthToken)
-            .where(
-                AuthToken.user_id == user.id,
-                AuthToken.token_type == TOKEN_TYPE_HOSTING_INVITE,
-                AuthToken.used_at.is_(None),
-            )
-        )
-        existing_tokens = (await session.execute(delete_stmt)).scalars().all()
-        for et in existing_tokens:
-            await session.delete(et)
-
-        logger.info(
-            "Admin %s updated hosting access for user %d (%s): can_host=%s",
-            admin_user_id,
-            user.id,
-            user.email,
-            new_can_host,
-        )
-
-        user_email = user.email
-
-    if new_can_host:
-        login_url = f"{settings.public_base_url.rstrip('/')}/workspace/"
-        await send_hosting_granted_email(user_email, login_url)
+    value = True if action == "grant" else False if action == "revoke" else None
+    try:
+        change = await apply_user_access(request, user_id, "hosting", value)
+    except UserAdminError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
 
     referrer = request.headers.get("referer", "")
     if f"/admin/users/{user_id}" in referrer:
         return safe_redirect(url=f"/admin/users/{user_id}/", status_code=status.HTTP_303_SEE_OTHER)
-    outcome = f"success=hosting_{'granted' if new_can_host else 'revoked'}"
+    outcome = f"success=hosting_{'granted' if change.value else 'revoked'}"
     return safe_redirect(url=hosting_return_url(request, "/admin/users/", outcome), status_code=status.HTTP_303_SEE_OTHER)
 
 
@@ -2110,30 +2172,77 @@ async def admin_decline_hosting_request(request: Request, request_id: int):
 
 @router.post("/admin/users/{user_id}/toggle-active", dependencies=[Depends(require_super_admin)])
 async def admin_toggle_user_active(request: Request, user_id: int):
-    async with get_session() as session:
-        user = await get_user_by_id(session, user_id)
-        if user:
-            await update_user_active(session, user_id, is_active=not user.is_active)
-    return safe_redirect(url="/admin/users/", status_code=status.HTTP_303_SEE_OTHER)
+    """Older form endpoint: flip the account between active and deactivated."""
+    if not verify_same_origin(request):
+        raise HTTPException(status_code=400, detail="Invalid request origin.")
+    try:
+        change = await apply_user_access(request, user_id, "active", None)
+    except UserAdminError as exc:
+        return user_action_redirect(request, user_id, f"error={exc.code}")
+    return user_action_redirect(request, user_id, f"notice={change.notice}")
 
 
 @router.post("/admin/users/{user_id}/delete", dependencies=[Depends(require_super_admin)])
 async def admin_delete_user(request: Request, user_id: int):
-    async with get_session() as session:
-        await delete_user(session, user_id)
-    return safe_redirect(url="/admin/users/", status_code=status.HTTP_303_SEE_OTHER)
+    """Delete an account and all its roles; the form must repeat the account's email."""
+    if not verify_same_origin(request):
+        raise HTTPException(status_code=400, detail="Invalid request origin.")
+    form = await request.form()
+    confirm_email = form.get("confirm_email")
+    try:
+        async with get_session() as session:
+            await delete_user_account(
+                session,
+                actor_id=request.state.principal["user_id"],
+                user_id=user_id,
+                confirm_email=confirm_email if isinstance(confirm_email, str) else "",
+            )
+    except UserAdminError as exc:
+        return safe_redirect(url=f"/admin/users/{user_id}/?error={exc.code}", status_code=status.HTTP_303_SEE_OTHER)
+    return safe_redirect(url="/admin/users/?notice=deleted", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@dataclass(frozen=True)
+class UserRoleRow:
+    event: Event
+    where: str
+    role: str
+    since: object
+
+
+async def user_roles_and_owned_events(session: AsyncSession, user_id: int) -> tuple[list[UserRoleRow], list[Event]]:
+    """Roles a person holds in events (other than owner), and the events they own."""
+    rows: list[UserRoleRow] = []
+    owned: list[Event] = []
+    for m in await list_memberships_for_user(session, user_id):
+        if m.event is None or m.event.deleted_at is not None:
+            continue
+        if m.role == "event_owner":
+            owned.append(m.event)
+        else:
+            rows.append(UserRoleRow(m.event, "Whole event", ROLE_LABELS.get(m.role, m.role), m.created_at))
+    for m in await list_room_memberships_for_user(session, user_id):
+        if m.room and m.room.event and m.room.event.deleted_at is None:
+            rows.append(UserRoleRow(m.room.event, m.room.display_name, ROLE_LABELS.get(m.role, m.role), m.created_at))
+    for m in await list_booth_memberships_for_user(session, user_id):
+        booth = m.booth
+        if booth and booth.event and booth.event.deleted_at is None:
+            room = booth.room.display_name if booth.room else ""
+            where = " · ".join(part for part in (room, f"{booth.language_name} booth") if part)
+            rows.append(UserRoleRow(booth.event, where, ROLE_LABELS.get(m.role, m.role), m.created_at))
+    rows.sort(key=lambda r: (r.event.display_name.casefold(), r.where.casefold()))
+    owned.sort(key=lambda e: e.display_name.casefold())
+    return rows, owned
 
 
 @router.get("/admin/users/{user_id}/", dependencies=[Depends(require_super_admin)])
 async def admin_user_detail(request: Request, user_id: int):
+    """One person's access, roles and account, with the actions Admins can take (#765)."""
     async with get_session() as session:
         user = await get_user_by_id(session, user_id)
         if not user:
             return safe_redirect(url="/admin/users/", status_code=status.HTTP_303_SEE_OTHER)
-        events = await list_events(session)
-        memberships = await list_memberships_for_user(session, user_id)
-        event_owner_map = {m.event_id: m for m in memberships if m.role == "event_owner"}
-
+        roles, owned_events = await user_roles_and_owned_events(session, user_id)
         pending_token = None
         if not user.can_host:
             tok_stmt = (
@@ -2146,15 +2255,23 @@ async def admin_user_detail(request: Request, user_id: int):
                 .order_by(AuthToken.created_at.desc())
             )
             pending_token = (await session.execute(tok_stmt)).scalars().first()
+        open_request = await get_open_hosting_request(session, user_id)
+        developer_account = await get_developer_account(session, user_id)
+        is_last_admin = await is_last_active_admin(session, user)
 
     return templates.TemplateResponse(
         request=request,
         name="admin/user_detail.html",
         context={
             "user_detail": user,
-            "events": events,
-            "event_owner_map": event_owner_map,
+            "roles": roles,
+            "owned_events": owned_events,
             "pending_token": pending_token,
+            "open_request": open_request,
+            "developer_account": developer_account,
+            "is_self": user.id == request.state.principal["user_id"],
+            "is_last_admin": is_last_admin,
+            "notice": user_notice(request),
             "is_super_admin": True,
             "is_event_owner": True,
             "is_room_coordinator": True,
@@ -2164,29 +2281,14 @@ async def admin_user_detail(request: Request, user_id: int):
 
 @router.post("/admin/users/{user_id}/toggle-admin", dependencies=[Depends(require_super_admin)])
 async def admin_toggle_user_admin(request: Request, user_id: int):
-    async with get_session() as session:
-        user = await get_user_by_id(session, user_id)
-        if user:
-            stmt = update(User).where(User.id == user_id).values(is_admin=not user.is_admin)
-            await session.execute(stmt)
-            await session.flush()
-    return safe_redirect(url=f"/admin/users/{user_id}/", status_code=status.HTTP_303_SEE_OTHER)
-
-
-@router.post("/admin/users/{user_id}/events/{event_id}/toggle-owner", dependencies=[Depends(require_super_admin)])
-async def admin_toggle_user_event_owner(request: Request, user_id: int, event_id: int):
-    async with get_session() as session:
-        user = await get_user_by_id(session, user_id)
-        if user:
-            memberships = await list_memberships_for_user(session, user_id)
-            event_owner_membership = next(
-                (m for m in memberships if m.event_id == event_id and m.role == "event_owner"), None
-            )
-            if event_owner_membership:
-                await remove_event_membership(session, event_owner_membership.id)
-            else:
-                await set_event_membership(session, user_id=user_id, event_id=event_id, role="event_owner")
-    return safe_redirect(url=f"/admin/users/{user_id}/", status_code=status.HTTP_303_SEE_OTHER)
+    """Older form endpoint: flip Admin. Event roles are managed by each event's owners (#765)."""
+    if not verify_same_origin(request):
+        raise HTTPException(status_code=400, detail="Invalid request origin.")
+    try:
+        change = await apply_user_access(request, user_id, "admin", None)
+    except UserAdminError as exc:
+        return user_action_redirect(request, user_id, f"error={exc.code}")
+    return user_action_redirect(request, user_id, f"notice={change.notice}")
 
 
 @router.get("/admin/events/{event_id}/members/", dependencies=[Depends(require_admin)])

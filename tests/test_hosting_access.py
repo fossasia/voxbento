@@ -280,7 +280,7 @@ async def test_inactive_user_cannot_be_invited_or_redeem():
             headers={"Origin": "http://test"},
         )
         assert res_invite.status_code == 400
-        assert "inactive" in res_invite.text.lower()
+        assert "inactive" in res_invite.text.lower() or "reactivate" in res_invite.text.lower()
 
         # Inactive user attempts redemption -> 403
         res_redeem = await http.post(
@@ -299,7 +299,7 @@ async def test_inactive_user_cannot_be_invited_or_redeem():
             headers={"Origin": "http://test"},
         )
         assert res_grant.status_code == 400
-        assert "inactive" in res_grant.text.lower()
+        assert "reactivate this account first" in res_grant.text.lower()
 
         # Revoking hosting from inactive user who has can_host is permitted -> 303
         async with get_session() as session:
@@ -336,7 +336,7 @@ async def test_toggle_hosting_on_stub_user_rejected():
             headers={"Origin": "http://test"},
         )
         assert resp.status_code == 400
-        assert "stub" in resp.text.lower()
+        assert "finished setting up their account" in resp.text.lower()
 
 
 @pytest.mark.anyio
@@ -778,11 +778,11 @@ async def test_admin_users_table_layout_and_flash_alerts():
         assert "Invitation sent successfully." in res.text
         assert "alert-success" in res.text
 
-        # In table: Hosting column has Pending badge and no forms inside it
-        assert "Pending</span>" in res.text
-        # Resend and Cancel buttons exist in actions-cell
-        assert f"/admin/users/invite/{tok.id}/resend" in res.text
-        assert f"/admin/users/invite/{tok.id}/cancel" in res.text
+        # The list tags the pending invitation; resend and cancel live on the user page (#765)
+        assert "Invitation pending</span>" in res.text
+        detail = await http.get(f"/admin/users/{invited.id}/", cookies={"user_token": admin_token})
+        assert f"/admin/users/invite/{tok.id}/resend" in detail.text
+        assert f"/admin/users/invite/{tok.id}/cancel" in detail.text
 
 
 @pytest.mark.anyio

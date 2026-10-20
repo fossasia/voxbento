@@ -596,21 +596,44 @@ async def get_user_by_id(session: AsyncSession, user_id: int) -> User | None:
     return result.scalar_one_or_none()
 
 
-async def count_users(session: AsyncSession, search: str | None = None) -> int:
-    stmt = select(func.count(User.id))
+# "Show" filter on the Admin Users page (#765).
+USER_FILTERS = {
+    "all": None,
+    "admins": User.is_admin.is_(True),
+    "hosting": User.can_host.is_(True),
+    "deactivated": User.is_active.is_(False),
+    "unverified": User.email_verified.is_(False),
+}
+
+
+def _user_list_conditions(search: str | None, show: str | None) -> list:
+    conditions = []
     if search:
         search_pattern = f"%{escape_event_search_term(search)}%"
-        stmt = stmt.where(
+        conditions.append(
             or_(
                 User.email.ilike(search_pattern, escape="\\"),
                 User.display_name.ilike(search_pattern, escape="\\"),
             )
         )
+    show_condition = USER_FILTERS.get(show or "all")
+    if show_condition is not None:
+        conditions.append(show_condition)
+    return conditions
+
+
+async def count_users(session: AsyncSession, search: str | None = None, show: str | None = None) -> int:
+    stmt = select(func.count(User.id)).where(*_user_list_conditions(search, show))
     result = await session.execute(stmt)
     return result.scalar_one()
 
 
-_USER_SORT_COLUMNS = {
+async def count_active_admins(session: AsyncSession) -> int:
+    stmt = select(func.count(User.id)).where(User.is_admin.is_(True), User.is_active.is_(True))
+    return (await session.execute(stmt)).scalar_one()
+
+
+USER_SORT_COLUMNS = {
     "id": User.id,
     "email": User.email,
     "display_name": User.display_name,
@@ -629,19 +652,11 @@ async def list_users(
     search: str | None = None,
     sort_by: str = "created_at",
     sort_order: str = "asc",
+    show: str | None = None,
 ) -> list[User]:
-    stmt = select(User)
+    stmt = select(User).where(*_user_list_conditions(search, show))
 
-    if search:
-        search_pattern = f"%{escape_event_search_term(search)}%"
-        stmt = stmt.where(
-            or_(
-                User.email.ilike(search_pattern, escape="\\"),
-                User.display_name.ilike(search_pattern, escape="\\"),
-            )
-        )
-
-    sort_column = _USER_SORT_COLUMNS.get(sort_by, User.created_at)
+    sort_column = USER_SORT_COLUMNS.get(sort_by, User.created_at)
     # Tie-break on id so rows sharing a sort value keep a stable order across pages.
     if sort_order == "desc":
         order_by = (sort_column.desc(), User.id.desc())
