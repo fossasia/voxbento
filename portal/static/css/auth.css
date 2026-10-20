@@ -422,6 +422,51 @@ body:has(.login-page) .portal-footer {
 .alert-error { background: #fef2f2; color: var(--color-danger); border: 1px solid #fecaca; padding: 10px 14px; border-radius: var(--radius-sm); font-size: 0.875rem; margin-bottom: 8px; }
 .error-list { margin: 0; padding-left: 18px; text-align: left; }
 
+/* ── Magic-link success (magic_success.html) ───────────────────────────── */
+.magic-success-card {
+  max-width: 480px;
+  margin: 80px auto;
+  text-align: center;
+  background: #fff;
+  padding: 40px 20px;
+  border-radius: 12px;
+  box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.05);
+  border: 1px solid #e2e8f0;
+}
+.magic-success-icon {
+  width: 64px;
+  height: 64px;
+  background: #22c55e;
+  color: #fff;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 32px;
+  margin: 0 auto 20px;
+}
+.magic-success-title { margin-top: 0; color: #0f172a; }
+.magic-success-message { color: #64748b; font-size: 16px; margin-bottom: 24px; }
+.magic-success-banner {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  color: #1e40af;
+  font-weight: 500;
+  padding: 14px 18px;
+  background: #eff6ff;
+  border: 1px solid #bfdbfe;
+  border-radius: 8px;
+  line-height: 1.6;
+  margin-bottom: 20px;
+  text-align: left;
+}
+.magic-success-banner-icon { font-size: 20px; }
+.magic-success-banner-title { font-weight: 600; color: #1e3a8a; }
+.magic-success-banner-text { color: #3b82f6; font-size: 14px; }
+.magic-success-link { color: #1d4ed8; text-decoration: underline; font-weight: 600; cursor: pointer; }
+
 @media (max-width: 768px) {
   .portal-home-header { padding: 12px 16px; }
   .admin-main { padding: 16px; }
