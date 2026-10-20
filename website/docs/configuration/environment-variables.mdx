@@ -73,10 +73,59 @@ These variables configure how Voxbento talks to MediaMTX and other local Docker 
 | --- | --- | --- |
 | `MEDIAMTX_API_BASE` | `http://localhost:9997` | MediaMTX Control API URL. |
 | `MEDIAMTX_RTSP_BASE` | `rtsp://mediamtx:8554` | Internal RTSP URL for floor audio transcription. |
+| `MEDIAMTX_AUTH_HOOK_SECRET` | _(none)_ | Shared secret used to authenticate private internal MediaMTX webhooks to `/internal/media-auth`. Required in production. |
 | `FLOOR_BOT_BASE` | `http://floor-bot:8080` | URL for the floor-bot container. |
 | `MEETING_AGENT_MAX_RESTARTS` | `5` | Automatic meeting-agent restarts per incident before the room reports **Needs attention**. |
 | `MEETING_AGENT_NO_AUDIO_SECS` | `45` | Seconds a joined agent may go without delivering audio to MediaMTX before it is restarted. |
 | `JITSI_INTERNAL_BASE` | `https://jitsi-web:8443` in Compose | Internal HTTPS URL used by the floor bot. Jitsi `stable-11146` and newer listen on the unprivileged container port `8443`. |
+
+## Program Stream Ingest & Relay Variables
+
+These variables control external encoder ingest and YouTube RTMPS forwarding.
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `PROGRAM_INGEST_ENABLED` | `false` | Enables room-scoped external Program Stream Ingest (WHIP/RTMPS) via authenticated MediaMTX hooks. |
+| `PROGRAM_INGEST_MAX_ROOMS` | `10` | Maximum simultaneous rooms allowed to run Program Ingest. |
+| `PROGRAM_INGEST_DISCONNECT_GRACE_SECS` | `15.0` | Grace period in seconds before marking a disconnected encoder stream as terminated. |
+| `PROGRAM_INGEST_STALL_SECS` | `30.0` | Duration without packets before declaring a stream stalled. |
+| `PROGRAM_SENDER_SESSION_TTL_SECS` | `150` | Browser sender publish window for WHIP session negotiation. |
+| `PROGRAM_RELAY_ENABLED` | `false` | Enables operator-controlled RTMPS relaying to YouTube destinations via the `program-relay` service (`docker-compose.relay.yml`). |
+| `PROGRAM_RTMPS_PUBLIC_BASE` | _(none)_ | Public base RTMPS URL (e.g. `rtmps://voxbento.com:1936`) for incoming RTMP/RTMPS encoder streams. |
+| `PROGRAM_RELAY_BASE` | `http://program-relay:8090` | Internal URL of the dedicated `program-relay` media service. |
+| `PROGRAM_RELAY_CONTROL_SECRET` | _(none)_ | Shared Bearer token (min 32 characters) for authenticating commands to `program-relay`. |
+| `PROGRAM_RELAY_MAX` | `4` | Maximum concurrent active YouTube relay streams. |
+| `PROGRAM_RELAY_ALLOWED_HOSTS` | `a.rtmps.youtube.com,b.rtmps.youtube.com` | Comma-separated allowlist of permitted destination hostnames for RTMPS relay. |
+
+## Token Expiry and Embed Controls
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `LISTENER_TOKEN_EXPIRY_SECONDS` | `14400` (4 hours) | Lifetime of signed listener session tokens. |
+| `EMBED_TOKEN_EXPIRY_SECONDS` | `1800` (30 mins) | Lifetime of short-lived tokens in embedded iframe URLs. |
+| `EMBED_ALLOWED_ORIGINS` | _(empty)_ | Comma-separated list of origins permitted to embed the Voxbento player in iframes (CSP `frame-ancestors`). Empty allows any origin (`*`). |
+
+## Speech & TTS Settings
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `SUPERTONIC_TOTAL_STEPS` | `4` | Diffusion steps for self-hosted Supertonic ONNX TTS. `4` provides real-time CPU synthesis; `8` offers reference quality. |
+| `SUPERTONIC_INTRA_OP_THREADS` | `0` | Intra-op threads for ONNX Runtime (`0` defaults to all available CPU cores). |
+| `NVIDIA_FUNCTION_ID` | _(empty)_ | Optional function ID for NVIDIA Cloud Riva integrations. |
+
+## Email and Notification Variables
+
+Configured for transactional emails (invitations, password resets, hosting access approvals).
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `SMTP_HOST` | _(none)_ | Outgoing SMTP server hostname. |
+| `SMTP_PORT` | `587` | SMTP port (e.g. 587 for STARTTLS). |
+| `SMTP_USER` | _(none)_ | SMTP authentication username. |
+| `SMTP_PASSWORD` | _(none)_ | SMTP authentication password. |
+| `SMTP_FROM_EMAIL` | `noreply@voxbento.com` | Sender address on outgoing notification emails. |
+| `HOSTING_REQUESTS_EMAIL` | `voxbento.dev@gmail.com` | Team inbox alerted when users request event hosting access. |
+| `PUBLIC_BASE_URL` | `https://voxbento.com` | Canonical public URL used to build invite and confirmation links. |
 
 ## Jitsi Internal Auth Variables
 

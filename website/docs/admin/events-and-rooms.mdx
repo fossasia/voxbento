@@ -26,13 +26,13 @@ Every piece of content in Voxbento hangs off a strict three-level hierarchy:
 
 ## Creating an Event
 
-:::info Role Requirement
-Only a **`super_admin`** can create or delete top-level events. If you are an **`event_owner`**, you will only see the events assigned to you on the dashboard and cannot create new ones.
+:::info Role & Hosting Requirement
+Top-level events can be created by a **`super_admin`** or any registered user who has been granted **hosting access** (`can_host`). Signed-in users without hosting access can request it from `/account/hosting-request` or receive a hosting invitation from an administrator. Event creators automatically become the `event_owner` of their created events and manage them from `/workspace/` (My events).
 :::
 
-### Open the Events list
+### Open the Events list or Workspace
 
-From the dashboard, click **Events** in the admin navigation, or go directly to `/admin/events/`.
+From the header, go to **My events** (`/workspace/`) and click **New event**, or if you are a super administrator, navigate to `/admin/events/`.
   ### Fill in the event details
 
 Enter a **slug** and a **display name** in the creation form.
@@ -82,16 +82,21 @@ On the event rooms page (`/admin/events/{event_id}/rooms/`), administrators can 
 
 ## Editing a Room
 
-After creation you can update a room's Jitsi URL or set its relay booth ID. This is useful if you need to point the room at a different Jitsi conference or configure audio relay between booths.
+On the room detail page (`/workspace/events/{event_id}/rooms/{room_id}/` or `/admin/...`), you can configure several operational settings:
 
-### Open the room
+### Meeting Source and Floor Audio Ingest
+- **Jitsi Meeting URL**: Custom meeting link for the room's floor audio session.
+- **Relay Booth ID**: Optional pointer to a booth whose WHEP stream acts as the source relay in this room.
+- **Floor Source**: Choose between the managed **Meeting agent** (`jitsi_bot`) or **Program stream ingest** (authenticated media ingest from an external encoder). When Program stream ingest is enabled, configure its **Delivery mode**: either *Independent outputs* (direct authenticated WHIP) or *VoxBento relays to YouTube* (RTMPS relay, where OBS sends an RTMPS stream and VoxBento forwards it to an allow-listed YouTube RTMPS destination).
 
-From the event detail page, click the room you want to edit.
-  ### Edit room settings
+### Playback Audio Delay
+- **Audio delay (ms)**: Optional listener-side WHEP playback buffer (e.g. `1000` to `5000` ms) to align translated audio with delayed conference video players or external livestreams. A value of `0` uses direct sub-second playback.
 
-On the room detail page, update the **Jitsi URL** field to a custom meeting link, or set the **Relay Booth ID** to specify which booth should act as the relay source.
-  ### Save
+### AI Interpretation & Glossary
+- **AI Interpreter Persona & Style**: Domain persona and style instructions applied to floor translations.
+- **AI Vocabulary Glossary**: Upload and export CSV glossaries with domain-specific terms to ensure translation accuracy.
 
+### Save
 Click **Save** on the room detail page to apply your changes.
 
 ## Deleting Events and Rooms
