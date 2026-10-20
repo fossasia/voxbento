@@ -295,9 +295,10 @@ async def test_auth_throttling_and_anonymous_floor_denial(environment):
         assert (await client.post("/internal/media-auth", json=credentials(rooms[0], ""))).status_code == 401
     assert (await client.post("/internal/media-auth", json=credentials(rooms[0], ""))).status_code == 429
     assert (await client.post("/internal/media-auth", json={"token": "secret"})).status_code == 401
+    # Interpreter booth paths share the throttle and no longer bypass authorization (#783).
     assert (
         await client.post("/internal/media-auth", json=credentials(rooms[0], "", path="program-test/1/fr"))
-    ).status_code == 204
+    ).status_code == 429
 
 
 @pytest.mark.anyio

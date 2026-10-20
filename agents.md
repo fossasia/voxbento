@@ -73,6 +73,7 @@ VoxBento is a production-grade **browser-first interpretation booth console** fo
 | `portal/config.py` | `Settings` — pydantic-settings; all env vars / `.env` |
 | `portal/models.py` | SQLAlchemy declarative models: `Event`, `Room`, `DBBooth`, `InviteToken`, `User`, `EventMembership`, `BoothMembership` |
 | `portal/database.py` | Async engine, session factory (`get_session`), all CRUD helpers |
+| `portal/booth_publish.py` | Single-use WHIP publish tickets for interpreter booth paths; checked by the MediaMTX auth hook |
 | `portal/booth_identity.py` | `make_booth_id`, `make_mediamtx_path`, `parse_booth_id`, `validate_event_slug`, `validate_language_code` |
 | `portal/roles.py` | `Permission` enum, `ROLE_PERMISSIONS` dict, `ALL_ROLES` set, `_ROLE_RANK` |
 | `portal/crypto.py` | `encrypt_val` / `decrypt_val` (Fernet, SHA-256 key derivation) |
@@ -159,8 +160,14 @@ Validation: `portal/booth_identity.py` — slug: `^[a-z0-9]+(?:-[a-z0-9]+)*$`; l
 | `booth:chat` | `_handle_chat` | `body` only |
 | `booth:set-active` | `_handle_set_active` | `target_id` |
 | `booth:update-state` | `_handle_update_state` | `mic_active`, `ingest_connected` |
+| `booth:request-publish-ticket` | `_handle_request_publish_ticket` | — (participant from the WS session) |
 
-Server → Client: `booth:joined`, `booth:state`, `booth:chat`, `booth:error`
+Server → Client: `booth:joined`, `booth:state`, `booth:chat`, `booth:error`, `booth:publish-ticket`
+
+Booth WHIP publishing is authenticated (#783): MediaMTX forwards the `Authorization: Bearer` ticket to
+`/internal/media-auth`, which redeems it once (`portal/booth_publish.py`, 30 s TTL, bound to the booth's
+server-derived path) and re-checks that the holder is still the active interpreter and that Mission Control has
+broadcast unlocked. Anonymous publishes get 401. A `booth:join` naming another socket's `participant_id` gets a fresh ID.
 
 Caption feed: `/ws/captions/{booth_id}` (no auth) — receives `caption` + `booth:state` messages.
 

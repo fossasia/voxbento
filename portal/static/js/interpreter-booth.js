@@ -207,6 +207,8 @@ function handleServerMessage(data) {
     joinMonitoringFeed()
     render()
     showError('')
+  } else if (type === 'booth:publish-ticket') {
+    settlePublishTicket(data)
   } else if (type === 'booth:state') {
     applyBoothState(data.state)
     render()
@@ -1049,11 +1051,48 @@ async function toggleMicMute() {
 
 // ── Ingest helpers ────────────────────────────────────────────────────────────
 
+// MediaMTX only accepts a booth publish carrying a single-use ticket that the
+// server issues to the active interpreter over the booth WebSocket (#783).
+const PUBLISH_TICKET_TIMEOUT_MS = 5000
+let pendingPublishTicket = null
+
+/** Ask the server for a single-use WHIP ticket; resolves with the ticket string. */
+function requestPublishTicket() {
+  return new Promise((resolve, reject) => {
+    if (pendingPublishTicket) {
+      clearTimeout(pendingPublishTicket.timer)
+      pendingPublishTicket.reject(new Error('Publish ticket request superseded'))
+    }
+    const timer = window.setTimeout(() => {
+      pendingPublishTicket = null
+      reject(new Error('Timed out waiting for a publish ticket'))
+    }, PUBLISH_TICKET_TIMEOUT_MS)
+    pendingPublishTicket = { resolve, reject, timer }
+    if (!wsSend({ type: 'booth:request-publish-ticket' })) {
+      clearTimeout(timer)
+      pendingPublishTicket = null
+      reject(new Error('Not connected to server'))
+    }
+  })
+}
+
+/** Resolve or reject the pending ticket request from a `booth:publish-ticket` reply. */
+function settlePublishTicket(data) {
+  if (!pendingPublishTicket) return
+  const { resolve, reject, timer } = pendingPublishTicket
+  pendingPublishTicket = null
+  clearTimeout(timer)
+  if (data.ticket) resolve(data.ticket)
+  else reject(new Error(data.error || 'Publish ticket refused'))
+}
+
+/** POST the local SDP offer to MediaMTX with a fresh publish ticket and apply the answer. */
 async function doWhipIngest(peerConnection) {
   const whipUrl = `${state.whipBase}/${encodeURIComponent(state.channelId)}/whip`
+  const ticket = await requestPublishTicket()
   const response = await fetch(whipUrl, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/sdp' },
+    headers: { 'Content-Type': 'application/sdp', Authorization: `Bearer ${ticket}` },
     body: peerConnection.localDescription.sdp,
   })
   if (!response.ok) {

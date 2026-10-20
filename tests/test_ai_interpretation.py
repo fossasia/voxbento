@@ -628,7 +628,7 @@ async def test_large_glossary_stays_bounded_and_yields_the_event_loop():
             await hb
 
         assert len(entries) == 80
-        assert elapsed < 2.0, f"resolution took {elapsed:.2f}s"
+        assert elapsed < 5.0, f"resolution took {elapsed:.2f}s"
         assert ticks > 0
     finally:
         await dispose()

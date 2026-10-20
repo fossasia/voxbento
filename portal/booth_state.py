@@ -223,9 +223,19 @@ class BoothRegistry:
         channel_id: str,
         participant_id: str | None = None,
         room_id: int | None = None,
+        *,
+        reclaim: bool = False,
     ) -> tuple[Participant, dict]:
+        """Add a participant, auto-assigning the active slot if it is free.
+
+        An ID already present in the booth is honoured only with ``reclaim``
+        (the caller's own socket already holds it); anyone else naming it gets a
+        fresh ID instead of taking over that record, e.g. the active interpreter's.
+        """
         async with self._lock:
             booth = self._get_or_create_booth(booth_id, language, channel_id, room_id=room_id)
+            if participant_id in booth.participants and not reclaim:
+                participant_id = None
             participant = Participant(
                 participant_id=participant_id or uuid4().hex,
                 display_name=display_name.strip() or "Interpreter",

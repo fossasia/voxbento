@@ -144,7 +144,7 @@ Here is what happens when a room_coordinator switches the active interpreter:
 
 1. The room_coordinator clicks **Set Active** next to the incoming interpreter in the booth.
 2. The portal updates the active interpreter state and notifies all booth participants over WebSocket.
-3. The incoming interpreter's browser calls the gated `/api/booth/{booth_id}/whip-url` endpoint, receives the WHIP URL, and begins publishing.
+3. The incoming interpreter's browser asks the portal for a single-use publish ticket over its booth WebSocket (`booth:request-publish-ticket`) and sends it as `Authorization: Bearer` on its WHIP request.
 4. MediaMTX is configured with `overridePublisher: yes` — it immediately accepts the new publisher and disconnects the outgoing interpreter's WHIP session.
 5. All existing WHEP listeners receive the new publisher's audio within approximately one to two seconds. Their `RTCPeerConnection` stays open throughout; MediaMTX routes the new track into it automatically.
 6. **Transcription Continuity:** The backend background transcription worker (FFmpeg) continuously retries pulling from the RTSP stream. Even if the stream drops for a few milliseconds during the handoff, the worker aggressively reconnects, ensuring zero loss of translation pipeline state.
@@ -273,9 +273,9 @@ Publishing audio to a booth is protected by three independent enforcement layers
 Voxbento's server-side coordination layer rejects any attempt to activate a microphone or begin audio publishing unless the participant holds the `interpreter` role **and** is the currently designated active interpreter for that booth. Room coordinators and listeners cannot publish audio under any circumstances.
 
 </TabItem>
-  <TabItem value="whip-url-gating" label="WHIP URL gating">
+  <TabItem value="whip-url-gating" label="Publish tickets">
 
-Before the browser can start publishing, it must request the MediaMTX ingest URL from the Voxbento API (`GET /api/booth/{booth_id}/whip-url`). That URL is returned only to the active interpreter. Any other participant receives HTTP 403 and never receives a usable ingest address.
+Before the browser can start publishing, it asks the portal for a publish ticket over its booth WebSocket. The portal issues one only to the active interpreter, and only while Mission Control has the booth live. The ticket is single-use, expires after 30 seconds and is bound to that booth's MediaMTX path. MediaMTX passes it to the portal's private authorization hook, which redeems it and checks again that its holder is still the active interpreter and that the booth has not been stopped. A WHIP request without a valid ticket, such as an anonymous POST straight to MediaMTX, is refused with HTTP 401 and cannot displace the live interpreter.
 
 </TabItem>
   <TabItem value="media-server" label="Media server">
