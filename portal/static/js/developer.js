@@ -3,33 +3,69 @@
  * Loaded as an ES module — no jQuery, no inline scripts.
  */
 
+async function copyText(text) {
+  if (navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch (error) {
+      console.error('Clipboard API failed; trying execCommand fallback:', error);
+    }
+  }
+
+  if (typeof document.execCommand !== 'function') return false;
+
+  let textarea;
+  try {
+    textarea = document.createElement('textarea');
+    textarea.value = text;
+    textarea.readOnly = true;
+    textarea.style.position = 'fixed';
+    textarea.style.opacity = '0';
+    document.body.appendChild(textarea);
+    textarea.focus();
+    textarea.select();
+    return document.execCommand('copy');
+  } catch (error) {
+    console.error('Clipboard fallback failed:', error);
+    return false;
+  } finally {
+    textarea?.remove();
+  }
+}
+
 /**
- * Copies text to clipboard and updates the UI to show feedback.
- * Handles tooltip text change and icon state with a 2-second reset.
+ * Copies text to clipboard and updates the UI to show success or failure.
+ * Feedback resets after 2 seconds.
  */
 async function copyToClipboard(element, text) {
-  try {
-    await navigator.clipboard.writeText(text);
-    element.classList.add('copied');
+  const copied = await copyText(text);
+  const tooltip = element.querySelector('.copy-tooltip');
 
-    const tooltip = element.querySelector('.copy-tooltip');
+  element.classList.remove('copied', 'copy-failed');
+  element.classList.add(copied ? 'copied' : 'copy-failed');
+
+  if (tooltip) {
+    tooltip.textContent = copied ? 'Copied!' : 'Copy failed';
+    if (copied) {
+      tooltip.classList.add('copied-tooltip');
+    } else {
+      tooltip.classList.remove('copied-tooltip');
+    }
+  }
+
+  if (!copied) {
+    console.error('Failed to copy text using available clipboard methods');
+  }
+
+  setTimeout(() => {
+    element.classList.remove('copied', 'copy-failed');
 
     if (tooltip) {
-      tooltip.textContent = 'Copied!';
-      tooltip.classList.add('copied-tooltip');
+      tooltip.textContent = 'Copy to clipboard';
+      tooltip.classList.remove('copied-tooltip');
     }
-
-    setTimeout(() => {
-      element.classList.remove('copied');
-
-      if (tooltip) {
-        tooltip.textContent = 'Copy to clipboard';
-        tooltip.classList.remove('copied-tooltip');
-      }
-    }, 2000);
-  } catch (err) {
-    console.error('Failed to copy text: ', err);
-  }
+  }, 2000);
 }
 
 /**
