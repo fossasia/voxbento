@@ -21,12 +21,12 @@ In the admin or workspace panel, navigate to **Events → Rooms → [Select Room
 Voxbento merges these instructions with a system-level safety prompt requiring clean, spoken translation output without meta-commentary or Markdown markup. Empty settings retain standard translation output.
 
 :::info Shared Interpretation State
-The translated text is broadcast concurrently to listeners via `/ws/translations/{channel_id}` and piped directly to the room's configured TTS engine (Deepgram Aura or Supertonic ONNX), ensuring that captions and speech share the exact same translation.
+The translated text is broadcast concurrently to listeners via the target booth's captions feed (`/ws/captions/{booth_id}`) and delivered via framed binary bundles (`/ws/tts/{room_id}/{language_code}/{booth_id}`) to the room's configured TTS engine (Deepgram Aura or Supertonic ONNX), ensuring that captions and speech share the exact same translation.
 :::
 
 ## AI Vocabulary & Glossary CSV
 
-Event owners and coordinators can upload custom glossaries to enforce accurate translation of brand names, product terms, and technical acronyms.
+Event owners manage custom glossaries to enforce accurate translation of brand names, product terms, and technical acronyms. (The AI interpretation vocabulary card is displayed to event owners; room coordinators without event ownership do not have card access).
 
 ### Uploading a Glossary
 
@@ -56,7 +56,7 @@ Pull Request,de,Pull Request,Developer term in German,false,phrase,80
 - **`target_language`**: Accepts `all` or a specific ISO 639-1 language code (e.g. `de`, `fr`, `es`).
 - **`case_sensitive`**: Boolean flag (`true`, `false`, `1`, `0`, `yes`, `no`).
 - **`match_type`**: `exact` (matches on word boundaries) or `phrase` (substring/phrase match).
-- **`priority`**: Integer priority. Entries with priority ≥ 90 are always included in the translation prompt.
+- **`priority`**: Integer priority. Entries with priority ≥ 90 are prioritized for prompt inclusion, up to a maximum of 80 matching high-priority entries within the translation prompt's character budget.
 
 Exporting downloads the normalized glossary in the identical CSV schema. Formula characters (`=`, `+`, `-`, `@`) at the start of text cells are neutralized during export to protect against spreadsheet injection.
 
@@ -67,8 +67,8 @@ To prevent token bloating and latency spikes during live simultaneous interpreta
 1. Filters entries matching the target language or marked `all`.
 2. Resolves scope hierarchy: booth-specific entries take precedence, followed by room entries, then event-wide entries.
 3. Detects source terms present in the current spoken transcript segment.
-4. Guarantees inclusion of high-priority terms (priority ≥ 90).
-5. Caps the final prompt glossary at 80 entries.
+4. Prioritizes matching high-priority terms (priority ≥ 90).
+5. Caps the final prompt glossary at a maximum of 80 entries within the prompt character budget.
 
 This keeps real-time prompts compact, minimizing LLM inference latency.
 

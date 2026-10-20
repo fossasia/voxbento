@@ -176,9 +176,8 @@ Booth WHIP publishing is authenticated (#783): MediaMTX forwards the `Authorizat
 server-derived path) and re-checks that the holder is still the active interpreter and that Mission Control has
 broadcast unlocked. Anonymous publishes get 401. A `booth:join` naming another socket's `participant_id` gets a fresh ID.
 
-Caption feed: `/ws/captions/{booth_id}` (no auth) — receives `caption` + `booth:state` messages.
-Translation feed: `/ws/translations/{channel_id}` — receives translated segments.
-Direct-push TTS feed: `/ws/tts/{room_id}/{language_code}/{booth_id}` — pre-authorized binary PCM stream.
+Caption feed: `/ws/captions/{booth_id}` — receives `caption`, `translated_caption` + `booth:state` messages (protected by `resolve_ws_auth` when `BOOTH_ACCESS_TOKEN` is configured).
+Direct-push TTS feed: `/ws/tts/{room_id}/{language_code}/{booth_id}` — pre-authorized binary bundle stream (version byte, length-prefixed JSON header, optional 24 kHz PCM audio). Translation text is delivered concurrently over the captions feed and inside TTS bundle headers.
 
 ---
 

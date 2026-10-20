@@ -56,7 +56,7 @@ Jitsi Meet Floor Conference
         ▼
    Database (TranscriptSegment target_language)
         │
-   broadcast_translation() (WebSocket /ws/translations)
+   broadcast_translation() (WebSocket /ws/captions/{target_booth_id} as 'translated_caption')
         │
         ▼
    TTS Worker (tts/worker.py)
@@ -64,7 +64,8 @@ Jitsi Meet Floor Conference
    (Deepgram Aura cloud WebSocket OR Supertonic self-hosted in-process ONNX)
         │
         ▼
-   broadcast_tts() (WebSocket /ws/tts/{room_id}/{language_code}/{booth_id}) -> AudioScheduler -> Web Audio API
+   broadcast_bundle() (WebSocket /ws/tts/{room_id}/{language_code}/{booth_id}) -> AudioScheduler -> Web Audio API
+   Transmits structured binary frames (version byte, 4-byte header length, JSON header with text & metadata, optional 24 kHz mono PCM audio).
    Client uses a jitter-buffered playback queue (audio-scheduler.js) to schedule
    each audio segment seamlessly after the previous one ends, with comfort noise
    during gaps. See portal/static/js/audio-scheduler.js.

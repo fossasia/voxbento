@@ -35,9 +35,15 @@ The table below shows which actions each role can perform within a booth or even
 | Manage Booths | ✓ | ✓ | — | — | — | — |
 | Manage Events | ✓ | — | — | — | — | — |
 
-## Event-Scoped Roles
+## Role Scopes and Boundaries
 
-Roles in Voxbento are always **per-event**, not global. A user assigned as an interpreter for `pycon2026` has no special permissions on any other event. This design lets you safely reuse the same user accounts across multiple events without worrying about permission bleed.
+Permissions in Voxbento are scoped according to privilege level:
+- **`super_admin`**: Site-wide platform authority (`User.is_admin = True`), with global access across all events and settings.
+- **`event_owner`**: Event-scoped (`EventMembership`), granting administrative and configuration control across all rooms and booths within that specific event.
+- **`room_coordinator`**: Room-scoped (`RoomMembership`), conferring operational authority in Mission Control and floor source controls for assigned rooms.
+- **`interpreter` / `support`**: Booth-scoped (`BoothMembership`) or assigned across rooms/events.
+
+Cross-event permission isolation applies to event- and room-scoped assignments: an organizer or interpreter assigned to `pycon2026` has no special permissions on any other event. This design lets you safely reuse the same user accounts across multiple events without permission bleed.
 
 ## Assigning Event-Level Roles
 

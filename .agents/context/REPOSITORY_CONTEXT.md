@@ -137,9 +137,8 @@ Server → Client broadcasts: `booth:joined`, `booth:state`, `booth:chat`, `boot
 Role is NEVER trusted from client data — always read from the server-side `Session.granted_role` derived from cookies at connect time.
 
 ### Additional Real-Time Feeds
-- Live captions feed: `/ws/captions/{booth_id}` (no auth required) — receives `caption` (`partial`, `final`, `clear`) and `booth:state` messages for listeners. Also supports room floor captions (`floor-{room_id}`).
-- Translation feed: `/ws/translations/{channel_id}` — receives translated caption segments.
-- Direct-push TTS feed: `/ws/tts/{room_id}/{language_code}/{booth_id}` — authorized before acceptance; receives raw binary PCM audio synthesized via Deepgram Aura or Supertonic ONNX.
+- Live captions feed: `/ws/captions/{booth_id}` — receives `caption` (`partial`, `final`, `clear`), `translated_caption`, and `booth:state` messages for listeners (authenticated via `resolve_ws_auth` when `BOOTH_ACCESS_TOKEN` is set). Supports canonical `{event_slug}-{room_id}-{language_code}`.
+- Direct-push TTS feed: `/ws/tts/{room_id}/{language_code}/{booth_id}` — authorized before acceptance; receives structured binary bundle messages (1-byte version, 4-byte header length, JSON metadata header, optional 24 kHz 16-bit mono PCM payload) synthesized via Deepgram Aura or Supertonic ONNX. Translations are delivered concurrently via the caption feed and the TTS bundle header.
 
 ---
 

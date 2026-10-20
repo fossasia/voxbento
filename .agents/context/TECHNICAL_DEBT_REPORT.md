@@ -57,9 +57,9 @@
 
 ---
 
-### TD-08: [RESOLVED] Rate limiting on `/register` and `/login`
-**File:** `portal/routers/public.py` + `portal/routers/auth.py`
-**Resolution:** Implemented sliding-window rate limiting on login (10 attempts per normalized email per hour) and register to mitigate brute-force and email enumeration attacks.
+### TD-08: Rate limiting on `/register` (login rate limiting resolved)
+**File:** `portal/routers/auth.py`
+**Status:** Partially addressed. Sliding-window rate limiting is implemented on `/login` (10 attempts per normalized email per hour) and verification email requests. However, `POST /register` does not yet enforce a sliding-window limit on registration attempts. TD-08 remains open until registration rate limiting is implemented to prevent automated registration abuse and email flooding.
 
 ---
 
