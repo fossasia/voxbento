@@ -1487,7 +1487,8 @@ code { font-family: var(--font-mono); font-size: 0.85em; background: var(--color
 .ul-open { text-align: right; }
 .ul-open a { color: var(--color-primary); text-decoration: underline; text-underline-offset: 2px; font-weight: 500; }
 .ul-table tr.is-deactivated .ul-name, .ul-table tr.is-deactivated .ul-email { color: var(--color-text-secondary); }
-.ul-empty { margin: 0; padding: 32px 20px; text-align: center; color: var(--color-text-secondary); }
+/* The empty state sits inside .ul-card, so it must not draw a second box. */
+.ul-card > .empty-state { border: 0; border-radius: 0; background: transparent; }
 
 /* On/off switch */
 .ut-form { display: inline-flex; margin: 0; }
