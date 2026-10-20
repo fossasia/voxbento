@@ -11,16 +11,83 @@ permissions:
 jobs:
   assign-check:
     runs-on: ubuntu-latest
+    if: github.event.issue.pull_request == null && github.event.comment.user.type != 'Bot'
 
-    if: contains(github.event.comment.body, 'please assign') || contains(github.event.comment.body, 'assign me')
     steps:
       - uses: actions/github-script@v9
         with:
-          github-token: ${{secrets.GITHUB_TOKEN}}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
+            const comment = context.payload.comment;
+            const author = comment.user.login;
+            const body = comment.body || '';
+            const { owner, repo } = context.repo;
+            const issueNumber = context.issue.number;
+
+            // Maintainers, owners, and repo members are not subject to external assignment guidance
+            if (['OWNER', 'MEMBER', 'COLLABORATOR'].includes(comment.author_association)) {
+              core.info(`${author} is ${comment.author_association}, skipping.`);
+              return;
+            }
+
+            // Remove markdown blockquotes (lines starting with '>') to avoid false positives when quoting
+            const unquotedBody = body
+              .split('\n')
+              .filter(line => !line.trim().startsWith('>'))
+              .join('\n');
+
+            // Patterns indicating a contributor is asking for assignment or if they can work on the issue
+            const patterns = [
+              /(?:^|\s)\/?assign(?:\s|$)/i,
+              /\bassign\s+(?:me|this|it)\b/i,
+              /\b(?:please\s+)?assign\b/i,
+              /\b(?:can|could|may)\s+(?:you\s+)?assign\b/i,
+              /\b(?:can|could|may)\s+(?:i\s+)?(?:please\s+)?(?:be\s+assigned|assign)\b/i,
+              /\bis\s+this\s+(?:issue\s+)?(?:still\s+)?available(?:\s+for\s+me)?(?:\s+to\s+work\s+on)?/i,
+              /\bis\s+(?:it|this)\s+(?:open|available)\s+(?:for\s+contributions?|to\s+work\s+on)?/i,
+              /\b(?:can|may|could)\s+i\s+(?:please\s+)?(?:work\s+on|take\s+(?:this\s+)?up|contribute\s+to)(?:\s+(?:this|it))?\b/i,
+              /\bi(?:'d|’d|\s+would|\s+wish\s+to)?\s+(?:love|like|want)\s+to\s+(?:work\s+on|contribute\s+to|take\s+(?:this\s+)?up)\b/i,
+              /\b(?:i\s+am\s+|i'm\s+)?interested\s+(?:in|to)\s+(?:working\s+on|contributing\s+to|work\s+on|take\s+up)\b/i
+            ];
+
+            const isAsking = patterns.some(p => p.test(unquotedBody));
+            if (!isAsking) {
+              core.info('Comment does not match assignment or availability request patterns.');
+              return;
+            }
+
+            // Check existing comments to prevent duplicate notices to the same author on this issue
+            const marker = '<!-- voxbento-contributor-assignment-notice -->';
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner,
+              repo,
+              issue_number: issueNumber,
+              per_page: 100
+            });
+
+            const alreadyNotified = comments.some(c =>
+              c.body && c.body.includes(marker) && c.body.includes(`@${author}`)
+            );
+
+            if (alreadyNotified) {
+              core.info(`Author ${author} was already informed about the assignment policy on issue #${issueNumber}.`);
+              return;
+            }
+
+            // Post guidance for external/new contributors
             await github.rest.issues.createComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
-              body: "We don't assign issues to external contributors. Please comment that you're working on the issue after checking that no one else is, and then send a pull request for it. Thank You!"
-            })
+              owner,
+              repo,
+              issue_number: issueNumber,
+              body: [
+                `Hi @${author}, thanks for your interest in contributing to VoxBento!`,
+                '',
+                `We don't assign issues to external or new contributors in this repository. Anyone is welcome to work on open issues without waiting for an assignment.`,
+                '',
+                `Please check this issue thread and existing pull requests to ensure nobody else is actively working on it, leave a comment stating you are working on it, and feel free to submit a pull request when ready!`,
+                '',
+                marker
+              ].join('\n')
+            });
+
+            core.info(`Posted contributor assignment guidance for ${author} on issue #${issueNumber}.`);

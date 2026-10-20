@@ -35,7 +35,7 @@ event the person has a role in, with a button to where they work. **Account**
 (`/account`) holds the person's display name, hosting and developer access, and
 sign-in settings (change, set or remove a password).
 Admins manage accounts at **Admin → Users**: search and filter everyone, and turn
-hosting access, Admin and Active on or off right from the list.
+hosting access, Admin, Active, and Email Verification on or off right from the list.
 
 ## Hosting access
 
@@ -46,6 +46,14 @@ in `HOSTING_REQUESTS_EMAIL` (default `voxbento.dev@gmail.com`) is emailed about
 each new request. Admins review requests under **Admin → Hosting access → Requests**:
 **Grant access** gives the person hosting access straight away, **Decline** asks for
 a reason that is emailed to them. A person has at most one open request at a time.
+
+## Floor Audio & AI Interpretation
+
+- **Meeting Source**: Managed headless floor bot automatically joins Jitsi sessions and streams conference floor audio.
+- **Program Stream Ingest**: Accepts direct broadcast audio from hardware encoders via authenticated HTTPS WHIP.
+- **RTMPS Relay**: Optional YouTube RTMPS forwarding via the dedicated `program-relay` service without re-encoding.
+- **AI Interpretation**: Real-time LLM translations guided by room personas, tone styles, and customizable domain vocabulary CSV glossaries.
+- **Direct-Push TTS**: Instant synthesized speech streamed to attendees over WebSocket (Deepgram Aura or self-hosted Supertonic ONNX).
 
 ---
 
