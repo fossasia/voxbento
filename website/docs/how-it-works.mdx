@@ -8,6 +8,11 @@ import Tabs from "@theme/Tabs";
 import TabItem from "@theme/TabItem";
 
 
+## Legacy API authentication
+
+Trusted integrations can exchange the production `BOOTH_ACCESS_TOKEN` at `/api/auth/token` for a legacy API JWT. The credential and resulting JWT have global scope across the applicable protected `/api/events/...` endpoints, not event-specific scope, so operators should generate the credential with `openssl rand -hex 32` and share it only with trusted integrations. This global credential does not grant access to unrelated application routes or bypass separate authorization checks; participant tokens, user JWTs, and event-scoped API keys remain subject to their own event, room, and language scopes.
+
+
 Voxbento is built on a single guiding principle: the audio path should be as short and as direct as possible. Rather than routing interpreter microphone audio through application servers, Voxbento sends audio straight from the interpreter's browser to MediaMTX — an open-source media server — and from there straight to each listener's browser. The Voxbento coordination portal sits alongside that path to handle coordination, but it never touches the audio itself.
 
 ## The Interpretation Pipeline
@@ -185,6 +190,49 @@ For example:
 
 Listeners connected to the caption WebSocket receive transcription segments as they are produced. The caption stream is independent of the audio stream — listeners can receive captions even while audio is playing through WHEP or HLS.
 
+## Shared header and user menu
+
+Every signed-in page (Admin, My events and its event pages, Mission Control,
+Account, Developer API) renders the same header from `_app_header.html`: the
+VoxBento logo with the name of the current area, the area's page links, and the
+user menu. `portal/user_menu.py` builds the menu from the request principal: My
+events, Account, Developer API (only with an approved developer app), Admin (only
+for Admins) and Logout, with the current area highlighted. A router dependency
+loads the principal once per request so templates never query the database.
+
+**My events** at `/workspace/` (`portal/my_events.py`) lists every event the
+person has a role in, combining event, room and booth memberships into one card
+per event: "Event owner", "Room coordinator · Room 1", "Interpreter · Grand Hall ·
+Chinese", each with a button to where they work. Deleted events are hidden.
+
+## Account page
+
+`/account` is about the person themselves, in four sections. **Profile** changes
+the display name (`POST /account/profile`); the email is shown but can't be
+changed there. **Hosting events** shows Request access, the open request
+waiting for review, or a link to My events. **Developer API** shows the
+application state from `developer_accounts`: apply (links to `/developer`),
+pending with its date, approved with a link to the Developer API page, or
+rejected/suspended. **Sign-in** changes the password (the current one is
+required), sets a first password, or removes it so the person signs in with
+email links only. Event, room and booth roles are listed on My events instead.
+
+## Admin Users pages
+
+`/admin/users/` lists every account with a search, a **Show** filter (All users,
+Admins, Hosting access, Deactivated, Email not verified) and on/off switches for
+**Hosting access**, **Admin** and **Active** in each row, changed in place without a
+page reload. Each switch posts to `/admin/users/{id}/access`; if the server refuses
+a change, the switch flips back and the reason is shown. `/admin/users/{id}/` shows
+the person's platform access, their roles in events (read-only, since each event's
+owners manage roles), the events they own, account facts and a danger zone.
+Deleting an account requires typing its email address.
+
+`portal/user_admin.py` holds the rules every path follows: an Admin can't change
+their own Admin or Active status or delete themselves, VoxBento always keeps at
+least one active Admin, and hosting access is only granted to active accounts that
+have finished setting up (others get an invitation instead).
+
 ## Administrative access
 
 Administrative access is tied to registered user accounts rather than a shared
@@ -197,6 +245,23 @@ known addresses continue to a password or magic link, and unknown addresses go t
 memberships allow. Operators should maintain at least two active administrator
 accounts; the [admin-login migration guide](https://github.com/fossasia/voxbento/blob/dev/docs/admin-password-removal-migration.md)
 documents the controlled recovery procedure.
+
+## Hosting access requests
+
+Creating events requires hosting access (`users.can_host`). Signed-in users without
+it request access from `/account/hosting-request`; the form is pre-filled with
+their name and email and stores a row in `hosting_requests` linked to their
+account. A partial unique index allows only one open request per user. Each new
+request emails the team address in `HOSTING_REQUESTS_EMAIL`, and the Account page
+shows the request as waiting for review until it is handled.
+
+Admins see open requests on the **Requests** tab of `/admin/hosting-access/`; the
+"Hosting access" menu item shows how many are open. Granting sets `can_host`,
+closes the request as `granted` and sends the "hosting access granted" email.
+Declining requires a reason, closes the request as `declined` and emails the
+reason to the person, who can then send a new request. Granting hosting access
+any other way (the user page toggle or an accepted hosting invitation) also
+closes an open request.
 
 ## Security Layers
 

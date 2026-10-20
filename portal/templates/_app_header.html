@@ -1,0 +1,81 @@
+{#- Shared header and user menu for every signed-in page (#766).
+    Import with context and call it, passing the area's page links as the body:
+      {% from "_app_header.html" import app_header with context %}
+      {% call app_header() %}<a href="...">...</a>{% endcall %}
+    Needs css/app-header.css and js/user-menu.js on the page. -#}
+
+{% macro menu_icon(name) -%}
+  <svg class="app-menu-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+  {%- if name == 'calendar' -%}
+    <rect x="3" y="4" width="18" height="18" rx="2" /><path d="M16 2v4M8 2v4M3 10h18" />
+  {%- elif name == 'user' -%}
+    <circle cx="12" cy="8" r="4" /><path d="M4 21a8 8 0 0 1 16 0" />
+  {%- elif name == 'code' -%}
+    <path d="m16 18 6-6-6-6M8 6l-6 6 6 6" />
+  {%- elif name == 'shield' -%}
+    <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+  {%- elif name == 'logout' -%}
+    <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9" />
+  {%- elif name == 'check' -%}
+    <path d="M20 6 9 17l-5-5" />
+  {%- elif name == 'chevron' -%}
+    <path d="m6 9 6 6 6-6" />
+  {%- endif -%}
+  </svg>
+{%- endmacro %}
+
+{% macro app_header() -%}
+{% set nav_links = caller() if caller else '' %}
+<header class="app-header">
+  <div class="app-header-inner">
+    <div class="app-header-left">
+      <a class="app-brand" href="/">VoxBento</a>
+      {% if user_menu %}
+      <span class="app-area app-area--{{ user_menu.area }}">{{ user_menu.area_label }}</span>
+      {% endif %}
+    </div>
+    {% if nav_links|trim %}
+    <nav class="app-header-nav" aria-label="{{ user_menu.area_label if user_menu else 'Main' }}">
+      {{ nav_links }}
+    </nav>
+    {% endif %}
+    {% if user_menu %}
+    <div class="app-user" data-user-menu>
+      <button type="button" class="app-user-button" aria-expanded="false" aria-controls="app-user-menu" aria-label="User menu - {{ user_menu.display_name }}" data-user-menu-button>
+        {{ menu_icon('user') }}
+        <span class="app-user-name">{{ user_menu.short_name }}</span>
+        <span class="app-user-chevron">{{ menu_icon('chevron') }}</span>
+      </button>
+      <div class="app-user-menu" id="app-user-menu" hidden>
+        <div class="app-user-head">
+          <p class="app-user-head-name">{{ user_menu.display_name }}</p>
+          <p class="app-user-head-email">{{ user_menu.email }}</p>
+        </div>
+        <nav aria-label="User menu">
+          <ul class="app-user-list">
+            {% for entry in user_menu.entries %}
+            {% set is_current = entry.area == user_menu.area %}
+            <li>
+              <a class="app-user-item{{ ' is-current' if is_current else '' }}" href="{{ entry.href }}"{% if is_current %} aria-current="true"{% endif %}>
+                {{ menu_icon(entry.icon) }}
+                <span>{{ entry.label }}</span>
+                {% if is_current %}<span class="app-user-check">{{ menu_icon('check') }}</span>{% endif %}
+              </a>
+            </li>
+            {% endfor %}
+          </ul>
+          <ul class="app-user-list app-user-list--end">
+            <li>
+              <a class="app-user-item app-user-item--logout" href="/logout">
+                {{ menu_icon('logout') }}
+                <span>Logout</span>
+              </a>
+            </li>
+          </ul>
+        </nav>
+      </div>
+    </div>
+    {% endif %}
+  </div>
+</header>
+{%- endmacro %}

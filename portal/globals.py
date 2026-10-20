@@ -9,6 +9,15 @@ from portal.booth_state import BoothRegistry
 booths = BoothRegistry()
 _JS_CACHE_BUST = str(int(time.time()))
 
+
+def asset_version_context(_request: object) -> dict[str, str]:
+    """Jinja context processor: version for static URLs (``?v={{ asset_version }}``).
+
+    Static files are cached for hours by browsers and the CDN; a new value on
+    every deploy makes them fetch the stylesheets and scripts that match the HTML.
+    """
+    return {"asset_version": _JS_CACHE_BUST}
+
 # Shared connection pool for outbound API calls (LLM translation, TTS, floor-bot,
 # MediaMTX). Set by the FastAPI lifespan handler on startup and closed on
 # shutdown; get_http_client() lazily creates it for contexts (e.g. tests) that

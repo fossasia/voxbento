@@ -19,6 +19,7 @@ users (1)
   └── event_memberships (n) ─── event_id → events.id
   └── room_memberships (n) ─── room_id → rooms.id
   └── booth_memberships (n) ─── booth_id → booths.id
+  └── hosting_requests (n) ─── at most one with status 'open'
 ```
 
 ---
@@ -249,6 +250,7 @@ Run migrations: `uv run alembic upgrade head`
 | `set_event_membership`, `remove_event_membership`, `list_memberships_for_user`, `list_memberships_for_event` | event_memberships | upsert pattern |
 | `set_room_membership`, `remove_room_membership`, `list_memberships_for_room`, `list_room_memberships_for_user` | room_memberships | upsert pattern |
 | `set_booth_membership`, `remove_booth_membership`, `list_memberships_for_booth`, `list_booth_memberships_for_user` | booth_memberships | upsert pattern |
+| `create_hosting_request`, `get_hosting_request`, `get_open_hosting_request`, `list_open_hosting_requests`, `count_open_hosting_requests`, `close_hosting_request`, `close_open_hosting_request` | hosting_requests | `close_*` records the outcome and clears `users.hosting_requested_at` |
 
 ### Session Pattern
 
@@ -266,6 +268,27 @@ async with get_session() as session:
 - `configure(url)` overrides engine (used in tests).
 - `init_db()` creates all tables without Alembic (tests only).
 - `dispose()` disposes connection pool.
+## Migration 030 — hosting access requests (#768)
+
+Table `hosting_requests`: `user_id` (FK users, CASCADE), `organization`, `event_name`,
+nullable `event_starts_on` / `event_ends_on` (Date), `languages`, `message`, `status`
+(`open` | `granted` | `declined`), `decline_reason`, `decided_by_user_id` (FK users,
+SET NULL), `decided_at`, `created_at`. The partial unique index
+`uq_hosting_requests_open_user` (`WHERE status = 'open'`) allows one open request per
+user. Handled requests are kept for the record. `users.hosting_requested_at` mirrors
+the open request's creation time and is cleared when it is handled; the homepage demo
+form no longer sets it.
+
+## Migration 031 — AI interpretation settings and vocabulary entries (#639)
+
+Room fields: `floor_ai_interpreter_persona` (Text, nullable), `floor_ai_interpretation_style`
+(Text, nullable), `floor_ai_vocabulary_enabled` (Boolean, default true).
+Table `ai_vocabulary_entries`: indexed glossary terms scoped to event, room, or booth.
+Fields: `id`, `event_id`, `room_id` (nullable), `booth_id` (nullable), `source_term` (String(255)),
+`target_language` (String(20), default `all`), `target_term` (String(255)), `description` (Text),
+`case_sensitive` (Boolean, default false), `match_type` (String(20), `phrase` default | `exact`),
+`priority` (Integer, default 0), `created_at`. Scopes cascade on delete.
+
 ## Migration 028 — RTMPS relay mode (#749)
 
 Room fields: `program_ingest_mode` (`whip` default | `rtmps_relay`; binds the program

@@ -18,15 +18,14 @@ from portal.database import (
     list_room_memberships_for_user,
 )
 from portal.email_sender import send_demo_request_email
-from portal.globals import _JS_CACHE_BUST
-from portal.models import utc_now
+from portal.globals import _JS_CACHE_BUST, asset_version_context
 from portal.rate_limit import check_rate_limit
 from portal.utils import _check_mediamtx, get_client_ip
 
 logger = logging.getLogger(__name__)
 
 _BASE_DIR = Path(__file__).resolve().parent.parent
-templates = Jinja2Templates(directory=str(_BASE_DIR / "templates"))
+templates = Jinja2Templates(directory=str(_BASE_DIR / "templates"), context_processors=[asset_version_context])
 
 router = APIRouter()
 
@@ -258,12 +257,11 @@ async def request_demo(request: Request, data: DemoRequestModel):
     async with get_session() as session:
         principal = await resolve_request_principal(request, session)
         user = principal["user"]
+        # Hosting access is requested from the Account page (#768); a demo
+        # request only links the email to the signed-in account.
         if user is not None:
             user_id = user.id
             is_authenticated = True
-            if user.hosting_requested_at is None:
-                user.hosting_requested_at = utc_now()
-                await session.flush()
 
     cleaned_data = {
         "email": email,

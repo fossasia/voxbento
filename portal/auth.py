@@ -31,7 +31,11 @@ def verify_password(password: str, password_hash: str) -> bool:
 
 def create_token() -> str:
     now = datetime.now(timezone.utc)
-    payload = {"iat": now, "exp": now + timedelta(seconds=settings.jwt_expiry_seconds)}
+    payload = {
+        "iat": now,
+        "exp": now + timedelta(seconds=settings.jwt_expiry_seconds),
+        "purpose": "legacy_api",
+    }
     return jwt.encode(payload, settings.effective_jwt_secret, algorithm="HS256")
 
 
@@ -163,11 +167,18 @@ async def resolve_request_principal(request: Request, db_session: AsyncSession) 
             "owned_event_ids": set(),
             "coordinated_event_ids": set(),
             "coordinated_room_ids": set(),
+            "open_hosting_requests": 0,
+            "has_developer_app": False,
         }
         request.state.principal = principal
         return principal
 
-    from portal.database import list_memberships_for_user, list_room_memberships_for_user
+    from portal.database import (
+        count_open_hosting_requests,
+        has_approved_developer_app,
+        list_memberships_for_user,
+        list_room_memberships_for_user,
+    )
 
     memberships = await list_memberships_for_user(db_session, user.id)
     rms = await list_room_memberships_for_user(db_session, user.id)
@@ -190,6 +201,10 @@ async def resolve_request_principal(request: Request, db_session: AsyncSession) 
         "owned_event_ids": owned_event_ids,
         "coordinated_event_ids": coordinated_event_ids,
         "coordinated_room_ids": coordinated_room_ids,
+        # Shown as the count on the Admin "Hosting access" menu item.
+        "open_hosting_requests": await count_open_hosting_requests(db_session) if user.is_admin else 0,
+        # Shows "Developer API" in the user menu.
+        "has_developer_app": await has_approved_developer_app(db_session, user.id),
     }
     request.state.principal = principal
     request.state.user = user
@@ -468,6 +483,8 @@ async def get_current_user(request: Request) -> dict | None:
     except jwt.InvalidTokenError:
         return None
     if not payload.get("user"):
+        return None
+    if await _current_user(payload) is None:
         return None
     return payload
 
