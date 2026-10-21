@@ -33,8 +33,17 @@ class WebhookResponse(BaseModel):
     secret_key: str | None = None
 
 
+_CLOUD_METADATA_ADDRS = {
+    ipaddress.ip_address("169.254.169.254"),
+    ipaddress.ip_address("fd00:ec2::254"),
+}
+
+
 def _is_forbidden_ip(ip_obj: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
-    return ip_obj.is_private or ip_obj.is_loopback or ip_obj.is_link_local or ip_obj.is_multicast or ip_obj.is_reserved
+    return (
+        ip_obj.is_private or ip_obj.is_loopback or ip_obj.is_link_local
+        or ip_obj.is_multicast or ip_obj.is_reserved or ip_obj in _CLOUD_METADATA_ADDRS
+    )
 
 
 def resolve_and_validate_url(url: str) -> list[tuple[str, int]]:

@@ -62,7 +62,21 @@ async def process_delivery(client: httpx.AsyncClient, db, delivery: WebhookDeliv
 
     try:
         safe_addrs = resolve_and_validate_url(sub.target_url)
-    except (ValueError, Exception) as e:
+    except ValueError as e:
+        err_msg = str(e)
+        if "DNS resolution failed" in err_msg:
+            delivery.last_error = f"Temporary DNS failure: {e}"
+            delivery.attempt_count += 1
+            if delivery.attempt_count >= 4:
+                delivery.status = "dead"
+            else:
+                delivery.status = "failed"
+                delivery.next_attempt_at = datetime.now(timezone.utc) + timedelta(seconds=2**delivery.attempt_count)
+            return
+        delivery.status = "dead"
+        delivery.last_error = f"SSRF Validation failed at dispatch: {e}"
+        return
+    except Exception as e:
         delivery.status = "dead"
         delivery.last_error = f"SSRF Validation failed at dispatch: {e}"
         return
@@ -84,14 +98,22 @@ async def process_delivery(client: httpx.AsyncClient, db, delivery: WebhookDeliv
     last_error = None
 
     pinned_ip, pinned_port = safe_addrs[0]
-    pinned_url = urllib.parse.urlunparse(
-        urllib.parse.urlparse(sub.target_url)._replace(netloc=f"[{pinned_ip}]:{pinned_port}" if ":" in pinned_ip else f"{pinned_ip}:{pinned_port}")
-    )
     parsed = urllib.parse.urlparse(sub.target_url)
-    pin_headers = {**headers, "Host": parsed.hostname or ""}
+    pinned_url = urllib.parse.urlunparse(
+        parsed._replace(netloc=f"[{pinned_ip}]:{pinned_port}" if ":" in pinned_ip else f"{pinned_ip}:{pinned_port}")
+    )
+    host_header = parsed.hostname or ""
+    if parsed.port and parsed.port != 443:
+        host_header = f"{host_header}:{parsed.port}"
+    pin_headers = {**headers, "Host": host_header}
 
     try:
-        response = await client.post(pinned_url, content=payload_str, headers=pin_headers)
+        response = await client.post(
+            pinned_url,
+            content=payload_str,
+            headers=pin_headers,
+            extensions={"sni_hostname": parsed.hostname},
+        )
         response.raise_for_status()
         success = True
     except httpx.RequestError as e:
