@@ -9,6 +9,8 @@ from fastapi import WebSocket, WebSocketDisconnect
 
 import portal.webhooks.worker as _wh_worker
 from portal.auth import can_perform_role
+from portal.booth_identity import booth_id_to_mediamtx_path
+from portal.booth_publish import TICKET_TTL_SECS, issue_ticket
 from portal.globals import booths
 
 
@@ -16,7 +18,7 @@ from portal.globals import booths
 class Session:
     booth_id: str
     participant_id: str | None
-    language: str
+    language: str | None
     channel_id: str
     # Role derived from the bearer cookie at WS connection time — never from client data.
     granted_role: str | None = None
@@ -120,9 +122,20 @@ class TTSConnectionManager:
         caption: str = "",
         translation: str = "",
         error: str | None = None,
+        audio_pending: bool | None = None,
     ) -> None:
         key = self._get_key(room_id, language_code, booth_id)
-        header = {"segment_id": segment_id, "seq": seq, "caption": caption, "translation": translation, "error": error}
+        from portal.transcription.timing import timing_metadata
+
+        header = {
+            "segment_id": segment_id,
+            "seq": seq,
+            "caption": caption,
+            "translation": translation,
+            "error": error,
+            "audio_pending": (not audio_bytes and error is None) if audio_pending is None else audio_pending,
+            **timing_metadata(),
+        }
         header_bytes = json.dumps(header).encode("utf-8")
         # Frame: [1-byte version][4-byte length L][L-bytes header][audio_bytes]
         frame = struct.pack(">BI", 1, len(header_bytes)) + header_bytes + audio_bytes
@@ -162,9 +175,19 @@ async def broadcast_transcription(booth_id: str, payload: str | dict):
 
 
 async def _handle_join(ws: WebSocket, session: Session, data: dict) -> None:
+    """Handle a client joining a booth session.
+
+    Validates client role and language parameters, initializes participant state,
+    and broadcasts state updates to listeners.
+    """
     display_name = data.get("display_name", "Interpreter")
     role = data.get("role", "interpreter")
-    language = data.get("language", session.language)
+    language = data.get("language") or session.language
+    if not language:
+        await ws.send_text(
+            json.dumps({"type": "booth:error", "message": "Language must be specified or configured for this booth."})
+        )
+        return
     channel_id = data.get("channel_id", f"{session.booth_id}-audio")
     participant_id = data.get("participant_id")
     if session.granted_role is None:
@@ -203,6 +226,8 @@ async def _handle_join(ws: WebSocket, session: Session, data: dict) -> None:
             channel_id=channel_id,
             participant_id=participant_id,
             room_id=room_id,
+            # Only this socket's own record may be re-claimed by ID.
+            reclaim=participant_id is not None and participant_id == session.participant_id,
         )
     except (ValueError, PermissionError) as exc:
         await ws.send_text(json.dumps({"type": "booth:error", "message": str(exc)}))
@@ -266,8 +291,6 @@ async def _handle_set_active(ws: WebSocket, session: Session, data: dict) -> Non
     if not target_id:
         await ws.send_text(json.dumps({"type": "booth:error", "message": "Missing target_id."}))
         return
-    snap = await booths.snapshot(session.booth_id, session.language, session.channel_id)
-    previous_active = snap.get("active_interpreter_id")
     try:
         state = await booths.set_active_interpreter(
             session.booth_id, session.participant_id, target_id, session.language, session.channel_id
@@ -275,8 +298,6 @@ async def _handle_set_active(ws: WebSocket, session: Session, data: dict) -> Non
     except (ValueError, PermissionError) as exc:
         await ws.send_text(json.dumps({"type": "booth:error", "message": str(exc)}))
         return
-    if previous_active and previous_active != target_id:
-        pass
     await manager.broadcast(session.booth_id, {"type": "booth:state", "state": state})
 
 
@@ -299,10 +320,47 @@ async def _handle_update_state(ws: WebSocket, session: Session, data: dict) -> N
     await manager.broadcast(session.booth_id, {"type": "booth:state", "state": state})
 
 
+async def _handle_request_publish_ticket(ws: WebSocket, session: Session, data: dict) -> None:
+    """Issue a single-use WHIP ticket to the active interpreter (#783).
+
+    Always answers with ``booth:publish-ticket`` so the client can match the reply
+    to its pending request; a refusal carries ``error`` instead of ``ticket``.
+    """
+    reply: dict = {"type": "booth:publish-ticket"}
+    if not session.participant_id:
+        reply["error"] = "Join the booth before going live."
+    else:
+        try:
+            await booths.check_publish_permission(
+                session.booth_id, session.participant_id, session.language, session.channel_id
+            )
+            booth = booths.get_booth_sync(session.booth_id)
+            if booth is None or not booth.broadcast_unlocked:
+                raise PermissionError("Broadcast is stopped by Mission Control.")
+            # Bound to the server's booth, never to the client-supplied channel_id.
+            path = booth_id_to_mediamtx_path(session.booth_id)
+        except (ValueError, PermissionError) as exc:
+            reply["error"] = str(exc)
+        else:
+            reply["ticket"] = issue_ticket(session.booth_id, session.participant_id, path)
+            reply["expires_in"] = int(TICKET_TTL_SECS)
+    await ws.send_text(json.dumps(reply))
+
+
 async def _handle_set_broadcast_unlocked(ws: WebSocket, session: Session, data: dict) -> None:
+    """Handle setting broadcast lock state for a booth session.
+
+    Requires room coordinator or administrator privileges and a configured
+    session language.
+    """
     if session.granted_role not in ("room_coordinator", "event_owner", "super_admin"):
         await ws.send_text(
             json.dumps({"type": "booth:error", "message": "Only Room Coordinators can manage broadcast lock."})
+        )
+        return
+    if not session.language:
+        await ws.send_text(
+            json.dumps({"type": "booth:error", "message": "Language must be specified or configured for this booth."})
         )
         return
     unlocked = bool(data.get("unlocked"))

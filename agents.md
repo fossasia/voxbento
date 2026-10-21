@@ -71,19 +71,26 @@ VoxBento is a production-grade **browser-first interpretation booth console** fo
 | `portal/booth_state.py` | In-memory `BoothRegistry`, `Booth`, `Participant`, handoff policy, chat history |
 | `portal/auth.py` | JWT create/decode, bcrypt password, `require_admin`, `require_user`, `resolve_booth_role`, `can_perform_role` |
 | `portal/config.py` | `Settings` — pydantic-settings; all env vars / `.env` |
-| `portal/models.py` | SQLAlchemy declarative models: `Event`, `Room`, `DBBooth`, `InviteToken`, `User`, `EventMembership`, `BoothMembership` |
+| `portal/models.py` | SQLAlchemy declarative models: `Event`, `Room`, `DBBooth`, `InviteToken`, `User`, `EventMembership`, `RoomMembership`, `BoothMembership`, `HostingRequest`, `AIVocabularyEntry`, etc. |
 | `portal/database.py` | Async engine, session factory (`get_session`), all CRUD helpers |
+| `portal/booth_publish.py` | Single-use WHIP publish tickets for interpreter booth paths; checked by the MediaMTX auth hook |
 | `portal/booth_identity.py` | `make_booth_id`, `make_mediamtx_path`, `parse_booth_id`, `validate_event_slug`, `validate_language_code` |
 | `portal/roles.py` | `Permission` enum, `ROLE_PERMISSIONS` dict, `ALL_ROLES` set, `_ROLE_RANK` |
 | `portal/crypto.py` | `encrypt_val` / `decrypt_val` (Fernet, SHA-256 key derivation) |
 | `portal/transcription/` | Transcription subsystem — see `TRANSCRIPTION_MAP.md` |
+| `portal/translations/` | Translation subsystem — LLM workers, contextual prompts (`prompts.py`), glossaries (`vocabulary.py`) |
+| `portal/tts/` | Text-to-speech subsystem — direct-push Deepgram Aura and Supertonic ONNX |
+| `portal/meeting_source.py` | Managed Jitsi floor agent lifecycle reconciler |
+| `portal/program_ingest.py` | Floor authorization and reconciliation for Program Stream Ingest |
+| `portal/program_relay.py` | YouTube RTMPS destination management and relay health convergence |
+| `portal/user_admin.py` | Administrative access rules, user flags (`can_host`, `is_admin`, `is_active`, `email_verified`) |
 | `portal/templates/` | Jinja2 HTML — `base.html`, `interpreter_booth.html`, `listener-event.html`, `admin/` |
 | `portal/static/js/interpreter-booth.js` | Booth UI — WebRTC/WHIP, WebSocket, Jitsi iframe, mic controls, level meter |
 | `portal/static/js/whep-listener.js` | WHEP playback client — RTCPeerConnection, auto-reconnect with exponential back-off |
 | `portal/static/js/admin.js` | Admin panel JS helpers |
 | `mediamtx.yml` | MediaMTX config — WHIP/WHEP paths, RTSP, Control API, `overridePublisher` |
 | `docker-compose.yml` | portal + mediamtx + jitsi-web/prosody/jicofo/jvb |
-| `alembic/versions/` | 8 migrations (001–008); run `uv run alembic upgrade head` |
+| `alembic/versions/` | 31 migrations (001–031); run `uv run alembic upgrade head` |
 
 ---
 
@@ -91,7 +98,7 @@ VoxBento is a production-grade **browser-first interpretation booth console** fo
 
 1. **One active publisher per language channel.** MediaMTX enforces `overridePublisher: yes`; Python enforces via `BoothRegistry`.
 2. **Interpreter mic audio never routes to `AudioContext.destination`.** No local loopback.
-3. **No OBS/RTMP/external encoder.** Browser-only ingest via WHIP.
+3. **Interpreter ingest remains browser-only WHIP.** Explicit exception: room-scoped Program Stream Ingest (#690) accepts authenticated HTTPS WHIP from an external encoder, and its operator-enabled relay mode (#749) accepts room-authenticated RTMPS (never plaintext RTMP) and pushes it to an allow-listed YouTube RTMPS destination from the dedicated `program-relay` service. No YouTube pulling, no unauthenticated or plaintext RTMP, no SRT. Floor ownership is `jitsi_bot` or `program_ingest`; never last-publisher-wins.
 4. **Jitsi is monitoring only** — receive-only iframe. Not the ingest transport.
 5. **No framework.** Frontend is plain ES modules in `portal/static/js/`. No Vue, React, jQuery, inline `<script>` blocks.
 6. **No Flask, Socket.IO, aiortc.**
@@ -107,15 +114,16 @@ VoxBento is a production-grade **browser-first interpretation booth console** fo
 ## Role Model
 
 ```
-super_admin > event_owner > room_coordinator > interpreter > listener
+super_admin > event_owner > room_coordinator > interpreter > support > listener
 ```
 
 | Role | Go Live (WHIP) | Set Active | Chat | Manage Booths/Events |
 |---|---|---|---|---|
 | `super_admin` | ✓ | ✓ | ✓ | ✓ |
-| `event_admin` | ✓ | ✓ | ✓ | booths only |
-| `coordinator` | ✓ | ✓ | ✓ | — |
+| `event_owner` | ✓ | ✓ | ✓ | booths only |
+| `room_coordinator` | ✓ | ✓ | ✓ | — |
 | `interpreter` | ✓ (active only) | — | ✓ | — |
+| `support` | — | — | — | — (booth view only) |
 | `listener` | — | — | — | — |
 
 Defined in: `portal/roles.py`
@@ -127,9 +135,8 @@ Enforced in: `portal/websockets/handlers.py` (`_handle_join`), `portal/routers/a
 
 | Purpose | Token type | Cookie name | Key claims |
 |---|---|---|---|
-| Invite-link participant | `create_participant_token()` | `session_token` | `booth_id`, `role`, `event_slug`, `language_code` |
-| Registered user | `create_user_token()` | `user_token` | `sub` (user_id), `email`, `is_admin`, `user=True` |
-| Admin panel | `create_admin_token()` | `admin_token` | `admin=True` |
+| Invite-link participant | `create_participant_token()` | `session_token` | `booth_id`, `role`, `event_slug`, `room_id`, `language_code` |
+| Registered user / Admin | `create_user_token()` | `user_token` | `sub` (user_id), `email`, `is_admin`, `user=True` |
 
 All tokens: HS256, `settings.effective_jwt_secret`, expiry = `jwt_expiry_seconds`.
 Password hashing: bcrypt (`portal/auth.py` `hash_password` / `verify_password`).
@@ -140,8 +147,8 @@ API key storage: Fernet-encrypted in DB (`portal/crypto.py`).
 ## Booth Identity
 
 ```python
-booth_id  = make_booth_id("pycon2026", "en")   # → "pycon2026-en"
-mtx_path  = make_mediamtx_path("pycon2026", "en")  # → "pycon2026/en"
+booth_id  = make_booth_id("pycon2026", 14, "en")   # → "pycon2026-14-en"
+mtx_path  = make_mediamtx_path("pycon2026", 14, "en")  # → "pycon2026/14/en"
 whip_url  = f"{settings.mediamtx_whip_base}/{mtx_path}/whip"
 whep_url  = f"{settings.mediamtx_whip_base}/{mtx_path}/whep"
 rtsp_url  = f"rtsp://mediamtx:8554/{mtx_path}"   # transcription only
@@ -160,10 +167,17 @@ Validation: `portal/booth_identity.py` — slug: `^[a-z0-9]+(?:-[a-z0-9]+)*$`; l
 | `booth:chat` | `_handle_chat` | `body` only |
 | `booth:set-active` | `_handle_set_active` | `target_id` |
 | `booth:update-state` | `_handle_update_state` | `mic_active`, `ingest_connected` |
+| `booth:request-publish-ticket` | `_handle_request_publish_ticket` | — (participant from the WS session) |
 
-Server → Client: `booth:joined`, `booth:state`, `booth:chat`, `booth:error`
+Server → Client: `booth:joined`, `booth:state`, `booth:chat`, `booth:error`, `booth:publish-ticket`
 
-Caption feed: `/ws/captions/{booth_id}` (no auth) — receives `caption` + `booth:state` messages.
+Booth WHIP publishing is authenticated (#783): MediaMTX forwards the `Authorization: Bearer` ticket to
+`/internal/media-auth`, which redeems it once (`portal/booth_publish.py`, 30 s TTL, bound to the booth's
+server-derived path) and re-checks that the holder is still the active interpreter and that Mission Control has
+broadcast unlocked. Anonymous publishes get 401. A `booth:join` naming another socket's `participant_id` gets a fresh ID.
+
+Caption feed: `/ws/captions/{booth_id}` — receives `caption`, `translated_caption` + `booth:state` messages (protected by `resolve_ws_auth` when `BOOTH_ACCESS_TOKEN` is configured).
+Direct-push TTS feed: `/ws/tts/{room_id}/{language_code}/{booth_id}` — pre-authorized binary bundle stream (version byte, length-prefixed JSON header, optional 24 kHz PCM audio). Translation text is delivered concurrently over the captions feed and inside TTS bundle headers.
 
 ---
 
@@ -215,7 +229,25 @@ Manual browser check:
 
 - Python runtime: `3.13.x` (enforced in `pyproject.toml`)
 - `uv.lock` is the source of truth for all Python dependencies.
-- Docker images: `bluenviron/mediamtx:1`, `ghcr.io/jitsi/*:stable-11248`
+- Docker images: `bluenviron/mediamtx:1.18.2`, `ghcr.io/jitsi/*:stable-11248`
+
+Meeting source: `portal/meeting_source.py` owns the managed Jitsi agent lifecycle
+(desired state `rooms.meeting_agent_enabled`, migration 027, bounded restarts,
+restart reconciliation); `portal/routers/meeting_source.py` owns its owner controls.
+Never log or return the meeting URL. Read `docs/meeting-source.md` first.
+
+Program ingest: `portal/program_ingest.py` owns floor authorization/reconciliation;
+`portal/routers/program_ingest.py` owns private media auth and event-owner controls.
+Migration 025 adds protected credentials, source ownership and persistent floor
+sequence. One portal replica; program media never traverses Python. Read
+`docs/program-stream-ingest.md` before changing this boundary or deploying it.
+
+Program relay (#749): `portal/program_relay.py` owns the YouTube destination
+(Fernet-encrypted, write-only), relay health and convergence of the `program-relay`
+service (`program-relay/relay.py`, the media plane; `docker-compose.relay.yml`);
+migration 028 adds `program_ingest_mode`, which binds the program key to WHIP or RTMPS.
+Never log, return or forward FFmpeg text containing the destination. Read
+`docs/program-relay.md` before changing relay mode.
 
 ---
 
@@ -224,8 +256,16 @@ Manual browser check:
 Every PR that adds, removes, or changes a feature **must** update these files in the same commit:
 
 - `README.md` — operational usage and setup
-- `docs/how-it-works.mdx` — system design
+- `website/docs/how-it-works.mdx` — system design
 - `agents.md` (this file) — guardrails, if they changed
 - Relevant context file in `.agents/context/` — if the change affects routes, DB schema, or transcription
 
 Do not defer documentation to a follow-up PR.
+
+Password sign-in requires `User.email_verified`; everyone, admins included, signs in
+at `/login` (`login` rate-limit bucket, 10 attempts per normalized email per hour).
+`/admin/login` only redirects to `/login?next=/admin/`.
+
+Production deployments validate a separate candidate checkout before advancing
+the live checkout. Portal source and dependencies must come from the built image,
+with persistent data volumes retained under the `voxbento` Compose project.

@@ -1,106 +1,65 @@
-# Voxbento
+<p align="center">
+  <img src="https://github.com/user-attachments/assets/4521a23a-f99c-445d-96ee-dd98a4b66d5d" alt="VoxBento" width="420" />
+</p>
 
-Voxbento is a real-time interpretation platform for live events. It provides a browser-first, zero-install experience for simultaneous interpreters, allowing them to monitor the main floor video via Jitsi and broadcast translated audio to attendees with low latency.
+<p align="center">
+  Browser-first, real-time interpretation for live events.
+</p>
 
-**Official Documentation:** [docs.voxbento.com](https://docs.voxbento.com)
+<p align="center">
+  <a href="https://voxbento.com"><img src="https://img.shields.io/badge/live-voxbento.com-2ea44f" alt="Documentation"></a>
+  <a href="https://docs.voxbento.com"><img src="https://img.shields.io/badge/docs-docs.voxbento.com-1f6feb" alt="Documentation"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-2ea44f" alt="License: Apache 2.0"></a>
+</p>
 
-Interpreters stream live audio via WebRTC/WHIP → MediaMTX → WHEP (WebRTC playback).
-Booth coordination (who is active, relay handoff, chat) runs over WebSocket.
+VoxBento is a real-time interpretation platform for live events. Interpreters monitor the floor in Jitsi and publish translated audio from the browser, while attendees listen with low-latency WebRTC playback.
 
-Rooms can optionally add a listener-side audio synchronization delay for WHEP playback. The default is `0` ms, which keeps the existing low-latency HTML audio path unchanged. Organizers can set values such as `1000`, `2000`, `5000`, or `8000` ms when a room's livestream video, captions, embedded player, or other external media is delayed and translated audio needs to line up with it. The delay is applied in the listener browser only; MediaMTX, WHIP, WHEP, and RTP packets are not changed. Within the organizer workspace, organizers can manage and search rooms by name within each event using server-side, case-insensitive filtering.
+**Quick links:** [Documentation](https://docs.voxbento.com) · [Contributing](CONTRIBUTING.md) · [VoxBento Local](https://voxbento.com/local)
 
-## Management dashboards
+### Why VoxBento
 
-- Event owners manage event configuration at `/workspace/`.
-- Room coordinators use `/mission-control/`, which limits them to their assigned rooms.
-- System administrators use `/admin/` for instance-wide administration.
-- Existing organizer bookmarks under `/admin/events/...` redirect to the matching `/workspace/events/...` URL. HTTP methods and query strings are preserved, so old forms and filtered room-list bookmarks continue to work.
-
-The workspace and admin surfaces share the same management implementation and authorization checks. This URL separation does not change OAuth authorization, token refresh, reconnect, or disconnect behavior for Eventyay integrations.
+- **Browser-first workflow:** No native install needed for interpreter booths.
+- **Low-latency delivery:** WebRTC-based broadcast path for live interpretation.
+- **Built for operations:** Role-based booth coordination for organizers and interpreters.
 
 ---
 
-## How it works
+## Signed-in pages
 
-```
-Interpreter browser
-  │  iframe → Jitsi Meet (Monitor conference floor video/audio)
-  │  mic → RTCPeerConnection → WHIP POST
-  ▼
-MediaMTX :8889 (WHIP ingest + WHEP)   Python is never in the audio path
-  │  WebRTC termination + remux
-  └──► WHEP :8889 ←── attendees connect via WebRTC (sub-second latency)
+Every signed-in page shares one header: the VoxBento logo with the current area
+(**Admin**, **My events** or **Account**), that area's page links, and a user menu
+in the top right with the person's name. The menu always lists **My events**,
+**Account** and **Logout**, plus **Developer API** for users with an approved
+developer app and **Admin** for Admins. **My events** (`/workspace/`) lists every
+event the person has a role in, with a button to where they work. **Account**
+(`/account`) holds the person's display name, hosting and developer access, and
+sign-in settings (change, set or remove a password).
+Admins manage accounts at **Admin → Users**: search and filter everyone, and turn
+hosting access, Admin, Active, and Email Verification on or off right from the list.
 
-Interpreter / Coordinator browser
-  │  WebSocket /ws/booth/{booth_id}
-  ▼
-FastAPI portal :8000 (coordination, state, JWT, REST)
-  │
-  ├──► Background Transcription (ffmpeg → Deepgram/OpenAI/Local)
-  └──► Background Translation (Groq/Anthropic/Gemini)
+## Hosting access
 
-Floor Audio Bot (floor-bot)
-  │  Headless Chromium → Joins Jitsi Meeting
-  └──► ffmpeg → RTSP → MediaMTX → Transcription/Translation
-```
+Only people with hosting access can create events. A signed-in user without it
+selects **Request access** on their Account page and fills in a short form
+(organization, event name and dates, languages, optional message). The team inbox
+in `HOSTING_REQUESTS_EMAIL` (default `voxbento.dev@gmail.com`) is emailed about
+each new request. Admins review requests under **Admin → Hosting access → Requests**:
+**Grant access** gives the person hosting access straight away, **Decline** asks for
+a reason that is emailed to them. A person has at most one open request at a time.
 
+## Floor Audio & AI Interpretation
+
+- **Meeting Source**: Managed headless floor bot automatically joins Jitsi sessions and streams conference floor audio.
+- **Program Stream Ingest**: Accepts direct broadcast audio from hardware encoders via authenticated HTTPS WHIP.
+- **RTMPS Relay**: Optional YouTube RTMPS forwarding via the dedicated `program-relay` service without re-encoding.
+- **AI Interpretation**: Real-time LLM translations guided by room personas, tone styles, and customizable domain vocabulary CSV glossaries.
+- **Direct-Push TTS**: Instant synthesized speech streamed to attendees over WebSocket (Deepgram Aura or self-hosted Supertonic ONNX).
 
 ---
 
 ## Setup
 
-### Prerequisites
-
-| Dependency | Version | Purpose |
-|-----------|---------|---------|
-| Python | 3.13+ | FastAPI portal |
-| [uv](https://github.com/astral-sh/uv) | latest | Python package manager |
-| [MediaMTX](https://github.com/bluenviron/mediamtx/releases) | 1.x | WebRTC/HLS audio server |
-| Docker & Docker Compose | latest | Jitsi stack (or full Docker setup) |
-
-### Option 1 — Docker Compose (everything in containers)
-
-All services (portal, MediaMTX, Jitsi) start with one command:
-
-```bash
-git clone https://github.com/fossasia/voxbento.git
-cd voxbento
-
-# Configure environment
-cp .env.example .env
-
-# Required: set your admin password (or generate a secure random password)
-echo "ADMIN_PASSWORD=$(openssl rand -hex 16)" >> .env
-
-# Required for API key encryption: set your encryption key (must be 32 characters or longer)
-echo "API_KEY_ENCRYPTION_KEY=$(openssl rand -hex 32)" >> .env
-
-# Required for Jitsi video: set the IP JVB advertises to browsers
-# macOS:  ipconfig getifaddr en0
-# Linux:  hostname -I | awk '{print $1}'
-echo 'JVB_ADVERTISE_IPS=192.168.1.x' >> .env
-
-docker compose up --build
-```
-
-Open http://localhost:8000 — all services are running.
-
 For detailed API documentation, environment variables, and configuration, visit [docs.voxbento.com](https://docs.voxbento.com). Native development setup details can also be found in [CONTRIBUTING.md](CONTRIBUTING.md).
-
----
-
-## Upgrade Notes
-
-### API Key Encryption & Rotation
-A mandatory environment variable `API_KEY_ENCRYPTION_KEY` securely encrypts third-party API keys in the database. 
-- You must generate a secure key (e.g., using `openssl rand -hex 32`) and add it to your `.env` file before starting the application. 
-- **Rotation**: To rotate keys without breaking existing database entries, provide a comma-separated list of keys. Voxbento will encrypt new tokens using the *first* key, but will use *all* keys to attempt decryption.
-
-### Optional NVIDIA Transcription
-NVIDIA Riva support is now an optional dependency to reduce the default installation footprint. If you intend to run NVIDIA transcription models, you must explicitly install the optional package:
-```bash
-uv pip install -e .[nvidia]
-```
 
 ---
 

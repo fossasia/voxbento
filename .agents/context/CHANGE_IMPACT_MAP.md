@@ -68,8 +68,8 @@
 
 **Files to change:**
 1. `portal/config.py` — `Settings.effective_jwt_secret` (property)
-2. `portal/auth.py` — `create_token`, `create_participant_token`, `create_user_token`, `create_admin_token`, `decode_token`
-3. All cookie names: `session_token`, `user_token`, `admin_token` — search across `portal/routers/`
+2. `portal/auth.py` — `create_token`, `create_participant_token`, `create_user_token`, `decode_token`
+3. All cookie names: `session_token`, `user_token` — search across `portal/routers/`
 4. `portal/static/js/interpreter-booth.js` — `?token=` query param for WS if legacy token auth is changed
 
 ---
@@ -148,3 +148,37 @@
 | `portal/booth_identity.py` | Booth ID + MediaMTX path — breaks all in-memory state |
 | `portal/routers/` | All routes — every user-facing feature |
 | `mediamtx.yml` | Media server behaviour — WHIP/WHEP/transcription |
+## Program Stream Ingest
+
+For room floor publishing/auth/lifecycle: `portal/program_ingest.py`,
+`portal/routers/program_ingest.py`, Room model/migration 025, `mediamtx.yml`,
+`docker-compose.yml`, `Caddyfile`, owner card `_program_ingest.html` and
+`program-ingest.js`. Timing changes also touch aggregator, translation worker,
+TTS manager, `program-delivery.js` and listener client. Preserve interpreter
+browser publishing. Update `docs/program-stream-ingest.md` and run native media
+smoke tests in addition to unit tests before production sign-off.
+
+---
+
+## 13. Modifying AI Interpretation Settings & Vocabulary
+
+**Files to change:**
+1. `portal/models.py` — `Room` (persona, style, vocab enabled) & `AIVocabularyEntry` models (migration 031)
+2. `portal/translations/prompts.py` — system prompt templates and contextual prompt building
+3. `portal/translations/vocabulary.py` — glossary lookup, overlap resolution, priority ordering, and CSV import/export
+4. `portal/translations/worker.py` — translation dispatch and glossary resolution before taking worker slots
+5. `portal/routers/admin.py` — room AI interpretation settings & vocabulary CSV routes (`.../ai-vocabulary/upload`, `.../export`, `.../delete`)
+6. `portal/templates/admin/room_detail.html` — AI interpretation persona, style, and glossary management UI
+7. `tests/test_ai_interpretation.py` & `tests/test_translation_pipeline.py` — regression tests
+
+---
+
+## 14. Program Relay (YouTube RTMPS)
+
+**Files to change:**
+1. `portal/program_relay.py` — destination encryption/decryption, relay reconciliation, health checking
+2. `portal/routers/program_ingest.py` — relay mode endpoints (`PUT/DELETE .../program-relay`)
+3. `program-relay/relay.py` — standalone media relay service pulling RTSP and pushing RTMPS
+4. `docker-compose.relay.yml` — deployment definition for `program-relay` service
+5. `portal/config.py` — relay configuration settings (`program_relay_*`)
+6. `docs/program-relay.md` — operational documentation and architecture notes

@@ -5,17 +5,22 @@ import logging
 
 from portal.database import get_session
 from portal.models import DBBooth, Event, Room, TranscriptTranslation
+from portal.transcription.timing import timing_metadata
 from portal.translations.constants import OPENAI_COMPATIBLE_ENDPOINTS, TranslationProviderEnum
 from portal.translations.keys import get_translation_api_key
 from portal.translations.providers.anthropic import AnthropicProvider
 from portal.translations.providers.gemini import GeminiProvider
 from portal.translations.providers.local import LocalProvider
 from portal.translations.providers.openai import OpenAIProvider
+from portal.translations.vocabulary import resolve_vocabulary_entries
 
 LANGUAGE_SEMAPHORES: dict[str, asyncio.Semaphore] = {}
 LANGUAGE_QUEUES: dict[str, int] = {}
 
 logger = logging.getLogger(__name__)
+
+#: The glossary is optional context, so its lookup must never eat into the inference budget.
+VOCABULARY_LOOKUP_TIMEOUT = 2.0
 
 openai_provider = OpenAIProvider()
 
@@ -119,10 +124,11 @@ class TranslationWorker:
                     async def _broadcast_source(r_id, l_code, b_id_str, u_seg_id, sq, txt, t_booth_id):
                         from portal.websockets.manager import listener_manager
                         await tts_manager.broadcast_bundle(
-                            r_id, l_code, b_id_str, b"", u_seg_id, sq, txt, txt, None
+                            r_id, l_code, b_id_str, b"", u_seg_id, sq, txt, txt, None, audio_pending=False
                         )
                         if t_booth_id:
-                            await listener_manager.broadcast(t_booth_id, {"type": "translated_caption", "status": "final", "text": txt})
+                            await listener_manager.broadcast(t_booth_id, {"type": "translated_caption", "status": "final", "text": txt,
+                                                                         "segment_id": u_seg_id, "seq": sq, **timing_metadata()})
 
                     target_booth_id = f"{event.slug}-{room.id}-{lang.language_code}"
                     tasks.append(
@@ -146,6 +152,7 @@ class TranslationWorker:
                             api_key,
                             lang.language_code,
                             lang.language_name,
+                            source_lang_code,
                             source_lang_name,
                             segment_id,
                             text,
@@ -153,6 +160,7 @@ class TranslationWorker:
                             uuid_segment_id,
                             seq,
                             target_booth_id,
+                            segment.booth_id,
                         )
                     )
 
@@ -172,6 +180,7 @@ class TranslationWorker:
         api_key: str,
         lang_code: str,
         lang_name: str,
+        source_lang_code: str | None,
         source_lang_name: str,
         segment_id: int,
         text: str,
@@ -179,11 +188,13 @@ class TranslationWorker:
         uuid_segment_id: str,
         seq: int,
         target_booth_id: str | None = None,
+        source_booth_id: int | None = None,
     ):
         from portal.websockets.manager import tts_manager
 
-        sem = LANGUAGE_SEMAPHORES.setdefault(lang_code, asyncio.Semaphore(2))
-        q_depth = LANGUAGE_QUEUES.setdefault(lang_code, 0)
+        queue_key = f"{booth_id_str}:{lang_code}"
+        sem = LANGUAGE_SEMAPHORES.setdefault(queue_key, asyncio.Semaphore(2))
+        q_depth = LANGUAGE_QUEUES.setdefault(queue_key, 0)
 
         if q_depth >= 15:
             logger.warning(f"[{booth_id_str}] Queue full for {lang_code}. Dropping segment {seq}.")
@@ -192,10 +203,32 @@ class TranslationWorker:
             )
             return
 
-        LANGUAGE_QUEUES[lang_code] += 1
+        LANGUAGE_QUEUES[queue_key] += 1
+        queue_decremented = False
 
         try:
-            queue_decremented = False
+            # Resolved before taking an inference slot: the glossary is optional context, and a slow
+            # lookup must not occupy one of the two per-language slots while other rooms wait.
+            vocabulary_entries = []
+            if room.floor_ai_vocabulary_enabled:
+                try:
+                    async with asyncio.timeout(VOCABULARY_LOOKUP_TIMEOUT):
+                        async with get_session() as vocabulary_session:
+                            vocabulary_entries = await resolve_vocabulary_entries(
+                                vocabulary_session,
+                                event_id=event.id,
+                                room_id=room.id,
+                                booth_id=source_booth_id,
+                                target_language=lang_code,
+                                transcript_text=text,
+                            )
+                except (Exception, asyncio.TimeoutError) as e:
+                    logger.warning(
+                        f"[{booth_id_str}] Vocabulary lookup failed for {lang_code}: {e!r}. "
+                        "Translating without glossary entries."
+                    )
+                    vocabulary_entries = []
+
             async with sem:
                 try:
                     # Enforce a strict timeout on LLM inference (12s for cloud, 60s for local).
@@ -213,7 +246,20 @@ class TranslationWorker:
                             pass
 
                     translated_text = await asyncio.wait_for(
-                        self._call_llm(provider, model, api_key, text, lang_name, source_lang_name), timeout=timeout_val
+                        self._call_llm(
+                            provider,
+                            model,
+                            api_key,
+                            text,
+                            lang_name,
+                            source_lang_name,
+                            target_lang_code=lang_code,
+                            source_language_code=source_lang_code,
+                            persona=room.floor_ai_interpreter_persona,
+                            style=room.floor_ai_interpretation_style,
+                            vocabulary_entries=vocabulary_entries,
+                        ),
+                        timeout=timeout_val,
                     )
                 except asyncio.TimeoutError:
                     if provider == "local" and timeout_val == 0.1:
@@ -248,10 +294,11 @@ class TranslationWorker:
                 )
                 if target_booth_id:
                     from portal.websockets.manager import listener_manager
-                    await listener_manager.broadcast(target_booth_id, {"type": "translated_caption", "status": "final", "text": translated_text})
+                    await listener_manager.broadcast(target_booth_id, {"type": "translated_caption", "status": "final", "text": translated_text,
+                                                                      "segment_id": uuid_segment_id, "seq": seq, **timing_metadata()})
 
             # Decrement queue early so slow TTS doesn't cause new incoming segments to be dropped
-            LANGUAGE_QUEUES[lang_code] -= 1
+            LANGUAGE_QUEUES[queue_key] -= 1
             queue_decremented = True
 
             from portal.tts.worker import synthesize
@@ -264,6 +311,8 @@ class TranslationWorker:
                 synth_bytes = await asyncio.wait_for(synthesize(room.id, translated_text, lang_code), timeout=timeout_s)
                 if synth_bytes:
                     audio_bytes = synth_bytes
+                else:
+                    error = "tts_unavailable"
             except asyncio.TimeoutError:
                 logger.warning(f"[{booth_id_str}] TTS timeout for {lang_code} after {timeout_s}s.")
                 error = "tts_timeout"
@@ -283,7 +332,7 @@ class TranslationWorker:
             )
         finally:
             if not queue_decremented:
-                LANGUAGE_QUEUES[lang_code] -= 1
+                LANGUAGE_QUEUES[queue_key] -= 1
 
     async def _call_llm(
         self,
@@ -293,6 +342,12 @@ class TranslationWorker:
         text: str,
         target_lang_name: str,
         source_lang_name: str = "English",
+        *,
+        target_lang_code: str = "",
+        source_language_code: str | None = None,
+        persona: str | None = None,
+        style: str | None = None,
+        vocabulary_entries: list | None = None,
     ) -> str | None:
         provider_instance = PROVIDERS.get(provider)
         if not provider_instance:
@@ -303,10 +358,13 @@ class TranslationWorker:
             provider_name=provider,
             text=text,
             target_lang_name=target_lang_name,
-            target_lang_code="",  # Not explicitly passed from current DB schema
+            target_lang_code=target_lang_code,
             source_lang_name=source_lang_name,
             model=model,
             api_key=api_key,
+            persona=persona,
+            style=style,
+            vocabulary_entries=vocabulary_entries or (),
         )
         if not translated:
             logger.warning(f"Provider {provider} returned empty translation for text: '{text}'")

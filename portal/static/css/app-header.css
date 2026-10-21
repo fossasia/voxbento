@@ -1,0 +1,162 @@
+/* ── Shared header and user menu (#766) ──────────────────────────────────
+   Used on every signed-in page via _app_header.html. Tokens are scoped to
+   .app-header so the header looks the same whatever page stylesheet loads. */
+
+.app-header {
+  --ah-surface: #ffffff;
+  --ah-border: #e2e7f0;
+  --ah-border-strong: #d0d7e6;
+  --ah-text: #101828;
+  --ah-text-secondary: #475467;
+  --ah-icon: #344054;
+  --ah-primary: #1d4ed8;
+  --ah-primary-subtle: #eff4ff;
+  --ah-primary-border: #bfd3fe;
+  --ah-danger: #b42318;
+  --ah-hover: #f5f7fb;
+  --ah-gutter: 56px;
+  position: sticky;
+  top: 0;
+  z-index: 200;
+  background: var(--ah-surface);
+  border-bottom: 1px solid var(--ah-border);
+  font-family: Inter, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  font-size: 16px;
+  line-height: 1.5;
+}
+.app-header p { line-height: 1.4; }
+
+.app-header-inner {
+  width: min(1280px, 100% - 2 * var(--ah-gutter));
+  margin: 0 auto;
+  min-height: 64px;
+  display: flex;
+  align-items: center;
+  gap: 40px;
+}
+
+.app-header-left { display: flex; align-items: center; gap: 12px; flex: none; }
+.app-brand {
+  font-size: 1.25rem;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+  color: var(--ah-primary);
+  text-decoration: none;
+}
+.app-brand:hover { text-decoration: none; color: var(--ah-primary); }
+
+.app-area {
+  display: inline-flex;
+  align-items: center;
+  height: 22px;
+  padding: 0 10px;
+  border-radius: 999px;
+  font-size: 0.78rem;
+  font-weight: 600;
+  line-height: 1;
+  white-space: nowrap;
+}
+.app-area--events { background: #d1fae5; color: #065f46; }
+.app-area--account { background: #e4e7ec; color: #344054; }
+.app-area--admin { background: #dbe7fe; color: #1e40af; }
+.app-area--developer { background: #ede9fe; color: #5b21b6; }
+
+.app-header-nav { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; flex: 1 1 auto; min-width: 0; padding: 4px 0; }
+.app-header-nav a {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  font-size: 0.9375rem;
+  font-weight: 500;
+  color: var(--ah-icon);
+  text-decoration: none;
+  white-space: nowrap;
+}
+.app-header-nav a:hover { background: var(--ah-hover); color: var(--ah-text); text-decoration: none; }
+.app-header-nav a.is-active { background: var(--ah-primary-subtle); color: var(--ah-primary); }
+.app-header-nav a.btn-primary { background: var(--ah-primary); color: #fff; }
+
+/* User menu */
+.app-user { position: relative; margin-left: auto; flex: none; }
+.app-user-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  height: 44px;
+  padding: 0 14px;
+  border: 1px solid var(--ah-border-strong);
+  border-radius: 999px;
+  background: var(--ah-surface);
+  color: var(--ah-text);
+  font: inherit;
+  font-size: 0.9375rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+.app-user-button:hover { background: var(--ah-hover); }
+.app-user-button:focus-visible { outline: none; box-shadow: 0 0 0 3px rgba(29, 78, 216, 0.25); }
+.app-user-button[aria-expanded="true"] { background: var(--ah-primary-subtle); border-color: var(--ah-primary-border); }
+.app-user-button .app-menu-icon { width: 18px; height: 18px; color: var(--ah-icon); }
+.app-user-chevron { display: inline-flex; transition: transform 0.15s; }
+.app-user-chevron .app-menu-icon { width: 15px; height: 15px; }
+.app-user-button[aria-expanded="true"] .app-user-chevron { transform: rotate(180deg); }
+
+.app-user-menu {
+  position: absolute;
+  top: calc(100% + 13px);
+  right: 0;
+  width: 296px;
+  max-width: calc(100vw - 32px);
+  background: var(--ah-surface);
+  border: 1px solid var(--ah-border);
+  border-radius: 12px;
+  box-shadow: 0 12px 32px rgba(16, 24, 40, 0.12), 0 2px 6px rgba(16, 24, 40, 0.05);
+  overflow: hidden;
+}
+.app-user-menu[hidden] { display: none; }
+.app-user-head { padding: 15px 22px 12px; border-bottom: 1px solid var(--ah-border); }
+.app-user-head-name { margin: 0; font-size: 0.9375rem; font-weight: 700; color: var(--ah-text); overflow-wrap: anywhere; }
+.app-user-head-email { margin: 1px 0 0; font-size: 0.8125rem; color: var(--ah-text-secondary); overflow-wrap: anywhere; }
+
+.app-user-list { list-style: none; margin: 0; padding: 6px 8px; }
+.app-user-list--end { border-top: 1px solid var(--ah-border); padding-top: 8px; padding-bottom: 8px; }
+.app-user-item {
+  display: flex;
+  align-items: center;
+  gap: 13px;
+  min-height: 44px;
+  padding: 0 14px;
+  border-radius: 8px;
+  color: var(--ah-text);
+  font-size: 0.9375rem;
+  text-decoration: none;
+}
+.app-user-item:hover { background: var(--ah-hover); color: var(--ah-text); text-decoration: none; }
+.app-user-item:focus-visible { outline: none; box-shadow: inset 0 0 0 2px var(--ah-primary); }
+.app-user-item .app-menu-icon { width: 17px; height: 17px; color: var(--ah-icon); flex: none; }
+.app-user-item.is-current { background: var(--ah-primary-subtle); color: var(--ah-primary); font-weight: 600; }
+.app-user-item.is-current .app-menu-icon { color: var(--ah-primary); }
+.app-user-check { margin-left: auto; display: inline-flex; }
+.app-user-check .app-menu-icon { width: 15px; height: 15px; }
+.app-user-item--logout,
+.app-user-item--logout .app-menu-icon { color: var(--ah-danger); }
+.app-user-item--logout:hover { background: #fef3f2; color: var(--ah-danger); }
+
+@media (max-width: 1100px) {
+  .app-header-inner { gap: 24px; }
+}
+
+@media (max-width: 767px) {
+  .app-header { --ah-gutter: 16px; }
+  .app-header-inner { flex-wrap: wrap; gap: 8px 12px; padding: 10px 0; }
+  .app-header-nav { order: 3; flex-basis: 100%; flex-wrap: nowrap; overflow-x: auto; padding: 0 0 2px; }
+  /* Icon only on phones; the button keeps its accessible name. */
+  .app-user-name {
+    position: absolute; width: 1px; height: 1px; overflow: hidden;
+    clip: rect(0, 0, 0, 0); white-space: nowrap;
+  }
+  .app-user-button { width: 44px; padding: 0; justify-content: center; }
+  .app-user-chevron { display: none; }
+}

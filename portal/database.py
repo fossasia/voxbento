@@ -20,22 +20,25 @@ import logging
 import secrets
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import sqlalchemy as sa
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import joinedload, selectinload
 
 from portal.config import settings
 from portal.models import (
+    HOSTING_REQUEST_OPEN,
     AuthToken,
     Base,
     BoothMembership,
     DBBooth,
+    DeveloperAccount,
     Event,
     EventAPIKey,
     EventMembership,
+    HostingRequest,
     InviteToken,
     Room,
     RoomMembership,
@@ -65,10 +68,13 @@ def _get_engine():
 
         if settings.database_url.startswith("sqlite"):
             from sqlalchemy import event
+
             @event.listens_for(_engine.sync_engine, "connect")
             def set_sqlite_pragma(dbapi_connection, connection_record):
                 cursor = dbapi_connection.cursor()
                 cursor.execute("PRAGMA foreign_keys=ON")
+                cursor.execute("PRAGMA busy_timeout=5000")
+                cursor.execute("PRAGMA journal_mode=WAL")
                 cursor.close()
 
         _async_session_factory = async_sessionmaker(_engine, expire_on_commit=False)
@@ -93,10 +99,13 @@ def configure(url: str, *, echo: bool = False) -> None:
 
     if url.startswith("sqlite"):
         from sqlalchemy import event
+
         @event.listens_for(_engine.sync_engine, "connect")
         def set_sqlite_pragma(dbapi_connection, connection_record):
             cursor = dbapi_connection.cursor()
             cursor.execute("PRAGMA foreign_keys=ON")
+            cursor.execute("PRAGMA busy_timeout=5000")
+            cursor.execute("PRAGMA journal_mode=WAL")
             cursor.close()
 
     _async_session_factory = async_sessionmaker(_engine, expire_on_commit=False)
@@ -149,11 +158,28 @@ async def drop_db() -> None:
 # ---------------------------------------------------------------------------
 
 
-async def create_event(session: AsyncSession, *, slug: str, display_name: str) -> Event:
+async def create_event(
+    session: AsyncSession,
+    *,
+    slug: str,
+    display_name: str,
+    owner_user_id: int | None = None,
+) -> Event:
     ev = Event(slug=slug, display_name=display_name)
     session.add(ev)
     await session.flush()
+    if owner_user_id is not None:
+        membership = EventMembership(
+            event_id=ev.id,
+            user_id=owner_user_id,
+            role="event_owner",
+        )
+        session.add(membership)
+        await session.flush()
     return ev
+
+
+create_event_with_owner = create_event
 
 
 async def get_event_by_slug(session: AsyncSession, slug: str) -> Event | None:
@@ -166,10 +192,27 @@ async def get_event_by_id(session: AsyncSession, event_id: int) -> Event | None:
     return result.scalar_one_or_none()
 
 
-async def count_events(session: AsyncSession, *, allowed_event_ids: set[int] | None = None) -> int:
+def escape_event_search_term(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+async def count_events(
+    session: AsyncSession,
+    *,
+    allowed_event_ids: set[int] | None = None,
+    search: str | None = None,
+) -> int:
     stmt = select(func.count(Event.id)).where(Event.deleted_at.is_(None))
     if allowed_event_ids is not None:
         stmt = stmt.where(Event.id.in_(allowed_event_ids))
+    if search:
+        search_pattern = f"%{escape_event_search_term(search)}%"
+        stmt = stmt.where(
+            or_(
+                Event.slug.ilike(search_pattern, escape="\\"),
+                Event.display_name.ilike(search_pattern, escape="\\"),
+            )
+        )
     result = await session.execute(stmt)
     return result.scalar_one()
 
@@ -180,10 +223,19 @@ async def list_events(
     limit: int = 100,
     offset: int = 0,
     allowed_event_ids: set[int] | None = None,
+    search: str | None = None,
 ) -> list[Event]:
     stmt = select(Event).where(Event.deleted_at.is_(None)).order_by(Event.created_at)
     if allowed_event_ids is not None:
         stmt = stmt.where(Event.id.in_(allowed_event_ids))
+    if search:
+        search_pattern = f"%{escape_event_search_term(search)}%"
+        stmt = stmt.where(
+            or_(
+                Event.slug.ilike(search_pattern, escape="\\"),
+                Event.display_name.ilike(search_pattern, escape="\\"),
+            )
+        )
     result = await session.execute(stmt.limit(limit).offset(offset))
     return list(result.scalars().all())
 
@@ -260,7 +312,6 @@ async def list_rooms_for_event(
 
     result = await session.execute(query)
     return list(result.scalars().all())
-
 
 
 async def delete_room(session: AsyncSession, room_id: int) -> bool:
@@ -488,12 +539,22 @@ async def create_user(
     display_name: str,
     password_hash: str | None = None,
     email_verified: bool = False,
+    is_admin: bool = False,
+    is_active: bool = True,
+    can_host: bool = False,
+    hosting_requested_at: datetime | None = None,
+    hosting_revoked_at: datetime | None = None,
 ) -> User:
     user = User(
         email=email.strip().lower(),
         display_name=display_name.strip(),
         password_hash=password_hash,
         email_verified=email_verified,
+        is_admin=is_admin,
+        is_active=is_active,
+        can_host=can_host,
+        hosting_requested_at=hosting_requested_at,
+        hosting_revoked_at=hosting_revoked_at,
     )
     session.add(user)
     await session.flush()
@@ -506,6 +567,8 @@ async def update_user(
     *,
     password_hash: str | None = None,
     email_verified: bool | None = None,
+    is_admin: bool | None = None,
+    is_active: bool | None = None,
 ) -> User | None:
     user = await get_user_by_id(session, user_id)
     if user:
@@ -513,6 +576,10 @@ async def update_user(
             user.password_hash = password_hash
         if email_verified is not None:
             user.email_verified = email_verified
+        if is_admin is not None:
+            user.is_admin = is_admin
+        if is_active is not None:
+            user.is_active = is_active
         await session.flush()
     return user
 
@@ -529,12 +596,52 @@ async def get_user_by_id(session: AsyncSession, user_id: int) -> User | None:
     return result.scalar_one_or_none()
 
 
-async def count_users(session: AsyncSession, search: str | None = None) -> int:
-    stmt = select(func.count(User.id))
+# "Show" filter on the Admin Users page (#765).
+USER_FILTERS = {
+    "all": None,
+    "admins": User.is_admin.is_(True),
+    "hosting": User.can_host.is_(True),
+    "deactivated": User.is_active.is_(False),
+    "unverified": User.email_verified.is_(False),
+}
+
+
+def _user_list_conditions(search: str | None, show: str | None) -> list:
+    conditions = []
     if search:
-        stmt = stmt.where(or_(User.email.ilike(f"%{search}%"), User.display_name.ilike(f"%{search}%")))
+        search_pattern = f"%{escape_event_search_term(search)}%"
+        conditions.append(
+            or_(
+                User.email.ilike(search_pattern, escape="\\"),
+                User.display_name.ilike(search_pattern, escape="\\"),
+            )
+        )
+    show_condition = USER_FILTERS.get(show or "all")
+    if show_condition is not None:
+        conditions.append(show_condition)
+    return conditions
+
+
+async def count_users(session: AsyncSession, search: str | None = None, show: str | None = None) -> int:
+    stmt = select(func.count(User.id)).where(*_user_list_conditions(search, show))
     result = await session.execute(stmt)
     return result.scalar_one()
+
+
+async def count_active_admins(session: AsyncSession) -> int:
+    stmt = select(func.count(User.id)).where(User.is_admin.is_(True), User.is_active.is_(True))
+    return (await session.execute(stmt)).scalar_one()
+
+
+USER_SORT_COLUMNS = {
+    "id": User.id,
+    "email": User.email,
+    "display_name": User.display_name,
+    "is_admin": User.is_admin,
+    "email_verified": User.email_verified,
+    "is_active": User.is_active,
+    "created_at": User.created_at,
+}
 
 
 async def list_users(
@@ -545,13 +652,11 @@ async def list_users(
     search: str | None = None,
     sort_by: str = "created_at",
     sort_order: str = "asc",
+    show: str | None = None,
 ) -> list[User]:
-    stmt = select(User)
+    stmt = select(User).where(*_user_list_conditions(search, show))
 
-    if search:
-        stmt = stmt.where(or_(User.email.ilike(f"%{search}%"), User.display_name.ilike(f"%{search}%")))
-
-    sort_column = getattr(User, sort_by, User.created_at)
+    sort_column = USER_SORT_COLUMNS.get(sort_by, User.created_at)
     # Tie-break on id so rows sharing a sort value keep a stable order across pages.
     if sort_order == "desc":
         order_by = (sort_column.desc(), User.id.desc())
@@ -580,6 +685,109 @@ async def delete_user(session: AsyncSession, user_id: int) -> bool:
     await session.delete(user)
     await session.flush()
     return True
+
+
+async def get_developer_account(session: AsyncSession, user_id: int) -> DeveloperAccount | None:
+    stmt = select(DeveloperAccount).where(DeveloperAccount.user_id == user_id).order_by(DeveloperAccount.id.desc())
+    return (await session.execute(stmt.limit(1))).scalars().first()
+
+
+async def has_approved_developer_app(session: AsyncSession, user_id: int) -> bool:
+    stmt = select(DeveloperAccount.id).where(
+        DeveloperAccount.user_id == user_id,
+        DeveloperAccount.status == "approved",
+    )
+    return (await session.execute(stmt.limit(1))).first() is not None
+
+
+# ---------------------------------------------------------------------------
+# HostingRequest CRUD
+# ---------------------------------------------------------------------------
+
+
+async def create_hosting_request(
+    session: AsyncSession,
+    *,
+    user_id: int,
+    organization: str,
+    event_name: str,
+    languages: str,
+    event_starts_on: date | None = None,
+    event_ends_on: date | None = None,
+    message: str = "",
+) -> HostingRequest:
+    hosting_request = HostingRequest(
+        user_id=user_id,
+        organization=organization,
+        event_name=event_name,
+        languages=languages,
+        event_starts_on=event_starts_on,
+        event_ends_on=event_ends_on,
+        message=message,
+    )
+    session.add(hosting_request)
+    await session.flush()
+    return hosting_request
+
+
+async def get_hosting_request(session: AsyncSession, request_id: int) -> HostingRequest | None:
+    stmt = select(HostingRequest).options(joinedload(HostingRequest.user)).where(HostingRequest.id == request_id)
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
+async def get_open_hosting_request(session: AsyncSession, user_id: int) -> HostingRequest | None:
+    stmt = select(HostingRequest).options(joinedload(HostingRequest.user)).where(
+        HostingRequest.user_id == user_id,
+        HostingRequest.status == HOSTING_REQUEST_OPEN,
+    )
+    return (await session.execute(stmt)).scalars().first()
+
+
+async def list_open_hosting_requests(session: AsyncSession) -> list[HostingRequest]:
+    """Open hosting requests, newest first, with the requesting user loaded."""
+    stmt = (
+        select(HostingRequest)
+        .options(joinedload(HostingRequest.user))
+        .where(HostingRequest.status == HOSTING_REQUEST_OPEN)
+        .order_by(HostingRequest.created_at.desc(), HostingRequest.id.desc())
+    )
+    return list((await session.execute(stmt)).scalars().all())
+
+
+async def count_open_hosting_requests(session: AsyncSession) -> int:
+    stmt = select(func.count(HostingRequest.id)).where(HostingRequest.status == HOSTING_REQUEST_OPEN)
+    return (await session.execute(stmt)).scalar_one()
+
+
+async def close_hosting_request(
+    session: AsyncSession,
+    hosting_request: HostingRequest,
+    *,
+    status: str,
+    decided_by_user_id: int | None,
+    decline_reason: str | None = None,
+) -> None:
+    """Record the outcome of an open request and clear the user's pending flag."""
+    hosting_request.status = status
+    hosting_request.decided_by_user_id = decided_by_user_id
+    hosting_request.decided_at = utc_now()
+    hosting_request.decline_reason = decline_reason
+    if hosting_request.user is not None:
+        hosting_request.user.hosting_requested_at = None
+    await session.flush()
+
+
+async def close_open_hosting_request(
+    session: AsyncSession,
+    user_id: int,
+    *,
+    status: str,
+    decided_by_user_id: int | None,
+) -> None:
+    """Close the user's open request, if any, when access is decided elsewhere."""
+    hosting_request = await get_open_hosting_request(session, user_id)
+    if hosting_request is not None:
+        await close_hosting_request(session, hosting_request, status=status, decided_by_user_id=decided_by_user_id)
 
 
 # ---------------------------------------------------------------------------
@@ -790,11 +998,13 @@ async def revoke_invite_token(session: AsyncSession, token_str: str) -> InviteTo
 async def create_auth_token(
     session: AsyncSession,
     *,
-    jti: str,
     user_id: int,
     token_type: str,
+    jti: str | None = None,
     expires_in_seconds: int = 900,
 ) -> AuthToken:
+    if jti is None:
+        jti = generate_token()
     expires_at = datetime.now(tz=timezone.utc) + timedelta(seconds=expires_in_seconds)
     tok = AuthToken(
         jti=jti,
@@ -805,6 +1015,35 @@ async def create_auth_token(
     session.add(tok)
     await session.flush()
     return tok
+
+
+async def revoke_auth_token(session: AsyncSession, *, jti: str) -> None:
+    """Invalidate one unused auth token by its identifier."""
+    await session.execute(
+        sa.update(AuthToken)
+        .where(AuthToken.jti == jti, AuthToken.used_at.is_(None))
+        .values(used_at=datetime.now(tz=timezone.utc))
+    )
+    await session.flush()
+
+
+async def revoke_auth_tokens(
+    session: AsyncSession,
+    *,
+    user_id: int,
+    token_type: str,
+    exclude_jti: str | None = None,
+) -> None:
+    """Invalidate unused auth tokens, optionally preserving one token."""
+    conditions = [
+        AuthToken.user_id == user_id,
+        AuthToken.token_type == token_type,
+        AuthToken.used_at.is_(None),
+    ]
+    if exclude_jti is not None:
+        conditions.append(AuthToken.jti != exclude_jti)
+    await session.execute(sa.update(AuthToken).where(*conditions).values(used_at=datetime.now(tz=timezone.utc)))
+    await session.flush()
 
 
 async def get_auth_token(session: AsyncSession, jti: str) -> AuthToken | None:
@@ -911,14 +1150,18 @@ async def get_api_keys_for_event(session: AsyncSession, event_id: int) -> list[E
 
 
 async def revoke_api_key(session: AsyncSession, key_id: int, event_id: int) -> bool:
-    stmt = select(EventAPIKey).where(EventAPIKey.id == key_id, EventAPIKey.event_id == event_id)
+    stmt = (
+        update(EventAPIKey)
+        .where(
+            EventAPIKey.id == key_id,
+            EventAPIKey.event_id == event_id,
+            EventAPIKey.active.is_(True),
+        )
+        .values(active=False)
+    )
     result = await session.execute(stmt)
-    key = result.scalar_one_or_none()
-    if key:
-        key.active = False
-        await session.flush()
-        return True
-    return False
+    await session.flush()
+    return result.rowcount == 1
 
 
 async def verify_api_key(session: AsyncSession, raw_key: str) -> EventAPIKey | None:
@@ -943,10 +1186,12 @@ async def log_usage_metric(session: AsyncSession, event_id: int, metric_name: st
     await session.flush()
 
 
-async def get_booth_language_name(booth_id: str) -> str:
+async def get_booth_language_name(booth_id: str) -> str | None:
     """Resolve the real language name for a booth_id from the database.
 
-    Returns 'English' as a fallback if the booth is not found or parsing fails.
+    Returns ``None`` if the booth is not found in the database or if
+    ``booth_id`` cannot be parsed. Callers must handle ``None`` explicitly
+    rather than assuming a default language.
     """
     from sqlalchemy import select
 
@@ -955,6 +1200,10 @@ async def get_booth_language_name(booth_id: str) -> str:
 
     try:
         event_slug, room_id, language_code = parse_booth_id(booth_id)
+    except ValueError:
+        return None
+
+    try:
         async with get_session() as db_session:
             stmt = (
                 select(DBBooth.language_name)
@@ -964,6 +1213,7 @@ async def get_booth_language_name(booth_id: str) -> str:
             res = await db_session.scalar(stmt)
             if res:
                 return res
-    except Exception:
-        pass
-    return "English"
+    except Exception as exc:
+        logger.warning("Database error while resolving language for booth '%s': %s", booth_id, exc, exc_info=True)
+        return None
+    return None

@@ -60,6 +60,7 @@ const elements = {
   toggleMic: document.getElementById('toggle-mic'),
   handoverBtn: document.getElementById('handover-btn'),
   handoverLabel: document.getElementById('handover-label'),
+  handoverAnnouncer: document.getElementById('handover-announcer'),
   liveBadge: document.getElementById('live-badge'),
   liveBadgeText: document.getElementById('live-badge-text'),
   passRelay: document.getElementById('pass-relay'),
@@ -206,6 +207,8 @@ function handleServerMessage(data) {
     joinMonitoringFeed()
     render()
     showError('')
+  } else if (type === 'booth:publish-ticket') {
+    settlePublishTicket(data)
   } else if (type === 'booth:state') {
     applyBoothState(data.state)
     render()
@@ -1048,11 +1051,48 @@ async function toggleMicMute() {
 
 // ── Ingest helpers ────────────────────────────────────────────────────────────
 
+// MediaMTX only accepts a booth publish carrying a single-use ticket that the
+// server issues to the active interpreter over the booth WebSocket (#783).
+const PUBLISH_TICKET_TIMEOUT_MS = 5000
+let pendingPublishTicket = null
+
+/** Ask the server for a single-use WHIP ticket; resolves with the ticket string. */
+function requestPublishTicket() {
+  return new Promise((resolve, reject) => {
+    if (pendingPublishTicket) {
+      clearTimeout(pendingPublishTicket.timer)
+      pendingPublishTicket.reject(new Error('Publish ticket request superseded'))
+    }
+    const timer = window.setTimeout(() => {
+      pendingPublishTicket = null
+      reject(new Error('Timed out waiting for a publish ticket'))
+    }, PUBLISH_TICKET_TIMEOUT_MS)
+    pendingPublishTicket = { resolve, reject, timer }
+    if (!wsSend({ type: 'booth:request-publish-ticket' })) {
+      clearTimeout(timer)
+      pendingPublishTicket = null
+      reject(new Error('Not connected to server'))
+    }
+  })
+}
+
+/** Resolve or reject the pending ticket request from a `booth:publish-ticket` reply. */
+function settlePublishTicket(data) {
+  if (!pendingPublishTicket) return
+  const { resolve, reject, timer } = pendingPublishTicket
+  pendingPublishTicket = null
+  clearTimeout(timer)
+  if (data.ticket) resolve(data.ticket)
+  else reject(new Error(data.error || 'Publish ticket refused'))
+}
+
+/** POST the local SDP offer to MediaMTX with a fresh publish ticket and apply the answer. */
 async function doWhipIngest(peerConnection) {
   const whipUrl = `${state.whipBase}/${encodeURIComponent(state.channelId)}/whip`
+  const ticket = await requestPublishTicket()
   const response = await fetch(whipUrl, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/sdp' },
+    headers: { 'Content-Type': 'application/sdp', Authorization: `Bearer ${ticket}` },
     body: peerConnection.localDescription.sdp,
   })
   if (!response.ok) {
@@ -1435,6 +1475,7 @@ function renderHandoverButton() {
     elements.handoverBtn.disabled = true
     elements.handoverBtn.className = 'header-btn header-btn--handover state-grey'
     elements.handoverLabel.textContent = 'PASS MIC'
+    setTextIfChanged(elements.handoverAnnouncer, '')
     return
   }
 
@@ -1483,6 +1524,16 @@ function renderHandoverButton() {
       elements.handoverBtn.disabled = true
     }
   }
+
+  // The flashing button is the only cue that the boothmate wants a handover,
+  // so put it into words for screen reader users as well.
+  let handoverMessage = ''
+  if (elements.handoverBtn.classList.contains('state-flash-yellow')) {
+    handoverMessage = isActive
+      ? 'Your boothmate is asking for the mic. Press Pass mic to hand it over.'
+      : 'Your boothmate is offering you the mic. Press Take over to accept.'
+  }
+  setTextIfChanged(elements.handoverAnnouncer, handoverMessage)
 }
 
 /** Update the LIVE / OFF LIVE / STANDBY badge in the header */
@@ -1491,17 +1542,17 @@ function renderLiveBadge() {
   if (state.ingestConnected) {
     elements.liveBadge.classList.remove('off', 'standby')
     elements.liveBadge.classList.add('on')
-    if (elements.liveBadgeText) elements.liveBadgeText.textContent = 'LIVE'
+    setTextIfChanged(elements.liveBadgeText, 'LIVE')
   } else if (state.broadcastUnlocked && state.joined && state.activeInterpreterId === state.participantId) {
     // Coordinator has unlocked this booth and we are the active interpreter —
     // show STANDBY so the interpreter knows they are cleared to go live.
     elements.liveBadge.classList.remove('off', 'on')
     elements.liveBadge.classList.add('standby')
-    if (elements.liveBadgeText) elements.liveBadgeText.textContent = 'STANDBY'
+    setTextIfChanged(elements.liveBadgeText, 'STANDBY')
   } else {
     elements.liveBadge.classList.remove('on', 'standby')
     elements.liveBadge.classList.add('off')
-    if (elements.liveBadgeText) elements.liveBadgeText.textContent = 'OFF LIVE'
+    setTextIfChanged(elements.liveBadgeText, 'OFF LIVE')
   }
 }
 
@@ -1509,13 +1560,27 @@ function renderLiveBadge() {
 
 function setBadge(element, text, tone = '') {
   if (!element) return
-  element.textContent = text
+  setTextIfChanged(element, text)
   element.classList.remove('success', 'warning', 'danger')
   if (tone) element.classList.add(tone)
 }
 
+/** Write text only when it changes, so live regions don't announce it twice. */
+function setTextIfChanged(element, text) {
+  if (element && element.textContent !== text) element.textContent = text
+}
+
 function showError(message) {
+  const isNew = message && elements.errorBanner.textContent !== message
+  // The banner lives in the Audio Setup panel, which starts collapsed. Open it
+  // before writing the text, so the alert is in the accessibility tree when it
+  // changes and screen readers announce it.
+  const panel = elements.errorBanner.closest('details')
+  if (message && panel) panel.open = true
   elements.errorBanner.textContent = message
+  // The panel sits at the bottom of the sidebar, so bring a new error into
+  // view, but don't keep pulling the page there when the same error repeats.
+  if (isNew) elements.errorBanner.scrollIntoView({ block: 'nearest' })
 }
 
 function waitForIceGathering(peerConnection) {

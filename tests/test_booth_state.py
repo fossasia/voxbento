@@ -126,6 +126,22 @@ async def test_standby_interpreter_cannot_mark_ingest_connected():
 
 
 @pytest.mark.anyio
+async def test_update_state_rejects_non_boolean_flag():
+    registry = BoothRegistry()
+    interpreter = await join(registry, "Interpreter A")
+
+    # A truthy non-boolean (e.g. 1 or "true") must not slip past the publisher checks.
+    with pytest.raises(ValueError):
+        await registry.update_participant_state(
+            "hall-1-fr",
+            interpreter.participant_id,
+            "French",
+            "hall-1-fr-audio",
+            mic_active=1,
+        )
+
+
+@pytest.mark.anyio
 async def test_coordinator_can_assign_active_interpreter():
     registry = BoothRegistry()
     await join(registry, "Interpreter A")
@@ -764,3 +780,63 @@ async def test_an_interpreter_can_still_take_over_an_offered_mic():
     state = await registry.accept_handoff("hall-1-fr", passive.participant_id, "French", "hall-1-fr-audio")
 
     assert state["active_interpreter_id"] == passive.participant_id
+
+
+# ── Ingest status on leave ───────────────────────────────────────────────────
+
+
+async def go_live(registry, participant):
+    return await registry.update_participant_state(
+        BOOTH[0], participant.participant_id, *BOOTH[1:], mic_active=True, ingest_connected=True
+    )
+
+
+@pytest.mark.anyio
+async def test_booth_is_not_live_after_the_publishing_interpreter_leaves():
+    registry = BoothRegistry()
+    active = await join(registry, "Interpreter A")
+    passive = await join(registry, "Interpreter B")
+    await go_live(registry, active)
+
+    state = await registry.leave_participant(BOOTH[0], active.participant_id, *BOOTH[1:])
+
+    assert state["active_interpreter_id"] == passive.participant_id
+    assert state["ingest_status"] == "disconnected"
+
+
+@pytest.mark.anyio
+async def test_booth_stays_live_when_a_passive_interpreter_leaves():
+    registry = BoothRegistry()
+    active = await join(registry, "Interpreter A")
+    passive = await join(registry, "Interpreter B")
+    await go_live(registry, active)
+
+    state = await registry.leave_participant(BOOTH[0], passive.participant_id, *BOOTH[1:])
+
+    assert state["active_interpreter_id"] == active.participant_id
+    assert state["ingest_status"] == "connected"
+
+
+@pytest.mark.anyio
+async def test_booth_is_not_live_after_the_last_publisher_leaves():
+    registry = BoothRegistry()
+    active = await join(registry, "Interpreter A")
+    await go_live(registry, active)
+
+    state = await registry.leave_participant(BOOTH[0], active.participant_id, *BOOTH[1:])
+
+    assert state["participants"] == []
+    assert state["ingest_status"] == "disconnected"
+
+
+@pytest.mark.anyio
+async def test_a_non_publisher_leaving_keeps_an_overloaded_status():
+    registry = BoothRegistry()
+    active = await join(registry, "Interpreter A")
+    passive = await join(registry, "Interpreter B")
+    await go_live(registry, active)
+    registry.get_booth_sync(BOOTH[0]).ingest_status = "overloaded"
+
+    state = await registry.leave_participant(BOOTH[0], passive.participant_id, *BOOTH[1:])
+
+    assert state["ingest_status"] == "overloaded"

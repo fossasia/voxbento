@@ -12,7 +12,7 @@
 const config = window.MISSION_CONTROL_CONFIG;
 const roomsContainer = document.getElementById('rooms-container');
 
-/** @type {Map<string, {state:object, ws:WebSocket|null, whep:object|null, audioElement:HTMLAudioElement|null, currentVolume:number}>} */
+/** @type {Map<string, {state:object, ws:WebSocket|null, whep:object|null, audioElement:HTMLAudioElement|null, currentVolume:number, pendingFocusId:string}>} */
 const boothMap = new Map();
 
 function init() {
@@ -68,6 +68,7 @@ function init() {
       whep: null,
       audioElement: null,
       currentVolume: 0,
+      pendingFocusId: '',
     });
     renderCard(b.booth_id);
     connectWs(b.booth_id);
@@ -198,6 +199,15 @@ function renderCard(boothId) {
     isDisabled = true;
   }
 
+  const active = document.activeElement;
+  let focusedId = '';
+  if (card.contains(active)) {
+    focusedId = active.id;
+  } else if (active === document.body) {
+    focusedId = entry.pendingFocusId;
+  }
+  entry.pendingFocusId = '';
+
   card.innerHTML = '';
 
   const headerDiv = document.createElement('div');
@@ -324,6 +334,13 @@ function renderCard(boothId) {
   btn.addEventListener('click', () => {
     setBroadcastLive(boothId, !isLive);
   });
+
+  const focusTarget = focusedId ? document.getElementById(focusedId) : null;
+  if (focusTarget && !focusTarget.disabled) {
+    focusTarget.focus({ preventScroll: true });
+  } else if (focusTarget) {
+    entry.pendingFocusId = focusedId;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -337,5 +354,14 @@ function showToast(msg, type = 'info') {
   document.body.appendChild(t);
   setTimeout(() => t.remove(), 4000);
 }
+
+document.addEventListener('focusin', (e) => {
+  boothMap.forEach((entry, boothId) => {
+    const card = document.getElementById(`mc-card-${boothId}`);
+    if (!card || !card.contains(e.target)) {
+      entry.pendingFocusId = '';
+    }
+  });
+});
 
 document.addEventListener('DOMContentLoaded', init);

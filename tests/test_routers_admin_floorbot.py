@@ -9,9 +9,8 @@ from httpx import ASGITransport, AsyncClient
 from fastapi_app import app
 
 os.environ["BOOTH_ACCESS_TOKEN"] = ""
-os.environ["ADMIN_PASSWORD"] = "test-admin-pass"
 
-from portal.auth import create_admin_token, create_user_token
+from portal.auth import create_user_token
 
 
 @pytest.fixture(autouse=True)
@@ -68,15 +67,15 @@ async def _set_membership(user_id, event_id=None, room_id=None, role="event_owne
 
 
 @pytest.mark.anyio
-@patch('portal.routers.admin.start_transcription_worker')
-@patch('portal.routers.admin.stop_transcription_worker')
+@patch('portal.meeting_source.start_transcription_worker')
+@patch('portal.meeting_source.stop_transcription_worker')
 async def test_event_owner_can_start_stop_status(mock_stop, mock_start, client, setup_db):
     user = await _create_user()
     ev, rm = await _create_event_room()
     await _set_membership(user.id, event_id=ev.id, role="event_owner")
     token = create_user_token(user_id=user.id, email=user.email)
 
-    with patch("portal.routers.admin.get_http_client") as mock_http:
+    with patch("portal.meeting_source.get_http_client") as mock_http:
         from unittest.mock import AsyncMock
 
         mock_resp = MagicMock()
@@ -101,20 +100,22 @@ async def test_event_owner_can_start_stop_status(mock_stop, mock_start, client, 
 
 
 @pytest.mark.anyio
-@patch('portal.routers.admin.start_transcription_worker')
-@patch('portal.routers.admin.stop_transcription_worker')
+@patch('portal.meeting_source.start_transcription_worker')
+@patch('portal.meeting_source.stop_transcription_worker')
 async def test_room_coordinator_can_start_stop(mock_stop, mock_start, client, setup_db):
     user = await _create_user()
     ev, rm = await _create_event_room()
     await _set_membership(user.id, room_id=rm.id, role="room_coordinator")
     token = create_user_token(user_id=user.id, email=user.email)
 
-    with patch("portal.routers.admin.get_http_client") as mock_http:
+    with patch("portal.meeting_source.get_http_client") as mock_http:
         from unittest.mock import AsyncMock
 
         mock_resp = MagicMock()
+        mock_resp.json.return_value = {"active_rooms": {}}
         mock_client = AsyncMock()
         mock_client.post = AsyncMock(return_value=mock_resp)
+        mock_client.get = AsyncMock(return_value=mock_resp)
         mock_http.return_value = mock_client
         r = await client.post(f"/api/rooms/{rm.id}/floor-transcription/start", cookies={"user_token": token})
         assert r.status_code == 200
@@ -144,8 +145,8 @@ async def test_cross_event_leak_gets_403(client, setup_db):
 
 
 @pytest.mark.anyio
-@patch('portal.routers.admin.start_transcription_worker')
-@patch('portal.routers.admin.stop_transcription_worker')
+@patch('portal.meeting_source.start_transcription_worker')
+@patch('portal.meeting_source.stop_transcription_worker')
 async def test_super_admin_does_no_extra_query(mock_stop, mock_start, client, setup_db):
     user = await _create_user(is_admin=True)
     ev, rm = await _create_event_room()
@@ -153,12 +154,14 @@ async def test_super_admin_does_no_extra_query(mock_stop, mock_start, client, se
 
     # We will assert that only 2 queries happen in the dependency (fetch user, etc)
     # The short circuit means we shouldn't hit the `RoomMembership` OR query
-    with patch("portal.routers.admin.get_http_client") as mock_http:
+    with patch("portal.meeting_source.get_http_client") as mock_http:
         from unittest.mock import AsyncMock
 
         mock_resp = MagicMock()
+        mock_resp.json.return_value = {"active_rooms": {}}
         mock_client = AsyncMock()
         mock_client.post = AsyncMock(return_value=mock_resp)
+        mock_client.get = AsyncMock(return_value=mock_resp)
         mock_http.return_value = mock_client
         r = await client.post(f"/api/rooms/{rm.id}/floor-transcription/start", cookies={"user_token": token})
         assert r.status_code == 200
@@ -186,8 +189,9 @@ async def test_non_admin_missing_room_403(client, setup_db):
 
 @pytest.mark.anyio
 async def test_malformed_room_id_422(client, setup_db):
-    token = create_admin_token()
-    r = await client.post("/api/rooms/abc/floor-transcription/start", cookies={"admin_token": token})
+    user = await _create_user(is_admin=True)
+    token = create_user_token(user_id=user.id, email=user.email, is_admin=True)
+    r = await client.post("/api/rooms/abc/floor-transcription/start", cookies={"user_token": token})
     assert r.status_code == 422
 
     r = await client.post("/api/rooms/abc/floor-transcription/start")
@@ -208,7 +212,7 @@ async def test_downstream_failure_returns_502(client, setup_db):
     await _set_membership(user.id, event_id=ev.id, role="event_owner")
     token = create_user_token(user_id=user.id, email=user.email)
 
-    with patch("portal.routers.admin.get_http_client") as mock_http:
+    with patch("portal.meeting_source.get_http_client") as mock_http:
         from unittest.mock import AsyncMock
 
         from httpx import HTTPStatusError, Request, Response
@@ -216,13 +220,16 @@ async def test_downstream_failure_returns_502(client, setup_db):
         err = HTTPStatusError(
             "Error", request=Request("POST", "http://test"), response=Response(401, json={"detail": "Eventyay Revoked"})
         )
+        status_resp = MagicMock()
+        status_resp.json.return_value = {"active_rooms": {}}
         mock_client = AsyncMock()
+        mock_client.get = AsyncMock(return_value=status_resp)
         mock_client.post = AsyncMock(side_effect=err)
         mock_http.return_value = mock_client
 
         r = await client.post(f"/api/rooms/{rm.id}/floor-transcription/start", cookies={"user_token": token})
         assert r.status_code == 502
-        assert "Bot service connection failed or access was revoked upstream." in r.text
+        assert "meeting agent service is unreachable" in r.text
 
 
 @pytest.mark.anyio
@@ -237,20 +244,16 @@ async def test_privilege_escalation(client, setup_db):
 
 
 @pytest.mark.anyio
-@patch('portal.routers.admin.start_transcription_worker')
-@patch('portal.routers.admin.stop_transcription_worker')
-async def test_admin_token_without_user(mock_stop, mock_start, client, setup_db):
-    token = create_admin_token()
-    ev, rm = await _create_event_room()
-    with patch("portal.routers.admin.get_http_client") as mock_http:
-        from unittest.mock import AsyncMock
+async def test_legacy_admin_token_rejected(client, setup_db):
+    """Legacy admin_token without user_token must be rejected with 403."""
+    import jwt
 
-        mock_resp = MagicMock()
-        mock_client = AsyncMock()
-        mock_client.post = AsyncMock(return_value=mock_resp)
-        mock_http.return_value = mock_client
-        r = await client.post(f"/api/rooms/{rm.id}/floor-transcription/start", cookies={"admin_token": token})
-        assert r.status_code == 200
+    from portal.config import settings
+
+    token = jwt.encode({"admin": True}, settings.effective_jwt_secret, algorithm="HS256")
+    ev, rm = await _create_event_room()
+    r = await client.post(f"/api/rooms/{rm.id}/floor-transcription/start", cookies={"admin_token": token})
+    assert r.status_code == 403
 
 
 @pytest.mark.anyio

@@ -5,11 +5,10 @@ from __future__ import annotations
 import os
 
 os.environ.setdefault("BOOTH_ACCESS_TOKEN", "")
-os.environ.setdefault("ADMIN_PASSWORD", "test-admin-pass")
 
 import pytest
 
-from portal.auth import create_admin_token, create_user_token, hash_password
+from portal.auth import create_user_token, hash_password
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -57,15 +56,19 @@ async def _create_event(slug: str, name: str) -> object:
 
 @pytest.mark.anyio
 async def test_get_accessible_event_ids_super_admin_sees_all(setup_db):
-    """admin_token with admin=True → is_super_admin=True and allowed_event_ids=None."""
+    """An active admin user → is_super_admin=True and allowed_event_ids=None."""
     from portal.auth import get_accessible_event_ids
+    from portal.database import create_user, get_session
 
     await _create_event("ev1", "Event 1")
     await _create_event("ev2", "Event 2")
     await _create_event("ev3", "Event 3")
 
-    req = _make_request({"admin_token": create_admin_token()})
-    is_super_admin, allowed_event_ids = await get_accessible_event_ids(req, user_id=1)
+    async with get_session() as s:
+        admin = await create_user(s, email="admin@example.com", display_name="Admin", is_admin=True)
+
+    req = _make_request({"user_token": create_user_token(user_id=admin.id, email="admin@example.com", is_admin=True)})
+    is_super_admin, allowed_event_ids = await get_accessible_event_ids(req, user_id=admin.id)
 
     assert is_super_admin is True
     assert allowed_event_ids is None
@@ -73,16 +76,37 @@ async def test_get_accessible_event_ids_super_admin_sees_all(setup_db):
 
 @pytest.mark.anyio
 async def test_get_accessible_event_ids_user_is_admin_flag(setup_db):
-    """user_token with is_admin=True → is_super_admin=True."""
+    """An active admin user → is_super_admin=True, derived from the database."""
     from portal.auth import get_accessible_event_ids
+    from portal.database import create_user, get_session
 
     await _create_event("ev1", "Event 1")
-    token = create_user_token(user_id=99, email="admin@test.com", is_admin=True)
+    async with get_session() as s:
+        admin = await create_user(s, email="admin@test.com", display_name="Admin", is_admin=True)
+    token = create_user_token(user_id=admin.id, email="admin@test.com", is_admin=True)
     req = _make_request({"user_token": token})
-    is_super_admin, allowed_event_ids = await get_accessible_event_ids(req, user_id=99)
+    is_super_admin, allowed_event_ids = await get_accessible_event_ids(req, user_id=admin.id)
 
     assert is_super_admin is True
     assert allowed_event_ids is None
+
+
+@pytest.mark.anyio
+async def test_get_accessible_event_ids_stale_admin_claim_denied(setup_db):
+    """A token claiming is_admin for a non-admin/deleted user grants nothing.
+
+    The claim alone must never be authoritative: authorization is read from the
+    current database row, so a forged or stale ``is_admin`` claim is denied.
+    """
+    from portal.auth import get_accessible_event_ids
+
+    await _create_event("ev1", "Event 1")
+    # user_id=4242 does not exist in the database.
+    req = _make_request({"user_token": create_user_token(user_id=4242, email="ghost@test.com", is_admin=True)})
+    is_super_admin, allowed_event_ids = await get_accessible_event_ids(req, user_id=4242)
+
+    assert is_super_admin is False
+    assert allowed_event_ids == set()
 
 
 @pytest.mark.anyio

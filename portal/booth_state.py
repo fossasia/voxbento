@@ -15,6 +15,7 @@ from portal.booth_identity import (
     validate_instance,
     validate_language_code,
 )
+from portal.tasks import track_task
 
 ParticipantRole = Literal[
     "super_admin",
@@ -76,6 +77,12 @@ class Booth:
                 self.mediamtx_path = make_mediamtx_path(self.event_slug, self.room_id, self.language_code)
             if not self.channel_id:
                 self.channel_id = self.mediamtx_path
+
+    def refresh_ingest_status(self) -> None:
+        """Set ``ingest_status`` from whether any participant is still publishing."""
+        self.ingest_status = (
+            "connected" if any(p.ingest_connected for p in self.participants.values()) else "disconnected"
+        )
 
     def as_public_dict(self) -> dict:
         return {
@@ -216,9 +223,19 @@ class BoothRegistry:
         channel_id: str,
         participant_id: str | None = None,
         room_id: int | None = None,
+        *,
+        reclaim: bool = False,
     ) -> tuple[Participant, dict]:
+        """Add a participant, auto-assigning the active slot if it is free.
+
+        An ID already present in the booth is honoured only with ``reclaim``
+        (the caller's own socket already holds it); anyone else naming it gets a
+        fresh ID instead of taking over that record, e.g. the active interpreter's.
+        """
         async with self._lock:
             booth = self._get_or_create_booth(booth_id, language, channel_id, room_id=room_id)
+            if participant_id in booth.participants and not reclaim:
+                participant_id = None
             participant = Participant(
                 participant_id=participant_id or uuid4().hex,
                 display_name=display_name.strip() or "Interpreter",
@@ -250,6 +267,9 @@ class BoothRegistry:
             if was_active or participant_id == booth.handoff_initiator_id:
                 booth.handoff_state = "idle"
                 booth.handoff_initiator_id = None
+            # The booth is no longer live if the participant who left was the one publishing.
+            if participant.ingest_connected:
+                booth.refresh_ingest_status()
             if not booth.participants:
                 booth.ingest_status = "disconnected"
                 booth.handoff_state = "idle"
@@ -282,8 +302,10 @@ class BoothRegistry:
 
             import portal.webhooks.worker as _wh
 
-            asyncio.create_task(
-                _wh.enqueue_webhook("session.status_changed", {"booth_id": booth_id, "is_active": unlocked})
+            track_task(
+                asyncio.create_task(
+                    _wh.enqueue_webhook("session.status_changed", {"booth_id": booth_id, "is_active": unlocked})
+                )
             )
 
             return booth.as_public_dict()
@@ -319,9 +341,7 @@ class BoothRegistry:
                 p.ingest_connected = p.participant_id == target_id and p.ingest_connected
                 p.mic_active = p.participant_id == target_id and p.mic_active
                 p.updated_at = utc_now_iso()
-            booth.ingest_status = (
-                "connected" if any(p.ingest_connected for p in booth.participants.values()) else "disconnected"
-            )
+            booth.refresh_ingest_status()
             return booth.as_public_dict()
 
     async def initiate_handoff(
@@ -416,9 +436,7 @@ class BoothRegistry:
                 p.ingest_connected = p.participant_id == new_active and p.ingest_connected
                 p.mic_active = p.participant_id == new_active and p.mic_active
                 p.updated_at = utc_now_iso()
-            booth.ingest_status = (
-                "connected" if any(p.ingest_connected for p in booth.participants.values()) else "disconnected"
-            )
+            booth.refresh_ingest_status()
             return booth.as_public_dict()
 
     async def cancel_handoff(
@@ -481,6 +499,11 @@ class BoothRegistry:
             participant = booth.participants.get(participant_id)
             if participant is None:
                 raise ValueError("Participant does not exist in booth.")
+            # Reject non-boolean flags so a truthy value like 1 or "true" cannot slip
+            # past the publisher permission checks below (which compare with `is True`).
+            for name, value in (("mic_active", mic_active), ("ingest_connected", ingest_connected), ("connected", connected)):
+                if value is not None and not isinstance(value, bool):
+                    raise ValueError(f"{name} must be a boolean.")
             from portal.roles import Permission, has_permission
 
             wants_publisher_state = mic_active is True or ingest_connected is True
@@ -495,9 +518,7 @@ class BoothRegistry:
             if connected is not None:
                 participant.connected = connected
             participant.updated_at = utc_now_iso()
-            booth.ingest_status = (
-                "connected" if any(p.ingest_connected for p in booth.participants.values()) else "disconnected"
-            )
+            booth.refresh_ingest_status()
             return booth.as_public_dict()
 
     async def check_publish_permission(
