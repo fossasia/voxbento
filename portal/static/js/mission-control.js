@@ -183,8 +183,8 @@ function renderCard(boothId) {
   }
 
   // Interpreters and rows
-  const LIVE_ROLES = new Set(['interpreter', 'coordinator', 'event_admin', 'super_admin']);
-  const interpreters = (s.participants || []).filter(p => LIVE_ROLES.has(p.role));
+  // Everyone who can go live, as decided by the server (portal/roles.py).
+  const interpreters = (s.participants || []).filter((p) => p.can_go_live);
 
   // Broadcast control
   const isWsOpen = entry.ws && entry.ws.readyState === WebSocket.OPEN;

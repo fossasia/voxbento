@@ -48,6 +48,7 @@ from portal.models import (
     generate_token,
     utc_now,
 )
+from portal.roles import EVENT_OWNER
 
 logger = logging.getLogger(__name__)
 
@@ -172,7 +173,7 @@ async def create_event(
         membership = EventMembership(
             event_id=ev.id,
             user_id=owner_user_id,
-            role="event_owner",
+            role=EVENT_OWNER,
         )
         session.add(membership)
         await session.flush()
@@ -756,6 +757,12 @@ async def list_open_hosting_requests(session: AsyncSession) -> list[HostingReque
 
 async def count_open_hosting_requests(session: AsyncSession) -> int:
     stmt = select(func.count(HostingRequest.id)).where(HostingRequest.status == HOSTING_REQUEST_OPEN)
+    return (await session.execute(stmt)).scalar_one()
+
+
+async def count_pending_developer_accounts(session: AsyncSession) -> int:
+    """Developer API applications waiting for an Admin to approve or reject them."""
+    stmt = select(func.count(DeveloperAccount.id)).where(DeveloperAccount.status == "pending")
     return (await session.execute(stmt)).scalar_one()
 
 

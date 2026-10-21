@@ -2,8 +2,9 @@
 // changed in place like Eventyay's admin users page. Without JavaScript each
 // switch is a plain form that posts and reloads.
 
+import { confirmBeforeSubmit, confirmChange } from './confirm-dialog.js';
+
 const live = document.querySelector('[data-users-live]');
-const dialog = document.querySelector('[data-users-confirm]');
 
 function announce(message, kind = 'success') {
   if (!live) return;
@@ -14,19 +15,6 @@ function announce(message, kind = 'success') {
   live.append(note);
   clearTimeout(announce.timer);
   announce.timer = setTimeout(() => note.remove(), 6000);
-}
-
-function confirmChange(message) {
-  if (!message) return Promise.resolve(true);
-  if (!dialog || typeof dialog.showModal !== 'function') return Promise.resolve(window.confirm(message));
-  dialog.querySelector('[data-confirm-text]').textContent = message;
-  // Escape closes the dialog without setting returnValue, so clear the previous answer.
-  dialog.returnValue = '';
-  return new Promise((resolve) => {
-    dialog.addEventListener('close', () => resolve(dialog.returnValue === 'confirm'), { once: true });
-    dialog.showModal();
-    dialog.querySelector('[data-confirm-ok]')?.focus();
-  });
 }
 
 function setSwitch(form, on) {
@@ -122,13 +110,4 @@ document.querySelectorAll('[data-open-dialog]').forEach((btn) => {
 });
 
 // User page buttons that need a second look (Make Admin, Deactivate, …).
-document.querySelectorAll('form[data-confirm-message]').forEach((form) => {
-  form.addEventListener('submit', async (event) => {
-    if (form.dataset.confirmed) return;
-    event.preventDefault();
-    if (await confirmChange(form.dataset.confirmMessage)) {
-      form.dataset.confirmed = '1';
-      form.requestSubmit();
-    }
-  });
-});
+confirmBeforeSubmit();

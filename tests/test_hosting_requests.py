@@ -574,3 +574,31 @@ async def test_deleting_user_removes_their_requests():
         page = await http.get("/admin/hosting-access/requests/", cookies={"user_token": admin_token})
     assert page.status_code == 200
     assert await open_requests() == []
+
+
+# ---------------------------------------------------------------------------
+# Admin: Dev Accounts count, like the Hosting access count
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_dev_accounts_nav_counts_pending_applications_until_reviewed():
+    from portal.models import DeveloperAccount
+
+    _, admin_token = await make_user("admin@example.org", display_name="Hong", is_admin=True)
+    applicant_id, applicant_token = await make_user()
+    async with get_session() as session:
+        account = DeveloperAccount(user_id=applicant_id, status="pending")
+        session.add(account)
+        await session.flush()
+        account_id = account.id
+    badge = '<span class="nav-count">1<span class="visually-hidden"> pending applications</span></span>'
+    async with client() as http:
+        overview = await http.get("/admin/", cookies={"user_token": admin_token})
+        applicant_view = await http.get("/account", cookies={"user_token": applicant_token})
+        await http.post(f"/api/admin/developer-accounts/{account_id}/approve", cookies={"user_token": admin_token})
+        after = await http.get("/admin/", cookies={"user_token": admin_token})
+    # Shown on every Admin page, only to Admins, and gone once the application is reviewed.
+    assert badge in overview.text
+    assert "pending applications" not in applicant_view.text
+    assert "pending applications" not in after.text

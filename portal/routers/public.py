@@ -9,7 +9,7 @@ from fastapi.responses import JSONResponse, PlainTextResponse, Response
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 
-from portal.auth import get_admin_flags, get_current_user, resolve_request_principal
+from portal.auth import get_access_flags, get_current_user, resolve_request_principal
 from portal.database import (
     get_session,
     get_user_by_id,
@@ -20,6 +20,7 @@ from portal.database import (
 from portal.email_sender import send_demo_request_email
 from portal.globals import _JS_CACHE_BUST, asset_version_context
 from portal.rate_limit import check_rate_limit
+from portal.roles import EVENT_OWNER, ROOM_COORDINATOR
 from portal.utils import _check_mediamtx, get_client_ip
 
 logger = logging.getLogger(__name__)
@@ -33,8 +34,8 @@ router = APIRouter()
 @router.get("/")
 async def home(request: Request):
     current_user = await get_current_user(request)
-    admin_flags = await get_admin_flags(request)
-    if not current_user and admin_flags.get("is_super_admin"):
+    admin_flags = await get_access_flags(request)
+    if not current_user and admin_flags.get("is_admin"):
         current_user = {"email": "admin", "display_name": "Admin", "is_admin": True}
 
     management_home = "/admin/" if current_user and current_user.get("is_admin") else "/account"
@@ -47,9 +48,9 @@ async def home(request: Request):
                 ems = await list_memberships_for_user(session, uid)
                 room_memberships = await list_room_memberships_for_user(session, uid)
                 booth_memberships = await list_booth_memberships_for_user(session, uid)
-            if (db_user and db_user.can_host) or any(em.role == "event_owner" for em in ems):
+            if (db_user and db_user.can_host) or any(em.role == EVENT_OWNER for em in ems):
                 management_home = "/workspace/"
-            elif any(rm.role == "room_coordinator" for rm in room_memberships):
+            elif any(rm.role == ROOM_COORDINATOR for rm in room_memberships):
                 management_home = "/mission-control/"
             elif booth_memberships:
                 management_home = "/interpreter"

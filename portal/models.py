@@ -16,8 +16,8 @@ Design decisions
 - **No hls_url column**: WHEP is the primary playback protocol.
 - **Model name DBBooth**: avoids collision with the in-memory ``Booth``
   dataclass in ``portal.booth_state``.
-- **InviteToken.role** stores a ``ParticipantRole`` string value validated
-  against ``portal.roles.ALL_ROLES``.
+- **InviteToken.role** stores a booth role validated against
+  ``portal.roles.BOOTH_ROLES`` (invitations are always to a booth).
 """
 
 from __future__ import annotations
@@ -30,7 +30,7 @@ from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Index, Integer, Stri
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, validates
 
 from portal.booth_identity import make_mediamtx_path, validate_event_slug, validate_language_code
-from portal.roles import ALL_ROLES
+from portal.roles import assignment_error
 
 TOKEN_LENGTH = 64  # hex characters → 32 bytes of entropy
 
@@ -387,8 +387,8 @@ class InviteToken(Base):
 
     @validates("role")
     def _validate_role(self, _key: str, value: str) -> str:
-        if value not in ALL_ROLES:
-            raise ValueError(f"Invalid role '{value}'. Must be one of: {', '.join(sorted(ALL_ROLES))}")
+        if error := assignment_error(value, "booth"):
+            raise ValueError(error)
         return value
 
     @property
@@ -559,9 +559,7 @@ class HostingRequest(Base):
 # EventMembership
 # ---------------------------------------------------------------------------
 
-EVENT_ROLES = frozenset({"interpreter", "room_coordinator", "event_owner"})
-ROOM_ROLES = frozenset({"room_coordinator"})
-BOOTH_ROLES = frozenset({"interpreter", "room_coordinator"})
+# Which roles can be given at each level is defined in portal.roles (#757).
 
 
 class EventMembership(Base):
@@ -585,8 +583,8 @@ class EventMembership(Base):
 
     @validates("role")
     def _validate_role(self, _key: str, value: str) -> str:
-        if value not in EVENT_ROLES:
-            raise ValueError(f"Invalid event role '{value}'. Must be one of: {', '.join(sorted(EVENT_ROLES))}")
+        if error := assignment_error(value, "event"):
+            raise ValueError(error)
         return value
 
     def __repr__(self) -> str:
@@ -618,8 +616,8 @@ class BoothMembership(Base):
 
     @validates("role")
     def _validate_role(self, _key: str, value: str) -> str:
-        if value not in BOOTH_ROLES:
-            raise ValueError(f"Invalid booth role '{value}'. Must be one of: {', '.join(sorted(BOOTH_ROLES))}")
+        if error := assignment_error(value, "booth"):
+            raise ValueError(error)
         return value
 
     def __repr__(self) -> str:
@@ -651,8 +649,8 @@ class RoomMembership(Base):
 
     @validates("role")
     def _validate_role(self, _key: str, value: str) -> str:
-        if value not in ROOM_ROLES:
-            raise ValueError(f"Invalid room role '{value}'. Must be one of: {', '.join(sorted(ROOM_ROLES))}")
+        if error := assignment_error(value, "room"):
+            raise ValueError(error)
         return value
 
     def __repr__(self) -> str:

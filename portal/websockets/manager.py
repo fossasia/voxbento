@@ -12,6 +12,7 @@ from portal.auth import can_perform_role
 from portal.booth_identity import booth_id_to_mediamtx_path
 from portal.booth_publish import TICKET_TTL_SECS, issue_ticket
 from portal.globals import booths
+from portal.roles import INTERPRETER, can_set_active
 
 
 @dataclass
@@ -181,7 +182,7 @@ async def _handle_join(ws: WebSocket, session: Session, data: dict) -> None:
     and broadcasts state updates to listeners.
     """
     display_name = data.get("display_name", "Interpreter")
-    role = data.get("role", "interpreter")
+    role = data.get("role", INTERPRETER)
     language = data.get("language") or session.language
     if not language:
         await ws.send_text(
@@ -245,7 +246,7 @@ async def _handle_join(ws: WebSocket, session: Session, data: dict) -> None:
     )
     await manager.broadcast(session.booth_id, {"type": "booth:state", "state": state})
 
-    if role == "interpreter":
+    if role == INTERPRETER:
         await _wh_worker.enqueue_webhook(
             "booth.interpreter.joined",
             {
@@ -353,7 +354,7 @@ async def _handle_set_broadcast_unlocked(ws: WebSocket, session: Session, data: 
     Requires room coordinator or administrator privileges and a configured
     session language.
     """
-    if session.granted_role not in ("room_coordinator", "event_owner", "super_admin"):
+    if not can_set_active(session.granted_role):
         await ws.send_text(
             json.dumps({"type": "booth:error", "message": "Only Room Coordinators can manage broadcast lock."})
         )

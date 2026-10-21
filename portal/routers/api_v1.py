@@ -8,23 +8,22 @@ from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from portal.auth import require_oauth_scope
+from portal.auth import coordinates_room, load_membership_scope, require_oauth_scope
 from portal.booth_identity import make_booth_id, make_mediamtx_path, validate_language_code
 from portal.database import get_db_session
 from portal.globals import booths
 from portal.models import (
     DBBooth,
-    DeveloperAccount,
     Event,
     EventMembership,
     OAuthAuditLog,
     OAuthClient,
     OAuthToken,
     Room,
-    RoomMembership,
     RoomTranslationLanguage,
 )
 from portal.rate_limit import auth_rate_limiter
+from portal.roles import EVENT_OWNER
 from portal.transcription.constants import ProviderEnum
 from portal.transcription.worker import active_workers, start_transcription_worker, stop_transcription_worker
 
@@ -48,8 +47,14 @@ _API_KEY_FIELDS: list[tuple[str, str]] = [
 ]
 
 
-async def _verify_token_rbac(db: AsyncSession, token: OAuthToken, event: Event, room_id: int | None = None) -> None:
-    """Ensure the OAuth token is valid for this event, AND the underlying user still has RBAC permissions."""
+async def _verify_token_rbac(
+    db: AsyncSession, token: OAuthToken, event: Event, room_id: int | None = None, *, manage: bool = False
+) -> None:
+    """Ensure the OAuth token is valid for this event, AND the underlying user still has RBAC permissions.
+
+    manage=True is for creating, changing or deleting rooms and booths, which only Admins and
+    Event owners may do (#757); Room coordinators pass only for live-session and read actions.
+    """
     if token.event_id != event.id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event not found")
 
@@ -63,35 +68,20 @@ async def _verify_token_rbac(db: AsyncSession, token: OAuthToken, event: Event, 
     if client and client.is_confidential and client.status == "active":
         return
 
-    # Check if user is super admin or event owner
+    # Check if user is Admin or event owner
     from portal.models import User
 
     user = await db.get(User, token.user_id)
-    if user and getattr(user, "is_super_admin", False):
+    if user and getattr(user, "is_admin", False):
         return
 
-    # Check Event Owner
-    evt_mem = await db.execute(
-        select(EventMembership).where(
-            EventMembership.user_id == token.user_id,
-            EventMembership.event_id == event.id,
-            EventMembership.role == "event_owner",
-        )
-    )
-    if evt_mem.scalars().first():
+    scope = await load_membership_scope(db, token.user_id)
+    if event.id in scope["owned_event_ids"]:
         return
 
-    # Check Room Coordinator if room is specified
-    if room_id is not None:
-        rm_mem = await db.execute(
-            select(RoomMembership).where(
-                RoomMembership.user_id == token.user_id,
-                RoomMembership.room_id == room_id,
-                RoomMembership.role == "room_coordinator",
-            )
-        )
-        if rm_mem.scalars().first():
-            return
+    # Room coordinators may be given per event, room or booth (#757); the room was checked above.
+    if not manage and room_id is not None and coordinates_room(scope, room_id, event.id):
+        return
 
     raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User lost RBAC access to this resource")
 
@@ -170,7 +160,7 @@ async def _ensure_event_memberships(
 
     from portal.models import EventMembership, User
 
-    async def _upsert_member(uid: int, role: str = "event_owner") -> None:
+    async def _upsert_member(uid: int, role: str = EVENT_OWNER) -> None:
         try:
             async with db.begin_nested():
                 mem_res = await db.execute(
@@ -203,7 +193,7 @@ async def _ensure_event_memberships(
                 pass
 
     if user_id:
-        await _upsert_member(user_id, "event_owner")
+        await _upsert_member(user_id, EVENT_OWNER)
 
     for email_raw in organizer_emails:
         email = email_raw.strip().lower()
@@ -227,7 +217,7 @@ async def _ensure_event_memberships(
                 user_obj = user_res.scalars().first()
 
         if user_obj:
-            await _upsert_member(user_obj.id, "event_owner")
+            await _upsert_member(user_obj.id, EVENT_OWNER)
 
 
 @router.post("/events/", status_code=status.HTTP_201_CREATED)
@@ -263,7 +253,7 @@ async def create_event(
                         select(EventMembership).where(
                             EventMembership.user_id == token.user_id,
                             EventMembership.event_id == existing_event.id,
-                            EventMembership.role.in_(("event_owner", "super_admin", "owner")),
+                            EventMembership.role == EVENT_OWNER,
                         )
                     )
                 )
@@ -294,17 +284,9 @@ async def create_event(
         db.add(event)
         await db.flush()
 
+        # The organizer becomes owner; the app's developer gets no automatic
+        # access (#757). The organizer can add them as a member if they want help.
         await _ensure_event_memberships(db, event.id, token.user_id, payload.organizer_emails)
-
-        client_res = await db.execute(select(OAuthClient).where(OAuthClient.id == token.client_id))
-        client = client_res.scalars().first()
-        if client:
-            dev_acc_res = await db.execute(
-                select(DeveloperAccount).where(DeveloperAccount.id == client.developer_account_id)
-            )
-            dev_acc = dev_acc_res.scalars().first()
-            if dev_acc and dev_acc.user_id != token.user_id:
-                db.add(EventMembership(user_id=dev_acc.user_id, event_id=event.id, role="support"))
 
         action = "event.created"
         status_code_ret = status.HTTP_201_CREATED
@@ -436,7 +418,7 @@ async def upsert_room(
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
 
-    await _verify_token_rbac(db, token, event)
+    await _verify_token_rbac(db, token, event, manage=True)
 
     room_res = await db.execute(
         select(Room).where(Room.event_id == event.id, Room.eventyay_room_id == eventyay_room_id)
@@ -589,7 +571,7 @@ async def delete_room(
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
 
-    await _verify_token_rbac(db, token, event)
+    await _verify_token_rbac(db, token, event, manage=True)
 
     room_res = await db.execute(
         select(Room).where(Room.event_id == event.id, Room.eventyay_room_id == eventyay_room_id)
@@ -635,7 +617,7 @@ async def patch_room_settings(
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
 
-    await _verify_token_rbac(db, token, event, room_id)
+    await _verify_token_rbac(db, token, event, room_id, manage=True)
     return {"status": "success"}
 
 
@@ -708,7 +690,7 @@ async def create_booth(
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
 
-    await _verify_token_rbac(db, token, event, room_id)
+    await _verify_token_rbac(db, token, event, room_id, manage=True)
 
     result = await db.execute(select(DBBooth).where(DBBooth.room_id == room_id, DBBooth.language_code == language_code))
     if result.scalars().first():
@@ -737,7 +719,7 @@ async def delete_booth_endpoint(
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
 
-    await _verify_token_rbac(db, token, event, room_id)
+    await _verify_token_rbac(db, token, event, room_id, manage=True)
 
     result = await db.execute(select(DBBooth).where(DBBooth.room_id == room_id, DBBooth.language_code == language_code, DBBooth.event_id == event.id))
     booth = result.scalars().first()

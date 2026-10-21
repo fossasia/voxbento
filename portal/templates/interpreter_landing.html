@@ -111,11 +111,11 @@
                   </div>
                   
                   <div class="card-body">
-                    <div class="role-badge">Role: <strong>{{ b.role }}</strong></div>
+                    <div class="role-badge">Role: <strong>{{ b.role|role_label }}</strong></div>
                   </div>
 
                   <div class="card-footer">
-                    {% if b.role in ['coordinator', 'event_admin', 'super_admin'] %}
+                    {% if b.can_coordinate %}
                       <a href="/mission-control/{{ b.event_slug }}/" class="btn btn-primary enter-btn">Go to Mission Control ↗</a>
                     {% else %}
                       <a href="/interpreter/{{ b.event_slug }}/{{ b.room_id }}/{{ b.language_code }}" class="btn btn-primary enter-btn">Enter Booth ↗</a>

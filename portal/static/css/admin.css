@@ -252,7 +252,7 @@ code { font-family: var(--font-mono); font-size: 0.85em; background: var(--color
 .badge-coordinator { background: #fef3c7; color: #92400e; }
 .badge-listener { background: #e0e7ff; color: #4338ca; }
 .badge-event_admin { background: #fce7f3; color: #9d174d; }
-.badge-super_admin { background: #fecaca; color: #991b1b; }
+.badge-admin { background: #fecaca; color: #991b1b; }
 .badge-valid { background: #d1fae5; color: #065f46; }
 .badge-used { background: #e5e7eb; color: #6b7280; }
 .badge-expired { background: #fecaca; color: #991b1b; }
@@ -1576,3 +1576,91 @@ code { font-family: var(--font-mono); font-size: 0.85em; background: var(--color
 /* Keep names and emails readable; the table scrolls sideways inside its card instead. */
 .ul-table th:first-child, .ul-table td:first-child { min-width: 210px; }
 .ud-table td:last-child { white-space: nowrap; }
+
+/* ── Event Team page (#757) ──────────────────────────────────────────────── */
+
+.tm-header { display: flex; justify-content: space-between; align-items: flex-end; flex-wrap: wrap; gap: 12px 24px; margin-bottom: 24px; }
+.tm-header h1 { font-size: 2rem; font-weight: 800; letter-spacing: -0.02em; line-height: 1.15; margin: 0 0 4px; }
+.tm-subtitle { margin: 0; max-width: 640px; color: var(--color-text-secondary); font-size: 1rem; }
+.tm-summary { display: flex; flex-wrap: wrap; gap: 8px; list-style: none; margin: 0; padding: 0; }
+.tm-summary li { padding: 6px 12px; border-radius: 999px; background: var(--color-surface); border: 1px solid var(--color-border); font-size: 0.875rem; color: var(--color-text-secondary); }
+.tm-summary strong { color: var(--color-text); }
+
+.tm-card { background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 12px; margin-bottom: 24px; }
+.tm-card-title { margin: 0; padding: 16px 24px; font-size: 1.125rem; font-weight: 700; color: var(--color-text); }
+.tm-card > .tm-card-title { border-bottom: 1px solid var(--color-border); }
+.tm-card-note { margin: 0; padding: 14px 24px 0; color: var(--color-text-secondary); font-size: 0.9375rem; max-width: 760px; }
+.tm-count { display: inline-block; min-width: 24px; padding: 1px 8px; margin-left: 6px; border-radius: 999px; background: #eef1f6; font-size: 0.8125rem; font-weight: 600; text-align: center; vertical-align: 2px; }
+
+.tm-add-form { display: grid; grid-template-columns: minmax(220px, 2fr) minmax(170px, 1fr) minmax(200px, 1.4fr) auto; gap: 12px; align-items: end; padding: 18px 24px 4px; }
+.tm-link-form { grid-template-columns: minmax(200px, 1.4fr) minmax(150px, 1fr) minmax(160px, 1.2fr) minmax(130px, 0.8fr) auto; padding-bottom: 18px; }
+.tm-field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.tm-field label { font-size: 0.875rem; font-weight: 600; color: var(--color-text); }
+.tm-optional { color: var(--color-text-secondary); font-weight: 400; }
+.tm-field input, .tm-field select, .tm-filters input {
+  height: 40px; padding: 0 12px; border: 1px solid var(--color-border-strong); border-radius: 8px;
+  background: var(--color-surface); color: var(--color-text); font: inherit; font-size: 0.9375rem; width: 100%;
+}
+.tm-field input:focus, .tm-field select:focus, .tm-filters input:focus { outline: none; border-color: var(--color-primary); box-shadow: 0 0 0 3px var(--color-primary-subtle); }
+.tm-add-btn { height: 40px; white-space: nowrap; }
+.tm-role-help { margin: 0; padding: 0 24px 18px; min-height: 1.4em; font-size: 0.875rem; color: var(--color-text-secondary); }
+
+.tm-people-head { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; padding-right: 24px; border-bottom: 1px solid var(--color-border); }
+.tm-filters { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; padding: 10px 0; }
+.tm-filters input { width: 240px; }
+.tm-tabs { display: flex; gap: 4px; flex-wrap: wrap; }
+.tm-tab { height: 36px; padding: 0 12px; border: 1px solid transparent; border-radius: 8px; background: none; color: var(--color-text-secondary); font: inherit; font-size: 0.875rem; font-weight: 500; cursor: pointer; }
+.tm-tab:hover { background: var(--color-surface-2); color: var(--color-text); }
+.tm-tab.is-active { background: var(--color-primary-subtle); color: var(--color-primary); font-weight: 600; }
+
+.tm-people { list-style: none; margin: 0; padding: 0; }
+.tm-person { display: grid; grid-template-columns: minmax(200px, 1fr) minmax(0, 2fr) auto; gap: 12px 20px; align-items: center; padding: 14px 24px; }
+.tm-person + .tm-person { border-top: 1px solid var(--color-border); }
+.tm-person[hidden] { display: none; }
+.tm-who { display: flex; flex-direction: column; min-width: 0; }
+.tm-name { font-weight: 600; color: var(--color-text); }
+.tm-email { font-size: 0.875rem; color: var(--color-text-secondary); overflow-wrap: anywhere; }
+.tm-tag { display: inline-block; width: fit-content; margin-top: 4px; padding: 1px 8px; border-radius: 999px; background: #eef1f6; color: #475467; font-size: 0.75rem; font-weight: 600; }
+.tm-name .tm-tag { margin: 0 0 0 4px; vertical-align: 1px; }
+.tm-tag--pending { background: #fef3c7; color: #92400e; }
+.tm-roles { display: flex; flex-wrap: wrap; gap: 6px; list-style: none; margin: 0; padding: 0; }
+.tm-role { display: inline-flex; align-items: center; gap: 2px; padding: 3px 4px 3px 10px; border-radius: 999px; background: #eef1f6; color: #344054; font-size: 0.8125rem; font-weight: 600; }
+.tm-role--event_owner { background: #e0e9ff; color: #1e40af; }
+.tm-role--room_coordinator { background: #dcfce7; color: #166534; }
+.tm-role form { display: inline-flex; margin: 0; }
+.tm-role-remove {
+  display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; border: none; border-radius: 50%;
+  background: transparent; color: inherit; font-size: 1rem; line-height: 1; cursor: pointer; opacity: 0.65;
+}
+.tm-role-remove:hover, .tm-role-remove:focus-visible { opacity: 1; background: rgba(16, 24, 40, 0.08); outline: none; }
+.tm-actions { display: flex; justify-content: flex-end; }
+.tm-empty { margin: 0; padding: 24px; text-align: center; color: var(--color-text-secondary); }
+.tm-empty[hidden] { display: none; }
+
+.tm-table-wrap { position: relative; overflow-x: auto; border-top: 1px solid var(--color-border); }
+.tm-table { width: 100%; border-collapse: collapse; font-size: 0.9375rem; }
+.tm-table th { padding: 10px 24px; background: var(--color-surface-2); border-bottom: 1px solid var(--color-border); font-size: 0.75rem; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--color-text-secondary); text-align: left; white-space: nowrap; }
+.tm-table td { padding: 10px 24px; border-bottom: 1px solid var(--color-border); vertical-align: middle; }
+.tm-table tbody tr:last-child td { border-bottom: none; }
+.tm-link-cell { display: flex; gap: 8px; align-items: center; min-width: 280px; }
+.tm-link-input { flex: 1; min-width: 0; height: 34px; padding: 0 10px; border: 1px solid var(--color-border); border-radius: 6px; background: var(--color-surface-2); font: inherit; font-size: 0.8125rem; color: var(--color-text-secondary); }
+.tm-revoke { color: #b42318; border-color: #f0a29a; }
+
+/* Links to the Team page from event, room and booth pages */
+.tm-pointer { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; padding: 16px 20px; margin: 24px 0; background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 12px; }
+.tm-pointer p { margin: 0; color: var(--color-text-secondary); }
+.tm-pointer strong { color: var(--color-text); }
+
+@media (max-width: 900px) {
+  .tm-add-form, .tm-link-form { grid-template-columns: 1fr 1fr; }
+  .tm-field--email { grid-column: 1 / -1; }
+  .tm-person { grid-template-columns: 1fr; }
+  .tm-actions { justify-content: flex-start; }
+}
+@media (max-width: 560px) {
+  .tm-add-form, .tm-link-form { grid-template-columns: 1fr; padding: 16px; }
+  .tm-card-title, .tm-person, .tm-card-note, .tm-role-help { padding-left: 16px; padding-right: 16px; }
+  .tm-people-head { padding: 0 16px; }
+  .tm-people-head .tm-card-title { padding-left: 0; padding-right: 0; }
+  .tm-filters input { width: 100%; }
+}
