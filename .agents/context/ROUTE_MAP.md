@@ -124,8 +124,9 @@
 | `portal/routers/api.py` | Booth state REST API, WHIP URL generation |
 | `portal/routers/admin.py` | Shared event-management handlers and system-admin routes |
 | `portal/workspace_routing.py` | `/workspace` handler mapping, legacy organizer redirects, and template URL context |
-| `portal/websockets/manager.py` | `ws_booth` and `ws_captions` endpoints |
-| `portal/websockets/handlers.py` | Specific `_handle_*` logic for WS messages |
+| `portal/websockets/manager.py` | Connection managers (`ConnectionManager`, `ListenerConnectionManager`, `TTSConnectionManager`) |
+| `portal/websockets/handlers.py` | Transport adapters: `ws_booth` and `ws_captions` endpoints |
+| `portal/websockets/booth_protocol.py` | `BoothProtocolCoordinator` message dispatch and protocol handling |
 | `fastapi_app.py` | Application lifespan, router include aggregation |
 
 ## Program ingest routes (#690)

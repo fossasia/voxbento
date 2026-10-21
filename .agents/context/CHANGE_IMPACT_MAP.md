@@ -21,7 +21,7 @@
 1. `portal/booth_state.py` — add to `ParticipantRole` Literal type
 2. `portal/roles.py` — add to `ROLE_PERMISSIONS`, `_ROLE_RANK`, `ALL_ROLES`
 3. `portal/auth.py` — update `can_perform_role` / `resolve_booth_role` if needed
-4. `portal/websockets/handlers.py` — update WS join handler `_handle_join` if role has special logic
+4. `portal/websockets/booth_protocol.py` — update WS join handler `handle_join` if role has special logic
 5. `portal/templates/interpreter_booth.html` — update role display if shown in UI
 6. `portal/static/js/interpreter-booth.js` — update role-based UI gating
 7. `tests/test_roles.py` — add role permission tests
@@ -89,7 +89,7 @@
 ## 8. Changing the WebSocket Protocol
 
 **Files to change:**
-1. `portal/websockets/` — WS endpoint (`manager.py`) + `_handle_*` functions (`handlers.py`)
+1. `portal/websockets/` — WS endpoints (`handlers.py`), managers (`manager.py`), and protocol coordinator (`booth_protocol.py`)
 2. `portal/static/js/interpreter-booth.js` — client `sendMessage`, `onMessage` handling
 3. `portal/booth_state.py` — if new state fields added to `Booth.as_public_dict()`
 4. `tests/test_booth_state.py` — if new state operations added

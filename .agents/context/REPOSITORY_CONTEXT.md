@@ -39,6 +39,8 @@ Attendees receive sub-second audio via WHEP. All coordination flows through Fast
 | File | Purpose |
 |---|---|
 | `fastapi_app.py` | Application lifespan, router aggregation |
+| `portal/routers/` | All HTTP routes (pages, admin, REST API) |
+| `portal/websockets/` | WebSocket connection managers, handlers, and booth protocol coordinator |
 | `portal/routers/` | All HTTP routes (pages, admin, REST API, API v1, OAuth, webhooks) |
 | `portal/workspace_routing.py` | `/workspace` handler mapping, legacy organizer redirects, template URL context |
 | `portal/websockets/` | WebSocket connection manager and handlers (`manager.py`, `handlers.py`) |
@@ -100,7 +102,7 @@ super_admin > event_owner > room_coordinator > interpreter > support > listener
 | listener | — | — | — | — | — |
 
 Defined in: `portal/roles.py` (`Permission` enum, `ROLE_PERMISSIONS` dict)
-Enforced at: `portal/websockets/handlers.py` (WS `_handle_join`), `portal/routers/api.py` (WHIP endpoint) + `portal/booth_state.py`
+Enforced at: `portal/websockets/booth_protocol.py` (WS `handle_join`), `portal/routers/api.py` (WHIP endpoint) + `portal/booth_state.py`
 
 ---
 

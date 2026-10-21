@@ -67,7 +67,7 @@ VoxBento is a production-grade **browser-first interpretation booth console** fo
 | `fastapi_app.py` | Application lifespan, router aggregation, global exception handlers |
 | `portal/routers/` | All HTTP routes (pages, admin, REST API), Jinja2 template rendering |
 | `portal/workspace_routing.py` | `/workspace` handler mapping, legacy organizer redirects, management URL/template namespace helpers |
-| `portal/websockets/` | WebSocket connection manager, message handlers (`_handle_join`, etc.) |
+| `portal/websockets/` | WebSocket connection managers (`manager.py`), transport adapter (`handlers.py`), protocol coordinator (`booth_protocol.py`) |
 | `portal/booth_state.py` | In-memory `BoothRegistry`, `Booth`, `Participant`, handoff policy, chat history |
 | `portal/auth.py` | JWT create/decode, bcrypt password, `require_admin`, `require_user`, `resolve_booth_role`, `can_perform_role` |
 | `portal/config.py` | `Settings` — pydantic-settings; all env vars / `.env` |
@@ -127,7 +127,7 @@ super_admin > event_owner > room_coordinator > interpreter > support > listener
 | `listener` | — | — | — | — |
 
 Defined in: `portal/roles.py`
-Enforced in: `portal/websockets/handlers.py` (`_handle_join`), `portal/routers/api.py` (WHIP URL endpoints), `portal/booth_state.py` (`set_active_interpreter`)
+Enforced in: `portal/websockets/booth_protocol.py` (`handle_join`), `portal/routers/api.py` (WHIP URL endpoints), `portal/booth_state.py` (`set_active_interpreter`)
 
 ---
 
@@ -162,11 +162,11 @@ Validation: `portal/booth_identity.py` — slug: `^[a-z0-9]+(?:-[a-z0-9]+)*$`; l
 
 | Client → Server | Handler | Trusted fields |
 |---|---|---|
-| `booth:join` | `_handle_join` | role overridden from `session.granted_role` |
-| `booth:leave` | `_handle_leave` | — |
-| `booth:chat` | `_handle_chat` | `body` only |
-| `booth:set-active` | `_handle_set_active` | `target_id` |
-| `booth:update-state` | `_handle_update_state` | `mic_active`, `ingest_connected` |
+| `booth:join` | `booth_protocol.handle_join` | role overridden from `session.granted_role` |
+| `booth:leave` | `booth_protocol.handle_leave` | — |
+| `booth:chat` | `booth_protocol.handle_chat` | `body` only |
+| `booth:set-active` | `booth_protocol.handle_set_active` | `target_id` |
+| `booth:update-state` | `booth_protocol.handle_update_state` | `mic_active`, `ingest_connected` |
 | `booth:request-publish-ticket` | `_handle_request_publish_ticket` | — (participant from the WS session) |
 
 Server → Client: `booth:joined`, `booth:state`, `booth:chat`, `booth:error`, `booth:publish-ticket`

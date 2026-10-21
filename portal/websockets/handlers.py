@@ -6,19 +6,9 @@ import logging
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from portal.auth import WSAuthError, resolve_booth_role, resolve_ws_auth
-from portal.globals import booths
+from portal.websockets.booth_protocol import booth_protocol
 from portal.websockets.manager import (
     Session,
-    _handle_accept_handoff,
-    _handle_cancel_handoff,
-    _handle_chat,
-    _handle_initiate_handoff,
-    _handle_join,
-    _handle_leave,
-    _handle_request_publish_ticket,
-    _handle_set_active,
-    _handle_set_broadcast_unlocked,
-    _handle_update_state,
     listener_manager,
     manager,
     tts_manager,
@@ -72,43 +62,12 @@ async def ws_booth(websocket: WebSocket, booth_id: str) -> None:
                 )
                 continue
 
-            msg_type = data.get("type", "")
-            if msg_type == "booth:join":
-                await _handle_join(websocket, session, data)
-            elif msg_type == "booth:leave":
-                await _handle_leave(session)
-            elif msg_type == "booth:chat":
-                await _handle_chat(websocket, session, data)
-            elif msg_type == "booth:set-active":
-                await _handle_set_active(websocket, session, data)
-            elif msg_type == "booth:update-state":
-                await _handle_update_state(websocket, session, data)
-            elif msg_type == "booth:request-publish-ticket":
-                await _handle_request_publish_ticket(websocket, session, data)
-            elif msg_type == "booth:set-broadcast-unlocked":
-                await _handle_set_broadcast_unlocked(websocket, session, data)
-            elif msg_type == "booth:initiate-handoff":
-                await _handle_initiate_handoff(websocket, session, data)
-            elif msg_type == "booth:accept-handoff":
-                await _handle_accept_handoff(websocket, session, data)
-            elif msg_type == "booth:cancel-handoff":
-                await _handle_cancel_handoff(websocket, session, data)
-            else:
-                await websocket.send_text(
-                    json.dumps({"type": "booth:error", "message": f"Unknown message type: {msg_type}"})
-                )
+            await booth_protocol.dispatch(websocket, session, data)
     except WebSocketDisconnect:
         pass
     finally:
         manager.remove(websocket)
-        if session.participant_id:
-            state = await booths.leave_participant(
-                session.booth_id,
-                session.participant_id,
-                session.language,
-                session.channel_id,
-            )
-            await manager.broadcast(session.booth_id, {"type": "booth:state", "state": state})
+        await booth_protocol.handle_disconnect(session)
 
 
 @router.websocket("/ws/captions/{booth_id}")

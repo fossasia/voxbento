@@ -5,8 +5,9 @@ import time
 import httpx
 
 from portal.booth_state import BoothRegistry
+from portal.websockets.manager import WebSocketBoothEventPublisher
 
-booths = BoothRegistry()
+booths = BoothRegistry(publisher=WebSocketBoothEventPublisher())
 _JS_CACHE_BUST = str(int(time.time()))
 
 

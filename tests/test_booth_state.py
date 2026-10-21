@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from portal.booth_state import BoothRegistry
@@ -840,3 +842,345 @@ async def test_a_non_publisher_leaving_keeps_an_overloaded_status():
     state = await registry.leave_participant(BOOTH[0], passive.participant_id, *BOOTH[1:])
 
     assert state["ingest_status"] == "overloaded"
+
+
+# ── Coordinated State Transitions and Event Publication Tests ──────────────────
+
+
+class RecordingPublisher:
+    """Test double implementing BoothEventPublisher for verifying emitted events."""
+
+    def __init__(
+        self,
+        fail_broadcast: bool = False,
+        fail_booth: bool = False,
+        fail_chat_only: bool = False,
+    ) -> None:
+        self.booth_events: list[tuple[str, dict]] = []
+        self.listener_events: list[tuple[str, dict]] = []
+        self.fail_broadcast = fail_broadcast
+        self.fail_booth = fail_booth
+        self.fail_chat_only = fail_chat_only
+
+    async def broadcast_booth(self, booth_id: str, message: dict) -> None:
+        if self.fail_broadcast or self.fail_booth:
+            raise RuntimeError("Simulated network delivery failure")
+        if self.fail_chat_only and message.get("type") == "booth:chat":
+            raise RuntimeError("Simulated chat delivery failure")
+        self.booth_events.append((booth_id, message))
+
+    async def broadcast_listeners(self, booth_id: str, message: dict) -> None:
+        if self.fail_broadcast:
+            raise RuntimeError("Simulated network delivery failure")
+        self.listener_events.append((booth_id, message))
+
+
+@pytest.mark.anyio
+async def test_join_participant_coordinates_event_publication():
+    publisher = RecordingPublisher()
+    registry = BoothRegistry(publisher=publisher)
+    direct_joined: list[dict] = []
+
+    async def on_joined(p, state):
+        direct_joined.append({"participant_id": p.participant_id, "state": state})
+
+    participant, state = await registry.join_participant(
+        booth_id="pycon2026-1-en",
+        display_name="Interpreter A",
+        role="interpreter",
+        language="English",
+        channel_id="pycon2026/1/en",
+        before_broadcast=on_joined,
+    )
+
+    # Direct response was sent before broadcast
+    assert len(direct_joined) == 1
+    assert direct_joined[0]["participant_id"] == participant.participant_id
+    assert direct_joined[0]["state"] == state
+
+    # State broadcast was emitted to the booth audience
+    assert len(publisher.booth_events) == 1
+    booth_id, event = publisher.booth_events[0]
+    assert booth_id == "pycon2026-1-en"
+    assert event["type"] == "booth:state"
+    assert event["state"]["active_interpreter_id"] == participant.participant_id
+    assert event["state"] == state
+
+
+@pytest.mark.anyio
+async def test_leave_participant_coordinates_event_and_noop_suppresses_event():
+    publisher = RecordingPublisher()
+    registry = BoothRegistry(publisher=publisher)
+    p = await join_identity(registry, "Interpreter A", booth_id="pycon2026-1-en")
+    publisher.booth_events.clear()
+
+    # Successful leave emits state event
+    await registry.leave_participant("pycon2026-1-en", p.participant_id, "English", "pycon2026/1/en")
+    assert len(publisher.booth_events) == 1
+    _, event = publisher.booth_events[0]
+    assert event["type"] == "booth:state"
+    assert len(event["state"]["participants"]) == 0
+
+    # No-op leave with non-existent participant emits no duplicate event
+    publisher.booth_events.clear()
+    await registry.leave_participant("pycon2026-1-en", "non-existent-id", "English", "pycon2026/1/en")
+    assert len(publisher.booth_events) == 0
+
+
+@pytest.mark.anyio
+async def test_set_active_interpreter_coordinates_event():
+    publisher = RecordingPublisher()
+    registry = BoothRegistry(publisher=publisher)
+    int_a = await join_identity(registry, "Interpreter A", booth_id="pycon2026-1-en")
+    int_b = await join_identity(registry, "Interpreter B", booth_id="pycon2026-1-en")
+    publisher.booth_events.clear()
+
+    # Successful active reassignment
+    state = await registry.set_active_interpreter(
+        "pycon2026-1-en", int_a.participant_id, int_b.participant_id, "English", "pycon2026/1/en"
+    )
+    assert len(publisher.booth_events) == 1
+    _, event = publisher.booth_events[0]
+    assert event["type"] == "booth:state"
+    assert event["state"]["active_interpreter_id"] == int_b.participant_id
+    assert event["state"] == state
+
+    # Unauthorized reassignment: passive interpreter int_a tries to assign int_c active
+    int_c = await join_identity(registry, "Interpreter C", booth_id="pycon2026-1-en")
+    publisher.booth_events.clear()
+    with pytest.raises(PermissionError):
+        await registry.set_active_interpreter(
+            "pycon2026-1-en", int_a.participant_id, int_c.participant_id, "English", "pycon2026/1/en"
+        )
+    assert len(publisher.booth_events) == 0
+
+
+@pytest.mark.anyio
+async def test_update_participant_state_coordinates_event():
+    publisher = RecordingPublisher()
+    registry = BoothRegistry(publisher=publisher)
+    int_a = await join_identity(registry, "Interpreter A", booth_id="pycon2026-1-en")
+    publisher.booth_events.clear()
+
+    # Valid update emits event
+    state = await registry.update_participant_state(
+        "pycon2026-1-en", int_a.participant_id, "English", "pycon2026/1/en", mic_active=True
+    )
+    assert len(publisher.booth_events) == 1
+    _, event = publisher.booth_events[0]
+    assert event["type"] == "booth:state"
+    assert event["state"] == state
+
+    # Invalid update raises and emits NO event
+    publisher.booth_events.clear()
+    with pytest.raises(ValueError):
+        await registry.update_participant_state(
+            "pycon2026-1-en", int_a.participant_id, "English", "pycon2026/1/en", mic_active="invalid"
+        )
+    assert len(publisher.booth_events) == 0
+
+
+@pytest.mark.anyio
+async def test_set_broadcast_unlocked_emits_to_booth_and_listeners():
+    publisher = RecordingPublisher()
+    registry = BoothRegistry(publisher=publisher)
+    await join_identity(registry, "Interpreter A", booth_id="pycon2026-1-en")
+    publisher.booth_events.clear()
+    publisher.listener_events.clear()
+
+    # Unlock broadcast
+    state = await registry.set_broadcast_unlocked("pycon2026-1-en", True, "English", "pycon2026/1/en")
+    assert len(publisher.booth_events) == 1
+    assert len(publisher.listener_events) == 1
+    assert publisher.booth_events[0][1]["state"] == state
+    assert publisher.listener_events[0][1]["state"] == state
+
+    # Lock broadcast
+    publisher.booth_events.clear()
+    publisher.listener_events.clear()
+    state_locked = await registry.set_broadcast_unlocked("pycon2026-1-en", False, "English", "pycon2026/1/en")
+    assert len(publisher.booth_events) == 1
+    assert len(publisher.listener_events) == 1
+    assert state_locked["broadcast_unlocked"] is False
+
+
+@pytest.mark.anyio
+async def test_handoff_and_chat_event_coordination():
+    publisher = RecordingPublisher()
+    registry = BoothRegistry(publisher=publisher)
+    int_a = await join_identity(registry, "Interpreter A", booth_id="pycon2026-1-en")
+    int_b = await join_identity(registry, "Interpreter B", booth_id="pycon2026-1-en")
+    publisher.booth_events.clear()
+
+    # Handoff initiation emits state
+    await registry.initiate_handoff("pycon2026-1-en", int_a.participant_id, "English", "pycon2026/1/en")
+    assert len(publisher.booth_events) == 1
+    assert publisher.booth_events[0][1]["state"]["handoff_state"] == "offered"
+
+    # Handoff acceptance emits state
+    publisher.booth_events.clear()
+    await registry.accept_handoff("pycon2026-1-en", int_b.participant_id, "English", "pycon2026/1/en")
+    assert len(publisher.booth_events) == 1
+    assert publisher.booth_events[0][1]["state"]["handoff_state"] == "idle"
+    assert publisher.booth_events[0][1]["state"]["active_interpreter_id"] == int_b.participant_id
+
+    # Handoff cancellation when idle is a no-op and emits no event
+    publisher.booth_events.clear()
+    await registry.cancel_handoff("pycon2026-1-en", int_b.participant_id, "English", "pycon2026/1/en")
+    assert len(publisher.booth_events) == 0
+
+    # Chat message emits booth:chat first, then booth:state
+    publisher.booth_events.clear()
+    msg, _ = await registry.add_chat_message(
+        "pycon2026-1-en", int_b.participant_id, "Hello booth", "English", "pycon2026/1/en"
+    )
+    assert len(publisher.booth_events) == 2
+    assert publisher.booth_events[0][1]["type"] == "booth:chat"
+    assert publisher.booth_events[0][1]["message"] == msg
+    assert publisher.booth_events[1][1]["type"] == "booth:state"
+
+
+@pytest.mark.anyio
+async def test_delivery_failure_does_not_rollback_in_memory_state():
+    """A network broadcast failure must not rollback the committed in-memory state transition."""
+    publisher = RecordingPublisher(fail_broadcast=False)
+    registry = BoothRegistry(publisher=publisher)
+    int_a = await join_identity(registry, "Interpreter A", booth_id="pycon2026-1-en")
+    int_b = await join_identity(registry, "Interpreter B", booth_id="pycon2026-1-en")
+
+    # Now make the network broadcast fail
+    publisher.fail_broadcast = True
+
+    with pytest.raises(RuntimeError, match="Simulated network delivery failure"):
+        await registry.set_active_interpreter(
+            "pycon2026-1-en", int_a.participant_id, int_b.participant_id, "English", "pycon2026/1/en"
+        )
+
+    # In-memory state remains committed to int_b despite broadcast failure
+    snapshot = await registry.snapshot("pycon2026-1-en", "English", "pycon2026/1/en")
+    assert snapshot["active_interpreter_id"] == int_b.participant_id
+
+
+def test_architecture_regression_boundaries():
+    """Ensure manager.py and handlers.py no longer expose or import private _handle_* functions."""
+    import portal.websockets.handlers as handlers_mod
+    import portal.websockets.manager as manager_mod
+    from portal.websockets.booth_protocol import BoothProtocolCoordinator, booth_protocol
+
+    # manager.py must not define _handle_* functions
+    extracted_handlers = [
+        "_handle_join",
+        "_handle_leave",
+        "_handle_chat",
+        "_handle_set_active",
+        "_handle_update_state",
+        "_handle_set_broadcast_unlocked",
+        "_handle_initiate_handoff",
+        "_handle_accept_handoff",
+        "_handle_cancel_handoff",
+    ]
+    for handler_name in extracted_handlers:
+        assert not hasattr(manager_mod, handler_name), f"{handler_name} still in manager.py"
+        assert not hasattr(handlers_mod, handler_name), f"{handler_name} still in handlers.py"
+
+    # booth_protocol must provide public dispatch entry point
+    assert isinstance(booth_protocol, BoothProtocolCoordinator)
+    assert callable(booth_protocol.dispatch)
+    assert callable(booth_protocol.handle_disconnect)
+
+
+@pytest.mark.anyio
+async def test_concurrent_state_transitions_preserve_broadcast_order():
+    """Verify that concurrent transitions on a booth serialize broadcasts and do not clobber newer state."""
+    publisher = RecordingPublisher()
+    registry = BoothRegistry(publisher=publisher)
+
+    async def slow_before_broadcast(participant, state):
+        # Yield to event loop to allow another concurrent transition to run
+        await asyncio.sleep(0.05)
+
+    # Launch join with slow direct response
+    join_task = asyncio.create_task(
+        registry.join_participant(
+            booth_id="pycon2026-1-en",
+            display_name="Interpreter A",
+            role="interpreter",
+            language="English",
+            channel_id="pycon2026/1/en",
+            participant_id="int-a",
+            before_broadcast=slow_before_broadcast,
+        )
+    )
+
+    # Let join_task enter before_broadcast
+    await asyncio.sleep(0.01)
+
+    # Concurrently perform another transition while join_task is in before_broadcast
+    unlock_task = asyncio.create_task(
+        registry.set_broadcast_unlocked("pycon2026-1-en", True, "English", "pycon2026/1/en")
+    )
+
+    await asyncio.gather(join_task, unlock_task)
+
+    # Verify that broadcasts arrived in the correct serial order:
+    # First: join_participant broadcast (broadcast_unlocked=False)
+    # Second: set_broadcast_unlocked broadcast (broadcast_unlocked=True)
+    assert len(publisher.booth_events) == 2
+    first_event = publisher.booth_events[0][1]["state"]
+    second_event = publisher.booth_events[1][1]["state"]
+
+    assert first_event["broadcast_unlocked"] is False
+    assert second_event["broadcast_unlocked"] is True
+
+
+@pytest.mark.anyio
+async def test_set_broadcast_unlocked_resilient_to_booth_broadcast_failure():
+    """Failure in booth broadcast must not prevent listener broadcast."""
+    publisher = RecordingPublisher(fail_booth=True)
+    registry = BoothRegistry(publisher=publisher)
+    await registry.create_booth("pycon2026", "en", "English", room_id=1)
+
+    with pytest.raises(RuntimeError, match="Simulated network delivery failure"):
+        await registry.set_broadcast_unlocked("pycon2026-1-en", True, "English", "pycon2026/1/en")
+
+    # Even though booth broadcast failed, listeners broadcast was still executed
+    assert len(publisher.listener_events) == 1
+    assert publisher.listener_events[0][1]["state"]["broadcast_unlocked"] is True
+
+
+@pytest.mark.anyio
+async def test_add_chat_resilient_to_chat_broadcast_failure():
+    """Failure in booth:chat broadcast must not prevent booth:state broadcast."""
+    publisher = RecordingPublisher(fail_chat_only=True)
+    registry = BoothRegistry(publisher=publisher)
+    p = await join_identity(registry, "Interpreter A", booth_id="pycon2026-1-en")
+    publisher.booth_events.clear()
+
+    with pytest.raises(RuntimeError, match="Simulated chat delivery failure"):
+        await registry.add_chat_message("pycon2026-1-en", p.participant_id, "Hello booth", "English", "pycon2026/1/en")
+
+    # booth:state was still delivered despite chat broadcast failure
+    assert len(publisher.booth_events) == 1
+    assert publisher.booth_events[0][1]["type"] == "booth:state"
+
+
+@pytest.mark.anyio
+async def test_set_ingest_overloaded_coordinates_state_and_broadcast():
+    """set_ingest_overloaded updates in-memory status and publishes booth:state."""
+    publisher = RecordingPublisher()
+    registry = BoothRegistry(publisher=publisher)
+    await join_identity(registry, "Interpreter A", booth_id="pycon2026-1-en")
+    publisher.booth_events.clear()
+
+    state = await registry.set_ingest_overloaded("pycon2026-1-en")
+    assert state is not None
+    assert state["ingest_status"] == "overloaded"
+
+    assert len(publisher.booth_events) == 1
+    assert publisher.booth_events[0][1]["type"] == "booth:state"
+    assert publisher.booth_events[0][1]["state"]["ingest_status"] == "overloaded"
+
+    # Non-existent booth returns None and emits no event
+    publisher.booth_events.clear()
+    assert await registry.set_ingest_overloaded("non-existent") is None
+    assert len(publisher.booth_events) == 0
