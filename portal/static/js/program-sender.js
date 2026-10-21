@@ -49,6 +49,10 @@ let silentSince = null;
 let recentPeak = 0;
 let wakeLock = null;
 let recorder = null;
+// Changed only by an explicit pick, so recovering from an unplugged USB input waits for that input.
+let preferredDevice = savedDevice();
+// Bumped by stop(); a connect() that resumes under an older generation is abandoned.
+let generation = 0;
 
 function setState(state, message) {
   stateBadge.textContent = stateLabels[state] || state;
@@ -81,7 +85,7 @@ async function listDevices() {
   try {
     const devices = await navigator.mediaDevices.enumerateDevices();
     const inputs = devices.filter(device => device.kind === 'audioinput');
-    const chosen = deviceSelect.value || savedDevice();
+    const chosen = preferredDevice || deviceSelect.value;
     deviceSelect.innerHTML = '';
     inputs.forEach((device, index) => {
       const option = document.createElement('option');
@@ -127,6 +131,11 @@ async function handleInputLost() {
   if (!sending && !testing) return;
   setState('reconnecting', 'The audio input disappeared. Waiting for it to come back…');
   await listDevices();
+  // Wait for the chosen input rather than silently sending whichever input is left.
+  if (preferredDevice && deviceSelect.value !== preferredDevice) {
+    window.setTimeout(handleInputLost, 2000);
+    return;
+  }
   try {
     await openInput();
     setState(sending ? (muted ? 'muted' : 'live') : 'testing', 'Audio input restored.');
@@ -217,6 +226,8 @@ class SenderError extends Error {
   }
 }
 
+class StaleConnect extends Error {}
+
 /** @throws {SenderError} when the server refuses a session */
 async function mintSession() {
   // No sync_offset_ms: the server keeps the room's saved YouTube sync delay.
@@ -236,26 +247,45 @@ async function mintSession() {
     const detail = typeof data?.detail === 'string' ? data.detail : `Could not start session (HTTP ${response.status})`;
     throw new SenderError(detail, response.status);
   }
-  sessionSecret = data.secret;
+  // The caller adopts data.secret only if its attempt is still current.
   return data;
 }
 
-/** @throws {SenderError} when MediaMTX rejects the offer */
-async function publish(endpoint) {
-  pc = new RTCPeerConnection({iceServers: []});
-  stream.getAudioTracks().forEach(track => pc.addTrack(track, stream));
+/**
+ * Builds the peer locally and only publishes it to `pc` once negotiation finishes for
+ * the current generation, so a stop() mid-negotiation cannot leave a peer or WHIP source behind.
+ * @throws {SenderError} when MediaMTX rejects the offer
+ * @throws {StaleConnect} when stop() ran during negotiation
+ */
+async function publish(endpoint, secret, gen) {
+  const peer = new RTCPeerConnection({iceServers: []});
+  let location = null;
+  try {
+    stream.getAudioTracks().forEach(track => peer.addTrack(track, stream));
+    const offer = await peer.createOffer();
+    await peer.setLocalDescription(offer);
+    if (gen !== generation) throw new StaleConnect();
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/sdp', 'Authorization': `Bearer ${secret}`},
+      body: offer.sdp,
+    });
+    if (response.ok) location = response.headers.get('Location') || null;
+    if (gen !== generation) throw new StaleConnect();
+    if (!response.ok) throw new SenderError(`Floor rejected the stream (HTTP ${response.status})`, response.status);
+    const answer = await response.text();
+    if (gen !== generation) throw new StaleConnect();
+    await peer.setRemoteDescription({type: 'answer', sdp: answer});
+    if (gen !== generation) throw new StaleConnect();
+  } catch (error) {
+    peer.close();
+    if (location) fetch(location, {method: 'DELETE', keepalive: true}).catch(cleanupError => console.warn('WHIP release failed', cleanupError));
+    throw error;
+  }
+  pc = peer;
+  resourceUrl = location;
   pc.addEventListener('connectionstatechange', handleConnectionChange);
-  const offer = await pc.createOffer();
-  await pc.setLocalDescription(offer);
-  const response = await fetch(endpoint, {
-    method: 'POST',
-    headers: {'Content-Type': 'application/sdp', 'Authorization': `Bearer ${sessionSecret}`},
-    body: offer.sdp,
-  });
-  if (!response.ok) throw new SenderError(`Floor rejected the stream (HTTP ${response.status})`, response.status);
-  resourceUrl = response.headers.get('Location') || null;
-  const answer = await response.text();
-  await pc.setRemoteDescription({type: 'answer', sdp: answer});
+  handleConnectionChange();
 }
 
 function liveState() {
@@ -288,23 +318,28 @@ function teardownPeer() {
 
 async function releaseSession() {
   teardownPeer();
-  if (resourceUrl) {
+  // Snapshot and clear before awaiting, so a late resume never wipes a newer session's state.
+  const resource = resourceUrl;
+  const secret = sessionActive ? sessionSecret : null;
+  resourceUrl = null;
+  sessionActive = false;
+  sessionSecret = null;
+  if (resource) {
     try {
-      await fetch(resourceUrl, {method: 'DELETE'});
+      await fetch(resource, {method: 'DELETE'});
     } catch (error) {
       console.warn('Stale WHIP resource already gone', error);
     }
-    resourceUrl = null;
   }
-  if (sessionActive) {
-    try {
-      await fetch(card.dataset.mintUrl, {method: 'DELETE', cache: 'no-store', headers: releaseHeaders()});
-    } catch (error) {
-      console.warn('Could not release the previous sender session', error);
-    }
-    sessionActive = false;
+  if (secret) await discardSession(secret);
+}
+
+async function discardSession(secret) {
+  try {
+    await fetch(card.dataset.mintUrl, {method: 'DELETE', cache: 'no-store', keepalive: true, headers: {'X-Program-Session': secret}});
+  } catch (error) {
+    console.warn('Could not release the previous sender session', error);
   }
-  sessionSecret = null;
 }
 
 function scheduleReconnect(delayMs) {
@@ -317,16 +352,26 @@ function scheduleReconnect(delayMs) {
 
 async function connect() {
   if (!sending || connecting) return;
+  const gen = generation;
   connecting = true;
   if (attempt > 0) setState('reconnecting', `Connection dropped. Reconnecting (attempt ${attempt})…`);
   else setState('connecting', 'Connecting to the floor…');
   try {
     // Drop the stale WHIP source and release the old session so the retry claims the floor cleanly.
     await releaseSession();
+    if (gen !== generation) return;
     const session = await mintSession();
+    if (gen !== generation) {
+      // Stopped while minting: give back the session nobody will use.
+      await discardSession(session.secret);
+      return;
+    }
+    sessionSecret = session.secret;
     sessionActive = true;
-    await publish(session.endpoint);
+    await publish(session.endpoint, session.secret, gen);
   } catch (error) {
+    // stop() already released this attempt's session and reset the UI.
+    if (gen !== generation) return;
     console.error('Program sender could not connect', error);
     connecting = false;
     if (error instanceof SenderError && [401, 403, 404, 409].includes(error.status)) {
@@ -342,7 +387,7 @@ async function connect() {
     scheduleReconnect(delay);
     return;
   }
-  connecting = false;
+  if (gen === generation) connecting = false;
 }
 
 async function keepAwake() {
@@ -383,6 +428,7 @@ async function start() {
 }
 
 async function stop(keepState) {
+  generation += 1;
   sending = false;
   connecting = false;
   window.clearTimeout(retryTimer);
@@ -497,6 +543,7 @@ async function recordCheck() {
 }
 
 async function changeDevice() {
+  preferredDevice = deviceSelect.value;
   saveDevice(deviceSelect.value);
   if (!stream) return;
   try {
