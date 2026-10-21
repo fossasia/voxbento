@@ -1040,6 +1040,24 @@ async def admin_room_detail(request: Request, event_id: int, room_id: int):
     )
 
 
+@router.get("/admin/events/{event_id}/rooms/{room_id}/sender/", dependencies=[Depends(require_event_owner)])
+async def admin_room_sender(request: Request, event_id: int, room_id: int):
+    """Standalone program audio sender, meant to stay open on the sound-desk machine."""
+    async with get_session() as session:
+        event = await get_event_by_id(session, event_id)
+        if event is None:
+            raise HTTPException(status_code=404, detail="Event not found.")
+        room = await get_room_by_id(session, room_id)
+        if room is None or room.event_id != event_id:
+            raise HTTPException(status_code=404, detail="Room not found.")
+    return templates.TemplateResponse(
+        request=request,
+        name="admin/program_sender.html",
+        context={"event": event, "room": room},
+        headers={"Cache-Control": "no-store"},
+    )
+
+
 @router.get("/admin/events/{event_id}/rooms/{room_id}/transcripts/", dependencies=[Depends(require_owner_or_coordinator)])
 async def admin_room_transcripts(request: Request, event_id: int, room_id: int):
     async with get_session() as session:
