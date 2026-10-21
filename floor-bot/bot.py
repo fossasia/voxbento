@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
+import re
 import subprocess  # nosec B404
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -10,6 +12,11 @@ from typing import Dict
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("floor-bot")
+# Authenticated Jitsi deployments carry credentials in the room URL and XMPP traffic.
+# Browser console lines use query (jwt=...), JSON ("jwt":"...") and prose (token: ...) forms.
+SECRET_VALUE = re.compile(
+    r"""(?i)(["']?\b(?:jwt|(?:access_|refresh_)?token|password)\b["']?\s*[:=]\s*["']?)[^&\s#"',;}]+"""
+)
 
 
 class SubprocessManager:
@@ -18,6 +25,9 @@ class SubprocessManager:
         # Lifecycle stage per event_slug, updated from subprocess stdout markers.
         # Possible values: launching, joining, in_meeting, leaving, stopping, stopped, dead.
         self.room_states: Dict[str, str] = {}
+        # Last failure code from the subprocess (join_failed, not_jitsi, redirected, left_meeting, audio_failed).
+        self.room_failures: Dict[str, str] = {}
+        self.room_meta: Dict[str, dict] = {}
         self.lock = threading.Lock()
 
     def start_room(self, event_slug: str, room_id: int, jitsi_url: str, mediamtx_rtsp_base: str):
@@ -43,6 +53,35 @@ import os
 import signal
 import subprocess
 from playwright.async_api import async_playwright
+
+class AgentFailure(Exception):
+    pass
+
+JOINED_JS = (
+    "() => typeof APP !== 'undefined' && !!APP.conference"
+    " && typeof APP.conference.isJoined === 'function' && APP.conference.isJoined()"
+)
+IS_JITSI_JS = "() => typeof APP !== 'undefined' && !!APP.conference"
+
+def same_meeting(requested, final):
+    # Whether a followed redirect still points at the requested room on the same Jitsi.
+    # Host and room must match. The port may change only with an http-to-https upgrade;
+    # a downgrade to http is refused because it would expose the room credential.
+    import urllib.parse
+    req, got = urllib.parse.urlsplit(requested), urllib.parse.urlsplit(final)
+    def room(parts):
+        return (parts.hostname or "").casefold(), parts.path.strip("/").casefold()
+    if room(req) != room(got):
+        return False
+    if req.scheme == got.scheme:
+        return req.port == got.port
+    return req.scheme == "http" and got.scheme == "https"
+
+async def evaluate(page, script):
+    try:
+        return bool(await page.evaluate(script))
+    except Exception:
+        return False
 
 async def run_capture():
     loop = asyncio.get_running_loop()
@@ -72,6 +111,7 @@ async def run_capture():
     browser = None
     ffmpeg_proc = None
     user_data_dir = None
+    exit_code = 0
 
     try:
         import tempfile
@@ -148,10 +188,16 @@ async def run_capture():
         )
 
         print("BOT_STAGE:joining", flush=True)
-        print(f"Joining: {join_url}")
-        await page.goto(join_url)
-
-        await asyncio.sleep(5)
+        # Never print join_url: it can carry meeting credentials.
+        print("Joining meeting", flush=True)
+        try:
+            await page.goto(join_url, timeout=30000)
+        except Exception:
+            raise AgentFailure("join_failed")
+        # goto follows HTTP redirects. Refuse one that leaves the requested room, so the
+        # requested-URL fingerprint in /status names the room actually joined.
+        if not same_meeting(jitsi_url, page.url):
+            raise AgentFailure("redirected")
 
         try:
             await page.click("div[aria-label='Join meeting']", timeout=5000)
@@ -159,67 +205,97 @@ async def run_capture():
         except Exception:
             pass
 
+        deadline = loop.time() + 30
+        while not await evaluate(page, JOINED_JS):
+            if loop.time() > deadline:
+                raise AgentFailure("join_failed" if await evaluate(page, IS_JITSI_JS) else "not_jitsi")
+            await asyncio.sleep(1)
+
         # Wait a bit for Jitsi audio to start flowing into PulseAudio
         await asyncio.sleep(3)
 
         print("BOT_STAGE:in_meeting", flush=True)
 
-        # Retry loop: ffmpeg can exit if RTSP or PulseAudio isn't ready yet
-        max_retries = 5
-        retry_delay = 3
-        for attempt in range(1, max_retries + 1):
-            print(f"Starting ffmpeg (attempt {attempt}/{max_retries})...", flush=True)
-            ffmpeg_proc = await asyncio.create_subprocess_exec(
-                "ffmpeg", "-y",
-                "-f", "pulse",
-                "-i", f"{sink_name}.monitor",
-                "-ac", "1",
-                "-ar", "16000",
-                "-c:a", "libopus",
-                "-b:a", "32k",
-                "-vbr", "on",
-                "-compression_level", "10",
-                "-application", "lowdelay",
-                "-f", "rtsp",
-                "-rtsp_transport", "tcp",
-                f"{mediamtx_rtsp_base}/{event_slug}/{room_id}/floor",
-                env=env,
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.PIPE,
-            )
+        async def stream_audio():
+            nonlocal ffmpeg_proc
+            # Retry loop: ffmpeg can exit if RTSP or PulseAudio isn't ready yet
+            max_retries = 5
+            retry_delay = 3
+            for attempt in range(1, max_retries + 1):
+                print(f"Starting ffmpeg (attempt {attempt}/{max_retries})...", flush=True)
+                ffmpeg_proc = await asyncio.create_subprocess_exec(
+                    "ffmpeg", "-y",
+                    "-f", "pulse",
+                    "-i", f"{sink_name}.monitor",
+                    "-ac", "1",
+                    "-ar", "16000",
+                    "-c:a", "libopus",
+                    "-b:a", "32k",
+                    "-vbr", "on",
+                    "-compression_level", "10",
+                    "-application", "lowdelay",
+                    "-f", "rtsp",
+                    "-rtsp_transport", "tcp",
+                    f"{mediamtx_rtsp_base}/{event_slug}/{room_id}/floor",
+                    env=env,
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.PIPE,
+                )
 
-            # Read stderr in background so we can log it
-            async def _drain_stderr(proc):
-                while True:
-                    line = await proc.stderr.readline()
-                    if not line:
-                        break
-                    text = line.decode(errors="replace").rstrip()
-                    if text:
-                        print(f"ffmpeg: {text}", flush=True)
+                # Read stderr in background so we can log it
+                async def _drain_stderr(proc):
+                    while True:
+                        line = await proc.stderr.readline()
+                        if not line:
+                            break
+                        text = line.decode(errors="replace").rstrip()
+                        if text:
+                            print(f"ffmpeg: {text}", flush=True)
 
-            stderr_task = asyncio.create_task(_drain_stderr(ffmpeg_proc))
+                stderr_task = asyncio.create_task(_drain_stderr(ffmpeg_proc))
 
-            await ffmpeg_proc.wait()
-            await stderr_task
+                await ffmpeg_proc.wait()
+                await stderr_task
 
-            rc = ffmpeg_proc.returncode
-            print(f"ffmpeg exited with code {rc}", flush=True)
+                rc = ffmpeg_proc.returncode
+                print(f"ffmpeg exited with code {rc}", flush=True)
 
-            if rc == 0:
-                print("ffmpeg exited cleanly", flush=True)
-                break
+                if rc == 0:
+                    # A publisher never ends on its own; the media server closed the session.
+                    print("ffmpeg exited cleanly", flush=True)
+                    raise AgentFailure("audio_failed")
 
-            if attempt < max_retries:
-                print(f"Retrying ffmpeg in {retry_delay}s...", flush=True)
-                await asyncio.sleep(retry_delay)
-                retry_delay = min(retry_delay * 2, 15)
-            else:
-                print("ffmpeg failed after all retries", flush=True)
+                if attempt < max_retries:
+                    print(f"Retrying ffmpeg in {retry_delay}s...", flush=True)
+                    await asyncio.sleep(retry_delay)
+                    retry_delay = min(retry_delay * 2, 15)
+                else:
+                    print("ffmpeg failed after all retries", flush=True)
+                    raise AgentFailure("audio_failed")
 
+        async def watch_membership():
+            misses = 0
+            while True:
+                await asyncio.sleep(5)
+                misses = 0 if await evaluate(page, JOINED_JS) else misses + 1
+                if misses >= 3:
+                    raise AgentFailure("left_meeting")
+
+        tasks = [asyncio.create_task(stream_audio()), asyncio.create_task(watch_membership())]
+        try:
+            done, _ = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            for task in tasks:
+                task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+        for task in done:
+            task.result()
 
     except asyncio.CancelledError:
         print("run_capture cancelled")
+    except AgentFailure as failure:
+        print(f"BOT_FAILURE:{failure}", flush=True)
+        exit_code = 3
     finally:
         print("BOT_STAGE:leaving", flush=True)
         if ffmpeg_proc is not None and ffmpeg_proc.returncode is None:
@@ -258,7 +334,9 @@ async def run_capture():
             except OSError:
                 pass
 
-asyncio.run(run_capture())
+    return exit_code
+
+raise SystemExit(asyncio.run(run_capture()))
 """,
             ]
 
@@ -268,15 +346,24 @@ asyncio.run(run_capture())
 
             def log_stream(stream, prefix):
                 for line in iter(stream.readline, ""):
-                    text = line.strip()
+                    text = SECRET_VALUE.sub(r"\1[redacted]", line.strip())
                     logger.info(f"{prefix}: {text}")
                     if "BOT_STAGE:" in text:
                         self.room_states[process_key] = text.split("BOT_STAGE:", 1)[1].strip()
+                    elif "BOT_FAILURE:" in text:
+                        self.room_failures[process_key] = text.split("BOT_FAILURE:", 1)[1].strip()
 
             threading.Thread(target=log_stream, args=(proc.stdout, f"bot[{process_key}] stdout"), daemon=True).start()
             threading.Thread(target=log_stream, args=(proc.stderr, f"bot[{process_key}] stderr"), daemon=True).start()
 
             self.room_states[process_key] = "launching"
+            self.room_failures.pop(process_key, None)
+            self.room_meta[process_key] = {
+                "event_slug": event_slug,
+                "room_id": room_id,
+                # Lets the portal detect a stale meeting without the URL (which may hold a jwt) leaving the bot.
+                "url_fingerprint": hashlib.sha256(jitsi_url.encode("utf-8")).hexdigest()[:16],
+            }
             self.rooms[process_key] = proc
 
     def stop_room_locked(self, process_key: str):
@@ -297,6 +384,8 @@ asyncio.run(run_capture())
                         logger.error(f"Subprocess for {process_key} did not exit after SIGKILL")
             del self.rooms[process_key]
             self.room_states[process_key] = "stopped"
+            self.room_failures.pop(process_key, None)
+            self.room_meta.pop(process_key, None)
 
     def stop_room(self, process_key: str):
         with self.lock:
@@ -351,10 +440,17 @@ class RequestHandler(BaseHTTPRequestHandler):
             with manager.lock:
                 for process_key, proc in manager.rooms.items():
                     stage = manager.room_states.get(process_key, "unknown")
+                    meta = manager.room_meta.get(process_key, {})
                     if proc.poll() is not None:
-                        status[process_key] = {"state": "dead", "stage": "dead", "exit_code": proc.returncode}
+                        status[process_key] = {
+                            **meta,
+                            "state": "dead",
+                            "stage": "dead",
+                            "exit_code": proc.returncode,
+                            "failure": manager.room_failures.get(process_key),
+                        }
                     else:
-                        status[process_key] = {"state": "healthy", "stage": stage, "pid": proc.pid}
+                        status[process_key] = {**meta, "state": "healthy", "stage": stage, "pid": proc.pid}
             self.send_response(200)
             self.send_header("Content-type", "application/json")
             self.end_headers()

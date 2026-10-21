@@ -9,15 +9,16 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, Form, HTTPException, Request
+from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from portal.auth import get_current_user, require_user
+from portal.auth import get_current_user, load_membership_scope, require_user
 from portal.database import get_db_session
+from portal.globals import asset_version_context
 from portal.models import (
     Event,
     EventMembership,
@@ -28,12 +29,14 @@ from portal.models import (
     OAuthToken,
 )
 from portal.rate_limit import auth_rate_limiter, token_rate_limiter
+from portal.roles import EVENT_OWNER
+from portal.utils import safe_redirect
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["oauth"])
 
 _BASE_DIR = Path(__file__).resolve().parent.parent
-templates = Jinja2Templates(directory=str(_BASE_DIR / "templates"))
+templates = Jinja2Templates(directory=str(_BASE_DIR / "templates"), context_processors=[asset_version_context])
 
 VALID_SCOPES = {
     "events:read": "Read event information",
@@ -58,6 +61,22 @@ def hash_token(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
 
 
+def is_absolute_http_url(uri: str) -> bool:
+    """Whether ``uri`` is an absolute http(s) URL with a host.
+
+    Clients registered before redirect URIs were validated can hold any string.
+    Redirecting to one that is relative or uses another scheme (``javascript:``)
+    would send the authorization response somewhere other than the client.
+    """
+    try:
+        parts = urllib.parse.urlsplit(uri)
+        # Reading .port is what raises ValueError for a malformed or out-of-range port.
+        hostname, _port = parts.hostname, parts.port
+    except ValueError:
+        return False
+    return parts.scheme in ("http", "https") and bool(hostname)
+
+
 def verify_pkce(code_verifier: str, code_challenge: str, method: str) -> bool:
     if method == "S256":
         hashed = hashlib.sha256(code_verifier.encode()).digest()
@@ -66,42 +85,36 @@ def verify_pkce(code_verifier: str, code_challenge: str, method: str) -> bool:
     return False
 
 
+# What a Room coordinator may let an app do: run live sessions and read, never manage rooms or
+# booths (the roles table in website/docs/admin/members-and-roles.mdx).
+COORDINATOR_SCOPES = frozenset(
+    {
+        "rooms:read",
+        "booths:read",
+        "sessions:manage",
+        "sessions:read",
+        "transcripts:read",
+        "listeners:provision",
+    }
+)
+
+
 async def get_effective_scopes(
     db: AsyncSession, user: dict, event_id: int, requested_scopes: list[str], client: OAuthClient
 ) -> list[str]:
-    # Check if user has EventMembership
-    result = await db.execute(
-        select(EventMembership).where(EventMembership.user_id == int(user["sub"]), EventMembership.event_id == event_id)
-    )
-    event_membership = result.scalars().first()
+    """The requested scopes this person may grant the app for this event.
 
-    # Check if user has RoomMembership in this event (for room_coordinators)
-    # simplified for now: if they have any role in the event, we grant scopes they requested
-    # that map to their role.
-    # Accept "owner" as a synonym for "event_owner" (e.g. roles synced from Eventyay)
-    is_event_admin = event_membership and event_membership.role in ("event_owner", "super_admin", "owner")
-    is_room_coordinator = event_membership and event_membership.role == "room_coordinator"
-
-    # In a full implementation, we would narrow this down per-room.
-    # For MVP, if they are event_owner, they get all they asked for.
-    # If they are room_coordinator, they get room/booth level scopes.
-    # Confidential clients are trusted to manage permissions (e.g. for ownerless events or multi-organizer auth)
-    allowed = set()
-    if is_event_admin or client.is_confidential:
-        allowed = set(VALID_SCOPES.keys())
-    elif is_room_coordinator:
-        allowed = {
-            "rooms:read",
-            "rooms:write",
-            "booths:read",
-            "booths:write",
-            "sessions:manage",
-            "sessions:read",
-            "transcripts:read",
-            "listeners:provision",
-        }
-
-    # Intersection with user's allowed scopes AND the client's registered scopes
+    Event owners grant everything. Room coordinators, given per event, room or booth (#757),
+    grant only COORDINATOR_SCOPES; the API still limits them to their rooms. Confidential
+    clients are trusted to check the organizer themselves.
+    """
+    scope = await load_membership_scope(db, int(user["sub"]))
+    if event_id in scope["owned_event_ids"] or client.is_confidential:
+        allowed = set(VALID_SCOPES)
+    elif event_id in scope["coordinated_event_ids"]:
+        allowed = set(COORDINATOR_SCOPES)
+    else:
+        allowed = set()
     return list(set(requested_scopes) & allowed & set(client.scopes_requested))
 
 
@@ -116,14 +129,18 @@ async def authorize_get(
     code_challenge: str = "",
     code_challenge_method: str = "",
     event: str = "",
+    login_hint: str = "",
     user: dict | None = Depends(get_current_user),
     db: AsyncSession = Depends(get_db_session),
 ):
+    path_query = f"{request.url.path}?{request.url.query}" if request.url.query else request.url.path
+    next_url = urllib.parse.quote(path_query)
+
     if user is None:
-        # User is not logged in, redirect to login with 'next' parameter
-        path_query = f"{request.url.path}?{request.url.query}" if request.url.query else request.url.path
-        next_url = urllib.parse.quote(path_query)
-        return RedirectResponse(url=f"/login?next={next_url}", status_code=303)
+        login_url = f"/login?next={next_url}"
+        if login_hint:
+            login_url += f"&email={urllib.parse.quote(login_hint)}"
+        return safe_redirect(url=login_url, status_code=status.HTTP_303_SEE_OTHER)
 
     if response_type != "code":
         raise HTTPException(status_code=400, detail="Unsupported response_type. Only 'code' is supported.")
@@ -142,7 +159,7 @@ async def authorize_get(
     if not client or client.status != "active":
         raise HTTPException(status_code=400, detail="Invalid or inactive client_id.")
 
-    if redirect_uri not in client.redirect_uris:
+    if redirect_uri not in client.redirect_uris or not is_absolute_http_url(redirect_uri):
         raise HTTPException(status_code=400, detail="Invalid redirect_uri.")
 
     # 2. Validate Event
@@ -188,6 +205,9 @@ async def authorize_get(
             "code_challenge": code_challenge,
             "code_challenge_method": code_challenge_method,
             "scope_string": " ".join(effective_scopes),
+            "current_user_email": user.get("email", "") if user else "",
+            "switch_url": f"/login?switch=1&next={next_url}"
+            + (f"&email={urllib.parse.quote(login_hint)}" if login_hint else ""),
         },
     )
 
@@ -213,7 +233,7 @@ async def authorize_post(
 
     # Use the canonical registered redirect URI value for all redirects.
     validated_redirect_uri = next((uri for uri in client.redirect_uris if uri == redirect_uri), None)
-    if not validated_redirect_uri:
+    if not validated_redirect_uri or not is_absolute_http_url(validated_redirect_uri):
         raise HTTPException(status_code=400, detail="Invalid client or redirect URI.")
 
     if action == "deny":
@@ -234,9 +254,10 @@ async def authorize_post(
     if not effective_scopes:
         raise HTTPException(status_code=403, detail="Forbidden")
 
-    # Save consent — handle race conditions with a savepoint
+    # Save consent — handle race conditions with separate savepoints
     from sqlalchemy.exc import IntegrityError
 
+    # 1. Manage consent grant in its own savepoint
     try:
         async with db.begin_nested():
             consent = OAuthConsentGrant(
@@ -245,7 +266,7 @@ async def authorize_post(
             db.add(consent)
             await db.flush()
     except IntegrityError:
-        # Another request inserted it concurrently. Just update the scopes.
+        # Consent grant already exists. Update the scopes.
         await db.execute(
             update(OAuthConsentGrant)
             .where(
@@ -255,6 +276,10 @@ async def authorize_post(
             )
             .values(scopes=effective_scopes)
         )
+
+    # No membership changes here. Clicking Allow proves only that someone is signed in; anyone can
+    # open this page with any event. Event ownership is given at the token exchange, where the
+    # confidential client proves itself with its secret (_handle_authorization_code_grant).
 
     # Generate authorization code
     code = generate_token()
@@ -285,6 +310,220 @@ async def authorize_post(
     return RedirectResponse(url=redirect_url, status_code=303)
 
 
+async def _handle_authorization_code_grant(
+    db: AsyncSession,
+    client: OAuthClient,
+    code: str | None,
+    redirect_uri: str | None,
+    code_verifier: str | None,
+) -> dict | JSONResponse:
+    if not code or not redirect_uri or not code_verifier:
+        return JSONResponse(status_code=400, content={"error": "invalid_request"})
+
+    code_hash = hash_token(code)
+
+    # Fetch the details of the claimed code
+    code_result = await db.execute(
+        select(OAuthAuthorizationCode).where(OAuthAuthorizationCode.code_hash == code_hash)
+    )
+    auth_code = code_result.scalars().first()
+
+    if (
+        not auth_code
+        or auth_code.used
+        or auth_code.expires_at.replace(tzinfo=timezone.utc) < datetime.now(timezone.utc)
+    ):
+        return JSONResponse(status_code=400, content={"error": "invalid_grant"})
+
+    if auth_code.client_id != client.id or auth_code.redirect_uri != redirect_uri:
+        return JSONResponse(status_code=400, content={"error": "invalid_grant"})
+
+    if not verify_pkce(code_verifier, auth_code.code_challenge, auth_code.code_challenge_method):
+        return JSONResponse(
+            status_code=400, content={"error": "invalid_grant", "error_description": "PKCE verification failed"}
+        )
+
+    # Atomically claim the authorization code
+    update_result = await db.execute(
+        update(OAuthAuthorizationCode)
+        .where(
+            OAuthAuthorizationCode.code_hash == code_hash,
+            OAuthAuthorizationCode.used.is_(False),
+        )
+        .values(used=True)
+    )
+    if update_result.rowcount == 0:
+        return JSONResponse(status_code=400, content={"error": "invalid_grant"})
+
+    # Issue tokens
+    access_token_raw = generate_token()
+    refresh_token_raw = generate_token()
+
+    if client.is_confidential:
+        from sqlalchemy.exc import IntegrityError
+
+        try:
+            async with db.begin_nested():
+                membership_result = await db.execute(
+                    select(EventMembership).where(
+                        EventMembership.user_id == auth_code.user_id, EventMembership.event_id == auth_code.event_id
+                    )
+                )
+                membership = membership_result.scalars().first()
+                if membership:
+                    if membership.role != EVENT_OWNER:
+                        membership.role = EVENT_OWNER
+                else:
+                    membership = EventMembership(
+                        user_id=auth_code.user_id, event_id=auth_code.event_id, role=EVENT_OWNER
+                    )
+                    db.add(membership)
+                await db.flush()
+        except IntegrityError:
+            membership_result = await db.execute(
+                select(EventMembership).where(
+                    EventMembership.user_id == auth_code.user_id, EventMembership.event_id == auth_code.event_id
+                )
+            )
+            membership = membership_result.scalars().first()
+            if membership and membership.role != EVENT_OWNER:
+                membership.role = EVENT_OWNER
+
+    token_record = OAuthToken(
+        client_id=client.id,
+        user_id=auth_code.user_id,
+        event_id=auth_code.event_id,
+        scopes=auth_code.scopes,
+        access_token_hash=hash_token(access_token_raw),
+        refresh_token_hash=hash_token(refresh_token_raw),
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+    )
+    db.add(token_record)
+    await db.flush()  # materialise token_record.id before audit log
+    db.add(
+        OAuthAuditLog(
+            token_id=token_record.id,
+            client_id=client.id,
+            event_id=auth_code.event_id,
+            action="token_exchange_code",
+            request_path="/oauth/token",
+            status_code=200,
+        )
+    )
+    await db.flush()
+
+    return {
+        "access_token": access_token_raw,
+        "token_type": "Bearer",
+        "expires_in": 3600,
+        "refresh_token": refresh_token_raw,
+        "scope": " ".join(auth_code.scopes),
+    }
+
+
+async def _handle_refresh_token_grant(
+    db: AsyncSession,
+    client: OAuthClient,
+    refresh_token: str | None,
+) -> dict | JSONResponse:
+    if not refresh_token:
+        return JSONResponse(status_code=400, content={"error": "invalid_request"})
+
+    refresh_hash = hash_token(refresh_token)
+    token_result = await db.execute(
+        select(OAuthToken)
+        .options(selectinload(OAuthToken.client), selectinload(OAuthToken.event))
+        .where(OAuthToken.refresh_token_hash == refresh_hash)
+    )
+    token_record = token_result.scalars().first()
+
+    if not token_record or token_record.client_id != client.id:
+        return JSONResponse(status_code=400, content={"error": "invalid_grant"})
+
+    if token_record.revoked:
+        # Refresh token reuse detected — revoke only this token's rotation family.
+        # Walk up to the root of the chain via parent_token_id, then collect and
+        # revoke every token that descends from that root. This leaves unrelated
+        # sessions for the same client/user/event completely untouched.
+        root_id = token_record.id
+        current = token_record
+        while current.parent_token_id is not None:
+            parent = await db.get(OAuthToken, current.parent_token_id)
+            if parent is None:
+                break
+            root_id = parent.id
+            current = parent
+
+        # Collect the entire family by following parent_token_id chains from root
+        family_ids: list[int] = []
+        to_visit = [root_id]
+        while to_visit:
+            current_id = to_visit.pop()
+            family_ids.append(current_id)
+            children_result = await db.execute(
+                select(OAuthToken.id).where(OAuthToken.parent_token_id == current_id)
+            )
+            to_visit.extend(children_result.scalars().all())
+
+        await db.execute(
+            update(OAuthToken)
+            .where(OAuthToken.id.in_(family_ids))
+            .values(revoked=True)
+        )
+        db.add(
+            OAuthAuditLog(
+                client_id=client.id,
+                event_id=token_record.event_id,
+                action="token_reuse_detected",
+                request_path="/oauth/token",
+                status_code=400,
+            )
+        )
+        await db.flush()
+        return JSONResponse(
+            status_code=400, content={"error": "invalid_grant", "error_description": "Token reuse detected"}
+        )
+
+    # Revoke the old token
+    token_record.revoked = True
+
+    # Issue new token pair
+    new_access_token_raw = generate_token()
+    new_refresh_token_raw = generate_token()
+
+    new_token_record = OAuthToken(
+        client_id=client.id,
+        user_id=token_record.user_id,
+        event_id=token_record.event_id,
+        scopes=token_record.scopes,  # Can be narrowed down, but keep same for now
+        access_token_hash=hash_token(new_access_token_raw),
+        refresh_token_hash=hash_token(new_refresh_token_raw),
+        parent_token_id=token_record.id,
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+    )
+    db.add(new_token_record)
+    await db.flush()  # materialise new_token_record.id before audit log
+    db.add(
+        OAuthAuditLog(
+            token_id=new_token_record.id,
+            client_id=client.id,
+            event_id=token_record.event_id,
+            action="token_exchange_refresh",
+            request_path="/oauth/token",
+            status_code=200,
+        )
+    )
+    await db.flush()
+
+    return {
+        "access_token": new_access_token_raw,
+        "token_type": "Bearer",
+        "expires_in": 3600,
+        "refresh_token": new_refresh_token_raw,
+        "scope": " ".join(token_record.scopes),
+    }
+
+
 @router.post("/oauth/token", response_class=JSONResponse)
 async def token_exchange(
     request: Request,
@@ -311,183 +550,10 @@ async def token_exchange(
             return JSONResponse(status_code=401, content={"error": "invalid_client"})
 
     if grant_type == "authorization_code":
-        if not code or not redirect_uri or not code_verifier:
-            return JSONResponse(status_code=400, content={"error": "invalid_request"})
-
-        code_hash = hash_token(code)
-
-        # Fetch the details of the claimed code
-        code_result = await db.execute(
-            select(OAuthAuthorizationCode).where(OAuthAuthorizationCode.code_hash == code_hash)
-        )
-        auth_code = code_result.scalars().first()
-
-        if (
-            not auth_code
-            or auth_code.used
-            or auth_code.expires_at.replace(tzinfo=timezone.utc) < datetime.now(timezone.utc)
-        ):
-            return JSONResponse(status_code=400, content={"error": "invalid_grant"})
-
-        if auth_code.client_id != client.id or auth_code.redirect_uri != redirect_uri:
-            return JSONResponse(status_code=400, content={"error": "invalid_grant"})
-
-        if not verify_pkce(code_verifier, auth_code.code_challenge, auth_code.code_challenge_method):
-            return JSONResponse(
-                status_code=400, content={"error": "invalid_grant", "error_description": "PKCE verification failed"}
-            )
-
-        # Atomically claim the authorization code
-        update_result = await db.execute(
-            update(OAuthAuthorizationCode)
-            .where(
-                OAuthAuthorizationCode.code_hash == code_hash,
-                OAuthAuthorizationCode.used.is_(False),
-            )
-            .values(used=True)
-        )
-        if update_result.rowcount == 0:
-            return JSONResponse(status_code=400, content={"error": "invalid_grant"})
-
-        # Issue tokens
-        access_token_raw = generate_token()
-        refresh_token_raw = generate_token()
-
-        if client.is_confidential:
-            from sqlalchemy.exc import IntegrityError
-
-            try:
-                async with db.begin_nested():
-                    membership_result = await db.execute(
-                        select(EventMembership).where(
-                            EventMembership.user_id == auth_code.user_id, EventMembership.event_id == auth_code.event_id
-                        )
-                    )
-                    membership = membership_result.scalars().first()
-                    if membership:
-                        if membership.role not in ("event_owner", "super_admin", "owner"):
-                            membership.role = "event_owner"
-                    else:
-                        membership = EventMembership(
-                            user_id=auth_code.user_id, event_id=auth_code.event_id, role="event_owner"
-                        )
-                        db.add(membership)
-                    await db.flush()
-            except IntegrityError:
-                membership_result = await db.execute(
-                    select(EventMembership).where(
-                        EventMembership.user_id == auth_code.user_id, EventMembership.event_id == auth_code.event_id
-                    )
-                )
-                membership = membership_result.scalars().first()
-                if membership and membership.role not in ("event_owner", "super_admin", "owner"):
-                    membership.role = "event_owner"
-
-        token_record = OAuthToken(
-            client_id=client.id,
-            user_id=auth_code.user_id,
-            event_id=auth_code.event_id,
-            scopes=auth_code.scopes,
-            access_token_hash=hash_token(access_token_raw),
-            refresh_token_hash=hash_token(refresh_token_raw),
-            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
-        )
-        db.add(token_record)
-        db.add(
-            OAuthAuditLog(
-                token_id=token_record.id,
-                client_id=client.id,
-                event_id=auth_code.event_id,
-                action="token_exchange_code",
-                request_path="/oauth/token",
-                status_code=200,
-            )
-        )
-        await db.flush()
-
-        return {
-            "access_token": access_token_raw,
-            "token_type": "Bearer",
-            "expires_in": 3600,
-            "refresh_token": refresh_token_raw,
-            "scope": " ".join(auth_code.scopes),
-        }
+        return await _handle_authorization_code_grant(db, client, code, redirect_uri, code_verifier)
 
     elif grant_type == "refresh_token":
-        if not refresh_token:
-            return JSONResponse(status_code=400, content={"error": "invalid_request"})
-
-        refresh_hash = hash_token(refresh_token)
-        token_result = await db.execute(
-            select(OAuthToken)
-            .options(selectinload(OAuthToken.client), selectinload(OAuthToken.event))
-            .where(OAuthToken.refresh_token_hash == refresh_hash)
-        )
-        token_record = token_result.scalars().first()
-
-        if not token_record or token_record.client_id != client.id:
-            return JSONResponse(status_code=400, content={"error": "invalid_grant"})
-
-        if token_record.revoked:
-            # Refresh token reuse detected! Revoke the entire family
-            await db.execute(
-                update(OAuthToken)
-                .where(OAuthToken.client_id == client.id)
-                .where(OAuthToken.user_id == token_record.user_id)
-                .where(OAuthToken.event_id == token_record.event_id)
-                .values(revoked=True)
-            )
-            db.add(
-                OAuthAuditLog(
-                    client_id=client.id,
-                    event_id=token_record.event_id,
-                    action="token_reuse_detected",
-                    request_path="/oauth/token",
-                    status_code=400,
-                )
-            )
-            await db.flush()
-            return JSONResponse(
-                status_code=400, content={"error": "invalid_grant", "error_description": "Token reuse detected"}
-            )
-
-        # Revoke the old token
-        token_record.revoked = True
-
-        # Issue new token pair
-        new_access_token_raw = generate_token()
-        new_refresh_token_raw = generate_token()
-
-        new_token_record = OAuthToken(
-            client_id=client.id,
-            user_id=token_record.user_id,
-            event_id=token_record.event_id,
-            scopes=token_record.scopes,  # Can be narrowed down, but keep same for now
-            access_token_hash=hash_token(new_access_token_raw),
-            refresh_token_hash=hash_token(new_refresh_token_raw),
-            parent_token_id=token_record.id,
-            expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
-        )
-        db.add(new_token_record)
-        db.add(
-            OAuthAuditLog(
-                token_id=new_token_record.id,
-                client_id=client.id,
-                event_id=token_record.event_id,
-                action="token_exchange_refresh",
-                request_path="/oauth/token",
-                status_code=200,
-            )
-        )
-        await db.flush()
-
-        return {
-            "access_token": new_access_token_raw,
-            "token_type": "Bearer",
-            "expires_in": 3600,
-            "refresh_token": new_refresh_token_raw,
-            "scope": " ".join(token_record.scopes),
-        }
+        return await _handle_refresh_token_grant(db, client, refresh_token)
 
     return JSONResponse(status_code=400, content={"error": "unsupported_grant_type"})
 
