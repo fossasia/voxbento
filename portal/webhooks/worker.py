@@ -6,6 +6,7 @@ import hmac
 import json
 import logging
 import time
+import urllib.parse
 from datetime import datetime, timedelta, timezone
 
 import httpx
@@ -13,7 +14,7 @@ from sqlalchemy import select, update
 
 from portal.database import get_session
 from portal.models import OAuthAuditLog, WebhookDelivery, WebhookSubscription
-from portal.routers.webhooks import validate_ssrf
+from portal.routers.webhooks import resolve_and_validate_url
 
 logger = logging.getLogger(__name__)
 
@@ -60,8 +61,8 @@ async def process_delivery(client: httpx.AsyncClient, db, delivery: WebhookDeliv
         return
 
     try:
-        validate_ssrf(sub.target_url)
-    except Exception as e:
+        safe_addrs = resolve_and_validate_url(sub.target_url)
+    except (ValueError, Exception) as e:
         delivery.status = "dead"
         delivery.last_error = f"SSRF Validation failed at dispatch: {e}"
         return
@@ -82,8 +83,15 @@ async def process_delivery(client: httpx.AsyncClient, db, delivery: WebhookDeliv
     success = False
     last_error = None
 
+    pinned_ip, pinned_port = safe_addrs[0]
+    pinned_url = urllib.parse.urlunparse(
+        urllib.parse.urlparse(sub.target_url)._replace(netloc=f"[{pinned_ip}]:{pinned_port}" if ":" in pinned_ip else f"{pinned_ip}:{pinned_port}")
+    )
+    parsed = urllib.parse.urlparse(sub.target_url)
+    pin_headers = {**headers, "Host": parsed.hostname or ""}
+
     try:
-        response = await client.post(sub.target_url, content=payload_str, headers=headers)
+        response = await client.post(pinned_url, content=payload_str, headers=pin_headers)
         response.raise_for_status()
         success = True
     except httpx.RequestError as e:
