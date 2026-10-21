@@ -282,40 +282,9 @@ async def authorize_post(
             .values(scopes=effective_scopes)
         )
 
-    # 2. Manage event membership for authorizing user outside the consent savepoint
-    try:
-        async with db.begin_nested():
-            mem_res = await db.execute(
-                select(EventMembership).where(
-                    EventMembership.user_id == int(user["sub"]),
-                    EventMembership.event_id == event_id,
-                )
-            )
-            existing_mem = mem_res.scalars().first()
-            if existing_mem:
-                # Upgrade existing lower role (e.g. room_coordinator) to event_owner if confidential client
-                if client.is_confidential and existing_mem.role not in ("event_owner", "super_admin", "owner"):
-                    existing_mem.role = "event_owner"
-            else:
-                # Only grant event_owner if event currently has no owners (initial setup)
-                # or if client is confidential and user was verified by the platform
-                existing_owners = (
-                    (
-                        await db.execute(
-                            select(EventMembership).where(
-                                EventMembership.event_id == event_id,
-                                EventMembership.role.in_(("event_owner", "super_admin", "owner")),
-                            )
-                        )
-                    )
-                    .scalars()
-                    .all()
-                )
-                if not existing_owners or client.is_confidential:
-                    db.add(EventMembership(user_id=int(user["sub"]), event_id=event_id, role="event_owner"))
-            await db.flush()
-    except IntegrityError:
-        pass
+    # No membership changes here. Clicking Allow proves only that someone is signed in; anyone can
+    # open this page with any event. Event ownership is given at the token exchange, where the
+    # confidential client proves itself with its secret (_handle_authorization_code_grant).
 
     # Generate authorization code
     code = generate_token()
