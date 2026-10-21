@@ -301,11 +301,22 @@ function handleConnectionChange() {
     attempt = 0;
     if (stateBadge.dataset.state !== 'no-audio') liveState();
   } else if (state === 'failed') {
-    scheduleReconnect(0);
+    retryAfterPeerLoss();
   } else if (state === 'disconnected') {
     // ICE often recovers from a brief blip by itself; only rebuild if it does not.
-    disconnectTimer = window.setTimeout(() => scheduleReconnect(0), DISCONNECT_GRACE_MS);
+    disconnectTimer = window.setTimeout(retryAfterPeerLoss, DISCONNECT_GRACE_MS);
   }
+}
+
+function retryDelay() {
+  return Math.min(MAX_RETRY_DELAY_MS, 1000 * 2 ** Math.min(attempt, 5));
+}
+
+// First retry is immediate; a peer that keeps failing before it connects backs off like a failed connect.
+function retryAfterPeerLoss() {
+  const delay = attempt === 0 ? 0 : retryDelay();
+  attempt += 1;
+  scheduleReconnect(delay);
 }
 
 function teardownPeer() {
@@ -382,7 +393,7 @@ async function connect() {
       return;
     }
     attempt += 1;
-    const delay = Math.min(MAX_RETRY_DELAY_MS, 1000 * 2 ** Math.min(attempt, 5));
+    const delay = retryDelay();
     setState('reconnecting', `Could not reach the floor. Retrying in ${Math.round(delay / 1000)} s (attempt ${attempt})…`);
     scheduleReconnect(delay);
     return;
