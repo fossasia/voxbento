@@ -3,7 +3,7 @@
 
 {% block breadcrumb %}
 <nav class="breadcrumb">
-  <a href="{{ management_prefix }}/">{{ 'My events' if is_workspace else 'Dashboard' }}</a> <span>/</span>
+  <a href="{{ management_prefix }}/">{{ 'My events' if is_workspace else 'Overview' }}</a> <span>/</span>
   <a href="{{ management_prefix }}/events/">Events</a> <span>/</span>
   <a href="{{ management_prefix }}/events/{{ event.id }}/">{{ event.display_name }}</a> <span>/</span>
   <a href="{{ management_prefix }}/events/{{ event.id }}/rooms/">Rooms</a> <span>/</span>
@@ -610,94 +610,13 @@
 </div>
 
 <!-- Assigned Members -->
-<div class="section-card section-card--spaced-lg">
-  <div class="section-header">
-    <h2>Assigned Room Coordinators</h2>
-  </div>
-  
-  {% if request.query_params.get('error') == 'user_not_found' %}
-  <div class="alert alert-danger alert-flash">
-    <strong>Error:</strong> User with that email address was not found. They must register first.
-  </div>
-  {% endif %}
-  {% if request.query_params.get('error') == 'invalid_role' %}
-  <div class="alert alert-danger alert-flash">
-    <strong>Error:</strong> Invalid role selected. Only room_coordinator is allowed.
-  </div>
-  {% endif %}
-
-  <!-- Assign Member Form -->
-  <div class="token-form-card token-form-card--spaced-sm">
-    <h3>Assign Coordinator</h3>
-    <form method="post" action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/members/" class="token-form">
-      <div class="form-row">
-        <div class="form-group">
-          <label for="member_email">User Email</label>
-          <input type="email" name="email" id="member_email" class="input" placeholder="user@example.com" required />
-        </div>
-        <div class="form-group">
-          <label for="member_role">Role</label>
-          <select name="role" id="member_role" class="input" required>
-            <option value="room_coordinator" selected>room_coordinator</option>
-          </select>
-        </div>
-        <div class="form-group form-group-btn">
-          <button type="submit" class="btn btn-primary">Assign</button>
-        </div>
-      </div>
-    </form>
-  </div>
-
-  {% if memberships %}
-  <table class="data-table">
-    <thead>
-      <tr>
-        <th>Email</th>
-        <th>Display Name</th>
-        <th>Account Status</th>
-        <th>Room Role</th>
-        <th>Actions</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for m in memberships %}
-      {% set u = m.user %}
-      <tr class="row-assigned">
-        <td>{{ u.email }}</td>
-        <td>{{ u.display_name }}</td>
-        <td>
-          {% if u.is_active %}
-          <span class="status-live">● Active</span>
-          {% else %}
-          <span class="status-offline">○ Inactive</span>
-          {% endif %}
-        </td>
-        <td>
-          <span class="badge badge-role badge-{{ m.role }}">{{ m.role }}</span>
-        </td>
-        <td class="actions-cell">
-          <form method="post"
-                action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/members/{{ m.id }}/invite"
-                class="inline-form form-inline-spaced">
-            <button type="submit" class="btn btn-sm btn-outline btn-invite">✉️ Invite</button>
-          </form>
-          <form method="post"
-                action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/members/{{ m.id }}/delete"
-                class="inline-form"
-                data-confirm="Remove {{ u.display_name }} from this room?">
-            <button type="submit" class="btn btn-sm btn-danger">Remove</button>
-          </form>
-        </td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
-  {% else %}
-  <div class="empty-state">
-    <p>No coordinators are assigned to this room yet.</p>
-  </div>
-  {% endif %}
+{# The event's Team page manages everyone with a role (#757). #}
+{% if is_event_owner %}
+<div class="tm-pointer">
+  <p><strong>Room coordinators</strong> for this room are added and removed on the event's Team page.</p>
+  <a href="{{ management_prefix }}/events/{{ event.id }}/team/" class="btn btn-outline">Open Team</a>
 </div>
+{% endif %}
 
 {% if is_event_owner %}
 <div class="danger-zone">

@@ -65,7 +65,18 @@
 
 ## Management Surfaces (`/workspace/*` and `/admin/*`)
 
-`/workspace/*` is the canonical event-management surface for event owners. Room coordinators use `/mission-control/*`, which filters the operational view to their assigned rooms. `/admin/*` is reserved for super admins, apart from legacy room-scoped coordinator handlers retained for compatibility. All admin and workspace routes require a `user_token` with `is_admin=True`, or the appropriate `event_owner` / `room_coordinator` membership for scoped routes. The paths in the table below name the shared `/admin` handler routes; current event-management paths have explicit event-owner mappings formed by replacing `/admin` with `/workspace`. Likewise, the listed `/api/admin/providers/...` and `/api/admin/events/...` routes have explicit `/api/workspace/...` event-owner mappings. New admin routes are not exposed through the workspace unless they are added to that allowlist.
+`/workspace/*` is the canonical event-management surface for event owners. Room coordinators use `/mission-control/*`, which filters the operational view to their assigned rooms. `/admin/*` is reserved for Admins, apart from legacy room-scoped coordinator handlers retained for compatibility. All admin and workspace routes require a `user_token` with `is_admin=True`, or the appropriate `event_owner` / `room_coordinator` membership for scoped routes. The paths in the table below name the shared `/admin` handler routes; current event-management paths have explicit event-owner mappings formed by replacing `/admin` with `/workspace`. Likewise, the listed `/api/admin/providers/...` and `/api/admin/events/...` routes have explicit `/api/workspace/...` event-owner mappings. New admin routes are not exposed through the workspace unless they are added to that allowlist.
+
+**Access checks (#757).** Routes use dependencies named after who they admit (Admins pass all of them):
+`require_admin` (Admins only), `require_event_owner` (owners of the event in the path),
+`require_owner_or_coordinator` (owners, or coordinators of the room in the path) and
+`require_room_event_access` (floor transcription: owners and coordinators of the room).
+Every change to an event, its rooms, booths, members, invite links, keys and settings, and the
+setup, keys and members pages, use `require_event_owner`; coordinators keep read-only room and
+booth pages, transcripts, Mission Control and floor transcription. A Room coordinator given per
+event coordinates every room of it; given per booth, that booth's room. Role assignments are
+checked with `portal.roles.assignment_error` before anything is created; a refused one redirects
+with `?error=invalid_role&role=…` and the page explains why.
 
 `/workspace/` itself is **My events** (#766): its own route, open to every signed-in user, not mapped onto the admin dashboard. Legacy organizer requests to `/admin/` still redirect there. Legacy organizer requests to allowlisted event-management paths under `/admin/events...`, `/admin/setup...`, or their management API equivalents receive a `307` redirect to the matching workspace URL. The redirect preserves the HTTP method and query string. System-only and unknown routes, including `/admin/users/`, `/admin/developer-accounts`, and `/admin/login`, have no workspace equivalent. OAuth routes under `/oauth/*` are unchanged. General workspace entry points such as the dashboard and setup require ownership of at least one event; routes containing `{event_id}` require ownership of that specific event.
 
@@ -73,7 +84,7 @@
 |---|---|---|---|
 | GET | `/admin/login` | — | `303` → `/login?next=/admin/` (admins use the shared sign-in page) |
 | GET | `/admin/logout` | — | Deletes session cookies → `/login` |
-| GET | `/admin/` | `admin/dashboard.html` | System-wide events for super admins |
+| GET | `/admin/` | `admin/dashboard.html` | System-wide events for Admins |
 | GET | `/workspace/` | `admin/my_events.html` | **My events** (#766): every event the user has a role in, once per event, with roles in plain language and Manage event / Open Mission Control / Enter booth buttons; New event for hosting access and Admins; `303` → `/login?next=/workspace/` when signed out |
 | GET | `/admin/events/` | `admin/event_list.html` | Search by event slug or display name with `?search=`; blank queries show all events; `%` and `_` are literal; pagination URL-encodes the term and clamps out-of-range pages |
 | POST | `/admin/events/` | — | Creates event (slug + display_name) |

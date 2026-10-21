@@ -82,7 +82,7 @@ Event management and system administration use separate public URL namespaces:
 
 - `/workspace/...` is the event workspace for `event_owner` users. It contains event, room, booth, membership, transcription, translation, and event API-key management scoped by the existing role checks.
 - `/mission-control/...` is the room-scoped operational surface for `room_coordinator` users.
-- `/admin/...` is reserved for `super_admin` users and contains system-wide views such as user and developer-account management.
+- `/admin/...` is reserved for Admins and contains system-wide views such as user and developer-account management.
 
 Both namespaces use the same underlying management handlers, so the route split does not duplicate event-management behavior. Existing organizer bookmarks under `/admin/events/...` receive a temporary redirect to the corresponding workspace URL with their query string and HTTP method preserved. The OAuth routes remain under `/oauth/...`; shared-organizer authorization and token lifecycle behavior are therefore unchanged.
 
@@ -166,13 +166,9 @@ Oversees the room's booths from Mission Control. Assigns which interpreter is ac
 
 Monitors floor audio via the Jitsi iframe and publishes translated audio to MediaMTX via WHIP when designated as the active interpreter. Only the active interpreter can go live — all others remain in standby.
 
-### Support
+### Listeners
 
-Observer role with view-only monitoring privileges into booth state and floor audio, without broadcasting or chat capability.
-
-### Listener
-
-Receives the interpreted audio stream from MediaMTX via WHEP or HLS. Listeners connect to the event's public listener page and choose a room and language — no login required by default.
+Listening is not a role. Listeners receive the interpreted audio stream from MediaMTX via WHEP or HLS. They connect to the event's public listener page and choose a room and language — no login required by default.
   
 
 ## Live Captions
@@ -259,7 +255,7 @@ request emails the team address in `HOSTING_REQUESTS_EMAIL`, and the Account pag
 shows the request as waiting for review until it is handled.
 
 Admins see open requests on the **Requests** tab of `/admin/hosting-access/`; the
-"Hosting access" menu item shows how many are open. Granting sets `can_host`,
+"Hosting access" menu item shows how many are open, and the "Dev Accounts" item likewise shows how many Developer API applications are waiting for review. Granting sets `can_host`,
 closes the request as `granted` and sends the "hosting access granted" email.
 Declining requires a reason, closes the request as `declined` and emails the
 reason to the person, who can then send a new request. Granting hosting access
@@ -273,7 +269,7 @@ Publishing audio to a booth is protected by three independent enforcement layers
 <Tabs>
   <TabItem value="role-and-active-interpreter-check" label="Role and active-interpreter check">
 
-Voxbento's server-side coordination layer rejects any attempt to activate a microphone or begin audio publishing unless the participant holds publishing authority (`interpreter`, `room_coordinator`, `event_owner`, `super_admin`) **and** is the currently designated active broadcaster for that booth. Standby participants, support observers, and listeners cannot publish audio.
+Voxbento's server-side coordination layer rejects any attempt to activate a microphone or begin audio publishing unless the participant's role can go live (every role in `portal/roles.py`: Interpreter, Room coordinator, Event owner, Admin) **and** they are the currently designated active broadcaster for that booth. Standby participants and listeners cannot publish audio.
 
 </TabItem>
   <TabItem value="whip-url-gating" label="Publish tickets">

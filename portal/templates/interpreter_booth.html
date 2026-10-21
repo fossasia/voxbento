@@ -20,6 +20,7 @@
   data-whip-url='{{ whip_url | default("") }}'
   data-whep-url='{{ whep_url | default("") }}'
   data-granted-role='{{ granted_role | default("") }}'
+  data-can-go-live="{{ 'true' if can_go_live else 'false' }}"
   data-display-name='{{ display_name | default("") }}'
   data-relay-whep-url='{{ relay_whep_url | default("", true) }}'
 >

@@ -37,6 +37,16 @@ sign-in settings (change, set or remove a password).
 Admins manage accounts at **Admin → Users**: search and filter everyone, and turn
 hosting access, Admin, Active, and Email Verification on or off right from the list.
 
+## Roles
+
+VoxBento has four roles: **Admin** (runs the platform), **Event owner** (runs an
+event: rooms, booths, team, keys), **Room coordinator** (runs the live session from
+Mission Control; given per event, room or booth) and **Interpreter** (given per
+event or booth). Each role can do everything the roles below it can. Hosting access
+is an account setting, not a role, and listening needs no role. The full table is
+in [Roles](website/docs/admin/members-and-roles.mdx); roles are defined once in
+`portal/roles.py`.
+
 ## Hosting access
 
 Only people with hosting access can create events. A signed-in user without it

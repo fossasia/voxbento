@@ -98,7 +98,7 @@
 .badge-coordinator { background: #fef3c7; color: #92400e; }
 .badge-listener { background: #e0e7ff; color: #4338ca; }
 .badge-event_admin { background: #fce7f3; color: #9d174d; }
-.badge-super_admin { background: #fecaca; color: #991b1b; }
+.badge-admin { background: #fecaca; color: #991b1b; }
 
 .muted { color: var(--color-text-secondary); font-size: 0.875rem; }
 

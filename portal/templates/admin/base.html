@@ -15,7 +15,7 @@
     {% from "_app_header.html" import app_header with context %}
     {% call app_header() %}
       {% if user_menu and user_menu.area == 'admin' %}
-        <a href="/admin/" class="{{ 'is-active' if _path == '/admin/' else '' }}">Dashboard</a>
+        <a href="/admin/" class="{{ 'is-active' if _path == '/admin/' else '' }}">Overview</a>
         <a href="/admin/hosting-access/" class="{{ 'is-active' if _path.startswith('/admin/hosting-access') else '' }}">
           Hosting access
           {% if open_hosting_requests|default(0) %}
@@ -23,9 +23,13 @@
           {% endif %}
         </a>
         <a href="/admin/events/" class="{{ 'is-active' if _path.startswith('/admin/events') or _path.startswith('/admin/setup') else '' }}">Events</a>
-        <a href="/mission-control/">Mission Control</a>
         <a href="/admin/users/" class="{{ 'is-active' if _path.startswith('/admin/users') else '' }}">Users</a>
-        <a href="/admin/developer-accounts" class="{{ 'is-active' if _path.startswith('/admin/developer-accounts') else '' }}">Dev Accounts</a>
+        <a href="/admin/developer-accounts" class="{{ 'is-active' if _path.startswith('/admin/developer-accounts') else '' }}">
+          Dev Accounts
+          {% if pending_developer_accounts|default(0) %}
+          <span class="nav-count">{{ pending_developer_accounts }}<span class="visually-hidden"> pending applications</span></span>
+          {% endif %}
+        </a>
       {% endif %}
     {% endcall %}
 

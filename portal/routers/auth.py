@@ -192,10 +192,7 @@ async def join_via_invite(request: Request, token: str) -> RedirectResponse:
         language_code=tok.booth.language_code,
     )
 
-    if tok.role == "listener":
-        redirect_url = f"/listener/{tok.booth.event.slug}"
-    else:
-        redirect_url = "/interpreter"
+    redirect_url = "/interpreter"
 
     response = safe_redirect(url=redirect_url, status_code=status.HTTP_303_SEE_OTHER)
     response.set_cookie(

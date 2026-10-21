@@ -437,7 +437,10 @@ def test_stale_admin_claim_does_not_grant_booth_access(booth_team):
     assert calls == []
 
 
-@pytest.mark.parametrize(("role", "can_go_live"), [("interpreter", True), ("support", False)])
+@pytest.mark.parametrize(
+    ("role", "can_go_live"),
+    [("interpreter", True), pytest.param("support", False, id="removed-support-role")],
+)
 def test_invite_link_role_must_be_able_to_go_live(booth_team, role, can_go_live):
     _, room_id, booth_id, calls = booth_team
     participant = create_participant_token(

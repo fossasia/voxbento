@@ -602,7 +602,7 @@ function setBoothVolume(pct) {
 
 function joinBooth() {
   const displayName = portal.dataset.displayName || 'Interpreter'
-  const requestedRole = state.grantedRole || 'interpreter'
+  const requestedRole = state.grantedRole
 
   const rawRoomId = portal.dataset.roomId
   const parsedRoomId =
@@ -1311,11 +1311,10 @@ function render() {
  * Show/hide controls that are not available to the current role.
  */
 function renderRoleControls() {
-  const role = state.grantedRole
-  if (!role) return
+  if (!state.grantedRole) return
 
-  const isListener = role === 'listener'
-  const canGo = !isListener
+  // What the role allows comes from the server (portal/roles.py), not from role names here.
+  const canGo = portal.dataset.canGoLive === 'true'
 
   if (elements.handoverBtn) elements.handoverBtn.style.display = canGo ? '' : 'none'
   if (elements.toggleMic) elements.toggleMic.style.display = canGo ? '' : 'none'
@@ -1325,7 +1324,7 @@ function renderRoleControls() {
 function renderParticipants() {
   const currentParticipant = state.participants.find((p) => p.participant_id === state.participantId)
   const isActiveInterpreter = state.activeInterpreterId === state.participantId
-  const canReassign = ['room_coordinator', 'event_owner', 'super_admin'].includes(currentParticipant?.role) || isActiveInterpreter
+  const canReassign = Boolean(currentParticipant?.can_set_active) || isActiveInterpreter
   const activeParticipant = state.participants.find((p) => p.participant_id === state.activeInterpreterId)
   setBadge(
     elements.activeIndicator,
@@ -1341,7 +1340,7 @@ function renderParticipants() {
       tile.classList.add('active')
     }
     const canActivateSelf = participant.participant_id === state.participantId
-    const canActivate = ['interpreter', 'room_coordinator', 'event_owner', 'super_admin'].includes(participant.role) && (canReassign || canActivateSelf)
+    const canActivate = participant.can_go_live && (canReassign || canActivateSelf)
     const isThisActive = participant.participant_id === state.activeInterpreterId
 
     const top = document.createElement('div')
@@ -1354,11 +1353,10 @@ function renderParticipants() {
     const rolePill = document.createElement('span')
     rolePill.className = `participant-pill${isThisActive ? ' live' : ''}`
     
-    if (participant.role === 'interpreter') {
+    if (participant.can_go_live && !participant.can_set_active) {
       rolePill.textContent = isThisActive ? 'Active' : 'Passive'
     } else {
-      rolePill.textContent = participant.role.replace('_', ' ')
-      rolePill.style.textTransform = 'capitalize'
+      rolePill.textContent = participant.role_label || participant.role
     }
     
     top.append(nameEl, rolePill)
@@ -1472,7 +1470,7 @@ function renderHandoverButton() {
   const isActive = state.activeInterpreterId === state.participantId
   const hState = state.handoffState
   const iAmInitiator = state.handoffInitiatorId === state.participantId
-  const hasPartner = state.participants.filter(p => ['interpreter', 'room_coordinator', 'event_owner', 'super_admin'].includes(p.role)).length > 1
+  const hasPartner = state.participants.filter((p) => p.can_go_live).length > 1
 
   // Remove all state classes
   elements.handoverBtn.classList.remove('state-grey', 'state-green', 'state-flash-yellow')

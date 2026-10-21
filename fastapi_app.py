@@ -15,7 +15,7 @@ from fastapi.templating import Jinja2Templates
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from portal import meeting_source, program_ingest
-from portal.auth import require_admin
+from portal.auth import require_owner_or_coordinator
 from portal.config import settings
 from portal.exceptions import RedirectRequired
 from portal.globals import asset_version_context
@@ -135,12 +135,12 @@ app.add_middleware(WorkspaceRoutingMiddleware)
 
 
 @app.get("/docs", include_in_schema=False)
-async def custom_swagger_ui_html(request: Request, _=Depends(require_admin)):
+async def custom_swagger_ui_html(request: Request, _=Depends(require_owner_or_coordinator)):
     return get_swagger_ui_html(openapi_url="/openapi.json", title="Voxbento API Docs")
 
 
 @app.get("/openapi.json", include_in_schema=False)
-async def get_open_api_endpoint(request: Request, _=Depends(require_admin)):
+async def get_open_api_endpoint(request: Request, _=Depends(require_owner_or_coordinator)):
     return JSONResponse(get_openapi(title="Voxbento API", version="1.0.0", routes=app.routes))
 
 

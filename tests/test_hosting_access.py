@@ -16,7 +16,7 @@ from starlette.requests import Request
 
 from fastapi_app import app
 from portal import database
-from portal.auth import create_user_token, get_admin_flags, hash_password, verify_password
+from portal.auth import create_user_token, get_access_flags, hash_password, verify_password
 from portal.database import (
     configure,
     create_auth_token,
@@ -116,10 +116,10 @@ async def test_get_admin_flags_room_owner_and_coordinator():
     req = create_mock_request("/admin/rooms/1/", cookies={"user_token": token})
 
     # Route with only room_id passed:
-    flags = await get_admin_flags(req, event_id=None, room_id=room.id)
+    flags = await get_access_flags(req, event_id=None, room_id=room.id)
     assert flags["is_room_coordinator"] is True
     assert flags["is_event_owner"] is True
-    assert flags["is_super_admin"] is False
+    assert flags["is_admin"] is False
 
 
 @pytest.mark.anyio
@@ -141,7 +141,7 @@ async def test_template_context_does_not_overwrite_event_scoped_owner_flag():
     assert ctx["can_host"] is False
     assert ctx["is_workspace"] is False
 
-    req.state.principal = {"can_host": True, "is_super_admin": False}
+    req.state.principal = {"can_host": True, "is_admin": False}
     req.state.is_workspace = True
     ctx_resolved = management_template_context(req)
     assert ctx_resolved["can_host"] is True

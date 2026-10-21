@@ -27,12 +27,12 @@ Every piece of content in Voxbento hangs off a strict three-level hierarchy:
 ## Creating an Event
 
 :::info Role & Hosting Requirement
-Top-level events can be created by a **`super_admin`** or any registered user who has been granted **hosting access** (`can_host`). Signed-in users without hosting access can request it from `/account/hosting-request` or receive a hosting invitation from an administrator. Event creators automatically become the `event_owner` of their created events and manage them from `/workspace/` (My events).
+Top-level events can be created by an **Admin** or any registered user who has been granted **hosting access** (`can_host`). Signed-in users without hosting access can request it from `/account/hosting-request` or receive a hosting invitation from an administrator. Event creators automatically become the `event_owner` of their created events and manage them from `/workspace/` (My events).
 :::
 
 ### Open the Events list or Workspace
 
-From the header, go to **My events** (`/workspace/`) and click **New event**, or if you are a super administrator, navigate to `/admin/events/`.
+From the header, go to **My events** (`/workspace/`) and click **New event**, or if you are an Admin, navigate to `/admin/events/`.
   ### Fill in the event details
 
 Enter a **slug** and a **display name** in the creation form.
@@ -53,7 +53,7 @@ Each event has a unique slug used in all URLs. Choose it carefully — changing 
 ## Creating a Room
 
 :::info Role Requirement
-Both **`super_admin`** and **`event_owner`** roles can create, edit, and delete rooms within an event.
+Admins and **Event owners** can create, edit, and delete rooms within an event.
 :::
 
 Rooms represent physical or logical spaces within your event — typically one room per stage or conference track. Each room can contain multiple language booths.

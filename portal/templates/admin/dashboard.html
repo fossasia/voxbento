@@ -1,5 +1,5 @@
 {% extends "admin/base.html" %}
-{% block title %}Dashboard{% endblock %}
+{% block title %}Overview{% endblock %}
 
 {% block content %}
 {% set ns = namespace(events=event_data|length, live=0, booths=0) %}
@@ -10,10 +10,10 @@
 
   <div class="hub-header">
   <div>
-    <h1>Dashboard</h1>
+    <h1>Overview</h1>
     <p>Manage your events, rooms and interpretation booths.</p>
   </div>
-  {% if can_host or is_super_admin %}
+  {% if can_host or is_admin %}
   <a href="{{ management_prefix }}/setup" class="btn btn-primary btn-lg">+ New event</a>
   {% endif %}
 </div>
@@ -21,7 +21,7 @@
 {% if not event_data %}
 <div class="empty-state">
   <div class="empty-state-icon">🎧</div>
-  {% if can_host or is_super_admin %}
+  {% if can_host or is_admin %}
   <h2 class="empty-state-title empty-state-title--lg">Let's set up your first event</h2>
   <p class="empty-state-text--narrow">Create an event, add rooms and language booths, and invite your team — all in a few guided steps.</p>
   <a href="{{ management_prefix }}/setup" class="btn btn-primary btn-lg">Create your first event &rarr;</a>

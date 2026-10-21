@@ -71,7 +71,7 @@ def short_user_label(display_name: str, email: str) -> str:
     return label if len(label) <= SHORT_LABEL_MAX else f"{label[:SHORT_LABEL_MAX]}…"
 
 
-def area_for_request(request: Request, *, is_super_admin: bool) -> str:
+def area_for_request(request: Request, *, is_admin: bool) -> str:
     """Name the area a page belongs to from its path."""
     path = request.url.path
     if path.startswith("/account"):
@@ -82,7 +82,7 @@ def area_for_request(request: Request, *, is_super_admin: bool) -> str:
         return AREA_EVENTS
     # Room coordinators still reach a few legacy /admin/ room pages; for them
     # those pages are part of their events, not the Admin area.
-    if path.startswith("/admin") and is_super_admin:
+    if path.startswith("/admin") and is_admin:
         return AREA_ADMIN
     return AREA_EVENTS
 
@@ -109,12 +109,12 @@ def user_menu_context(request: Request) -> dict[str, UserMenu | None]:
     user = principal.get("user") if principal else None
     if user is None:
         return {"user_menu": None}
-    is_admin = bool(principal.get("is_super_admin"))
+    is_admin = bool(principal.get("is_admin"))
     return {
         "user_menu": UserMenu(
             display_name=user.display_name,
             email=user.email,
-            area=area_for_request(request, is_super_admin=is_admin),
+            area=area_for_request(request, is_admin=is_admin),
             entries=menu_entries(is_admin=is_admin, has_developer_app=bool(principal.get("has_developer_app"))),
         )
     }
