@@ -25,10 +25,6 @@
   <a href="https://docs.voxbento.com">Docs</a>
 </p>
 
-### Listener links
-
-Attendees listen at `/listener/{event_slug}`. Add `room` and `lang` to open a room and language directly, for example `/listener/pycon2026?room=1&lang=hi`, which works well behind a QR code on a room door or slide. Unknown values are ignored, an event with one room opens with that room selected, and the address bar updates as listeners switch, so it can be copied as a link to that audio. Join codes still apply, and the join code is removed from the address bar so a copied link never shares it.
-
 ---
 
 ## 🎧 About VoxBento
@@ -43,6 +39,7 @@ Interpreters monitor the floor session and broadcast high-fidelity translation d
 
 - **🎙️ Browser-First Interpreter Booth:** Zero software installation. Interpreters join, test microphones, go live, and coordinate shift handoffs smoothly via WebRTC (WHIP).
 - **⚡ Sub-Second Listener Playback:** Attendees receive ultra-low latency audio via WebRTC (WHEP) powered by MediaMTX, scaling effortlessly to thousands of listeners.
+- **🔗 Direct Listener Links:** `/listener/{event_slug}?room=1&lang=hi` opens a room and language directly, ready for a QR code on a room door or slide. Unknown values are ignored, a single-room event opens with its room selected, and the address bar updates as listeners switch so it can be shared. Join codes still apply and are never kept in the link.
 - **🤖 Live AI Transcription & Translation:** Multi-provider speech-to-text (Faster-Whisper, OpenAI, Deepgram, NVIDIA Parakeet, ElevenLabs) paired with real-time LLM translations guided by custom personas, styles, and domain vocabulary glossaries.
 - **🗣️ Direct-Push Text-to-Speech (TTS):** Synthesize live translated speech on the fly (Deepgram Aura or self-hosted Supertonic ONNX), streamed directly to attendees over binary WebSocket frames.
 - **📡 Program Stream Ingest & YouTube Relay:** Ingest clean conference audio directly from hardware video switchers (OBS, ATEM, vMix) via authenticated HTTPS WHIP, with optional automated RTMPS forwarding to YouTube.
