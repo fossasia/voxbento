@@ -505,3 +505,27 @@ def test_cookie_only_transcription_post_must_be_same_origin(booth_team, headers,
     assert response.status_code == 400, response.text
     assert response.json()["detail"] == "Invalid request origin."
     assert calls == []
+
+
+def test_wrong_query_token_does_not_skip_the_origin_check(booth_team):
+    user_ids, room_id, _, calls = booth_team
+
+    response = client.post(
+        f"/api/events/team-event/rooms/{room_id}/booths/es/transcription/start?token=not-the-booth-token",
+        cookies=_user_cookies(user_ids, "interpreter"),
+        headers={"Origin": "https://attacker.example"},
+    )
+
+    assert response.status_code == 400, response.text
+    assert calls == []
+
+
+def test_configured_query_token_needs_no_origin(booth_team):
+    _, room_id, _, calls = booth_team
+
+    response = client.post(
+        f"/api/events/team-event/rooms/{room_id}/booths/es/transcription/start?token=configured-master-token"
+    )
+
+    assert response.status_code == 200, response.text
+    assert calls == ["start"]

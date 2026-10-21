@@ -168,7 +168,9 @@ def _require_same_origin_for_cookies(
     request: Request, credentials: HTTPAuthorizationCredentials | None, token: str
 ) -> None:
     """Reject a cross-site POST that only browser cookies would authorize (CSRF)."""
-    if credentials is None and not token and not verify_same_origin(request):
+    # Any other query token falls back to the cookies, so only the configured one skips the check.
+    has_configured_token = bool(settings.booth_access_token) and token == settings.booth_access_token
+    if credentials is None and not has_configured_token and not verify_same_origin(request):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid request origin.")
 
 
