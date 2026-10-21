@@ -12,16 +12,17 @@ from portal.auth import get_booth_sessions, resolve_booth_role
 from portal.booth_identity import make_booth_id, make_mediamtx_path
 from portal.config import settings
 from portal.database import get_booth_by_id, get_session, list_booth_memberships_for_user
-from portal.globals import _JS_CACHE_BUST, booths
+from portal.globals import _JS_CACHE_BUST, asset_version_context, booths
 from portal.models import DBBooth, Event
-from portal.roles import _ROLE_RANK
+from portal.roles import INTERPRETER, ROLE_RANK, can_go_live, can_set_active, role_label
 from portal.utils import _ensure_mediamtx_path, _make_jitsi_url, safe_redirect
 
 router = APIRouter()
 
 _BASE_DIR = Path(__file__).resolve().parent.parent
 
-templates = Jinja2Templates(directory=str(_BASE_DIR / "templates"))
+templates = Jinja2Templates(directory=str(_BASE_DIR / "templates"), context_processors=[asset_version_context])
+templates.env.filters["role_label"] = role_label
 
 
 @router.get("/interpreter")
@@ -61,10 +62,10 @@ async def interpreter_landing_page(request: Request) -> Any:
 
     if invite_sess and "event_slug" in invite_sess and "language_code" in invite_sess and "room_id" in invite_sess:
         bid = make_booth_id(invite_sess["event_slug"], invite_sess["room_id"], invite_sess["language_code"])
-        invite_role = invite_sess.get("role", "interpreter")
+        invite_role = invite_sess.get("role", INTERPRETER)
         if bid in booths_by_id:
             existing_role = booths_by_id[bid]["role"]
-            if _ROLE_RANK.get(invite_role, 0) > _ROLE_RANK.get(existing_role, 0):
+            if ROLE_RANK.get(invite_role, 0) > ROLE_RANK.get(existing_role, 0):
                 booths_by_id[bid]["role"] = invite_role
         else:
             mem_booth = booths.get_booth_sync(bid)
@@ -98,6 +99,9 @@ async def interpreter_landing_page(request: Request) -> Any:
                 "role": invite_role,
             }
 
+    # Decided after membership and invite roles are merged, so the Mission Control link follows the final role.
+    for booth in booths_by_id.values():
+        booth["can_coordinate"] = can_set_active(booth["role"])
     my_booths = list(booths_by_id.values())
     return templates.TemplateResponse(
         request=request, name="interpreter_landing.html", context={"my_booths": my_booths, "js_version": _JS_CACHE_BUST}
@@ -124,7 +128,7 @@ async def interpreter_booth_by_identity(
     if granted_role is None:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="You do not have a role assigned for this event. Ask an admin to assign you one.",
+            detail="You do not have a role in this event. Ask the event's owners to add you to its team.",
         )
     mediamtx_path = make_mediamtx_path(event_slug, room_id, language_code)
     channel_id = mediamtx_path
@@ -175,6 +179,7 @@ async def interpreter_booth_by_identity(
             "relay_whep_url": relay_whep_url,
             "relay_language_name": relay_language_name,
             "granted_role": granted_role,
+            "can_go_live": can_go_live(granted_role),
             "display_name": display_name,
             "default_jitsi_room": settings.default_jitsi_room,
             "jitsi_url": final_jitsi_url,

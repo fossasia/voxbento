@@ -490,3 +490,101 @@ class TestOAuthMultiOrganizer:
             res3 = await c.get(f"/workspace/events/by-slug/{event.slug}/rooms/10?by=id")
             assert res3.status_code == 303
             assert f"/workspace/events/{event.id}/rooms/10/" in res3.headers["location"]
+
+
+# ── Clicking Allow gives no role; the token exchange does (fix for #740) ──
+
+
+def _allow_form(client, event_id, challenge="challenge"):
+    return {
+        "client_id": client.client_id,
+        "redirect_uri": "http://localhost/callback",
+        "response_type": "code",
+        "code_challenge": challenge,
+        "code_challenge_method": "S256",
+        "state": "state123",
+        "event_id": str(event_id),
+        "scope": "events:write events:read",
+        "action": "allow",
+    }
+
+
+async def _role(user_id, event_id):
+    from sqlalchemy import select
+
+    from portal.database import get_session
+
+    async with get_session() as session:
+        membership = await session.scalar(
+            select(EventMembership).where(EventMembership.user_id == user_id, EventMembership.event_id == event_id)
+        )
+        return membership.role if membership else None
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("event_key", ["event", "ownerless_event"])
+async def test_allow_alone_does_not_make_anyone_event_owner(setup_oauth_clients, event_key):
+    """A signed-in stranger who opens the Allow page for someone else's event gains nothing."""
+    from portal.auth import create_user_token
+
+    stranger = setup_oauth_clients["unrelated_user"]
+    event = setup_oauth_clients[event_key]
+    cookies = {"user_token": create_user_token(user_id=stranger.id, email=stranger.email)}
+    async with _client() as c:
+        for key in ("confidential_client", "public_client"):
+            await c.post("/oauth/authorize", data=_allow_form(setup_oauth_clients[key], event.id), cookies=cookies)
+    assert await _role(stranger.id, event.id) is None
+
+
+@pytest.mark.anyio
+async def test_allow_alone_does_not_upgrade_an_existing_role(setup_oauth_clients):
+    from portal.auth import create_user_token
+    from portal.database import get_session
+
+    stranger = setup_oauth_clients["unrelated_user"]
+    event = setup_oauth_clients["event"]
+    async with get_session() as session:
+        session.add(EventMembership(user_id=stranger.id, event_id=event.id, role="interpreter"))
+    cookies = {"user_token": create_user_token(user_id=stranger.id, email=stranger.email)}
+    async with _client() as c:
+        res = await c.post(
+            "/oauth/authorize", data=_allow_form(setup_oauth_clients["confidential_client"], event.id), cookies=cookies
+        )
+    assert res.status_code == 303
+    assert await _role(stranger.id, event.id) == "interpreter"
+
+
+@pytest.mark.anyio
+async def test_token_exchange_with_the_client_secret_makes_the_organizer_owner(setup_oauth_clients):
+    """The normal Eventyay flow still works: the server-side exchange gives ownership."""
+    import base64
+    import hashlib
+    import urllib.parse
+
+    from portal.auth import create_user_token
+
+    organizer = setup_oauth_clients["unrelated_user"]
+    event = setup_oauth_clients["ownerless_event"]
+    client = setup_oauth_clients["confidential_client"]
+    verifier = "organizer-verifier-organizer-verifier-0123"
+    challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip("=")
+    cookies = {"user_token": create_user_token(user_id=organizer.id, email=organizer.email)}
+    async with _client() as c:
+        allow = await c.post("/oauth/authorize", data=_allow_form(client, event.id, challenge), cookies=cookies)
+        code = urllib.parse.parse_qs(urllib.parse.urlparse(allow.headers["location"]).query)["code"][0]
+        assert await _role(organizer.id, event.id) is None
+
+        token_data = {
+            "grant_type": "authorization_code",
+            "code": code,
+            "redirect_uri": "http://localhost/callback",
+            "client_id": client.client_id,
+            "code_verifier": verifier,
+        }
+        wrong_secret = await c.post("/oauth/token", data={**token_data, "client_secret": "wrong"})
+        assert wrong_secret.status_code == 401
+        assert await _role(organizer.id, event.id) is None
+
+        ok = await c.post("/oauth/token", data={**token_data, "client_secret": "test_secret"})
+    assert ok.status_code == 200
+    assert await _role(organizer.id, event.id) == "event_owner"

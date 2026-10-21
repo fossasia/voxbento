@@ -1,0 +1,95 @@
+---
+title: "Program Stream Ingest and YouTube Relay — Voxbento Admin"
+sidebarTitle: "Program Ingest & Relay"
+description: "Ingest floor audio directly from hardware encoders via authenticated HTTPS WHIP or RTMPS with optional YouTube relay."
+---
+
+import Tabs from "@theme/Tabs";
+import TabItem from "@theme/TabItem";
+
+While Voxbento default floor audio monitoring uses the self-hosted Jitsi Meet bot (`floor-bot`), high-production conferences often prefer ingesting clean program audio directly from an external hardware video switcher (e.g. Blackmagic ATEM, OBS, vMix).
+
+Voxbento supports **room-scoped Program Stream Ingest** (#690) and optional **YouTube RTMPS Relay** (#749).
+
+## Architecture Overview
+
+```
+                      ┌──────────────────────────────────────────────┐
+                      │              MediaMTX Server                 │
+                      │                                              │
+                      │  /pycon2026/14/floor                         │
+                      └───────▲───────────────────────────────┬──────┘
+                              │ HTTPS WHIP / RTMPS            │ RTSP
+                              │                               ▼
+[ External Video Switcher ]───┘                    [ Transcription Pipeline ]
+                                                              │
+                                                              ▼
+                                                   [ Translation & TTS ]
+                                                              │
+                                                              ▼
+                                                   [ Listeners (WHEP / WS) ]
+```
+
+- Ingest audio terminates directly in MediaMTX on the canonical floor path (`{event_slug}/{room_id}/floor`).
+- FastAPI validates stream credentials via private callback (`/internal/media-auth`) and never handles media bytes.
+- Only one floor source owns a room at any time: either the **Meeting Agent** (`jitsi_bot`) or **Program Ingest** (`program_ingest`).
+
+## Ingest Modes
+
+<Tabs>
+<TabItem value="whip" label="HTTPS WHIP Ingest (Default)">
+
+The external encoder sends a WebRTC stream via HTTPS WHIP directly to MediaMTX.
+
+- **URL format**: `https://{domain}:{port}/{event_slug}/{room_id}/floor/whip`
+- **Authentication**: Bearer stream key generated on the room page.
+- **Latency**: Sub-second end-to-end delay.
+- **Best for**: Encoders with native WHIP output (OBS Studio 30+, modern hardware encoders).
+
+</TabItem>
+<TabItem value="rtmps-relay" label="RTMPS Relay Mode">
+
+The encoder pushes a single secure RTMPS stream (`H.264 + AAC`) to MediaMTX. MediaMTX makes the audio available for transcription and translation, while a dedicated `program-relay` service forwards the untouched video and audio stream to YouTube.
+
+- **URL format**: `rtmps://{domain}:1936/{event_slug}/{room_id}`
+- **Stream Key format**: `floor?key={program_key}`
+- **Destination**: Stream key is Fernet-encrypted in the database and forwarded only to allow-listed YouTube ingest servers.
+- **Best for**: Broadcast setups wanting to simultaneously interpret a live conference stage and livestream it to YouTube without running duplicate encoder outputs.
+
+</TabItem>
+</Tabs>
+
+## Enabling Program Ingest on a Room
+
+### 1. Configure Floor Transcription Prerequisites
+
+Before connecting your encoder, configure the room's transcription settings so the worker can launch as soon as media frames arrive:
+
+1. Open your room in the workspace (`/workspace/events/{event_id}/rooms/{room_id}/` or `/admin/...`).
+2. In the **Floor Audio Transcription** section, check **Enable AI Transcription for Floor Audio**.
+3. Enter the spoken **Floor Language Code** (e.g. `en`, `de`, `fr`).
+4. Select a usable transcription **Provider** (e.g. Local Faster-Whisper, OpenAI, Deepgram, NVIDIA Parakeet, or ElevenLabs) and **Model**, and ensure any required API keys are configured under API settings.
+5. Click **Save Settings**.
+
+### 2. Enable Ingest and Generate Credentials
+
+1. Scroll to the **Program stream ingest** section on the room page.
+2. Select your desired **Delivery mode**:
+   - **Independent outputs** (HTTPS WHIP): Encoder pushes audio/video directly to VoxBento. Click **Enable ingest and create token**. (If switching from another mode, the button displays **Switch to Independent outputs and create credential**).
+   - **VoxBento relays to YouTube** (RTMPS Relay): Encoder pushes a single RTMPS feed; VoxBento forwards it to YouTube. Click **Enable relay ingest and create stream key**. (If switching modes, the button displays **Switch to VoxBento relays to YouTube and create credential**).
+3. If a Meeting Agent is currently running, confirm the source change when prompted.
+4. Copy the one-time credentials:
+   - For **WHIP**: Copy the **WHIP server URL** (`https://{domain}/.../{event_slug}/{room_id}/floor/whip`) and click **Copy** on the one-time **Bearer token**. Paste the token into your encoder's WHIP authorization / Bearer Token field.
+   - For **RTMPS Relay**: Copy the **RTMPS server** (`rtmps://{domain}:1936/{event_slug}/{room_id}`) and one-time **Stream key** (`floor?key={program_key}`). Paste these into your encoder's Server and Stream Key fields.
+5. In your encoder (e.g. OBS Studio):
+   - For WHIP: Choose **WHIP** service, paste the WHIP server URL, and enter the Bearer token in the Bearer Token field.
+   - For RTMPS Relay: Choose **Custom…** service, paste the RTMPS server and stream key (`floor?key={program_key}`). Send H.264 video and AAC audio.
+6. Start streaming. The room contribution ingest status transitions to **Connected**. Live floor transcription workers start automatically as soon as audio packets arrive, provided floor transcription is enabled, a floor language is configured, and a usable provider is selected.
+
+## YouTube Relay Configuration
+
+When RTMPS Relay mode is selected:
+
+1. Under **Relay Destination**, enter the YouTube RTMPS server (`rtmps://a.rtmps.youtube.com/live2`) and your private YouTube stream key.
+2. Voxbento encrypts the stream key at rest. The key is write-only and is never displayed or returned in API responses.
+3. Once the encoder connects, the `program-relay` container begins copying the stream to YouTube using `ffmpeg -c copy` without re-encoding, preserving video fidelity and minimizing server load.

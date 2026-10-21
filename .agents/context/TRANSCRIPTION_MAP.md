@@ -56,7 +56,7 @@ Jitsi Meet Floor Conference
         ▼
    Database (TranscriptSegment target_language)
         │
-   broadcast_translation() (WebSocket /ws/translations)
+   broadcast_translation() (WebSocket /ws/captions/{target_booth_id} as 'translated_caption')
         │
         ▼
    TTS Worker (tts/worker.py)
@@ -64,7 +64,8 @@ Jitsi Meet Floor Conference
    (Deepgram Aura cloud WebSocket OR Supertonic self-hosted in-process ONNX)
         │
         ▼
-   broadcast_tts() (WebSocket /ws/tts/{room_id}) -> AudioScheduler -> Web Audio API
+   broadcast_bundle() (WebSocket /ws/tts/{room_id}/{language_code}/{booth_id}) -> AudioScheduler -> Web Audio API
+   Transmits structured binary frames (version byte, 4-byte header length, JSON header with text & metadata, optional 24 kHz mono PCM audio).
    Client uses a jitter-buffered playback queue (audio-scheduler.js) to schedule
    each audio segment seamlessly after the previous one ends, with comfort noise
    during gaps. See portal/static/js/audio-scheduler.js.
@@ -88,6 +89,8 @@ Jitsi Meet Floor Conference
 | `portal/transcription/providers/elevenlabs.py` | `ElevenLabsProvider` — scribe_v2 |
 | `portal/translations/worker.py` | `start_translation_worker()`, LLM translation loop, multithreaded translation dispatch |
 | `portal/translations/constants.py` | Translation models enum mapped to Anthropic, OpenAI, Groq, Gemini, etc. |
+| `portal/translations/prompts.py` | Contextual prompt construction incorporating room AI persona and style instructions |
+| `portal/translations/vocabulary.py` | AI interpretation vocabulary & glossary resolution, CSV import/export, and matching |
 | `portal/tts/worker.py` | `TTSWorker`, buffers punctuation, chunks text, routes to a TTS provider, pushes raw PCM binary to `tts_manager` |
 | `portal/tts/providers/` | `TTSProvider` ABC + factory; `DeepgramTTSProvider` (Aura WebSocket) and `SupertonicTTSProvider` (in-process ONNX, 44.1k→24k resample) |
 | `portal/tts/constants.py` | `DEEPGRAM_VOICE_MAPPING` (language→Aura voice) plus Supertonic preset voices, language map, and supported languages |

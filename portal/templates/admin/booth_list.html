@@ -3,7 +3,7 @@
 
 {% block breadcrumb %}
 <nav class="breadcrumb">
-  <a href="{{ management_prefix }}/">Dashboard</a> <span>/</span>
+  <a href="{{ management_prefix }}/">{{ 'My events' if is_workspace else 'Overview' }}</a> <span>/</span>
   <a href="{{ management_prefix }}/events/">Events</a> <span>/</span>
   <a href="{{ management_prefix }}/events/{{ event.id }}/">{{ event.display_name }}</a> <span>/</span>
   <a href="{{ management_prefix }}/events/{{ event.id }}/rooms/">Rooms</a> <span>/</span>
@@ -19,6 +19,10 @@
     <p class="text-secondary">{{ room.display_name }} · {{ event.display_name }}</p>
   </div>
 </div>
+
+{% if request.query_params.get('error') == 'duplicate_language' %}
+<div class="alert alert-danger">{{ room.display_name }} already has a booth for that language.</div>
+{% endif %}
 
 <div class="form-card">
   <h3>Add an interpretation booth</h3>

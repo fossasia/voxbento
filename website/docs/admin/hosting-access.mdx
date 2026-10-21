@@ -1,0 +1,68 @@
+---
+title: "Event Hosting Access and User Management — Voxbento Admin"
+sidebarTitle: "Hosting & Users"
+description: "Manage event creation permissions, hosting access requests, organizer invitations, and in-place user administration switches."
+---
+
+import Tabs from "@theme/Tabs";
+import TabItem from "@theme/TabItem";
+
+In Voxbento, creating events is governed by **Hosting Access** (`users.can_host`). This prevents uncontrolled event creation while enabling event owners and organizers to manage their conferences autonomously.
+
+## The Hosting Access Model
+
+- **Admins** (`is_admin=True`): Have full access to create events and administer all platform settings.
+- **Hosts** (`can_host=True`): Can create new events via the **My events** workspace (`/workspace/`) and become `event_owner` of their created events.
+- **Standard Users**: Can be invited to participate as interpreters, coordinators, or event members, but cannot create new events until granted hosting access.
+
+## Requesting Hosting Access
+
+Signed-in users without hosting access can submit an application directly:
+
+1. Open the user profile menu in the top right and select **Account** (`/account`).
+2. Under **Hosting events**, click **Request access**.
+3. Fill out the application form:
+   - Organization name
+   - Event name and planned dates
+   - Expected languages
+   - Optional message detailing requirements
+4. Submitting stores a request in `hosting_requests` (limited to one open request per user) and immediately sends an email alert to the configured `HOSTING_REQUESTS_EMAIL` address.
+5. The applicant's Account page displays **Request sent — waiting for review** while pending.
+
+## Reviewing Requests (Admin Guide)
+
+Admins review incoming requests from the **Hosting access** dashboard:
+
+1. Navigate to `/admin/hosting-access/` or click **Hosting access** in the navigation header (a badge shows the number of pending requests).
+2. Open the **Requests** tab to view open applications in chronological order.
+3. Review the applicant's details and choose an action:
+   - **Grant access**: Sets `can_host = True` on the user's account, marks the request as `granted`, and sends a confirmation email to the organizer.
+   - **Decline**: Requires a reason message, records the request as `declined`, and emails the explanation to the user. The user can then submit a revised request later.
+
+## Hosting Invitations
+
+Admins can also invite external organizers directly before they create an account:
+
+1. From `/admin/hosting-access/`, switch to the **People with access** tab.
+2. Click **Invite host** and provide the organizer's email address and name.
+3. Voxbento creates a secure, single-use invitation token and emails an invitation link (`/invite/accept/{token}`) to the recipient.
+4. When the organizer accepts the invitation, password creation applies only to new accounts, while existing users accept using their current password or an existing signed-in session; hosting access is enabled automatically upon acceptance.
+
+## User Administration (`/admin/users/`)
+
+The Users page (`/admin/users/`) gives administrators complete control over platform accounts:
+
+### Search & Filtering
+- **Search**: Filter accounts by name or email address (matches `%` and `_` literally).
+- **Show Filter**: Segment accounts by *All users*, *Admins*, *Hosting access*, *Deactivated*, or *Email not verified*.
+- **Sorting**: Sort by name or registration date (`created_at`).
+
+### In-Place Access Switches
+Administrators can toggle permissions directly from the user table without reloading the page:
+
+- **Hosting access**: Grant or revoke event creation capability.
+- **Admin**: Make the person an Admin or remove Admin (protected against self-demotion or removal of the last remaining admin).
+- **Active**: Deactivate or reactivate an account.
+- **Email Verified**: Manually verify or unverify a user's email address (useful for manual user onboarding or support cases).
+
+Toggling any switch posts immediately to `/admin/users/{id}/access`. If validation fails, the UI reverts the switch state and displays the reason.

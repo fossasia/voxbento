@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
+from typing import Any
 
 import httpx
 
+from portal.translations.prompts import build_interpretation_messages
 from portal.translations.providers.base import TranslationProvider
 
 logger = logging.getLogger(__name__)
@@ -19,11 +22,21 @@ class AnthropicProvider(TranslationProvider):
         source_lang_name: str,
         model: str,
         api_key: str | None,
+        persona: str | None = None,
+        style: str | None = None,
+        vocabulary_entries: Sequence[Any] = (),
     ) -> str | None:
         if not api_key:
             return None
 
-        system_prompt = f"You are a professional interpreter. Translate the following {source_lang_name} text into {target_lang_name}. Output ONLY the translated text, nothing else."
+        messages = build_interpretation_messages(
+            source_language_name=source_lang_name,
+            target_language_name=target_lang_name,
+            text=text,
+            persona=persona,
+            style=style,
+            vocabulary_entries=vocabulary_entries,
+        )
         timeout = httpx.Timeout(10.0)
 
         import portal.globals as pg
@@ -36,8 +49,8 @@ class AnthropicProvider(TranslationProvider):
                 json={
                     "model": model,
                     "max_tokens": 1024,
-                    "system": system_prompt,
-                    "messages": [{"role": "user", "content": text}],
+                    "system": messages[0]["content"],
+                    "messages": [messages[1]],
                 },
                 timeout=timeout,
             )

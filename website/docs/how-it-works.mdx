@@ -8,6 +8,11 @@ import Tabs from "@theme/Tabs";
 import TabItem from "@theme/TabItem";
 
 
+## Legacy API authentication
+
+Trusted integrations can exchange the production `BOOTH_ACCESS_TOKEN` at `/api/auth/token` for a legacy API JWT. The credential and resulting JWT have global scope across the applicable protected `/api/events/...` endpoints, not event-specific scope, so operators should generate the credential with `openssl rand -hex 32` and share it only with trusted integrations. This global credential does not grant access to unrelated application routes or bypass separate authorization checks; participant tokens, user JWTs, and event-scoped API keys remain subject to their own event, room, and language scopes.
+
+
 Voxbento is built on a single guiding principle: the audio path should be as short and as direct as possible. Rather than routing interpreter microphone audio through application servers, Voxbento sends audio straight from the interpreter's browser to MediaMTX — an open-source media server — and from there straight to each listener's browser. The Voxbento coordination portal sits alongside that path to handle coordination, but it never touches the audio itself.
 
 ## The Interpretation Pipeline
@@ -43,17 +48,17 @@ The audio path goes directly from your browser to MediaMTX and then to listeners
 MediaMTX terminates the WebRTC connection from the interpreter's browser, decodes the audio, and makes it available on a named path that corresponds to the booth's identity:
 
     ```text
-    {event_slug}/{language_code}
+    {event_slug}/{room_id}/{language_code}
     ```
 
-    For example, the English booth at PyCon 2026 occupies the path `pycon2026/en`. The WHIP and WHEP URLs for that booth follow the pattern:
+    For example, the English booth in room 14 at PyCon 2026 occupies the path `pycon2026/14/en`. The WHIP and WHEP URLs for that booth follow the pattern:
 
     ```text
     # Interpreter publishes to:
-    {mediamtx_base}/pycon2026/en/whip
+    {mediamtx_base}/pycon2026/14/en/whip
     
     # Listeners connect to:
-    {mediamtx_base}/pycon2026/en/whep
+    {mediamtx_base}/pycon2026/14/en/whep
     ```
 
     MediaMTX holds these paths open even when no interpreter is currently publishing, so listener connections are never dropped between handoffs.
@@ -77,9 +82,11 @@ Event management and system administration use separate public URL namespaces:
 
 - `/workspace/...` is the event workspace for `event_owner` users. It contains event, room, booth, membership, transcription, translation, and event API-key management scoped by the existing role checks.
 - `/mission-control/...` is the room-scoped operational surface for `room_coordinator` users.
-- `/admin/...` is reserved for `super_admin` users and contains system-wide views such as user and developer-account management.
+- `/admin/...` is reserved for Admins and contains system-wide views such as user and developer-account management.
 
 Both namespaces use the same underlying management handlers, so the route split does not duplicate event-management behavior. Existing organizer bookmarks under `/admin/events/...` receive a temporary redirect to the corresponding workspace URL with their query string and HTTP method preserved. The OAuth routes remain under `/oauth/...`; shared-organizer authorization and token lifecycle behavior are therefore unchanged.
+
+Room deletion checks that the requested room belongs to the event specified in the workspace URL before removing it and its dependent booths, invites, and memberships. An unknown room or a room from another event returns HTTP 404 without deleting any data.
 
 ## The Transcription & Translation Pipeline
 
@@ -102,15 +109,15 @@ checks a 900 MB compressed base-image budget for Linux amd64 before pulling
 layers. These checks cover browser and audio dependencies without an external
 Jitsi session; they do not validate a deployment host's available disk space.
 
-1. **Audio Ingest:** The worker uses FFmpeg to pull the live audio stream from MediaMTX via RTSP (`rtsp://mediamtx:8554/{event_slug}/{language_code}` or `rtsp://mediamtx:8554/{event_slug}/floor`).
+1. **Audio Ingest:** The worker uses FFmpeg to pull the live audio stream from MediaMTX via RTSP (`rtsp://mediamtx:8554/{event_slug}/{room_id}/{language_code}` or `rtsp://mediamtx:8554/{event_slug}/{room_id}/floor`).
 2. **Transcoding:** FFmpeg transcodes the audio to PCM S16LE (mono, 16kHz or 24kHz depending on the provider) and pipes it to the selected `TranscriptionProvider`.
 3. **Speech-to-Text (Transcription):** The provider sends audio to an AI service (OpenAI, Deepgram, ElevenLabs, NVIDIA, or Local Whisper). The `CaptionAggregator` receives raw text, splitting sentences and instantly broadcasting partial updates to listeners (`/ws/captions/{channel_id}`).
 4. **Finalization:** Once a full sentence is formed, the aggregator saves it to the database as a canonical `transcript_segment`.
-5. **Text-to-Text (Translation):** If target languages are enabled, the Translation Worker detects the finalized segment and spawns parallel requests to LLMs (Anthropic, Groq, Gemini) to translate the sentence. 
-6. **Broadcast:** Translations are saved to the database and immediately broadcast via the dedicated WebSocket (`/ws/translations/{channel_id}`).
+5. **Text-to-Text (Translation & AI Interpretation):** If target languages are enabled, the Translation Worker detects the finalized segment and generates translations using LLMs (Anthropic, OpenAI, Groq, Gemini) or local NLLB. Translation prompts dynamically integrate the room's configured **AI interpreter persona** and **interpretation style**, as well as matching domain terms from the room's **AI vocabulary glossary**, ensuring consistent, conference-grade terminology.
+6. **Broadcast:** Translations are saved to the database and immediately broadcast as `translated_caption` events via the target booth's caption feed (`/ws/captions/{booth_id}`).
 
-7. **Text-to-Speech (TTS):** If the room has "Floor Audio TTS (Direct Push)" enabled, the `TTSWorker` instantly receives the finalized translated text and synthesizes speech using the room's configured provider — either **Deepgram Aura** (cloud WebSocket) or **Supertonic** (self-hosted, in-process ONNX). Both emit raw PCM (24 kHz s16le) pushed directly to listeners.
-8. **TTS Audio Delivery:** Deepgram returns synthesized speech as raw PCM binary data, which the `tts_manager` broadcasts directly to listeners over a dedicated WebSocket (`/ws/tts/{room_id}`). Listeners hear the translated audio natively via the Web Audio API with sub-second latency, bypassing the WHEP stream entirely.
+7. **Text-to-Speech (TTS):** If the room has "Floor Audio TTS (Direct Push)" enabled, the `TTSWorker` instantly receives the finalized translated text and synthesizes speech using the room's configured provider — either **Deepgram Aura** (cloud WebSocket) or **Supertonic** (self-hosted, in-process ONNX).
+8. **TTS Audio Delivery:** The synthesized audio is streamed to listeners in structured binary bundle messages (1-byte version, 4-byte header length, JSON metadata header, and optional 24 kHz 16-bit mono PCM payload) over an authorized subscription WebSocket (`/ws/tts/{room_id}/{language_code}/{booth_id}`). Listeners receive translated speech natively via the Web Audio API with sub-second latency, scheduled smoothly by `audio-scheduler.js` without relying on WHEP.
 
 :::info
 Transcription, Translation, and TTS workers are isolated from the main audio path. If an API provider lags, fails, or drops chunks, the core interpretation audio remains perfectly stable and unaffected.
@@ -118,14 +125,15 @@ Transcription, Translation, and TTS workers are isolated from the main audio pat
 
 ## Booth Identity
 
-Every booth in Voxbento is uniquely identified by two coordinates:
+Every booth in Voxbento is uniquely identified by three coordinates:
 
 | Coordinate | Format | Example |
 | --- | --- | --- |
 | `event_slug` | Lowercase alphanumeric and hyphens, 1–64 characters | `pycon2026` |
+| `room_id` | Non-negative integer representing the room / stage | `14` |
 | `language_code` | ISO 639-1 two-letter code | `en` |
 
-These two values combine to form the **MediaMTX path** (`pycon2026/en`) and the **booth ID** (`pycon2026-en`). Both are derived at runtime — there is no separate stored URL. If you change the event slug or language code, the derived URLs update automatically.
+These values combine to form the **MediaMTX path** (`pycon2026/14/en`) and the **booth ID** (`pycon2026-14-en`). Both are derived at runtime — there is no separate stored URL. If you change the event slug, room, or language code, the derived URLs update automatically.
 
 Administrators can search the event list by either slug or display name. Filtering is applied before pagination so page counts and results stay in sync. Search treats `%` and `_` literally, pagination URL-encodes reserved characters such as `&` and `#`, blank queries show all events, and out-of-range pages open the last filtered page.
 
@@ -137,7 +145,7 @@ Here is what happens when a room_coordinator switches the active interpreter:
 
 1. The room_coordinator clicks **Set Active** next to the incoming interpreter in the booth.
 2. The portal updates the active interpreter state and notifies all booth participants over WebSocket.
-3. The incoming interpreter's browser calls the gated `/api/booth/{booth_id}/whip-url` endpoint, receives the WHIP URL, and begins publishing.
+3. The incoming interpreter's browser asks the portal for a single-use publish ticket over its booth WebSocket (`booth:request-publish-ticket`) and sends it as `Authorization: Bearer` on its WHIP request.
 4. MediaMTX is configured with `overridePublisher: yes` — it immediately accepts the new publisher and disconnects the outgoing interpreter's WHIP session.
 5. All existing WHEP listeners receive the new publisher's audio within approximately one to two seconds. Their `RTCPeerConnection` stays open throughout; MediaMTX routes the new track into it automatically.
 6. **Transcription Continuity:** The backend background transcription worker (FFmpeg) continuously retries pulling from the RTSP stream. Even if the stream drops for a few milliseconds during the handoff, the worker aggressively reconnects, ensuring zero loss of translation pipeline state.
@@ -148,21 +156,19 @@ Listeners on the HLS fallback path experience a longer gap during handoff — ro
 
 ## Roles
 
-Voxbento has three participant roles that are active during a live event:
+Voxbento defines a clear privilege hierarchy across live operations:
 
 ### Room Coordinator
 
-Manages the booth. Assigns which interpreter is active, initiates handoffs, and monitors participant state. Room coordinators can see the full participant roster and internal booth chat. They cannot publish audio themselves.
-  
+Oversees the room's booths from Mission Control. Assigns which interpreter is active, initiates handoffs, and monitors participant state. Room coordinators can participate in booth chat and can also publish audio when designated as the active broadcaster.
 
-  ### Interpreter
+### Interpreter
 
-    Monitors floor audio via the Jitsi iframe and publishes translated audio to MediaMTX via WHIP when they are the active interpreter. Only the active interpreter can go live — all others are held in standby.
-  
+Monitors floor audio via the Jitsi iframe and publishes translated audio to MediaMTX via WHIP when designated as the active interpreter. Only the active interpreter can go live — all others remain in standby.
 
-  ### Listener
+### Listeners
 
-    Receives the interpreted audio stream from MediaMTX via WHEP or HLS. Listeners connect to the event's public listener page and choose a language — no login required by default.
+Listening is not a role. Listeners receive the interpreted audio stream from MediaMTX via WHEP or HLS. They connect to the event's public listener page and choose a room and language — no login required by default.
   
 
 ## Live Captions
@@ -178,10 +184,53 @@ Captions are delivered over a dedicated WebSocket endpoint:
 For example:
 
 ```text
-/ws/captions/pycon2026-en
+/ws/captions/pycon2026-14-en
 ```
 
 Listeners connected to the caption WebSocket receive transcription segments as they are produced. The caption stream is independent of the audio stream — listeners can receive captions even while audio is playing through WHEP or HLS.
+
+## Shared header and user menu
+
+Every signed-in page (Admin, My events and its event pages, Mission Control,
+Account, Developer API) renders the same header from `_app_header.html`: the
+VoxBento logo with the name of the current area, the area's page links, and the
+user menu. `portal/user_menu.py` builds the menu from the request principal: My
+events, Account, Developer API (only with an approved developer app), Admin (only
+for Admins) and Logout, with the current area highlighted. A router dependency
+loads the principal once per request so templates never query the database.
+
+**My events** at `/workspace/` (`portal/my_events.py`) lists every event the
+person has a role in, combining event, room and booth memberships into one card
+per event: "Event owner", "Room coordinator · Room 1", "Interpreter · Grand Hall ·
+Chinese", each with a button to where they work. Deleted events are hidden.
+
+## Account page
+
+`/account` is about the person themselves, in four sections. **Profile** changes
+the display name (`POST /account/profile`); the email is shown but can't be
+changed there. **Hosting events** shows Request access, the open request
+waiting for review, or a link to My events. **Developer API** shows the
+application state from `developer_accounts`: apply (links to `/developer`),
+pending with its date, approved with a link to the Developer API page, or
+rejected/suspended. **Sign-in** changes the password (the current one is
+required), sets a first password, or removes it so the person signs in with
+email links only. Event, room and booth roles are listed on My events instead.
+
+## Admin Users pages
+
+`/admin/users/` lists every account with a search, a **Show** filter (All users,
+Admins, Hosting access, Deactivated, Email not verified) and on/off switches for
+**Hosting access**, **Admin**, **Active**, and **Email verified** in each row, changed in place without a
+page reload. Each switch posts to `/admin/users/{id}/access`; if the server refuses
+a change, the switch flips back and the reason is shown. `/admin/users/{id}/` shows
+the person's platform access, their roles in events (read-only, since each event's
+owners manage roles), the events they own, account facts and a danger zone.
+Deleting an account requires typing its email address.
+
+`portal/user_admin.py` holds the rules every path follows: an Admin can't change
+their own Admin or Active status or delete themselves, VoxBento always keeps at
+least one active Admin, and hosting access is only granted to active accounts that
+have finished setting up (others get an invitation instead).
 
 ## Administrative access
 
@@ -196,6 +245,23 @@ memberships allow. Operators should maintain at least two active administrator
 accounts; the [admin-login migration guide](https://github.com/fossasia/voxbento/blob/dev/docs/admin-password-removal-migration.md)
 documents the controlled recovery procedure.
 
+## Hosting access requests
+
+Creating events requires hosting access (`users.can_host`). Signed-in users without
+it request access from `/account/hosting-request`; the form is pre-filled with
+their name and email and stores a row in `hosting_requests` linked to their
+account. A partial unique index allows only one open request per user. Each new
+request emails the team address in `HOSTING_REQUESTS_EMAIL`, and the Account page
+shows the request as waiting for review until it is handled.
+
+Admins see open requests on the **Requests** tab of `/admin/hosting-access/`; the
+"Hosting access" menu item shows how many are open, and the "Dev Accounts" item likewise shows how many Developer API applications are waiting for review. Granting sets `can_host`,
+closes the request as `granted` and sends the "hosting access granted" email.
+Declining requires a reason, closes the request as `declined` and emails the
+reason to the person, who can then send a new request. Granting hosting access
+any other way (the user page toggle or an accepted hosting invitation) also
+closes an open request.
+
 ## Security Layers
 
 Publishing audio to a booth is protected by three independent enforcement layers:
@@ -203,12 +269,12 @@ Publishing audio to a booth is protected by three independent enforcement layers
 <Tabs>
   <TabItem value="role-and-active-interpreter-check" label="Role and active-interpreter check">
 
-Voxbento's server-side coordination layer rejects any attempt to activate a microphone or begin audio publishing unless the participant holds the `interpreter` role **and** is the currently designated active interpreter for that booth. Room coordinators and listeners cannot publish audio under any circumstances.
+Voxbento's server-side coordination layer rejects any attempt to activate a microphone or begin audio publishing unless the participant's role can go live (every role in `portal/roles.py`: Interpreter, Room coordinator, Event owner, Admin) **and** they are the currently designated active broadcaster for that booth. Standby participants and listeners cannot publish audio.
 
 </TabItem>
-  <TabItem value="whip-url-gating" label="WHIP URL gating">
+  <TabItem value="whip-url-gating" label="Publish tickets">
 
-Before the browser can start publishing, it must request the MediaMTX ingest URL from the Voxbento API (`GET /api/booth/{booth_id}/whip-url`). That URL is returned only to the active interpreter. Any other participant receives HTTP 403 and never receives a usable ingest address.
+Before the browser can start publishing, it asks the portal for a publish ticket over its booth WebSocket. The portal issues one only to the active interpreter, and only while Mission Control has the booth live. The ticket is single-use, expires after 30 seconds and is bound to that booth's MediaMTX path. MediaMTX passes it to the portal's private authorization hook, which redeems it and checks again that its holder is still the active interpreter and that the booth has not been stopped. A WHIP request without a valid ticket, such as an anonymous POST straight to MediaMTX, is refused with HTTP 401 and cannot displace the live interpreter.
 
 </TabItem>
   <TabItem value="media-server" label="Media server">
@@ -241,6 +307,20 @@ manual synchronization, not shared encoder timecode.
 
 See the repository's `docs/program-stream-ingest.md` for rollout, security limits,
 encoder compatibility, capacity and the required two-destination rehearsal.
+
+### RTMPS relay mode
+
+A room can choose relay mode instead: the encoder sends a single RTMPS stream
+(H.264 + AAC) to MediaMTX on the same canonical floor path, authorized per room by
+the same callback with a stream key bound to the RTMPS transport. A dedicated
+`program-relay` service pulls the floor over private RTSP and pushes it with
+`ffmpeg -c copy` to the room's YouTube RTMPS destination, while the existing
+pipeline consumes the audio. The portal reconciler drives the relay service over an
+authenticated control API and stops relays on revoke, source switch, destination
+removal or restart; it enforces a fail-closed relay cap. The YouTube key is
+Fernet-encrypted at rest and write-only. Ingest, relay and language-processing
+health are reported separately. Relay mode puts VoxBento in the YouTube path, so
+the independent WHIP mode remains the default. See `docs/program-relay.md`.
 
 ## Production deployment
 

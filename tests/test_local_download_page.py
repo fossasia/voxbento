@@ -48,4 +48,4 @@ def test_home_page_contains_local_download_links():
     html = response.text
     assert "/local" in html
     assert "Local App" in html
-    assert "Download Desktop App" in html
+    assert "Download App" in html
