@@ -40,7 +40,7 @@
     </main>
 
     <!-- Custom Confirm Modal -->
-    <div id="custom-confirm-modal" class="custom-modal-overlay">
+    <dialog id="custom-confirm-modal" class="custom-modal-overlay" aria-labelledby="custom-confirm-message" aria-describedby="custom-confirm-funny">
       <div class="custom-modal">
         <div class="custom-modal-header">
           <span class="brand-text brand-text--modal">VoxBento</span>
@@ -54,7 +54,7 @@
           <button id="custom-confirm-ok" class="btn btn-danger" type="button">Confirm</button>
         </div>
       </div>
-    </div>
+    </dialog>
 
     <!-- Toast container for transient feedback (e.g. copy success/failure). Visible text plus
          aria-live so both sighted and assistive-tech users get the same confirmation. -->

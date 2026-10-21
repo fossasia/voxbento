@@ -212,12 +212,16 @@ function initCustomModal() {
   if (!modalOverlay) return;
 
   let pendingForm = null;
+  let opener = null;
 
   function closeModal() {
     modalOverlay.classList.remove('active');
+    if (modalOverlay.open) modalOverlay.close();
     pendingForm = null;
     btnOk.disabled = false;
     btnCancel.disabled = false;
+    if (opener && opener.isConnected) opener.focus();
+    opener = null;
   }
 
   function openModal(message, formElement) {
@@ -227,15 +231,22 @@ function initCustomModal() {
     pendingForm = formElement;
     btnOk.disabled = false;
     btnCancel.disabled = false;
+    opener = document.activeElement;
 
+    modalOverlay.showModal();
     // Force reflow before activating so the CSS transition plays
     void modalOverlay.offsetWidth;
     modalOverlay.classList.add('active');
+    btnCancel.focus();
   }
 
   btnCancel.addEventListener('click', closeModal);
   modalOverlay.addEventListener('click', (e) => {
     if (e.target === modalOverlay) closeModal();
+  });
+  modalOverlay.addEventListener('cancel', (e) => {
+    e.preventDefault();
+    if (!btnOk.disabled) closeModal();
   });
 
   btnOk.addEventListener('click', () => {

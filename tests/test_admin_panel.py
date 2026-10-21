@@ -515,6 +515,15 @@ class TestRequireAdmin:
         assert resp.status_code == 200
 
     @pytest.mark.anyio
+    async def test_confirm_popup_is_a_labelled_dialog(self, admin_cookie):
+        async with _client() as c:
+            resp = await c.get("/admin/", cookies=admin_cookie)
+        assert resp.status_code == 200
+        assert '<dialog id="custom-confirm-modal"' in resp.text
+        assert 'aria-labelledby="custom-confirm-message"' in resp.text
+        assert '<div id="custom-confirm-modal"' not in resp.text
+
+    @pytest.mark.anyio
     async def test_invalid_cookie_rejected(self):
         async with _client() as c:
             resp = await c.get("/admin/", cookies={"user_token": "garbage"})
