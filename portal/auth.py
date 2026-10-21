@@ -658,6 +658,9 @@ async def resolve_ws_auth(websocket: WebSocket, booth_id: str) -> dict:
         payload = user_sess or {}
 
     if not settings.booth_access_token:
+        if not payload:
+            await websocket.close(code=4001)
+            raise WSAuthError("Missing WebSocket token and session cookie.")
         return payload
 
     # Origin Check for Cookie fallback
