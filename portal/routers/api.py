@@ -37,7 +37,13 @@ from portal.roles import INTERPRETER, Permission, has_permission
 from portal.schemas.booth import CreateBoothRequest
 from portal.transcription import ProviderConfig, ProviderEnum, get_api_key
 from portal.transcription.worker import start_transcription_worker, stop_transcription_worker
-from portal.utils import _check_mediamtx, _ensure_mediamtx_path, _require_access, _resolve_whip_url
+from portal.utils import (
+    _check_mediamtx,
+    _ensure_mediamtx_path,
+    _require_access,
+    _resolve_whip_url,
+    verify_same_origin,
+)
 from portal.websockets.manager import broadcast_transcription
 
 router = APIRouter(prefix="/api")
@@ -156,6 +162,14 @@ def _verify_participant_scope(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Booth room access required.")
     if payload.get("language_code") and payload["language_code"] != language_code:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Booth language access required.")
+
+
+def _require_same_origin_for_cookies(
+    request: Request, credentials: HTTPAuthorizationCredentials | None, token: str
+) -> None:
+    """Reject a cross-site POST that only browser cookies would authorize (CSRF)."""
+    if credentials is None and not token and not verify_same_origin(request):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid request origin.")
 
 
 async def _verify_resource_access(
@@ -757,6 +771,7 @@ async def api_transcription_start(
             token=token,
             booth_permission=Permission.BOOTH_GO_LIVE,
         )
+        _require_same_origin_for_cookies(request, credentials, token)
         stmt = (
             select(DBBooth)
             .join(Event)
@@ -831,5 +846,6 @@ async def api_transcription_stop(
             token=token,
             booth_permission=Permission.BOOTH_GO_LIVE,
         )
+        _require_same_origin_for_cookies(request, credentials, token)
     await stop_transcription_worker(booth_id)
     return {"status": "stopped"}

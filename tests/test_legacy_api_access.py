@@ -398,6 +398,10 @@ def booth_team(monkeypatch):
         anyio.run(dispose)
 
 
+# Booth page requests are same-origin; cookie-only POSTs without it are refused (CSRF).
+SAME_ORIGIN = {"Origin": "http://testserver"}
+
+
 def _user_cookies(user_ids, name, *, is_admin=False):
     return {"user_token": create_user_token(user_id=user_ids[name], email=f"{name}@example.com", is_admin=is_admin)}
 
@@ -420,8 +424,8 @@ def test_signed_in_booth_team_reaches_the_booth_api(booth_team, name, can_view, 
     state = client.get(f"/api/events/team-event/booths/es/state?room_id={room_id}", cookies=cookies)
     assert (state.status_code == 200) is can_view, state.text
 
-    start = client.post(f"{base}/start", cookies=cookies)
-    stop = client.post(f"{base}/stop", cookies=cookies)
+    start = client.post(f"{base}/start", cookies=cookies, headers=SAME_ORIGIN)
+    stop = client.post(f"{base}/stop", cookies=cookies, headers=SAME_ORIGIN)
     assert (start.status_code == 200) is can_go_live, start.text
     assert (stop.status_code == 200) is can_go_live, stop.text
     assert calls == (["start", "stop"] if can_go_live else [])
@@ -431,7 +435,9 @@ def test_stale_admin_claim_does_not_grant_booth_access(booth_team):
     user_ids, room_id, _, calls = booth_team
     cookies = _user_cookies(user_ids, "stale-admin", is_admin=True)
 
-    response = client.post(f"/api/events/team-event/rooms/{room_id}/booths/es/transcription/start", cookies=cookies)
+    response = client.post(
+        f"/api/events/team-event/rooms/{room_id}/booths/es/transcription/start", cookies=cookies, headers=SAME_ORIGIN
+    )
 
     assert response.status_code == 403, response.text
     assert calls == []
@@ -450,6 +456,7 @@ def test_invite_link_role_must_be_able_to_go_live(booth_team, role, can_go_live)
     response = client.post(
         f"/api/events/team-event/rooms/{room_id}/booths/es/transcription/start",
         cookies={"session_token": participant},
+        headers=SAME_ORIGIN,
     )
 
     assert (response.status_code == 200) is can_go_live, response.text
@@ -462,6 +469,7 @@ def test_booth_role_does_not_reach_another_language(booth_team):
     response = client.post(
         f"/api/events/team-event/rooms/{room_id}/booths/fr/transcription/start",
         cookies=_user_cookies(user_ids, "interpreter"),
+        headers=SAME_ORIGIN,
     )
 
     assert response.status_code == 403, response.text
@@ -475,7 +483,25 @@ def test_old_invite_cookie_does_not_block_a_booth_member(booth_team):
     )
     cookies = {**_user_cookies(user_ids, "interpreter"), "session_token": stale_invite}
 
-    response = client.post(f"/api/events/team-event/rooms/{room_id}/booths/es/transcription/start", cookies=cookies)
+    response = client.post(
+        f"/api/events/team-event/rooms/{room_id}/booths/es/transcription/start", cookies=cookies, headers=SAME_ORIGIN
+    )
 
     assert response.status_code == 200, response.text
     assert calls == ["start"]
+
+
+@pytest.mark.parametrize("headers", [{"Origin": "https://attacker.example"}, {}], ids=["cross-site", "no-origin"])
+@pytest.mark.parametrize("action", ["start", "stop"])
+def test_cookie_only_transcription_post_must_be_same_origin(booth_team, headers, action):
+    user_ids, room_id, _, calls = booth_team
+
+    response = client.post(
+        f"/api/events/team-event/rooms/{room_id}/booths/es/transcription/{action}",
+        cookies=_user_cookies(user_ids, "interpreter"),
+        headers=headers,
+    )
+
+    assert response.status_code == 400, response.text
+    assert response.json()["detail"] == "Invalid request origin."
+    assert calls == []
