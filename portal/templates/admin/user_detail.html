@@ -1,173 +1,220 @@
 {% extends "admin/base.html" %}
 
-{% block title %}User Detail — {{ user_detail.display_name }}{% endblock %}
+{% set u = user_detail %}
+{% block title %}{{ u.display_name }} — Users{% endblock %}
 
-{% block breadcrumb %}
-<nav class="breadcrumb">
-  <a href="/admin/">Dashboard</a> <span>/</span>
-  <a href="/admin/users/">Users</a> <span>/</span>
-  <span class="breadcrumb-current" aria-current="page">{{ user_detail.display_name }}</span>
-</nav>
+{% block head %}
+<script type="module" src="{{ url_for('static', path='js/admin-users.js') }}?v={{ asset_version }}"></script>
 {% endblock %}
 
+{% macro access_form(field, value, label, classes='btn btn-outline ud-btn', confirm='', disabled=false) -%}
+<form method="post" action="/admin/users/{{ u.id }}/access"{% if confirm %} data-confirm-message="{{ confirm }}"{% endif %}>
+  <input type="hidden" name="field" value="{{ field }}" />
+  <input type="hidden" name="value" value="{{ 'true' if value else 'false' }}" />
+  <button type="submit" class="{{ classes }}"{% if disabled %} disabled{% endif %}>{{ label }}</button>
+</form>
+{%- endmacro %}
+
 {% block content %}
-<div class="page-header">
-  <h1>User: {{ user_detail.display_name }}</h1>
-  {% if user_detail.is_admin %}
-  <span class="badge badge-role badge-super_admin">Super Admin</span>
+<nav class="ud-breadcrumb" aria-label="Breadcrumb">
+  <a href="/admin/users/">Users</a>
+  <span aria-hidden="true">/</span>
+  <span aria-current="page">{{ u.display_name }}</span>
+</nav>
+
+<div class="ud-header">
+  <div>
+    <h1>{{ u.display_name }}</h1>
+    <p class="ud-email">{{ u.email }}</p>
+  </div>
+  {% if u.is_active %}
+  <span class="ud-pill ud-pill--active">Active</span>
+  {% else %}
+  <span class="ud-pill ud-pill--off">Deactivated</span>
   {% endif %}
 </div>
 
-<div class="card card--spaced">
-  <div class="card-header">
-    <h3>User Information</h3>
-  </div>
-  <div class="card-body">
-    <table class="data-table compact user-facts">
-      <tbody>
-        <tr>
-          <td class="user-facts-label user-facts-label--wide">Email</td>
-          <td>{{ user_detail.email }}</td>
-        </tr>
-        <tr>
-          <td class="user-facts-label">Display Name</td>
-          <td>{{ user_detail.display_name }}</td>
-        </tr>
-        <tr>
-          <td class="user-facts-label">Joined</td>
-          <td>{{ user_detail.created_at.strftime('%b %d, %Y, %H:%M UTC') if user_detail.created_at else '—' }}</td>
-        </tr>
-        <tr>
-          <td class="user-facts-label">Global Status</td>
-          <td>
-            <form method="post" action="/admin/users/{{ user_detail.id }}/toggle-active" class="inline-form">
-              <button type="submit" class="btn btn-sm {{ 'btn-warning' if user_detail.is_active else 'btn-success' }}">
-                {{ 'Deactivate Account' if user_detail.is_active else 'Activate Account' }}
-              </button>
-            </form>
-          </td>
-        </tr>
-        <tr>
-          <td class="user-facts-label">Global Admin</td>
-          <td>
-            <form method="post" action="/admin/users/{{ user_detail.id }}/toggle-admin" class="inline-form">
-              <button type="submit" class="btn btn-sm {{ 'btn-danger' if user_detail.is_admin else 'btn-primary' }}">
-                {{ 'Revoke Super Admin' if user_detail.is_admin else 'Promote to Super Admin' }}
-              </button>
-            </form>
-          </td>
-        </tr>
-        <tr>
-          <td class="user-facts-label">Event Hosting</td>
-          <td>
-            {% if user_detail.is_admin %}
-              <div class="user-facts-action">
-                <span class="badge badge-valid">Allowed</span>
-                <span class="muted">(Administrators can always host events)</span>
-              </div>
-            {% elif user_detail.can_host %}
-              <div class="user-facts-action">
-                <form method="post" action="/admin/users/{{ user_detail.id }}/hosting" class="inline-form">
-                  <input type="hidden" name="action" value="revoke">
-                  <button type="submit" class="btn btn-sm btn-warning">Revoke Hosting</button>
-                </form>
-                <span class="badge badge-valid">Allowed</span>
-              </div>
-            {% elif pending_token %}
-              <div class="user-facts-action">
-                <form method="post" action="/admin/users/invite/{{ pending_token.id }}/resend" class="inline-form">
-                  <button type="submit" class="btn btn-sm btn-outline" title="Resend invitation email">Resend</button>
-                </form>
-                <form method="post" action="/admin/users/invite/{{ pending_token.id }}/cancel" class="inline-form"
-                      data-confirm="Cancel invitation for {{ user_detail.email }}?">
-                  <button type="submit" class="btn btn-sm btn-danger" title="Cancel invitation">Cancel</button>
-                </form>
-                <span class="badge badge-warning">Pending</span>
-                {% if user_detail.hosting_requested_at %}
-                  <span class="badge badge-role">Requested {{ user_detail.hosting_requested_at.strftime('%b %d, %Y') }}</span>
-                {% endif %}
-              </div>
-            {% elif not user_detail.password_hash %}
-              <div class="user-facts-action">
-                <form method="post" action="/admin/users/invite" class="inline-form">
-                  <input type="hidden" name="email" value="{{ user_detail.email }}">
-                  <button type="submit" class="btn btn-sm btn-primary">Invite Organizer</button>
-                </form>
-                <span class="badge badge-warning">Stub Account</span>
-                <span class="muted">(Must accept invitation to activate hosting)</span>
-                {% if user_detail.hosting_requested_at %}
-                  <span class="badge badge-role">Requested {{ user_detail.hosting_requested_at.strftime('%b %d, %Y') }}</span>
-                {% elif user_detail.hosting_revoked_at %}
-                  <span class="badge badge-used">Revoked</span>
-                {% endif %}
-              </div>
-            {% else %}
-              <div class="user-facts-action">
-                <form method="post" action="/admin/users/{{ user_detail.id }}/hosting" class="inline-form">
-                  <input type="hidden" name="action" value="grant">
-                  <button type="submit" class="btn btn-sm btn-primary">Grant Hosting</button>
-                </form>
-                <span class="badge badge-used">
-                  {{ 'Revoked' if user_detail.hosting_revoked_at else 'Not Allowed' }}
-                </span>
-                {% if user_detail.hosting_requested_at %}
-                  <span class="badge badge-role">Requested {{ user_detail.hosting_requested_at.strftime('%b %d, %Y') }}</span>
-                {% endif %}
-              </div>
-            {% endif %}
-          </td>
-        </tr>
-      </tbody>
-    </table>
-  </div>
-</div>
-
-<h2>Event Admin Roles</h2>
-<p class="muted hint--spaced-lg">Toggle event admin status for specific events below. Interpreter and listener roles are assigned per-booth.</p>
-
-{% if events %}
-<table class="data-table">
-  <thead>
-    <tr>
-      <th>Event</th>
-      <th>Status</th>
-      <th>Action</th>
-    </tr>
-  </thead>
-  <tbody>
-    {% for event in events %}
-    {% set is_event_admin = event.id in event_owner_map %}
-    <tr class="{{ 'row-assigned' if is_event_admin else '' }}">
-      <td><strong>{{ event.display_name }}</strong> ({{ event.slug }})</td>
-      <td>
-        {% if is_event_admin %}
-        <span class="badge badge-role badge-event_admin">Event Admin</span>
-        {% else %}
-        <span class="muted">—</span>
-        {% endif %}
-      </td>
-      <td>
-        <form method="post" action="/admin/users/{{ user_detail.id }}/events/{{ event.id }}/toggle-owner" class="inline-form">
-          <button type="submit" class="btn btn-sm {{ 'btn-danger' if is_event_admin else 'btn-primary' }}">
-            {{ 'Remove Admin' if is_event_admin else 'Make Admin' }}
-          </button>
-        </form>
-      </td>
-    </tr>
-    {% endfor %}
-  </tbody>
-</table>
-{% else %}
-<div class="empty-state">
-  <p>No events configured. <a href="/admin/events/">Create an event</a> to assign admin roles.</p>
-</div>
+{% if notice %}
+<div class="alert alert-{{ 'danger' if notice[0] == 'error' else 'success' }}" role="{{ 'alert' if notice[0] == 'error' else 'status' }}">{{ notice[1] }}</div>
 {% endif %}
 
-<div class="section-spaced-lg">
-  <form method="post" action="/admin/users/{{ user_detail.id }}/delete"
-        data-confirm="Delete user {{ user_detail.email }}? This cannot be undone.">
-    <button type="submit" class="btn btn-danger">Delete User Account</button>
-  </form>
+<div class="ud-layout">
+  <div class="ud-main">
+    {# ── Platform access ── #}
+    <section class="ud-card" aria-labelledby="ud-access">
+      <h2 class="ud-card-title" id="ud-access">Platform access</h2>
+      <div class="ud-row">
+        <div class="ud-row-text">
+          <p class="ud-row-title">Hosting access</p>
+          <p class="ud-row-desc">Lets this person create new events. They become Event owner of each event they create.</p>
+        </div>
+        <div class="ud-row-action">
+          {% if u.is_admin %}
+            <span class="ud-state">Included with Admin</span>
+          {% elif u.can_host %}
+            <span class="ud-state ud-state--on">Granted</span>
+            {{ access_form('hosting', false, 'Remove hosting access', confirm='Remove hosting access from ' ~ u.display_name ~ '? Their existing events are kept.') }}
+          {% elif pending_token and not pending_token.is_expired %}
+            <span class="ud-state">Invitation pending</span>
+            <form method="post" action="/admin/users/invite/{{ pending_token.id }}/resend"><button type="submit" class="btn btn-outline ud-btn">Resend invitation</button></form>
+            <form method="post" action="/admin/users/invite/{{ pending_token.id }}/cancel"><button type="submit" class="btn btn-outline ud-btn">Cancel invitation</button></form>
+          {% elif not u.password_hash %}
+            <span class="ud-state">Account not set up</span>
+            <form method="post" action="/admin/users/invite">
+              <input type="hidden" name="email" value="{{ u.email }}" />
+              <button type="submit" class="btn btn-outline ud-btn"{% if not u.is_active %} disabled{% endif %}>Send invitation</button>
+            </form>
+          {% else %}
+            <span class="ud-state">{% if open_request %}Requested {{ open_request.created_at.strftime('%b %d, %Y') }}{% else %}Not granted{% endif %}</span>
+            {% if open_request %}<a class="btn btn-outline ud-btn" href="/admin/hosting-access/requests/">Review request</a>{% endif %}
+            {{ access_form('hosting', true, 'Grant hosting access', disabled=not u.is_active) }}
+          {% endif %}
+        </div>
+      </div>
+      <div class="ud-row">
+        <div class="ud-row-text">
+          <p class="ud-row-title">Admin</p>
+          <p class="ud-row-desc">Full access to the Admin panel and every event on the platform.</p>
+          {% if is_self %}<p class="ud-row-note">You can't change your own Admin status.</p>
+          {% elif is_last_admin %}<p class="ud-row-note">VoxBento needs at least one active Admin.</p>{% endif %}
+        </div>
+        <div class="ud-row-action">
+          <span class="ud-state{{ ' ud-state--on' if u.is_admin else '' }}">{{ 'Yes' if u.is_admin else 'No' }}</span>
+          {% if u.is_admin %}
+            {{ access_form('admin', false, 'Remove Admin', confirm='Remove Admin from ' ~ u.display_name ~ '?', disabled=is_self or is_last_admin) }}
+          {% else %}
+            {{ access_form('admin', true, 'Make Admin', confirm='Make ' ~ u.display_name ~ ' an Admin? Admins have full access to the Admin panel and every event.', disabled=not u.is_active) }}
+          {% endif %}
+        </div>
+      </div>
+      <div class="ud-row">
+        <div class="ud-row-text">
+          <p class="ud-row-title">Email verification</p>
+          <p class="ud-row-desc">Allows this person to sign in with their password.</p>
+          {% if is_self %}<p class="ud-row-note">You can't unverify your own email address.</p>
+          {% elif is_last_admin and u.email_verified %}<p class="ud-row-note">VoxBento needs at least one active Admin.</p>{% endif %}
+        </div>
+        <div class="ud-row-action">
+          <span class="ud-state{{ ' ud-state--on' if u.email_verified else '' }}">{{ 'Verified' if u.email_verified else 'Not verified' }}</span>
+          {% if u.email_verified %}
+            {{ access_form('verified', false, 'Mark unverified', confirm='Mark ' ~ u.display_name ~ '’s email as not verified? They will not be able to sign in until verified.', disabled=is_self or (is_last_admin and u.email_verified)) }}
+          {% else %}
+            {{ access_form('verified', true, 'Mark verified') }}
+          {% endif %}
+        </div>
+      </div>
+    </section>
+
+    {# ── Roles in events ── #}
+    <section class="ud-card" aria-labelledby="ud-roles">
+      <h2 class="ud-card-title" id="ud-roles">Roles in events</h2>
+      <p class="ud-card-note">Roles are given and removed by each event's owners, not from here.</p>
+      {% if roles %}
+      <div class="ud-table-wrap">
+        <table class="ud-table">
+          <thead>
+            <tr><th scope="col">Event</th><th scope="col">Where</th><th scope="col">Role</th><th scope="col">Since</th></tr>
+          </thead>
+          <tbody>
+            {% for r in roles %}
+            <tr>
+              <td><a href="/admin/events/{{ r.event.id }}/">{{ r.event.display_name }}</a></td>
+              <td>{{ r.where }}</td>
+              <td>{{ r.role }}</td>
+              <td>{{ r.since.strftime('%b %d, %Y') if r.since else '—' }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+      {% else %}
+      <p class="ud-empty">This person has no roles in events.</p>
+      {% endif %}
+    </section>
+
+    {# ── Events owned ── #}
+    <section class="ud-card" aria-labelledby="ud-owned">
+      <h2 class="ud-card-title" id="ud-owned">Events owned</h2>
+      {% if owned_events %}
+      <ul class="ud-list">
+        {% for ev in owned_events %}
+        <li><a href="/admin/events/{{ ev.id }}/">{{ ev.display_name }}</a><span>Created {{ ev.created_at.strftime('%b %d, %Y') if ev.created_at else '—' }}</span></li>
+        {% endfor %}
+      </ul>
+      {% else %}
+      <p class="ud-empty">This person does not own any events.</p>
+      {% endif %}
+    </section>
+  </div>
+
+  <aside class="ud-side">
+    {# ── Account ── #}
+    <section class="ud-card" aria-labelledby="ud-account">
+      <h2 class="ud-card-title" id="ud-account">Account</h2>
+      <dl class="ud-facts">
+        <dt>Joined</dt><dd>{{ u.created_at.strftime('%b %d, %Y') if u.created_at else '—' }}</dd>
+        <dt>Email</dt><dd>{{ 'Verified' if u.email_verified else 'Not verified' }}</dd>
+        <dt>Sign-in</dt><dd>{{ 'Password' if u.password_hash else 'Email link only' }}</dd>
+        <dt>Developer app</dt>
+        <dd>
+          {% if developer_account %}
+          <a href="/admin/developer-accounts">{{ developer_account.status|capitalize }}</a>
+          {% else %}None{% endif %}
+        </dd>
+      </dl>
+    </section>
+
+    {# ── Danger zone ── #}
+    <section class="ud-card ud-card--danger" aria-labelledby="ud-danger">
+      <h2 class="ud-card-title" id="ud-danger">Danger zone</h2>
+      {% if is_self %}
+      <p class="ud-card-note">You can't deactivate or delete your own account.</p>
+      {% elif is_last_admin %}
+      <p class="ud-card-note">This is the only active Admin, so the account can't be deactivated or deleted.</p>
+      {% endif %}
+      <div class="ud-danger-row">
+        {% if u.is_active %}
+        <p class="ud-row-title">Deactivate account</p>
+        <p class="ud-row-desc">Signs them out and blocks sign-in. Can be undone.</p>
+        {{ access_form('active', false, 'Deactivate', classes='btn btn-outline ud-btn ud-btn--danger', confirm='Deactivate ' ~ u.display_name ~ '? They are signed out and can no longer sign in until reactivated.', disabled=is_self or is_last_admin) }}
+        {% else %}
+        <p class="ud-row-title">Reactivate account</p>
+        <p class="ud-row-desc">Lets them sign in again with their existing roles.</p>
+        {{ access_form('active', true, 'Reactivate') }}
+        {% endif %}
+      </div>
+      <div class="ud-danger-row">
+        <p class="ud-row-title">Delete account</p>
+        <p class="ud-row-desc">Removes the account and all its roles. Asks you to type the email address to confirm.</p>
+        <button type="button" class="btn btn-outline ud-btn ud-btn--danger" data-open-dialog="ud-delete-dialog"{% if is_self or is_last_admin %} disabled{% endif %}>Delete</button>
+      </div>
+    </section>
+  </aside>
 </div>
 
+<dialog class="ul-dialog" data-users-confirm aria-labelledby="ul-confirm-title">
+  <form method="dialog">
+    <h2 class="ul-dialog-title" id="ul-confirm-title">Please confirm</h2>
+    <p class="ul-dialog-text" data-confirm-text></p>
+    <div class="ul-dialog-actions">
+      <button type="submit" value="cancel" class="btn btn-outline">Cancel</button>
+      <button type="submit" value="confirm" class="btn btn-primary" data-confirm-ok>Confirm</button>
+    </div>
+  </form>
+</dialog>
+
+{% if not is_self and not is_last_admin %}
+<dialog class="ul-dialog" id="ud-delete-dialog" aria-labelledby="ud-delete-title">
+  <form method="post" action="/admin/users/{{ u.id }}/delete">
+    <h2 class="ul-dialog-title" id="ud-delete-title">Delete {{ u.display_name }}?</h2>
+    <p class="ul-dialog-text">This removes the account and all its roles in events. It can't be undone.</p>
+    <label class="ud-confirm-label" for="ud-confirm-email">Type <strong>{{ u.email }}</strong> to confirm</label>
+    <input class="ud-confirm-input" id="ud-confirm-email" name="confirm_email" type="email" autocomplete="off" required data-confirm-match="{{ u.email }}" />
+    <div class="ul-dialog-actions">
+      <button type="button" class="btn btn-outline" data-close-dialog>Cancel</button>
+      <button type="submit" class="btn btn-danger" data-confirm-submit disabled>Delete account</button>
+    </div>
+  </form>
+</dialog>
+{% endif %}
 {% endblock %}

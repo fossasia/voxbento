@@ -120,11 +120,19 @@ def _require_access(
     request: Request,
     credentials: HTTPAuthorizationCredentials | None,
     token_query: str | None = None,
+    session_payload: dict | None = None,
 ) -> None:
-    """Allow request if access token is unset, or if a valid JWT or legacy token is provided."""
+    """Allow request with a valid credential, or anonymously in debug mode."""
     if not settings.booth_access_token:
+        if not settings.debug:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="BOOTH_ACCESS_TOKEN is not configured on this server.",
+            )
         return
     if credentials is not None:
+        if credentials.credentials == settings.booth_access_token:
+            return
         try:
             payload = decode_token(credentials.credentials)
             if payload.get("role") == "listener":
@@ -140,7 +148,7 @@ def _require_access(
     # Cookie Fallback
     from portal.auth import get_booth_session
 
-    payload = get_booth_session(request)
+    payload = session_payload if session_payload is not None else get_booth_session(request)
     if payload:
         if payload.get("role") == "listener":
             raise HTTPException(

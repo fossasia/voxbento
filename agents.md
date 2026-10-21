@@ -71,19 +71,26 @@ VoxBento is a production-grade **browser-first interpretation booth console** fo
 | `portal/booth_state.py` | In-memory `BoothRegistry`, `Booth`, `Participant`, handoff policy, chat history |
 | `portal/auth.py` | JWT create/decode, bcrypt password, `require_admin`, `require_user`, `resolve_booth_role`, `can_perform_role` |
 | `portal/config.py` | `Settings` — pydantic-settings; all env vars / `.env` |
-| `portal/models.py` | SQLAlchemy declarative models: `Event`, `Room`, `DBBooth`, `InviteToken`, `User`, `EventMembership`, `BoothMembership` |
+| `portal/models.py` | SQLAlchemy declarative models: `Event`, `Room`, `DBBooth`, `InviteToken`, `User`, `EventMembership`, `RoomMembership`, `BoothMembership`, `HostingRequest`, `AIVocabularyEntry`, etc. |
 | `portal/database.py` | Async engine, session factory (`get_session`), all CRUD helpers |
+| `portal/booth_publish.py` | Single-use WHIP publish tickets for interpreter booth paths; checked by the MediaMTX auth hook |
 | `portal/booth_identity.py` | `make_booth_id`, `make_mediamtx_path`, `parse_booth_id`, `validate_event_slug`, `validate_language_code` |
 | `portal/roles.py` | `Permission` enum, `ROLE_PERMISSIONS` dict, `ALL_ROLES` set, `_ROLE_RANK` |
 | `portal/crypto.py` | `encrypt_val` / `decrypt_val` (Fernet, SHA-256 key derivation) |
 | `portal/transcription/` | Transcription subsystem — see `TRANSCRIPTION_MAP.md` |
+| `portal/translations/` | Translation subsystem — LLM workers, contextual prompts (`prompts.py`), glossaries (`vocabulary.py`) |
+| `portal/tts/` | Text-to-speech subsystem — direct-push Deepgram Aura and Supertonic ONNX |
+| `portal/meeting_source.py` | Managed Jitsi floor agent lifecycle reconciler |
+| `portal/program_ingest.py` | Floor authorization and reconciliation for Program Stream Ingest |
+| `portal/program_relay.py` | YouTube RTMPS destination management and relay health convergence |
+| `portal/user_admin.py` | Administrative access rules, user flags (`can_host`, `is_admin`, `is_active`, `email_verified`) |
 | `portal/templates/` | Jinja2 HTML — `base.html`, `interpreter_booth.html`, `listener-event.html`, `admin/` |
 | `portal/static/js/interpreter-booth.js` | Booth UI — WebRTC/WHIP, WebSocket, Jitsi iframe, mic controls, level meter |
 | `portal/static/js/whep-listener.js` | WHEP playback client — RTCPeerConnection, auto-reconnect with exponential back-off |
 | `portal/static/js/admin.js` | Admin panel JS helpers |
 | `mediamtx.yml` | MediaMTX config — WHIP/WHEP paths, RTSP, Control API, `overridePublisher` |
 | `docker-compose.yml` | portal + mediamtx + jitsi-web/prosody/jicofo/jvb |
-| `alembic/versions/` | 8 migrations (001–008); run `uv run alembic upgrade head` |
+| `alembic/versions/` | 31 migrations (001–031); run `uv run alembic upgrade head` |
 
 ---
 
@@ -107,15 +114,16 @@ VoxBento is a production-grade **browser-first interpretation booth console** fo
 ## Role Model
 
 ```
-super_admin > event_owner > room_coordinator > interpreter > listener
+super_admin > event_owner > room_coordinator > interpreter > support > listener
 ```
 
 | Role | Go Live (WHIP) | Set Active | Chat | Manage Booths/Events |
 |---|---|---|---|---|
 | `super_admin` | ✓ | ✓ | ✓ | ✓ |
-| `event_admin` | ✓ | ✓ | ✓ | booths only |
-| `coordinator` | ✓ | ✓ | ✓ | — |
+| `event_owner` | ✓ | ✓ | ✓ | booths only |
+| `room_coordinator` | ✓ | ✓ | ✓ | — |
 | `interpreter` | ✓ (active only) | — | ✓ | — |
+| `support` | — | — | — | — (booth view only) |
 | `listener` | — | — | — | — |
 
 Defined in: `portal/roles.py`
@@ -127,7 +135,7 @@ Enforced in: `portal/websockets/handlers.py` (`_handle_join`), `portal/routers/a
 
 | Purpose | Token type | Cookie name | Key claims |
 |---|---|---|---|
-| Invite-link participant | `create_participant_token()` | `session_token` | `booth_id`, `role`, `event_slug`, `language_code` |
+| Invite-link participant | `create_participant_token()` | `session_token` | `booth_id`, `role`, `event_slug`, `room_id`, `language_code` |
 | Registered user / Admin | `create_user_token()` | `user_token` | `sub` (user_id), `email`, `is_admin`, `user=True` |
 
 All tokens: HS256, `settings.effective_jwt_secret`, expiry = `jwt_expiry_seconds`.
@@ -139,8 +147,8 @@ API key storage: Fernet-encrypted in DB (`portal/crypto.py`).
 ## Booth Identity
 
 ```python
-booth_id  = make_booth_id("pycon2026", "en")   # → "pycon2026-en"
-mtx_path  = make_mediamtx_path("pycon2026", "en")  # → "pycon2026/en"
+booth_id  = make_booth_id("pycon2026", 14, "en")   # → "pycon2026-14-en"
+mtx_path  = make_mediamtx_path("pycon2026", 14, "en")  # → "pycon2026/14/en"
 whip_url  = f"{settings.mediamtx_whip_base}/{mtx_path}/whip"
 whep_url  = f"{settings.mediamtx_whip_base}/{mtx_path}/whep"
 rtsp_url  = f"rtsp://mediamtx:8554/{mtx_path}"   # transcription only
@@ -159,10 +167,17 @@ Validation: `portal/booth_identity.py` — slug: `^[a-z0-9]+(?:-[a-z0-9]+)*$`; l
 | `booth:chat` | `_handle_chat` | `body` only |
 | `booth:set-active` | `_handle_set_active` | `target_id` |
 | `booth:update-state` | `_handle_update_state` | `mic_active`, `ingest_connected` |
+| `booth:request-publish-ticket` | `_handle_request_publish_ticket` | — (participant from the WS session) |
 
-Server → Client: `booth:joined`, `booth:state`, `booth:chat`, `booth:error`
+Server → Client: `booth:joined`, `booth:state`, `booth:chat`, `booth:error`, `booth:publish-ticket`
 
-Caption feed: `/ws/captions/{booth_id}` (no auth) — receives `caption` + `booth:state` messages.
+Booth WHIP publishing is authenticated (#783): MediaMTX forwards the `Authorization: Bearer` ticket to
+`/internal/media-auth`, which redeems it once (`portal/booth_publish.py`, 30 s TTL, bound to the booth's
+server-derived path) and re-checks that the holder is still the active interpreter and that Mission Control has
+broadcast unlocked. Anonymous publishes get 401. A `booth:join` naming another socket's `participant_id` gets a fresh ID.
+
+Caption feed: `/ws/captions/{booth_id}` — receives `caption`, `translated_caption` + `booth:state` messages (protected by `resolve_ws_auth` when `BOOTH_ACCESS_TOKEN` is configured).
+Direct-push TTS feed: `/ws/tts/{room_id}/{language_code}/{booth_id}` — pre-authorized binary bundle stream (version byte, length-prefixed JSON header, optional 24 kHz PCM audio). Translation text is delivered concurrently over the captions feed and inside TTS bundle headers.
 
 ---
 

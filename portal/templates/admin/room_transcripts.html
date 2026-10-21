@@ -3,7 +3,7 @@
 
 {% block breadcrumb %}
 <nav class="breadcrumb">
-  <a href="{{ management_prefix }}/">Dashboard</a> <span>/</span>
+  <a href="{{ management_prefix }}/">{{ 'My events' if is_workspace else 'Dashboard' }}</a> <span>/</span>
   <a href="{{ management_prefix }}/events/">Events</a> <span>/</span>
   <a href="{{ management_prefix }}/events/{{ event.id }}/">{{ event.display_name }}</a> <span>/</span>
   <a href="{{ management_prefix }}/events/{{ event.id }}/rooms/">Rooms</a> <span>/</span>
@@ -43,7 +43,7 @@
     </div>
     <div class="form-group form-group-btn form-group--align-end">
       <button type="button" class="btn btn-primary" id="refresh-transcripts-btn" onclick="fetchTranscripts()">Refresh</button>
-      <a href="#" id="download-csv-btn" class="btn btn-outline" style="display: none;">Download CSV</a>
+      <a href="#" id="download-csv-btn" class="btn btn-outline" hidden>Download CSV</a>
     </div>
   </div>
 
@@ -63,7 +63,7 @@
       fetchTranscripts();
     } else {
       document.getElementById('transcript-viewer-container').innerHTML = '<p class="muted transcript-placeholder">Select a channel above to view its transcripts.</p>';
-      document.getElementById('download-csv-btn').style.display = 'none';
+      document.getElementById('download-csv-btn').hidden = true;
     }
   });
 
@@ -80,7 +80,7 @@
       const data = await res.json();
       if (data.length === 0) {
         container.innerHTML = '<p class="muted transcript-placeholder">No transcripts recorded for this channel yet.</p>';
-        document.getElementById('download-csv-btn').style.display = 'none';
+        document.getElementById('download-csv-btn').hidden = true;
         return;
       }
       
@@ -107,7 +107,7 @@
       downloadBtn.href = url;
       const safeFilename = currentLanguageCode.replace(/[^a-zA-Z0-9_-]/g, '_');
       downloadBtn.download = `transcripts_${safeFilename}.csv`;
-      downloadBtn.style.display = 'inline-block';
+      downloadBtn.hidden = false;
       
       // Auto-scroll to bottom
       container.scrollTop = container.scrollHeight;

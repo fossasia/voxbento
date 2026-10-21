@@ -3,7 +3,7 @@
 
 {% block breadcrumb %}
 <nav class="breadcrumb">
-  <a href="{{ management_prefix }}/">Dashboard</a> <span>/</span>
+  <a href="{{ management_prefix }}/">{{ 'My events' if is_workspace else 'Dashboard' }}</a> <span>/</span>
   <a href="{{ management_prefix }}/events/">Events</a> <span>/</span>
   <a href="{{ management_prefix }}/events/{{ event.id }}/">{{ event.display_name }}</a> <span>/</span>
   <a href="{{ management_prefix }}/events/{{ event.id }}/rooms/">Rooms</a> <span>/</span>
@@ -145,7 +145,7 @@
   <div class="token-form-card token-form-card--spaced">
     <div class="card-head card-head--spaced">
       <h3>Floor Audio Translation</h3>
-      <div id="nllb_download_progress_container" class="download-progress" style="display: none;">
+      <div id="nllb_download_progress_container" class="download-progress" hidden>
         <span id="nllb_download_speed" class="download-speed">-- MB/s</span>
         <div class="progress-track">
           <div id="nllb_download_bar" class="progress-fill"></div>
@@ -187,6 +187,35 @@
       </div>
     </div>
 
+    <div class="ai-interpretation-grid">
+      <div class="form-group">
+        <label for="floor_ai_interpreter_persona">AI interpreter persona</label>
+        <textarea id="floor_ai_interpreter_persona" name="floor_ai_interpreter_persona" class="input ai-interpretation-textarea" rows="4" placeholder="Example: A professional simultaneous interpreter for open source technical conferences.">{{ room.floor_ai_interpreter_persona or '' }}</textarea>
+        <p class="form-help">Describe the interpreter's domain expertise and role.</p>
+      </div>
+      <div class="form-group">
+        <label for="floor_ai_interpretation_style">AI interpretation style</label>
+        <textarea id="floor_ai_interpretation_style" name="floor_ai_interpretation_style" class="input ai-interpretation-textarea" rows="4" placeholder="Example: Use clear formal conference language. Preserve API names and issue numbers.">{{ room.floor_ai_interpretation_style or '' }}</textarea>
+        <p class="form-help">Set tone, formality, terminology, and language-specific conventions.</p>
+      </div>
+    </div>
+
+    <p class="form-help ai-interpretation-note">
+      Persona, style, and vocabulary are sent as prompt instructions to cloud translation providers
+      (OpenAI-compatible, Gemini, Anthropic). The local NLLB provider takes no prompt, so these
+      settings have no effect while it is selected.
+    </p>
+
+    <div class="form-row">
+      <div class="form-group">
+        <label class="checkbox-label ai-vocabulary-toggle">
+          <input type="checkbox" name="floor_ai_vocabulary_enabled" id="floor_ai_vocabulary_enabled" {% if room.floor_ai_vocabulary_enabled %}checked{% endif %}>
+          Use the room vocabulary glossary in AI prompts
+        </label>
+        <p class="form-help">Only matching terms and high-priority entries are sent to the provider, up to 80 entries per segment.</p>
+      </div>
+    </div>
+
     <div class="form-row">
       <div class="form-group form-group--grow">
         <label>Target Languages</label>
@@ -208,12 +237,81 @@
   </div>
 </form>
 
+<section class="token-form-card ai-vocabulary-card" aria-labelledby="ai-vocabulary-heading">
+  <div class="ai-vocabulary-header">
+    <div>
+      <h3 id="ai-vocabulary-heading">AI interpretation vocabulary</h3>
+      <p class="form-help">Upload event terminology for consistent translated captions and translated TTS.</p>
+    </div>
+    <a class="btn btn-outline btn-sm" href="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/ai-vocabulary/export">Export CSV</a>
+  </div>
+
+  {% if vocabulary_imported is not none %}
+    <div class="alert alert-success ai-vocabulary-alert">
+      Imported {{ vocabulary_imported }} row{% if vocabulary_imported != '1' %}s{% endif %}.
+      {% if vocabulary_languages %} Languages: {{ vocabulary_languages }}.{% endif %}
+    </div>
+  {% endif %}
+  {% if vocabulary_warnings %}
+    <div class="alert alert-warning ai-vocabulary-alert"><strong>Import warnings:</strong> {{ vocabulary_warnings }}</div>
+  {% endif %}
+
+  <form method="post" action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/ai-vocabulary/upload" enctype="multipart/form-data" class="ai-vocabulary-upload">
+    <div class="form-group ai-vocabulary-file">
+      <label for="vocabulary_file">Vocabulary CSV</label>
+      <input type="file" id="vocabulary_file" name="vocabulary_file" accept=".csv,text/csv" required>
+      <p class="form-help">Required columns: source_term, target_language, target_term. Maximum size: 2 MB.</p>
+    </div>
+    <div class="form-group ai-vocabulary-mode">
+      <label for="import_mode">Import mode</label>
+      <select id="import_mode" name="import_mode" class="input">
+        <option value="append">Append new entries</option>
+        <option value="replace">Replace room vocabulary</option>
+      </select>
+    </div>
+    <button type="submit" class="btn btn-primary">Upload vocabulary</button>
+  </form>
+
+  {% if vocabulary_entries %}
+    <div class="ai-vocabulary-table-wrap">
+      <table class="data-table ai-vocabulary-table">
+        <thead>
+          <tr><th>Source term</th><th>Language</th><th>Target term</th><th>Match</th><th>Priority</th><th></th></tr>
+        </thead>
+        <tbody>
+          {% for entry in vocabulary_entries %}
+            <tr>
+              <td><strong>{{ entry.source_term }}</strong>{% if entry.description %}<small>{{ entry.description }}</small>{% endif %}</td>
+              <td><span class="badge">{{ entry.target_language }}</span></td>
+              <td>{{ entry.target_term }}</td>
+              <td>{{ entry.match_type }}{% if entry.case_sensitive %}, case-sensitive{% endif %}</td>
+              <td>{{ entry.priority }}</td>
+              <td>
+                <form method="post" action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/ai-vocabulary/delete">
+                  <input type="hidden" name="entry_id" value="{{ entry.id }}">
+                  <button type="submit" class="btn btn-sm btn-outline">Delete</button>
+                </form>
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    <form method="post" action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/ai-vocabulary/delete" class="ai-vocabulary-clear">
+      <input type="hidden" name="entry_id" value="all">
+      <button type="submit" class="btn btn-sm btn-outline">Delete all room vocabulary</button>
+    </form>
+  {% else %}
+    <p class="ai-vocabulary-empty">No room vocabulary has been uploaded yet.</p>
+  {% endif %}
+</section>
+
 <form method="post" action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/edit" class="token-form" id="floor_tts_form">
   <input type="hidden" name="form_section" value="tts">
   <div class="token-form-card token-form-card--spaced">
     <div class="card-head card-head--spaced">
       <h3>Floor Audio TTS (Direct Push)</h3>
-      <div id="supertonic_download_progress_container" class="download-progress" style="display: none;">
+      <div id="supertonic_download_progress_container" class="download-progress" hidden>
         <span id="supertonic_download_speed" class="download-speed">-- MB/s</span>
         <div class="progress-track">
           <div id="supertonic_download_bar" class="progress-fill"></div>
@@ -240,7 +338,7 @@
           <option value="supertonic" {% if room.floor_tts_provider == 'supertonic' %}selected{% endif %}>Supertonic (Self-Hosted)</option>
         </select>
         <p class="form-help form-help--spaced" id="tts_provider_help_deepgram"><strong>Supported Deepgram languages:</strong> English (en), Spanish (es), Dutch (nl), French (fr), German (de), Italian (it), Japanese (ja). Other languages fall back to an English voice.</p>
-        <p class="form-help form-help--spaced" id="tts_provider_help_supertonic" style="display: none;">Supertonic runs locally with no API key. 31 languages supported; unknown languages use a language-agnostic fallback. The model (~400MB) downloads on first use.</p>
+        <p class="form-help form-help--spaced" id="tts_provider_help_supertonic" hidden>Supertonic runs locally with no API key. 31 languages supported; unknown languages use a language-agnostic fallback. The model (~400MB) downloads on first use.</p>
       </div>
       <div class="form-group form-group--grow" id="tts_voice_group">
         <label for="floor_tts_voice">Supertonic Voice</label>
@@ -339,9 +437,9 @@
 
       function syncTtsProvider() {
         const isSupertonic = ttsProviderSelect.value === 'supertonic';
-        if (ttsVoiceGroup) ttsVoiceGroup.style.display = isSupertonic ? '' : 'none';
-        if (helpDeepgram) helpDeepgram.style.display = isSupertonic ? 'none' : '';
-        if (helpSupertonic) helpSupertonic.style.display = isSupertonic ? '' : 'none';
+        if (ttsVoiceGroup) ttsVoiceGroup.hidden = !isSupertonic;
+        if (helpDeepgram) helpDeepgram.hidden = isSupertonic;
+        if (helpSupertonic) helpSupertonic.hidden = !isSupertonic;
       }
 
       ttsProviderSelect.addEventListener('change', syncTtsProvider);
@@ -612,7 +710,7 @@
 </div>
 {% endif %}
 
-<div id="nllb_download_modal" class="model-modal-overlay" style="display: none;">
+<div id="nllb_download_modal" class="model-modal-overlay" hidden>
   <div class="model-modal">
     <h3>Local Offline Model Selected</h3>
     <p>You selected a local offline model. It will take time to load the model. Do you want to continue?</p>
@@ -623,7 +721,7 @@
   </div>
 </div>
 
-<div id="nllb_success_modal" class="model-modal-overlay" style="display: none;">
+<div id="nllb_success_modal" class="model-modal-overlay" hidden>
   <div class="model-modal model-modal--success">
     <div class="model-modal-icon">
       ✓
@@ -636,7 +734,7 @@
   </div>
 </div>
 
-<div id="supertonic_download_modal" class="model-modal-overlay" style="display: none;">
+<div id="supertonic_download_modal" class="model-modal-overlay" hidden>
   <div class="model-modal">
     <h3>Supertonic TTS Selected</h3>
     <p>You selected the local Supertonic TTS provider. It will take some time to download the ~400MB model on its first use. Do you want to continue?</p>
@@ -647,7 +745,7 @@
   </div>
 </div>
 
-<div id="supertonic_success_modal" class="model-modal-overlay" style="display: none;">
+<div id="supertonic_success_modal" class="model-modal-overlay" hidden>
   <div class="model-modal model-modal--success">
     <div class="model-modal-icon">
       ✓

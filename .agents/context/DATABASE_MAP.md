@@ -19,6 +19,7 @@ users (1)
   └── event_memberships (n) ─── event_id → events.id
   └── room_memberships (n) ─── room_id → rooms.id
   └── booth_memberships (n) ─── booth_id → booths.id
+  └── hosting_requests (n) ─── at most one with status 'open'
 ```
 
 ---
@@ -232,6 +233,20 @@ Tracks which languages the translation worker should generate for a given room o
 | 015 | `015_add_floor_tts_enabled.py` | `rooms.floor_tts_enabled` |
 | 016 | `016_add_room_audio_delay.py` | `rooms.audio_delay_ms` |
 | 017 | `017_add_tts_provider_fields.py` | `rooms.floor_tts_provider`, `rooms.floor_tts_voice` |
+| 018 | `018_add_authtoken_and_user_email_verified.py` | `users.email_verified`, `auth_tokens` table |
+| 019 | `019_add_api_keys_and_usage_metrics.py` | `api_keys`, `usage_metrics` tables |
+| 020 | `020_multi_room_architecture.py` | multi-room booth support (`booths.room_id`, unique index `(room_id, language_code)`) |
+| 021 | `021_add_oauth2_and_developer_platform_models.py` | `oauth_clients`, `oauth_tokens`, `developer_accounts`, `oauth_audit_logs` |
+| 022 | `022_add_webhooks.py` | `webhooks`, `webhook_deliveries` tables |
+| 023 | `023_phase_4_models_update.py` | model relationships and index updates |
+| 024 | `024_make_oauth_audit_logs_client_id_nullable.py` | nullable `client_id` in audit logs |
+| 025 | `025_program_ingest.py` | `rooms.floor_source`, `rooms.program_key_hash`, `rooms.program_key_expires_at`, `rooms.program_sync_offset_ms`, `rooms.floor_caption_seq` |
+| 026 | `026_program_sender_session.py` | `rooms.program_session_id`, `program_connected_at`, `program_disconnected_at` |
+| 027 | `027_meeting_agent.py` | `rooms.meeting_agent_enabled` (desired state for Jitsi floor agent) |
+| 028 | `028_program_relay.py` | `rooms.program_ingest_mode`, `rooms.program_relay_server`, `rooms.program_relay_key_enc`, `rooms.program_relay_updated_at` |
+| 029 | `029_add_can_host_to_users.py` | `users.can_host`, `users.hosting_requested_at`, `hosting_invitations` table |
+| 030 | `030_hosting_requests.py` | `hosting_requests` table with partial unique index for open requests |
+| 031 | `031_add_ai_interpretation_settings.py` | `rooms.floor_ai_interpreter_persona`, `rooms.floor_ai_interpretation_style`, `rooms.floor_ai_vocabulary_enabled`, `ai_vocabulary_entries` table |
 
 Run migrations: `uv run alembic upgrade head`
 
@@ -249,6 +264,7 @@ Run migrations: `uv run alembic upgrade head`
 | `set_event_membership`, `remove_event_membership`, `list_memberships_for_user`, `list_memberships_for_event` | event_memberships | upsert pattern |
 | `set_room_membership`, `remove_room_membership`, `list_memberships_for_room`, `list_room_memberships_for_user` | room_memberships | upsert pattern |
 | `set_booth_membership`, `remove_booth_membership`, `list_memberships_for_booth`, `list_booth_memberships_for_user` | booth_memberships | upsert pattern |
+| `create_hosting_request`, `get_hosting_request`, `get_open_hosting_request`, `list_open_hosting_requests`, `count_open_hosting_requests`, `close_hosting_request`, `close_open_hosting_request` | hosting_requests | `close_*` records the outcome and clears `users.hosting_requested_at` |
 
 ### Session Pattern
 
@@ -266,6 +282,27 @@ async with get_session() as session:
 - `configure(url)` overrides engine (used in tests).
 - `init_db()` creates all tables without Alembic (tests only).
 - `dispose()` disposes connection pool.
+## Migration 030 — hosting access requests (#768)
+
+Table `hosting_requests`: `user_id` (FK users, CASCADE), `organization`, `event_name`,
+nullable `event_starts_on` / `event_ends_on` (Date), `languages`, `message`, `status`
+(`open` | `granted` | `declined`), `decline_reason`, `decided_by_user_id` (FK users,
+SET NULL), `decided_at`, `created_at`. The partial unique index
+`uq_hosting_requests_open_user` (`WHERE status = 'open'`) allows one open request per
+user. Handled requests are kept for the record. `users.hosting_requested_at` mirrors
+the open request's creation time and is cleared when it is handled; the homepage demo
+form no longer sets it.
+
+## Migration 031 — AI interpretation settings and vocabulary entries (#639)
+
+Room fields: `floor_ai_interpreter_persona` (Text, nullable), `floor_ai_interpretation_style`
+(Text, nullable), `floor_ai_vocabulary_enabled` (Boolean, default true).
+Table `ai_vocabulary_entries`: indexed glossary terms scoped to event, room, or booth.
+Fields: `id`, `event_id`, `room_id` (nullable), `booth_id` (nullable), `source_term` (String(255)),
+`target_language` (String(20), default `all`), `target_term` (String(255)), `description` (Text),
+`case_sensitive` (Boolean, default false), `match_type` (String(20), `phrase` default | `exact`),
+`priority` (Integer, default 0), `created_at`. Scopes cascade on delete.
+
 ## Migration 028 — RTMPS relay mode (#749)
 
 Room fields: `program_ingest_mode` (`whip` default | `rtmps_relay`; binds the program

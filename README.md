@@ -28,6 +28,39 @@ Attendees listen at `/listener/{event_slug}`. Add `room` and `lang` to open a ro
 
 ---
 
+## Signed-in pages
+
+Every signed-in page shares one header: the VoxBento logo with the current area
+(**Admin**, **My events** or **Account**), that area's page links, and a user menu
+in the top right with the person's name. The menu always lists **My events**,
+**Account** and **Logout**, plus **Developer API** for users with an approved
+developer app and **Admin** for Admins. **My events** (`/workspace/`) lists every
+event the person has a role in, with a button to where they work. **Account**
+(`/account`) holds the person's display name, hosting and developer access, and
+sign-in settings (change, set or remove a password).
+Admins manage accounts at **Admin → Users**: search and filter everyone, and turn
+hosting access, Admin, Active, and Email Verification on or off right from the list.
+
+## Hosting access
+
+Only people with hosting access can create events. A signed-in user without it
+selects **Request access** on their Account page and fills in a short form
+(organization, event name and dates, languages, optional message). The team inbox
+in `HOSTING_REQUESTS_EMAIL` (default `voxbento.dev@gmail.com`) is emailed about
+each new request. Admins review requests under **Admin → Hosting access → Requests**:
+**Grant access** gives the person hosting access straight away, **Decline** asks for
+a reason that is emailed to them. A person has at most one open request at a time.
+
+## Floor Audio & AI Interpretation
+
+- **Meeting Source**: Managed headless floor bot automatically joins Jitsi sessions and streams conference floor audio.
+- **Program Stream Ingest**: Accepts direct broadcast audio from hardware encoders via authenticated HTTPS WHIP.
+- **RTMPS Relay**: Optional YouTube RTMPS forwarding via the dedicated `program-relay` service without re-encoding.
+- **AI Interpretation**: Real-time LLM translations guided by room personas, tone styles, and customizable domain vocabulary CSV glossaries.
+- **Direct-Push TTS**: Instant synthesized speech streamed to attendees over WebSocket (Deepgram Aura or self-hosted Supertonic ONNX).
+
+---
+
 ## Setup
 
 For detailed API documentation, environment variables, and configuration, visit [docs.voxbento.com](https://docs.voxbento.com). Native development setup details can also be found in [CONTRIBUTING.md](CONTRIBUTING.md).

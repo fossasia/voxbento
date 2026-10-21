@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import logging
+import re
 import secrets
 from datetime import datetime, timezone
 from pathlib import Path
@@ -14,6 +15,7 @@ from fastapi import APIRouter, BackgroundTasks, Body, HTTPException, Request, Re
 from fastapi.responses import RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.exc import DBAPIError, IntegrityError, OperationalError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from portal.auth import (
     create_participant_token,
@@ -23,35 +25,46 @@ from portal.auth import (
     get_current_user,
     hash_password,
     require_user,
+    resolve_request_principal,
     verify_password,
 )
 from portal.config import settings
 from portal.database import (
+    close_open_hosting_request,
     create_auth_token,
+    create_hosting_request,
     create_user,
     get_auth_token,
+    get_developer_account,
+    get_open_hosting_request,
     get_session,
     get_user_by_email,
     get_user_by_id,
-    list_booth_memberships_for_user,
-    list_memberships_for_user,
-    list_room_memberships_for_user,
     redeem_auth_token,
     redeem_invite_token,
     revoke_auth_token,
     revoke_auth_tokens,
     update_user,
 )
-from portal.email import send_magic_login_email, send_password_reset_email, send_verification_email
+from portal.email import (
+    send_hosting_request_notification,
+    send_magic_login_email,
+    send_password_reset_email,
+    send_verification_email,
+)
 from portal.email_sender import send_delayed_onboarding_email
-from portal.globals import _JS_CACHE_BUST
-from portal.models import TOKEN_TYPE_HOSTING_INVITE, AuthToken, utc_now
+from portal.globals import _JS_CACHE_BUST, asset_version_context
+from portal.hosting_requests import format_event_dates, parse_hosting_request_form
+from portal.models import HOSTING_REQUEST_GRANTED, TOKEN_TYPE_HOSTING_INVITE, AuthToken, User, utc_now
 from portal.rate_limit import check_rate_limit
 from portal.schemas.auth import TokenRequest, TokenResponse
+from portal.user_menu import resolve_user_menu, user_menu_context
 from portal.utils import safe_redirect, verify_same_origin
 
 _BASE_DIR = Path(__file__).resolve().parent.parent
-templates = Jinja2Templates(directory=str(_BASE_DIR / "templates"))
+templates = Jinja2Templates(
+    directory=str(_BASE_DIR / "templates"), context_processors=[user_menu_context, asset_version_context]
+)
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -403,7 +416,7 @@ async def request_magic_link(request: Request):
     import hashlib
     import secrets
     import time
-    from datetime import datetime, timedelta, timezone
+    from datetime import timedelta
 
     from fastapi.responses import JSONResponse
 
@@ -496,7 +509,6 @@ async def poll_magic_link(request: Request, poll_id: str = ""):
         return {"authenticated": False}
 
     # 2. Reject expired magic-link tokens before issuing a JWT
-    from datetime import datetime, timezone
 
     now_utc = datetime.now(timezone.utc)
     exp = poll_entry.get("expires_at")
@@ -729,8 +741,20 @@ async def user_logout(request: Request, next: str = "/"):
     return response
 
 
+ACCOUNT_NOTICES = {
+    "hosting_request_sent": "hosting_request_sent",
+    "profile_saved": "Your display name was saved.",
+    "password_changed": "Your password was changed.",
+    "password_set": "Your password was set. You can now sign in with it or with an email link.",
+    "password_removed": "Your password was removed. Sign in with a link sent to your email from now on.",
+}
+DISPLAY_NAME_MAX = 200
+_CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
+
+
 @router.get("/account")
 async def account_page(request: Request):
+    """The person's profile, access (hosting, developer API) and sign-in settings (#767)."""
     current_user = await get_current_user(request)
     if current_user is None:
         return safe_redirect(url="/login", status_code=status.HTTP_303_SEE_OTHER)
@@ -741,104 +765,162 @@ async def account_page(request: Request):
             response = safe_redirect(url="/login", status_code=status.HTTP_303_SEE_OTHER)
             response.delete_cookie("user_token")
             return response
-        event_memberships = await list_memberships_for_user(session, user.id)
-        room_memberships = await list_room_memberships_for_user(session, user.id)
-        booth_memberships = await list_booth_memberships_for_user(session, user.id)
+        open_hosting_request = await get_open_hosting_request(session, user.id)
+        developer_account = await get_developer_account(session, user.id)
+    await resolve_user_menu(request)
 
-    unified_memberships = []
-    coordinated_event_slugs = {
-        m.room.event_id: m.room.event.slug
-        for m in room_memberships
-        if m.role == "room_coordinator" and m.room and m.room.event
-    }
-    has_owned_events = any(m.role == "event_owner" for m in event_memberships)
-    is_hosting_revoked = bool(user.hosting_revoked_at is not None)
-
-    for m in event_memberships:
-        is_disabled = False
-        if m.event is None:
-            link = "#"
-        elif m.role == "event_owner":
-            link = f"/workspace/events/{m.event.id}/"
-        elif m.event_id in coordinated_event_slugs:
-            link = f"/mission-control/{coordinated_event_slugs[m.event_id]}/"
-        else:
-            link = "#"
-        unified_memberships.append(
-            {
-                "context": m.event.display_name if m.event else "—",
-                "link": link,
-                "type": "Event",
-                "role": m.role,
-                "created_at": m.created_at,
-                "is_disabled": is_disabled,
-            }
-        )
-    for m in room_memberships:
-        context_str = (
-            f"{m.room.event.display_name} - {m.room.display_name}"
-            if m.room and m.room.event
-            else (m.room.display_name if m.room else "—")
-        )
-        link_str = f"/mission-control/{m.room.event.slug}/" if m.room and m.room.event else "#"
-        unified_memberships.append(
-            {"context": context_str, "link": link_str, "type": "Room", "role": m.role, "created_at": m.created_at}
-        )
-    for m in booth_memberships:
-        context_str = (
-            f"{m.booth.event.display_name} - {m.booth.room.display_name} - {m.booth.language_name}"
-            if m.booth and m.booth.event and m.booth.room
-            else "—"
-        )
-        link_str = (
-            f"/interpreter/{m.booth.event.slug}/{m.booth.room_id}/{m.booth.language_code}"
-            if m.booth and m.booth.event
-            else "#"
-        )
-        unified_memberships.append(
-            {"context": context_str, "link": link_str, "type": "Booth", "role": m.role, "created_at": m.created_at}
-        )
-
-    unified_memberships.sort(key=lambda x: x["created_at"] or datetime.min.replace(tzinfo=timezone.utc))
-
-    if user.is_admin:
-        management_home = "/admin/"
-        management_label = "Admin Panel"
-    elif user.can_host or has_owned_events:
-        management_home = "/workspace/"
-        management_label = "Organizer Workspace"
-    elif any(m.role == "room_coordinator" for m in room_memberships):
-        management_home = "/mission-control/"
-        management_label = "Mission Control"
-    else:
-        management_home = "/account"
-        management_label = "My Account"
-
+    success = request.query_params.get("success", "")
     return templates.TemplateResponse(
         request=request,
         name="account.html",
         context={
             "user": user,
-            "memberships": unified_memberships,
-            "management_home": management_home,
-            "management_label": management_label,
-            "is_hosting_revoked": is_hosting_revoked,
+            "is_hosting_revoked": user.hosting_revoked_at is not None,
+            "open_hosting_request": open_hosting_request,
+            "developer_account": developer_account,
+            "hosting_request_sent": success == "hosting_request_sent",
+            "notice": ACCOUNT_NOTICES.get(success) if success != "hosting_request_sent" else None,
+            "error": request.query_params.get("error", ""),
+            "display_name_max": DISPLAY_NAME_MAX,
         },
     )
+
+
+@router.post("/account/profile")
+async def update_profile(request: Request):
+    """Change the signed-in person's display name."""
+    if not verify_same_origin(request):
+        raise HTTPException(status_code=400, detail="Invalid request origin.")
+    current_user = await get_current_user(request)
+    if current_user is None:
+        return safe_redirect(url="/login", status_code=status.HTTP_303_SEE_OTHER)
+
+    form = await request.form()
+    raw = form.get("display_name")
+    display_name = " ".join(raw.split()) if isinstance(raw, str) else ""
+    if not display_name or len(display_name) > DISPLAY_NAME_MAX or _CONTROL_CHARS.search(display_name):
+        return safe_redirect(url="/account?error=display_name", status_code=status.HTTP_303_SEE_OTHER)
+
+    async with get_session() as session:
+        user = await get_user_by_id(session, int(current_user["sub"]))
+        if user is None:
+            return safe_redirect(url="/login", status_code=status.HTTP_303_SEE_OTHER)
+        user.display_name = display_name
+    return safe_redirect(url="/account?success=profile_saved", status_code=status.HTTP_303_SEE_OTHER)
+
+
+HOSTING_REQUEST_PATH = "/account/hosting-request"
+HOSTING_REQUEST_FIELDS = ("organization", "event_name", "event_starts_on", "event_ends_on", "languages", "message")
+
+
+def render_hosting_request_form(
+    request: Request,
+    user: User,
+    *,
+    values: dict[str, str] | None = None,
+    errors: dict[str, str] | None = None,
+    status_code: int = status.HTTP_200_OK,
+):
+    return templates.TemplateResponse(
+        request=request,
+        name="account_hosting_request.html",
+        context={"user": user, "values": values or {}, "errors": errors or {}},
+        status_code=status_code,
+    )
+
+
+async def load_hosting_requester(request: Request, session: AsyncSession) -> tuple[User | None, Response | None]:
+    """Return the signed-in user who may request hosting access, or the redirect to send instead."""
+    principal = await resolve_request_principal(request, session)
+    user = principal["user"]
+    if user is None:
+        return None, safe_redirect(url=f"/login?next={HOSTING_REQUEST_PATH}", status_code=status.HTTP_303_SEE_OTHER)
+    if user.is_admin or user.can_host or await get_open_hosting_request(session, user.id) is not None:
+        return None, safe_redirect(url="/account", status_code=status.HTTP_303_SEE_OTHER)
+    return user, None
+
+
+@router.get(HOSTING_REQUEST_PATH)
+async def hosting_request_page(request: Request):
+    """Show the hosting access request form to a signed-in user without hosting access."""
+    async with get_session() as session:
+        user, redirect = await load_hosting_requester(request, session)
+    if redirect is not None:
+        return redirect
+    return render_hosting_request_form(request, user)
+
+
+@router.post(HOSTING_REQUEST_PATH)
+async def submit_hosting_request(request: Request):
+    """Save a hosting access request for the signed-in user and notify the team."""
+    if not verify_same_origin(request):
+        raise HTTPException(status_code=400, detail="Invalid request origin.")
+
+    form = await request.form()
+    cleaned, errors = parse_hosting_request_form(form)
+
+    try:
+        async with get_session() as session:
+            user, redirect = await load_hosting_requester(request, session)
+            if redirect is not None:
+                return redirect
+            if errors:
+                values = {key: str(form.get(key, "")) for key in HOSTING_REQUEST_FIELDS}
+                return render_hosting_request_form(
+                    request, user, values=values, errors=errors, status_code=status.HTTP_400_BAD_REQUEST
+                )
+            hosting_request = await create_hosting_request(
+                session,
+                user_id=user.id,
+                organization=cleaned.organization,
+                event_name=cleaned.event_name,
+                event_starts_on=cleaned.event_starts_on,
+                event_ends_on=cleaned.event_ends_on,
+                languages=cleaned.languages,
+                message=cleaned.message,
+            )
+            user.hosting_requested_at = hosting_request.created_at
+            requester_name = user.display_name
+            requester_email = user.email
+    except IntegrityError:
+        # A concurrent submission already opened this user's one request.
+        return safe_redirect(url="/account", status_code=status.HTTP_303_SEE_OTHER)
+
+    logger.info("Hosting access request %d opened by user %d", hosting_request.id, hosting_request.user_id)
+    await send_hosting_request_notification(
+        settings.hosting_requests_email,
+        requester_name=requester_name,
+        requester_email=requester_email,
+        organization=cleaned.organization,
+        event_name=cleaned.event_name,
+        event_dates=format_event_dates(cleaned.event_starts_on, cleaned.event_ends_on),
+        languages=cleaned.languages,
+        message=cleaned.message,
+        review_url=f"{settings.public_base_url.rstrip('/')}/admin/hosting-access/requests/",
+    )
+    return safe_redirect(url="/account?success=hosting_request_sent", status_code=status.HTTP_303_SEE_OTHER)
 
 
 @router.post("/api/auth/set-password")
 async def set_password_api(request: Request):
     user_token = await require_user(request)
     data = await request.json()
-    password = data.get("password", "")
+    password = data.get("password", "") if isinstance(data, dict) else ""
+    current_password = data.get("current_password", "") if isinstance(data, dict) else ""
 
-    if len(password) < 8:
+    if not isinstance(password, str) or len(password) < 8:
         raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
 
     async with get_session() as session:
-        pw_hash = hash_password(password)
-        await update_user(session, int(user_token["sub"]), password_hash=pw_hash)
+        user = await get_user_by_id(session, int(user_token["sub"]))
+        if user is None:
+            raise HTTPException(status_code=400, detail="User not found")
+        # Changing an existing password needs the current one; setting a first password does not.
+        if user.password_hash and not (
+            isinstance(current_password, str) and verify_password(current_password, user.password_hash)
+        ):
+            raise HTTPException(status_code=403, detail="Your current password is not correct")
+        await update_user(session, user.id, password_hash=hash_password(password))
 
     return {"status": "ok"}
 
@@ -847,17 +929,18 @@ async def set_password_api(request: Request):
 async def remove_password_api(request: Request):
     user_token = await require_user(request)
     data = await request.json()
-    password = data.get("password", "")
+    password = data.get("password", "") if isinstance(data, dict) else ""
 
     async with get_session() as session:
         user = await get_user_by_id(session, int(user_token["sub"]))
         if not user or not user.password_hash:
-            raise HTTPException(status_code=400, detail="User has no password")
+            raise HTTPException(status_code=400, detail="You don't have a password to remove")
 
-        if not verify_password(password, user.password_hash):
-            raise HTTPException(status_code=403, detail="Invalid password")
+        if not isinstance(password, str) or not verify_password(password, user.password_hash):
+            raise HTTPException(status_code=403, detail="Your current password is not correct")
 
-        await update_user(session, user.id, password_hash=None)
+        # Set directly: update_user() treats None as "leave unchanged".
+        user.password_hash = None
 
     return {"status": "ok"}
 
@@ -1000,6 +1083,9 @@ async def invite_accept_submit(request: Request, token: str):
             user.can_host = True
             user.hosting_revoked_at = None
             user.hosting_requested_at = None
+            await close_open_hosting_request(
+                session, user.id, status=HOSTING_REQUEST_GRANTED, decided_by_user_id=None
+            )
 
             # Delete any other pending hosting_invite tokens for this user
             delete_stmt = (

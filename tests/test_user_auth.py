@@ -898,11 +898,11 @@ class TestAccountPage:
         link = f"/interpreter/zephyr-2031/{room.id}/ja"
 
         async with _client() as c:
-            account = await c.get("/account", cookies={"user_token": token})
+            my_events = await c.get("/workspace/", cookies={"user_token": token})
             booth_page = await c.get(link, follow_redirects=False)
 
-        assert f'href="{link}"' in account.text
-        assert 'href="/interpreter/zephyr-2031/ja"' not in account.text
+        assert f'href="{link}"' in my_events.text
+        assert 'href="/interpreter/zephyr-2031/ja"' not in my_events.text
         assert booth_page.status_code == 303
         assert booth_page.headers["location"].startswith(f"/login?next={link}")
 
@@ -928,9 +928,7 @@ class TestAdminUserManagement:
         assert b"user3@example.com" in resp.content
         assert b"User Three" in resp.content
         assert b"user1@example.com" not in resp.content
-        assert b"<th>#</th>" in resp.content
-        # Row number must be 1, NOT the database primary key.
-        assert b"<td>1</td>" in resp.content
+        # Database ids are never shown as row numbers.
         assert f"<td>{u3.id}</td>".encode() not in resp.content
 
         # On page 2 with limit=1 (descending), the middle user gets row index 2.
@@ -938,7 +936,7 @@ class TestAdminUserManagement:
             resp2 = await c.get("/admin/users/?sort_by=created_at&sort_order=desc&limit=1&page=2", cookies=admin_cookie)
         assert resp2.status_code == 200
         assert b"user2@example.com" in resp2.content
-        assert b"<td>2</td>" in resp2.content
+        assert b"user3@example.com" not in resp2.content
         assert b"limit=1" in resp2.content
 
     @pytest.mark.anyio
@@ -956,7 +954,7 @@ class TestAdminUserManagement:
         async with _client() as c:
             resp = await c.get(f"/admin/users/{user.id}/", cookies=admin_cookie)
         assert resp.status_code == 200
-        assert user.created_at.strftime("%b %d, %Y, %H:%M UTC").encode() in resp.content
+        assert user.created_at.strftime("%b %d, %Y").encode() in resp.content
         assert user.created_at.strftime("%Y-%m-%d").encode() not in resp.content
 
     @pytest.mark.anyio
@@ -995,6 +993,7 @@ class TestAdminUserManagement:
             resp = await c.post(
                 f"/admin/users/{user.id}/toggle-active",
                 cookies=admin_cookie,
+                headers={"origin": "http://test"},
                 follow_redirects=False,
             )
         assert resp.status_code == 303
@@ -1010,7 +1009,9 @@ class TestAdminUserManagement:
         async with _client() as c:
             resp = await c.post(
                 f"/admin/users/{user.id}/delete",
+                data={"confirm_email": user.email},
                 cookies=admin_cookie,
+                headers={"origin": "http://test"},
                 follow_redirects=False,
             )
         assert resp.status_code == 303

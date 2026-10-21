@@ -127,3 +127,44 @@ async def send_hosting_granted_email(email_to: str, login_url: str) -> None:
             "login_url": login_url,
         },
     )
+
+
+async def send_hosting_request_notification(
+    email_to: str,
+    *,
+    requester_name: str,
+    requester_email: str,
+    organization: str,
+    event_name: str,
+    event_dates: str,
+    languages: str,
+    message: str,
+    review_url: str,
+) -> None:
+    await _send_email_async(
+        email_to=email_to,
+        subject=f"New hosting access request from {requester_email}",
+        template_name="hosting_request.html",
+        template_body={
+            "requester_name": requester_name,
+            "requester_email": requester_email,
+            "organization": organization,
+            "event_name": event_name,
+            "event_dates": event_dates,
+            "languages": languages,
+            "message": message,
+            "review_url": review_url,
+        },
+    )
+
+
+async def send_hosting_request_declined_email(email_to: str, reason: str, account_url: str) -> None:
+    await _send_email_async(
+        email_to=email_to,
+        subject="Your hosting access request on VoxBento",
+        template_name="hosting_request_declined.html",
+        template_body={
+            "reason": reason,
+            "account_url": account_url,
+        },
+    )

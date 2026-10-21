@@ -14,10 +14,10 @@ on:
 
   workflow_dispatch:
 
-# Cancel superseded runs on the same PR / branch
+# Cancel superseded runs on the same PR; allow post-merge and branch pushes to run to completion
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
@@ -273,7 +273,7 @@ jobs:
       MEDIAMTX_API_PORT: 9997
       JITSI_HTTP_PORT: 8080
       SECRET_KEY: ci-test-secret-key-not-for-production
-      BOOTH_ACCESS_TOKEN: ci-test-token
+      BOOTH_ACCESS_TOKEN: ci-test-token-generated-with-openssl-rand-hex-32
       JVB_ADVERTISE_IPS: 127.0.0.1
       JITSI_DOMAIN: localhost:8080
       MEDIAMTX_WHIP_BASE: http://localhost:8889
