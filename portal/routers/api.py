@@ -8,7 +8,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 from sqlalchemy.orm.exc import ObjectDeletedError, StaleDataError
 
-from portal.auth import create_embed_token, create_listener_token, decode_token, get_booth_session, security
+from portal.auth import (
+    create_embed_token,
+    create_listener_token,
+    decode_token,
+    get_booth_session,
+    resolve_booth_role,
+    security,
+)
 from portal.booth_identity import make_booth_id, make_mediamtx_path, validate_event_slug, validate_language_code
 from portal.config import settings
 from portal.database import (
@@ -24,6 +31,7 @@ from portal.database import (
 from portal.globals import booths
 from portal.models import DBBooth, Event, EventMembership, Room, RoomMembership
 from portal.rate_limit import check_rate_limit
+from portal.roles import Permission, has_permission
 from portal.schemas.booth import CreateBoothRequest
 from portal.transcription import ProviderConfig, ProviderEnum, get_api_key
 from portal.transcription.worker import start_transcription_worker, stop_transcription_worker
@@ -43,8 +51,14 @@ async def _verify_event_access(
     credentials: HTTPAuthorizationCredentials | None = None,
     token: str = "",
     require_booth_management: bool = False,
+    booth_id: str | None = None,
+    booth_permission: Permission | None = None,
 ) -> dict | None:
-    """Authorize a legacy API operation against its event and optional room."""
+    """Authorize a legacy API operation against its event and optional room.
+
+    With ``booth_id`` and ``booth_permission``, a signed-in user whose role in that
+    booth grants the permission is also allowed.
+    """
     if credentials is None and request.headers.get("authorization"):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid auth token.")
     configured_token = settings.booth_access_token
@@ -101,6 +115,12 @@ async def _verify_event_access(
                 )
                 if is_room_coordinator and not require_booth_management:
                     return
+            if booth_id is not None and booth_permission is not None:
+                # Same role lookup as the booth page and WebSocket. Pass only the user id
+                # so the role comes from the database, never from claims like is_admin.
+                booth_role = await resolve_booth_role({"sub": str(user.id)}, booth_id)
+                if booth_role is not None and has_permission(booth_role, booth_permission):
+                    return
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Event access required.")
 
     if not configured_token and settings.debug:
@@ -156,11 +176,16 @@ async def _verify_resource_access(
     language_code: str,
     credentials: HTTPAuthorizationCredentials | None,
     token: str,
-    require_booth_management: bool = False,
+    booth_permission: Permission | None = None,
 ) -> dict | None:
-    """Apply user membership checks while retaining scoped participant access."""
+    """Apply user membership checks while retaining scoped participant access.
+
+    ``booth_permission`` lets a signed-in member of this booth in, and is also
+    required of a participant (invite link) session's role.
+    """
     if credentials is None and request.headers.get("authorization"):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid auth token.")
+    booth_id = make_booth_id(event.slug, room_id, language_code) if booth_permission is not None else None
     payload = None
     is_global_credential = bool(
         settings.booth_access_token
@@ -182,14 +207,15 @@ async def _verify_resource_access(
                 room_id=room_id,
                 credentials=credentials,
                 token=token,
-                require_booth_management=require_booth_management,
             )
             return None
     if payload is None and not is_global_credential:
         payload = get_booth_session(request)
     if credentials is None and payload and payload.get("user") and request.cookies.get("session_token"):
         try:
-            await _verify_event_access(session, request, event.id, room_id=room_id)
+            await _verify_event_access(
+                session, request, event.id, room_id=room_id, booth_id=booth_id, booth_permission=booth_permission
+            )
         except HTTPException:
             try:
                 participant_payload = decode_token(request.cookies["session_token"])
@@ -202,7 +228,9 @@ async def _verify_resource_access(
             return payload
     if credentials is None and payload and not payload.get("user") and request.cookies.get("user_token"):
         try:
-            await _verify_event_access(session, request, event.id, room_id=room_id)
+            await _verify_event_access(
+                session, request, event.id, room_id=room_id, booth_id=booth_id, booth_permission=booth_permission
+            )
         except HTTPException:
             # A user cookie without membership must not prevent a valid,
             # independently scoped participant session from being used.
@@ -217,7 +245,8 @@ async def _verify_resource_access(
             room_id=room_id,
             credentials=credentials,
             token=token,
-            require_booth_management=require_booth_management,
+            booth_id=booth_id,
+            booth_permission=booth_permission,
         )
     elif credentials is not None and payload is None:
         # A bearer API key is not a JWT. Resolve it through the event-scoped
@@ -236,6 +265,14 @@ async def _verify_resource_access(
             language_code=language_code,
             session_payload=payload,
         )
+    if (
+        booth_permission is not None
+        and payload
+        and not payload.get("user")
+        and payload.get("purpose") != "legacy_api"
+        and not has_permission(payload.get("role"), booth_permission)
+    ):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Your booth role does not permit this.")
     return payload
 
 
@@ -608,6 +645,7 @@ async def event_booth_state(
                 language_code=code,
                 credentials=credentials,
                 token=token,
+                booth_permission=Permission.BOOTH_VIEW,
             )
     state = await booths.get_booth_for_event(slug, room_id, code)
     if state is None:
@@ -726,7 +764,7 @@ async def api_transcription_start(
             language_code=language_code,
             credentials=credentials,
             token=token,
-            require_booth_management=True,
+            booth_permission=Permission.BOOTH_GO_LIVE,
         )
         stmt = (
             select(DBBooth)
@@ -800,7 +838,7 @@ async def api_transcription_stop(
             language_code=language_code,
             credentials=credentials,
             token=token,
-            require_booth_management=True,
+            booth_permission=Permission.BOOTH_GO_LIVE,
         )
     await stop_transcription_worker(booth_id)
     return {"status": "stopped"}

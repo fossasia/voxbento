@@ -1156,17 +1156,7 @@ async function startLiveIngest() {
 
     state.ingestConnected = true
     
-    // Start backend transcription
-    try {
-      const payload = { event_slug: portal.dataset.eventSlug, language_code: portal.dataset.languageCode }
-      await fetch(`/api/events/${portal.dataset.eventSlug}/rooms/${portal.dataset.roomId}/booths/${portal.dataset.languageCode}/transcription/start`, {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${portal.dataset.boothToken}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      })
-    } catch (err) {
-      console.warn('Failed to start transcription worker:', err)
-    }
+    await startTranscription()
     wsSend({
       type: 'booth:update-state',
       mic_active: !state.micMuted,
@@ -1178,6 +1168,17 @@ async function startLiveIngest() {
     await stopLiveIngest()
   }
   renderMicControls()
+}
+
+async function startTranscription() {
+  try {
+    const response = await fetch(`/api/events/${portal.dataset.eventSlug}/rooms/${portal.dataset.roomId}/booths/${portal.dataset.languageCode}/transcription/start`, { method: 'POST', headers: authHeaders() })
+    if (!response.ok) {
+      console.warn('Failed to start transcription worker:', response.status)
+    }
+  } catch (err) {
+    console.warn('Failed to start transcription worker:', err)
+  }
 }
 
 async function stopLiveIngest() {
@@ -1260,18 +1261,7 @@ function attemptRelayStart(attempt) {
       state.ingestStarting = false
       // Start backend transcription worker now that WHIP ingest is live
       if (portal.dataset.eventSlug && portal.dataset.languageCode) {
-        try {
-          await fetch(`/api/events/${portal.dataset.eventSlug}/rooms/${portal.dataset.roomId}/booths/${portal.dataset.languageCode}/transcription/start`, {
-            method: 'POST',
-            headers: { 'Authorization': `Bearer ${portal.dataset.boothToken}`, 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              event_slug: portal.dataset.eventSlug,
-              language_code: portal.dataset.languageCode,
-            }),
-          })
-        } catch (err) {
-          console.warn('Failed to start transcription worker:', err)
-        }
+        await startTranscription()
       }
 
       wsSend({ type: 'booth:update-state', mic_active: !state.micMuted, ingest_connected: true })
