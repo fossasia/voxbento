@@ -69,8 +69,8 @@ function createWhepClient() {
 
   function resumeDelayedContext() {
     const ctx = delayedAudio.context;
-    if (!ctx || ctx.state !== 'suspended') return;
-    ctx.resume().then(removeResumeHandler).catch((err) => {
+    if (!ctx || ctx.state !== 'suspended') return Promise.resolve();
+    return ctx.resume().then(removeResumeHandler).catch((err) => {
       log('AudioContext resume blocked: ' + err.message);
     });
   }
@@ -315,6 +315,24 @@ function createWhepClient() {
         prepareDelayedContext();
       }
       connect();
+    },
+
+    /**
+     * True when audio is attached but still inaudible without a user gesture.
+     * The delayed path plays a muted <audio> sink while its AudioContext stays
+     * suspended, so a paused check alone would report it as playing.
+     */
+    needsGesture() {
+      if (_audioDelayMs > 0) {
+        return Boolean(delayedAudio.context && delayedAudio.context.state === 'suspended');
+      }
+      return Boolean(_audioEl && _audioEl.srcObject && _audioEl.paused);
+    },
+
+    /** Start or resume audio on the path currently in use. */
+    resume() {
+      if (_audioDelayMs > 0) return resumeDelayedContext();
+      return _audioEl ? _audioEl.play() : Promise.resolve();
     },
 
     setAudioDelayMs(audioDelayMs) {

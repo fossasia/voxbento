@@ -1,4 +1,5 @@
 import { createDeliveryQueue } from './program-delivery.js';
+import { resolveRoomId, buildSelectionUrl } from './listener-selection.js';
 
 const captionDelivery = createDeliveryQueue();
 const speechDelivery = createDeliveryQueue();
@@ -132,25 +133,34 @@ function showTapToListen(show) {
 // A deep link starts playback without a tap, which browsers block until the
 // page has a user gesture. Offer the gesture instead of failing silently.
 function checkAutoplayBlocked() {
-  if (!audioEl.paused) {
+  // TTS sync mutes the WHEP element on purpose and plays its own audio.
+  if (ttsSyncEnabled) {
     showTapToListen(false);
     return;
   }
-  audioEl.play().then(
-    function () {
-      showTapToListen(false);
-    },
-    function () {
-      showTapToListen(true);
-      setStatus("Tap to listen", "waiting");
-    },
-  );
+  if (!WhepListener.needsGesture()) {
+    showTapToListen(false);
+    return;
+  }
+  // Some browsers still let this through without a gesture; only fall back to
+  // the button once a retry has actually failed to make audio audible.
+  WhepListener.resume().then(promptForGesture, promptForGesture);
+}
+
+function promptForGesture() {
+  if (ttsSyncEnabled || !WhepListener.needsGesture()) {
+    showTapToListen(false);
+    return;
+  }
+  showTapToListen(true);
+  setStatus("Tap to listen", "waiting");
 }
 
 if (tapToListenBtn) {
   tapToListenBtn.addEventListener("click", function () {
-    audioEl.muted = false;
-    audioEl.play().then(
+    // Never unmute here: on the delayed path <audio> is a deliberately muted
+    // sink and the audible output comes from the Web Audio graph.
+    WhepListener.resume().then(
       function () {
         showTapToListen(false);
         setStatus("Live (WebRTC)", "live");
@@ -1118,22 +1128,13 @@ function applyTtsOverlay() {
 // this exact audio. Other params (notably ?code=) are preserved untouched.
 function syncUrlSelection() {
   if (!window.history || !window.history.replaceState) return;
-  var url = new URL(window.location.href);
-  var roomId = roomSelect.value;
   var selectedOpt = languageSelect.options[languageSelect.selectedIndex];
   var langCode = selectedOpt ? selectedOpt.dataset.languageCode : null;
-
-  if (roomId) {
-    url.searchParams.set("room", roomId);
-  } else {
-    url.searchParams.delete("room");
-  }
-  if (roomId && langCode) {
-    url.searchParams.set("lang", langCode);
-  } else {
-    url.searchParams.delete("lang");
-  }
-  window.history.replaceState(null, "", url.toString());
+  window.history.replaceState(
+    null,
+    "",
+    buildSelectionUrl(window.location.href, roomSelect.value, langCode),
+  );
 }
 
 roomSelect.addEventListener("change", syncUrlSelection);
@@ -1155,15 +1156,9 @@ function selectLanguageByCode(langCode) {
 // Unknown values are ignored so the normal dropdowns still work.
 function initSelection() {
   var params = new URLSearchParams(window.location.search);
-  var wantedRoom = params.get("room");
   var wantedLang = params.get("lang");
 
-  var roomId = null;
-  if (wantedRoom && roomsData.some((r) => r.id.toString() === wantedRoom)) {
-    roomId = wantedRoom;
-  } else if (roomsData.length === 1) {
-    roomId = roomsData[0].id.toString();
-  }
+  var roomId = resolveRoomId(roomsData, params.get("room"));
   if (!roomId) return;
 
   roomSelect.value = roomId;

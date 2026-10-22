@@ -255,6 +255,7 @@ jobs:
         run: |
           node tests/test_audio_scheduler.js
           node tests/test_tts_parser.js
+          node tests/test_listener_selection.js
 
       - name: Run unit tests
         run: uv run pytest tests/ -v
