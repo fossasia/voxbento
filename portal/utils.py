@@ -12,6 +12,7 @@ from fastapi.security import HTTPAuthorizationCredentials
 from portal.auth import decode_token, is_listener_token
 from portal.config import settings
 from portal.globals import booths, get_http_client
+from portal.roles import EVENT_OWNER, ROOM_COORDINATOR
 
 
 def safe_redirect(url: str, status_code: int = status.HTTP_303_SEE_OTHER) -> RedirectResponse:
@@ -182,10 +183,10 @@ def _require_access(
                     memberships = await list_memberships_for_user(db_session, uid)
                     rms = await list_room_memberships_for_user(db_session, uid)
                     is_owner = any(
-                        m.event.slug == expected_event_slug and m.role == "event_owner" for m in memberships
+                        m.event.slug == expected_event_slug and m.role == EVENT_OWNER for m in memberships
                     )
                     is_coordinator = any(
-                        rm.room.event.slug == expected_event_slug and rm.role == "room_coordinator" for rm in rms
+                        rm.room.event.slug == expected_event_slug and rm.role == ROOM_COORDINATOR for rm in rms
                     )
                     if not (is_owner or is_coordinator):
                         raise HTTPException(
