@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import secrets
 import uuid
 from datetime import datetime, timedelta, timezone
 
@@ -332,10 +333,43 @@ async def require_owner_or_coordinator(request: Request) -> None:
             if request.url.path.startswith("/admin/models/") or request.url.path.startswith("/workspace/models/"):
                 if bool(principal["owned_event_ids"]):
                     return
-                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You don't have access to this event.")
-            if principal.get("can_host") or bool(principal["owned_event_ids"]) or bool(principal["coordinated_room_ids"]):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN, detail="You don't have access to this event."
+                )
+            if (
+                principal.get("can_host")
+                or bool(principal["owned_event_ids"])
+                or bool(principal["coordinated_room_ids"])
+            ):
                 return
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You don't have access to this event.")
+
+
+ADMIN_CSRF_COOKIE = "admin_csrf"
+
+
+def generate_admin_csrf_token() -> str:
+    return secrets.token_urlsafe(32)
+
+
+async def require_admin_csrf(request: Request) -> None:
+    """Validate the admin CSRF double-submit token."""
+    cookie_token = request.cookies.get(ADMIN_CSRF_COOKIE, "")
+    submitted_token = request.headers.get("X-CSRF-Token", "")
+
+    if not submitted_token:
+        content_type = request.headers.get("content-type", "").lower()
+        if content_type.startswith("application/x-www-form-urlencoded") or content_type.startswith(
+            "multipart/form-data"
+        ):
+            form = await request.form()
+            submitted_token = str(form.get("csrf_token", ""))
+
+    if not cookie_token or not submitted_token or not secrets.compare_digest(cookie_token, submitted_token):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Invalid CSRF token",
+        )
 
 
 async def require_admin(request: Request) -> None:
@@ -384,7 +418,9 @@ async def require_event_owner(request: Request) -> None:
             if request.url.path.startswith("/admin/models/") or request.url.path.startswith("/workspace/models/"):
                 if bool(principal["owned_event_ids"]):
                     return
-                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You don't have access to this event.")
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN, detail="You don't have access to this event."
+                )
             if principal.get("can_host") or bool(principal["owned_event_ids"]):
                 return
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You don't have access to this event.")
@@ -425,7 +461,9 @@ async def require_hosting_access(request: Request) -> dict:
         raise RedirectRequired("/account?error=hosting_access_required")
 
 
-async def get_access_flags(request: Request, event_id: int | None = None, room_id: int | None = None) -> dict[str, bool]:
+async def get_access_flags(
+    request: Request, event_id: int | None = None, room_id: int | None = None
+) -> dict[str, bool]:
     """Which roles the signed-in person holds here, for templates (is_admin, is_event_owner, is_room_coordinator).
 
     Flags are derived from the user's current database state, so a demoted or

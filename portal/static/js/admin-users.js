@@ -71,7 +71,10 @@ async function onToggle(event) {
   try {
     const res = await fetch(form.action, {
       method: 'POST',
-      headers: { Accept: 'application/json' },
+      headers: {
+        Accept: 'application/json',
+        'X-CSRF-Token': document.querySelector('meta[name="csrf-token"]')?.content || ''
+      },
       body: new URLSearchParams({ field: form.dataset.field, value: String(turningOn) }),
     });
     const data = await res.json().catch(() => ({}));

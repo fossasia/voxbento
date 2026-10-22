@@ -57,7 +57,12 @@ def _client():
 
     from fastapi_app import app
 
-    return AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
+    return AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+        cookies={"admin_csrf": "test-csrf-token"},
+        headers={"X-CSRF-Token": "test-csrf-token"},
+    )
 
 
 async def _create_test_user(email="test@example.com", display_name="Test User", password="securepass123"):

@@ -25,7 +25,12 @@ async def setup_db():
 
 @pytest.fixture
 def client():
-    return AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
+    return AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+        cookies={"admin_csrf": "test-csrf-token"},
+        headers={"X-CSRF-Token": "test-csrf-token"},
+    )
 
 
 async def _create_user(email="owner@test.com", is_admin=False):
@@ -67,8 +72,8 @@ async def _set_membership(user_id, event_id=None, room_id=None, role="event_owne
 
 
 @pytest.mark.anyio
-@patch('portal.meeting_source.start_transcription_worker')
-@patch('portal.meeting_source.stop_transcription_worker')
+@patch("portal.meeting_source.start_transcription_worker")
+@patch("portal.meeting_source.stop_transcription_worker")
 async def test_event_owner_can_start_stop_status(mock_stop, mock_start, client, setup_db):
     user = await _create_user()
     ev, rm = await _create_event_room()
@@ -100,8 +105,8 @@ async def test_event_owner_can_start_stop_status(mock_stop, mock_start, client, 
 
 
 @pytest.mark.anyio
-@patch('portal.meeting_source.start_transcription_worker')
-@patch('portal.meeting_source.stop_transcription_worker')
+@patch("portal.meeting_source.start_transcription_worker")
+@patch("portal.meeting_source.stop_transcription_worker")
 async def test_room_coordinator_can_start_stop(mock_stop, mock_start, client, setup_db):
     user = await _create_user()
     ev, rm = await _create_event_room()
@@ -145,8 +150,8 @@ async def test_cross_event_leak_gets_403(client, setup_db):
 
 
 @pytest.mark.anyio
-@patch('portal.meeting_source.start_transcription_worker')
-@patch('portal.meeting_source.stop_transcription_worker')
+@patch("portal.meeting_source.start_transcription_worker")
+@patch("portal.meeting_source.stop_transcription_worker")
 async def test_admin_does_no_extra_query(mock_stop, mock_start, client, setup_db):
     user = await _create_user(is_admin=True)
     ev, rm = await _create_event_room()
@@ -277,6 +282,7 @@ async def test_revoked_admin_flag_takes_effect_immediately(client, setup_db):
         from sqlalchemy import select as sa_select
 
         from portal.models import User
+
         db_user = (await s.execute(sa_select(User).where(User.id == user.id))).scalars().first()
         db_user.is_admin = False
         await s.commit()

@@ -24,6 +24,9 @@ from portal.models import DeveloperAccount
 
 os.environ["BOOTH_ACCESS_TOKEN"] = ""
 SAME_ORIGIN = {"origin": "http://test"}
+CSRF_TOKEN = "test-csrf-token"
+CSRF_COOKIES = {"admin_csrf": CSRF_TOKEN}
+CSRF_FORM = {"csrf_token": CSRF_TOKEN}
 
 
 @pytest.fixture(autouse=True)
@@ -112,9 +115,9 @@ async def test_display_name_can_be_changed():
     async with client() as http:
         res = await http.post(
             "/account/profile",
-            data={"display_name": "  Priya   Sharma "},
+            data={"display_name": "  Priya   Sharma ", **CSRF_FORM},
             headers=SAME_ORIGIN,
-            cookies=cookies,
+            cookies={**cookies, **CSRF_COOKIES},
             follow_redirects=False,
         )
         assert res.headers["location"] == "/account?success=profile_saved"
@@ -132,9 +135,9 @@ async def test_invalid_display_name_is_refused(name):
     async with client() as http:
         res = await http.post(
             "/account/profile",
-            data={"display_name": name},
+            data={"display_name": name, **CSRF_FORM},
             headers=SAME_ORIGIN,
-            cookies=cookies,
+            cookies={**cookies, **CSRF_COOKIES},
             follow_redirects=False,
         )
         page = await http.get(res.headers["location"], cookies=cookies)
@@ -150,9 +153,9 @@ async def test_profile_update_rejects_cross_origin():
     async with client() as http:
         res = await http.post(
             "/account/profile",
-            data={"display_name": "Evil"},
+            data={"display_name": "Evil", **CSRF_FORM},
             headers={"origin": "https://evil.example"},
-            cookies=cookies,
+            cookies={**cookies, **CSRF_COOKIES},
         )
     assert res.status_code == 400
     async with get_session() as session:

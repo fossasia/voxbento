@@ -45,7 +45,12 @@ def _client():
 
     from fastapi_app import app
 
-    return AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
+    return AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+        cookies={"admin_csrf": "test-csrf-token"},
+        headers={"X-CSRF-Token": "test-csrf-token"},
+    )
 
 
 async def _create_test_user(email="test@example.com", display_name="Test User", password="securepass123"):
@@ -511,6 +516,25 @@ class TestUserLogin:
         assert b"Invalid email or password" in resp.content
 
     @pytest.mark.anyio
+    async def test_failed_login_preserves_existing_csrf_cookie(self, setup_db):
+        async with _client() as client:
+            await client.get("/admin/login")
+            csrf_token = client.cookies.get("admin_csrf")
+            assert csrf_token
+
+            response = await client.post(
+                "/login",
+                data={
+                    "email": "nobody@example.com",
+                    "password": "wrong-password",
+                },
+                follow_redirects=False,
+            )
+
+            assert response.status_code == 403
+            assert client.cookies.get("admin_csrf") == csrf_token
+
+    @pytest.mark.anyio
     async def test_login_with_nonexistent_email(self, setup_db):
         async with _client() as c:
             resp = await c.post(
@@ -855,8 +879,15 @@ class TestUserLogout:
     async def test_logout_clears_cookie(self, setup_db):
         async with _client() as c:
             resp = await c.get("/logout", follow_redirects=False)
+
         assert resp.status_code == 303
         assert resp.headers["location"] == "/"
+
+        cleared = {header.split("=", 1)[0].strip().lower() for header in resp.headers.get_list("set-cookie")}
+        assert "user_token" in cleared
+        assert "session_token" in cleared
+        assert "admin_token" in cleared
+        assert "admin_csrf" in cleared
 
 
 # ---------------------------------------------------------------------------

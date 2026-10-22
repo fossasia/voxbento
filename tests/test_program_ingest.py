@@ -78,7 +78,8 @@ async def environment(monkeypatch):
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app, client=("127.0.0.1", 1234)),
             base_url="http://test",
-            cookies={"user_token": admin_token},
+            cookies={"user_token": admin_token, "admin_csrf": "test-csrf-token"},
+            headers={"X-CSRF-Token": "test-csrf-token"},
         ) as client:
             yield client, event, rooms, media, calls, start, stop
     ingest.health.clear()
@@ -309,6 +310,7 @@ async def test_owner_guard_csrf_and_cross_event(environment):
     client.cookies.clear()
     assert (await client.post(url, json={"action": "enable"})).status_code == 403
     client.cookies.set("user_token", admin_token)
+    client.cookies.set("admin_csrf", "test-csrf-token")
     assert (
         await client.post(url, json={"action": "enable"}, headers={"Origin": "https://evil.example"})
     ).status_code == 403

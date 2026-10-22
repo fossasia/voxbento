@@ -27,6 +27,7 @@
   {% include 'admin/_program_sender.html' %}
 
   <form method="post" action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/edit" class="token-form">
+    <input type="hidden" name="csrf_token" value="{{ request.state.admin_csrf_token }}" />
   <input type="hidden" name="form_section" value="general">
   <div class="token-form-card token-form-card--spaced-sm">
     <h3>Room Settings</h3>
@@ -53,6 +54,7 @@
 </form>
 
 <form method="post" action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/edit" class="token-form">
+  <input type="hidden" name="csrf_token" value="{{ request.state.admin_csrf_token }}" />
   <input type="hidden" name="form_section" value="relay">
   <div class="token-form-card token-form-card--spaced">
     <h3>Relay Settings</h3>
@@ -85,6 +87,7 @@
   </div>
 
 <form method="post" action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/edit" class="token-form">
+  <input type="hidden" name="csrf_token" value="{{ request.state.admin_csrf_token }}" />
   <input type="hidden" name="form_section" value="transcription">
   <div class="token-form-card token-form-card--spaced">
     <div class="card-head card-head--spaced">
@@ -141,6 +144,7 @@
 </form>
 
 <form id="floor_translation_form" method="post" action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/edit" class="token-form">
+  <input type="hidden" name="csrf_token" value="{{ request.state.admin_csrf_token }}" />
   <input type="hidden" name="form_section" value="translation">
   <div class="token-form-card token-form-card--spaced">
     <div class="card-head card-head--spaced">
@@ -257,6 +261,7 @@
   {% endif %}
 
   <form method="post" action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/ai-vocabulary/upload" enctype="multipart/form-data" class="ai-vocabulary-upload">
+    <input type="hidden" name="csrf_token" value="{{ request.state.admin_csrf_token }}" />
     <div class="form-group ai-vocabulary-file">
       <label for="vocabulary_file">Vocabulary CSV</label>
       <input type="file" id="vocabulary_file" name="vocabulary_file" accept=".csv,text/csv" required>
@@ -288,6 +293,7 @@
               <td>{{ entry.priority }}</td>
               <td>
                 <form method="post" action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/ai-vocabulary/delete">
+                  <input type="hidden" name="csrf_token" value="{{ request.state.admin_csrf_token }}" />
                   <input type="hidden" name="entry_id" value="{{ entry.id }}">
                   <button type="submit" class="btn btn-sm btn-outline">Delete</button>
                 </form>
@@ -298,6 +304,7 @@
       </table>
     </div>
     <form method="post" action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/ai-vocabulary/delete" class="ai-vocabulary-clear">
+      <input type="hidden" name="csrf_token" value="{{ request.state.admin_csrf_token }}" />
       <input type="hidden" name="entry_id" value="all">
       <button type="submit" class="btn btn-sm btn-outline">Delete all room vocabulary</button>
     </form>
@@ -307,6 +314,7 @@
 </section>
 
 <form method="post" action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/edit" class="token-form" id="floor_tts_form">
+  <input type="hidden" name="csrf_token" value="{{ request.state.admin_csrf_token }}" />
   <input type="hidden" name="form_section" value="tts">
   <div class="token-form-card token-form-card--spaced">
     <div class="card-head card-head--spaced">
@@ -623,6 +631,7 @@
   <h3>Danger Zone</h3>
   <form method="post" action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/delete" class="inline-delete"
         data-confirm="Delete room '{{ room.display_name }}'? All booths in this room will be removed.">
+        <input type="hidden" name="csrf_token" value="{{ request.state.admin_csrf_token }}" />
     <button type="submit" class="btn btn-danger">Delete Room</button>
     <span class="danger-text">This removes all booths and their invite tokens.</span>
   </form>

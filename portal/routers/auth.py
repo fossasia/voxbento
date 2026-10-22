@@ -11,19 +11,22 @@ from typing import Annotated
 
 import jwt
 import sqlalchemy as sa
-from fastapi import APIRouter, BackgroundTasks, Body, HTTPException, Request, Response, status
+from fastapi import APIRouter, BackgroundTasks, Body, Depends, HTTPException, Request, Response, status
 from fastapi.responses import RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.exc import DBAPIError, IntegrityError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from portal.auth import (
+    ADMIN_CSRF_COOKIE,
     create_participant_token,
     create_token,
     create_user_token,
     decode_token,
+    generate_admin_csrf_token,
     get_current_user,
     hash_password,
+    require_admin_csrf,
     require_user,
     resolve_request_principal,
     verify_password,
@@ -397,6 +400,13 @@ async def user_login_submit(request: Request):
         samesite="lax",
         max_age=settings.jwt_expiry_seconds,
     )
+    response.set_cookie(
+        key=ADMIN_CSRF_COOKIE,
+        value=generate_admin_csrf_token(),
+        httponly=True,
+        secure=_is_cookie_secure(request),
+        samesite="lax",
+    )
     return response
 
 
@@ -735,6 +745,7 @@ async def user_logout(request: Request, next: str = "/"):
     response.delete_cookie("user_token")
     response.delete_cookie("session_token")
     response.delete_cookie("admin_token")
+    response.delete_cookie(ADMIN_CSRF_COOKIE)
     return response
 
 
@@ -772,6 +783,7 @@ async def account_page(request: Request):
         name="account.html",
         context={
             "user": user,
+            "csrf_token": request.state.admin_csrf_token,
             "is_hosting_revoked": user.hosting_revoked_at is not None,
             "open_hosting_request": open_hosting_request,
             "developer_account": developer_account,
@@ -783,7 +795,7 @@ async def account_page(request: Request):
     )
 
 
-@router.post("/account/profile")
+@router.post("/account/profile", dependencies=[Depends(require_admin_csrf)])
 async def update_profile(request: Request):
     """Change the signed-in person's display name."""
     if not verify_same_origin(request):
@@ -847,7 +859,7 @@ async def hosting_request_page(request: Request):
     return render_hosting_request_form(request, user)
 
 
-@router.post(HOSTING_REQUEST_PATH)
+@router.post(HOSTING_REQUEST_PATH, dependencies=[Depends(require_admin_csrf)])
 async def submit_hosting_request(request: Request):
     """Save a hosting access request for the signed-in user and notify the team."""
     if not verify_same_origin(request):
@@ -1080,9 +1092,7 @@ async def invite_accept_submit(request: Request, token: str):
             user.can_host = True
             user.hosting_revoked_at = None
             user.hosting_requested_at = None
-            await close_open_hosting_request(
-                session, user.id, status=HOSTING_REQUEST_GRANTED, decided_by_user_id=None
-            )
+            await close_open_hosting_request(session, user.id, status=HOSTING_REQUEST_GRANTED, decided_by_user_id=None)
 
             # Delete any other pending hosting_invite tokens for this user
             delete_stmt = (

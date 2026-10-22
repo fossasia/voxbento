@@ -467,10 +467,17 @@ jobs:
           echo "GET /admin/users/ → $code"
           [ "$code" = "200" ] || { echo "FAIL"; exit 1; }
 
+
           # Admin without cookie → 403
           code=$(curl -s -o /dev/null -w '%{http_code}' "${BASE}/admin/")
           echo "GET /admin/ (no cookie) → $code"
           [ "$code" = "403" ] || { echo "FAIL: expected 403"; exit 1; }
+
+          # Legacy admin_token-only authentication must be rejected
+          code=$(curl -s -o /dev/null -w '%{http_code}' \
+            -b "admin_token=legacy-smoke-token" "${BASE}/admin/")
+          echo "GET /admin/ (legacy admin_token only) → $code"
+          [ "$code" = "403" ] || { echo "FAIL: expected 403 for legacy admin_token"; exit 1; }
 
       - name: User registration and login smoke test
         run: |

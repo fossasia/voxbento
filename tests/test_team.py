@@ -47,13 +47,22 @@ def no_email():
 
 
 def client():
-    return AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
+    return AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+        cookies={"admin_csrf": "test-csrf-token"},
+        headers={"X-CSRF-Token": "test-csrf-token"},
+    )
 
 
 async def make_user(session, email: str, **kwargs):
     return await create_user(
-        session, email=email, display_name=email.split("@")[0].title(), password_hash=hash_password("pw123456"),
-        email_verified=True, **kwargs,
+        session,
+        email=email,
+        display_name=email.split("@")[0].title(),
+        password_hash=hash_password("pw123456"),
+        email_verified=True,
+        **kwargs,
     )
 
 
@@ -71,8 +80,16 @@ async def event():
         await set_event_membership(s, user_id=owner.id, event_id=ev.id, role=EVENT_OWNER)
         await set_room_membership(s, user_id=coord.id, room_id=room.id, role=ROOM_COORDINATOR)
         await set_booth_membership(s, user_id=interp.id, booth_id=booth.id, role=INTERPRETER)
-        ids = {"event": ev.id, "room": room.id, "booth": booth.id, "other": other.id, "other_room": other_room.id,
-                   "owner": owner.id, "coord": coord.id, "interp": interp.id}
+        ids = {
+            "event": ev.id,
+            "room": room.id,
+            "booth": booth.id,
+            "other": other.id,
+            "other_room": other_room.id,
+            "owner": owner.id,
+            "coord": coord.id,
+            "interp": interp.id,
+        }
     cookie = lambda uid, email: {"user_token": create_user_token(user_id=uid, email=email)}  # noqa: E731
     return {
         **ids,
@@ -85,7 +102,11 @@ async def event():
 
 async def post(http, event, path, data, cookies=None):
     return await http.post(
-        f"{event['base']}/{path}", data=data, headers=ORIGIN, cookies=cookies or event["owner_cookies"], follow_redirects=False
+        f"{event['base']}/{path}",
+        data=data,
+        headers=ORIGIN,
+        cookies=cookies or event["owner_cookies"],
+        follow_redirects=False,
     )
 
 
@@ -114,7 +135,7 @@ async def test_page_lists_everyone_once_in_plain_language(event):
     assert "<span>Event owner</span>" in html
     assert "<span>Room coordinator · Room 1</span>" in html
     assert "<span>Interpreter · Room 1 · Deutsch</span>" in html
-    assert html.count('data-team-person') == 3
+    assert html.count("data-team-person") == 3
     for raw in ("event_owner</", "room_coordinator</", ">interpreter<"):
         assert raw not in html
 
@@ -122,17 +143,22 @@ async def test_page_lists_everyone_once_in_plain_language(event):
 @pytest.mark.anyio
 async def test_old_members_page_and_old_sections_point_to_team(event):
     async with client() as http:
-        old = await http.get(f"/workspace/events/{event['event']}/members/", cookies=event["owner_cookies"], follow_redirects=False)
-        room = await http.get(f"/workspace/events/{event['event']}/rooms/{event['room']}/", cookies=event["owner_cookies"])
+        old = await http.get(
+            f"/workspace/events/{event['event']}/members/", cookies=event["owner_cookies"], follow_redirects=False
+        )
+        room = await http.get(
+            f"/workspace/events/{event['event']}/rooms/{event['room']}/", cookies=event["owner_cookies"]
+        )
         booth = await http.get(
-            f"/workspace/events/{event['event']}/rooms/{event['room']}/booths/{event['booth']}/", cookies=event["owner_cookies"]
+            f"/workspace/events/{event['event']}/rooms/{event['room']}/booths/{event['booth']}/",
+            cookies=event["owner_cookies"],
         )
         detail = await http.get(f"/workspace/events/{event['event']}/", cookies=event["owner_cookies"])
     assert old.status_code == 303 and old.headers["location"].endswith(f"/events/{event['event']}/team/")
     for page in (room, booth):
         assert "Open Team" in page.text
         assert "/members/" not in page.text and "Generate New Token" not in page.text
-    assert f'/events/{event["event"]}/team/' in detail.text
+    assert f"/events/{event['event']}/team/" in detail.text
 
 
 # ── Adding people ────────────────────────────────────────────────────────
@@ -175,7 +201,9 @@ async def test_add_where_the_table_allows(event, no_email, role, where_key, mode
 )
 async def test_add_refused_where_the_table_does_not_allow(event, no_email, role, where_key, message):
     async with client() as http:
-        res = await post(http, event, "add", {"email": "new@example.org", "role": role, "where": f"{where_key}:{event[where_key]}"})
+        res = await post(
+            http, event, "add", {"email": "new@example.org", "role": role, "where": f"{where_key}:{event[where_key]}"}
+        )
     assert res.status_code == 400
     assert message in res.text
     assert 'value="new@example.org"' in res.text  # what they typed is kept
@@ -187,8 +215,15 @@ async def test_add_refused_where_the_table_does_not_allow(event, no_email, role,
 @pytest.mark.anyio
 async def test_add_refuses_places_outside_this_event_and_bad_email(event):
     async with client() as http:
-        elsewhere = await post(http, event, "add", {"email": "a@example.org", "role": ROOM_COORDINATOR, "where": f"room:{event['other_room']}"})
-        bad_email = await post(http, event, "add", {"email": "not-an-email", "role": INTERPRETER, "where": f"event:{event['event']}"})
+        elsewhere = await post(
+            http,
+            event,
+            "add",
+            {"email": "a@example.org", "role": ROOM_COORDINATOR, "where": f"room:{event['other_room']}"},
+        )
+        bad_email = await post(
+            http, event, "add", {"email": "not-an-email", "role": INTERPRETER, "where": f"event:{event['event']}"}
+        )
     assert elsewhere.status_code == 400 and "Choose where this role applies." in elsewhere.text
     assert bad_email.status_code == 400 and "Enter a valid email address." in bad_email.text
 
@@ -196,7 +231,9 @@ async def test_add_refuses_places_outside_this_event_and_bad_email(event):
 @pytest.mark.anyio
 async def test_adding_the_same_role_again_changes_nothing(event, no_email):
     async with client() as http:
-        res = await post(http, event, "add", {"email": "interp@example.org", "role": INTERPRETER, "where": f"booth:{event['booth']}"})
+        res = await post(
+            http, event, "add", {"email": "interp@example.org", "role": INTERPRETER, "where": f"booth:{event['booth']}"}
+        )
     assert res.headers["location"].endswith("?notice=already")
     no_email.assert_not_awaited()
 
@@ -204,12 +241,18 @@ async def test_adding_the_same_role_again_changes_nothing(event, no_email):
 @pytest.mark.anyio
 async def test_the_last_event_owner_cannot_be_downgraded_or_removed(event):
     async with get_session() as s:
-        owner_row = (await s.execute(select(EventMembership).where(EventMembership.user_id == event["owner"]))).scalar_one()
+        owner_row = (
+            await s.execute(select(EventMembership).where(EventMembership.user_id == event["owner"]))
+        ).scalar_one()
     async with client() as http:
-        downgrade = await post(http, event, "add", {"email": "owner@example.org", "role": INTERPRETER, "where": f"event:{event['event']}"})
+        downgrade = await post(
+            http, event, "add", {"email": "owner@example.org", "role": INTERPRETER, "where": f"event:{event['event']}"}
+        )
         remove = await post(http, event, "remove", {"level": "event", "membership_id": owner_row.id})
         # With a second owner, the first can be removed.
-        await post(http, event, "add", {"email": "second@example.org", "role": EVENT_OWNER, "where": f"event:{event['event']}"})
+        await post(
+            http, event, "add", {"email": "second@example.org", "role": EVENT_OWNER, "where": f"event:{event['event']}"}
+        )
         allowed = await post(http, event, "remove", {"level": "event", "membership_id": owner_row.id})
     for res in (downgrade, remove):
         assert res.status_code == 400 and "An event needs at least one Event owner." in res.text
@@ -262,7 +305,10 @@ async def test_coordinators_cannot_change_the_team(event):
 async def test_create_copy_and_revoke_an_invite_link(event):
     async with client() as http:
         created = await post(
-            http, event, "links", {"booth": f"booth:{event['booth']}", "link_role": INTERPRETER, "label": "Maria", "expires_hours": "48"}
+            http,
+            event,
+            "links",
+            {"booth": f"booth:{event['booth']}", "link_role": INTERPRETER, "label": "Maria", "expires_hours": "48"},
         )
         page = await http.get(f"{event['base']}/", cookies=event["owner_cookies"])
         async with get_session() as s:
@@ -293,7 +339,9 @@ async def test_invite_link_validation(event, data, message):
 @pytest.mark.anyio
 async def test_cannot_revoke_links_of_another_event(event):
     async with get_session() as s:
-        other_booth = await create_booth(s, event_id=event["other"], room_id=event["other_room"], language_code="fr", language_name="French")
+        other_booth = await create_booth(
+            s, event_id=event["other"], room_id=event["other_room"], language_code="fr", language_name="French"
+        )
         tok = InviteToken(booth_id=other_booth.id, role=INTERPRETER)
         s.add(tok)
         await s.flush()
@@ -320,7 +368,9 @@ async def test_owner_cannot_delete_a_booth_of_another_event(event):
     async with client() as http:
         res = await http.post(
             f"/workspace/events/{event['event']}/rooms/{event['other_room']}/booths/{foreign_id}/delete",
-            headers=ORIGIN, cookies=event["owner_cookies"], follow_redirects=False,
+            headers=ORIGIN,
+            cookies=event["owner_cookies"],
+            follow_redirects=False,
         )
     assert res.status_code == 404
     async with get_session() as s:
@@ -338,11 +388,15 @@ async def test_legacy_member_removal_checks_the_event_and_keeps_the_last_owner(e
     async with client() as http:
         cross = await http.post(
             f"/workspace/events/{event['event']}/members/{foreign_id}/delete",
-            headers=ORIGIN, cookies=event["owner_cookies"], follow_redirects=False,
+            headers=ORIGIN,
+            cookies=event["owner_cookies"],
+            follow_redirects=False,
         )
         last = await http.post(
             f"/workspace/events/{event['event']}/members/{owner_row_id}/delete",
-            headers=ORIGIN, cookies=event["owner_cookies"], follow_redirects=False,
+            headers=ORIGIN,
+            cookies=event["owner_cookies"],
+            follow_redirects=False,
         )
     assert cross.status_code == 400
     assert last.status_code == 400
@@ -396,7 +450,9 @@ async def test_owner_cannot_assign_or_invite_in_another_events_rooms_and_booths(
     ]
     async with client() as http:
         for path, data in attempts:
-            res = await http.post(path, data=data, headers=ORIGIN, cookies=event["owner_cookies"], follow_redirects=False)
+            res = await http.post(
+                path, data=data, headers=ORIGIN, cookies=event["owner_cookies"], follow_redirects=False
+            )
             assert res.status_code == 404, path
 
     async with get_session() as s:
@@ -417,7 +473,9 @@ async def test_setup_wizard_does_not_add_booths_to_another_events_room(event):
         res = await http.post(
             f"/workspace/events/{event['event']}/setup/booths",
             data={"room_id": str(event["other_room"]), "language_code": "es"},
-            headers=ORIGIN, cookies=event["owner_cookies"], follow_redirects=False,
+            headers=ORIGIN,
+            cookies=event["owner_cookies"],
+            follow_redirects=False,
         )
     assert res.status_code == 303
     async with get_session() as s:

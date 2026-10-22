@@ -12,6 +12,7 @@
 <form method="post" action="/admin/users/{{ u.id }}/access" class="ut-form" data-user-toggle data-field="{{ field }}"
   {%- if confirm_on %} data-confirm-on="{{ confirm_on }}"{% endif %}
   {%- if confirm_off %} data-confirm-off="{{ confirm_off }}"{% endif %}>
+  <input type="hidden" name="csrf_token" value="{{ request.state.admin_csrf_token }}" />
   <input type="hidden" name="field" value="{{ field }}" />
   <input type="hidden" name="value" value="{{ 'false' if on else 'true' }}" />
   <button type="submit" role="switch" class="ut-switch" aria-checked="{{ 'true' if on else 'false' }}"

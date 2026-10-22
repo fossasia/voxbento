@@ -29,8 +29,18 @@ from portal.database import (
 )
 
 os.environ["BOOTH_ACCESS_TOKEN"] = ""
-JSON = {"origin": "http://test", "accept": "application/json"}
-FORM = {"origin": "http://test"}
+CSRF_TOKEN = "test-csrf-token"
+JSON = {
+    "origin": "http://test",
+    "accept": "application/json",
+    "X-CSRF-Token": CSRF_TOKEN,
+}
+FORM = {
+    "origin": "http://test",
+    "X-CSRF-Token": CSRF_TOKEN,
+    "content-type": "application/x-www-form-urlencoded",
+}
+CSRF_COOKIES = {"admin_csrf": CSRF_TOKEN}
 
 
 @pytest.fixture(autouse=True)
@@ -59,7 +69,10 @@ async def make_user(email: str, name: str, *, password: bool = True, **kwargs) -
 
 
 def cookies_for(user_id: int, email: str, is_admin: bool = False) -> dict[str, str]:
-    return {"user_token": create_user_token(user_id=user_id, email=email, is_admin=is_admin)}
+    return {
+        "user_token": create_user_token(user_id=user_id, email=email, is_admin=is_admin),
+        **CSRF_COOKIES,
+    }
 
 
 @pytest.fixture
@@ -295,7 +308,12 @@ async def test_access_endpoint_validation(admin):
     user_id = await make_user("x@example.org", "X")
     async with client() as http:
         cross = await set_access(
-            http, admin["cookies"], user_id, "admin", True, headers={"origin": "https://evil.example"}
+            http,
+            admin["cookies"],
+            user_id,
+            "admin",
+            True,
+            headers={**JSON, "origin": "https://evil.example"},
         )
         bad_field = await http.post(
             f"/admin/users/{user_id}/access",
@@ -343,7 +361,11 @@ async def test_plain_form_posts_return_to_the_page_with_a_message(admin):
 @pytest.mark.anyio
 async def test_legacy_toggles_follow_the_same_rules(admin):
     async with client() as http:
-        no_origin = await http.post(f"/admin/users/{admin['id']}/toggle-admin", cookies=admin["cookies"])
+        no_origin = await http.post(
+            f"/admin/users/{admin['id']}/toggle-admin",
+            headers={"X-CSRF-Token": CSRF_TOKEN},
+            cookies=admin["cookies"],
+        )
         self_demote = await http.post(
             f"/admin/users/{admin['id']}/toggle-admin", headers=FORM, cookies=admin["cookies"], follow_redirects=False
         )

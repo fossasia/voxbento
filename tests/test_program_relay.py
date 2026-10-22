@@ -112,7 +112,8 @@ async def relay_env(monkeypatch):
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app, client=("127.0.0.1", 1234)),
             base_url="http://test",
-            cookies={"user_token": token},
+            cookies={"user_token": token, "admin_csrf": "test-csrf-token"},
+            headers={"X-CSRF-Token": "test-csrf-token"},
         ) as client:
             yield {
                 "client": client,
@@ -276,6 +277,7 @@ async def test_relay_requires_operator_flag_owner_and_origin(relay_env, monkeypa
     client.cookies.clear()
     assert (await client.put(relay_url(event, room), json=put)).status_code == 403
     client.cookies.set("user_token", owner_cookie)
+    client.cookies.set("admin_csrf", "test-csrf-token")
     monkeypatch.setattr(settings, "program_relay_enabled", False)
     response = await client.post(ingest_url(event, room), json={"action": "enable", "mode": "rtmps_relay"})
     assert response.status_code == 409

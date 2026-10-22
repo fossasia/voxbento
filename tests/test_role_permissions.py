@@ -51,7 +51,12 @@ async def setup_db():
 
 
 def client():
-    return AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
+    return AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+        cookies={"admin_csrf": "test-csrf-token"},
+        headers={"X-CSRF-Token": "test-csrf-token"},
+    )
 
 
 @pytest.fixture
@@ -205,7 +210,9 @@ async def test_manage_rooms_booths_members_and_invites(world, who, allowed):
 async def test_manage_ai_provider_and_api_keys(world, who, allowed):
     async with client() as http:
         page = await http.get(
-            f"{prefix(who)}/events/{world['event']}/api-settings/", cookies=world["cookies"][who], follow_redirects=False
+            f"{prefix(who)}/events/{world['event']}/api-settings/",
+            cookies=world["cookies"][who],
+            follow_redirects=False,
         )
         keys = await http.get(
             f"{prefix(who)}/api/events/{world['event']}/api-keys", cookies=world["cookies"][who], follow_redirects=False
@@ -229,9 +236,7 @@ async def test_use_mission_control(world, who, allowed):
 @pytest.mark.parametrize(("who", "allowed"), allowed_for(ADMIN, EVENT_OWNER, ROOM_COORDINATOR))
 async def test_start_and_stop_floor_transcription(world, who, allowed):
     async with client() as http:
-        res = await http.get(
-            f"/api/rooms/{world['room']}/floor-transcription/status", cookies=world["cookies"][who]
-        )
+        res = await http.get(f"/api/rooms/{world['room']}/floor-transcription/status", cookies=world["cookies"][who])
     assert (res.status_code == 200) is allowed, res.status_code
 
 
@@ -246,7 +251,9 @@ async def test_choose_the_active_interpreter(who, allowed):
         return  # someone with no role can't join the booth at all (see test_view_booths)
     requester, _ = await registry.join_participant(booth_id, who, who, "de", "c")
     try:
-        state = await registry.set_active_interpreter(booth_id, requester.participant_id, target.participant_id, "de", "c")
+        state = await registry.set_active_interpreter(
+            booth_id, requester.participant_id, target.participant_id, "de", "c"
+        )
         changed = state["active_interpreter_id"] == target.participant_id
     except PermissionError:
         changed = False
@@ -274,7 +281,9 @@ async def test_go_live_chat_and_view_booths(world, who, allowed):
 
     registry = BoothRegistry()
     participant, _ = await registry.join_participant(booth_id, who, granted, "de", "c")
-    state = await registry.update_participant_state(booth_id, participant.participant_id, "de", "c", ingest_connected=True)
+    state = await registry.update_participant_state(
+        booth_id, participant.participant_id, "de", "c", ingest_connected=True
+    )
     me = next(p for p in state["participants"] if p["participant_id"] == participant.participant_id)
     assert me["ingest_connected"] is True and me["can_go_live"] is True
     message, _ = await registry.add_chat_message(booth_id, participant.participant_id, "hello", "de", "c")
@@ -302,7 +311,9 @@ async def test_go_live_chat_and_view_booths(world, who, allowed):
     ],
 )
 async def test_roles_can_only_be_given_where_the_table_allows(world, level, role, ok):
-    where = {"event": f"event:{world['event']}", "room": f"room:{world['room']}", "booth": f"booth:{world['booth']}"}[level]
+    where = {"event": f"event:{world['event']}", "room": f"room:{world['room']}", "booth": f"booth:{world['booth']}"}[
+        level
+    ]
     async with client() as http:
         res = await http.post(
             f"/admin/events/{world['event']}/team/add",

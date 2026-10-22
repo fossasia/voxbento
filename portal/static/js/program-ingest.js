@@ -190,7 +190,11 @@ card.querySelectorAll('[data-ingest-action]').forEach(button => {
     document.getElementById('program-secret-panel').hidden = true;
     try {
       const response = await fetch(card.dataset.url, {
-        method: 'POST', headers: {'Content-Type': 'application/json'},
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-CSRF-Token': document.querySelector('meta[name="csrf-token"]')?.content || ''
+        },
         body: JSON.stringify({action, sync_offset_ms: Number(offset.value), mode}),
       });
       const data = await readError(response);
@@ -241,7 +245,11 @@ destinationForm.addEventListener('submit', async event => {
   event.preventDefault();
   if (!destinationForm.reportValidity()) return;
   const saved = await changeDestination(() => fetch(card.dataset.relayUrl, {
-    method: 'PUT', headers: {'Content-Type': 'application/json'},
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-CSRF-Token': document.querySelector('meta[name="csrf-token"]')?.content || ''
+    },
     body: JSON.stringify({
       server_url: document.getElementById('program-relay-server').value,
       stream_key: relayKey.value,
@@ -253,7 +261,12 @@ destinationForm.addEventListener('submit', async event => {
 document.getElementById('program-relay-clear').addEventListener('click', async () => {
   if (destinationPending || busy) return;
   if (!window.confirm('Remove the YouTube destination? The relay stops and YouTube stops receiving this room.')) return;
-  await changeDestination(() => fetch(card.dataset.relayUrl, {method: 'DELETE'}), 'YouTube destination removal failed');
+  await changeDestination(() => fetch(card.dataset.relayUrl, {
+    method: 'DELETE',
+    headers: {
+      'X-CSRF-Token': document.querySelector('meta[name="csrf-token"]')?.content || ''
+    }
+  }), 'YouTube destination removal failed');
 });
 
 document.getElementById('program-reveal').addEventListener('click', () => {

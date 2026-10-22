@@ -36,7 +36,12 @@ async def setup_db():
 
 
 def client():
-    return AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
+    return AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+        cookies={"admin_csrf": "test-csrf-token"},
+        headers={"X-CSRF-Token": "test-csrf-token"},
+    )
 
 
 @pytest.mark.parametrize(
@@ -162,6 +167,22 @@ async def test_legacy_admin_event_url_redirects_owner_and_preserves_query(organi
 
 
 @pytest.mark.anyio
+async def test_workspace_form_submission_rejects_missing_csrf(organizer):
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+    ) as http:
+        response = await http.post(
+            f"/workspace/events/{organizer['event_id']}/rooms/",
+            data={"display_name": "Main Hall"},
+            cookies=organizer["cookies"],
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 403
+
+
+@pytest.mark.anyio
 async def test_workspace_form_submission_stays_in_workspace_namespace(organizer):
     async with client() as http:
         response = await http.post(
@@ -231,7 +252,7 @@ async def test_event_owner_event_pages_show_my_events_header(organizer, page):
 
     assert response.status_code == 200
     assert '<span class="app-area app-area--events">My events</span>' in response.text
-    assert 'data-user-menu-button' in response.text
+    assert "data-user-menu-button" in response.text
     assert f'href="/workspace/events/{organizer["event_id"]}/"' in response.text
     assert 'href="/admin/users/"' not in response.text
     assert 'href="/mission-control/shared-event/"' in event_page.text
@@ -254,6 +275,21 @@ async def test_workspace_api_uses_workspace_namespace(organizer):
     assert response.json() == []
     assert legacy.status_code == 307
     assert legacy.headers["location"] == f"/workspace/api/events/{organizer['event_id']}/api-keys"
+
+
+@pytest.mark.anyio
+async def test_workspace_api_rejects_missing_csrf(organizer):
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+    ) as http:
+        response = await http.post(
+            f"/workspace/api/events/{organizer['event_id']}/api-keys",
+            json={"name": "test-key"},
+            cookies=organizer["cookies"],
+        )
+
+    assert response.status_code == 403
 
 
 @pytest.mark.anyio
@@ -490,7 +526,11 @@ async def test_regular_user_navigation_omits_management_dashboard():
     assert 'href="/account"' in home.text
     assert account.status_code == 200
     menu_html = account.text.split('<nav aria-label="User menu">')[1].split("</nav>")[0]
-    assert [label for label in ("My events", "Account", "Developer API", "Admin", "Logout") if f"<span>{label}</span>" in menu_html] == [
+    assert [
+        label
+        for label in ("My events", "Account", "Developer API", "Admin", "Logout")
+        if f"<span>{label}</span>" in menu_html
+    ] == [
         "My events",
         "Account",
         "Logout",

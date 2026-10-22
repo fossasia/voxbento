@@ -20,6 +20,7 @@ from portal.database import configure, create_user, dispose, get_session, init_d
 from portal.models import Event, Room
 
 SECRET_URL = "https://meet.example.org/TrackA?jwt=meeting-secret-token"
+CSRF_TOKEN = "test-csrf-token"
 
 
 def fingerprint(url: str) -> str:
@@ -141,7 +142,10 @@ async def env(monkeypatch):
             event_id, room_id = event.id, room.id
         token = create_user_token(user_id=owner.id, email=owner.email, is_admin=True)
         async with httpx.AsyncClient(
-            transport=httpx.ASGITransport(app=app), base_url="http://test", cookies={"user_token": token}
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://test",
+            cookies={"user_token": token, "admin_csrf": CSRF_TOKEN},
+            headers={"X-CSRF-Token": CSRF_TOKEN},
         ) as client:
             yield {
                 "client": client,
