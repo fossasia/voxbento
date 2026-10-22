@@ -413,6 +413,11 @@ paths:
             else:
                 pytest.fail((tmp_path / "media.log").read_text())
             client.cookies.set("user_token", create_user_token(user_id=admin.id, email=admin.email, is_admin=True))
+            csrf_response = await client.get(f"http://127.0.0.1:{ports['http']}/admin")
+            assert csrf_response.status_code == 200, csrf_response.text
+            csrf_token = client.cookies.get("admin_csrf")
+            assert csrf_token
+            client.headers["X-CSRF-Token"] = csrf_token
             stack = Stack(client=client, event=event, rooms=rooms, manager=manager, ports=ports, tmp_path=tmp_path)
             yield stack
     finally:
