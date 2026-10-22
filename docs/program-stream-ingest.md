@@ -117,8 +117,9 @@ machine covers sound check, connecting, live, muted, reconnecting, no-audio, per
 stopped; on a transient WebRTC failure it drops the stale WHIP resource, releases the
 old session, and reconnects with a fresh one. Reconnects never give up while the
 owner wants to send: back-off doubles to a 30 s cap and retries immediately when the
-browser comes back online. Only a refusal (409 another source owns the floor, or
-401/403/404 lost access) stops the sender. Mute keeps the session and the floor but
+browser comes back online. Only a refusal stops the sender: any 4xx except 429,
+such as 409 (another source owns the floor) or 401/403/404 (lost access). A peer
+that recovers by itself cancels any queued rebuild. Mute keeps the session and the floor but
 sends silence (`track.enabled = false`); the meter keeps reading the input so the
 operator can see the desk feed before unmuting. The page also holds a screen wake
 lock, warns before the tab is closed while live, remembers the chosen input per room

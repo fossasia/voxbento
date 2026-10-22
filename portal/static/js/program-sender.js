@@ -298,6 +298,9 @@ function handleConnectionChange() {
   const state = pc.connectionState;
   window.clearTimeout(disconnectTimer);
   if (state === 'connected') {
+    // ICE recovered on its own; a rebuild queued during the drop would tear down a healthy peer.
+    window.clearTimeout(retryTimer);
+    retryTimer = null;
     attempt = 0;
     if (stateBadge.dataset.state !== 'no-audio') liveState();
   } else if (state === 'failed') {
@@ -385,9 +388,11 @@ async function connect() {
     if (gen !== generation) return;
     console.error('Program sender could not connect', error);
     connecting = false;
-    if (error instanceof SenderError && [401, 403, 404, 409].includes(error.status)) {
-      // Refused, not dropped: another source owns the floor or the sign-in expired. Retrying would not help.
-      const hint = error.status === 409 ? error.message : 'Your session is no longer allowed to send. Sign in again and restart.';
+    if (error instanceof SenderError && error.status >= 400 && error.status < 500 && error.status !== 429) {
+      // Refused, not dropped (sign-in expired, another source owns the floor, bad request). Retrying would not help.
+      const hint = [401, 403, 404].includes(error.status)
+        ? 'Your session is no longer allowed to send. Sign in again and restart.'
+        : error.message;
       await stop(true);
       setState('error', hint);
       return;
