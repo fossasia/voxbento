@@ -48,7 +48,7 @@
 | GET | `/api/events/{event_slug}/booths` | configured token/Bearer | `{event_slug, booths:[…]}` | Lists all in-memory booths for event; production protected |
 | GET | `/api/events/{event_slug}/booths/{language_code}/state` | configured token/Bearer, or user/session with a role in the booth | booth state dict | 404 if booth not in memory; production protected |
 | GET | `/api/events/{event_slug}/booths/{language_code}/whip-url` | configured token/Bearer | `{whip_url, channel_id, booth_id}` | Validates event ownership first; production protected |
-| POST | `/api/events/{event_slug}/rooms/{room_id}/booths/{language_code}/transcription/start` / `stop` | configured token/Bearer, or user/session whose booth role can go live (cookie-only requests must be same-origin) | `{status, …}` | Booth page calls these when the interpreter goes live or off live |
+| POST | `/api/events/{event_slug}/rooms/{room_id}/booths/{language_code}/transcription/start` / `stop` | configured token/Bearer, or user/session whose booth role can go live (cookie-only requests must be same-origin) | `{status, …}` | Booth page calls these when the interpreter goes live or off live. An interpreter can stop only while live or when nobody is live (checked against the session that joined the live participant) |
 | GET | `/api/interpreter/status/{channel_id:path}` | open | `{channel_id, state, reachable}` | MediaMTX reachability (preflight check) |
 
 ---

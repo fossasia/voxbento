@@ -5,7 +5,7 @@ import logging
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
-from portal.auth import WSAuthError, is_listener_token, resolve_booth_role, resolve_ws_auth
+from portal.auth import WSAuthError, booth_session_key, is_listener_token, resolve_booth_role, resolve_ws_auth
 from portal.globals import booths
 from portal.websockets.manager import (
     Session,
@@ -54,6 +54,7 @@ async def ws_booth(websocket: WebSocket, booth_id: str) -> None:
         language=language_name,
         channel_id=f"{booth_id}-audio",
         granted_role=ws_granted_role,
+        session_key=booth_session_key(payload),
     )
     manager.add(websocket, session)
 
