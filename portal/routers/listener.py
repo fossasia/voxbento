@@ -11,7 +11,7 @@ import jwt
 from fastapi import APIRouter, HTTPException, Query, Request, status
 from fastapi.templating import Jinja2Templates
 
-from portal.auth import decode_token, get_booth_session
+from portal.auth import decode_token, get_booth_session, is_listener_token
 from portal.config import settings
 from portal.database import (
     get_event_by_slug,
@@ -20,7 +20,7 @@ from portal.database import (
     list_booths_for_event,
     list_rooms_for_event,
 )
-from portal.globals import _JS_CACHE_BUST
+from portal.globals import _JS_CACHE_BUST, asset_version_context
 from portal.utils import _ensure_mediamtx_path
 
 # Allowlists for embed theming params — no free-text values accepted.
@@ -30,7 +30,7 @@ _PRIMARY_COLOR_RE = re.compile(r"^[0-9a-fA-F]{3,6}$")
 _DEFAULT_PRIMARY = "3b82f6"  # VoxBento blue
 
 _BASE_DIR = Path(__file__).resolve().parent.parent
-templates = Jinja2Templates(directory=str(_BASE_DIR / "templates"))
+templates = Jinja2Templates(directory=str(_BASE_DIR / "templates"), context_processors=[asset_version_context])
 
 router = APIRouter()
 
@@ -217,7 +217,7 @@ def _verify_embed_token(token: str, event_slug: str) -> None:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid embed token.")
 
     # Explicit claim checks — .get() only, never bare key access
-    if payload.get("role") != "listener":
+    if not is_listener_token(payload):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Token is not a listener token.")
     if payload.get("purpose") != "embed":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Token must be an embed token.")

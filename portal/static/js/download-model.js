@@ -21,7 +21,7 @@ export function initLocalModelDownloader() {
         } catch(err) { needsNllb = true; }
 
         if (needsNllb) {
-          document.getElementById('nllb_download_modal').style.display = 'flex';
+          document.getElementById('nllb_download_modal').hidden = false;
         } else {
           transForm.submit();
         }
@@ -31,7 +31,7 @@ export function initLocalModelDownloader() {
     const proceedBtn = document.getElementById('nllb_proceed_btn');
     if (proceedBtn) {
       proceedBtn.addEventListener('click', async function() {
-        document.getElementById('nllb_download_modal').style.display = 'none';
+        document.getElementById('nllb_download_modal').hidden = true;
         
         const formData = new FormData(transForm);
         const actionUrl = transForm.getAttribute('action');
@@ -45,7 +45,7 @@ export function initLocalModelDownloader() {
             body: JSON.stringify({model: transModel})
           });
           
-          document.getElementById('nllb_download_progress_container').style.display = 'flex';
+          document.getElementById('nllb_download_progress_container').hidden = false;
           
           const interval = setInterval(async () => {
             const res = await fetch(`${managementPrefix}/models/download_progress?model=${encodeURIComponent(transModel)}`);
@@ -60,8 +60,8 @@ export function initLocalModelDownloader() {
               }
               if (data.status === 'completed') {
                 clearInterval(interval);
-                document.getElementById('nllb_download_progress_container').style.display = 'none';
-                document.getElementById('nllb_success_modal').style.display = 'flex';
+                document.getElementById('nllb_download_progress_container').hidden = true;
+                document.getElementById('nllb_success_modal').hidden = false;
               } else if (data.status === 'error') {
                 clearInterval(interval);
                 alert("Failed to download local model.");
@@ -94,7 +94,7 @@ export function initLocalModelDownloader() {
         } catch(err) { needsSupertonic = true; }
 
         if (needsSupertonic) {
-          document.getElementById('supertonic_download_modal').style.display = 'flex';
+          document.getElementById('supertonic_download_modal').hidden = false;
         } else {
           ttsForm.submit();
         }
@@ -104,7 +104,7 @@ export function initLocalModelDownloader() {
     const supProceedBtn = document.getElementById('supertonic_proceed_btn');
     if (supProceedBtn) {
       supProceedBtn.addEventListener('click', async function() {
-        document.getElementById('supertonic_download_modal').style.display = 'none';
+        document.getElementById('supertonic_download_modal').hidden = true;
         
         const formData = new FormData(ttsForm);
         const actionUrl = ttsForm.getAttribute('action');
@@ -113,7 +113,7 @@ export function initLocalModelDownloader() {
           await fetch(actionUrl, { method: 'POST', body: formData, redirect: 'follow' });
           await fetch(`${managementPrefix}/models/supertonic/trigger_download`, { method: 'POST' });
           
-          document.getElementById('supertonic_download_progress_container').style.display = 'flex';
+          document.getElementById('supertonic_download_progress_container').hidden = false;
           
           const interval = setInterval(async () => {
             const res = await fetch(`${managementPrefix}/models/supertonic/download_progress`);
@@ -128,8 +128,8 @@ export function initLocalModelDownloader() {
               }
               if (data.status === 'completed') {
                 clearInterval(interval);
-                document.getElementById('supertonic_download_progress_container').style.display = 'none';
-                document.getElementById('supertonic_success_modal').style.display = 'flex';
+                document.getElementById('supertonic_download_progress_container').hidden = true;
+                document.getElementById('supertonic_success_modal').hidden = false;
               } else if (data.status === 'error') {
                 clearInterval(interval);
                 alert("Failed to download Supertonic model.");
@@ -147,14 +147,14 @@ export function initLocalModelDownloader() {
 
   // --- Modal Cancel & Success Button Listeners ---
   const cancelBtn = document.getElementById('nllb_cancel_btn');
-  if (cancelBtn) cancelBtn.addEventListener('click', () => { document.getElementById('nllb_download_modal').style.display = 'none'; });
+  if (cancelBtn) cancelBtn.addEventListener('click', () => { document.getElementById('nllb_download_modal').hidden = true; });
 
   const supCancelBtn = document.getElementById('supertonic_cancel_btn');
-  if (supCancelBtn) supCancelBtn.addEventListener('click', () => { document.getElementById('supertonic_download_modal').style.display = 'none'; });
+  if (supCancelBtn) supCancelBtn.addEventListener('click', () => { document.getElementById('supertonic_download_modal').hidden = true; });
 
   const gotItBtn = document.getElementById('nllb_success_got_it_btn');
-  if (gotItBtn) gotItBtn.addEventListener('click', () => { document.getElementById('nllb_success_modal').style.display = 'none'; });
+  if (gotItBtn) gotItBtn.addEventListener('click', () => { document.getElementById('nllb_success_modal').hidden = true; });
 
   const supGotItBtn = document.getElementById('supertonic_success_got_it_btn');
-  if (supGotItBtn) supGotItBtn.addEventListener('click', () => { document.getElementById('supertonic_success_modal').style.display = 'none'; });
+  if (supGotItBtn) supGotItBtn.addEventListener('click', () => { document.getElementById('supertonic_success_modal').hidden = true; });
 }

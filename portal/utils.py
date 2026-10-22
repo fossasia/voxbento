@@ -9,7 +9,7 @@ from fastapi import HTTPException, Request, status
 from fastapi.responses import RedirectResponse
 from fastapi.security import HTTPAuthorizationCredentials
 
-from portal.auth import decode_token
+from portal.auth import decode_token, is_listener_token
 from portal.config import settings
 from portal.globals import booths, get_http_client
 
@@ -116,37 +116,81 @@ async def _ensure_mediamtx_path(channel_id: str) -> None:
         pass  # Non-fatal; path will use all_others defaults
 
 
-async def _require_access(
+class _AwaitableNone:
+    def __await__(self):
+        async def _noop():
+            return None
+
+        return _noop().__await__()
+
+
+_AWAITABLE_NONE = _AwaitableNone()
+
+
+def _require_access(
     request: Request,
     credentials: HTTPAuthorizationCredentials | None,
     token_query: str | None = None,
     expected_event_slug: str | None = None,
-) -> None:
+    session_payload: dict | None = None,
+):
     """Allow request if access is unset, or if a valid JWT or legacy token is provided; scoped JWTs must match the requested event, while global/admin JWTs without an event_slug are accepted."""
     if not settings.booth_access_token:
-        return
+        if not settings.debug:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="BOOTH_ACCESS_TOKEN is not configured on this server.",
+            )
+        return _AWAITABLE_NONE
+
+    if credentials is not None and credentials.credentials == settings.booth_access_token:
+        return _AWAITABLE_NONE
+
+    if token_query and token_query == settings.booth_access_token:
+        return _AWAITABLE_NONE
 
     async def _check_scope(payload: dict) -> None:
-        if payload.get("role") == "listener":
+        if payload.get("role") == "listener" or is_listener_token(payload):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN, detail="Listener tokens cannot be used for this API."
             )
         token_event = payload.get("event_slug")
-        is_global = payload.get("admin") or payload.get("is_admin")
-        is_ordinary_user = payload.get("user") and not payload.get("is_admin")
+        is_global = (payload.get("admin") and not payload.get("user")) or (
+            payload.get("purpose") == "legacy_api" and bool(settings.booth_access_token)
+        )
+        is_ordinary_user = payload.get("user")
 
         if expected_event_slug:
             if is_global:
                 return
             if is_ordinary_user:
-                from portal.database import get_session, list_memberships_for_user, list_room_memberships_for_user
+                from portal.database import (
+                    get_session,
+                    get_user_by_id,
+                    list_memberships_for_user,
+                    list_room_memberships_for_user,
+                )
+
                 async with get_session() as db_session:
-                    memberships = await list_memberships_for_user(db_session, int(payload["sub"]))
-                    rms = await list_room_memberships_for_user(db_session, int(payload["sub"]))
-                    is_owner = any(m.event.slug == expected_event_slug and m.role == "event_owner" for m in memberships)
-                    is_coordinator = any(rm.room.event.slug == expected_event_slug and rm.role == "room_coordinator" for rm in rms)
+                    try:
+                        uid = int(payload.get("sub", 0))
+                    except (TypeError, ValueError):
+                        uid = 0
+                    user = await get_user_by_id(db_session, uid)
+                    if user and user.is_active and user.is_admin:
+                        return
+                    memberships = await list_memberships_for_user(db_session, uid)
+                    rms = await list_room_memberships_for_user(db_session, uid)
+                    is_owner = any(
+                        m.event.slug == expected_event_slug and m.role == "event_owner" for m in memberships
+                    )
+                    is_coordinator = any(
+                        rm.room.event.slug == expected_event_slug and rm.role == "room_coordinator" for rm in rms
+                    )
                     if not (is_owner or is_coordinator):
-                        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User is not a member of this event")
+                        raise HTTPException(
+                            status_code=status.HTTP_403_FORBIDDEN, detail="User is not a member of this event"
+                        )
                 return
 
             if not token_event:
@@ -154,25 +198,36 @@ async def _require_access(
             if token_event and token_event != expected_event_slug:
                 raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Token event scope mismatch")
 
-    if credentials is not None:
-        try:
-            payload = decode_token(credentials.credentials)
+    async def _async_verify() -> None:
+        if credentials is not None:
+            try:
+                payload = decode_token(credentials.credentials)
+                await _check_scope(payload)
+                return
+            except pyjwt.InvalidTokenError:
+                if credentials.scheme.lower() == "bearer":
+                    from portal.database import get_session, verify_api_key
+
+                    async with get_session() as db_session:
+                        key = await verify_api_key(db_session, credentials.credentials)
+                        if key:
+                            if expected_event_slug and key.event.slug != expected_event_slug:
+                                raise HTTPException(
+                                    status_code=status.HTTP_403_FORBIDDEN, detail="Token event scope mismatch"
+                                )
+                            return
+
+        # Cookie Fallback
+        from portal.auth import get_booth_session
+
+        payload = session_payload if session_payload is not None else get_booth_session(request)
+        if payload:
             await _check_scope(payload)
             return
-        except pyjwt.InvalidTokenError:
-            pass
-    if token_query and token_query == settings.booth_access_token:
-        return
 
-    # Cookie Fallback
-    from portal.auth import get_booth_session
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid or missing auth token.")
 
-    payload = get_booth_session(request)
-    if payload:
-        await _check_scope(payload)
-        return
-
-    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid or missing auth token.")
+    return _async_verify()
 
 
 async def _resolve_whip_url(booth_id: str, participant_id: str, language: str, channel_id: str) -> dict:
@@ -190,3 +245,31 @@ async def _resolve_whip_url(booth_id: str, participant_id: str, language: str, c
     await _ensure_mediamtx_path(channel_id)
     whip_url = f"{settings.mediamtx_whip_base}/{channel_id}/whip"
     return {"whip_url": whip_url, "channel_id": channel_id, "booth_id": booth_id}
+
+
+def verify_same_origin(request: Request) -> bool:
+    """Validate that the request Origin or Referer matches the request Host header.
+
+    Protects state-changing POST endpoints against CSRF.
+    """
+    origin = request.headers.get("origin")
+    referer = request.headers.get("referer")
+    host = request.headers.get("host")
+
+    target_url = origin or referer
+    if not target_url:
+        return False
+
+    parsed = urlparse(target_url)
+    if not parsed.netloc:
+        return False
+
+    return parsed.netloc.lower() == (host or "").lower()
+
+
+def get_client_ip(request: Request) -> str:
+    """Extract client IP address from headers or connection."""
+    x_forwarded_for = request.headers.get("x-forwarded-for")
+    if x_forwarded_for:
+        return x_forwarded_for.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"

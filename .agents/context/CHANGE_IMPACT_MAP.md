@@ -157,3 +157,28 @@ For room floor publishing/auth/lifecycle: `portal/program_ingest.py`,
 TTS manager, `program-delivery.js` and listener client. Preserve interpreter
 browser publishing. Update `docs/program-stream-ingest.md` and run native media
 smoke tests in addition to unit tests before production sign-off.
+
+---
+
+## 13. Modifying AI Interpretation Settings & Vocabulary
+
+**Files to change:**
+1. `portal/models.py` — `Room` (persona, style, vocab enabled) & `AIVocabularyEntry` models (migration 031)
+2. `portal/translations/prompts.py` — system prompt templates and contextual prompt building
+3. `portal/translations/vocabulary.py` — glossary lookup, overlap resolution, priority ordering, and CSV import/export
+4. `portal/translations/worker.py` — translation dispatch and glossary resolution before taking worker slots
+5. `portal/routers/admin.py` — room AI interpretation settings & vocabulary CSV routes (`.../ai-vocabulary/upload`, `.../export`, `.../delete`)
+6. `portal/templates/admin/room_detail.html` — AI interpretation persona, style, and glossary management UI
+7. `tests/test_ai_interpretation.py` & `tests/test_translation_pipeline.py` — regression tests
+
+---
+
+## 14. Program Relay (YouTube RTMPS)
+
+**Files to change:**
+1. `portal/program_relay.py` — destination encryption/decryption, relay reconciliation, health checking
+2. `portal/routers/program_ingest.py` — relay mode endpoints (`PUT/DELETE .../program-relay`)
+3. `program-relay/relay.py` — standalone media relay service pulling RTSP and pushing RTMPS
+4. `docker-compose.relay.yml` — deployment definition for `program-relay` service
+5. `portal/config.py` — relay configuration settings (`program_relay_*`)
+6. `docs/program-relay.md` — operational documentation and architecture notes
