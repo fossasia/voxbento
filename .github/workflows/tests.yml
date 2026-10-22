@@ -89,7 +89,7 @@ jobs:
   # /internal/media-auth hook; nothing is mocked between the encoder, MediaMTX and the relay.
   program-relay-media:
     name: program-relay-media (MediaMTX 1.18.2)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
       API_KEY_ENCRYPTION_KEY: "ci-test-encryption-key-must-be-32-chars-long"
