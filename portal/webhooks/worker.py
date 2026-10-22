@@ -160,7 +160,14 @@ async def process_delivery(client: httpx.AsyncClient, db, delivery: WebhookDeliv
 
 async def webhook_worker_loop():
     """Background polling worker for webhooks."""
-    async with httpx.AsyncClient(timeout=5.0) as client:
+    # Deliveries connect to a pinned IP, so httpcore would pool them by that IP
+    # rather than the hostname and could reuse one host's TLS connection for
+    # another host sharing the address. Keep-alive is disabled so every delivery
+    # handshakes against its own certificate.
+    async with httpx.AsyncClient(
+        timeout=5.0,
+        limits=httpx.Limits(max_keepalive_connections=0),
+    ) as client:
         while True:
             try:
                 claimed = False
