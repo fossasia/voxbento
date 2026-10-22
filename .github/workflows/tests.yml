@@ -451,8 +451,15 @@ jobs:
           echo "GET /admin/ → $code"
           [ "$code" = "200" ] || { echo "FAIL"; exit 1; }
 
+          # Fetch the CSRF cookie
+          csrf_resp=$(curl -s -D - -o /dev/null -b "user_token=${ADMIN_COOKIE}" "${BASE}/admin/")
+          CSRF_COOKIE=$(echo "$csrf_resp" | grep -i 'set-cookie.*admin_csrf' | sed 's/.*admin_csrf=\([^;]*\).*/\1/')
+          [ -n "$CSRF_COOKIE" ] || { echo "FAIL: no admin_csrf cookie"; exit 1; }
+
           # Create event
-          code=$(curl -s -o /dev/null -w '%{http_code}' -X POST -b "user_token=${ADMIN_COOKIE}" \
+          code=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+            -b "user_token=${ADMIN_COOKIE}; admin_csrf=${CSRF_COOKIE}" \
+            -H "X-CSRF-Token: ${CSRF_COOKIE}" \
             -d "slug=ci-smoke&display_name=CI+Smoke+Test" "${BASE}/admin/events/")
           echo "POST /admin/events/ → $code"
           [ "$code" = "303" ] || { echo "FAIL"; exit 1; }

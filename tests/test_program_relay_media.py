@@ -249,7 +249,10 @@ class Stack:
         response = await self.client.post(
             self.admin_url(room, "program-ingest"), json={"action": "enable", "mode": "rtmps_relay"}
         )
-        assert response.status_code == 200, response.text
+        assert response.status_code == 200, (
+            f"status={response.status_code}, location={response.headers.get('location')}, "
+            f"body={response.text}"
+        )
         return response.json()["secret"], response.json()["stream_key"]
 
     async def set_destination(self, room: Room, port: int) -> None:
@@ -257,7 +260,10 @@ class Stack:
             self.admin_url(room, "program-relay"),
             json={"server_url": f"rtmps://127.0.0.1:{port}/sink", "stream_key": SINK_KEY},
         )
-        assert response.status_code == 200, response.text
+        assert response.status_code == 200, (
+            f"status={response.status_code}, location={response.headers.get('location')}, "
+            f"body={response.text}"
+        )
 
     async def publish(self, url: str) -> asyncio.subprocess.Process:
         # What OBS sends: "Server" + "/" + "Stream Key", H.264 + AAC over RTMPS.
