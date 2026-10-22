@@ -41,7 +41,7 @@ Interpreters monitor the floor session and broadcast high-fidelity translation d
 - **⚡ Sub-Second Listener Playback:** Attendees receive ultra-low latency audio via WebRTC (WHEP) powered by MediaMTX, scaling effortlessly to thousands of listeners.
 - **🤖 Live AI Transcription & Translation:** Multi-provider speech-to-text (Faster-Whisper, OpenAI, Deepgram, NVIDIA Parakeet, ElevenLabs) paired with real-time LLM translations guided by custom personas, styles, and domain vocabulary glossaries.
 - **🗣️ Direct-Push Text-to-Speech (TTS):** Synthesize live translated speech on the fly (Deepgram Aura or self-hosted Supertonic ONNX), streamed directly to attendees over binary WebSocket frames.
-- **📡 Program Stream Ingest & YouTube Relay:** Ingest clean conference audio directly from hardware video switchers (OBS, ATEM, vMix) via authenticated HTTPS WHIP, with optional automated RTMPS forwarding to YouTube.
+- **📡 Program Stream Ingest & YouTube Relay:** Ingest clean conference audio directly from hardware video switchers (OBS, ATEM, vMix) via authenticated HTTPS WHIP, or straight from a browser tab on the sound-desk computer with the program audio sender (mute, sound check, auto-reconnect), with optional automated RTMPS forwarding to YouTube.
 - **🎛️ Mission Control & Coordination:** Real-time booth status monitoring, live audio meters, in-booth team chat, and coordinator controls via FastAPI WebSockets.
 - **💻 VoxBento Local:** Sovereign, 100% offline desktop application for private AI meeting intelligence and minutes on macOS, Windows, and Linux.
 
