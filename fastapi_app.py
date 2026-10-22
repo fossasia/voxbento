@@ -19,6 +19,8 @@ from portal import meeting_source, program_ingest
 from portal.auth import (
     ADMIN_CSRF_COOKIE,
     generate_admin_csrf_token,
+    get_csrf_session_id,
+    is_valid_admin_csrf_token,
     require_admin_csrf,
     require_owner_or_coordinator,
 )
@@ -171,13 +173,16 @@ class AdminCSRFMiddleware(BaseHTTPMiddleware):
                     )
 
         csrf_token = request.cookies.get(ADMIN_CSRF_COOKIE, "")
-        if is_admin_request and not csrf_token:
-            csrf_token = generate_admin_csrf_token()
+        session_id = get_csrf_session_id(request)
+        replace_csrf_cookie = is_admin_request and not is_valid_admin_csrf_token(csrf_token, session_id)
+
+        if replace_csrf_cookie:
+            csrf_token = generate_admin_csrf_token(session_id)
 
         request.state.admin_csrf_token = csrf_token
         response = await call_next(request)
 
-        if is_admin_request and not request.cookies.get(ADMIN_CSRF_COOKIE):
+        if replace_csrf_cookie:
             response.set_cookie(
                 key=ADMIN_CSRF_COOKIE,
                 value=csrf_token,

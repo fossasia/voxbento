@@ -244,8 +244,8 @@ async def _admin_csrf(client, admin_cookie):
         ("cookie-token", None, "form", 403),
         ("cookie-token", "wrong-token", "form", 403),
         (None, "submitted-token", "header", 403),
-        ("cookie-token", "cookie-token", "form", 200),
-        ("cookie-token", "cookie-token", "header", 200),
+        ("valid-token", "valid-token", "form", 200),
+        ("valid-token", "valid-token", "header", 200),
     ],
 )
 async def test_admin_csrf_validation(
@@ -257,6 +257,13 @@ async def test_admin_csrf_validation(
     expected_status,
 ):
     cookies = dict(admin_cookie)
+    if cookie_token == "valid-token":
+        from portal.auth import decode_token, generate_admin_csrf_token
+
+        payload = decode_token(cookies["user_token"])
+        session_id = str(payload.get("jti") or "anonymous")
+        cookie_token = generate_admin_csrf_token(session_id)
+        submitted_token = cookie_token
     if cookie_token is not None:
         cookies["admin_csrf"] = cookie_token
 
@@ -284,27 +291,88 @@ async def test_admin_csrf_validation(
 
 
 @pytest.mark.anyio
+async def test_admin_csrf_accepts_session_bound_json_header(seeded_admin):
+    from portal.auth import create_user_token, decode_token, generate_admin_csrf_token
+
+    user_token = create_user_token(
+        user_id=seeded_admin.id,
+        email=seeded_admin.email,
+        is_admin=True,
+    )
+    session_id = decode_token(user_token)["jti"]
+    csrf_token = generate_admin_csrf_token(session_id)
+
+    async with _raw_client() as client:
+        response = await client.post(
+            f"/admin/users/{seeded_admin.id}/access",
+            cookies={
+                "user_token": user_token,
+                "admin_csrf": csrf_token,
+            },
+            headers={
+                "Origin": "http://test",
+                "X-CSRF-Token": csrf_token,
+                "Accept": "application/json",
+            },
+            data={"field": "verified", "value": "true"},
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 200, response.text
+
+
+@pytest.mark.anyio
+async def test_admin_csrf_token_cannot_be_reused_across_sessions(seeded_admin):
+    from portal.auth import (
+        create_user_token,
+        generate_admin_csrf_token,
+    )
+
+    session_a = create_user_token(
+        user_id=seeded_admin.id,
+        email=seeded_admin.email,
+        is_admin=True,
+    )
+    session_b = create_user_token(
+        user_id=seeded_admin.id,
+        email=seeded_admin.email,
+        is_admin=True,
+    )
+
+    csrf_token_a = generate_admin_csrf_token(decode_token(session_a)["jti"])
+
+    async with _raw_client() as client:
+        response = await client.post(
+            f"/admin/users/{seeded_admin.id}/access",
+            cookies={
+                "user_token": session_b,
+                "admin_csrf": csrf_token_a,
+            },
+            headers={
+                "Origin": "http://test",
+                "X-CSRF-Token": csrf_token_a,
+            },
+            data={"field": "verified", "value": "true"},
+            follow_redirects=False,
+        )
+
+    assert response.status_code == 403
+
+
+@pytest.mark.anyio
 async def test_admin_mutation_routes_require_csrf():
     from fastapi.routing import APIRoute
 
-    from fastapi_app import app
     from portal.auth import require_admin_csrf
+    from portal.routers.admin import router as admin_router
 
     mutating_methods = {"POST", "PUT", "PATCH", "DELETE"}
-    protected_prefixes = (
-        "/admin/",
-        "/api/admin/",
-        "/workspace/",
-        "/api/workspace/",
-        "/api/rooms/",
-        "/account/",
-    )
     missing = []
 
-    for route in app.routes:
+    for route in admin_router.routes:
         if not isinstance(route, APIRoute):
             continue
-        if not route.path.startswith(protected_prefixes):
+        if route.path == "/admin/login":
             continue
         if not (route.methods or set()).intersection(mutating_methods):
             continue
@@ -312,13 +380,39 @@ async def test_admin_mutation_routes_require_csrf():
         dependencies = route.dependant.dependencies
         has_route_dependency = any(dependency.call is require_admin_csrf for dependency in dependencies)
 
-        # Account for both route-level dependencies and middleware protection.
-        # Form requests need the route dependency; JSON requests are checked
-        # by AdminCSRFMiddleware.
-        if not has_route_dependency and route.path.startswith("/account/"):
+        if not has_route_dependency:
             missing.append(f"{','.join(sorted(route.methods or set()))} {route.path}")
 
     assert not missing, "Mutation routes missing route-level CSRF dependency:\n" + "\n".join(missing)
+
+
+@pytest.mark.anyio
+async def test_reviewer_post_routes_reject_missing_csrf(admin_cookie, seeded_admin):
+    cookies = dict(admin_cookie)
+    cookies.pop("admin_csrf", None)
+
+    paths = [
+        f"/admin/users/{seeded_admin.id}/access",
+        f"/admin/users/{seeded_admin.id}/delete",
+        "/admin/hosting-access/requests/1/grant",
+        "/admin/hosting-access/requests/1/decline",
+        "/account/profile",
+        "/account/hosting-request",
+    ]
+
+    for path in paths:
+        async with _raw_client() as client:
+            response = await client.post(
+                path,
+                cookies=cookies,
+                headers={"Origin": "http://test"},
+                data={},
+                follow_redirects=False,
+            )
+
+        assert response.status_code == 403, (
+            f"Expected 403 for POST {path} without a CSRF token, got {response.status_code}: {response.text}"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -549,7 +643,22 @@ class TestAdminLogin:
 
     @pytest.mark.anyio
     async def test_logout_clears_current_and_legacy_cookies(self):
-        """Logout must clear both the new user_token and the legacy admin_token."""
+        async with _raw_client() as client:
+            response = await client.get("/logout", follow_redirects=False)
+
+        assert response.status_code == 303
+
+        set_cookie_headers = response.headers.get_list("set-cookie")
+        for cookie_name in ("user_token", "session_token", "admin_token", "admin_csrf"):
+            matching_headers = [
+                header
+                for header in set_cookie_headers
+                if header.split("=", 1)[0].strip().lower() == cookie_name.lower()
+            ]
+            assert matching_headers, f"Expected logout to clear {cookie_name}"
+            assert any("max-age=0" in header.lower() or "expires=" in header.lower() for header in matching_headers), (
+                f"Expected {cookie_name} to expire on logout"
+            )
 
     @pytest.mark.anyio
     async def test_logout_clears_cookie(self):
@@ -1531,10 +1640,9 @@ class TestRoomCRUD:
         event, room, _ = seed_event
         from portal.database import get_room_by_id, get_session
 
-        cookies = {**admin_cookie, "admin_csrf": "test-csrf-token"}
-        headers = {"X-CSRF-Token": "test-csrf-token"}
-
         async with _client() as c:
+            cookies, csrf_token = await _admin_csrf(c, admin_cookie)
+            headers = {"X-CSRF-Token": csrf_token}
             response = await c.post(
                 f"/admin/events/{event.id}/rooms/{room.id}/edit",
                 data={
@@ -1561,10 +1669,9 @@ class TestRoomCRUD:
         event, room, _ = seed_event
         from portal.database import get_room_by_id, get_session
 
-        cookies = {**admin_cookie, "admin_csrf": "test-csrf-token"}
-        headers = {"X-CSRF-Token": "test-csrf-token"}
-
         async with _client() as c:
+            cookies, csrf_token = await _admin_csrf(c, admin_cookie)
+            headers = {"X-CSRF-Token": csrf_token}
             response = await c.post(
                 f"/admin/events/{event.id}/rooms/{room.id}/edit",
                 data={
@@ -2346,11 +2453,16 @@ async def test_workspace_api_key_creation_requires_csrf(setup_db):
         )
         assert response.status_code == 403
 
-        # Matching cookie and header.
+        # Matching, session-bound CSRF cookie and header.
+        from portal.auth import generate_admin_csrf_token
+
+        session_id = decode_token(user_token)["jti"]
+        csrf_token = generate_admin_csrf_token(session_id)
+
         response = await client.post(
             url,
-            cookies={"user_token": user_token, "admin_csrf": "valid-token"},
-            headers={"X-CSRF-Token": "valid-token"},
+            cookies={"user_token": user_token, "admin_csrf": csrf_token},
+            headers={"X-CSRF-Token": csrf_token},
             json={"name": "Valid Token"},
         )
         assert response.status_code == 200

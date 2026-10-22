@@ -167,6 +167,22 @@ def set_auth_cookie(response: Response, token: str) -> None:
     )
 
 
+def set_admin_csrf_cookie(response: Response, request: Request, session_token: str) -> None:
+    """Set a CSRF cookie bound to the newly created session."""
+    payload = decode_token(session_token)
+    session_id = payload.get("jti")
+    if not session_id:
+        raise ValueError("Session token is missing its jti claim.")
+
+    response.set_cookie(
+        key=ADMIN_CSRF_COOKIE,
+        value=generate_admin_csrf_token(str(session_id)),
+        httponly=True,
+        secure=_is_cookie_secure(request),
+        samesite="lax",
+    )
+
+
 @router.post("/api/auth/token", response_model=TokenResponse)
 async def get_token(body: Annotated[TokenRequest | None, Body()] = None) -> TokenResponse:
     provided = body.token if body is not None else ""
@@ -206,6 +222,7 @@ async def join_via_invite(request: Request, token: str) -> RedirectResponse:
         samesite="lax",
         max_age=settings.jwt_expiry_seconds,
     )
+    set_admin_csrf_cookie(response, request, jwt_token)
     return response
 
 
@@ -342,6 +359,7 @@ async def verify_email_route(request: Request, token: str, background_tasks: Bac
                 samesite="lax",
                 max_age=settings.jwt_expiry_seconds,
             )
+            set_admin_csrf_cookie(response, request, jwt_token)
             return response
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
@@ -400,13 +418,7 @@ async def user_login_submit(request: Request):
         samesite="lax",
         max_age=settings.jwt_expiry_seconds,
     )
-    response.set_cookie(
-        key=ADMIN_CSRF_COOKIE,
-        value=generate_admin_csrf_token(),
-        httponly=True,
-        secure=_is_cookie_secure(request),
-        samesite="lax",
-    )
+    set_admin_csrf_cookie(response, request, jwt_token)
     return response
 
 
@@ -573,6 +585,7 @@ async def poll_magic_link(request: Request, poll_id: str = ""):
             samesite="lax",
             max_age=settings.jwt_expiry_seconds,
         )
+        set_admin_csrf_cookie(response, request, jwt_token)
         # Clear poll_verifier cookie as authentication is complete
         response.delete_cookie("poll_verifier")
         return response
@@ -629,6 +642,7 @@ async def redeem_magic_link(request: Request, token: str, background_tasks: Back
                 samesite="lax",
                 max_age=settings.jwt_expiry_seconds,
             )
+            set_admin_csrf_cookie(response, request, jwt_token)
             return response
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
@@ -735,6 +749,7 @@ async def reset_password_submit(request: Request, token: str):
         samesite="lax",
         max_age=settings.jwt_expiry_seconds,
     )
+    set_admin_csrf_cookie(response, request, jwt_token)
     return response
 
 
@@ -1154,4 +1169,5 @@ async def invite_accept_submit(request: Request, token: str):
     )
     response = safe_redirect("/workspace/")
     set_auth_cookie(response, jwt_token)
+    set_admin_csrf_cookie(response, request, jwt_token)
     return response
