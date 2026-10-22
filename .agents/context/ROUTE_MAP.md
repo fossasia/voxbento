@@ -153,6 +153,12 @@ with `?error=invalid_role&role=…` and the page explains why.
   revoke, disable and sync. Revoke returns 202 with `cleanup_pending` when the
   credential is invalidated but MediaMTX cleanup must be retried.
   `portal/routers/program_ingest.py` owns both routes.
+- `POST/DELETE /workspace/events/{event_id}/rooms/{room_id}/program-sender`:
+  event-owner, origin-checked browser sender session mint/release. `sync_offset_ms`
+  is optional; omitted keeps the room's saved sync delay.
+- `GET /workspace/events/{event_id}/rooms/{room_id}/sender/`: event-owner standalone
+  sender page (`admin/program_sender.html`, `program-sender.js`), no-store. Both
+  sender routes map to shared `/admin/...` handlers.
 - Existing floor-bot start/stop returns 409 while program ingest owns the room.
 
 ## Program relay routes (#749)
