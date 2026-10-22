@@ -19,6 +19,8 @@
     {% endif %}
 
     <form action="/listener/{{ event.slug }}" method="GET">
+      {% if room %}<input type="hidden" name="room" value="{{ room }}">{% endif %}
+      {% if lang %}<input type="hidden" name="lang" value="{{ lang }}">{% endif %}
       <div>
         <label for="code" class="join-label">Join Code</label>
         <input type="text" id="code" name="code" required class="join-input" placeholder="Enter code here">

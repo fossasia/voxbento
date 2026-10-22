@@ -122,10 +122,51 @@ function showAudioPlayer(show) {
   }
 }
 
+var tapToListenBtn = document.getElementById("tap-to-listen");
+
+function showTapToListen(show) {
+  if (!tapToListenBtn) return;
+  tapToListenBtn.style.display = show ? "inline-block" : "none";
+}
+
+// A deep link starts playback without a tap, which browsers block until the
+// page has a user gesture. Offer the gesture instead of failing silently.
+function checkAutoplayBlocked() {
+  if (!audioEl.paused) {
+    showTapToListen(false);
+    return;
+  }
+  audioEl.play().then(
+    function () {
+      showTapToListen(false);
+    },
+    function () {
+      showTapToListen(true);
+      setStatus("Tap to listen", "waiting");
+    },
+  );
+}
+
+if (tapToListenBtn) {
+  tapToListenBtn.addEventListener("click", function () {
+    audioEl.muted = false;
+    audioEl.play().then(
+      function () {
+        showTapToListen(false);
+        setStatus("Live (WebRTC)", "live");
+      },
+      function (err) {
+        console.error("Playback failed after tap", err);
+      },
+    );
+  });
+}
+
 function onState(s) {
   if (s.peerConnection === "connected" && s.audioActive) {
     setStatus("Live (WebRTC)", "live");
     showAudioPlayer(true);
+    checkAutoplayBlocked();
   } else if (s.peerConnection === "connecting" || s.ice === "checking") {
     setStatus("Connecting...", "recovering");
   } else if (
@@ -1072,6 +1113,67 @@ function applyTtsOverlay() {
     }
   }
 }
+
+// Keep ?room= and ?lang= in sync so copying the address bar gives a link to
+// this exact audio. Other params (notably ?code=) are preserved untouched.
+function syncUrlSelection() {
+  if (!window.history || !window.history.replaceState) return;
+  var url = new URL(window.location.href);
+  var roomId = roomSelect.value;
+  var selectedOpt = languageSelect.options[languageSelect.selectedIndex];
+  var langCode = selectedOpt ? selectedOpt.dataset.languageCode : null;
+
+  if (roomId) {
+    url.searchParams.set("room", roomId);
+  } else {
+    url.searchParams.delete("room");
+  }
+  if (roomId && langCode) {
+    url.searchParams.set("lang", langCode);
+  } else {
+    url.searchParams.delete("lang");
+  }
+  window.history.replaceState(null, "", url.toString());
+}
+
+roomSelect.addEventListener("change", syncUrlSelection);
+languageSelect.addEventListener("change", syncUrlSelection);
+
+function selectLanguageByCode(langCode) {
+  for (var i = 0; i < languageSelect.options.length; i++) {
+    if (languageSelect.options[i].dataset.languageCode === langCode) {
+      languageSelect.selectedIndex = i;
+      languageSelect.dispatchEvent(new Event("change"));
+      return true;
+    }
+  }
+  return false;
+}
+
+// Open with the room and language from the URL (e.g. a QR code on a room
+// door), and skip the room dropdown entirely when the event has only one room.
+// Unknown values are ignored so the normal dropdowns still work.
+function initSelection() {
+  var params = new URLSearchParams(window.location.search);
+  var wantedRoom = params.get("room");
+  var wantedLang = params.get("lang");
+
+  var roomId = null;
+  if (wantedRoom && roomsData.some((r) => r.id.toString() === wantedRoom)) {
+    roomId = wantedRoom;
+  } else if (roomsData.length === 1) {
+    roomId = roomsData[0].id.toString();
+  }
+  if (!roomId) return;
+
+  roomSelect.value = roomId;
+  roomSelect.dispatchEvent(new Event("change"));
+
+  if (wantedLang) selectLanguageByCode(wantedLang);
+  syncUrlSelection();
+}
+
+initSelection();
 
 // Clean up on page unload.
 window.addEventListener("beforeunload", function () {

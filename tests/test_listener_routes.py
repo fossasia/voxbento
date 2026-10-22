@@ -162,6 +162,91 @@ class TestListenerRoutes:
         assert b"?code=" not in resp.content.split(b'"shareUrl"')[1].split(b"\n")[0]
 
     @pytest.mark.anyio
+    async def test_listener_page_has_tap_to_listen_fallback(self, seed_event):
+        event, _, _ = seed_event
+
+        from portal.database import get_session
+
+        async with get_session() as s:
+            db_event = await s.get(type(event), event.id)
+            db_event.listener_join_code = "ROOM42"
+
+        async with _client() as c:
+            resp = await c.get(f"/listener/{event.slug}?code=ROOM42")
+
+        assert resp.status_code == 200
+        assert b'id="tap-to-listen"' in resp.content
+
+    @pytest.mark.anyio
+    async def test_room_and_lang_params_render_listener_page(self, seed_event):
+        event, room, _ = seed_event
+
+        from portal.database import get_session
+
+        async with get_session() as s:
+            db_event = await s.get(type(event), event.id)
+            db_event.listener_join_code = "ROOM42"
+
+        async with _client() as c:
+            resp = await c.get(f"/listener/{event.slug}?code=ROOM42&room={room.id}&lang=en")
+
+        assert resp.status_code == 200
+        assert b'id="room-select"' in resp.content
+
+    @pytest.mark.anyio
+    async def test_unknown_room_and_lang_params_are_accepted(self, seed_event):
+        """Invalid values must not error; the browser falls back to the dropdowns."""
+        event, _, _ = seed_event
+
+        from portal.database import get_session
+
+        async with get_session() as s:
+            db_event = await s.get(type(event), event.id)
+            db_event.listener_join_code = "ROOM42"
+
+        async with _client() as c:
+            resp = await c.get(f"/listener/{event.slug}?code=ROOM42&room=9999&lang=zz")
+
+        assert resp.status_code == 200
+        assert b'id="room-select"' in resp.content
+
+    @pytest.mark.anyio
+    async def test_join_form_preserves_room_and_lang(self, seed_event):
+        """room/lang must survive the join-code gate so QR links still land on the right audio."""
+        event, room, _ = seed_event
+
+        from portal.database import get_session
+
+        async with get_session() as s:
+            db_event = await s.get(type(event), event.id)
+            db_event.listener_join_code = "ROOM42"
+
+        async with _client() as c:
+            resp = await c.get(f"/listener/{event.slug}?room={room.id}&lang=en")
+
+        assert resp.status_code == 200
+        assert b"Join Event" in resp.content
+        assert f'name="room" value="{room.id}"'.encode() in resp.content
+        assert b'name="lang" value="en"' in resp.content
+
+    @pytest.mark.anyio
+    async def test_join_form_omits_absent_room_and_lang(self, seed_event):
+        event, _, _ = seed_event
+
+        from portal.database import get_session
+
+        async with get_session() as s:
+            db_event = await s.get(type(event), event.id)
+            db_event.listener_join_code = "ROOM42"
+
+        async with _client() as c:
+            resp = await c.get(f"/listener/{event.slug}")
+
+        assert resp.status_code == 200
+        assert b'name="room"' not in resp.content
+        assert b'name="lang"' not in resp.content
+
+    @pytest.mark.anyio
     async def test_audio_delay_requires_listener_access(self, seed_event):
         event, room, _ = seed_event
 

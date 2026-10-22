@@ -79,8 +79,17 @@ def has_listener_access(request: Request, event_slug: str, listener_join_code: s
 
 
 @router.get("/listener/{event_slug}")
-async def listen_event_page(request: Request, event_slug: str, code: str | None = None) -> Any:
-    """Listener page scoped by event, allowing users to select room and language."""
+async def listen_event_page(
+    request: Request,
+    event_slug: str,
+    code: str | None = None,
+    room: str | None = None,
+    lang: str | None = None,
+) -> Any:
+    """Listener page scoped by event, allowing users to select room and language.
+
+    `room` and `lang` preselect the audio source; the browser validates and applies them.
+    """
     async with get_session() as session:
         ev = await get_event_by_slug(session, event_slug)
         if not ev:
@@ -95,7 +104,12 @@ async def listen_event_page(request: Request, event_slug: str, code: str | None 
             return templates.TemplateResponse(
                 request=request,
                 name="listener_join.html",
-                context={"event": ev, "error": "Invalid join code." if code else None},
+                context={
+                    "event": ev,
+                    "error": "Invalid join code." if code else None,
+                    "room": room,
+                    "lang": lang,
+                },
             )
 
         rooms = await list_rooms_for_event(session, ev.id)
