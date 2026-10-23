@@ -250,7 +250,8 @@ Tracks which languages the translation worker should generate for a given room o
 | 031 | `031_add_ai_interpretation_settings.py` | `rooms.floor_ai_interpreter_persona`, `rooms.floor_ai_interpretation_style`, `rooms.floor_ai_vocabulary_enabled`, `ai_vocabulary_entries` table |
 | 032 | `032_remove_support_role.py` | deletes Support-role memberships; normalizes legacy event-owner role aliases to `event_owner` |
 | 033 | `033_add_index_booths_event_id.py` | index `ix_booths_event_id` on `booths.event_id` |
-| 034 | `034_add_tts_enabled.py` | `room_translation_languages.tts_enabled` |
+| 034 | `034_email_notifications.py` | `email_templates`, `email_template_revisions`, `email_settings`, `email_deliveries` tables |
+| 035 | `035_add_tts_enabled.py` | `room_translation_languages.tts_enabled` |
 
 Run migrations: `uv run alembic upgrade head`
 
