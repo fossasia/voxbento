@@ -1363,7 +1363,9 @@ function renderParticipants() {
 
     const meta = document.createElement('div')
     meta.className = 'participant-meta'
-    meta.textContent = `${participant.language} · ${participant.channel_id}`
+    // The role in words; the pill already says Active/Passive or names the role.
+    meta.textContent = participant.can_go_live && !participant.can_set_active ? participant.role_label || '' : ''
+    meta.hidden = !meta.textContent
 
     const bottom = document.createElement('div')
     bottom.className = 'participant-bottom'

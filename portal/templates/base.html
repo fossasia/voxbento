@@ -14,6 +14,7 @@
 
     <main class="portal-main">{% block content %}{% endblock %}</main>
     
+    {% block footer %}
     <footer class="portal-footer">
         <div class="footer-inner">
             <div>&copy; 2026 VoxBento.</div>
@@ -25,6 +26,7 @@
             </div>
         </div>
     </footer>
+    {% endblock %}
     
     <!-- Toast Container -->
     <div id="toast-container" class="toast-container"></div>
@@ -49,5 +51,6 @@
         window.showToast(msg, 'error');
       };
     </script>
+    {% include "_auth_sync.html" %}
   </body>
 </html>

@@ -13,6 +13,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
+from portal.config import settings
 from portal.database import (
     create_invite_token,
     create_user,
@@ -24,7 +25,18 @@ from portal.database import (
     set_event_membership,
     set_room_membership,
 )
-from portal.models import BoothMembership, DBBooth, EventMembership, InviteToken, Room, RoomMembership, User, utc_now
+from portal.models import (
+    BoothMembership,
+    DBBooth,
+    Event,
+    EventMembership,
+    InviteToken,
+    Room,
+    RoomMembership,
+    User,
+    utc_now,
+)
+from portal.notifications import queue_notification
 from portal.roles import (
     BOOTH_ROLES,
     EVENT_OWNER,
@@ -248,9 +260,34 @@ async def remove_assignment(session: AsyncSession, *, event_id: int, level: str,
     if level == "event" and membership.role == EVENT_OWNER:
         await ensure_another_owner(session, event_id)
     user = await session.get(User, membership.user_id)
+    where = await _place_name(session, level, membership, event_id)
     await session.delete(membership)
     await session.flush()
+    if user is not None:
+        await queue_notification(
+            session,
+            "role_removed",
+            user.email,
+            {"context_name": where, "login_url": f"{settings.public_base_url.rstrip('/')}/workspace/"},
+            idempotency_key=f"role-removed:{level}:{membership_id}",
+        )
     return user.email if user else ""
+
+
+async def _place_name(session: AsyncSession, level: str, membership, event_id: int) -> str:
+    """Where a role applied, in words: "Summit", "Main Hall at Summit" or "Main Hall · Deutsch at Summit"."""
+    event = await session.get(Event, event_id)
+    event_name = event.display_name if event else "the event"
+    if level == "room":
+        room = await session.get(Room, membership.room_id)
+        return f"{room.display_name} at {event_name}" if room else event_name
+    if level == "booth":
+        booth = await session.get(DBBooth, membership.booth_id)
+        if booth is not None:
+            room = await session.get(Room, booth.room_id)
+            room_name = f"{room.display_name} · " if room else ""
+            return f"{room_name}{booth.language_name} at {event_name}"
+    return event_name
 
 
 async def ensure_another_owner(session: AsyncSession, event_id: int) -> None:

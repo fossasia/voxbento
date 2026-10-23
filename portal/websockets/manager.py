@@ -23,6 +23,8 @@ class Session:
     channel_id: str
     # Role derived from the bearer cookie at WS connection time — never from client data.
     granted_role: str | None = None
+    # Key of the session that opened the socket (see portal.auth.booth_session_key); recorded at join.
+    session_key: str | None = None
 
 
 class ConnectionManager:
@@ -229,6 +231,7 @@ async def _handle_join(ws: WebSocket, session: Session, data: dict) -> None:
             room_id=room_id,
             # Only this socket's own record may be re-claimed by ID.
             reclaim=participant_id is not None and participant_id == session.participant_id,
+            joined_by=session.session_key,
         )
     except (ValueError, PermissionError) as exc:
         await ws.send_text(json.dumps({"type": "booth:error", "message": str(exc)}))

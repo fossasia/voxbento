@@ -192,7 +192,10 @@ class DBBooth(Base):
     """
 
     __tablename__ = "booths"
-    __table_args__ = (Index("ix_booths_room_language", "room_id", "language_code", unique=True),)
+    __table_args__ = (
+        Index("ix_booths_room_language", "room_id", "language_code", unique=True),
+        Index("ix_booths_event_id", "event_id"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     event_id: Mapped[int] = mapped_column(ForeignKey("events.id", ondelete="CASCADE"))
@@ -873,3 +876,82 @@ class WebhookDelivery(Base):
 
     def __repr__(self) -> str:
         return f"<WebhookDelivery id={self.id} status={self.status!r} attempt={self.attempt_count}>"
+
+
+# ---------------------------------------------------------------------------
+# Email notification outbox
+# ---------------------------------------------------------------------------
+
+
+class EmailTemplate(Base):
+    """The editable, published version of a named transactional email."""
+
+    __tablename__ = "email_templates"
+
+    key: Mapped[str] = mapped_column(String(80), primary_key=True)
+    draft_subject: Mapped[str | None] = mapped_column(Text, nullable=True)
+    draft_html: Mapped[str | None] = mapped_column(Text, nullable=True)
+    published_subject: Mapped[str | None] = mapped_column(Text, nullable=True)
+    published_html: Mapped[str | None] = mapped_column(Text, nullable=True)
+    published_version: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    updated_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+
+
+class EmailTemplateRevision(Base):
+    """Immutable audit trail for each published template version."""
+
+    __tablename__ = "email_template_revisions"
+    __table_args__ = (UniqueConstraint("template_key", "version", name="uq_email_template_revision"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    template_key: Mapped[str] = mapped_column(ForeignKey("email_templates.key", ondelete="CASCADE"), index=True)
+    version: Mapped[int] = mapped_column(Integer)
+    subject: Mapped[str] = mapped_column(Text)
+    html: Mapped[str] = mapped_column(Text)
+    published_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    published_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class EmailSettings(Base):
+    """Branding shared by every email (one row, id 1). No row means the defaults."""
+
+    __tablename__ = "email_settings"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    show_logo: Mapped[bool] = mapped_column(Boolean, default=True, server_default=sa.true())
+    # An https image URL; empty means the VoxBento logo served by this site.
+    logo_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    updated_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+
+
+class EmailDelivery(Base):
+    """An encrypted rendered message awaiting SMTP delivery or its audit record."""
+
+    __tablename__ = "email_deliveries"
+    __table_args__ = (
+        Index("ix_email_deliveries_due", "status", "scheduled_at"),
+        Index("ix_email_deliveries_created", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    notification_key: Mapped[str] = mapped_column(String(80), index=True)
+    recipient: Mapped[str] = mapped_column(String(320))
+    encrypted_subject: Mapped[str] = mapped_column(Text)
+    encrypted_html: Mapped[str] = mapped_column(Text)
+    template_version: Mapped[int] = mapped_column(Integer, default=0)
+    status: Mapped[str] = mapped_column(String(20), default="pending", server_default="pending")
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    scheduled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    claim_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    failed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # The sign-in or invitation token this email links to. Deliberately not a foreign key:
+    # once the token is deleted the id must stay, so the outbox finds no token and drops the email.
+    auth_token_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    last_error: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    idempotency_key: Mapped[str | None] = mapped_column(String(255), unique=True, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
