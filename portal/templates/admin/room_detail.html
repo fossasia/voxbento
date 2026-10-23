@@ -38,7 +38,7 @@
 </div>
 {% endif %}
 
-<section class="room-panel" id="room-panel-overview" role="tabpanel" aria-labelledby="room-tab-overview" data-room-panel="overview">
+<section class="room-panel" id="room-panel-overview"{% if is_event_owner %} role="tabpanel" aria-labelledby="room-tab-overview"{% endif %} data-room-panel="overview">
 <!-- Interpretation Schedule Table (replaces manual spreadsheet) -->
 <div class="section-card section-card--spaced-lg">
   <div class="section-header">

@@ -139,3 +139,11 @@ async def test_room_page_is_split_into_tabs_for_owners(world):
     assert "data-translation-languages=" in owner.text
     # The booth table shows short links, not raw paths.
     assert "Open booth ↗" in owner.text
+    assert 'id="room-panel-overview" role="tabpanel" aria-labelledby="room-tab-overview"' in owner.text
+
+    # For non-owners, tabpanel ARIA attributes are omitted so they do not reference missing tabs.
+    async with client() as http:
+        coord = await http.get(f"/admin/events/{world['event']}/rooms/{world['hall']}/", cookies=world["cookies"]["coord"])
+    assert coord.status_code == 200
+    assert 'id="room-panel-overview" data-room-panel="overview"' in coord.text
+    assert 'role="tabpanel"' not in coord.text
