@@ -1,41 +1,54 @@
 ---
-title: "Mission Control Dashboard Guide"
+title: "Voxbento Management Surfaces: Admin, Workspace, and Mission Control"
 sidebarTitle: "Dashboard Guide"
-description: "A visual map of the Voxbento Admin Panel, explaining the navigation, event summaries, and health diagnostics."
+description: "A guide to Voxbento management navigation: System Admin (/admin), Event Workspace (/workspace), and Mission Control (/mission-control)."
 ---
 
-The Voxbento Admin Panel (often referred to as Mission Control) is the central hub for managing your interpretation infrastructure. Depending on your role (`super_admin` or `event_owner`), your view of the dashboard will be tailored to what you have permission to manage.
+Voxbento organizes its management interfaces into clear, privilege-scoped surfaces:
 
-*(TODO: Add `admin_dashboard.png` screenshot here)*
-![Mission Control Dashboard](/img/admin_dashboard.png)
+- **`/admin/...`** — Central hub for site-wide administration (registered users, hosting access reviews, and platform configuration). It is for Admins; only a few legacy room pages under `/admin/` still let room coordinators in.
+- **`/workspace/...`** — The Event Workspace. Houses **My events** (`/workspace/`, accessible to all signed-in users including interpreters to view events they belong to) and event/room/booth configuration pages for event owners. Creating new events requires hosting access (`can_host`) or the Admin role.
+- **`/mission-control/{event_slug}/`** — The operational console for `room_coordinator` and event owner users to oversee active room broadcasts, monitor audio status, and conduct interpreter handoffs.
 
-## 1. Global Navigation (Sidebar)
+## 1. Global Header and Navigation
 
-The left sidebar is your primary navigation tool. 
+Every signed-in page renders a unified header with area links and a user profile menu:
 
-- **Dashboard**: The home screen, showing at-a-glance metrics for all your events.
-- **Events**: The master list of all events. `super_admin` users will see an "Add Event" button here.
-- **Users**: (Restricted to `super_admin`). Manage registered accounts and grant site-wide admin privileges.
-- **API Settings**: Manage the global API keys for Transcription providers (like OpenAI or Deepgram).
+- **My events (`/workspace/`)**: Lists every event you participate in or own with direct action links ("Event owner", "Room coordinator", "Enter booth"). Users with hosting access or admin rights see the **New event** button.
+- **Hosting access (`/admin/hosting-access/`)**: (Admins only). Review and approve/decline event hosting access requests, with a badge showing the number of open requests.
+- **Users (`/admin/users/`)**: (Admins only). Search and filter registered accounts, toggling **Hosting access**, **Admin**, **Active**, and **Verified** status directly in-place.
+- **Mission Control**: Not an Admin tab. Admins open it from an event's page (**Open Mission Control**) or its dashboard card; Room coordinators reach it from **My events**.
+- **Developer API**: Direct access to registered OAuth applications and webhook management for approved developer accounts.
+- **Account (`/account`)**: Manage display name, hosting access requests, developer status, and password sign-in settings.
 
 ## 2. Event Summary Cards
 
-On the main dashboard, each event you have access to is displayed as a summary card.
+The main dashboard and My events pages use distinct card layouts tailored to their respective audiences:
 
-- **Live Booths Metric**: Shows a real-time count of how many booths currently have an `active_interpreter` broadcasting audio.
-- **Rooms & Booths Count**: A quick summary of the total configured infrastructure for that event.
-- **Manage Button**: Clicking this takes you deep into the event's configuration page to add rooms or configure language channels.
+### Admin Overview (`/admin/`)
+Designed for high-level operational oversight across configured events:
+- **Total Booths**: Number of configured language channels.
+- **Live Now Metric**: Real-time count of active broadcasting booths (`● N` or `○ 0`).
+- **Booth Status Chips**: Interactive language chips (`●` live / `○` offline) showing each booth's language name and ISO code.
+- **Action Buttons**: Direct links to **Manage** (`{management_prefix}/events/{event_id}/`) and **Mission Control** (`/mission-control/{event_slug}/`).
 
-## 3. System Health Diagnostics
+### My Events (`/workspace/`)
+Designed for participants and organizers navigating their assigned events:
+- **Event Metadata**: Shows booth count and comma-separated list of configured languages (e.g. `2 booths · English, Spanish`).
+- **Your Roles**: Visual badges displaying your granted roles within the event (e.g. `Event owner`, `Room coordinator`, `Interpreter`).
+- **Action Links**: Contextual links matching your permissions, such as **Event owner** (`/workspace/events/{event_id}/`), **Mission Control** (`/mission-control/{event_slug}/`), or **Enter booth** (`/booth/{event_slug}-{room_id}-{lang}`).
 
-At the top of the dashboard, you will see a critical health indicator for the media server.
+## 3. System Diagnostics & Activity Indicators
 
-- **MediaMTX Reachable (Green)**: The backend portal can successfully communicate with the MediaMTX ingest server. WHIP and WHEP streams will work normally.
-- **MediaMTX Unreachable (Red)**: The portal cannot connect to the media server. **Interpreters will not be able to go live.** If you see this, contact your system administrator to check the Docker container status.
+The main dashboard aggregates platform activity cards at the top:
+- **Platform Stat Cards**: Display total Events, total Booths, and the number of booths **Live now** across the deployment.
+- **Live Now Badge**: Highlights active audio streams in real-time. When booths are broadcasting, the "Live now" counter accents and cards render live status indicators.
+- **Service Diagnostics**: MediaMTX health is continuously tracked by backend status checks (`_check_mediamtx()`). Administrators can verify MediaMTX container status directly via the MediaMTX API (`:9997/v3/paths/list`), service logs, or the `/health` diagnostic endpoints.
 
-## Role Differences in the UI
+## Role-Based Access Scoping
 
-Voxbento strictly enforces what you can see and click based on your role:
+Voxbento enforces role separation at every route:
 
-- **`super_admin`**: Can see the "Users" tab, can click "Add Event", and sees every event on the platform.
-- **`event_owner`**: The "Users" tab is hidden. The "Add Event" button is hidden. You will only see the summary cards for events that you have been explicitly assigned to manage.
+- **Admin**: Full platform visibility. Access to `/admin/*`, user management, and hosting access approval.
+- **Event owner**: Manages their events in `/workspace/*`, creating rooms, booths, API keys, and invite tokens.
+- **Room coordinator**: Scoped operational oversight via `/mission-control/{event_slug}/` for assigned rooms and stages.

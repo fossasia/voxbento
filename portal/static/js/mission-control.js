@@ -12,7 +12,7 @@
 const config = window.MISSION_CONTROL_CONFIG;
 const roomsContainer = document.getElementById('rooms-container');
 
-/** @type {Map<string, {state:object, ws:WebSocket|null, whep:object|null, audioElement:HTMLAudioElement|null, currentVolume:number}>} */
+/** @type {Map<string, {state:object, ws:WebSocket|null, whep:object|null, audioElement:HTMLAudioElement|null, currentVolume:number, pendingFocusId:string}>} */
 const boothMap = new Map();
 
 function init() {
@@ -68,6 +68,7 @@ function init() {
       whep: null,
       audioElement: null,
       currentVolume: 0,
+      pendingFocusId: '',
     });
     renderCard(b.booth_id);
     connectWs(b.booth_id);
@@ -182,8 +183,8 @@ function renderCard(boothId) {
   }
 
   // Interpreters and rows
-  const LIVE_ROLES = new Set(['interpreter', 'coordinator', 'event_admin', 'super_admin']);
-  const interpreters = (s.participants || []).filter(p => LIVE_ROLES.has(p.role));
+  // Everyone who can go live, as decided by the server (portal/roles.py).
+  const interpreters = (s.participants || []).filter((p) => p.can_go_live);
 
   // Broadcast control
   const isWsOpen = entry.ws && entry.ws.readyState === WebSocket.OPEN;
@@ -197,6 +198,15 @@ function renderCard(boothId) {
     btnText = 'Connecting...';
     isDisabled = true;
   }
+
+  const active = document.activeElement;
+  let focusedId = '';
+  if (card.contains(active)) {
+    focusedId = active.id;
+  } else if (active === document.body) {
+    focusedId = entry.pendingFocusId;
+  }
+  entry.pendingFocusId = '';
 
   card.innerHTML = '';
 
@@ -324,6 +334,13 @@ function renderCard(boothId) {
   btn.addEventListener('click', () => {
     setBroadcastLive(boothId, !isLive);
   });
+
+  const focusTarget = focusedId ? document.getElementById(focusedId) : null;
+  if (focusTarget && !focusTarget.disabled) {
+    focusTarget.focus({ preventScroll: true });
+  } else if (focusTarget) {
+    entry.pendingFocusId = focusedId;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -337,5 +354,14 @@ function showToast(msg, type = 'info') {
   document.body.appendChild(t);
   setTimeout(() => t.remove(), 4000);
 }
+
+document.addEventListener('focusin', (e) => {
+  boothMap.forEach((entry, boothId) => {
+    const card = document.getElementById(`mc-card-${boothId}`);
+    if (!card || !card.contains(e.target)) {
+      entry.pendingFocusId = '';
+    }
+  });
+});
 
 document.addEventListener('DOMContentLoaded', init);

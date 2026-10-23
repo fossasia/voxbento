@@ -5,7 +5,14 @@ import logging
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
-from portal.auth import WSAuthError, resolve_booth_role, resolve_ws_auth, ws_bearer_subprotocol
+from portal.auth import (
+    WSAuthError,
+    booth_session_key,
+    is_listener_token,
+    resolve_booth_role,
+    resolve_ws_auth,
+    ws_bearer_subprotocol,
+)
 from portal.globals import booths
 from portal.websockets.manager import (
     Session,
@@ -15,6 +22,7 @@ from portal.websockets.manager import (
     _handle_initiate_handoff,
     _handle_join,
     _handle_leave,
+    _handle_request_publish_ticket,
     _handle_set_active,
     _handle_set_broadcast_unlocked,
     _handle_update_state,
@@ -36,7 +44,7 @@ async def ws_booth(websocket: WebSocket, booth_id: str) -> None:
     except WSAuthError:
         return
 
-    if payload and payload.get("role") == "listener":
+    if is_listener_token(payload):
         await websocket.close(code=4003)
         return
 
@@ -53,6 +61,7 @@ async def ws_booth(websocket: WebSocket, booth_id: str) -> None:
         language=language_name,
         channel_id=f"{booth_id}-audio",
         granted_role=ws_granted_role,
+        session_key=booth_session_key(payload),
     )
     manager.add(websocket, session)
 
@@ -63,6 +72,12 @@ async def ws_booth(websocket: WebSocket, booth_id: str) -> None:
                 data = json.loads(raw)
             except json.JSONDecodeError:
                 await websocket.send_text(json.dumps({"type": "booth:error", "message": "Invalid JSON."}))
+                continue
+
+            if not isinstance(data, dict):
+                await websocket.send_text(
+                    json.dumps({"type": "booth:error", "message": "Message must be a JSON object."})
+                )
                 continue
 
             msg_type = data.get("type", "")
@@ -76,6 +91,8 @@ async def ws_booth(websocket: WebSocket, booth_id: str) -> None:
                 await _handle_set_active(websocket, session, data)
             elif msg_type == "booth:update-state":
                 await _handle_update_state(websocket, session, data)
+            elif msg_type == "booth:request-publish-ticket":
+                await _handle_request_publish_ticket(websocket, session, data)
             elif msg_type == "booth:set-broadcast-unlocked":
                 await _handle_set_broadcast_unlocked(websocket, session, data)
             elif msg_type == "booth:initiate-handoff":

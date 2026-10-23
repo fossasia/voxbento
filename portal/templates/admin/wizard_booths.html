@@ -10,6 +10,8 @@
     <h2>Add language booths</h2>
     <p class="wizard-sub">A booth is one interpretation channel for a language. Add a booth for each language you'll interpret into.</p>
 
+    {% if request.query_params.get('error') == 'duplicate_language' %}<div class="alert alert-danger">That room already has a booth for that language.</div>{% endif %}
+
     {% if rooms %}
     <form method="post" action="{{ management_prefix }}/events/{{ event.id }}/setup/booths">
       <div class="field-row field-row--end">

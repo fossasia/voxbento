@@ -122,6 +122,8 @@ async def test_deepgram_voice_only_used_for_its_language():
 async def test_booths_api_lists_ai_booths_with_human_precedence(ai_room, monkeypatch):
     event, room = ai_room
     monkeypatch.setattr(settings, "public_base_url", "http://localhost:8100")
+    # Open mode: no BOOTH_ACCESS_TOKEN, which the event API allows only in debug.
+    monkeypatch.setattr(settings, "debug", True)
     async with _client() as c:
         resp = await c.get(f"/api/events/{event.slug}/booths")
     assert resp.status_code == 200, resp.text
@@ -137,19 +139,21 @@ async def test_booths_api_lists_ai_booths_with_human_precedence(ai_room, monkeyp
     assert booth["tts_ws_url"] == f"ws://localhost:8100/ws/tts/aicon-{room.id}-ai-de"
 
 
-async def test_no_ai_booths_without_room_tts(ai_room):
+async def test_no_ai_booths_without_room_tts(ai_room, monkeypatch):
     from portal.database import get_session
 
+    monkeypatch.setattr(settings, "debug", True)
     event, room = ai_room
     async with get_session() as s:
         (await s.get(Room, room.id)).floor_tts_enabled = False
     async with _client() as c:
         resp = await c.get(f"/api/events/{event.slug}/booths")
+    assert resp.status_code == 200, resp.text
     assert not [b for b in resp.json()["booths"] if b.get("is_ai")]
 
 
 async def test_listener_page_offers_ai_booths_and_a_listener_token(ai_room):
-    from portal.auth import decode_token
+    from portal.auth import decode_token, is_listener_token
 
     event, room = ai_room
     async with _client() as c:
@@ -161,7 +165,7 @@ async def test_listener_page_offers_ai_booths_and_a_listener_token(ai_room):
     marker = '"listenerToken": "'
     token = resp.text.split(marker, 1)[1].split('"', 1)[0]
     payload = decode_token(token)
-    assert payload["role"] == "listener"
+    assert is_listener_token(payload)
     assert payload["event_slug"] == event.slug
 
 

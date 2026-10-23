@@ -10,23 +10,22 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from portal.ai_booths import excluded_ai_languages
-from portal.auth import require_oauth_scope
-from portal.booth_identity import make_ai_booth_id, make_booth_id, make_mediamtx_path
+from portal.auth import coordinates_room, load_membership_scope, require_oauth_scope
+from portal.booth_identity import make_ai_booth_id, make_booth_id, make_mediamtx_path, validate_language_code
 from portal.database import get_db_session
 from portal.globals import booths
 from portal.models import (
     DBBooth,
-    DeveloperAccount,
     Event,
     EventMembership,
     OAuthAuditLog,
     OAuthClient,
     OAuthToken,
     Room,
-    RoomMembership,
     RoomTranslationLanguage,
 )
 from portal.rate_limit import auth_rate_limiter
+from portal.roles import EVENT_OWNER
 from portal.transcription.constants import ProviderEnum
 from portal.transcription.worker import active_workers, start_transcription_worker, stop_transcription_worker
 from portal.utils import public_ws_url
@@ -35,9 +34,30 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1")
 
+# Maps each EventAPIKeysUpdate field name to its corresponding encrypted
+# attribute on the Event model.  Adding a new provider only requires one
+# new entry here.
+_API_KEY_FIELDS: list[tuple[str, str]] = [
+    ("openai_api_key",             "encrypted_openai_api_key"),
+    ("deepgram_api_key",           "encrypted_deepgram_api_key"),
+    ("nvidia_api_key",             "encrypted_nvidia_api_key"),
+    ("elevenlabs_api_key",         "encrypted_elevenlabs_api_key"),
+    ("translation_openai_api_key", "encrypted_translation_openai_api_key"),
+    ("openrouter_api_key",         "encrypted_openrouter_api_key"),
+    ("gemini_api_key",             "encrypted_gemini_api_key"),
+    ("anthropic_api_key",          "encrypted_anthropic_api_key"),
+    ("groq_api_key",               "encrypted_groq_api_key"),
+]
 
-async def _verify_token_rbac(db: AsyncSession, token: OAuthToken, event: Event, room_id: int | None = None) -> None:
-    """Ensure the OAuth token is valid for this event, AND the underlying user still has RBAC permissions."""
+
+async def _verify_token_rbac(
+    db: AsyncSession, token: OAuthToken, event: Event, room_id: int | None = None, *, manage: bool = False
+) -> None:
+    """Ensure the OAuth token is valid for this event, AND the underlying user still has RBAC permissions.
+
+    manage=True is for creating, changing or deleting rooms and booths, which only Admins and
+    Event owners may do (#757); Room coordinators pass only for live-session and read actions.
+    """
     if token.event_id != event.id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event not found")
 
@@ -51,35 +71,20 @@ async def _verify_token_rbac(db: AsyncSession, token: OAuthToken, event: Event, 
     if client and client.is_confidential and client.status == "active":
         return
 
-    # Check if user is super admin or event owner
+    # Check if user is Admin or event owner
     from portal.models import User
 
     user = await db.get(User, token.user_id)
-    if user and getattr(user, "is_super_admin", False):
+    if user and getattr(user, "is_admin", False):
         return
 
-    # Check Event Owner
-    evt_mem = await db.execute(
-        select(EventMembership).where(
-            EventMembership.user_id == token.user_id,
-            EventMembership.event_id == event.id,
-            EventMembership.role == "event_owner",
-        )
-    )
-    if evt_mem.scalars().first():
+    scope = await load_membership_scope(db, token.user_id)
+    if event.id in scope["owned_event_ids"]:
         return
 
-    # Check Room Coordinator if room is specified
-    if room_id is not None:
-        rm_mem = await db.execute(
-            select(RoomMembership).where(
-                RoomMembership.user_id == token.user_id,
-                RoomMembership.room_id == room_id,
-                RoomMembership.role == "room_coordinator",
-            )
-        )
-        if rm_mem.scalars().first():
-            return
+    # Room coordinators may be given per event, room or booth (#757); the room was checked above.
+    if not manage and room_id is not None and coordinates_room(scope, room_id, event.id):
+        return
 
     raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User lost RBAC access to this resource")
 
@@ -126,7 +131,6 @@ async def get_rooms(
         {
             "id": r.id,
             "display_name": r.display_name,
-            "is_active": r.is_active,
             "created_at": r.created_at.isoformat(),
         }
         for r in rooms
@@ -159,7 +163,7 @@ async def _ensure_event_memberships(
 
     from portal.models import EventMembership, User
 
-    async def _upsert_member(uid: int, role: str = "event_owner") -> None:
+    async def _upsert_member(uid: int, role: str = EVENT_OWNER) -> None:
         try:
             async with db.begin_nested():
                 mem_res = await db.execute(
@@ -192,7 +196,7 @@ async def _ensure_event_memberships(
                 pass
 
     if user_id:
-        await _upsert_member(user_id, "event_owner")
+        await _upsert_member(user_id, EVENT_OWNER)
 
     for email_raw in organizer_emails:
         email = email_raw.strip().lower()
@@ -216,7 +220,7 @@ async def _ensure_event_memberships(
                 user_obj = user_res.scalars().first()
 
         if user_obj:
-            await _upsert_member(user_obj.id, "event_owner")
+            await _upsert_member(user_obj.id, EVENT_OWNER)
 
 
 @router.post("/events/", status_code=status.HTTP_201_CREATED)
@@ -252,7 +256,7 @@ async def create_event(
                         select(EventMembership).where(
                             EventMembership.user_id == token.user_id,
                             EventMembership.event_id == existing_event.id,
-                            EventMembership.role.in_(("event_owner", "super_admin", "owner")),
+                            EventMembership.role == EVENT_OWNER,
                         )
                     )
                 )
@@ -283,17 +287,9 @@ async def create_event(
         db.add(event)
         await db.flush()
 
+        # The organizer becomes owner; the app's developer gets no automatic
+        # access (#757). The organizer can add them as a member if they want help.
         await _ensure_event_memberships(db, event.id, token.user_id, payload.organizer_emails)
-
-        client_res = await db.execute(select(OAuthClient).where(OAuthClient.id == token.client_id))
-        client = client_res.scalars().first()
-        if client:
-            dev_acc_res = await db.execute(
-                select(DeveloperAccount).where(DeveloperAccount.id == client.developer_account_id)
-            )
-            dev_acc = dev_acc_res.scalars().first()
-            if dev_acc and dev_acc.user_id != token.user_id:
-                db.add(EventMembership(user_id=dev_acc.user_id, event_id=event.id, role="support"))
 
         action = "event.created"
         status_code_ret = status.HTTP_201_CREATED
@@ -349,8 +345,8 @@ async def delete_event(
 
 
 class RoomUpsert(BaseModel):
-    name: str | None = None
-    description: str | None = None
+    name: str | None = Field(None, min_length=1, max_length=200)
+    description: str | None = Field(None, max_length=1000)
     enabled: bool | None = None
     # Languages served by a human interpreter booth.
     target_languages: list[str] | None = None
@@ -381,18 +377,18 @@ class RoomUpsert(BaseModel):
 
     @field_validator("target_languages", "ai_languages")
     @classmethod
-    def _iso_639_1_codes(cls, codes: list[str] | None) -> list[str] | None:
+    def check_language_codes(cls, codes: list[str] | None) -> list[str] | None:
         """Normalize to lowercase ISO 639-1 codes, so "DE" can't slip past a human "de" booth."""
         if codes is None:
             return None
-        normalized = []
+        validated: list[str] = []
         for code in codes:
-            code = code.strip().lower()
-            if len(code) != 2 or pycountry.languages.get(alpha_2=code) is None:
-                raise ValueError(f"'{code}' is not an ISO 639-1 language code")
-            if code not in normalized:
-                normalized.append(code)
-        return normalized
+            normalised = validate_language_code(code)
+            if normalised == "floor":
+                raise ValueError("'floor' is not a valid booth language for a room.")
+            if normalised not in validated:
+                validated.append(normalised)
+        return validated
 
 
 def _language_name(code: str) -> str:
@@ -436,7 +432,7 @@ async def upsert_room(
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
 
-    await _verify_token_rbac(db, token, event)
+    await _verify_token_rbac(db, token, event, manage=True)
 
     room_res = await db.execute(
         select(Room).where(Room.event_id == event.id, Room.eventyay_room_id == eventyay_room_id)
@@ -630,7 +626,7 @@ async def delete_room(
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
 
-    await _verify_token_rbac(db, token, event)
+    await _verify_token_rbac(db, token, event, manage=True)
 
     room_res = await db.execute(
         select(Room).where(Room.event_id == event.id, Room.eventyay_room_id == eventyay_room_id)
@@ -676,7 +672,7 @@ async def patch_room_settings(
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
 
-    await _verify_token_rbac(db, token, event, room_id)
+    await _verify_token_rbac(db, token, event, room_id, manage=True)
     return {"status": "success"}
 
 
@@ -749,7 +745,7 @@ async def create_booth(
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
 
-    await _verify_token_rbac(db, token, event, room_id)
+    await _verify_token_rbac(db, token, event, room_id, manage=True)
 
     result = await db.execute(select(DBBooth).where(DBBooth.room_id == room_id, DBBooth.language_code == language_code))
     if result.scalars().first():
@@ -778,7 +774,7 @@ async def delete_booth_endpoint(
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
 
-    await _verify_token_rbac(db, token, event, room_id)
+    await _verify_token_rbac(db, token, event, room_id, manage=True)
 
     result = await db.execute(select(DBBooth).where(DBBooth.room_id == room_id, DBBooth.language_code == language_code, DBBooth.event_id == event.id))
     booth = result.scalars().first()
@@ -942,32 +938,11 @@ async def update_event_api_keys(
 
     await _verify_token_rbac(db, token, event)
 
-    if payload.openai_api_key is not None:
-        event.encrypted_openai_api_key = encrypt_val(payload.openai_api_key) if payload.openai_api_key else None
-    if payload.deepgram_api_key is not None:
-        event.encrypted_deepgram_api_key = encrypt_val(payload.deepgram_api_key) if payload.deepgram_api_key else None
-    if payload.nvidia_api_key is not None:
-        event.encrypted_nvidia_api_key = encrypt_val(payload.nvidia_api_key) if payload.nvidia_api_key else None
-    if payload.elevenlabs_api_key is not None:
-        event.encrypted_elevenlabs_api_key = (
-            encrypt_val(payload.elevenlabs_api_key) if payload.elevenlabs_api_key else None
-        )
-    if payload.translation_openai_api_key is not None:
-        event.encrypted_translation_openai_api_key = (
-            encrypt_val(payload.translation_openai_api_key) if payload.translation_openai_api_key else None
-        )
-    if payload.openrouter_api_key is not None:
-        event.encrypted_openrouter_api_key = (
-            encrypt_val(payload.openrouter_api_key) if payload.openrouter_api_key else None
-        )
-    if payload.gemini_api_key is not None:
-        event.encrypted_gemini_api_key = encrypt_val(payload.gemini_api_key) if payload.gemini_api_key else None
-    if payload.anthropic_api_key is not None:
-        event.encrypted_anthropic_api_key = (
-            encrypt_val(payload.anthropic_api_key) if payload.anthropic_api_key else None
-        )
-    if payload.groq_api_key is not None:
-        event.encrypted_groq_api_key = encrypt_val(payload.groq_api_key) if payload.groq_api_key else None
+    payload_data = payload.model_dump()
+    for payload_field, event_attr in _API_KEY_FIELDS:
+        value = payload_data[payload_field]
+        if value is not None:
+            setattr(event, event_attr, encrypt_val(value) if value else None)
 
     await db.commit()
     return {"status": "ok"}

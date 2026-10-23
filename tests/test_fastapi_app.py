@@ -19,11 +19,13 @@ client = TestClient(app)
 
 
 @pytest.fixture(autouse=True)
-def setup_db():
+def setup_db(monkeypatch):
     import anyio
 
+    from portal.config import settings
     from portal.database import configure, dispose, init_db
 
+    monkeypatch.setattr(settings, "debug", True)
     configure("sqlite+aiosqlite://")
     anyio.run(init_db)
     yield
@@ -43,8 +45,23 @@ def _interpreter_cookie(event_slug: str = "test-event", language_code: str = "en
 
 
 def _admin_user_cookie() -> dict:
-    """Return a cookies dict with a valid is_admin user_token."""
-    tok = create_user_token(user_id=1, email="admin@test.com", is_admin=True)
+    """Return a cookies dict with a valid is_admin user_token.
+
+    Admin powers come from the live user record (#757), so the Admin is created
+    in the test database first.
+    """
+    import anyio
+
+    from portal.database import create_user, get_session, get_user_by_email
+
+    async def admin_id() -> int:
+        async with get_session() as session:
+            user = await get_user_by_email(session, "admin@test.com")
+            if user is None:
+                user = await create_user(session, email="admin@test.com", display_name="Admin", is_admin=True)
+            return user.id
+
+    tok = create_user_token(user_id=anyio.run(admin_id), email="admin@test.com", is_admin=True)
     return {"user_token": tok}
 
 
@@ -126,6 +143,26 @@ def test_token_redactor_covers_websocket_handshakes():
     output = record.getMessage()
     assert "secretjwt123" not in output
     assert "/ws/tts/test-event-1-ai-de?token=[REDACTED]" in output
+
+
+def test_token_redactor_handles_legacy_api_query_credentials():
+    import logging
+
+    from fastapi_app import _UvicornTokenRedactor
+
+    record = logging.LogRecord(
+        name="uvicorn.access",
+        level=logging.INFO,
+        pathname="",
+        lineno=0,
+        msg='GET /api/events/demo/booths?access_token=secretjwt123&room_id=1',
+        args=(),
+        exc_info=None,
+    )
+    _UvicornTokenRedactor().filter(record)
+    output = record.getMessage()
+    assert "secretjwt123" not in output
+    assert "[REDACTED]" in output
 
 
 def test_token_redactor_hides_internal_hook_secret():
@@ -937,6 +974,37 @@ def _ws_join(ws, display_name: str, role: str, language: str, channel_id: str) -
     return joined["participant_id"], state_msg["state"]
 
 
+@pytest.mark.parametrize(
+    ("raw_frame", "expected_error"),
+    [
+        ("[]", "Message must be a JSON object."),
+        ("null", "Message must be a JSON object."),
+        ("0", "Message must be a JSON object."),
+        ("true", "Message must be a JSON object."),
+        ('"hello"', "Message must be a JSON object."),
+        ("{}", "Unknown message type: "),
+        ("{oops", "Invalid JSON."),
+    ],
+)
+def test_ws_invalid_frame_keeps_active_interpreter_connected(raw_frame: str, expected_error: str):
+    booth_id = "shape-test-booth"
+    with client.websocket_connect(f"/ws/booth/{booth_id}", cookies=_ws_auth()) as ws:
+        participant_id, initial_state = _ws_join(ws, "Alice", "interpreter", "English", f"{booth_id}-audio")
+        assert initial_state["active_interpreter_id"] == participant_id
+
+        ws.send_text(raw_frame)
+        assert json.loads(ws.receive_text()) == {"type": "booth:error", "message": expected_error}
+
+        ws.send_text(json.dumps({"type": "booth:chat", "body": "Still connected"}))
+        responses = [json.loads(ws.receive_text()), json.loads(ws.receive_text())]
+        assert {message["type"] for message in responses} == {"booth:chat", "booth:state"}
+        chat = next(message for message in responses if message["type"] == "booth:chat")
+        state = next(message["state"] for message in responses if message["type"] == "booth:state")
+        assert chat["message"]["body"] == "Still connected"
+        assert state["active_interpreter_id"] == participant_id
+        assert [person["participant_id"] for person in state["participants"]] == [participant_id]
+
+
 def test_ws_broadcast_unlock_authorized_user_can_toggle():
     """Authorized coordinator/admin session can toggle broadcast lock."""
     client.post("/api/events/broadcastok/booths", json={"language_code": "en", "room_id": 1, "language": "English"})
@@ -1421,11 +1489,11 @@ def test_interpreter_booth_by_identity_no_role_returns_403():
     assert res.status_code == 403
 
 
-def test_interpreter_booth_admin_user_gets_super_admin_role():
-    """A user with is_admin=True gets super_admin role without needing a membership."""
+def test_interpreter_booth_admin_user_gets_admin_role():
+    """A user with is_admin=True gets the Admin role without needing a membership."""
     res = client.get("/interpreter/myevent/1/en", cookies=_admin_user_cookie())
     assert res.status_code == 200, res.text
-    assert b"data-granted-role='super_admin'" in res.content
+    assert b"data-granted-role='admin'" in res.content
 
 
 def test_full_bootstrap_flow():
@@ -1826,6 +1894,7 @@ def test_strong_secret_passes_production():
         secret_key="a-strong-random-secret-0123456789abcdef",
         jwt_secret="",
         mediamtx_auth_hook_secret="media-hook-secret",
+        booth_access_token="booth-access-secret-0123456789abcdef",
     )
     s.validate_production_secrets()  # must not raise
 
@@ -2136,8 +2205,10 @@ def test_embed_captions_opt_in_websocket_auth():
     token = _embed_listener_token(event_slug="test-event")
     payload = decode_token(token)
 
-    # Verify role and event_slug claims match what resolve_ws_auth expects.
-    assert payload.get("role") == "listener"
+    # Verify the listener kind and event_slug claims match what resolve_ws_auth expects.
+    # Listening is not a role (#757), so the token carries a kind instead.
+    assert payload.get("kind") == "listener"
+    assert payload.get("role") is None
     assert payload.get("event_slug") == "test-event"
 
     # Verify the booth_id produced by make_booth_id satisfies the startswith check.
@@ -2412,6 +2483,57 @@ def test_credentials_for_one_event_cannot_subscribe_to_another_events_tts(monkey
     # The same listener token and member session do open their own event's AI booth.
     assert _ws_close_code(f"{own}?token={listener}") is None
     assert _ws_close_code(own, cookies=_user_cookie()) is None
+
+
+def test_ws_tts_cleanup_on_disconnect(monkeypatch):
+    """A closed TTS socket is dropped from its AI booth's subscriber set."""
+    from portal.auth import create_listener_token
+    from portal.config import settings
+    from portal.websockets.manager import tts_manager
+
+    monkeypatch.setattr(settings, "booth_access_token", "secret-test-token")
+
+    booth_id = "ttstest3-1-ai-fr"
+    token = create_listener_token(event_slug="ttstest3")
+    initial_count = len(tts_manager._rooms.get(booth_id, set()))
+
+    with client.websocket_connect(f"/ws/tts/{booth_id}?token={token}"):
+        assert len(tts_manager._rooms.get(booth_id, set())) == initial_count + 1
+
+    import time
+
+    time.sleep(0.1)  # allow time for cleanup
+    assert len(tts_manager._rooms.get(booth_id, set())) == initial_count
+
+
+def test_ws_tts_registered_user_cookie_needs_event_membership(monkeypatch):
+    """Against real rows: a user_token opens an AI booth only for an event the user belongs to."""
+    import anyio
+
+    from portal.auth import create_user_token
+    from portal.config import settings
+    from portal.database import create_event, create_room, create_user, get_session
+    from portal.models import EventMembership
+
+    monkeypatch.setattr(settings, "booth_access_token", "secret-test-token")
+
+    async def setup():
+        async with get_session() as session:
+            user = await create_user(session, email="owner@example.com", display_name="Owner")
+            ev = await create_event(session, slug="ttstest-auth-user", display_name="TTS Auth User")
+            room = await create_room(session, event_id=ev.id, display_name="Main Room")
+            session.add(EventMembership(user_id=user.id, event_id=ev.id, role="event_owner"))
+            await session.flush()
+            return user.id, room.id
+
+    user_id, room_id = anyio.run(setup)
+    route = f"/ws/tts/ttstest-auth-user-{room_id}-ai-fr"
+
+    outsider = create_user_token(user_id=8888, email="unauth@example.com", is_admin=False)
+    assert _ws_close_code(route, cookies={"user_token": outsider}) == 4003
+
+    member = create_user_token(user_id=user_id, email="owner@example.com", is_admin=False)
+    assert _ws_close_code(route, cookies={"user_token": member}) is None
 
 
 # ── Refactor coverage: missing event, context keys, allowlists, CSP policy ──

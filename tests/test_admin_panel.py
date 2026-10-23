@@ -2,7 +2,7 @@
 
 Covers:
 - Admin sign-in redirect and logout flow
-- require_admin() guard (403 without cookie)
+- require_owner_or_coordinator() guard (403 without cookie)
 - CRUD operations for events, rooms, booths
 - Dashboard with live status
 - Booth detail with WHEP URL and participant roster
@@ -79,6 +79,54 @@ async def seed_event():
             language_name="English",
         )
     return event, room, booth
+
+
+@pytest.fixture
+async def room_scope_events():
+    """Two event rooms with an owner scoped only to the first event."""
+    from portal.database import (
+        create_booth,
+        create_event,
+        create_invite_token,
+        create_room,
+        create_user,
+        get_session,
+        set_booth_membership,
+        set_event_membership,
+        set_room_membership,
+    )
+
+    async with get_session() as s:
+        event_a = await create_event(s, slug="scope-a", display_name="Event A")
+        event_b = await create_event(s, slug="scope-b", display_name="Event B")
+        room_a = await create_room(s, event_id=event_a.id, display_name="A room")
+        room_b = await create_room(s, event_id=event_b.id, display_name="B room")
+        booth_a = await create_booth(
+            s, event_id=event_a.id, room_id=room_a.id, language_code="en", language_name="English"
+        )
+        booth_b = await create_booth(
+            s, event_id=event_b.id, room_id=room_b.id, language_code="fr", language_name="French"
+        )
+        invite_b = await create_invite_token(s, booth_id=booth_b.id, role="interpreter")
+        owner = await create_user(s, email="scope-owner@example.com", display_name="Owner A")
+        member = await create_user(s, email="scope-member@example.com", display_name="Interpreter B")
+        coordinator = await create_user(s, email="scope-coordinator@example.com", display_name="Coordinator A")
+        await set_event_membership(s, user_id=owner.id, event_id=event_a.id, role="event_owner")
+        booth_membership = await set_booth_membership(s, user_id=member.id, booth_id=booth_b.id, role="interpreter")
+        await set_room_membership(s, user_id=coordinator.id, room_id=room_a.id, role="room_coordinator")
+
+        return {
+            "event_a": event_a.id,
+            "event_b": event_b.id,
+            "room_a": room_a.id,
+            "room_b": room_b.id,
+            "booth_a": booth_a.id,
+            "booth_b": booth_b.id,
+            "invite_b": invite_b.token,
+            "booth_membership_b": booth_membership.id,
+            "owner_cookie": {"user_token": create_user_token(user_id=owner.id, email=owner.email)},
+            "coordinator_cookie": {"user_token": create_user_token(user_id=coordinator.id, email=coordinator.email)},
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -185,7 +233,8 @@ class TestAdminLogin:
                 follow_redirects=False,
             )
         assert response.status_code == 403
-        assert "Please verify your email address first." in response.text
+        assert "Invalid email or password." in response.text
+        assert "Please verify your email address first." not in response.text
         assert "user_token" not in response.cookies
 
     @pytest.mark.anyio
@@ -402,8 +451,8 @@ class TestStaleAdminToken:
         assert resp.status_code == 403
 
     @pytest.mark.anyio
-    async def test_demoted_admin_token_denied_on_super_admin_route(self, setup_db):
-        """Super-admin-only routes (e.g. /admin/users/) also honour the demotion."""
+    async def test_demoted_admin_token_denied_on_admin_route(self, setup_db):
+        """Admin-only routes (e.g. /admin/users/) also honour the demotion."""
         user = await self._make_admin()
         cookie = {"user_token": create_user_token(user_id=user.id, email=user.email, is_admin=True)}
 
@@ -420,8 +469,8 @@ class TestStaleAdminToken:
         assert resp.status_code == 403
 
     @pytest.mark.anyio
-    async def test_event_owner_denied_on_super_admin_route(self, seed_event):
-        """A normal event owner cannot reach super-admin-only routes (e.g. /admin/users/)."""
+    async def test_event_owner_denied_on_admin_route(self, seed_event):
+        """A normal event owner cannot reach Admin-only routes (e.g. /admin/users/)."""
         event, _, _ = seed_event
         from portal.database import create_user, get_session, set_event_membership
 
@@ -975,7 +1024,7 @@ class TestEventCRUD:
 
     @pytest.mark.anyio
     async def test_delete_event_rejects_a_room_coordinator(self, admin_cookie, seed_event):
-        """require_admin admits a room_coordinator for the whole event, and deleting one
+        """require_owner_or_coordinator admits a room_coordinator for the whole event, and deleting one
         now destroys transcripts and OAuth grant state. Match the API-key routes and
         require an event owner."""
         from portal.auth import create_user_token
@@ -1087,7 +1136,7 @@ class TestEventCRUD:
 
 class TestBreadcrumbs:
     @pytest.mark.anyio
-    @pytest.mark.parametrize("path", ["/admin/events/", "/admin/users/"])
+    @pytest.mark.parametrize("path", ["/admin/events/"])
     async def test_breadcrumb_marks_current_page_and_uses_slash_separator(self, admin_cookie, path):
         async with _client() as c:
             resp = await c.get(path, cookies=admin_cookie)
@@ -1218,6 +1267,173 @@ class TestRoomCRUD:
         assert b'name="audio_delay_ms"' in resp.content
 
     @pytest.mark.anyio
+    async def test_update_room_ai_interpretation_settings(self, admin_cookie, seed_event):
+        event, room, _ = seed_event
+        async with _client() as c:
+            resp = await c.post(
+                f"/admin/events/{event.id}/rooms/{room.id}/edit",
+                data={
+                    "form_section": "translation",
+                    "floor_translation_provider": "openai",
+                    "floor_translation_model": "gpt-4o-mini",
+                    "floor_ai_interpreter_persona": "Technical conference interpreter",
+                    "floor_ai_interpretation_style": "Formal and concise",
+                    "floor_ai_vocabulary_enabled": "on",
+                },
+                cookies=admin_cookie,
+                follow_redirects=False,
+            )
+        assert resp.status_code == 303
+
+        from portal.database import get_room_by_id, get_session
+
+        async with get_session() as session:
+            updated = await get_room_by_id(session, room.id)
+            assert updated.floor_ai_interpreter_persona == "Technical conference interpreter"
+            assert updated.floor_ai_interpretation_style == "Formal and concise"
+            assert updated.floor_ai_vocabulary_enabled is True
+
+    @pytest.mark.anyio
+    async def test_room_vocabulary_upload_preview_and_export(self, admin_cookie, seed_event):
+        event, room, _ = seed_event
+        csv_content = (
+            "source_term,target_language,target_term,description,case_sensitive,match_type,priority\n"
+            "Voxbento,all,Voxbento,Product name,true,exact,100\n"
+            "WebRTC,de,WebRTC,Protocol,false,phrase,90\n"
+            "US,de,US,Country,true,exact,80\n"
+            "us,de,uns,Pronoun,true,exact,70\n"
+        )
+        async with _client() as c:
+            upload = await c.post(
+                f"/admin/events/{event.id}/rooms/{room.id}/ai-vocabulary/upload",
+                data={"import_mode": "append"},
+                files={"vocabulary_file": ("glossary.csv", csv_content, "text/csv")},
+                cookies=admin_cookie,
+                follow_redirects=False,
+            )
+            assert upload.status_code == 303
+            assert "vocab_imported=4" in upload.headers["location"]
+
+            page = await c.get(upload.headers["location"], cookies=admin_cookie)
+            assert page.status_code == 200
+            assert b"Imported 4 rows" in page.content
+            assert b"Voxbento" in page.content
+            assert b"WebRTC" in page.content
+
+            overlapping_upload = await c.post(
+                f"/admin/events/{event.id}/rooms/{room.id}/ai-vocabulary/upload",
+                data={"import_mode": "append"},
+                files={
+                    "vocabulary_file": (
+                        "overlap.csv",
+                        "source_term,target_language,target_term,case_sensitive\nuS,de,wir,false\n",
+                        "text/csv",
+                    )
+                },
+                cookies=admin_cookie,
+                follow_redirects=False,
+            )
+            assert overlapping_upload.status_code == 303
+            assert "vocab_imported=0" in overlapping_upload.headers["location"]
+            assert "Existing+duplicate" in overlapping_upload.headers["location"]
+
+            export = await c.get(
+                f"/admin/events/{event.id}/rooms/{room.id}/ai-vocabulary/export",
+                cookies=admin_cookie,
+            )
+        assert export.status_code == 200
+        assert export.headers["content-type"].startswith("text/csv")
+        assert "Voxbento,all,Voxbento" in export.text
+        assert "US,de,US" in export.text
+        assert "us,de,uns" in export.text
+
+    @pytest.mark.anyio
+    async def test_room_vocabulary_upload_rejects_cross_event_room(self, admin_cookie, seed_event):
+        """A room belonging to a different event must not accept this event's vocabulary."""
+        from portal.database import create_event, create_room, get_session
+
+        event, _, _ = seed_event
+        async with get_session() as s:
+            other_event = await create_event(s, slug="othercon", display_name="OtherCon")
+            other_room = await create_room(s, event_id=other_event.id, display_name="Other Hall")
+
+        async with _client() as c:
+            upload = await c.post(
+                f"/admin/events/{event.id}/rooms/{other_room.id}/ai-vocabulary/upload",
+                data={"import_mode": "append"},
+                files={
+                    "vocabulary_file": (
+                        "x.csv",
+                        "source_term,target_language,target_term\nVoxbento,all,Voxbento\n",
+                        "text/csv",
+                    )
+                },
+                cookies=admin_cookie,
+                follow_redirects=False,
+            )
+        assert upload.status_code == 404
+
+    @pytest.mark.anyio
+    async def test_vocabulary_export_delete_reject_cross_event_room(self, admin_cookie, seed_event):
+        """Export and delete must 404 for a room belonging to another event."""
+        from portal.database import create_event, create_room, get_session
+
+        event, _, _ = seed_event
+        async with get_session() as s:
+            other_event = await create_event(s, slug="xcon", display_name="XCon")
+            other_room = await create_room(s, event_id=other_event.id, display_name="X Hall")
+
+        async with _client() as c:
+            export = await c.get(
+                f"/admin/events/{event.id}/rooms/{other_room.id}/ai-vocabulary/export",
+                cookies=admin_cookie,
+            )
+            delete = await c.post(
+                f"/admin/events/{event.id}/rooms/{other_room.id}/ai-vocabulary/delete",
+                data={"entry_id": "all"},
+                cookies=admin_cookie,
+                follow_redirects=False,
+            )
+        assert export.status_code == 404
+        assert delete.status_code == 404
+
+    @pytest.mark.anyio
+    async def test_validate_vocabulary_scope_enforces_hierarchy(self, seed_event):
+        """The scope validator rejects a booth that belongs to another room/event."""
+        from portal.database import create_booth, create_event, create_room, get_session
+        from portal.translations.vocabulary import VocabularyScopeError, validate_vocabulary_scope
+
+        event, room, booth = seed_event
+        async with get_session() as s:
+            other_event = await create_event(s, slug="othercon2", display_name="OtherCon2")
+            other_room = await create_room(s, event_id=other_event.id, display_name="Other Hall")
+            other_booth = await create_booth(
+                s, event_id=other_event.id, room_id=other_room.id, language_code="fr", language_name="French"
+            )
+
+        async with get_session() as s:
+            await validate_vocabulary_scope(s, event.id, room_id=room.id, booth_id=booth.id)
+            with pytest.raises(VocabularyScopeError):
+                await validate_vocabulary_scope(s, event.id, room_id=other_room.id)
+            with pytest.raises(VocabularyScopeError):
+                await validate_vocabulary_scope(s, event.id, room_id=room.id, booth_id=other_booth.id)
+
+    @pytest.mark.anyio
+    async def test_room_vocabulary_upload_reports_invalid_rows(self, admin_cookie, seed_event):
+        event, room, _ = seed_event
+        csv_content = "source_term,target_language,target_term,match_type\nBad,de,Term,regex\n"
+        async with _client() as c:
+            upload = await c.post(
+                f"/admin/events/{event.id}/rooms/{room.id}/ai-vocabulary/upload",
+                files={"vocabulary_file": ("glossary.csv", csv_content, "text/csv")},
+                cookies=admin_cookie,
+                follow_redirects=False,
+            )
+        assert upload.status_code == 303
+        assert "vocab_imported=0" in upload.headers["location"]
+        assert "unsupported+match_type" in upload.headers["location"]
+
+    @pytest.mark.anyio
     async def test_update_room_audio_delay(self, admin_cookie, seed_event):
         event, room, _ = seed_event
         async with _client() as c:
@@ -1309,6 +1525,102 @@ class TestRoomCRUD:
             )
         assert resp.status_code == 303
 
+    @pytest.mark.anyio
+    async def test_delete_room_rejects_cross_event_target_without_deleting_dependents(self, room_scope_events):
+        from portal.database import get_room_by_id, get_session
+        from portal.models import BoothMembership, DBBooth, InviteToken
+
+        scope = room_scope_events
+        async with _client() as c:
+            resp = await c.post(
+                f"/workspace/events/{scope['event_a']}/rooms/{scope['room_b']}/delete",
+                cookies=scope["owner_cookie"],
+                follow_redirects=False,
+            )
+        assert resp.status_code == 404
+        async with get_session() as s:
+            assert await get_room_by_id(s, scope["room_b"]) is not None
+            assert await s.get(DBBooth, scope["booth_b"]) is not None
+            assert await s.get(InviteToken, scope["invite_b"]) is not None
+            assert await s.get(BoothMembership, scope["booth_membership_b"]) is not None
+
+    @pytest.mark.anyio
+    async def test_delete_room_allows_own_event_and_preserves_other_event(self, room_scope_events):
+        from portal.database import get_room_by_id, get_session
+        from portal.models import DBBooth
+
+        scope = room_scope_events
+        async with _client() as c:
+            resp = await c.post(
+                f"/workspace/events/{scope['event_a']}/rooms/{scope['room_a']}/delete",
+                cookies=scope["owner_cookie"],
+                follow_redirects=False,
+            )
+        assert resp.status_code == 303
+        assert resp.headers["location"] == f"/workspace/events/{scope['event_a']}/rooms/"
+        async with get_session() as s:
+            assert await get_room_by_id(s, scope["room_a"]) is None
+            assert await s.get(DBBooth, scope["booth_a"]) is None
+            assert await get_room_by_id(s, scope["room_b"]) is not None
+            assert await s.get(DBBooth, scope["booth_b"]) is not None
+
+    @pytest.mark.anyio
+    async def test_delete_room_rejects_foreign_event_owner(self, room_scope_events):
+        from portal.database import get_room_by_id, get_session
+
+        scope = room_scope_events
+        async with _client() as c:
+            resp = await c.post(
+                f"/workspace/events/{scope['event_b']}/rooms/{scope['room_b']}/delete",
+                cookies=scope["owner_cookie"],
+                follow_redirects=False,
+            )
+        assert resp.status_code == 403
+        async with get_session() as s:
+            assert await get_room_by_id(s, scope["room_b"]) is not None
+
+    @pytest.mark.anyio
+    async def test_delete_room_returns_404_for_nonexistent_room(self, room_scope_events):
+        scope = room_scope_events
+        async with _client() as c:
+            resp = await c.post(
+                f"/workspace/events/{scope['event_a']}/rooms/99999/delete",
+                cookies=scope["owner_cookie"],
+                follow_redirects=False,
+            )
+        assert resp.status_code == 404
+
+    @pytest.mark.anyio
+    async def test_delete_room_rejects_admin_event_mismatch(self, admin_cookie, room_scope_events):
+        from portal.database import get_room_by_id, get_session
+
+        scope = room_scope_events
+        async with _client() as c:
+            resp = await c.post(
+                f"/admin/events/{scope['event_a']}/rooms/{scope['room_b']}/delete",
+                cookies=admin_cookie,
+                follow_redirects=False,
+            )
+        assert resp.status_code == 404
+        async with get_session() as s:
+            assert await get_room_by_id(s, scope["room_b"]) is not None
+
+    @pytest.mark.anyio
+    async def test_room_coordinator_cannot_delete_room_on_legacy_path(self, room_scope_events):
+        # Managing rooms is an Event owner permission (#757), on /admin/ paths too.
+        from portal.database import get_room_by_id, get_session
+
+        scope = room_scope_events
+        async with _client() as c:
+            resp = await c.post(
+                f"/admin/events/{scope['event_a']}/rooms/{scope['room_a']}/delete",
+                cookies=scope["coordinator_cookie"],
+                follow_redirects=False,
+            )
+        assert resp.status_code == 403
+        async with get_session() as s:
+            assert await get_room_by_id(s, scope["room_a"]) is not None
+
 
 # ---------------------------------------------------------------------------
 # Booth CRUD
@@ -1346,6 +1658,87 @@ class TestBoothCRUD:
         assert b"French" in resp.content
 
     @pytest.mark.anyio
+    async def test_create_duplicate_booth_shows_error(self, admin_cookie, seed_event):
+        event, room, _ = seed_event
+        async with _client() as c:
+            resp = await c.post(
+                f"/admin/events/{event.id}/rooms/{room.id}/booths/",
+                data={"language_code": "en", "language_name": "English"},
+                cookies=admin_cookie,
+                follow_redirects=False,
+            )
+            assert resp.status_code == 303
+            assert resp.headers["location"].endswith("/booths/?error=duplicate_language")
+            page = await c.get(resp.headers["location"], cookies=admin_cookie)
+        assert "Main Hall already has a booth for that language." in page.text
+
+    @pytest.mark.anyio
+    async def test_setup_wizard_duplicate_booth_shows_error(self, admin_cookie, seed_event):
+        event, room, _ = seed_event
+        async with _client() as c:
+            resp = await c.post(
+                f"/admin/events/{event.id}/setup/booths",
+                data={"room_id": str(room.id), "language_code": "en"},
+                cookies=admin_cookie,
+                follow_redirects=False,
+            )
+            assert resp.status_code == 303
+            assert resp.headers["location"].endswith(f"/setup/booths?room_id={room.id}&error=duplicate_language")
+            page = await c.get(resp.headers["location"], cookies=admin_cookie)
+        assert "That room already has a booth for that language." in page.text
+
+    @pytest.mark.parametrize("wizard", [False, True])
+    @pytest.mark.anyio
+    async def test_duplicate_booth_inserted_concurrently_shows_error(
+        self, admin_cookie, seed_event, monkeypatch, wizard
+    ):
+        from portal.routers import admin
+
+        event, room, _ = seed_event
+        real_check = admin._room_has_booth_language
+        calls = []
+
+        async def check_after_concurrent_insert(session, room_id, language_code):
+            calls.append(room_id)
+            if len(calls) == 1:
+                return False
+            return await real_check(session, room_id, language_code)
+
+        monkeypatch.setattr(admin, "_room_has_booth_language", check_after_concurrent_insert)
+        if wizard:
+            url = f"/admin/events/{event.id}/setup/booths"
+            data = {"room_id": str(room.id), "language_code": "en"}
+        else:
+            url = f"/admin/events/{event.id}/rooms/{room.id}/booths/"
+            data = {"language_code": "en", "language_name": "English"}
+        async with _client() as c:
+            resp = await c.post(url, data=data, cookies=admin_cookie, follow_redirects=False)
+        assert resp.status_code == 303
+        assert "error=duplicate_language" in resp.headers["location"]
+        assert len(calls) == 2
+
+    @pytest.mark.anyio
+    async def test_create_booth_in_missing_room_is_not_reported_as_duplicate(self, admin_cookie, seed_event):
+        event, _, _ = seed_event
+        async with _client() as c:
+            booths_page = await c.post(
+                f"/admin/events/{event.id}/rooms/9999/booths/",
+                data={"language_code": "en", "language_name": "English"},
+                cookies=admin_cookie,
+                follow_redirects=False,
+            )
+            wizard = await c.post(
+                f"/admin/events/{event.id}/setup/booths",
+                data={"room_id": "9999", "language_code": "en"},
+                cookies=admin_cookie,
+                follow_redirects=False,
+            )
+        # A room that isn't part of the event is not found (#757), never reported as a duplicate.
+        assert booths_page.status_code == 404
+        assert wizard.status_code == 303
+        assert "duplicate_language" not in wizard.headers["location"]
+
+    @pytest.mark.anyio
     async def test_booth_detail(self, admin_cookie, seed_event):
         event, room, booth = seed_event
         async with _client() as c:
@@ -1378,7 +1771,8 @@ class TestBoothCRUD:
         assert b"testcon/1/en" in resp.content
 
     @pytest.mark.anyio
-    async def test_booth_detail_shows_invite_tokens(self, admin_cookie, seed_event):
+    async def test_team_page_shows_booth_invite_links(self, admin_cookie, seed_event):
+        # Invite links moved from the booth page to the event's Team page (#757).
         event, room, booth = seed_event
         from portal.database import create_invite_token, get_session
 
@@ -1386,12 +1780,15 @@ class TestBoothCRUD:
             await create_invite_token(s, booth_id=booth.id, role="interpreter", label="Alice")
 
         async with _client() as c:
-            resp = await c.get(
+            booth_page = await c.get(
                 f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/",
                 cookies=admin_cookie,
             )
-        assert b"Alice" in resp.content
-        assert b"interpreter" in resp.content.lower()
+            team_page = await c.get(f"/admin/events/{event.id}/team/", cookies=admin_cookie)
+        assert b"Alice" not in booth_page.content
+        assert b"/team/" in booth_page.content
+        assert b"Alice" in team_page.content
+        assert b"Interpreter" in team_page.content
 
     @pytest.mark.anyio
     async def test_delete_booth(self, admin_cookie, seed_event):
@@ -1678,6 +2075,12 @@ class TestAPIKeyCRUD:
             # Revoke key
             res_del = await c.delete(f"/workspace/api/events/{event_id}/api-keys/{key_id}")
             assert res_del.status_code == 200
+            assert res_del.json() == {"success": True}
+
+            # Repeated revoke of the same key returns 404
+            res_del_again = await c.delete(f"/workspace/api/events/{event_id}/api-keys/{key_id}")
+            assert res_del_again.status_code == 404
+            assert res_del_again.json()["detail"] == "API Key not found or already revoked"
 
             # List keys (should be empty again)
             res = await c.get(f"/workspace/api/events/{event_id}/api-keys")
@@ -1688,6 +2091,44 @@ class TestAPIKeyCRUD:
             res_remake = await c.post(f"/workspace/api/events/{event_id}/api-keys", json={"name": "Integration Key"})
             assert res_remake.status_code == 200
             assert res_remake.json()["name"] == "Integration Key"
+
+    @pytest.mark.anyio
+    async def test_concurrent_api_key_revocation(self, setup_db):
+        import asyncio
+
+        from portal.auth import create_user_token
+        from portal.database import create_event, create_user, get_session, set_event_membership
+
+        async with get_session() as session:
+            event = await create_event(session, slug="event-concur-api", display_name="Event Concur API")
+            user = await create_user(session, email="concuradmin@example.com", display_name="Concur Admin")
+            await set_event_membership(session, user_id=user.id, event_id=event.id, role="event_owner")
+            event_id = event.id
+            user_id = user.id
+            user_email = user.email
+
+        token = create_user_token(user_id=user_id, email=user_email)
+
+        async with _client() as c:
+            c.cookies.set("user_token", token)
+
+            # Create an active key
+            res = await c.post(f"/workspace/api/events/{event_id}/api-keys", json={"name": "Race Key"})
+            assert res.status_code == 200
+            key_id = res.json()["id"]
+
+            # Overlapping concurrent revoke requests
+            req1 = c.delete(f"/workspace/api/events/{event_id}/api-keys/{key_id}")
+            req2 = c.delete(f"/workspace/api/events/{event_id}/api-keys/{key_id}")
+            res1, res2 = await asyncio.gather(req1, req2)
+
+            status_codes = sorted([res1.status_code, res2.status_code])
+            assert status_codes == [200, 404]
+
+            success_res = res1 if res1.status_code == 200 else res2
+            error_res = res1 if res1.status_code == 404 else res2
+            assert success_res.json() == {"success": True}
+            assert error_res.json()["detail"] == "API Key not found or already revoked"
 
     @pytest.mark.anyio
     async def test_hmac_sha256_hashing(self, setup_db):
@@ -1979,6 +2420,21 @@ async def test_user_list_explicit_ascending_sort_still_works(admin_cookie):
 
 
 @pytest.mark.anyio
+async def test_user_list_sort_links_encode_the_search_term(admin_cookie):
+    from portal.database import create_user, get_session
+
+    async with get_session() as s:
+        await create_user(s, email="rnd@example.com", display_name="Team %26 a&b# R&D")
+
+    async with _client() as c:
+        resp = await c.get("/admin/users/", params={"search": "%26 a&b#"}, cookies=admin_cookie)
+
+    assert resp.status_code == 200
+    assert 'href="?sort_by=email&sort_order=asc&search=%2526%20a%26b%23&limit=' in resp.text
+    assert "&search=%26 a&amp;b#" not in resp.text
+
+
+@pytest.mark.anyio
 async def test_user_list_only_marks_the_active_sort_column(admin_cookie):
     import re
 
@@ -2051,7 +2507,7 @@ async def test_user_list_badge_shows_total_across_pages(admin_cookie):
 
     assert resp.status_code == 200
     # 3 seeded users plus the fixture's own administrator row.
-    assert '<span class="badge">Total: 4 users</span>' in resp.text
+    assert '<span class="ul-count">4 users</span>' in resp.text
     assert "displayed" not in resp.text
 
 
@@ -2067,7 +2523,7 @@ async def test_user_list_badge_uses_singular_for_one_user(admin_cookie):
 
     assert resp.status_code == 200
     # The fixture's administrator row plus the one seeded user: plural "users".
-    assert '<span class="badge">Total: 2 users</span>' in resp.text
+    assert '<span class="ul-count">2 users</span>' in resp.text
 
 
 @pytest.mark.anyio
@@ -2128,7 +2584,7 @@ async def test_admin_pages_have_a_toast_live_region(admin_cookie, seed_event):
     "path",
     [
         "/admin/events/{event}/",
-        "/admin/events/{event}/members/",
+        "/admin/events/{event}/team/",
         "/admin/events/{event}/api-settings/",
         "/admin/events/{event}/rooms/{room}/booths/{booth}/",
         "/admin/events/{event}/rooms/{room}/",

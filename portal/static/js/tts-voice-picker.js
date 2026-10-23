@@ -23,8 +23,8 @@ export function initTtsVoicePicker() {
     const provider = providerSelect.value;
     const currentVoice = voiceSelect.dataset.currentVoice || '';
 
-    if (helpDeepgram) helpDeepgram.style.display = provider === 'deepgram' ? 'block' : 'none';
-    if (helpSupertonic) helpSupertonic.style.display = provider === 'deepgram' ? 'none' : 'block';
+    if (helpDeepgram) helpDeepgram.hidden = provider !== 'deepgram';
+    if (helpSupertonic) helpSupertonic.hidden = provider === 'deepgram';
 
     const auto = document.createElement('option');
     auto.value = '';

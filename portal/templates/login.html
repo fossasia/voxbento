@@ -52,7 +52,7 @@
     </div>
 
     <div class="login-footer">
-      <span>Don't have an account? <a href="/register">Register</a></span>
+      <span>Don't have an account? <a id="register-link" href="/register">Register</a></span>
       <a href="/">← Back to Portal Home</a>
     </div>
   </div>
@@ -111,26 +111,15 @@ document.addEventListener("DOMContentLoaded", () => {
         return;
       }
 
-      if (!data.exists) {
-        // Redirect to register
-        window.location.href = `/register?email=${encodeURIComponent(currentEmail)}`;
-        return;
-      }
-
-      // User exists, show login methods
+       // Always show the same authentication options. Any legacy response
+       // fields are constant compatibility sentinels, not account state.
       emailForm.classList.add("hidden");
       loginMethods.classList.remove("hidden");
       userEmailDisplay.textContent = currentEmail;
       passEmailInput.value = currentEmail;
-
-      if (data.has_password) {
-        passwordForm.classList.remove("hidden");
-        magicDivider.classList.remove("hidden");
-        document.getElementById("password").focus();
-      } else {
-        // Auto trigger magic link sending for passwordless user
-        magicLinkBtn.click();
-      }
+      passwordForm.classList.remove("hidden");
+      magicDivider.classList.remove("hidden");
+      document.getElementById("password").focus();
 
     } catch (err) {
       showError("Failed to connect to server");

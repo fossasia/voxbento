@@ -7,6 +7,7 @@ on:
     types: [completed]
 
 permissions:
+  contents: read
   pull-requests: write
   issues: write
 
@@ -14,8 +15,7 @@ jobs:
   post-meme:
     if: >-
       ${{ github.event.workflow_run.conclusion == 'failure' &&
-          github.event.workflow_run.event == 'pull_request' &&
-          github.event.workflow_run.pull_requests[0] != null }}
+          github.event.workflow_run.event == 'pull_request' }}
     runs-on: ubuntu-latest
     steps:
       - name: Find PR linked to the failed run
@@ -23,12 +23,30 @@ jobs:
         uses: actions/github-script@v9
         with:
           script: |
-            const prs = context.payload.workflow_run.pull_requests ?? [];
-            if (prs.length === 0) {
-              core.setOutput('pr_number', '');
+            const run = context.payload.workflow_run;
+            const prs = run.pull_requests ?? [];
+            if (prs.length > 0 && prs[0]?.number) {
+              core.setOutput('pr_number', String(prs[0].number));
               return;
             }
-            core.setOutput('pr_number', String(prs[0].number));
+
+            // For PRs from forks, workflow_run.pull_requests is empty.
+            // Look up the pull request using head_sha.
+            const headSha = run.head_sha;
+            if (headSha) {
+              const { data: associatedPrs } = await github.rest.repos.listPullRequestsAssociatedWithCommit({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                commit_sha: headSha,
+              });
+              const pr = associatedPrs.find((p) => p.state === 'open') ?? associatedPrs[0];
+              if (pr?.number) {
+                core.setOutput('pr_number', String(pr.number));
+                return;
+              }
+            }
+
+            core.setOutput('pr_number', '');
 
       - name: Post an encouraging build-failure comment
         if: steps.get-pr.outputs.pr_number != ''

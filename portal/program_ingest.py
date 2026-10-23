@@ -27,10 +27,12 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from portal import program_relay
 from portal.booth_identity import make_booth_id, make_mediamtx_path
+from portal.booth_publish import authorize_booth_publish
 from portal.config import settings
 from portal.database import get_session
 from portal.globals import get_http_client
 from portal.models import Event, Room
+from portal.outage_log import OutageLog
 from portal.transcription.process import audio_progress
 from portal.transcription.providers.base import ProviderConfig, ProviderEnum, get_api_key
 from portal.transcription.worker import start_transcription_worker, stop_transcription_worker
@@ -118,6 +120,8 @@ class IngestHealth:
 
 health: dict[int, IngestHealth] = {}
 failures: OrderedDict[str, tuple[float, int]] = OrderedDict()
+path_list_outage = OutageLog(logger, "program_ingest path_list_unavailable")
+database_outage = OutageLog(logger, "program_ingest database_unavailable")
 PROGRAM_SECRET_KDF_ROUNDS = 120_000
 
 
@@ -232,18 +236,21 @@ async def authorize_publish(data: MediaAuth) -> None:
     """Only called by MediaMTX on the private network. Never log request data."""
     if data.action != "publish":
         raise HTTPException(403, "Unsupported action")
-    # Preserve legacy interpreter publishing. Floor-like spellings fail closed
-    # instead of falling through to legacy authorization.
+    # Floor-like spellings fail closed instead of falling through to the
+    # interpreter booth check.
     trimmed_path = data.path.rstrip("/")
     final_component = trimmed_path.rsplit("/", 1)[-1].casefold()
-    if final_component == "floor":
-        if data.path.endswith("/") or not data.path.endswith("/floor"):
-            raise HTTPException(403, "Canonical floor path required")
-    else:
-        return
+    if final_component == "floor" and (data.path.endswith("/") or not data.path.endswith("/floor")):
+        raise HTTPException(403, "Canonical floor path required")
     start, count = failures.get(data.ip, (0, 0))
     if count >= 10 and time.monotonic() - start < 60:
         raise HTTPException(429, "Publish authorization failed")
+    if final_component != "floor":
+        # Interpreter booths publish from the browser only, with a single-use
+        # ticket issued to the active interpreter over the booth WebSocket.
+        if data.protocol != "webrtc" or not await authorize_booth_publish(data.path, data.token):
+            deny(data.ip)
+        return
     match = FLOOR_PATH.fullmatch(data.path)
     if not match:
         deny(data.ip)
@@ -734,8 +741,10 @@ async def reconcile_once() -> None:
                 "Media control unavailable; retrying automatically.",
             )
             current.ingest_state, current.ingest_reason = current.state, current.reason
-        logger.warning("program_ingest path_list_unavailable")
+        path_list_outage.failed()
         return
+    if ids:
+        path_list_outage.recovered()
     wanted: dict[int, tuple[str, str]] = {}
     for room_id in ids:
         try:
@@ -771,5 +780,7 @@ async def reconcile_loop() -> None:
         try:
             await reconcile_once()
         except SQLAlchemyError:
-            logger.warning("program_ingest database_unavailable")
+            database_outage.failed()
+        else:
+            database_outage.recovered()
         await asyncio.sleep(2)
