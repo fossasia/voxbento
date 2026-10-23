@@ -299,6 +299,8 @@ The reconciler reads one MediaMTX path snapshot per tick, and per-room ownership
 locks keep an unavailable room from delaying authorization for other rooms.
 Credential revocation commits before media cleanup; if cleanup is temporarily
 unavailable, the old token stays invalid while reconciliation retries the kick.
+While a dependency stays down, the reconcilers log the outage once, remind every
+5 minutes and log its recovery, rather than repeating a warning on every 2 s retry.
 Media never passes through FastAPI. Only one floor source may own a room.
 
 The existing FFmpeg/STT/aggregator/storage/translation/TTS chain is reused. Program

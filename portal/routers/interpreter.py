@@ -5,16 +5,22 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request, status
 from fastapi.templating import Jinja2Templates
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import joinedload
 
 from portal.auth import get_booth_sessions, resolve_booth_role
 from portal.booth_identity import make_booth_id, make_mediamtx_path
 from portal.config import settings
-from portal.database import get_booth_by_id, get_session, list_booth_memberships_for_user
+from portal.database import (
+    get_booth_by_id,
+    get_session,
+    list_booth_memberships_for_user,
+    list_memberships_for_user,
+    list_room_memberships_for_user,
+)
 from portal.globals import _JS_CACHE_BUST, asset_version_context, booths
 from portal.models import DBBooth, Event
-from portal.roles import INTERPRETER, ROLE_RANK, can_go_live, can_set_active, role_label
+from portal.roles import INTERPRETER, ROLE_RANK, can_go_live, can_set_active, highest_role, role_label
 from portal.utils import _ensure_mediamtx_path, _make_jitsi_url, safe_redirect
 
 router = APIRouter()
@@ -42,21 +48,75 @@ async def interpreter_landing_page(request: Request) -> Any:
             uid = int(user_sess["sub"])
             async with get_session() as session:
                 bms = await list_booth_memberships_for_user(session, uid)
+                rms = await list_room_memberships_for_user(session, uid)
+                ems = await list_memberships_for_user(session, uid)
+
+                booth_roles: dict[int, str] = {}
                 for bm in bms:
-                    bid = make_booth_id(bm.booth.event.slug, bm.booth.room_id, bm.booth.language_code)
-                    mem_booth = booths.get_booth_sync(bid)
-                    is_live = mem_booth is not None and mem_booth.ingest_status == "connected"
-                    booths_by_id[bid] = {
-                        "booth_id": bid,
-                        "is_live": is_live,
-                        "event_name": bm.booth.event.display_name,
-                        "language_name": bm.booth.language_name,
-                        "room_name": bm.booth.room.display_name if bm.booth.room else "",
-                        "room_id": bm.booth.room_id,
-                        "event_slug": bm.booth.event.slug,
-                        "language_code": bm.booth.language_code,
-                        "role": bm.role,
-                    }
+                    if bm.booth and bm.booth.event and bm.booth.event.deleted_at is None and can_go_live(bm.role):
+                        prev = booth_roles.get(bm.booth_id)
+                        if prev is None or ROLE_RANK.get(bm.role, 0) > ROLE_RANK.get(prev, 0):
+                            booth_roles[bm.booth_id] = bm.role
+
+                room_roles: dict[int, str] = {}
+                for rm in rms:
+                    if rm.room and rm.room.event and rm.room.event.deleted_at is None and can_go_live(rm.role):
+                        prev = room_roles.get(rm.room_id)
+                        if prev is None or ROLE_RANK.get(rm.role, 0) > ROLE_RANK.get(prev, 0):
+                            room_roles[rm.room_id] = rm.role
+
+                event_roles: dict[int, str] = {}
+                for em in ems:
+                    if em.event and em.event.deleted_at is None and can_go_live(em.role):
+                        prev = event_roles.get(em.event_id)
+                        if prev is None or ROLE_RANK.get(em.role, 0) > ROLE_RANK.get(prev, 0):
+                            event_roles[em.event_id] = em.role
+
+                booth_conditions = []
+                if booth_roles:
+                    booth_conditions.append(DBBooth.id.in_(list(booth_roles.keys())))
+                if room_roles:
+                    booth_conditions.append(DBBooth.room_id.in_(list(room_roles.keys())))
+                if event_roles:
+                    booth_conditions.append(DBBooth.event_id.in_(list(event_roles.keys())))
+
+                if booth_conditions:
+                    stmt = (
+                        select(DBBooth)
+                        .options(joinedload(DBBooth.event), joinedload(DBBooth.room))
+                        .join(Event)
+                        .where(
+                            Event.deleted_at.is_(None),
+                            or_(*booth_conditions),
+                        )
+                    )
+                    res = await session.execute(stmt)
+                    db_booths = res.scalars().unique().all()
+                    for b in db_booths:
+                        bid = make_booth_id(b.event.slug, b.room_id, b.language_code)
+                        applicable: list[str] = []
+                        if b.id in booth_roles:
+                            applicable.append(booth_roles[b.id])
+                        if b.room_id in room_roles:
+                            applicable.append(room_roles[b.room_id])
+                        if b.event_id in event_roles:
+                            applicable.append(event_roles[b.event_id])
+                        assigned_role = highest_role(applicable)
+                        if not assigned_role:
+                            continue
+                        mem_booth = booths.get_booth_sync(bid)
+                        is_live = mem_booth is not None and mem_booth.ingest_status == "connected"
+                        booths_by_id[bid] = {
+                            "booth_id": bid,
+                            "is_live": is_live,
+                            "event_name": b.event.display_name,
+                            "language_name": b.language_name,
+                            "room_name": b.room.display_name if b.room else "",
+                            "room_id": b.room_id,
+                            "event_slug": b.event.slug,
+                            "language_code": b.language_code,
+                            "role": assigned_role,
+                        }
         except ValueError:
             pass
 
