@@ -144,8 +144,10 @@ def _render(definition: NotificationDefinition, subject: str, html: str, context
     return rendered_subject, _env.from_string(html).render(**context)
 
 
-def default_logo_url() -> str:
-    return f"{settings.public_base_url.rstrip('/')}/static/img/wordmark.png"
+def default_logo_url(*, preview: bool = False) -> str:
+    # Browser previews use this checkout's asset; delivered mail needs a public URL.
+    base = "" if preview else settings.public_base_url.rstrip("/")
+    return f"{base}/static/img/email-mark.png"
 
 
 async def email_branding(session: AsyncSession) -> EmailSettings:
@@ -174,14 +176,15 @@ async def save_email_branding(session: AsyncSession, *, show_logo: bool, logo_ur
     branding.updated_by_id = editor_id
 
 
-async def _wrap(session: AsyncSession, subject: str, body: str) -> str:
+async def _wrap(session: AsyncSession, subject: str, body: str, *, preview: bool = False) -> str:
     """Put a rendered message inside the shared layout (logo, card and footer)."""
     branding = await email_branding(session)
     site = urllib.parse.urlparse(settings.public_base_url)
     return _env.get_template("_layout.html").render(
         subject=subject,
         body=Markup(body),  # noqa: S704  # nosec B704 - already rendered with autoescaping from an allowlisted template
-        logo_url=(branding.logo_url or default_logo_url()) if branding.show_logo else "",
+        logo_url=(branding.logo_url or default_logo_url(preview=preview)) if branding.show_logo else "",
+        default_logo=not branding.logo_url,
         site_url=settings.public_base_url.rstrip("/"),
         site_host=site.netloc,
     )
@@ -273,7 +276,7 @@ async def preview_notification(session: AsyncSession, key: str, context: Mapping
     definition = get_definition(key)
     subject, html, _ = await template_content(session, key, draft=draft)
     rendered_subject, rendered_html = _render(definition, subject, html, context)
-    return await _wrap(session, rendered_subject, rendered_html)
+    return await _wrap(session, rendered_subject, rendered_html, preview=True)
 
 
 async def _claim_delivery() -> int | None:

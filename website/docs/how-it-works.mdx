@@ -280,7 +280,14 @@ emails is erased after 30 days.
 Every email uses one fixed layout, so they all look alike: the logo, the message
 in a white card with one button, and a footer. Admins edit only the message;
 the **Branding** setting on Admin → Emails shows or hides the logo and can use
-another https image. Besides sign-in, invitation and hosting emails, people are
+another https image. The default is the V symbol without the wordmark or a
+background, so it stays clean on light and dark surfaces. Its SVG source has a
+high-resolution transparent PNG export for use in email clients. Browser
+previews load the bundled mark from the current site; delivered emails use an
+absolute image URL under `PUBLIC_BASE_URL`. Mail clients that block images show
+the VoxBento alternative text until images are allowed.
+
+Besides sign-in, invitation and hosting emails, people are
 told when they are removed from a team, when an Admin changes their Admin,
 hosting, active or verified status, when their password is set, changed,
 removed or reset, and when their account is deleted. Team invitation links last
