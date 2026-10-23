@@ -192,7 +192,10 @@ class DBBooth(Base):
     """
 
     __tablename__ = "booths"
-    __table_args__ = (Index("ix_booths_room_language", "room_id", "language_code", unique=True),)
+    __table_args__ = (
+        Index("ix_booths_room_language", "room_id", "language_code", unique=True),
+        Index("ix_booths_event_id", "event_id"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     event_id: Mapped[int] = mapped_column(ForeignKey("events.id", ondelete="CASCADE"))

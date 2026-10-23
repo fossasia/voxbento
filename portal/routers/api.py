@@ -9,11 +9,13 @@ from sqlalchemy.orm import selectinload
 from sqlalchemy.orm.exc import ObjectDeletedError, StaleDataError
 
 from portal.auth import (
+    booth_session_key,
     coordinates_room,
     create_embed_token,
     create_listener_token,
     decode_token,
     get_booth_session,
+    get_booth_sessions,
     is_listener_token,
     load_membership_scope,
     resolve_booth_role,
@@ -34,7 +36,7 @@ from portal.database import (
 from portal.globals import booths
 from portal.models import DBBooth, Event, Room
 from portal.rate_limit import check_rate_limit
-from portal.roles import INTERPRETER, Permission, has_permission
+from portal.roles import INTERPRETER, Permission, can_set_active, has_permission
 from portal.schemas.booth import CreateBoothRequest
 from portal.transcription import ProviderConfig, ProviderEnum, get_api_key
 from portal.transcription.worker import start_transcription_worker, stop_transcription_worker
@@ -186,6 +188,39 @@ def _require_same_origin_for_cookies(
     has_configured_token = bool(settings.booth_access_token) and token == settings.booth_access_token
     if credentials is None and not has_configured_token and not verify_same_origin(request):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid request origin.")
+
+
+async def _require_live_interpreter_to_stop(
+    request: Request, credentials: HTTPAuthorizationCredentials | None, token: str, booth_id: str
+) -> None:
+    """Let a booth role that can only go live stop transcription only while it is live (#941).
+
+    Coordinators, event owners and Admins can reassign the live slot, so they can always
+    stop, as can the configured token and event API keys.
+    """
+    configured_token = settings.booth_access_token
+    if configured_token and (
+        token == configured_token or (credentials is not None and credentials.credentials == configured_token)
+    ):
+        return
+    sessions = list(get_booth_sessions(request).values())
+    if credentials is not None:
+        try:
+            payload = decode_token(credentials.credentials)
+        except pyjwt.InvalidTokenError:
+            # An event API key; _verify_resource_access already scoped it to this event.
+            return
+        # Without a configured token anyone can get a legacy_api token, so it proves nothing.
+        if payload.get("purpose") == "legacy_api" and configured_token:
+            return
+        sessions.append(payload)
+    if can_set_active(await resolve_booth_role(sessions, booth_id)):
+        return
+    session_keys = {key for key in map(booth_session_key, sessions) if key}
+    if not await booths.can_stop_live(booth_id, session_keys):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="Only the live interpreter can stop transcription."
+        )
 
 
 async def _verify_resource_access(
@@ -872,5 +907,6 @@ async def api_transcription_stop(
             booth_permission=Permission.BOOTH_GO_LIVE,
         )
         _require_same_origin_for_cookies(request, credentials, token)
+    await _require_live_interpreter_to_stop(request, credentials, token, booth_id)
     await stop_transcription_worker(booth_id)
     return {"status": "stopped"}

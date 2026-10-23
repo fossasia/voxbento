@@ -420,6 +420,155 @@ async def test_invite_cancel_and_resend():
 
 
 @pytest.mark.anyio
+async def test_invite_redirect_context_and_fallback():
+    """Verify resend and cancel redirects preserve user detail and hosting access referrers or fall back."""
+    from sqlalchemy import select
+
+    async with get_session() as session:
+        admin = await create_user(session, email="admin_redir@example.com", display_name="Admin Redir", is_admin=True)
+        user = await create_user(
+            session, email="pending_redir@example.com", display_name="Pending Redir", password_hash=None
+        )
+        tok = await create_auth_token(session, user_id=user.id, token_type="hosting_invite", expires_in_seconds=3600)
+        token_id = tok.id
+        user_id = user.id
+
+    admin_token = create_user_token(user_id=admin.id, email=admin.email, is_admin=True)
+
+    async with client() as http:
+        # 1. Resend from user detail page -> returns to user detail with success=invite_resent
+        resp_resend_user = await http.post(
+            f"/admin/users/invite/{token_id}/resend",
+            cookies={"user_token": admin_token},
+            headers={"Origin": "http://test", "Referer": f"http://test/admin/users/{user_id}/"},
+        )
+        assert resp_resend_user.status_code == 303
+        assert resp_resend_user.headers["location"] == f"/admin/users/{user_id}/?success=invite_resent"
+
+    # Get the regenerated token for further tests
+    async with get_session() as session:
+        tok_stmt = select(AuthToken).where(AuthToken.user_id == user_id, AuthToken.token_type == "hosting_invite")
+        new_tok = (await session.execute(tok_stmt)).scalar_one()
+        new_token_id = new_tok.id
+
+    async with client() as http:
+        # 2. Resend fallback: missing Referer -> falls back to /admin/users/?success=invite_resent
+        resp_resend_fallback = await http.post(
+            f"/admin/users/invite/{new_token_id}/resend",
+            cookies={"user_token": admin_token},
+            headers={"Origin": "http://test"},
+        )
+        assert resp_resend_fallback.status_code == 303
+        assert resp_resend_fallback.headers["location"] == "/admin/users/?success=invite_resent"
+
+    # Get another regenerated token
+    async with get_session() as session:
+        tok_stmt = select(AuthToken).where(AuthToken.user_id == user_id, AuthToken.token_type == "hosting_invite")
+        new_tok2 = (await session.execute(tok_stmt)).scalar_one()
+        new_token_id2 = new_tok2.id
+
+    async with client() as http:
+        # 3. User-ID prefix collision: Referer for /admin/users/{user_id}0/ -> falls back to /admin/users/?success=invite_resent
+        resp_resend_collision = await http.post(
+            f"/admin/users/invite/{new_token_id2}/resend",
+            cookies={"user_token": admin_token},
+            headers={"Origin": "http://test", "Referer": f"http://test/admin/users/{user_id}0/"},
+        )
+        assert resp_resend_collision.status_code == 303
+        assert resp_resend_collision.headers["location"] == "/admin/users/?success=invite_resent"
+
+    # Get another regenerated token for cancel tests
+    async with get_session() as session:
+        tok_stmt = select(AuthToken).where(AuthToken.user_id == user_id, AuthToken.token_type == "hosting_invite")
+        cancel_tok = (await session.execute(tok_stmt)).scalar_one()
+        cancel_token_id = cancel_tok.id
+
+    async with client() as http:
+        # 4. Cancel from user detail page -> returns to user detail with success=invite_cancelled
+        resp_cancel_user = await http.post(
+            f"/admin/users/invite/{cancel_token_id}/cancel",
+            cookies={"user_token": admin_token},
+            headers={"Origin": "http://test", "Referer": f"http://test/admin/users/{user_id}/"},
+        )
+        assert resp_cancel_user.status_code == 303
+        assert resp_cancel_user.headers["location"] == f"/admin/users/{user_id}/?success=invite_cancelled"
+
+    # Create fresh tokens for hosting access cancel and fallback cancel
+    async with get_session() as session:
+        tok_ha = await create_auth_token(session, user_id=user_id, token_type="hosting_invite", expires_in_seconds=3600)
+        tok_ha_id = tok_ha.id
+
+    async with client() as http:
+        # 5. Cancel from Hosting Access page -> returns to /admin/hosting-access/?success=invite_cancelled
+        resp_cancel_ha = await http.post(
+            f"/admin/users/invite/{tok_ha_id}/cancel",
+            cookies={"user_token": admin_token},
+            headers={"Origin": "http://test", "Referer": "http://test/admin/hosting-access/"},
+        )
+        assert resp_cancel_ha.status_code == 303
+        assert resp_cancel_ha.headers["location"] == "/admin/hosting-access/?success=invite_cancelled"
+
+    async with get_session() as session:
+        tok_fb = await create_auth_token(session, user_id=user_id, token_type="hosting_invite", expires_in_seconds=3600)
+        tok_fb_id = tok_fb.id
+
+    async with client() as http:
+        # 6. Cancel fallback: missing or unrecognized Referer -> falls back to /admin/users/?success=invite_cancelled
+        resp_cancel_fb = await http.post(
+            f"/admin/users/invite/{tok_fb_id}/cancel",
+            cookies={"user_token": admin_token},
+            headers={"Origin": "http://test"},
+        )
+        assert resp_cancel_fb.status_code == 303
+        assert resp_cancel_fb.headers["location"] == "/admin/users/?success=invite_cancelled"
+
+
+@pytest.mark.anyio
+async def test_invite_redirect_malformed_referer():
+    """Verify resend and cancel safely fall back to default when given a malformed Referer URL."""
+    from sqlalchemy import select
+
+    async with get_session() as session:
+        admin = await create_user(
+            session, email="admin_malformed@example.com", display_name="Admin Malformed", is_admin=True
+        )
+        user = await create_user(
+            session, email="pending_malformed@example.com", display_name="Pending Malformed", password_hash=None
+        )
+        tok = await create_auth_token(session, user_id=user.id, token_type="hosting_invite", expires_in_seconds=3600)
+        token_id = tok.id
+        user_id = user.id
+
+    admin_token = create_user_token(user_id=admin.id, email=admin.email, is_admin=True)
+
+    async with client() as http:
+        # 1. Resend with malformed Referer -> falls back to /admin/users/?success=invite_resent
+        resp_resend = await http.post(
+            f"/admin/users/invite/{token_id}/resend",
+            cookies={"user_token": admin_token},
+            headers={"Origin": "http://test", "Referer": "http://["},
+        )
+        assert resp_resend.status_code == 303
+        assert resp_resend.headers["location"] == "/admin/users/?success=invite_resent"
+
+    # Get the regenerated token for cancel test
+    async with get_session() as session:
+        tok_stmt = select(AuthToken).where(AuthToken.user_id == user_id, AuthToken.token_type == "hosting_invite")
+        new_tok = (await session.execute(tok_stmt)).scalar_one()
+        new_token_id = new_tok.id
+
+    async with client() as http:
+        # 2. Cancel with malformed Referer -> falls back to /admin/users/?success=invite_cancelled
+        resp_cancel = await http.post(
+            f"/admin/users/invite/{new_token_id}/cancel",
+            cookies={"user_token": admin_token},
+            headers={"Origin": "http://test", "Referer": "http://["},
+        )
+        assert resp_cancel.status_code == 303
+        assert resp_cancel.headers["location"] == "/admin/users/?success=invite_cancelled"
+
+
+@pytest.mark.anyio
 async def test_demo_request_hosting_rate_limit_and_user_flag():
     """Demo request enforces rate limits, strips CRLF, ignores spoofed user_id, leaves hosting_requested_at alone."""
     async with get_session() as session:

@@ -27,6 +27,7 @@ from portal.config import settings
 from portal.database import get_session
 from portal.globals import get_http_client
 from portal.models import Event, Room
+from portal.outage_log import OutageLog
 from portal.program_ingest import MediaPath, configure_source, media_paths, pipeline_problem, room_lock
 from portal.transcription.process import audio_progress
 from portal.transcription.providers.base import ProviderConfig, ProviderEnum, get_api_key
@@ -79,6 +80,7 @@ class AgentHealth:
 health: dict[int, AgentHealth] = {}
 _last_sweep = 0.0  # monotonic time of the last stale-agent sweep; 0 forces one
 _unreachable = False
+database_outage = OutageLog(logger, "meeting_agent database_unavailable")
 
 
 def process_key(event_slug: str, room_id: int) -> str:
@@ -520,8 +522,10 @@ async def reconcile_loop() -> None:
         try:
             await reconcile_once()
         except SQLAlchemyError:
-            logger.warning("meeting_agent database_unavailable")
+            database_outage.failed()
         except Exception as exc:  # noqa: BLE001 - the loop must outlive any single bad tick
             # Log the type only: exception text from upstream calls may echo the meeting URL.
             logger.error("meeting_agent reconcile_error type=%s", type(exc).__name__)
+        else:
+            database_outage.recovered()
         await asyncio.sleep(RECONCILE_INTERVAL_SECS)
