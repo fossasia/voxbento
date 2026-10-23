@@ -63,5 +63,6 @@
 
     <script type="module" src="{{ url_for('static', path='js/admin.js') }}?v={{ asset_version }}"></script>
     <script type="module" src="{{ url_for('static', path='js/user-menu.js') }}?v={{ asset_version }}"></script>
+    {% include "_auth_sync.html" %}
   </body>
 </html>
