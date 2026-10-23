@@ -2195,14 +2195,16 @@ async def admin_cancel_invite(request: Request, token_id: int):
     if not verify_same_origin(request):
         raise HTTPException(status_code=400, detail="Invalid request origin.")
 
+    user_id = None
     async with get_session() as session:
         tok_stmt = select(AuthToken).where(AuthToken.id == token_id, AuthToken.token_type == TOKEN_TYPE_HOSTING_INVITE)
         tok = (await session.execute(tok_stmt)).scalar_one_or_none()
         if tok:
+            user_id = tok.user_id
             await session.delete(tok)
 
     return safe_redirect(
-        url=hosting_return_url(request, "/admin/users/", "success=invite_cancelled"),
+        url=hosting_return_url(request, "/admin/users/", "success=invite_cancelled", user_id=user_id),
         status_code=status.HTTP_303_SEE_OTHER,
     )
 
@@ -2243,17 +2245,29 @@ async def admin_resend_invite(request: Request, token_id: int):
 
     invite_url = f"{settings.public_base_url.rstrip('/')}/invite/accept/{raw_token}"
     await send_hosting_invite_email(user_email, invite_url, is_existing_user=has_password)
-    return safe_redirect(url="/admin/users/?success=invite_resent", status_code=status.HTTP_303_SEE_OTHER)
+    return safe_redirect(
+        url=hosting_return_url(request, "/admin/users/", "success=invite_resent", user_id=user_id),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
 
 
 HOSTING_ACCESS_URL = "/admin/hosting-access/"
 HOSTING_REQUESTS_URL = "/admin/hosting-access/requests/"
 
 
-def hosting_return_url(request: Request, default: str, query: str) -> str:
-    """Send hosting actions taken from the Hosting access page back to it."""
+def hosting_return_url(request: Request, default: str, query: str, user_id: int | None = None) -> str:
+    """Send hosting actions taken from the Hosting access or User detail page back to it."""
     referrer = request.headers.get("referer", "")
-    base = HOSTING_ACCESS_URL if "/admin/hosting-access/" in referrer else default
+    try:
+        ref_path = urllib.parse.urlsplit(referrer).path if referrer else ""
+    except ValueError:
+        ref_path = ""
+    if user_id is not None and ref_path == f"/admin/users/{user_id}/":
+        base = f"/admin/users/{user_id}/"
+    elif ref_path == HOSTING_ACCESS_URL:
+        base = HOSTING_ACCESS_URL
+    else:
+        base = default
     return f"{base}?{query}"
 
 
