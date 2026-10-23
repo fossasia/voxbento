@@ -193,13 +193,28 @@ Listeners connected to the caption WebSocket receive transcription segments as t
 
 ## Shared header and user menu
 
-Every signed-in page (Admin, My events and its event pages, Mission Control,
-Account, Developer API) renders the same header from `_app_header.html`: the
-VoxBento logo with the name of the current area, the area's page links, and the
-user menu. `portal/user_menu.py` builds the menu from the request principal: My
-events, Account, Developer API (only with an approved developer app), Admin (only
-for Admins) and Logout, with the current area highlighted. A router dependency
-loads the principal once per request so templates never query the database.
+Every signed-in page (Admin, My events and its event pages, My booths, Mission
+Control, Account, Developer API) renders the same header from `_app_header.html`:
+the VoxBento logo with the name of the current area, the area's page links, and
+the user menu. `portal/user_menu.py` builds the menu from the request principal: My
+events, My booths (only for interpreters, given for an event or a booth), Account,
+Developer API (only with an approved developer app), Admin (only for Admins) and
+Logout, with the current area highlighted. A router dependency loads the principal
+once per request so templates never query the database.
+
+The interpreter booth is a work screen, so it uses a compact bar instead: the
+language, room and event names, the connection state, the same user menu and
+**Leave**, and no site footer. **My booths** (`/interpreter`) lists the person's
+booths by event and room, with **Enter booth** (and **Mission Control** for
+coordinators) next to a microphone and connection check.
+
+**Mission Control** (`/mission-control/{event}/`) shows one section per room the
+person may run. Each room shows its floor captions' state with Start and Stop
+(through `/api/rooms/{room_id}/floor-transcription/*`), and each booth card shows
+who is in the booth and who is live, a listen-in slider, Go live / Stop broadcast
+and **Open booth**. The owner's room page is split into tabs (Overview, Floor
+source, Captions & translation, Settings); the open tab is remembered per room so
+saving a setting returns to it, and without JavaScript every section shows in order.
 
 **My events** at `/workspace/` (`portal/my_events.py`) lists every event the
 person has a role in, combining event, room and booth memberships into one card

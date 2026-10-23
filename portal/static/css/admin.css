@@ -1704,3 +1704,19 @@ code { font-family: var(--font-mono); font-size: 0.85em; background: var(--color
   .email-summary, .email-editor-grid { grid-template-columns: 1fr; }
   .email-template-row { padding-left: 16px; padding-right: 16px; }
 }
+
+/* Room page: header actions, tabs and sections */
+.room-header { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 16px; }
+.room-header h1 { margin: 0 0 4px; }
+.room-header .meta-text { margin: 0; }
+.room-header-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.room-tabs { display: flex; gap: 4px; margin: 8px 0 24px; border-bottom: 1px solid var(--color-border-strong, var(--color-border)); overflow-x: auto; }
+.room-tabs[hidden] { display: none; }
+.room-tab { padding: 12px 16px; margin-bottom: -1px; border: 0; border-bottom: 3px solid transparent; background: none; color: var(--color-text-secondary); font: inherit; font-size: .95rem; font-weight: 500; white-space: nowrap; cursor: pointer; }
+.room-tab:hover { color: var(--color-text); }
+.room-tab.is-active { color: var(--color-primary); border-bottom-color: var(--color-primary); font-weight: 600; }
+.room-tab:focus-visible { outline: 2px solid var(--color-primary); outline-offset: -2px; border-radius: 6px 6px 0 0; }
+.room-panel[hidden] { display: none; }
+.room-panel-intro { max-width: 760px; margin: 0 0 20px; color: var(--color-text-secondary); }
+.room-booth-links { display: flex; flex-wrap: wrap; gap: 4px 16px; }
+.schedule-table th { position: relative; } /* keeps visually hidden header text inside the scrolling table */
