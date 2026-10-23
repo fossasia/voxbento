@@ -157,7 +157,7 @@ async def _verify_token_rbac(
     if not user or not user.is_active:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User account is inactive")
 
-    if user and getattr(user, "is_admin", False):
+    if user.is_admin:
         return resolved_room
 
     scope = await load_membership_scope(db, token.user_id)
