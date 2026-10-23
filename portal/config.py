@@ -116,6 +116,15 @@ class Settings(BaseSettings):
                 "PROGRAM_RELAY_ENABLED requires PROGRAM_RELAY_CONTROL_SECRET (at least 32 characters), "
                 "shared with the program-relay service. Generate one with: openssl rand -hex 32"
             )
+        # Every outgoing email is encrypted at rest in the outbox, so sign-in links,
+        # invitations and password resets cannot be sent without this key.
+        encryption_key = (self.api_key_encryption_key or "").strip()
+        if encryption_key in {"", "change-this-encryption-key-in-production", "your-secure-32-char-key-here"}:
+            raise RuntimeError(
+                "API_KEY_ENCRYPTION_KEY is not set. It encrypts stored provider keys and queued email, "
+                "so sign-in and invitation emails cannot be sent without it. "
+                "Generate one with: openssl rand -hex 32 (to rotate, list the new key first, comma-separated)"
+            )
 
     # Transcription Settings
     nvidia_function_id: str = ""
@@ -135,6 +144,8 @@ class Settings(BaseSettings):
     smtp_user: str = ""
     smtp_password: str = ""
     smtp_from_email: str = "noreply@voxbento.com"
+    # Team inbox notified of each new hosting access request.
+    hosting_requests_email: str = "voxbento.dev@gmail.com"
     public_base_url: str = "https://voxbento.com"
 
 

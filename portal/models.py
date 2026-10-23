@@ -16,21 +16,21 @@ Design decisions
 - **No hls_url column**: WHEP is the primary playback protocol.
 - **Model name DBBooth**: avoids collision with the in-memory ``Booth``
   dataclass in ``portal.booth_state``.
-- **InviteToken.role** stores a ``ParticipantRole`` string value validated
-  against ``portal.roles.ALL_ROLES``.
+- **InviteToken.role** stores a booth role validated against
+  ``portal.roles.BOOTH_ROLES`` (invitations are always to a booth).
 """
 
 from __future__ import annotations
 
 import secrets
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 
 import sqlalchemy as sa
-from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, validates
 
 from portal.booth_identity import make_mediamtx_path, validate_event_slug, validate_language_code
-from portal.roles import ALL_ROLES
+from portal.roles import assignment_error
 
 TOKEN_LENGTH = 64  # hex characters → 32 bytes of entropy
 
@@ -91,6 +91,9 @@ class Event(Base):
     booths: Mapped[list[DBBooth]] = relationship(back_populates="event", cascade="all, delete-orphan")
     api_keys: Mapped[list[EventAPIKey]] = relationship(back_populates="event", cascade="all, delete-orphan")
     usage_metrics: Mapped[list[UsageMetric]] = relationship(back_populates="event", cascade="all, delete-orphan")
+    ai_vocabulary_entries: Mapped[list["AIVocabularyEntry"]] = relationship(
+        back_populates="event", cascade="all, delete-orphan"
+    )
 
     @validates("slug")
     def _validate_slug(self, _key: str, value: str) -> str:
@@ -147,6 +150,9 @@ class Room(Base):
     floor_translation_provider: Mapped[str | None] = mapped_column(String(50), nullable=True, default=None)
     floor_translation_model: Mapped[str | None] = mapped_column(String(100), nullable=True, default=None)
     floor_source_language_code: Mapped[str] = mapped_column(String(20), default="en", server_default=sa.text("'en'"))
+    floor_ai_interpreter_persona: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
+    floor_ai_interpretation_style: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
+    floor_ai_vocabulary_enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default="1")
 
     # TTS Settings
     floor_tts_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
@@ -166,6 +172,9 @@ class Room(Base):
     translation_languages: Mapped[list["RoomTranslationLanguage"]] = relationship(
         back_populates="room", cascade="all, delete-orphan"
     )
+    ai_vocabulary_entries: Mapped[list["AIVocabularyEntry"]] = relationship(
+        back_populates="room", cascade="all, delete-orphan"
+    )
 
     def __repr__(self) -> str:
         return f"<Room id={self.id} name={self.display_name!r}>"
@@ -183,7 +192,10 @@ class DBBooth(Base):
     """
 
     __tablename__ = "booths"
-    __table_args__ = (Index("ix_booths_room_language", "room_id", "language_code", unique=True),)
+    __table_args__ = (
+        Index("ix_booths_room_language", "room_id", "language_code", unique=True),
+        Index("ix_booths_event_id", "event_id"),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     event_id: Mapped[int] = mapped_column(ForeignKey("events.id", ondelete="CASCADE"))
@@ -207,6 +219,9 @@ class DBBooth(Base):
     event: Mapped[Event] = relationship(back_populates="booths")
     room: Mapped[Room] = relationship(back_populates="booths", foreign_keys=[room_id])
     translation_languages: Mapped[list["BoothTranslationLanguage"]] = relationship(
+        back_populates="booth", cascade="all, delete-orphan"
+    )
+    ai_vocabulary_entries: Mapped[list["AIVocabularyEntry"]] = relationship(
         back_populates="booth", cascade="all, delete-orphan"
     )
     invite_tokens: Mapped[list[InviteToken]] = relationship(
@@ -303,6 +318,42 @@ class BoothTranslationLanguage(Base):
 
 
 # ---------------------------------------------------------------------------
+# AI interpretation vocabulary
+# ---------------------------------------------------------------------------
+
+
+class AIVocabularyEntry(Base):
+    __tablename__ = "ai_vocabulary_entries"
+    __table_args__ = (
+        Index("ix_ai_vocab_event_language", "event_id", "target_language"),
+        Index("ix_ai_vocab_room_language", "room_id", "target_language"),
+        Index("ix_ai_vocab_booth_language", "booth_id", "target_language"),
+        Index("ix_ai_vocab_source_term", "source_term"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    event_id: Mapped[int] = mapped_column(ForeignKey("events.id", ondelete="CASCADE"))
+    room_id: Mapped[int | None] = mapped_column(
+        ForeignKey("rooms.id", ondelete="CASCADE"), nullable=True, default=None
+    )
+    booth_id: Mapped[int | None] = mapped_column(
+        ForeignKey("booths.id", ondelete="CASCADE"), nullable=True, default=None
+    )
+    source_term: Mapped[str] = mapped_column(String(255))
+    target_language: Mapped[str] = mapped_column(String(20), default="all", server_default="all")
+    target_term: Mapped[str] = mapped_column(String(255))
+    description: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
+    case_sensitive: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    match_type: Mapped[str] = mapped_column(String(20), default="phrase", server_default="phrase")
+    priority: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+    event: Mapped[Event] = relationship(back_populates="ai_vocabulary_entries")
+    room: Mapped[Room | None] = relationship(back_populates="ai_vocabulary_entries")
+    booth: Mapped[DBBooth | None] = relationship(back_populates="ai_vocabulary_entries")
+
+
+# ---------------------------------------------------------------------------
 # TranscriptTranslation
 # ---------------------------------------------------------------------------
 
@@ -339,8 +390,8 @@ class InviteToken(Base):
 
     @validates("role")
     def _validate_role(self, _key: str, value: str) -> str:
-        if value not in ALL_ROLES:
-            raise ValueError(f"Invalid role '{value}'. Must be one of: {', '.join(sorted(ALL_ROLES))}")
+        if error := assignment_error(value, "booth"):
+            raise ValueError(error)
         return value
 
     @property
@@ -441,6 +492,11 @@ class User(Base):
         back_populates="user",
         cascade="all, delete-orphan",
     )
+    hosting_requests: Mapped[list["HostingRequest"]] = relationship(
+        back_populates="user",
+        cascade="all, delete-orphan",
+        foreign_keys="HostingRequest.user_id",
+    )
 
     @validates("email")
     def _validate_email(self, _key: str, value: str) -> str:
@@ -454,12 +510,59 @@ class User(Base):
 
 
 # ---------------------------------------------------------------------------
+# HostingRequest
+# ---------------------------------------------------------------------------
+
+HOSTING_REQUEST_OPEN = "open"
+HOSTING_REQUEST_GRANTED = "granted"
+HOSTING_REQUEST_DECLINED = "declined"
+
+
+class HostingRequest(Base):
+    """A signed-in user's request for hosting access, reviewed by an Admin.
+
+    A user has at most one open request; granted and declined requests are
+    kept for the record but no longer listed.
+    """
+
+    __tablename__ = "hosting_requests"
+    __table_args__ = (
+        Index(
+            "uq_hosting_requests_open_user",
+            "user_id",
+            unique=True,
+            sqlite_where=sa.text("status = 'open'"),
+            postgresql_where=sa.text("status = 'open'"),
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    organization: Mapped[str] = mapped_column(String(200))
+    event_name: Mapped[str] = mapped_column(String(200))
+    event_starts_on: Mapped[date | None] = mapped_column(Date, nullable=True, default=None)
+    event_ends_on: Mapped[date | None] = mapped_column(Date, nullable=True, default=None)
+    languages: Mapped[str] = mapped_column(String(500))
+    message: Mapped[str] = mapped_column(Text, default="")
+    status: Mapped[str] = mapped_column(String(16), default=HOSTING_REQUEST_OPEN, index=True)
+    decline_reason: Mapped[str | None] = mapped_column(Text, nullable=True, default=None)
+    decided_by_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True, default=None
+    )
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+    user: Mapped[User] = relationship(back_populates="hosting_requests", foreign_keys=[user_id])
+
+    def __repr__(self) -> str:
+        return f"<HostingRequest id={self.id} user_id={self.user_id} status={self.status!r}>"
+
+
+# ---------------------------------------------------------------------------
 # EventMembership
 # ---------------------------------------------------------------------------
 
-EVENT_ROLES = frozenset({"interpreter", "room_coordinator", "event_owner"})
-ROOM_ROLES = frozenset({"room_coordinator"})
-BOOTH_ROLES = frozenset({"interpreter", "room_coordinator"})
+# Which roles can be given at each level is defined in portal.roles (#757).
 
 
 class EventMembership(Base):
@@ -483,8 +586,8 @@ class EventMembership(Base):
 
     @validates("role")
     def _validate_role(self, _key: str, value: str) -> str:
-        if value not in EVENT_ROLES:
-            raise ValueError(f"Invalid event role '{value}'. Must be one of: {', '.join(sorted(EVENT_ROLES))}")
+        if error := assignment_error(value, "event"):
+            raise ValueError(error)
         return value
 
     def __repr__(self) -> str:
@@ -516,8 +619,8 @@ class BoothMembership(Base):
 
     @validates("role")
     def _validate_role(self, _key: str, value: str) -> str:
-        if value not in BOOTH_ROLES:
-            raise ValueError(f"Invalid booth role '{value}'. Must be one of: {', '.join(sorted(BOOTH_ROLES))}")
+        if error := assignment_error(value, "booth"):
+            raise ValueError(error)
         return value
 
     def __repr__(self) -> str:
@@ -549,8 +652,8 @@ class RoomMembership(Base):
 
     @validates("role")
     def _validate_role(self, _key: str, value: str) -> str:
-        if value not in ROOM_ROLES:
-            raise ValueError(f"Invalid room role '{value}'. Must be one of: {', '.join(sorted(ROOM_ROLES))}")
+        if error := assignment_error(value, "room"):
+            raise ValueError(error)
         return value
 
     def __repr__(self) -> str:
@@ -773,3 +876,82 @@ class WebhookDelivery(Base):
 
     def __repr__(self) -> str:
         return f"<WebhookDelivery id={self.id} status={self.status!r} attempt={self.attempt_count}>"
+
+
+# ---------------------------------------------------------------------------
+# Email notification outbox
+# ---------------------------------------------------------------------------
+
+
+class EmailTemplate(Base):
+    """The editable, published version of a named transactional email."""
+
+    __tablename__ = "email_templates"
+
+    key: Mapped[str] = mapped_column(String(80), primary_key=True)
+    draft_subject: Mapped[str | None] = mapped_column(Text, nullable=True)
+    draft_html: Mapped[str | None] = mapped_column(Text, nullable=True)
+    published_subject: Mapped[str | None] = mapped_column(Text, nullable=True)
+    published_html: Mapped[str | None] = mapped_column(Text, nullable=True)
+    published_version: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    updated_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+
+
+class EmailTemplateRevision(Base):
+    """Immutable audit trail for each published template version."""
+
+    __tablename__ = "email_template_revisions"
+    __table_args__ = (UniqueConstraint("template_key", "version", name="uq_email_template_revision"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    template_key: Mapped[str] = mapped_column(ForeignKey("email_templates.key", ondelete="CASCADE"), index=True)
+    version: Mapped[int] = mapped_column(Integer)
+    subject: Mapped[str] = mapped_column(Text)
+    html: Mapped[str] = mapped_column(Text)
+    published_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    published_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class EmailSettings(Base):
+    """Branding shared by every email (one row, id 1). No row means the defaults."""
+
+    __tablename__ = "email_settings"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    show_logo: Mapped[bool] = mapped_column(Boolean, default=True, server_default=sa.true())
+    # An https image URL; empty means the VoxBento logo served by this site.
+    logo_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    updated_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+
+
+class EmailDelivery(Base):
+    """An encrypted rendered message awaiting SMTP delivery or its audit record."""
+
+    __tablename__ = "email_deliveries"
+    __table_args__ = (
+        Index("ix_email_deliveries_due", "status", "scheduled_at"),
+        Index("ix_email_deliveries_created", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    notification_key: Mapped[str] = mapped_column(String(80), index=True)
+    recipient: Mapped[str] = mapped_column(String(320))
+    encrypted_subject: Mapped[str] = mapped_column(Text)
+    encrypted_html: Mapped[str] = mapped_column(Text)
+    template_version: Mapped[int] = mapped_column(Integer, default=0)
+    status: Mapped[str] = mapped_column(String(20), default="pending", server_default="pending")
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    scheduled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    claim_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    failed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # The sign-in or invitation token this email links to. Deliberately not a foreign key:
+    # once the token is deleted the id must stay, so the outbox finds no token and drops the email.
+    auth_token_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    last_error: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    idempotency_key: Mapped[str | None] = mapped_column(String(255), unique=True, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)

@@ -1,36 +1,15 @@
-<section id='program-sender' class='token-form-card token-form-card--spaced program-ingest-card'
-  data-mint-url='{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/program-sender'
-  data-status-url='{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/program-ingest'>
+<section class='token-form-card token-form-card--spaced program-ingest-card'>
   <div class='program-ingest-head'>
     <div>
       <p class='program-ingest-eyebrow'>Live source</p>
       <h3>Program audio sender</h3>
-      <p class='program-ingest-lede'>Send this room's floor audio straight from the browser — no external encoder needed. Use a USB sound-desk input for the cleanest feed.</p>
-    </div>
-    <span id='sender-state-badge' class='program-state-badge' data-state='idle'>Not sending</span>
-  </div>
-
-  <div id='sender-unavailable' class='program-ingest-warning' role='alert' hidden>
-    <span class='program-ingest-warning-icon' aria-hidden='true'>!</span>
-    <div>
-      <strong>Browser sending is not available</strong>
-      <p id='sender-unavailable-reason'>Ask the server operator to enable authenticated program ingest.</p>
+      <p class='program-ingest-lede'>Send this room's floor audio straight from the browser — no external encoder needed. The sender opens in its own tab, so it keeps running while you work here. Use a USB sound-desk input for the cleanest feed.</p>
     </div>
   </div>
-
   <div class='program-sender-controls'>
-    <label for='sender-device'>Audio input</label>
-    <select id='sender-device' class='input'></select>
-
-    <div class='program-sender-meter' aria-hidden='true'>
-      <div id='sender-meter-fill' class='program-sender-meter-fill'></div>
-    </div>
-
     <div class='program-sender-actions'>
-      <button type='button' class='btn btn-primary' id='sender-start'>Start sending</button>
-      <button type='button' class='btn btn-outline' id='sender-stop' hidden>Stop sending</button>
+      <a class='btn btn-primary' href='{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/sender/' target='_blank' rel='noopener'>Open sender</a>
     </div>
-    <p id='sender-status' role='status' aria-live='polite'>Pick an input and start sending when you are ready.</p>
+    <p>Floor status above shows whether the sender is live. Leave the sender tab open on the sound-desk computer for the whole session.</p>
   </div>
 </section>
-<script type='module' src='/static/js/program-sender.js'></script>

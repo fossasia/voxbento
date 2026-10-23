@@ -296,6 +296,14 @@ label {
   background: linear-gradient(135deg, var(--bx-accent), #6b8cff);
   box-shadow: 0 4px 12px rgb(47 109 246 / 0.35);
   flex-shrink: 0;
+  text-decoration: none;
+}
+
+.brand-mark:hover,
+.brand-mark:focus-visible {
+  color: #fff;
+  text-decoration: none;
+  filter: brightness(1.08);
 }
 
 .brand-text {
@@ -312,10 +320,8 @@ label {
 }
 
 .brand-context {
-  font-size: 0.74rem;
+  font-size: 0.8rem;
   color: var(--bx-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;

@@ -324,3 +324,38 @@ async def test_start_rejects_room_event_mismatch(environment):
     client, event, room, _ = environment
     response = await client.post(f"/admin/events/{event.id + 999}/rooms/{room.id}/program-sender", json={})
     assert response.status_code in {403, 404}
+
+
+@pytest.mark.anyio
+async def test_start_without_offset_keeps_saved_sync_delay(environment):
+    client, event, room, _ = environment
+    async with get_session() as session:
+        (await session.get(Room, room.id)).program_sync_offset_ms = 2500
+    response = await client.post(sender_url(event, room), json={})
+    assert response.status_code == 200, response.text
+    async with get_session() as session:
+        assert (await session.get(Room, room.id)).program_sync_offset_ms == 2500
+
+
+@pytest.mark.anyio
+async def test_standalone_sender_page_renders(environment):
+    client, event, room, _ = environment
+    response = await client.get(f"/admin/events/{event.id}/rooms/{room.id}/sender/")
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-store"
+    assert f"/rooms/{room.id}/program-sender" in response.text
+    assert "/static/js/program-sender.js" in response.text
+
+
+@pytest.mark.anyio
+async def test_sender_page_rejects_room_event_mismatch(environment):
+    client, event, room, _ = environment
+    response = await client.get(f"/admin/events/{event.id + 999}/rooms/{room.id}/sender/")
+    assert response.status_code in {403, 404}
+
+
+def test_workspace_maps_sender_routes():
+    from portal.workspace_routing import workspace_to_admin_path
+
+    assert workspace_to_admin_path("/workspace/events/3/rooms/7/sender/") == "/admin/events/3/rooms/7/sender/"
+    assert workspace_to_admin_path("/workspace/events/3/rooms/7/program-sender") == "/admin/events/3/rooms/7/program-sender"

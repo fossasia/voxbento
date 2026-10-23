@@ -40,7 +40,7 @@ This endpoint enforces the active-interpreter rule. Only the participant current
 ### Example Request
 
 ```bash
-curl https://voxbento.com/api/events/pycon2026/booths/en/whip-url \
+curl "https://voxbento.com/api/events/pycon2026/booths/en/whip-url?room_id=14&participant_id=part-abc123" \
   -H 'Authorization: Bearer eyJ...'
 ```
 
@@ -48,36 +48,36 @@ curl https://voxbento.com/api/events/pycon2026/booths/en/whip-url \
 
 ```json
 {
-  "whip_url": "https://voxbento.com/pycon2026/en/whip",
-  "channel_id": "pycon2026/en",
-  "booth_id": "pycon2026-en"
+  "whip_url": "https://voxbento.com/pycon2026/14/en/whip",
+  "channel_id": "pycon2026/14/en",
+  "booth_id": "pycon2026-14-en"
 }
 ```
 
 ### Response Fields
 
-**`whip_url`** *(string)* — The full WHIP ingest URL. POST a WebRTC SDP offer to this URL to begin publishing audio.
+**`whip_url`** *(string)* — The full WHIP ingest URL. POST a WebRTC SDP offer with your single-use publish ticket in the `Authorization: Bearer` header to this URL to begin publishing audio.
 
-**`channel_id`** *(string)* — The media channel path for this booth, in the format `{event_slug}/{language_code}`.
+**`channel_id`** *(string)* — The media channel path for this booth, in the format `{event_slug}/{room_id}/{language_code}`.
 
-**`booth_id`** *(string)* — The canonical booth identifier, in the format `{event_slug}-{language_code}`.
+**`booth_id`** *(string)* — The canonical booth identifier, in the format `{event_slug}-{room_id}-{language_code}`.
 
 ---
 
 ## WHEP URL — Listener Playback
 
-WHEP URLs follow a deterministic pattern and do not require an API call to construct. You can build the WHEP URL directly using the event slug and language code.
+WHEP URLs follow a deterministic pattern and do not require an API call to construct. You can build the WHEP URL directly using the event slug, room ID, and language code.
 
 ### URL Format
 
 ```text
-{MEDIAMTX_WHIP_BASE}/{event_slug}/{language_code}/whep
+{MEDIAMTX_WHIP_BASE}/{event_slug}/{room_id}/{language_code}/whep
 ```
 
 ### Example
 
 ```text
-https://voxbento.com/pycon2026/en/whep
+https://voxbento.com/pycon2026/14/en/whep
 ```
 
 To start a WHEP session, send a `POST` request to the WHEP URL with a WebRTC SDP offer body. The response contains the SDP answer, and the `Location` response header provides the session resource URL for subsequent ICE candidate exchanges and teardown.
@@ -88,6 +88,10 @@ Build your custom listener by POSTing a WebRTC SDP offer to the WHEP URL. The re
 
 ---
 
+:::warning Single-Use Publish Ticket Required
+MediaMTX WHIP publishing is authenticated (#783). Simply fetching the WHIP URL is not sufficient to publish. The active interpreter's client must request a single-use publish ticket over the coordination WebSocket (`booth:request-publish-ticket`), which the server returns in `booth:publish-ticket`. The ticket expires after 30 seconds and must be sent as `Authorization: Bearer <ticket>` on the HTTP POST request to the WHIP URL. Anonymous publishes or publishes without a valid ticket return `401 Unauthorized`.
+:::
+
 ## Interpreter Status — Preflight Check
 
 Before your interpreter client attempts to publish, use this open endpoint to verify that the media server is reachable for the target channel.
@@ -95,7 +99,7 @@ Before your interpreter client attempts to publish, use this open endpoint to ve
 ### Endpoint
 
 ```text
-GET /api/interpreter/status/{channel_id}
+GET /api/interpreter/status/{channel_id:path}
 ```
 
 ### Authentication
@@ -104,19 +108,19 @@ No authentication required. Use this as a lightweight preflight check before ini
 
 ### Path Parameters
 
-**`channel_id`** *(string)* — The channel path in the format `{event_slug}/{language_code}`, e.g. `pycon2026/en`. Note that this parameter uses a forward slash, not a hyphen.
+**`channel_id`** *(string)* — The channel path in the format `{event_slug}/{room_id}/{language_code}`, e.g. `pycon2026/14/en`. Note that this parameter uses forward slashes, not hyphens.
 
 ### Example Request
 
 ```bash
-curl https://voxbento.com/api/interpreter/status/pycon2026/en
+curl https://voxbento.com/api/interpreter/status/pycon2026/14/en
 ```
 
 ### Example Response
 
 ```json
 {
-  "channel_id": "pycon2026/en",
+  "channel_id": "pycon2026/14/en",
   "state": "mediamtx",
   "reachable": true
 }
@@ -134,11 +138,11 @@ curl https://voxbento.com/api/interpreter/status/pycon2026/en
 
 ## Channel ID and URL Summary
 
-The table below shows how the three URL types relate for a given event and language.
+The table below shows how the URL and identifier formats relate for a given event, room, and language.
 
 | URL type | Format | Example |
 | --- | --- | --- |
-| `channel_id` | `{event_slug}/{language_code}` | `pycon2026/en` |
-| WHIP ingest | `{MEDIAMTX_WHIP_BASE}/{channel_id}/whip` | `https://voxbento.com/pycon2026/en/whip` |
-| WHEP playback | `{MEDIAMTX_WHIP_BASE}/{channel_id}/whep` | `https://voxbento.com/pycon2026/en/whep` |
-| `booth_id` | `{event_slug}-{language_code}` | `pycon2026-en` |
+| `channel_id` | `{event_slug}/{room_id}/{language_code}` | `pycon2026/14/en` |
+| WHIP ingest | `{MEDIAMTX_WHIP_BASE}/{channel_id}/whip` | `https://voxbento.com/pycon2026/14/en/whip` |
+| WHEP playback | `{MEDIAMTX_WHIP_BASE}/{channel_id}/whep` | `https://voxbento.com/pycon2026/14/en/whep` |
+| `booth_id` | `{event_slug}-{room_id}-{language_code}` | `pycon2026-14-en` |

@@ -2,232 +2,155 @@
 
 {% block title %}Users{% endblock %}
 
-{% block breadcrumb %}
-<nav class="breadcrumb">
-  <a href="/admin/">Dashboard</a> <span>/</span> <span class="breadcrumb-current" aria-current="page">Users</span>
-</nav>
+{% block head %}
+<script type="module" src="{{ url_for('static', path='js/admin-users.js') }}?v={{ asset_version }}"></script>
 {% endblock %}
 
-{% block content %}
-<div class="page-header">
-  <h1>Registered Users</h1>
-  <span class="badge">Total: {{ total_users }} user{{ 's' if total_users != 1 }}</span>
-</div>
+{#- One on/off switch posting to /admin/users/{id}/access. It works as a plain
+    form without JavaScript; admin-users.js turns it into an in-place toggle. -#}
+{% macro access_switch(u, field, on, label, disabled_reason='', confirm_on='', confirm_off='') -%}
+<form method="post" action="/admin/users/{{ u.id }}/access" class="ut-form" data-user-toggle data-field="{{ field }}"
+  {%- if confirm_on %} data-confirm-on="{{ confirm_on }}"{% endif %}
+  {%- if confirm_off %} data-confirm-off="{{ confirm_off }}"{% endif %}>
+  <input type="hidden" name="field" value="{{ field }}" />
+  <input type="hidden" name="value" value="{{ 'false' if on else 'true' }}" />
+  <button type="submit" role="switch" class="ut-switch" aria-checked="{{ 'true' if on else 'false' }}"
+    aria-label="{{ label }} for {{ u.display_name }}"
+    title="{{ disabled_reason or (('Turn off ' if on else 'Turn on ') ~ label|lower) }}"
+    {%- if disabled_reason %} disabled{% endif %}>
+    <span class="ut-switch-thumb"></span>
+  </button>
+</form>
+{%- endmacro %}
 
-{% if request.query_params.get('error') %}
-<div class="alert alert-danger alert-flash">
-  <strong>Error:</strong>
-  {% set err = request.query_params.get('error') %}
-  {% if err == 'already_admin' %}
-    User is already an administrator.
-  {% elif err == 'already_host' %}
-    User already has hosting access.
-  {% elif err == 'inactive_user' %}
-    Cannot invite or modify an inactive user.
-  {% elif err == 'invalid_email' %}
-    Please enter a valid email address.
-  {% elif err == 'stub_user' %}
-    Stub users cannot be granted hosting directly. Send an invitation instead.
-  {% elif err == 'admin_user' %}
-    Cannot modify hosting access for administrators.
-  {% elif err == 'invite_not_found' %}
-    Invitation not found or has expired.
-  {% elif err == 'already_host' %}
-    This user already has hosting access enabled.
-  {% else %}
-    {{ err }}
-  {% endif %}
-</div>
-{% endif %}
-{% if request.query_params.get('success') %}
-  {% set succ = request.query_params.get('success') %}
-  <div class="alert alert-success">
-    {% if succ == 'invite_sent' %}
-      Invitation sent successfully.
-    {% elif succ == 'invite_resent' %}
-      Invitation resent successfully.
-    {% elif succ == 'invite_cancelled' %}
-      Invitation cancelled.
-    {% elif succ == 'hosting_granted' %}
-      Hosting access granted.
-    {% elif succ == 'hosting_revoked' %}
-      Hosting access revoked.
-    {% else %}
-      Action completed successfully.
-    {% endif %}
-  </div>
-{% endif %}
-
-{% macro sortable_header(column, label) %}
-  {% set new_sort_order = 'desc' if sort_by == column and sort_order == 'asc' else 'asc' %}
-  <th>
-    <a href="?sort_by={{ column }}&sort_order={{ new_sort_order }}{% if search %}&search={{ search|urlencode }}{% endif %}{% if limit %}&limit={{ limit }}{% endif %}" class="sort-link">
-      {{ label }}
-      {% if sort_by == column %}
-        <span class="sort-indicator">{% if sort_order == 'asc' %}▲{% else %}▼{% endif %}</span>
-      {% else %}
-        <span class="sort-indicator sort-indicator--placeholder">▲</span>
-      {% endif %}
-    </a>
+{#- Column header that sorts the list; keeps the search, filter and page size. -#}
+{% macro sort_header(column, label, classes='') -%}
+  {% set next_order = 'asc' if sort_by == column and sort_order == 'desc' else 'desc' if sort_by == column else 'asc' %}
+  <th scope="col"{% if classes %} class="{{ classes }}"{% endif %}{% if sort_by == column %} aria-sort="{{ 'ascending' if sort_order == 'asc' else 'descending' }}"{% endif %}>
+    <a href="?sort_by={{ column }}&sort_order={{ next_order }}{% if search %}&search={{ search|urlencode }}{% endif %}{% if show != 'all' %}&show={{ show }}{% endif %}&limit={{ limit }}" class="sort-link">{{ label }}
+      {%- if sort_by == column %} <span class="sort-indicator">{{ '▲' if sort_order == 'asc' else '▼' }}</span>{% endif %}</a>
   </th>
-{% endmacro %}
+{%- endmacro %}
 
-<details class="create-panel">
-  <summary>Invite Organizer</summary>
-  <div class="create-body">
-    <p class="text-secondary create-hint">Send an email invitation granting hosting access to create events. If the recipient does not have an account, they will be guided to set a password and claim hosting access.</p>
-    <form method="post" action="/admin/users/invite" class="inline-form">
-      <input type="email" name="email" placeholder="organizer@example.com" required />
-      <input type="text" name="display_name" placeholder="Display Name (optional)" />
-      <button type="submit" class="btn btn-primary">Send Invitation</button>
-      <button type="button" class="btn btn-outline" onclick="this.closest('details').removeAttribute('open'); return false;">Cancel</button>
-    </form>
-  </div>
-</details>
-
-<div class="search-bar">
-  <form method="get" action="/admin/users/" class="search-form">
-    {% if sort_by %}<input type="hidden" name="sort_by" value="{{ sort_by }}">{% endif %}
-    {% if sort_order %}<input type="hidden" name="sort_order" value="{{ sort_order }}">{% endif %}
-    {% if limit %}<input type="hidden" name="limit" value="{{ limit }}">{% endif %}
-    <input type="text" name="search" value="{{ search or '' }}" placeholder="Search by email or name..." class="search-input">
-    <button type="submit" class="btn btn-primary">Search</button>
-    {% if search %}
-      <a href="/admin/users/" class="btn">Clear</a>
-    {% endif %}
-  </form>
+{% block content %}
+<div class="ul-header">
+  <h1>Users</h1>
+  <p class="ul-subtitle">Everyone with a VoxBento account.</p>
 </div>
 
-{% if users %}
-<div class="data-table-container">
-<table class="data-table users-table">
-  <thead>
-    <tr>
-      <th>#</th>
-      {{ sortable_header('email', 'Email') }}
-      {{ sortable_header('display_name', 'Display Name') }}
-      <th>Admin</th>
-      <th>Hosting</th>
-      {{ sortable_header('email_verified', '2FA Status') }}
-      {{ sortable_header('is_active', 'Status') }}
-      {{ sortable_header('created_at', 'Joined') }}
-      <th class="actions-col">Actions</th>
-    </tr>
-  </thead>
-  <tbody>
-    {% for user in users %}
-    <tr>
-      <td>{{ (page - 1) * (limit or 50) + loop.index if page and page > 1 else loop.index }}</td>
-      <td><a href="/admin/users/{{ user.id }}/">{{ user.email }}</a></td>
-      <td><a href="/admin/users/{{ user.id }}/">{{ user.display_name }}</a></td>
-      <td>
-        {% if user.is_admin %}
-        <span class="badge badge-role badge-event_admin">Admin</span>
-        {% else %}
-        <span class="muted">—</span>
-        {% endif %}
-      </td>
-      <td>
-        {% if user.can_host %}
-        <span class="badge badge-valid">Host</span>
-        {% else %}
-          {% if user.hosting_requested_at %}
-          <span class="badge badge-role" title="Requested {{ user.hosting_requested_at.strftime('%b %d, %Y') }}">Requested</span>
-          {% endif %}
-          {% if token_map and user.id in token_map and not token_map[user.id].is_used %}
-            {% set tok = token_map[user.id] %}
-            {% if tok.is_expired %}
-            <span class="badge badge-used">Expired</span>
-            {% else %}
-            <span class="badge badge-warning">Pending</span>
-            {% endif %}
-          {% elif not user.hosting_requested_at and user.hosting_revoked_at %}
-          <span class="badge badge-used" title="Revoked {{ user.hosting_revoked_at.strftime('%b %d, %Y') }}">Revoked</span>
-          {% elif not user.hosting_requested_at %}
-          <span class="muted">—</span>
-          {% endif %}
-        {% endif %}
-      </td>
-      <td>
-        {% if user.email_verified %}
-        <span class="badge badge-valid">Completed</span>
-        {% else %}
-        <span class="badge badge-used">Pending</span>
-        {% endif %}
-      </td>
-      <td>
-        {% if user.is_active %}
-        <span class="status-live">● Active</span>
-        {% else %}
-        <span class="status-offline">○ Inactive</span>
-        {% endif %}
-      </td>
-      <td>{{ user.created_at.strftime('%b %d, %Y') if user.created_at else '—' }}</td>
-      <td class="actions-cell">
-        {% if user.can_host %}
-          {% if not user.is_admin and user.is_active %}
-          <form method="post" action="/admin/users/{{ user.id }}/hosting" class="inline-form">
-            <input type="hidden" name="action" value="revoke">
-            <button type="submit" class="btn btn-sm btn-warning">Revoke Hosting</button>
-          </form>
-          {% endif %}
-        {% elif token_map and user.id in token_map and not token_map[user.id].is_used %}
-        {% set tok = token_map[user.id] %}
-        <form method="post" action="/admin/users/invite/{{ tok.id }}/resend" class="inline-form">
-          <button type="submit" class="btn btn-sm btn-outline" title="Resend invitation email">Resend</button>
-        </form>
-        <form method="post" action="/admin/users/invite/{{ tok.id }}/cancel" class="inline-form"
-              data-confirm="Cancel invitation for {{ user.email }}?">
-          <button type="submit" class="btn btn-sm btn-danger" title="Cancel invitation">Cancel</button>
-        </form>
-        {% elif not user.is_admin and user.is_active %}
-          {% if user.password_hash %}
-          <form method="post" action="/admin/users/{{ user.id }}/hosting" class="inline-form">
-            <input type="hidden" name="action" value="grant">
-            <button type="submit" class="btn btn-sm btn-primary">Grant Hosting</button>
-          </form>
-          {% else %}
-          <form method="post" action="/admin/users/invite" class="inline-form">
-            <input type="hidden" name="email" value="{{ user.email }}">
-            <button type="submit" class="btn btn-sm btn-primary" title="Send hosting invitation email">Invite</button>
-          </form>
-          {% endif %}
-        {% endif %}
-        <form method="post" action="/admin/users/{{ user.id }}/toggle-active" class="inline-form">
-          <button type="submit" class="btn btn-sm {{ 'btn-warning' if user.is_active else 'btn-success' }}">
-            {{ 'Deactivate' if user.is_active else 'Activate' }}
-          </button>
-        </form>
-        <form method="post" action="/admin/users/{{ user.id }}/delete" class="inline-form"
-              data-confirm="Delete user {{ user.email }}? This cannot be undone.">
-          <button type="submit" class="btn btn-sm btn-danger">Delete</button>
-        </form>
-      </td>
-    </tr>
-    {% endfor %}
-  </tbody>
-</table>
-</div>
-  {% include 'admin/pagination.html' %}
-{% else %}
-<div class="empty-state">
-  <p>No registered users yet. Users can sign up at <a href="/register">/register</a>.</p>
-</div>
+{% if notice %}
+<div class="alert alert-{{ 'danger' if notice[0] == 'error' else 'success' }}" role="{{ 'alert' if notice[0] == 'error' else 'status' }}">{{ notice[1] }}</div>
 {% endif %}
+<div class="ul-live" data-users-live role="status" aria-live="polite"></div>
 
-<div class="admin-help-section">
-  <h3>How Roles Work</h3>
-  <p>Roles are assigned <strong>per event</strong>, not globally. To manage a user's role for a specific event, go to that event's detail page and click <strong>Members</strong>.</p>
-  <table class="data-table compact">
-    <thead>
-      <tr><th>Role</th><th>Scope</th><th>Permissions</th></tr>
-    </thead>
-    <tbody>
-      <tr><td><strong>listener</strong></td><td>Event</td><td>Listen to interpretation streams and participate in booth chat.</td></tr>
-      <tr><td><strong>interpreter</strong></td><td>Event</td><td>Go live and provide real-time interpretation in assigned booths.</td></tr>
-      <tr><td><strong>coordinator</strong></td><td>Event</td><td>Assign active interpreters and manage handoffs within booths.</td></tr>
-      <tr><td><strong>event_admin</strong></td><td>Event</td><td>Manage booths, rooms, and generate invite tokens for the event.</td></tr>
-    </tbody>
-  </table>
-</div>
+<section class="ul-card" aria-label="Users">
+  <form class="ul-filters" method="get" action="/admin/users/" data-users-filter>
+    <label class="ul-filter-label" for="ul-search">Search</label>
+    <input class="ul-input ul-input--search" id="ul-search" type="search" name="search" value="{{ search or '' }}" placeholder="Name or email" />
+    <label class="ul-filter-label" for="ul-show">Show</label>
+    <select class="ul-input ul-input--select" id="ul-show" name="show" data-auto-submit>
+      {% for value, label in show_options %}
+      <option value="{{ value }}"{% if value == show %} selected{% endif %}>{{ label }}</option>
+      {% endfor %}
+    </select>
+    <span class="ul-count">{{ total_users }} user{{ '' if total_users == 1 else 's' }}</span>
+  </form>
+
+  {% if users %}
+  <div class="ul-table-wrap">
+    <table class="ul-table">
+      <thead>
+        <tr>
+          {{ sort_header('email', 'User') }}
+          <th scope="col" class="ul-center">Hosting access</th>
+          <th scope="col" class="ul-center">Admin</th>
+          <th scope="col" class="ul-center">Active</th>
+          <th scope="col" class="ul-center">Verified</th>
+          {{ sort_header('created_at', 'Joined') }}
+          <th scope="col"><span class="visually-hidden">Open</span></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for u in users %}
+        {% set is_self = u.id == current_user_id %}
+        {% set is_last_admin = u.is_admin and u.is_active and active_admin_count <= 1 %}
+        {% set pending_invite = token_map.get(u.id) %}
+        <tr data-user-row data-can-host="{{ 'true' if u.can_host else 'false' }}"{% if not u.is_active %} class="is-deactivated"{% endif %}>
+          <td>
+            <a class="ul-name" href="/admin/users/{{ u.id }}/">{{ u.display_name }}</a>
+            <span class="ul-email">{{ u.email }}</span>
+            {% if pending_invite and not pending_invite.is_expired %}
+            <span class="ul-tag ul-tag--pending">Invitation pending</span>
+            {% elif not u.email_verified %}
+            <span class="ul-tag" data-unverified-tag>Email not verified</span>
+            {% endif %}
+          </td>
+          <td class="ul-center">
+            {% if u.is_admin %}
+              {{ access_switch(u, 'hosting', true, 'Hosting access', 'Admins can always create events') }}
+            {% elif not u.can_host and not u.password_hash %}
+              {{ access_switch(u, 'hosting', false, 'Hosting access', "Hasn't finished setting up their account. Send an invitation from the Hosting access page.") }}
+            {% elif not u.can_host and not u.is_active %}
+              {{ access_switch(u, 'hosting', false, 'Hosting access', 'Reactivate the account first') }}
+            {% else %}
+              {{ access_switch(u, 'hosting', u.can_host, 'Hosting access') }}
+            {% endif %}
+          </td>
+          <td class="ul-center">
+            {% if is_self %}
+              {{ access_switch(u, 'admin', u.is_admin, 'Admin', "You can't change your own Admin status") }}
+            {% elif is_last_admin %}
+              {{ access_switch(u, 'admin', true, 'Admin', 'VoxBento needs at least one active Admin') }}
+            {% elif not u.is_admin and not u.is_active %}
+              {{ access_switch(u, 'admin', false, 'Admin', 'Reactivate the account first') }}
+            {% else %}
+              {{ access_switch(u, 'admin', u.is_admin, 'Admin', '',
+                   'Make ' ~ u.display_name ~ ' an Admin? Admins have full access to the Admin panel and every event.',
+                   'Remove Admin from ' ~ u.display_name ~ '?') }}
+            {% endif %}
+          </td>
+          <td class="ul-center">
+            {% if is_self %}
+              {{ access_switch(u, 'active', u.is_active, 'Active', "You can't deactivate your own account") }}
+            {% elif is_last_admin %}
+              {{ access_switch(u, 'active', true, 'Active', 'VoxBento needs at least one active Admin') }}
+            {% else %}
+              {{ access_switch(u, 'active', u.is_active, 'Active', '', '',
+                   'Deactivate ' ~ u.display_name ~ '? They are signed out and can no longer sign in until reactivated.') }}
+            {% endif %}
+          </td>
+          <td class="ul-center">
+            {% if is_self %}
+              {{ access_switch(u, 'verified', u.email_verified, 'Verified', "You can't unverify your own email address") }}
+            {% elif is_last_admin and u.email_verified %}
+              {{ access_switch(u, 'verified', true, 'Verified', 'VoxBento needs at least one active Admin') }}
+            {% else %}
+              {{ access_switch(u, 'verified', u.email_verified, 'Verified', '', '',
+                   'Mark ' ~ u.display_name ~ '’s email as not verified? They will not be able to sign in until verified.') }}
+            {% endif %}
+          </td>
+          <td class="ul-joined">{{ u.created_at.strftime('%b %d, %Y') if u.created_at else '—' }}</td>
+          <td class="ul-open"><a href="/admin/users/{{ u.id }}/" aria-label="View {{ u.display_name }}">View</a></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="ul-empty">No users match{% if search %} “{{ search }}”{% endif %}.</p>
+  {% endif %}
+</section>
+
+{% include 'admin/pagination.html' %}
+
+<dialog class="ul-dialog" data-users-confirm aria-labelledby="ul-confirm-title">
+  <form method="dialog">
+    <h2 class="ul-dialog-title" id="ul-confirm-title">Please confirm</h2>
+    <p class="ul-dialog-text" data-confirm-text></p>
+    <div class="ul-dialog-actions">
+      <button type="submit" value="cancel" class="btn btn-outline">Cancel</button>
+      <button type="submit" value="confirm" class="btn btn-primary" data-confirm-ok>Confirm</button>
+    </div>
+  </form>
+</dialog>
 {% endblock %}

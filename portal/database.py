@@ -20,22 +20,25 @@ import logging
 import secrets
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import sqlalchemy as sa
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import joinedload, selectinload
 
 from portal.config import settings
 from portal.models import (
+    HOSTING_REQUEST_OPEN,
     AuthToken,
     Base,
     BoothMembership,
     DBBooth,
+    DeveloperAccount,
     Event,
     EventAPIKey,
     EventMembership,
+    HostingRequest,
     InviteToken,
     Room,
     RoomMembership,
@@ -45,6 +48,7 @@ from portal.models import (
     generate_token,
     utc_now,
 )
+from portal.roles import EVENT_OWNER
 
 logger = logging.getLogger(__name__)
 
@@ -169,7 +173,7 @@ async def create_event(
         membership = EventMembership(
             event_id=ev.id,
             user_id=owner_user_id,
-            role="event_owner",
+            role=EVENT_OWNER,
         )
         session.add(membership)
         await session.flush()
@@ -593,21 +597,44 @@ async def get_user_by_id(session: AsyncSession, user_id: int) -> User | None:
     return result.scalar_one_or_none()
 
 
-async def count_users(session: AsyncSession, search: str | None = None) -> int:
-    stmt = select(func.count(User.id))
+# "Show" filter on the Admin Users page (#765).
+USER_FILTERS = {
+    "all": None,
+    "admins": User.is_admin.is_(True),
+    "hosting": User.can_host.is_(True),
+    "deactivated": User.is_active.is_(False),
+    "unverified": User.email_verified.is_(False),
+}
+
+
+def _user_list_conditions(search: str | None, show: str | None) -> list:
+    conditions = []
     if search:
         search_pattern = f"%{escape_event_search_term(search)}%"
-        stmt = stmt.where(
+        conditions.append(
             or_(
                 User.email.ilike(search_pattern, escape="\\"),
                 User.display_name.ilike(search_pattern, escape="\\"),
             )
         )
+    show_condition = USER_FILTERS.get(show or "all")
+    if show_condition is not None:
+        conditions.append(show_condition)
+    return conditions
+
+
+async def count_users(session: AsyncSession, search: str | None = None, show: str | None = None) -> int:
+    stmt = select(func.count(User.id)).where(*_user_list_conditions(search, show))
     result = await session.execute(stmt)
     return result.scalar_one()
 
 
-_USER_SORT_COLUMNS = {
+async def count_active_admins(session: AsyncSession) -> int:
+    stmt = select(func.count(User.id)).where(User.is_admin.is_(True), User.is_active.is_(True))
+    return (await session.execute(stmt)).scalar_one()
+
+
+USER_SORT_COLUMNS = {
     "id": User.id,
     "email": User.email,
     "display_name": User.display_name,
@@ -626,19 +653,11 @@ async def list_users(
     search: str | None = None,
     sort_by: str = "created_at",
     sort_order: str = "asc",
+    show: str | None = None,
 ) -> list[User]:
-    stmt = select(User)
+    stmt = select(User).where(*_user_list_conditions(search, show))
 
-    if search:
-        search_pattern = f"%{escape_event_search_term(search)}%"
-        stmt = stmt.where(
-            or_(
-                User.email.ilike(search_pattern, escape="\\"),
-                User.display_name.ilike(search_pattern, escape="\\"),
-            )
-        )
-
-    sort_column = _USER_SORT_COLUMNS.get(sort_by, User.created_at)
+    sort_column = USER_SORT_COLUMNS.get(sort_by, User.created_at)
     # Tie-break on id so rows sharing a sort value keep a stable order across pages.
     if sort_order == "desc":
         order_by = (sort_column.desc(), User.id.desc())
@@ -667,6 +686,115 @@ async def delete_user(session: AsyncSession, user_id: int) -> bool:
     await session.delete(user)
     await session.flush()
     return True
+
+
+async def get_developer_account(session: AsyncSession, user_id: int) -> DeveloperAccount | None:
+    stmt = select(DeveloperAccount).where(DeveloperAccount.user_id == user_id).order_by(DeveloperAccount.id.desc())
+    return (await session.execute(stmt.limit(1))).scalars().first()
+
+
+async def has_approved_developer_app(session: AsyncSession, user_id: int) -> bool:
+    stmt = select(DeveloperAccount.id).where(
+        DeveloperAccount.user_id == user_id,
+        DeveloperAccount.status == "approved",
+    )
+    return (await session.execute(stmt.limit(1))).first() is not None
+
+
+# ---------------------------------------------------------------------------
+# HostingRequest CRUD
+# ---------------------------------------------------------------------------
+
+
+async def create_hosting_request(
+    session: AsyncSession,
+    *,
+    user_id: int,
+    organization: str,
+    event_name: str,
+    languages: str,
+    event_starts_on: date | None = None,
+    event_ends_on: date | None = None,
+    message: str = "",
+) -> HostingRequest:
+    hosting_request = HostingRequest(
+        user_id=user_id,
+        organization=organization,
+        event_name=event_name,
+        languages=languages,
+        event_starts_on=event_starts_on,
+        event_ends_on=event_ends_on,
+        message=message,
+    )
+    session.add(hosting_request)
+    await session.flush()
+    return hosting_request
+
+
+async def get_hosting_request(session: AsyncSession, request_id: int) -> HostingRequest | None:
+    stmt = select(HostingRequest).options(joinedload(HostingRequest.user)).where(HostingRequest.id == request_id)
+    return (await session.execute(stmt)).scalar_one_or_none()
+
+
+async def get_open_hosting_request(session: AsyncSession, user_id: int) -> HostingRequest | None:
+    stmt = select(HostingRequest).options(joinedload(HostingRequest.user)).where(
+        HostingRequest.user_id == user_id,
+        HostingRequest.status == HOSTING_REQUEST_OPEN,
+    )
+    return (await session.execute(stmt)).scalars().first()
+
+
+async def list_open_hosting_requests(session: AsyncSession) -> list[HostingRequest]:
+    """Open hosting requests, newest first, with the requesting user loaded."""
+    stmt = (
+        select(HostingRequest)
+        .options(joinedload(HostingRequest.user))
+        .where(HostingRequest.status == HOSTING_REQUEST_OPEN)
+        .order_by(HostingRequest.created_at.desc(), HostingRequest.id.desc())
+    )
+    return list((await session.execute(stmt)).scalars().all())
+
+
+async def count_open_hosting_requests(session: AsyncSession) -> int:
+    stmt = select(func.count(HostingRequest.id)).where(HostingRequest.status == HOSTING_REQUEST_OPEN)
+    return (await session.execute(stmt)).scalar_one()
+
+
+async def count_pending_developer_accounts(session: AsyncSession) -> int:
+    """Developer API applications waiting for an Admin to approve or reject them."""
+    stmt = select(func.count(DeveloperAccount.id)).where(DeveloperAccount.status == "pending")
+    return (await session.execute(stmt)).scalar_one()
+
+
+async def close_hosting_request(
+    session: AsyncSession,
+    hosting_request: HostingRequest,
+    *,
+    status: str,
+    decided_by_user_id: int | None,
+    decline_reason: str | None = None,
+) -> None:
+    """Record the outcome of an open request and clear the user's pending flag."""
+    hosting_request.status = status
+    hosting_request.decided_by_user_id = decided_by_user_id
+    hosting_request.decided_at = utc_now()
+    hosting_request.decline_reason = decline_reason
+    if hosting_request.user is not None:
+        hosting_request.user.hosting_requested_at = None
+    await session.flush()
+
+
+async def close_open_hosting_request(
+    session: AsyncSession,
+    user_id: int,
+    *,
+    status: str,
+    decided_by_user_id: int | None,
+) -> None:
+    """Close the user's open request, if any, when access is decided elsewhere."""
+    hosting_request = await get_open_hosting_request(session, user_id)
+    if hosting_request is not None:
+        await close_hosting_request(session, hosting_request, status=status, decided_by_user_id=decided_by_user_id)
 
 
 # ---------------------------------------------------------------------------
@@ -1029,14 +1157,18 @@ async def get_api_keys_for_event(session: AsyncSession, event_id: int) -> list[E
 
 
 async def revoke_api_key(session: AsyncSession, key_id: int, event_id: int) -> bool:
-    stmt = select(EventAPIKey).where(EventAPIKey.id == key_id, EventAPIKey.event_id == event_id)
+    stmt = (
+        update(EventAPIKey)
+        .where(
+            EventAPIKey.id == key_id,
+            EventAPIKey.event_id == event_id,
+            EventAPIKey.active.is_(True),
+        )
+        .values(active=False)
+    )
     result = await session.execute(stmt)
-    key = result.scalar_one_or_none()
-    if key:
-        key.active = False
-        await session.flush()
-        return True
-    return False
+    await session.flush()
+    return result.rowcount == 1
 
 
 async def verify_api_key(session: AsyncSession, raw_key: str) -> EventAPIKey | None:

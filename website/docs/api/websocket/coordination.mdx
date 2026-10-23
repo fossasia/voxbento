@@ -14,11 +14,13 @@ To join a booth's coordination room, establish a WebSocket connection to:
 /ws/booth/{booth_id}
 ```
 
-### The `?token=` Parameter
-When joining the WebSocket, the client must pass a valid JWT in the `?token=` query parameter. This token is typically the `session_token` generated via an invite link, or the `user_token` for registered accounts.
+### Authentication (Tokens and Cookies)
+When establishing the WebSocket connection, `resolve_ws_auth` resolves credentials as follows:
+- The **`?token=` query parameter** containing a JWT (either a participant token or a user JWT). Note that if an invalid `?token=` parameter is provided, it takes precedence and immediately closes the socket with close code `4001`, even if a valid session cookie exists.
+- **HTTP cookies** (`session_token` or `user_token`), checked as fallback when `?token=` is not provided.
+- If credentials are missing altogether, the connection handshake is still permitted when `BOOTH_ACCESS_TOKEN` is unset (local development). When `BOOTH_ACCESS_TOKEN` is configured, missing credentials immediately close the socket with code `4001`.
 
-- If the token is missing or invalid, the server immediately drops the connection with WebSocket close code `4001`.
-- The server decodes the token to determine the user's role (`interpreter`, `room_coordinator`, etc.) and identity. **The client cannot assert its own role; the server solely trusts the JWT claims.**
+The server decodes verified credentials to determine the user's role (`interpreter`, `room_coordinator`, etc.) and identity. **The client cannot assert its own role; the server solely trusts the server-verified JWT claims.**
 
 ## Outbound Messages (Client to Server)
 
@@ -59,8 +61,24 @@ Sending an internal chat message to the booth.
 }
 ```
 
-### 4. Initiate a Handoff (Set Active)
-This is the core of the Voxbento handoff mechanic. A participant with the `BOOTH_SET_ACTIVE` permission (e.g., a `room_coordinator`) sends this message to designate a new active interpreter.
+### 4. Request WHIP Publish Ticket
+Before an active interpreter can publish media via WHIP, they must request a single-use publish ticket:
+```json
+{
+  "type": "booth:request-publish-ticket"
+}
+```
+The server validates that the participant holds the active interpreter role and that the booth is broadcasting, then responds directly with:
+```json
+{
+  "type": "booth:publish-ticket",
+  "ticket": "ticket-token-string"
+}
+```
+The browser sends this ticket as `Authorization: Bearer <ticket>` in its WHIP HTTP POST request to MediaMTX.
+
+### 5. Initiate a Handoff (Set Active)
+This message designates a new active interpreter in the booth.
 
 ```json
 {
@@ -70,7 +88,12 @@ This is the core of the Voxbento handoff mechanic. A participant with the `BOOTH
   }
 }
 ```
-**Authorization Check:** The backend explicitly calls `can_set_active(session.granted_role)`. If an `interpreter` (who lacks this permission) tries to send this message, the server ignores it.
+**Authorization Policy:** Handled by `BoothRegistry.set_active_interpreter`:
+- Joined interpreters may select themselves (`requester_id == target_id`) to take over as active interpreter, even if they lack the `BOOTH_SET_ACTIVE` permission.
+- Room coordinators, Event owners and Admins (every role with `BOOTH_SET_ACTIVE` in `portal/roles.py`), or the currently active interpreter, can assign any joined interpreter as the new active interpreter. Each participant in `booth:state` carries `can_go_live` and `can_set_active`, so clients never compare role names.
+- If an unauthorized participant attempts to reassign another participant, the server rejects the request and sends a `booth:error` message back to the client.
+
+Coordinators and interpreters can also utilize the structured handoff flow using `booth:initiate-handoff`, `booth:accept-handoff`, and `booth:cancel-handoff`.
 
 ## Inbound Messages (Server to Client)
 
@@ -80,7 +103,7 @@ Every time a participant joins, leaves, updates their mic status, or the active 
 ```json
 {
   "type": "booth:state",
-  "booth_id": "pycon2026-en",
+  "booth_id": "pycon2026-14-en",
   "active_interpreter_id": "participant-uuid-here",
   "participants": {
     "participant-uuid-here": {
@@ -115,6 +138,7 @@ When a `room_coordinator` clicks "Set Active" in the UI, here is the exact seque
 1. **WS Request:** Coordinator sends `booth:set-active` with the target's ID.
 2. **Server Auth:** The `_handle_set_active` backend function verifies the coordinator has `BOOTH_SET_ACTIVE` permissions.
 3. **State Update:** The server updates the in-memory `BoothRegistry` and immediately broadcasts a new `booth:state` to all clients.
-4. **Client Auth Fetch:** The target interpreter's client sees they are now the `active_interpreter_id`. The client immediately sends an HTTP `GET /api/booth/{id}/whip-url`.
-5. **WHIP URL Gating:** The FastAPI backend verifies the requesting client's `session_id` exactly matches the `active_interpreter_id` stored in the `BoothRegistry`. It returns the WHIP URL.
-6. **Media Disconnection:** The new interpreter executes the WHIP HTTP POST handshake. MediaMTX, configured with `overridePublisher: yes`, immediately accepts the new connection and kicks the old publisher, ensuring listeners hear a seamless transition.
+4. **Active Interpreter Notification:** The incoming interpreter's client sees they are now the `active_interpreter_id`.
+5. **Publish Ticket Request:** The browser sends `{"type": "booth:request-publish-ticket"}` over the WebSocket.
+6. **Ticket Issuance:** The server verifies that the participant is active and broadcast is unlocked, issuing a single-use 30-second ticket (`booth:publish-ticket`).
+7. **Media Disconnection & Seamless Switch:** The incoming interpreter sends an HTTP POST with their WebRTC SDP offer to the WHIP URL with `Authorization: Bearer <ticket>`. MediaMTX verifies the ticket with `/internal/media-auth`, accepts the new connection, and using `overridePublisher: yes` kicks the old publisher, ensuring listeners experience sub-second handoff without reconnection.

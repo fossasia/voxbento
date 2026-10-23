@@ -14,18 +14,21 @@ from portal.utils import safe_redirect
 WORKSPACE_PREFIX = "/workspace"
 ADMIN_PREFIX = "/admin"
 _EVENT_PATH_RE = re.compile(r"^/(?:api/)?admin(?:/api)?/events/(?P<event_id>\d+)(?:/|$)")
+# "/workspace/" itself is "My events" (#766), served by its own route for every
+# signed-in user, so it is not mapped onto the admin dashboard.
 _WORKSPACE_ROUTE_PATTERNS = (
-    re.compile(r"/workspace/?"),
     re.compile(r"/workspace/events/?"),
     re.compile(r"/workspace/setup/?"),
     re.compile(r"/workspace/events/\d+/?"),
     re.compile(r"/workspace/events/\d+/(?:setup/(?:rooms|booths|invite)|regenerate_join_code|api-settings|delete)/?"),
     re.compile(r"/workspace/events/\d+/(?:rooms|members)/?"),
     re.compile(r"/workspace/events/\d+/members/\d+/(?:invite|delete)/?"),
-    re.compile(r"/workspace/events/\d+/rooms/\d+(?:/(?:transcripts|edit|delete))?/?"),
+    re.compile(r"/workspace/events/\d+/team(?:/(?:add|remove|resend|links(?:/revoke)?)?)?"),
+    re.compile(r"/workspace/events/\d+/rooms/\d+(?:/(?:transcripts|edit|delete|sender))?/?"),
     re.compile(r"/workspace/events/by-slug/[^/]+/rooms/[^/]+/?"),
     re.compile(r"/workspace/events/by-slug/[^/]+/rooms/by-eventyay/[^/]+/?"),
-    re.compile(r"/workspace/events/\d+/rooms/\d+/(?:program-ingest|program-relay|meeting-source)"),
+    re.compile(r"/workspace/events/\d+/rooms/\d+/ai-vocabulary/(?:upload|export|delete)/?"),
+    re.compile(r"/workspace/events/\d+/rooms/\d+/(?:program-ingest|program-relay|program-sender|meeting-source)"),
     re.compile(r"/workspace/events/\d+/rooms/\d+/members(?:/\d+/(?:invite|delete))?/?"),
     re.compile(r"/workspace/events/\d+/rooms/\d+/booths/?"),
     re.compile(
@@ -58,6 +61,8 @@ def workspace_to_admin_path(path: str) -> str | None:
 
 def legacy_admin_to_workspace_path(path: str) -> str | None:
     """Return the organizer equivalent of a legacy management path."""
+    if path in (ADMIN_PREFIX, f"{ADMIN_PREFIX}/"):
+        return f"{WORKSPACE_PREFIX}/"
     if path == ADMIN_PREFIX or path.startswith(f"{ADMIN_PREFIX}/"):
         workspace_path = f"{WORKSPACE_PREFIX}{path[len(ADMIN_PREFIX) :]}"
     elif path.startswith("/api/admin/"):
@@ -76,7 +81,7 @@ async def should_redirect_organizer(request: Request) -> bool:
         principal = await resolve_request_principal(request, db_session)
         if principal["user"] is None:
             return False
-        if principal["is_super_admin"]:
+        if principal["is_admin"]:
             return False
 
         event_match = _EVENT_PATH_RE.match(request.url.path)
@@ -87,22 +92,28 @@ async def should_redirect_organizer(request: Request) -> bool:
         return principal["can_host"] or bool(principal["owned_event_ids"])
 
 
-def management_template_context(request: Request) -> dict[str, str | bool]:
+def management_template_context(request: Request) -> dict[str, str | bool | int]:
     """Expose the externally visible management namespace to Jinja templates."""
     is_workspace = getattr(request.state, "is_workspace", False)
     principal = getattr(request.state, "principal", None)
     if principal:
         can_host = bool(principal.get("can_host", False))
-        is_super_admin = bool(principal.get("is_super_admin", False))
+        is_admin = bool(principal.get("is_admin", False))
+        open_hosting_requests = int(principal.get("open_hosting_requests", 0))
+        pending_developer_accounts = int(principal.get("pending_developer_accounts", 0))
     else:
         can_host = False
-        is_super_admin = False
+        is_admin = False
+        open_hosting_requests = 0
+        pending_developer_accounts = 0
     return {
         "management_prefix": WORKSPACE_PREFIX if is_workspace else ADMIN_PREFIX,
         "management_api_prefix": "/api/workspace" if is_workspace else "/api/admin",
         "is_workspace": is_workspace,
         "can_host": can_host,
-        "is_super_admin": is_super_admin,
+        "is_admin": is_admin,
+        "open_hosting_requests": open_hosting_requests,
+        "pending_developer_accounts": pending_developer_accounts,
     }
 
 

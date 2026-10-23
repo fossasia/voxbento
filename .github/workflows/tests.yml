@@ -14,10 +14,10 @@ on:
 
   workflow_dispatch:
 
-# Cancel superseded runs on the same PR / branch
+# Cancel superseded runs on the same PR; allow post-merge and branch pushes to run to completion
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read

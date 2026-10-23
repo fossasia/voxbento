@@ -61,12 +61,12 @@ _require_access(credentials, token)   # passes if booth_access_token is unset
 
 `resolve_booth_role(payload, booth_id)` returns the most privileged applicable role:
 
-1. `super_admin` — if `is_admin=True` in user token.
-2. `event_admin` — if user has `EventMembership.role == 'event_admin'` for the booth's event.
-3. Role from `BoothMembership` for the specific booth.
+1. `admin` — if the signed-in account is an active Admin (`users.is_admin`, read from the database, not the token).
+2. Role from `BoothMembership` for the specific booth.
+3. Role from `RoomMembership` for the booth's room.
 4. Role from `EventMembership` for the booth's event.
-5. Role embedded in participant `session_token` — but only if `event_slug + language_code` match.
-6. Returns `None` if no applicable role found → 403 on page routes.
+5. Role embedded in participant `session_token` — but only if `event_slug`, room and `language_code` match.
+6. The highest of these wins (`portal.roles.highest_role`); `None` if none applies → 403 on page routes.
 
 ---
 

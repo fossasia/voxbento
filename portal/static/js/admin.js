@@ -102,7 +102,32 @@ document.addEventListener('DOMContentLoaded', () => {
   initCustomModal();
   initLocalModelDownloader();
   initAsyncSave();
+  initRevealPanels();
 });
+
+// Buttons with data-reveal-target show a hidden panel (e.g. the reason form for
+// declining a hosting request); data-reveal-close hides it again.
+function initRevealPanels() {
+  document.querySelectorAll('[data-reveal-target]').forEach((btn) => {
+    const panel = document.getElementById(btn.dataset.revealTarget);
+    if (!panel) return;
+    btn.addEventListener('click', () => {
+      panel.hidden = false;
+      btn.setAttribute('aria-expanded', 'true');
+      panel.querySelector('textarea, input')?.focus();
+    });
+  });
+  document.querySelectorAll('[data-reveal-close]').forEach((btn) => {
+    const panel = document.getElementById(btn.dataset.revealClose);
+    if (!panel) return;
+    btn.addEventListener('click', () => {
+      panel.hidden = true;
+      const opener = document.querySelector(`[data-reveal-target="${panel.id}"]`);
+      opener?.setAttribute('aria-expanded', 'false');
+      opener?.focus();
+    });
+  });
+}
 
 const FUNNY_WARNINGS = [
   "Are you sure? We can't undo this, but we can judge you.",
@@ -321,7 +346,7 @@ window.adminAPIKeys = {
       document.getElementById('api-key-name').value = '';
     }
     
-    modal.style.display = 'flex';
+    modal.hidden = false;
     void modal.offsetWidth; // force reflow
     modal.classList.add('active');
   },
@@ -336,7 +361,7 @@ window.adminAPIKeys = {
     
     modal.classList.remove('active');
     setTimeout(() => {
-      modal.style.display = 'none';
+      modal.hidden = true;
     }, 200);
   },
 
