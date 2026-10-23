@@ -159,6 +159,10 @@ credentials, or upstream errors. Authentication failures are bounded to 10/IP/mi
 with a bounded process-local cache. Do not enable HTTP request-body/debug logging
 on the media-auth route. The access-log filter redacts the hook key. Monitor
 degraded/disconnected rooms and worker capacity.
+While MediaMTX or the database stays unavailable, the 2 s reconciler logs
+`program_ingest path_list_unavailable` / `program_ingest database_unavailable` once,
+then an `ongoing` reminder every 5 minutes and a `recovered` line when it clears
+(`portal/outage_log.py`, #964), instead of one line per retry.
 
 ## Synchronization
 

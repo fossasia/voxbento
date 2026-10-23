@@ -572,6 +572,20 @@ def get_booth_sessions(request: Request | WebSocket) -> dict[str, dict]:
     return sessions
 
 
+def booth_session_key(payload: dict | None) -> str | None:
+    """Identify a booth session: a user account, or one invite-link visit.
+
+    Every visit to an invite link gets its own ``sub``, so two people sharing a link stay apart.
+    """
+    if not isinstance(payload, dict) or not payload.get("sub") or is_listener_token(payload):
+        return None
+    if payload.get("user"):
+        return f"user:{payload['sub']}"
+    if payload.get("role"):
+        return f"invite:{payload['sub']}"
+    return None
+
+
 def get_booth_session(request: Request | WebSocket) -> dict | None:
     """Return decoded JWT payload from either user_token (registered user) or session_token (invite link).
 

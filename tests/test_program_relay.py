@@ -41,6 +41,7 @@ async def relay_env(monkeypatch):
     ingest.failures.clear()
     ingest.room_locks.clear()
     relay.relay_health.clear()
+    relay.list_outage.failures = 0
     media: dict[str, dict] = {}
     relays: dict[str, dict] = {}
     pushed: dict[str, str] = {}
@@ -456,6 +457,28 @@ async def test_reconcile_failure_does_not_report_stale_live_relay(relay_env, mon
     await ingest.reconcile_once()
     relay_health = (await client.get(ingest_url(event, room))).json()["health"]["relay"]
     assert relay_health["state"] == "degraded" and str(room.id) not in env["relays"]
+
+
+@pytest.mark.anyio
+async def test_relay_service_outage_is_logged_once_not_every_tick(relay_env, caplog):
+    env = relay_env
+    client, event, room = env["client"], env["event"], env["rooms"][0]
+    secret = await enable_relay(client, event, room)
+    await save_destination(client, event, room)
+    await connect(env, room, secret)
+    env["service"]["up"] = False
+    for _ in range(5):
+        await ingest.reconcile_once()
+    relay_health = (await client.get(ingest_url(event, room))).json()["health"]["relay"]
+    assert relay_health["state"] == "degraded"
+    env["service"]["up"] = True
+    await ingest.reconcile_once()
+    await ingest.reconcile_once()
+    lines = [record.getMessage() for record in caplog.records if record.name == relay.logger.name]
+    assert lines.count("program_relay list_unavailable") == 1
+    recovered = [line for line in lines if "recovered" in line]
+    assert len(recovered) == 1 and recovered[0].startswith("program_relay list_unavailable recovered failures=5 ")
+    assert YOUTUBE_KEY not in caplog.text
 
 
 @pytest.mark.anyio
