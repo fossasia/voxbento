@@ -83,6 +83,7 @@ VoxBento is a production-grade **browser-first interpretation booth console** fo
 | `portal/meeting_source.py` | Managed Jitsi floor agent lifecycle reconciler |
 | `portal/program_ingest.py` | Floor authorization and reconciliation for Program Stream Ingest |
 | `portal/program_relay.py` | YouTube RTMPS destination management and relay health convergence |
+| `portal/outage_log.py` | `OutageLog` — reconcile loops log a repeating failure once per outage, not per tick |
 | `portal/user_admin.py` | Administrative access rules, user flags (`can_host`, `is_admin`, `is_active`, `email_verified`) |
 | `portal/templates/` | Jinja2 HTML — `base.html`, `interpreter_booth.html`, `listener-event.html`, `admin/` |
 | `portal/static/js/interpreter-booth.js` | Booth UI — WebRTC/WHIP, WebSocket, Jitsi iframe, mic controls, level meter |
