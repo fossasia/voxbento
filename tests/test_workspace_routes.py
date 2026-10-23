@@ -445,7 +445,7 @@ async def test_mission_control_titles_name_the_brand_once(organizer):
     assert event_list.status_code == 200
     assert "<title>Mission Control Events — Voxbento</title>" in event_list.text
     assert grid.status_code == 200
-    assert "<title>Mission Control - Shared Event — Voxbento</title>" in grid.text
+    assert "<title>Mission Control — Shared Event — Voxbento</title>" in grid.text
 
 
 @pytest.mark.anyio

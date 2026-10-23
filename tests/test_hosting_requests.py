@@ -75,7 +75,7 @@ async def open_requests() -> list[HostingRequest]:
 
 
 async def submit(http: AsyncClient, token: str, data: dict[str, str] | None = None):
-    with patch("portal.routers.auth.send_hosting_request_notification", new_callable=AsyncMock) as notify:
+    with patch("portal.routers.auth.queue_notification", new_callable=AsyncMock) as notify:
         res = await http.post(
             "/account/hosting-request",
             data=VALID_FORM if data is None else data,
@@ -153,10 +153,12 @@ async def test_submit_saves_request_notifies_team_and_shows_waiting_state():
         assert user.hosting_requested_at is not None
 
     notify.assert_awaited_once()
-    kwargs = notify.await_args.kwargs
-    assert kwargs["requester_email"] == "priya@example.org"
-    assert kwargs["event_dates"] == "Mar 10, 2027 – Mar 12, 2027"
-    assert kwargs["review_url"].endswith("/admin/hosting-access/requests/")
+    assert notify.await_args.args[1] == "hosting_request"
+    assert notify.await_args.args[2] == "voxbento.dev@gmail.com"
+    context = notify.await_args.args[3]
+    assert context["requester_email"] == "priya@example.org"
+    assert context["event_dates"] == "Mar 10, 2027 – Mar 12, 2027"
+    assert context["review_url"].endswith("/admin/hosting-access/requests/")
 
     html = account.text
     assert "Your request was sent" in html
@@ -300,7 +302,7 @@ async def test_grant_gives_access_and_moves_person_to_people_with_access():
     async with client() as http:
         await submit(http, token)
         hr = (await open_requests())[0]
-        with patch("portal.routers.admin.send_hosting_granted_email", new_callable=AsyncMock) as granted:
+        with patch("portal.routers.admin.queue_notification", new_callable=AsyncMock) as granted:
             res = await http.post(
                 f"/admin/hosting-access/requests/{hr.id}/grant",
                 headers=SAME_ORIGIN,
@@ -310,7 +312,7 @@ async def test_grant_gives_access_and_moves_person_to_people_with_access():
         assert res.status_code == 303
         assert res.headers["location"] == "/admin/hosting-access/requests/?success=request_granted"
         granted.assert_awaited_once()
-        assert granted.await_args.args[0] == "priya@example.org"
+        assert granted.await_args.args[2] == "priya@example.org"
 
         requests_page = await http.get("/admin/hosting-access/requests/", cookies={"user_token": admin_token})
         people_page = await http.get("/admin/hosting-access/", cookies={"user_token": admin_token})
@@ -339,7 +341,7 @@ async def test_decline_requires_reason_then_tells_person_why():
     async with client() as http:
         await submit(http, token)
         hr = (await open_requests())[0]
-        with patch("portal.routers.admin.send_hosting_request_declined_email", new_callable=AsyncMock) as declined:
+        with patch("portal.routers.admin.queue_notification", new_callable=AsyncMock) as declined:
             no_reason = await http.post(
                 f"/admin/hosting-access/requests/{hr.id}/decline",
                 data={"reason": "  "},
@@ -361,10 +363,9 @@ async def test_decline_requires_reason_then_tells_person_why():
         assert res.status_code == 303
         assert res.headers["location"] == "/admin/hosting-access/requests/?success=request_declined"
         declined.assert_awaited_once()
-        assert declined.await_args.args[:2] == (
-            "priya@example.org",
-            "We can only support events with a confirmed date.",
-        )
+        assert declined.await_args.args[1] == "hosting_request_declined"
+        assert declined.await_args.args[2] == "priya@example.org"
+        assert declined.await_args.args[3]["reason"] == "We can only support events with a confirmed date."
 
         account = await http.get("/account", cookies={"user_token": token})
 
@@ -388,13 +389,13 @@ async def test_handled_request_cannot_be_handled_again():
     async with client() as http:
         await submit(http, token)
         hr = (await open_requests())[0]
-        with patch("portal.routers.admin.send_hosting_granted_email", new_callable=AsyncMock):
+        with patch("portal.routers.admin.queue_notification", new_callable=AsyncMock):
             await http.post(
                 f"/admin/hosting-access/requests/{hr.id}/grant",
                 headers=SAME_ORIGIN,
                 cookies={"user_token": admin_token},
             )
-        with patch("portal.routers.admin.send_hosting_request_declined_email", new_callable=AsyncMock) as declined:
+        with patch("portal.routers.admin.queue_notification", new_callable=AsyncMock) as declined:
             res = await http.post(
                 f"/admin/hosting-access/requests/{hr.id}/decline",
                 data={"reason": "Too late"},
@@ -412,7 +413,7 @@ async def test_granting_from_user_page_closes_open_request():
     user_id, token = await make_user()
     async with client() as http:
         await submit(http, token)
-        with patch("portal.routers.admin.send_hosting_granted_email", new_callable=AsyncMock):
+        with patch("portal.routers.admin.queue_notification", new_callable=AsyncMock):
             await http.post(
                 f"/admin/users/{user_id}/hosting",
                 data={"action": "grant"},
@@ -522,7 +523,7 @@ async def test_granted_person_can_create_events():
 
         await submit(http, token)
         hr = (await open_requests())[0]
-        with patch("portal.routers.admin.send_hosting_granted_email", new_callable=AsyncMock):
+        with patch("portal.routers.admin.queue_notification", new_callable=AsyncMock):
             await http.post(
                 f"/admin/hosting-access/requests/{hr.id}/grant",
                 headers=SAME_ORIGIN,
@@ -545,7 +546,7 @@ async def test_grant_refused_for_deactivated_requester():
         user.is_active = False
     hr = (await open_requests())[0]
     async with client() as http:
-        with patch("portal.routers.admin.send_hosting_granted_email", new_callable=AsyncMock) as granted:
+        with patch("portal.routers.admin.queue_notification", new_callable=AsyncMock) as granted:
             res = await http.post(
                 f"/admin/hosting-access/requests/{hr.id}/grant",
                 headers=SAME_ORIGIN,

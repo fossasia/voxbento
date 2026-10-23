@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.templating import Jinja2Templates
 from sqlalchemy import or_, select
 from sqlalchemy.orm import joinedload
@@ -21,13 +21,17 @@ from portal.database import (
 from portal.globals import _JS_CACHE_BUST, asset_version_context, booths
 from portal.models import DBBooth, Event
 from portal.roles import INTERPRETER, ROLE_RANK, can_go_live, can_set_active, highest_role, role_label
+from portal.user_menu import resolve_user_menu, user_menu_context
 from portal.utils import _ensure_mediamtx_path, _make_jitsi_url, safe_redirect
 
-router = APIRouter()
+# Loads the signed-in person once per request for the shared header and user menu.
+router = APIRouter(dependencies=[Depends(resolve_user_menu)])
 
 _BASE_DIR = Path(__file__).resolve().parent.parent
 
-templates = Jinja2Templates(directory=str(_BASE_DIR / "templates"), context_processors=[asset_version_context])
+templates = Jinja2Templates(
+    directory=str(_BASE_DIR / "templates"), context_processors=[asset_version_context, user_menu_context]
+)
 templates.env.filters["role_label"] = role_label
 
 
@@ -201,13 +205,17 @@ async def interpreter_booth_by_identity(
         stmt = (
             select(DBBooth)
             .join(Event)
-            .options(joinedload(DBBooth.room))
+            .options(joinedload(DBBooth.room), joinedload(DBBooth.event))
             .where(Event.slug == event_slug)
             .where(Event.deleted_at.is_(None))
             .where(DBBooth.room_id == room_id)
             .where(DBBooth.language_code == language_code)
         )
         db_booth = (await session.scalars(stmt)).first()
+        # Shown in the booth's top bar instead of the slug and language code.
+        event_name = db_booth.event.display_name if db_booth and db_booth.event else event_slug
+        room_name = db_booth.room.display_name if db_booth and db_booth.room else ""
+        language_name = db_booth.language_name if db_booth else display_language
         relay_whep_url = None
         relay_language_name = None
         if db_booth and db_booth.room:
@@ -232,6 +240,9 @@ async def interpreter_booth_by_identity(
             "booth_language": display_language,
             "booth_channel_id": channel_id,
             "event_slug": event_slug,
+            "event_name": event_name,
+            "room_name": room_name,
+            "language_name": language_name,
             "room_id": room_id,
             "language_code": language_code,
             "whip_url": whip_url,

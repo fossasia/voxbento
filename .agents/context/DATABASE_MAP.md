@@ -311,6 +311,24 @@ URL), `program_relay_key_enc` (Fernet ciphertext of the YouTube stream key; writ
 never serialize or log) and `program_relay_updated_at`. Helpers live in
 `portal/program_relay.py` (`store_destination`, `clear_destination`, `destination`).
 
+## Migration 034 — transactional email outbox (#962)
+
+`email_templates` stores draft and published subject/HTML for every registered
+notification type. `email_template_revisions` retains immutable published
+versions. `email_deliveries` contains the encrypted rendered subject and HTML,
+delivery status, retry lease and schedule fields, expiry, an optional
+idempotency key and an optional `auth_token_id`. That ties an email carrying a
+sign-in or invitation link to its `auth_tokens` row (a plain integer, not a
+foreign key, so the id survives the token's deletion), so the outbox suppresses
+it once the token is redeemed, revoked, expired or deleted. The worker in
+`portal/notifications.py` claims due rows, retries failed sends with back-off,
+marks pending rows past `expires_at` as expired, and erases the rendered
+subject and HTML of finished deliveries after 30 days (the audit row stays).
+No links or email content are shown in the administration history.
+`email_settings` holds one row (id 1) of branding shared by every email:
+`show_logo` (default true) and an optional https `logo_url` (empty means the
+VoxBento logo served by the site). No row means the defaults.
+
 ## Migration 027 — managed meeting agent
 
 Room field `meeting_agent_enabled` (Boolean, default false): the durable desired

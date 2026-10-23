@@ -1,140 +1,120 @@
 {% extends "base.html" %}
 
-{% block title %}Interpreter Lobby - VoxBento{% endblock %}
+{% block title %}My booths — VoxBento{% endblock %}
+
+{% block body_class %} class="account-area lobby-area"{% endblock %}
 
 {% block head %}
-<link rel="stylesheet" href="{{ url_for('static', path='css/landing.css') }}?v={{ js_version }}" />
+<link rel="stylesheet" href="{{ url_for('static', path='css/account-area.css') }}?v={{ asset_version }}" />
+<link rel="stylesheet" href="{{ url_for('static', path='css/app-header.css') }}?v={{ asset_version }}" />
+<link rel="stylesheet" href="{{ url_for('static', path='css/lobby.css') }}?v={{ asset_version }}" />
+<script type="module" src="{{ url_for('static', path='js/user-menu.js') }}?v={{ asset_version }}"></script>
+{% endblock %}
+
+{% block header %}
+{% from "_app_header.html" import app_header with context %}
+{{ app_header() }}
 {% endblock %}
 
 {% block content %}
-<div class="lobby-container">
-  <header class="lobby-header">
-    <div class="header-left">
-      <img src="{{ url_for('static', path='img/wordmark.png') }}" alt="VoxBento" class="lobby-logo" />
-      <h1 class="lobby-title">Interpreter Lobby</h1>
-    </div>
-    <div class="header-right">
-      <a href="/" class="btn btn-outline">Back to Home</a>
-    </div>
-  </header>
+<div class="lobby-page">
+  <h1 class="aa-title">My booths</h1>
+  <p class="aa-lead">Pick a booth to start interpreting. On a new computer or headset, check your audio first.</p>
 
-  <div class="lobby-content">
-    
-    <!-- Left Column: Pre-Flight Checks -->
-    <section class="lobby-section preflight-panel">
-      <h2>Pre-Flight Checks</h2>
-      <p class="section-desc">Ensure your hardware and network are ready before entering the booth.</p>
-      
-      <div class="check-group">
-        <label for="mic-device-select">Microphone</label>
-        <div class="input-group">
-          <select id="mic-device-select" class="form-select">
-            <option value="">Loading devices...</option>
-          </select>
-          <button id="mic-test-btn" type="button" class="btn btn-outline" title="Test Microphone">⚙ Test</button>
-        </div>
-        
-        <div id="meter-row" class="meter-row hidden mt-sm">
-          <span class="meter-label">Input level</span>
-          <canvas id="mic-meter" class="mic-meter" width="400" height="10"></canvas>
-        </div>
-
-        <div class="checkbox-row mt-sm">
-          <input type="checkbox" id="show-virtual-devices" />
-          <label for="show-virtual-devices">Show virtual devices (Zoom, OBS, etc.)</label>
-        </div>
-      </div>
-
-      <div class="check-group mt-lg">
-        <div class="check-group-header">
-          <label>Loopback Audio Test</label>
-          <button id="loopback-test-btn" type="button" class="btn btn-outline btn-sm">Record & Play</button>
-        </div>
-        <p class="hint-sm">Record 5 seconds of audio to hear how you will sound in the booth.</p>
-        <div id="loopback-progress-row" class="hidden mt-sm">
-          <progress id="loopback-progress" class="loopback-progress" value="0" max="100"></progress>
-          <div id="loopback-status" class="loopback-status">Recording...</div>
-        </div>
-      </div>
-
-      <div class="check-group mt-lg">
-        <label>System Diagnostics</label>
-        <ul class="preflight-list">
-          <li id="check-mic-permission" class="preflight-item preflight--pending">
-            <div class="preflight-icon">⏳</div>
-            <div class="preflight-info">
-              <div class="preflight-name">Microphone Permission</div>
-              <div class="preflight-msg">Checking...</div>
-            </div>
-          </li>
-          <li id="check-network" class="preflight-item preflight--pending">
-            <div class="preflight-icon">⏳</div>
-            <div class="preflight-info">
-              <div class="preflight-name">Media Server Connection</div>
-              <div class="preflight-msg">Checking...</div>
-            </div>
-          </li>
-        </ul>
-        <button id="preflight-retry" type="button" class="btn btn-outline btn-sm btn-block-sm">Retry Diagnostics</button>
-      </div>
-      
-    </section>
-
-    <!-- Right Column: Assigned Booths -->
-    <section class="lobby-section assignments-panel">
-      <h2>Your Assigned Booths</h2>
-      <p class="section-desc">Select a booth to join the live session.</p>
-
+  <div class="lobby-grid">
+    <section class="aa-card lobby-booths" aria-labelledby="lobby-booths-title">
+      <div class="aa-card-head"><h2 class="aa-card-title" id="lobby-booths-title">Your booths</h2></div>
       {% if my_booths %}
-        <div class="booth-groups">
         {% for event_name, event_booths in my_booths|groupby('event_name') %}
-          <div class="event-group">
-            <h3 class="event-group-title">{{ event_name }}</h3>
-            
-            {% for room_name, room_booths in event_booths|groupby('room_name') %}
-              {% if room_name %}
-                <h4 class="room-group-title">{{ room_name }}</h4>
-              {% endif %}
-              
-              <div class="booth-cards">
-              {% for b in room_booths %}
-                <div class="card booth-card">
-                  <div class="card-header">
-                    <div class="card-title-group">
-                      <h3>{{ b.language_name }}</h3>
-                    </div>
-                    {% if b.is_live %}
-                      <span class="status-badge live">● LIVE</span>
-                    {% else %}
-                      <span class="status-badge offline">○ OFFLINE</span>
-                    {% endif %}
-                  </div>
-                  
-                  <div class="card-body">
-                    <div class="role-badge">Role: <strong>{{ b.role|role_label }}</strong></div>
-                  </div>
-
-                  <div class="card-footer">
-                    {% if b.can_coordinate %}
-                      <a href="/mission-control/{{ b.event_slug }}/" class="btn btn-primary enter-btn">Go to Mission Control ↗</a>
-                    {% else %}
-                      <a href="/interpreter/{{ b.event_slug }}/{{ b.room_id }}/{{ b.language_code }}" class="btn btn-primary enter-btn">Enter Booth ↗</a>
-                    {% endif %}
-                  </div>
-                </div>
-              {% endfor %}
+        <div class="lobby-event">
+          <h3 class="lobby-event-name">{{ event_name }}</h3>
+          {% for room_name, room_booths in event_booths|groupby('room_name') %}
+          {% if room_name %}<p class="lobby-room-name">{{ room_name }}</p>{% endif %}
+          <ul class="lobby-booth-list">
+            {% for b in room_booths %}
+            <li class="lobby-booth">
+              <div class="lobby-booth-main">
+                <span class="lobby-booth-language">{{ b.language_name }}</span>
+                <span class="lobby-booth-meta">
+                  {% if b.is_live %}<span class="lobby-live">● Live</span>{% else %}<span class="lobby-offline">Not live</span>{% endif %}
+                  · {{ b.role|role_label }}
+                </span>
               </div>
+              <div class="lobby-booth-actions">
+                {% if b.can_coordinate %}
+                <a href="/mission-control/{{ b.event_slug }}/" class="aa-btn">Mission Control</a>
+                {% endif %}
+                <a href="/interpreter/{{ b.event_slug }}/{{ b.room_id }}/{{ b.language_code }}" class="aa-btn aa-btn--primary">Enter booth</a>
+              </div>
+            </li>
             {% endfor %}
-          </div>
+          </ul>
+          {% endfor %}
+        </div>
         {% endfor %}
-        </div>
       {% else %}
-        <div class="empty-state">
-          <p>You have no assigned booths at this time.</p>
-        </div>
+      <div class="lobby-empty">
+        <p class="lobby-empty-title">You're not in any booth yet</p>
+        <p>Ask the event's owners to add you on its Team page. You'll get an email when they do.</p>
+      </div>
       {% endif %}
     </section>
 
+    <section class="aa-card lobby-check" aria-labelledby="lobby-check-title">
+      <div class="aa-card-head"><h2 class="aa-card-title" id="lobby-check-title">Check your audio</h2></div>
+      <div class="aa-card-body">
+        <div class="lobby-field">
+          <label for="mic-device-select">Microphone</label>
+          <div class="lobby-inline">
+            <select id="mic-device-select" class="lobby-select">
+              <option value="">Loading devices…</option>
+            </select>
+            <button id="mic-test-btn" type="button" class="aa-btn" title="Test microphone">Test</button>
+          </div>
+          <div id="meter-row" class="meter-row hidden">
+            <span class="meter-label">Input level</span>
+            <canvas id="mic-meter" class="mic-meter" width="400" height="10"></canvas>
+          </div>
+          <label class="lobby-check-option">
+            <input type="checkbox" id="show-virtual-devices" />
+            Show virtual devices (Zoom, OBS, …)
+          </label>
+        </div>
+
+        <div class="lobby-field">
+          <div class="lobby-field-head">
+            <span class="lobby-label">Hear yourself</span>
+            <button id="loopback-test-btn" type="button" class="aa-btn">Record &amp; play</button>
+          </div>
+          <p class="lobby-hint">Records 5 seconds so you can hear how you'll sound to listeners.</p>
+          <div id="loopback-progress-row" class="hidden">
+            <progress id="loopback-progress" class="loopback-progress" value="0" max="100"></progress>
+            <div id="loopback-status" class="loopback-status">Recording…</div>
+          </div>
+        </div>
+
+        <div class="lobby-field">
+          <span class="lobby-label">Before you go live</span>
+          <ul class="preflight-list">
+            <li id="check-mic-permission" class="preflight-item preflight--pending">
+              <div class="preflight-icon">⏳</div>
+              <div class="preflight-info">
+                <div class="preflight-name">Microphone permission</div>
+                <div class="preflight-msg">Checking…</div>
+              </div>
+            </li>
+            <li id="check-network" class="preflight-item preflight--pending">
+              <div class="preflight-icon">⏳</div>
+              <div class="preflight-info">
+                <div class="preflight-name">Connection to the audio server</div>
+                <div class="preflight-msg">Checking…</div>
+              </div>
+            </li>
+          </ul>
+          <button id="preflight-retry" type="button" class="aa-btn">Check again</button>
+        </div>
+      </div>
+    </section>
   </div>
 </div>
 
