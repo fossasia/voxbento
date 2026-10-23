@@ -428,8 +428,8 @@ async def test_lobby_deduplicates_overlapping_memberships_and_applies_highest_ro
         res = await http.get("/interpreter", cookies=cookies)
     assert res.status_code == 200
     assert "Deutsch" in res.text
-    # Exactly one card rendered for the booth
-    assert res.text.count("card booth-card") == 1
+    # Exactly one row rendered for the booth
+    assert res.text.count('class="lobby-booth"') == 1
     # Highest role (room_coordinator) wins over event-level interpreter
     assert 'href="/mission-control/summit/"' in res.text
 

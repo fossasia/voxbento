@@ -299,7 +299,7 @@ async def admin_emails(
             "labels": {definition.key: definition.label for definition in NOTIFICATIONS},
             "branding": branding,
             "logo_url": (branding.logo_url or "") if logo_url is None else logo_url,
-            "default_logo_url": default_logo_url(),
+            "default_logo_url": default_logo_url(preview=True),
             "error": error,
         },
         status_code=status.HTTP_400_BAD_REQUEST if error else status.HTTP_200_OK,
@@ -538,12 +538,25 @@ async def mission_control_grid(request: Request, event_slug: str, user=Depends(r
                 }
             state["room_name"] = db_b.room.display_name if db_b.room else "Unknown Room"
             event_booths.append(state)
+        # One section per room the person may control, even before it has booths, with what
+        # the floor-caption control needs. Program ingest starts captions on its own.
+        mc_rooms = [
+            {
+                "id": room.id,
+                "name": room.display_name,
+                "floor_captions": bool(room.floor_transcription_enabled) and room.floor_transcription_provider != "none",
+                "floor_source": room.floor_source or "jitsi_bot",
+            }
+            for room in await list_rooms_for_event(session, event.id)
+            if allowed_room_ids is None or room.id in allowed_room_ids
+        ]
     return templates.TemplateResponse(
         request=request,
         name="mission_control/grid.html",
         context={
             "event": event,
             "booths": event_booths,
+            "mc_config": {"eventSlug": event.slug, "whipBase": settings.mediamtx_whip_base, "rooms": mc_rooms, "booths": event_booths},
             "whip_base": settings.mediamtx_whip_base,
             "js_version": _JS_CACHE_BUST,
             "active_nav": "mission-control",
