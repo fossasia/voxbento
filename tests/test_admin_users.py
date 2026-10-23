@@ -10,7 +10,12 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from fastapi_app import app
-from portal.auth import create_user_token, hash_password
+from portal.auth import (
+    create_user_token,
+    decode_token,
+    generate_admin_csrf_token,
+    hash_password,
+)
 from portal.database import (
     configure,
     create_auth_token,
@@ -29,18 +34,14 @@ from portal.database import (
 )
 
 os.environ["BOOTH_ACCESS_TOKEN"] = ""
-CSRF_TOKEN = "test-csrf-token"
 JSON = {
     "origin": "http://test",
     "accept": "application/json",
-    "X-CSRF-Token": CSRF_TOKEN,
 }
 FORM = {
     "origin": "http://test",
-    "X-CSRF-Token": CSRF_TOKEN,
     "content-type": "application/x-www-form-urlencoded",
 }
-CSRF_COOKIES = {"admin_csrf": CSRF_TOKEN}
 
 
 @pytest.fixture(autouse=True)
@@ -69,9 +70,12 @@ async def make_user(email: str, name: str, *, password: bool = True, **kwargs) -
 
 
 def cookies_for(user_id: int, email: str, is_admin: bool = False) -> dict[str, str]:
+    user_token = create_user_token(user_id=user_id, email=email, is_admin=is_admin)
+    session_id = str(decode_token(user_token)["jti"])
+    csrf_token = generate_admin_csrf_token(session_id)
     return {
-        "user_token": create_user_token(user_id=user_id, email=email, is_admin=is_admin),
-        **CSRF_COOKIES,
+        "user_token": user_token,
+        "admin_csrf": csrf_token,
     }
 
 
@@ -92,11 +96,15 @@ def switch(html: str, field: str, user_id: int) -> str:
     return match.group(1)
 
 
-async def set_access(http: AsyncClient, cookies, user_id: int, field: str, value: bool, headers=JSON):
+async def set_access(http: AsyncClient, cookies, user_id: int, field: str, value: bool, headers=None):
+    request_headers = {**JSON, **(headers or {})}
+    if "content-type" in request_headers:
+        request_headers.pop("accept", None)
+    request_headers["X-CSRF-Token"] = cookies["admin_csrf"]
     return await http.post(
         f"/admin/users/{user_id}/access",
         data={"field": field, "value": "true" if value else "false"},
-        headers=headers,
+        headers=request_headers,
         cookies=cookies,
         follow_redirects=False,
     )
@@ -318,13 +326,13 @@ async def test_access_endpoint_validation(admin):
         bad_field = await http.post(
             f"/admin/users/{user_id}/access",
             data={"field": "is_admin", "value": "true"},
-            headers=JSON,
+            headers={**JSON, "X-CSRF-Token": admin["cookies"]["admin_csrf"]},
             cookies=admin["cookies"],
         )
         bad_value = await http.post(
             f"/admin/users/{user_id}/access",
             data={"field": "admin", "value": "yes"},
-            headers=JSON,
+            headers={**JSON, "X-CSRF-Token": admin["cookies"]["admin_csrf"]},
             cookies=admin["cookies"],
         )
         missing = await set_access(http, admin["cookies"], 9999, "admin", True)
@@ -363,14 +371,19 @@ async def test_legacy_toggles_follow_the_same_rules(admin):
     async with client() as http:
         no_origin = await http.post(
             f"/admin/users/{admin['id']}/toggle-admin",
-            headers={"X-CSRF-Token": CSRF_TOKEN},
+            headers={"X-CSRF-Token": admin["cookies"]["admin_csrf"]},
             cookies=admin["cookies"],
         )
         self_demote = await http.post(
-            f"/admin/users/{admin['id']}/toggle-admin", headers=FORM, cookies=admin["cookies"], follow_redirects=False
+            f"/admin/users/{admin['id']}/toggle-admin",
+            headers={**FORM, "X-CSRF-Token": admin["cookies"]["admin_csrf"]},
+            cookies=admin["cookies"],
+            follow_redirects=False,
         )
         owner_route = await http.post(
-            f"/admin/users/{admin['id']}/events/1/toggle-owner", headers=FORM, cookies=admin["cookies"]
+            f"/admin/users/{admin['id']}/events/1/toggle-owner",
+            headers={**FORM, "X-CSRF-Token": admin["cookies"]["admin_csrf"]},
+            cookies=admin["cookies"],
         )
     assert no_origin.status_code == 400
     assert self_demote.headers["location"].endswith("error=self_admin")
@@ -391,21 +404,21 @@ async def test_delete_needs_the_email_typed_and_never_self(admin):
         wrong = await http.post(
             f"/admin/users/{user_id}/delete",
             data={"confirm_email": "lukas@example.com"},
-            headers=FORM,
+            headers={**FORM, "X-CSRF-Token": admin["cookies"]["admin_csrf"]},
             cookies=admin["cookies"],
             follow_redirects=False,
         )
         self_delete = await http.post(
             f"/admin/users/{admin['id']}/delete",
             data={"confirm_email": "hong@example.org"},
-            headers=FORM,
+            headers={**FORM, "X-CSRF-Token": admin["cookies"]["admin_csrf"]},
             cookies=admin["cookies"],
             follow_redirects=False,
         )
         ok = await http.post(
             f"/admin/users/{user_id}/delete",
             data={"confirm_email": " LUKAS@example.org "},
-            headers=FORM,
+            headers={**FORM, "X-CSRF-Token": admin["cookies"]["admin_csrf"]},
             cookies=admin["cookies"],
             follow_redirects=False,
         )

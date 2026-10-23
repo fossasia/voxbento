@@ -4,7 +4,7 @@ import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.openapi.docs import get_swagger_ui_html
@@ -21,7 +21,6 @@ from portal.auth import (
     generate_admin_csrf_token,
     get_csrf_session_id,
     is_valid_admin_csrf_token,
-    require_admin_csrf,
     require_owner_or_coordinator,
 )
 from portal.config import settings
@@ -156,21 +155,6 @@ class AdminCSRFMiddleware(BaseHTTPMiddleware):
             or path == "/account"
             or path.startswith("/account/")
         )
-
-        if is_admin_request and request.method in {"POST", "PUT", "PATCH", "DELETE"}:
-            content_type = request.headers.get("content-type", "").lower()
-            is_form_request = content_type.startswith("application/x-www-form-urlencoded") or content_type.startswith(
-                "multipart/form-data"
-            )
-
-            if not is_form_request:
-                try:
-                    await require_admin_csrf(request)
-                except HTTPException as exc:
-                    return JSONResponse(
-                        status_code=exc.status_code,
-                        content={"detail": exc.detail},
-                    )
 
         csrf_token = request.cookies.get(ADMIN_CSRF_COOKIE, "")
         session_id = get_csrf_session_id(request)

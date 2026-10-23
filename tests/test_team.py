@@ -10,7 +10,12 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 
 from fastapi_app import app
-from portal.auth import create_user_token, hash_password
+from portal.auth import (
+    create_user_token,
+    decode_token,
+    generate_admin_csrf_token,
+    hash_password,
+)
 from portal.database import (
     configure,
     create_booth,
@@ -50,8 +55,6 @@ def client():
     return AsyncClient(
         transport=ASGITransport(app=app),
         base_url="http://test",
-        cookies={"admin_csrf": "test-csrf-token"},
-        headers={"X-CSRF-Token": "test-csrf-token"},
     )
 
 
@@ -90,7 +93,15 @@ async def event():
             "coord": coord.id,
             "interp": interp.id,
         }
-    cookie = lambda uid, email: {"user_token": create_user_token(user_id=uid, email=email)}  # noqa: E731
+
+    def cookie(uid, email):
+        token = create_user_token(user_id=uid, email=email)
+        csrf_token = generate_admin_csrf_token(str(decode_token(token)["jti"]))
+        return {
+            "user_token": token,
+            "admin_csrf": csrf_token,
+        }
+
     return {
         **ids,
         "owner_cookies": cookie(ids["owner"], "owner@example.org"),
@@ -101,11 +112,17 @@ async def event():
 
 
 async def post(http, event, path, data, cookies=None):
+    request_cookies = cookies or event["owner_cookies"]
+    csrf_token = request_cookies["admin_csrf"]
+
     return await http.post(
         f"{event['base']}/{path}",
         data=data,
-        headers=ORIGIN,
-        cookies=cookies or event["owner_cookies"],
+        headers={
+            **ORIGIN,
+            "X-CSRF-Token": csrf_token,
+        },
+        cookies=request_cookies,
         follow_redirects=False,
     )
 
@@ -117,7 +134,16 @@ async def post(http, event, path, data, cookies=None):
 async def test_only_owners_and_admins_manage_the_team(event):
     async with get_session() as s:
         admin = await make_user(s, "admin@example.org", is_admin=True)
-    admin_cookies = {"user_token": create_user_token(user_id=admin.id, email=admin.email, is_admin=True)}
+    admin_token = create_user_token(
+        user_id=admin.id,
+        email=admin.email,
+        is_admin=True,
+    )
+    admin_csrf = generate_admin_csrf_token(str(decode_token(admin_token)["jti"]))
+    admin_cookies = {
+        "user_token": admin_token,
+        "admin_csrf": admin_csrf,
+    }
     async with client() as http:
         owner = await http.get(f"{event['base']}/", cookies=event["owner_cookies"])
         admin_page = await http.get(f"/admin/events/{event['event']}/team/", cookies=admin_cookies)
@@ -368,7 +394,7 @@ async def test_owner_cannot_delete_a_booth_of_another_event(event):
     async with client() as http:
         res = await http.post(
             f"/workspace/events/{event['event']}/rooms/{event['other_room']}/booths/{foreign_id}/delete",
-            headers=ORIGIN,
+            headers={**ORIGIN, "X-CSRF-Token": event["owner_cookies"]["admin_csrf"]},
             cookies=event["owner_cookies"],
             follow_redirects=False,
         )
@@ -388,13 +414,13 @@ async def test_legacy_member_removal_checks_the_event_and_keeps_the_last_owner(e
     async with client() as http:
         cross = await http.post(
             f"/workspace/events/{event['event']}/members/{foreign_id}/delete",
-            headers=ORIGIN,
+            headers={**ORIGIN, "X-CSRF-Token": event["owner_cookies"]["admin_csrf"]},
             cookies=event["owner_cookies"],
             follow_redirects=False,
         )
         last = await http.post(
             f"/workspace/events/{event['event']}/members/{owner_row_id}/delete",
-            headers=ORIGIN,
+            headers={**ORIGIN, "X-CSRF-Token": event["owner_cookies"]["admin_csrf"]},
             cookies=event["owner_cookies"],
             follow_redirects=False,
         )
@@ -451,7 +477,11 @@ async def test_owner_cannot_assign_or_invite_in_another_events_rooms_and_booths(
     async with client() as http:
         for path, data in attempts:
             res = await http.post(
-                path, data=data, headers=ORIGIN, cookies=event["owner_cookies"], follow_redirects=False
+                path,
+                data=data,
+                headers={**ORIGIN, "X-CSRF-Token": event["owner_cookies"]["admin_csrf"]},
+                cookies=event["owner_cookies"],
+                follow_redirects=False,
             )
             assert res.status_code == 404, path
 
@@ -473,7 +503,7 @@ async def test_setup_wizard_does_not_add_booths_to_another_events_room(event):
         res = await http.post(
             f"/workspace/events/{event['event']}/setup/booths",
             data={"room_id": str(event["other_room"]), "language_code": "es"},
-            headers=ORIGIN,
+            headers={**ORIGIN, "X-CSRF-Token": event["owner_cookies"]["admin_csrf"]},
             cookies=event["owner_cookies"],
             follow_redirects=False,
         )

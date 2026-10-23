@@ -13,14 +13,13 @@ from sqlalchemy import select
 from fastapi_app import app
 from portal import meeting_source as meeting
 from portal import program_ingest as ingest
-from portal.auth import create_user_token
+from portal.auth import create_user_token, decode_token, generate_admin_csrf_token
 from portal.booth_identity import make_booth_id, make_mediamtx_path
 from portal.config import settings
 from portal.database import configure, create_user, dispose, get_session, init_db
 from portal.models import Event, Room
 
 SECRET_URL = "https://meet.example.org/TrackA?jwt=meeting-secret-token"
-CSRF_TOKEN = "test-csrf-token"
 
 
 def fingerprint(url: str) -> str:
@@ -141,11 +140,13 @@ async def env(monkeypatch):
             await session.flush()
             event_id, room_id = event.id, room.id
         token = create_user_token(user_id=owner.id, email=owner.email, is_admin=True)
+        csrf_session_id = str(decode_token(token)["jti"])
+        csrf_token = generate_admin_csrf_token(csrf_session_id)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app),
             base_url="http://test",
-            cookies={"user_token": token, "admin_csrf": CSRF_TOKEN},
-            headers={"X-CSRF-Token": CSRF_TOKEN},
+            cookies={"user_token": token, "admin_csrf": csrf_token},
+            headers={"X-CSRF-Token": csrf_token},
         ) as client:
             yield {
                 "client": client,

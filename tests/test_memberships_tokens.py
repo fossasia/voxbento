@@ -20,7 +20,7 @@ from datetime import timedelta
 
 import pytest
 
-from portal.auth import create_user_token, hash_password
+from portal.auth import create_user_token, decode_token, generate_admin_csrf_token, hash_password
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -49,7 +49,10 @@ async def admin_cookie():
             password_hash=hash_password("test-admin-pass"),
             is_admin=True,
         )
-    return {"user_token": create_user_token(user_id=user.id, email=user.email, is_admin=True)}
+    token = create_user_token(user_id=user.id, email=user.email, is_admin=True)
+    session_id = str(decode_token(token)["jti"])
+    csrf_token = generate_admin_csrf_token(session_id)
+    return {"user_token": token, "admin_csrf": csrf_token}
 
 
 def _client():
@@ -60,8 +63,6 @@ def _client():
     return AsyncClient(
         transport=ASGITransport(app=app),
         base_url="http://test",
-        cookies={"admin_csrf": "test-csrf-token"},
-        headers={"X-CSRF-Token": "test-csrf-token"},
     )
 
 
@@ -318,6 +319,7 @@ class TestAdminEventMembersRoutes:
                 f"/admin/events/{event.id}/members/",
                 data={"email": user.email, "role": "event_owner"},
                 cookies=admin_cookie,
+                headers={"X-CSRF-Token": admin_cookie["admin_csrf"]},
                 follow_redirects=False,
             )
         assert resp.status_code == 303
@@ -355,6 +357,7 @@ class TestAdminEventMembersRoutes:
             resp = await c.post(
                 f"/admin/events/{event.id}/members/{mid}/delete",
                 cookies=admin_cookie,
+                headers={"X-CSRF-Token": admin_cookie["admin_csrf"]},
                 follow_redirects=False,
             )
         assert resp.status_code == 303
@@ -376,6 +379,7 @@ class TestAdminEventMembersRoutes:
                 f"/admin/events/{event.id}/members/",
                 data={"email": user.email, "role": ""},
                 cookies=admin_cookie,
+                headers={"X-CSRF-Token": admin_cookie["admin_csrf"]},
                 follow_redirects=False,
             )
         assert resp.status_code == 303
@@ -400,6 +404,7 @@ class TestAdminTokenRoutes:
                 f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/tokens/",
                 data={"role": "interpreter", "label": "Alice"},
                 cookies=admin_cookie,
+                headers={"X-CSRF-Token": admin_cookie["admin_csrf"]},
                 follow_redirects=False,
             )
         assert resp.status_code == 303
@@ -419,6 +424,7 @@ class TestAdminTokenRoutes:
                 f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/tokens/",
                 data={"role": "interpreter", "label": "Bob", "expires_hours": "24"},
                 cookies=admin_cookie,
+                headers={"X-CSRF-Token": admin_cookie["admin_csrf"]},
                 follow_redirects=False,
             )
         assert resp.status_code == 303
@@ -447,6 +453,7 @@ class TestAdminTokenRoutes:
                 f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/tokens/",
                 data={"role": "", "label": "NoRole"},
                 cookies=admin_cookie,
+                headers={"X-CSRF-Token": admin_cookie["admin_csrf"]},
                 follow_redirects=False,
             )
         assert resp.status_code == 303
@@ -466,6 +473,7 @@ class TestAdminTokenRoutes:
             resp = await c.post(
                 f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/tokens/{token_str}/revoke",
                 cookies=admin_cookie,
+                headers={"X-CSRF-Token": admin_cookie["admin_csrf"]},
                 follow_redirects=False,
             )
         assert resp.status_code == 303
@@ -490,6 +498,7 @@ class TestAdminTokenRoutes:
             booth_page = await c.get(
                 f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/",
                 cookies=admin_cookie,
+                headers={"X-CSRF-Token": admin_cookie["admin_csrf"]},
             )
             resp = await c.get(f"/admin/events/{event.id}/team/", cookies=admin_cookie)
         assert booth_page.status_code == 200
@@ -633,6 +642,7 @@ class TestEndToEndAdminWorkflow:
                     "display_name": "E2E Event",
                 },
                 cookies=admin_cookie,
+                headers={"X-CSRF-Token": admin_cookie["admin_csrf"]},
                 follow_redirects=False,
             )
         assert resp.status_code == 303
@@ -652,6 +662,7 @@ class TestEndToEndAdminWorkflow:
                     "display_name": "Room A",
                 },
                 cookies=admin_cookie,
+                headers={"X-CSRF-Token": admin_cookie["admin_csrf"]},
                 follow_redirects=False,
             )
         assert resp.status_code == 303
@@ -672,6 +683,7 @@ class TestEndToEndAdminWorkflow:
                     "language_name": "French",
                 },
                 cookies=admin_cookie,
+                headers={"X-CSRF-Token": admin_cookie["admin_csrf"]},
                 follow_redirects=False,
             )
         assert resp.status_code == 303
@@ -716,6 +728,7 @@ class TestEndToEndAdminWorkflow:
                     "role": "event_owner",
                 },
                 cookies=admin_cookie,
+                headers={"X-CSRF-Token": admin_cookie["admin_csrf"]},
                 follow_redirects=False,
             )
         assert resp.status_code == 303
@@ -733,6 +746,7 @@ class TestEndToEndAdminWorkflow:
                 f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/tokens/",
                 data={"role": "interpreter", "label": "Alice FR booth"},
                 cookies=admin_cookie,
+                headers={"X-CSRF-Token": admin_cookie["admin_csrf"]},
                 follow_redirects=False,
             )
         assert resp.status_code == 303
@@ -757,6 +771,7 @@ class TestEndToEndAdminWorkflow:
             resp = await c.post(
                 f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/tokens/{token_str}/revoke",
                 cookies=admin_cookie,
+                headers={"X-CSRF-Token": admin_cookie["admin_csrf"]},
                 follow_redirects=False,
             )
         assert resp.status_code == 303
@@ -781,6 +796,7 @@ class TestEndToEndAdminWorkflow:
             resp = await c.post(
                 f"/admin/events/{event.id}/members/{alice_mid}/delete",
                 cookies=admin_cookie,
+                headers={"X-CSRF-Token": admin_cookie["admin_csrf"]},
                 follow_redirects=False,
             )
         assert resp.status_code == 303

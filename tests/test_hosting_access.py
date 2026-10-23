@@ -16,7 +16,14 @@ from starlette.requests import Request
 
 from fastapi_app import app
 from portal import database
-from portal.auth import create_user_token, get_access_flags, hash_password, verify_password
+from portal.auth import (
+    create_user_token,
+    decode_token,
+    generate_admin_csrf_token,
+    get_access_flags,
+    hash_password,
+    verify_password,
+)
 from portal.database import (
     configure,
     create_auth_token,
@@ -275,13 +282,16 @@ async def test_inactive_user_cannot_be_invited_or_redeem():
         raw_token, tok = await create_hosting_invite(session, inactive.id, 3600)
 
     admin_token = create_user_token(user_id=admin.id, email=admin.email, is_admin=True)
+    session_id = decode_token(admin_token)["jti"]
+    admin_csrf_token = generate_admin_csrf_token(str(session_id))
+    admin_csrf_cookies = {"admin_csrf": admin_csrf_token}
 
     async with client() as http:
         # Attempt to invite inactive user -> 400
         res_invite = await http.post(
             "/admin/users/invite",
-            data={"email": "inactive@example.com", "csrf_token": CSRF_TOKEN},
-            cookies={"user_token": admin_token, **CSRF_COOKIES},
+            data={"email": "inactive@example.com", "csrf_token": admin_csrf_token},
+            cookies={"user_token": admin_token, **admin_csrf_cookies},
             headers={"Origin": "http://test"},
         )
         assert res_invite.status_code == 400, res_invite.text
@@ -299,8 +309,8 @@ async def test_inactive_user_cannot_be_invited_or_redeem():
         # Granting hosting to inactive user is blocked -> 400
         res_grant = await http.post(
             f"/admin/users/{inactive.id}/hosting",
-            data={"action": "grant", "csrf_token": CSRF_TOKEN},
-            cookies={"user_token": admin_token, **CSRF_COOKIES},
+            data={"action": "grant", "csrf_token": admin_csrf_token},
+            cookies={"user_token": admin_token, **admin_csrf_cookies},
             headers={"Origin": "http://test"},
         )
         assert res_grant.status_code == 400
@@ -311,8 +321,8 @@ async def test_inactive_user_cannot_be_invited_or_redeem():
             await session.execute(User.__table__.update().where(User.id == inactive.id).values(can_host=True))
         res_revoke = await http.post(
             f"/admin/users/{inactive.id}/hosting",
-            data={"action": "revoke", "csrf_token": CSRF_TOKEN},
-            cookies={"user_token": admin_token, **CSRF_COOKIES},
+            data={"action": "revoke", "csrf_token": admin_csrf_token},
+            cookies={"user_token": admin_token, **admin_csrf_cookies},
             headers={"Origin": "http://test"},
         )
         assert res_revoke.status_code == 303
@@ -331,11 +341,14 @@ async def test_toggle_hosting_on_stub_user_rejected():
         stub_id = stub.id
 
     admin_token = create_user_token(user_id=admin.id, email=admin.email, is_admin=True)
+    csrf_session_id = decode_token(admin_token)["jti"]
+    csrf_token = generate_admin_csrf_token(str(csrf_session_id))
+    csrf_cookies = {"admin_csrf": csrf_token}
     async with client() as http:
         resp = await http.post(
             f"/admin/users/{stub_id}/hosting",
-            data={"action": "grant", "csrf_token": CSRF_TOKEN},
-            cookies={"user_token": admin_token, **CSRF_COOKIES},
+            data={"action": "grant", "csrf_token": csrf_token},
+            cookies={"user_token": admin_token, **csrf_cookies},
             headers={"Origin": "http://test"},
         )
         assert resp.status_code == 400
@@ -358,11 +371,14 @@ async def test_toggle_hosting_deletes_pending_tokens():
         user_id = user.id
 
     admin_token = create_user_token(user_id=admin.id, email=admin.email, is_admin=True)
+    csrf_session_id = decode_token(admin_token)["jti"]
+    csrf_token = generate_admin_csrf_token(str(csrf_session_id))
+    csrf_cookies = {"admin_csrf": csrf_token}
     async with client() as http:
         resp = await http.post(
             f"/admin/users/{user_id}/hosting",
-            data={"action": "grant", "csrf_token": CSRF_TOKEN},
-            cookies={"user_token": admin_token, **CSRF_COOKIES},
+            data={"action": "grant", "csrf_token": csrf_token},
+            cookies={"user_token": admin_token, **csrf_cookies},
             headers={"Origin": "http://test"},
         )
         assert resp.status_code == 303
@@ -391,29 +407,32 @@ async def test_invite_cancel_and_resend():
         token_id = tok.id
 
     admin_token = create_user_token(user_id=admin.id, email=admin.email, is_admin=True)
+    csrf_session_id = decode_token(admin_token)["jti"]
+    csrf_token = generate_admin_csrf_token(str(csrf_session_id))
+    csrf_cookies = {"admin_csrf": csrf_token}
 
     async with client() as http:
         # Cross origin rejected
         resp_bad_origin = await http.post(
             f"/admin/users/invite/{token_id}/resend",
-            cookies={"user_token": admin_token, **CSRF_COOKIES},
-            headers={"Origin": "http://evil.com", "X-CSRF-Token": CSRF_TOKEN},
+            cookies={"user_token": admin_token, **csrf_cookies},
+            headers={"Origin": "http://evil.com", "X-CSRF-Token": csrf_token},
         )
         assert resp_bad_origin.status_code == 400
 
         # Resend works with same-origin
         resp_resend = await http.post(
             f"/admin/users/invite/{token_id}/resend",
-            cookies={"user_token": admin_token, **CSRF_COOKIES},
-            headers={"Origin": "http://test", "X-CSRF-Token": CSRF_TOKEN},
+            cookies={"user_token": admin_token, **csrf_cookies},
+            headers={"Origin": "http://test", "X-CSRF-Token": csrf_token},
         )
         assert resp_resend.status_code == 303
 
         # Cancel works
         resp_cancel = await http.post(
             f"/admin/users/invite/{token_id}/cancel",
-            cookies={"user_token": admin_token, **CSRF_COOKIES},
-            headers={"Origin": "http://test", "X-CSRF-Token": CSRF_TOKEN},
+            cookies={"user_token": admin_token, **csrf_cookies},
+            headers={"Origin": "http://test", "X-CSRF-Token": csrf_token},
         )
         assert resp_cancel.status_code == 303
 
@@ -530,6 +549,9 @@ async def test_rate_limit_ordering_on_event_creation():
         host_id = host.id
 
     token = create_user_token(user_id=host_id, email="host@example.com")
+    csrf_session_id = decode_token(token)["jti"]
+    csrf_token = generate_admin_csrf_token(str(csrf_session_id))
+    csrf_cookies = {"admin_csrf": csrf_token}
 
     async with client() as http:
         # Submit duplicate slug multiple times
@@ -539,9 +561,9 @@ async def test_rate_limit_ordering_on_event_creation():
                 data={
                     "display_name": "My New Event",
                     "slug": "existing-slug",
-                    "csrf_token": CSRF_TOKEN,
+                    "csrf_token": csrf_token,
                 },
-                cookies={"user_token": token, **CSRF_COOKIES},
+                cookies={"user_token": token, **csrf_cookies},
             )
             assert resp.status_code == 400
             assert "already exists" in resp.text
@@ -552,9 +574,9 @@ async def test_rate_limit_ordering_on_event_creation():
             data={
                 "display_name": "Unique Event",
                 "slug": "unique-event",
-                "csrf_token": CSRF_TOKEN,
+                "csrf_token": csrf_token,
             },
-            cookies={"user_token": token, **CSRF_COOKIES},
+            cookies={"user_token": token, **csrf_cookies},
             follow_redirects=False,
         )
         assert resp_valid.status_code == 303
@@ -628,14 +650,18 @@ async def test_nllb_download_trigger_accepts_csrf_for_event_owner():
         user_id, email = host.id, host.email
 
     token = create_user_token(user_id=user_id, email=email)
+    csrf_session_id = decode_token(token)["jti"]
+    csrf_token = generate_admin_csrf_token(str(csrf_session_id))
+    csrf_cookies = {"admin_csrf": csrf_token}
+    csrf_headers = {"X-CSRF-Token": csrf_token}
 
     with patch("portal.translations.providers.local.trigger_download") as trigger:
         async with client() as http:
             response = await http.post(
                 "/workspace/models/trigger_download",
                 json={"model": "nllb-200-distilled-600M"},
-                cookies={"user_token": token, **CSRF_COOKIES},
-                headers=CSRF_HEADERS,
+                cookies={"user_token": token, **csrf_cookies},
+                headers=csrf_headers,
             )
 
     assert response.status_code == 200
@@ -660,13 +686,17 @@ async def test_supertonic_download_trigger_accepts_csrf_for_event_owner():
         user_id, email = host.id, host.email
 
     token = create_user_token(user_id=user_id, email=email)
+    csrf_session_id = decode_token(token)["jti"]
+    csrf_token = generate_admin_csrf_token(str(csrf_session_id))
+    csrf_cookies = {"admin_csrf": csrf_token}
+    csrf_headers = {"X-CSRF-Token": csrf_token}
 
     with patch("portal.tts.providers.supertonic.trigger_supertonic_download") as trigger:
         async with client() as http:
             response = await http.post(
                 "/workspace/models/supertonic/trigger_download",
-                cookies={"user_token": token, **CSRF_COOKIES},
-                headers=CSRF_HEADERS,
+                cookies={"user_token": token, **csrf_cookies},
+                headers=csrf_headers,
             )
 
     assert response.status_code == 200
@@ -766,6 +796,9 @@ async def test_new_event_button_visibility():
         event_id = ev.id
 
     token_revoked = create_user_token(user_id=revoked_id, email="revoked@example.com")
+    csrf_session_id = decode_token(token_revoked)["jti"]
+    csrf_token = generate_admin_csrf_token(str(csrf_session_id))
+    csrf_cookies = {"admin_csrf": csrf_token}
     async with client() as http:
         # 1. My events still links to the owned event (Issue #761: revocation does not block access to owned events)
         res_rev_events = await http.get("/workspace/", cookies={"user_token": token_revoked})
@@ -798,12 +831,12 @@ async def test_new_event_button_visibility():
             data={
                 "slug": "new-blocked",
                 "display_name": "Blocked",
-                "csrf_token": CSRF_TOKEN,
+                "csrf_token": csrf_token,
             },
-            cookies={"user_token": token_revoked, **CSRF_COOKIES},
+            cookies={"user_token": token_revoked, **csrf_cookies},
             headers={
                 "Origin": "http://test",
-                "X-CSRF-Token": CSRF_TOKEN,
+                "X-CSRF-Token": csrf_token,
             },
             follow_redirects=False,
         )
@@ -813,11 +846,11 @@ async def test_new_event_button_visibility():
         res_create_api = await http.post(
             "/workspace/events/",
             json={"slug": "new-blocked", "display_name": "Blocked"},
-            cookies={"user_token": token_revoked, **CSRF_COOKIES},
+            cookies={"user_token": token_revoked, **csrf_cookies},
             headers={
                 "Origin": "http://test",
                 "Accept": "application/json",
-                "X-CSRF-Token": CSRF_TOKEN,
+                "X-CSRF-Token": csrf_token,
             },
         )
         assert res_create_api.status_code == 403
@@ -836,13 +869,16 @@ async def test_400_html_error_screen():
             is_admin=True,
         )
     admin_token = create_user_token(user_id=admin.id, email=admin.email, is_admin=True)
+    csrf_session_id = decode_token(admin_token)["jti"]
+    csrf_token = generate_admin_csrf_token(str(csrf_session_id))
+    csrf_cookies = {"admin_csrf": csrf_token}
 
     async with client() as http:
         # Browser client requesting text/html receives unified 400.html screen
         res_html = await http.post(
             "/admin/users/invite",
-            data={"email": "admin_err@example.com", "csrf_token": CSRF_TOKEN},
-            cookies={"user_token": admin_token, **CSRF_COOKIES},
+            data={"email": "admin_err@example.com", "csrf_token": csrf_token},
+            cookies={"user_token": admin_token, **csrf_cookies},
             headers={"Origin": "http://test", "Accept": "text/html,application/xhtml+xml"},
         )
         assert res_html.status_code == 400
@@ -855,8 +891,8 @@ async def test_400_html_error_screen():
         # API client receives JSON
         res_json = await http.post(
             "/admin/users/invite",
-            data={"email": "admin_err@example.com", "csrf_token": CSRF_TOKEN},
-            cookies={"user_token": admin_token, **CSRF_COOKIES},
+            data={"email": "admin_err@example.com", "csrf_token": csrf_token},
+            cookies={"user_token": admin_token, **csrf_cookies},
             headers={"Origin": "http://test", "Accept": "application/json"},
         )
         assert res_json.status_code == 400

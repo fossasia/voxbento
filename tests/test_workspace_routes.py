@@ -313,7 +313,7 @@ async def test_workspace_mutation_routes_reject_missing_csrf(organizer):
         ("POST", f"/workspace/api/events/{event_id}/api-keys"),
         ("POST", f"/workspace/events/{event_id}/members/"),
         ("POST", f"/workspace/events/{event_id}/team/add"),
-        ("POST", f"/workspace/events/{event_id}/regenerate_join_code"),
+        ("POST", f"/workspace/events/{event_id}/regenerate_join_code/"),
         ("POST", f"/workspace/events/{event_id}/api-settings"),
         ("POST", f"/workspace/events/{event_id}/delete"),
     ]

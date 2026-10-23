@@ -14,7 +14,7 @@ import pytest
 from fastapi_app import app
 from portal import program_ingest as ingest
 from portal import program_relay as relay
-from portal.auth import create_user_token
+from portal.auth import create_user_token, decode_token, generate_admin_csrf_token
 from portal.config import settings
 from portal.crypto import decrypt_val
 from portal.database import configure, create_user, dispose, get_session, init_db
@@ -109,14 +109,17 @@ async def relay_env(monkeypatch):
             ]
             session.add_all(rooms)
         token = create_user_token(user_id=admin.id, email=admin.email, is_admin=True)
+        session_id = str(decode_token(token)["jti"])
+        csrf_token = generate_admin_csrf_token(session_id)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app, client=("127.0.0.1", 1234)),
             base_url="http://test",
-            cookies={"user_token": token, "admin_csrf": "test-csrf-token"},
-            headers={"X-CSRF-Token": "test-csrf-token"},
+            cookies={"user_token": token, "admin_csrf": csrf_token},
+            headers={"X-CSRF-Token": csrf_token},
         ) as client:
             yield {
                 "client": client,
+                "csrf_token": csrf_token,
                 "event": event,
                 "rooms": rooms,
                 "media": media,
@@ -277,7 +280,7 @@ async def test_relay_requires_operator_flag_owner_and_origin(relay_env, monkeypa
     client.cookies.clear()
     assert (await client.put(relay_url(event, room), json=put)).status_code == 403
     client.cookies.set("user_token", owner_cookie)
-    client.cookies.set("admin_csrf", "test-csrf-token")
+    client.cookies.set("admin_csrf", relay_env["csrf_token"])
     monkeypatch.setattr(settings, "program_relay_enabled", False)
     response = await client.post(ingest_url(event, room), json={"action": "enable", "mode": "rtmps_relay"})
     assert response.status_code == 409

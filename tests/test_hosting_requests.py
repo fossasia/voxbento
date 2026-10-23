@@ -16,7 +16,12 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from fastapi_app import app
-from portal.auth import create_user_token, hash_password
+from portal.auth import (
+    create_user_token,
+    decode_token,
+    generate_admin_csrf_token,
+    hash_password,
+)
 from portal.database import (
     configure,
     create_hosting_request,
@@ -32,7 +37,6 @@ from portal.models import HostingRequest
 os.environ["BOOTH_ACCESS_TOKEN"] = ""
 
 SAME_ORIGIN = {"origin": "http://test"}
-CSRF_TOKEN = "test-csrf-token"
 VALID_FORM = {
     "organization": "FOSSASIA",
     "event_name": "FOSSASIA Summit 2027",
@@ -76,14 +80,17 @@ async def open_requests() -> list[HostingRequest]:
 
 
 async def submit(http: AsyncClient, token: str, data: dict[str, str] | None = None):
+    session_id = str(decode_token(token)["jti"])
+    csrf_token = generate_admin_csrf_token(session_id)
+
     with patch("portal.routers.auth.send_hosting_request_notification", new_callable=AsyncMock) as notify:
         form_data = dict(VALID_FORM if data is None else data)
-        form_data["csrf_token"] = CSRF_TOKEN
+        form_data["csrf_token"] = csrf_token
         res = await http.post(
             "/account/hosting-request",
             data=form_data,
             headers=SAME_ORIGIN,
-            cookies={"user_token": token, "admin_csrf": CSRF_TOKEN},
+            cookies={"user_token": token, "admin_csrf": csrf_token},
             follow_redirects=False,
         )
     return res, notify
@@ -97,9 +104,12 @@ async def admin_post(
     data: dict[str, str] | None = None,
     follow_redirects: bool = False,
 ):
-    headers = {**SAME_ORIGIN, "X-CSRF-Token": CSRF_TOKEN}
-    cookies = {"user_token": token, "admin_csrf": CSRF_TOKEN}
-    form_data = {**data, "csrf_token": CSRF_TOKEN} if data is not None else None
+    session_id = str(decode_token(token)["jti"])
+    csrf_token = generate_admin_csrf_token(session_id)
+
+    headers = {**SAME_ORIGIN, "X-CSRF-Token": csrf_token}
+    cookies = {"user_token": token, "admin_csrf": csrf_token}
+    form_data = {**data, "csrf_token": csrf_token} if data is not None else None
     return await http.post(
         path,
         data=form_data,
@@ -231,12 +241,13 @@ async def test_submit_rejects_end_before_start():
 @pytest.mark.anyio
 async def test_submit_rejects_cross_origin_post():
     _, token = await make_user()
+    csrf_token = generate_admin_csrf_token(str(decode_token(token)["jti"]))
     async with client() as http:
         res = await http.post(
             "/account/hosting-request",
-            data={**VALID_FORM, "csrf_token": CSRF_TOKEN},
+            data={**VALID_FORM, "csrf_token": csrf_token},
             headers={"origin": "https://evil.example"},
-            cookies={"user_token": token, "admin_csrf": CSRF_TOKEN},
+            cookies={"user_token": token, "admin_csrf": csrf_token},
         )
     assert res.status_code == 400
     assert await open_requests() == []

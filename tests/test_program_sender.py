@@ -10,7 +10,7 @@ import pytest
 
 from fastapi_app import app
 from portal import program_ingest as ingest
-from portal.auth import create_user_token
+from portal.auth import create_user_token, decode_token, generate_admin_csrf_token
 from portal.config import settings
 from portal.database import configure, create_user, dispose, get_session, init_db
 from portal.models import Event, Room
@@ -57,14 +57,16 @@ async def environment(monkeypatch):
             )
             session.add(room)
         admin_token = create_user_token(user_id=admin.id, email=admin.email, is_admin=True)
+        session_id = str(decode_token(admin_token)["jti"])
+        csrf_token = generate_admin_csrf_token(session_id)
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app, client=("127.0.0.1", 1234)),
             base_url="http://test",
             cookies={
                 "user_token": admin_token,
-                "admin_csrf": "test-csrf-token",
+                "admin_csrf": csrf_token,
             },
-            headers={"X-CSRF-Token": "test-csrf-token"},
+            headers={"X-CSRF-Token": csrf_token},
         ) as client:
             yield client, event, room, media
     ingest.health.clear()
@@ -360,4 +362,7 @@ def test_workspace_maps_sender_routes():
     from portal.workspace_routing import workspace_to_admin_path
 
     assert workspace_to_admin_path("/workspace/events/3/rooms/7/sender/") == "/admin/events/3/rooms/7/sender/"
-    assert workspace_to_admin_path("/workspace/events/3/rooms/7/program-sender") == "/admin/events/3/rooms/7/program-sender"
+    assert (
+        workspace_to_admin_path("/workspace/events/3/rooms/7/program-sender")
+        == "/admin/events/3/rooms/7/program-sender"
+    )
