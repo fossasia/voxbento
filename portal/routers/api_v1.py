@@ -150,11 +150,14 @@ async def _verify_token_rbac(
     if client and client.is_confidential and client.status == "active":
         return resolved_room
 
-    # Check if user is Admin or event owner
+    # Validate active status upfront for all user accounts before any role or admin bypasses
     from portal.models import User
 
     user = await db.get(User, token.user_id)
-    if user and getattr(user, "is_admin", False) and getattr(user, "is_active", True):
+    if not user or not user.is_active:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User account is inactive")
+
+    if user and getattr(user, "is_admin", False):
         return resolved_room
 
     scope = await load_membership_scope(db, token.user_id)
