@@ -37,30 +37,33 @@ def _request():
     return Request({"type": "http", "method": "GET", "path": "/", "headers": [], "query_string": b""})
 
 
-def test_missing_booth_token_allows_development_access(monkeypatch):
+@pytest.mark.anyio
+async def test_missing_booth_token_allows_development_access(monkeypatch):
     monkeypatch.setattr(settings, "booth_access_token", "")
     monkeypatch.setattr(settings, "debug", True)
 
-    _require_access(_request(), None)
+    await _require_access(_request(), None)
 
 
-def test_missing_booth_token_rejects_production_access(monkeypatch):
+@pytest.mark.anyio
+async def test_missing_booth_token_rejects_production_access(monkeypatch):
     from fastapi import HTTPException
 
     monkeypatch.setattr(settings, "booth_access_token", "")
     monkeypatch.setattr(settings, "debug", False)
 
     with pytest.raises(HTTPException, match="BOOTH_ACCESS_TOKEN"):
-        _require_access(_request(), None)
+        await _require_access(_request(), None)
 
 
-def test_configured_booth_token_allows_legacy_access(monkeypatch):
+@pytest.mark.anyio
+async def test_configured_booth_token_allows_legacy_access(monkeypatch):
     from fastapi.security import HTTPAuthorizationCredentials
 
     monkeypatch.setattr(settings, "booth_access_token", "test-booth-token")
     monkeypatch.setattr(settings, "debug", False)
 
-    _require_access(
+    await _require_access(
         _request(),
         HTTPAuthorizationCredentials(scheme="Bearer", credentials="test-booth-token"),
     )

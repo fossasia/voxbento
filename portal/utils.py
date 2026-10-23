@@ -117,24 +117,13 @@ async def _ensure_mediamtx_path(channel_id: str) -> None:
         pass  # Non-fatal; path will use all_others defaults
 
 
-class _AwaitableNone:
-    def __await__(self):
-        async def _noop():
-            return None
-
-        return _noop().__await__()
-
-
-_AWAITABLE_NONE = _AwaitableNone()
-
-
-def _require_access(
+async def _require_access(
     request: Request,
     credentials: HTTPAuthorizationCredentials | None,
     token_query: str | None = None,
     expected_event_slug: str | None = None,
     session_payload: dict | None = None,
-):
+) -> None:
     """Allow request if access is unset, or if a valid JWT or legacy token is provided; scoped JWTs must match the requested event, while global/admin JWTs without an event_slug are accepted."""
     if not settings.booth_access_token:
         if not settings.debug:
@@ -142,13 +131,13 @@ def _require_access(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="BOOTH_ACCESS_TOKEN is not configured on this server.",
             )
-        return _AWAITABLE_NONE
+        return
 
     if credentials is not None and credentials.credentials == settings.booth_access_token:
-        return _AWAITABLE_NONE
+        return
 
     if token_query and token_query == settings.booth_access_token:
-        return _AWAITABLE_NONE
+        return
 
     async def _check_scope(payload: dict) -> None:
         if payload.get("role") == "listener" or is_listener_token(payload):
@@ -199,36 +188,33 @@ def _require_access(
             if token_event and token_event != expected_event_slug:
                 raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Token event scope mismatch")
 
-    async def _async_verify() -> None:
-        if credentials is not None:
-            try:
-                payload = decode_token(credentials.credentials)
-                await _check_scope(payload)
-                return
-            except pyjwt.InvalidTokenError:
-                if credentials.scheme.lower() == "bearer":
-                    from portal.database import get_session, verify_api_key
-
-                    async with get_session() as db_session:
-                        key = await verify_api_key(db_session, credentials.credentials)
-                        if key:
-                            if expected_event_slug and key.event.slug != expected_event_slug:
-                                raise HTTPException(
-                                    status_code=status.HTTP_403_FORBIDDEN, detail="Token event scope mismatch"
-                                )
-                            return
-
-        # Cookie Fallback
-        from portal.auth import get_booth_session
-
-        payload = session_payload if session_payload is not None else get_booth_session(request)
-        if payload:
+    if credentials is not None:
+        try:
+            payload = decode_token(credentials.credentials)
             await _check_scope(payload)
             return
+        except pyjwt.InvalidTokenError:
+            if credentials.scheme.lower() == "bearer":
+                from portal.database import get_session, verify_api_key
 
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid or missing auth token.")
+                async with get_session() as db_session:
+                    key = await verify_api_key(db_session, credentials.credentials)
+                    if key:
+                        if expected_event_slug and key.event.slug != expected_event_slug:
+                            raise HTTPException(
+                                status_code=status.HTTP_403_FORBIDDEN, detail="Token event scope mismatch"
+                            )
+                        return
 
-    return _async_verify()
+    # Cookie Fallback
+    from portal.auth import get_booth_session
+
+    payload = session_payload if session_payload is not None else get_booth_session(request)
+    if payload:
+        await _check_scope(payload)
+        return
+
+    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid or missing auth token.")
 
 
 async def _resolve_whip_url(booth_id: str, participant_id: str, language: str, channel_id: str) -> dict:
