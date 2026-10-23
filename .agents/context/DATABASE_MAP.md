@@ -248,7 +248,7 @@ Tracks which languages the translation worker should generate for a given room o
 | 029 | `029_add_can_host_to_users.py` | `users.can_host`, `users.hosting_requested_at`, `hosting_invitations` table |
 | 030 | `030_hosting_requests.py` | `hosting_requests` table with partial unique index for open requests |
 | 031 | `031_add_ai_interpretation_settings.py` | `rooms.floor_ai_interpreter_persona`, `rooms.floor_ai_interpretation_style`, `rooms.floor_ai_vocabulary_enabled`, `ai_vocabulary_entries` table |
-| 032 | `032_remove_support_role.py` | deletes Support-role memberships; normalizes `owner`/`super_admin` aliases to `event_owner` |
+| 032 | `032_remove_support_role.py` | deletes Support-role memberships; normalizes legacy event-owner role aliases to `event_owner` |
 | 033 | `033_add_index_booths_event_id.py` | index `ix_booths_event_id` on `booths.event_id` |
 | 034 | `034_add_tts_enabled.py` | `room_translation_languages.tts_enabled` |
 
