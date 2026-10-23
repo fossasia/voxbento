@@ -21,10 +21,10 @@
   /* Text */
   --vb-color-text: #101828;
   --vb-color-text-secondary: #5b6577;
-  --vb-color-muted: #8892a4;
+  --vb-color-muted: #6b7484;
 
-  /* Status. --vb-color-success is for fills, dots and badges; it is too light for
-     text on white (3.3:1), so green text uses --vb-color-success-text (4.8:1). */
+  /* Status. Success, warning, live and offline are for fills, dots and badges; they
+     are too light for text on white, so green text uses --vb-color-success-text (4.8:1). */
   --vb-color-danger: #dc2626;
   --vb-color-danger-hover: #b91c1c;
   --vb-color-success: #16a34a;

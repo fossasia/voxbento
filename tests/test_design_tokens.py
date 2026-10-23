@@ -31,9 +31,10 @@ def _page_templates():
 
 def test_tokens_file_only_defines_vb_custom_properties():
     css = re.sub(r"/\*.*?\*/", "", TOKENS.read_text(encoding="utf-8"), flags=re.S)
-    blocks = re.findall(r"([^{}]+){([^}]*)}", css)
-    assert [selector.strip() for selector, _ in blocks] == [":root"]
-    declarations = [d.strip() for d in blocks[0][1].split(";") if d.strip()]
+    # Nothing outside the single :root block: no other selectors, no @import or other at-rules.
+    root = re.fullmatch(r"\s*:root\s*{([^{}]*)}\s*", css)
+    assert root, "tokens.css must contain only comments and one :root block"
+    declarations = [d.strip() for d in root.group(1).split(";") if d.strip()]
     assert declarations
     for declaration in declarations:
         assert declaration.startswith("--vb-"), f"tokens.css may only declare --vb-* properties: {declaration}"
@@ -45,6 +46,8 @@ def test_page_links_tokens_before_other_stylesheets(source):
 
 
 def _contrast_on_white(hex_color: str) -> float:
+    # Opaque #rrggbb only: an alpha channel would make the real contrast lower than computed.
+    assert re.fullmatch(r"#[0-9a-fA-F]{6}", hex_color), f"text tokens must be opaque #rrggbb, got {hex_color}"
     channels = [int(hex_color[i : i + 2], 16) / 255 for i in (1, 3, 5)]
     r, g, b = (c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4 for c in channels)
     return 1.05 / (0.2126 * r + 0.7152 * g + 0.0722 * b + 0.05)
@@ -55,6 +58,7 @@ def _contrast_on_white(hex_color: str) -> float:
     [
         "--vb-color-text",
         "--vb-color-text-secondary",
+        "--vb-color-muted",
         "--vb-color-primary",
         "--vb-color-danger",
         "--vb-color-success-text",
