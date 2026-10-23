@@ -296,7 +296,7 @@ async def admin_emails(
             "labels": {definition.key: definition.label for definition in NOTIFICATIONS},
             "branding": branding,
             "logo_url": (branding.logo_url or "") if logo_url is None else logo_url,
-            "default_logo_url": default_logo_url(),
+            "default_logo_url": default_logo_url(preview=True),
             "error": error,
         },
         status_code=status.HTTP_400_BAD_REQUEST if error else status.HTTP_200_OK,

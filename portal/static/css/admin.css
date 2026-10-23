@@ -1684,7 +1684,7 @@ code { font-family: var(--font-mono); font-size: 0.85em; background: var(--color
 .email-check { display: inline-flex; align-items: center; gap: 8px; font-weight: 600; font-size: .9375rem; }
 .email-optional { font-weight: 400; color: var(--color-text-secondary); }
 .email-branding-preview { display: flex; align-items: center; gap: 12px; color: var(--color-text-secondary); font-size: .875rem; }
-.email-branding-preview img { height: 28px; width: auto; }
+.email-branding-preview img { width: auto; }
 .email-template-row > span:last-child { white-space: nowrap; color: var(--color-text-secondary); }
 
 @media (max-width: 900px) {

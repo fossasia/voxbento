@@ -15,7 +15,11 @@
         {% if logo_url %}
         <tr>
           <td style="padding:0 4px 20px;">
+            {% if default_logo %}
+            <img src="{{ logo_url }}" alt="VoxBento" width="72" height="48" style="display:block;width:72px;height:48px;border:0;" />
+            {% else %}
             <img src="{{ logo_url }}" alt="VoxBento" height="28" style="display:block;height:28px;width:auto;border:0;" />
+            {% endif %}
           </td>
         </tr>
         {% endif %}

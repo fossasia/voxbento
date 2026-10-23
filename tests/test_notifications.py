@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from html.parser import HTMLParser
+
 import pytest
 from sqlalchemy import select
 
@@ -336,9 +338,34 @@ async def test_every_email_uses_the_layout_with_the_logo_by_default():
     for delivery_id in ids:
         html = await _html_of(delivery_id)
         assert f'src="{default_logo_url()}"' in html
+        assert '/static/img/email-mark.png"' in html
         assert "Sent by VoxBento" in html
         # Inline styles only: many email clients drop <style> blocks.
         assert "<style" not in html
+
+
+@pytest.mark.anyio
+async def test_default_logo_preview_loads_from_this_site(admin_cookies, monkeypatch):
+    monkeypatch.setattr("portal.notifications.settings.public_base_url", "https://mail.example.invalid/")
+
+    class Images(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.sources = []
+
+        def handle_starttag(self, tag, attrs):
+            if tag == "img":
+                self.sources.append(dict(attrs).get("src"))
+
+    async with _client() as http:
+        for path in ("/admin/emails/", "/admin/emails/verification/preview"):
+            page = await http.get(path, cookies=admin_cookies)
+            images = Images()
+            images.feed(page.text)
+            assert "/static/img/email-mark.png" in images.sources
+        logo = await http.get("/static/img/email-mark.png")
+        assert logo.status_code == 200
+        assert logo.headers["content-type"] == "image/png"
 
 
 @pytest.mark.anyio

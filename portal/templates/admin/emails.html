@@ -42,11 +42,12 @@
     </label>
     <div class="form-group">
       <label for="logo_url">Logo image <span class="email-optional">(optional, https address)</span></label>
-      <input id="logo_url" name="logo_url" type="url" inputmode="url" placeholder="Leave empty for the VoxBento logo" value="{{ logo_url }}" />
+      <input id="logo_url" name="logo_url" type="url" inputmode="url" placeholder="Leave empty for the VoxBento V mark" value="{{ logo_url }}" aria-describedby="logo-help" />
+      <small id="logo-help">The default V mark has a transparent background for light and dark emails. For a custom logo, use a transparent PNG.</small>
     </div>
     <div class="email-branding-preview">
       <span>Currently shown:</span>
-      {% if branding.show_logo %}<img src="{{ branding.logo_url or default_logo_url }}" alt="Email logo" height="28" />{% else %}<em>No logo</em>{% endif %}
+      {% if branding.show_logo %}<img src="{{ branding.logo_url or default_logo_url }}" alt="VoxBento" height="{{ 28 if branding.logo_url else 48 }}" />{% else %}<em>No logo</em>{% endif %}
     </div>
     <button class="btn btn-primary" type="submit">Save branding</button>
   </form>
