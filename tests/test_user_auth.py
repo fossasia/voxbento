@@ -473,12 +473,25 @@ class TestEmailDiscoveryPrivacy:
 class TestUserLogin:
     @pytest.mark.anyio
     async def test_login_page_renders(self, setup_db):
+        from portal.globals import _JS_CACHE_BUST
+
         async with _client() as c:
             resp = await c.get("/login")
         assert resp.status_code == 200
         assert b"Sign in" in resp.content
         assert b'type="button" id="forgot-password-link"' in resp.content
         assert b'href="#" id="forgot-password-link"' not in resp.content
+        assert f"/static/js/login.js?v={_JS_CACHE_BUST}" in resp.text
+        assert '<script type="module" src="' in resp.text
+
+    @pytest.mark.anyio
+    async def test_login_page_loads_external_login_js_and_has_no_inline_app_script(self, setup_db):
+        from pathlib import Path
+
+        template_text = Path("portal/templates/login.html").read_text()
+        assert "<script>" not in template_text
+        assert '</script>' in template_text
+        assert 'src="{{ url_for(\'static\', path=\'js/login.js\') }}?v={{ js_version }}"' in template_text
 
     @pytest.mark.anyio
     async def test_login_with_correct_credentials(self, setup_db):

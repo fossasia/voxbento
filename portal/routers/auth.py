@@ -352,7 +352,9 @@ async def user_login_page(request: Request, next: str = "", email: str = "", swi
             redirect_to = next if next and next.startswith("/") and not next.startswith("//") else "/account"
             return safe_redirect(url=redirect_to, status_code=status.HTTP_303_SEE_OTHER)
     return templates.TemplateResponse(
-        request=request, name="login.html", context={"next_url": next, "email": email, "prefill_email": email}
+        request=request,
+        name="login.html",
+        context={"next_url": next, "email": email, "prefill_email": email, "js_version": _JS_CACHE_BUST},
     )
 
 
@@ -367,7 +369,12 @@ async def user_login_submit(request: Request):
         return templates.TemplateResponse(
             request=request,
             name="login.html",
-            context={"error": "Too many attempts. Try again later.", "email": email, "next_url": next_url},
+            context={
+                "error": "Too many attempts. Try again later.",
+                "email": email,
+                "next_url": next_url,
+                "js_version": _JS_CACHE_BUST,
+            },
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
         )
 
@@ -380,7 +387,12 @@ async def user_login_submit(request: Request):
         return templates.TemplateResponse(
             request=request,
             name="login.html",
-            context={"error": "Invalid email or password.", "email": email, "next_url": next_url},
+            context={
+                "error": "Invalid email or password.",
+                "email": email,
+                "next_url": next_url,
+                "js_version": _JS_CACHE_BUST,
+            },
             status_code=status.HTTP_403_FORBIDDEN,
         )
 
