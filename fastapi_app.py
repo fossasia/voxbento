@@ -13,9 +13,16 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from portal import meeting_source, program_ingest
-from portal.auth import require_owner_or_coordinator
+from portal.auth import (
+    ADMIN_CSRF_COOKIE,
+    generate_admin_csrf_token,
+    get_csrf_session_id,
+    is_valid_admin_csrf_token,
+    require_owner_or_coordinator,
+)
 from portal.config import settings
 from portal.exceptions import RedirectRequired
 from portal.globals import asset_version_context
@@ -39,7 +46,9 @@ from portal.workspace_routing import WorkspaceRoutingMiddleware
 
 _BASE_DIR = Path(__file__).resolve().parent
 
-templates = Jinja2Templates(directory=str(_BASE_DIR / "portal" / "templates"), context_processors=[asset_version_context])
+templates = Jinja2Templates(
+    directory=str(_BASE_DIR / "portal" / "templates"), context_processors=[asset_version_context]
+)
 
 
 @asynccontextmanager
@@ -135,8 +144,51 @@ class _UvicornTokenRedactor(logging.Filter):
         return True
 
 
+class AdminCSRFMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        path = request.url.path
+        is_admin_request = (
+            path == "/admin"
+            or path.startswith("/admin/")
+            or path == "/api/admin"
+            or path.startswith("/api/admin/")
+            or path == "/workspace"
+            or path.startswith("/workspace/")
+            or path == "/api/workspace"
+            or path.startswith("/api/workspace/")
+            or path.startswith("/api/rooms/")
+            or path == "/account"
+            or path.startswith("/account/")
+        )
+
+        csrf_token = request.cookies.get(ADMIN_CSRF_COOKIE, "")
+        session_id = get_csrf_session_id(request)
+        replace_csrf_cookie = is_admin_request and not is_valid_admin_csrf_token(csrf_token, session_id)
+
+        if replace_csrf_cookie:
+            csrf_token = generate_admin_csrf_token(session_id)
+
+        request.state.admin_csrf_token = csrf_token
+        response = await call_next(request)
+
+        if replace_csrf_cookie:
+            response.set_cookie(
+                key=ADMIN_CSRF_COOKIE,
+                value=csrf_token,
+                httponly=True,
+                secure=(
+                    request.url.scheme == "https"
+                    or request.headers.get("x-forwarded-proto", "").split(",")[0].strip() == "https"
+                ),
+                samesite="lax",
+            )
+
+        return response
+
+
 app = FastAPI(title="Voxbento", version="1.0.0", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
 app.add_middleware(WorkspaceRoutingMiddleware)
+app.add_middleware(AdminCSRFMiddleware)
 
 
 @app.get("/docs", include_in_schema=False)
@@ -233,7 +285,10 @@ async def http_exception_handler(request: Request, exc: StarletteHTTPException):
                 request, "500.html", {"request": request, "detail": detail_msg}, status_code=exc.status_code
             )
         return templates.TemplateResponse(
-            request, "400.html", {"request": request, "detail": detail_msg, "status_code": exc.status_code}, status_code=exc.status_code
+            request,
+            "400.html",
+            {"request": request, "detail": detail_msg, "status_code": exc.status_code},
+            status_code=exc.status_code,
         )
     return JSONResponse({"detail": exc.detail}, status_code=exc.status_code, headers=headers)
 

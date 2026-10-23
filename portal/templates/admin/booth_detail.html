@@ -95,6 +95,7 @@
 {% if is_event_owner %}
 <!-- Booth Settings Form -->
 <form method="post" action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/booths/{{ booth.id }}/edit" class="token-form">
+  <input type="hidden" name="csrf_token" value="{{ request.state.admin_csrf_token }}" />
   <div class="token-form-card token-form-card--spaced">
     <h3>Booth Settings</h3>
     <div class="form-row">
@@ -115,6 +116,7 @@
 
 <!-- Transcription Settings Form -->
 <form method="post" action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/booths/{{ booth.id }}/transcription-settings" class="token-form">
+  <input type="hidden" name="csrf_token" value="{{ request.state.admin_csrf_token }}" />
   <div class="token-form-card token-form-card--spaced">
     <div class="transcripts-head">
       <div>
@@ -181,6 +183,7 @@
 
 <!-- Translation Settings Form -->
 <form method="post" action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/booths/{{ booth.id }}/translation-settings" class="token-form">
+  <input type="hidden" name="csrf_token" value="{{ request.state.admin_csrf_token }}" />
   <div class="token-form-card token-form-card--spaced">
     <h3>Translation Settings</h3>
     <div class="form-row">
@@ -467,6 +470,7 @@
   <form method="post" action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/booths/{{ booth.id }}/delete"
         class="inline-delete"
         data-confirm="Delete the {{ booth.language_name }} booth? All invite tokens will be removed.">
+        <input type="hidden" name="csrf_token" value="{{ request.state.admin_csrf_token }}" />
     <button type="submit" class="btn btn-danger">Delete Booth</button>
     <span class="danger-text">This removes all invite tokens for this booth.</span>
   </form>

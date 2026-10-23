@@ -38,6 +38,30 @@
 </div>
 {% endif %}
 
+  <form method="post" action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/edit" class="token-form">
+    <input type="hidden" name="csrf_token" value="{{ request.state.admin_csrf_token }}" />
+  <input type="hidden" name="form_section" value="general">
+  <div class="token-form-card token-form-card--spaced-sm">
+    <h3>Room Settings</h3>
+    <div class="form-row">
+      <div class="form-group form-group--grow">
+        <label for="display_name">Room Name</label>
+        <input type="text" id="display_name" name="display_name" class="input" value="{{ room.display_name }}" required>
+      </div>
+      <div class="form-group form-group--wide">
+        <label for="jitsi_url">Jitsi Room URL (Floor Audio Source)</label>
+        <input type="url" id="jitsi_url" name="jitsi_url" class="input" value="{{ room.jitsi_url or fallback_jitsi_url }}" placeholder="e.g. https://jitsi.voxbento.com/Room-Event-TrackA">
+      </div>
+      <div class="form-group form-group--grow">
+        <label for="audio_delay_ms">Audio Synchronization Delay (ms)</label>
+        <input type="number" id="audio_delay_ms" name="audio_delay_ms" class="input" value="{{ room.audio_delay_ms }}" min="0" max="10000" step="1">
+      </div>
+      <div class="form-group form-group-btn form-group--action">
+        <button type="submit" class="btn btn-primary">Save Settings</button>
+      </div>
+    </div>
+    <p class="form-help form-help--spaced">Interpreters in all booths for this room will automatically join this Jitsi URL for floor monitoring.</p>
+    <p class="form-help form-help--tight">Applies a listener-side delay to all audio sources in this room. Use this when livestream video, captions, or external media are delayed and need audio synchronization.</p>
 <section class="room-panel" id="room-panel-overview"{% if is_event_owner %} role="tabpanel" aria-labelledby="room-tab-overview"{% endif %} data-room-panel="overview">
 <!-- Interpretation Schedule Table (replaces manual spreadsheet) -->
 <div class="section-card section-card--spaced-lg">
@@ -46,6 +70,28 @@
     <a href="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/booths/" class="btn btn-sm btn-primary">Manage Booths</a>
   </div>
 
+<form method="post" action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/edit" class="token-form">
+  <input type="hidden" name="csrf_token" value="{{ request.state.admin_csrf_token }}" />
+  <input type="hidden" name="form_section" value="relay">
+  <div class="token-form-card token-form-card--spaced">
+    <h3>Relay Settings</h3>
+    <div class="form-row">
+      <div class="form-group form-group--grow">
+        <label for="relay_booth_id">Relay Booth</label>
+        <select id="relay_booth_id" name="relay_booth_id" class="input">
+          <option value="none">-- None --</option>
+          {% for bs in booths %}
+            <option value="{{ bs.db.id }}" {% if room.relay_booth_id == bs.db.id %}selected{% endif %}>{{ bs.db.language_name }} ({{ bs.db.language_code }})</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="form-group form-group-btn">
+        <button type="submit" class="btn btn-primary">Save Settings</button>
+      </div>
+    </div>
+    <p class="form-help form-help--spaced">Designate a booth to act as the relay source for interpreters in other booths.</p>
+  </div>
+</form>
   {% if booths %}
   <table class="data-table schedule-table">
     <thead>
@@ -85,7 +131,6 @@
   {% endif %}
 </div>
 
-
 {% if is_event_owner %}
   <div class="token-form-card token-form-card--spaced">
     <div class="card-head">
@@ -121,6 +166,7 @@
 <section class="room-panel" id="room-panel-captions" role="tabpanel" aria-labelledby="room-tab-captions" data-room-panel="captions">
   <p class="room-panel-intro">Live captions of the floor audio, AI translation into other languages, the vocabulary used for both, and translated speech for listeners.</p>
 <form method="post" action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/edit" class="token-form">
+  <input type="hidden" name="csrf_token" value="{{ request.state.admin_csrf_token }}" />
   <input type="hidden" name="form_section" value="transcription">
   <div class="token-form-card token-form-card--spaced">
     <div class="card-head card-head--spaced">
@@ -177,6 +223,7 @@
 </form>
 
 <form id="floor_translation_form" method="post" action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/edit" class="token-form">
+  <input type="hidden" name="csrf_token" value="{{ request.state.admin_csrf_token }}" />
   <input type="hidden" name="form_section" value="translation">
   <div class="token-form-card token-form-card--spaced">
     <div class="card-head card-head--spaced">
@@ -293,6 +340,7 @@
   {% endif %}
 
   <form method="post" action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/ai-vocabulary/upload" enctype="multipart/form-data" class="ai-vocabulary-upload">
+    <input type="hidden" name="csrf_token" value="{{ request.state.admin_csrf_token }}" />
     <div class="form-group ai-vocabulary-file">
       <label for="vocabulary_file">Vocabulary CSV</label>
       <input type="file" id="vocabulary_file" name="vocabulary_file" accept=".csv,text/csv" required>
@@ -324,6 +372,7 @@
               <td>{{ entry.priority }}</td>
               <td>
                 <form method="post" action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/ai-vocabulary/delete">
+                  <input type="hidden" name="csrf_token" value="{{ request.state.admin_csrf_token }}" />
                   <input type="hidden" name="entry_id" value="{{ entry.id }}">
                   <button type="submit" class="btn btn-sm btn-outline">Delete</button>
                 </form>
@@ -334,6 +383,7 @@
       </table>
     </div>
     <form method="post" action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/ai-vocabulary/delete" class="ai-vocabulary-clear">
+      <input type="hidden" name="csrf_token" value="{{ request.state.admin_csrf_token }}" />
       <input type="hidden" name="entry_id" value="all">
       <button type="submit" class="btn btn-sm btn-outline">Delete all room vocabulary</button>
     </form>
@@ -343,6 +393,7 @@
 </section>
 
 <form method="post" action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/edit" class="token-form" id="floor_tts_form">
+  <input type="hidden" name="csrf_token" value="{{ request.state.admin_csrf_token }}" />
   <input type="hidden" name="form_section" value="tts">
   <div class="token-form-card token-form-card--spaced">
     <div class="card-head card-head--spaced">
@@ -447,6 +498,7 @@
   <h3>Danger Zone</h3>
   <form method="post" action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/delete" class="inline-delete"
         data-confirm="Delete room '{{ room.display_name }}'? All booths in this room will be removed.">
+        <input type="hidden" name="csrf_token" value="{{ request.state.admin_csrf_token }}" />
     <button type="submit" class="btn btn-danger">Delete Room</button>
     <span class="danger-text">This removes all booths and their invite tokens.</span>
   </form>

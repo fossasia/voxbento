@@ -8,7 +8,7 @@ export function initLocalModelDownloader() {
     transForm.addEventListener('submit', async function(e) {
       const transProvider = document.getElementById('floor_translation_provider').value;
       const transModel = document.getElementById('floor_translation_model').value || 'nllb-200-distilled-600M';
-      
+
       if (transProvider === 'local') {
         e.preventDefault();
         let needsNllb = false;
@@ -32,21 +32,41 @@ export function initLocalModelDownloader() {
     if (proceedBtn) {
       proceedBtn.addEventListener('click', async function() {
         document.getElementById('nllb_download_modal').hidden = true;
-        
+
         const formData = new FormData(transForm);
         const actionUrl = transForm.getAttribute('action');
-        
+
         try {
-          await fetch(actionUrl, { method: 'POST', body: formData, redirect: 'follow' });
-          
           const transModel = document.getElementById('floor_translation_model').value || 'nllb-200-distilled-600M';
-          await fetch(`${managementPrefix}/models/trigger_download`, {
-            method: 'POST', headers: {'Content-Type': 'application/json'},
+            const settingsResponse = await fetch(actionUrl, {
+              method: 'POST',
+              body: formData,
+              headers: {
+                'X-CSRF-Token': document.querySelector('meta[name="csrf-token"]')?.content || ''
+              },
+              redirect: 'follow'
+            });
+
+            if (!settingsResponse.ok) {
+              throw new Error('Failed to save translation settings');
+            }
+
+          const downloadResponse = await fetch(`${managementPrefix}/models/trigger_download`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'X-CSRF-Token': document.querySelector('meta[name="csrf-token"]')?.content || ''
+            },
             body: JSON.stringify({model: transModel})
           });
-          
+
+          if (!downloadResponse.ok) {
+            throw new Error('Failed to trigger translation model download');
+          }
+
+
           document.getElementById('nllb_download_progress_container').hidden = false;
-          
+
           const interval = setInterval(async () => {
             const res = await fetch(`${managementPrefix}/models/download_progress?model=${encodeURIComponent(transModel)}`);
             if (res.ok) {
@@ -81,7 +101,7 @@ export function initLocalModelDownloader() {
   if (ttsForm) {
     ttsForm.addEventListener('submit', async function(e) {
       const ttsProvider = document.getElementById('floor_tts_provider').value;
-      
+
       if (ttsProvider === 'supertonic') {
         e.preventDefault();
         let needsSupertonic = false;
@@ -105,16 +125,37 @@ export function initLocalModelDownloader() {
     if (supProceedBtn) {
       supProceedBtn.addEventListener('click', async function() {
         document.getElementById('supertonic_download_modal').hidden = true;
-        
+
         const formData = new FormData(ttsForm);
         const actionUrl = ttsForm.getAttribute('action');
-        
+
         try {
-          await fetch(actionUrl, { method: 'POST', body: formData, redirect: 'follow' });
-          await fetch(`${managementPrefix}/models/supertonic/trigger_download`, { method: 'POST' });
-          
+          const settingsResponse = await fetch(actionUrl, {
+            method: 'POST',
+            body: formData,
+            headers: {
+              'X-CSRF-Token': document.querySelector('meta[name="csrf-token"]')?.content || ''
+            },
+            redirect: 'follow'
+          });
+
+          if (!settingsResponse.ok) {
+            throw new Error('Failed to save Supertonic settings');
+          }
+
+          const downloadResponse = await fetch(`${managementPrefix}/models/supertonic/trigger_download`, {
+            method: 'POST',
+            headers: {
+              'X-CSRF-Token': document.querySelector('meta[name="csrf-token"]')?.content || ''
+            }
+          });
+
+          if (!downloadResponse.ok) {
+            throw new Error('Failed to trigger Supertonic model download');
+          }
+
           document.getElementById('supertonic_download_progress_container').hidden = false;
-          
+
           const interval = setInterval(async () => {
             const res = await fetch(`${managementPrefix}/models/supertonic/download_progress`);
             if (res.ok) {

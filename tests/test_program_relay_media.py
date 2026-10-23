@@ -249,7 +249,10 @@ class Stack:
         response = await self.client.post(
             self.admin_url(room, "program-ingest"), json={"action": "enable", "mode": "rtmps_relay"}
         )
-        assert response.status_code == 200, response.text
+        assert response.status_code == 200, (
+            f"status={response.status_code}, location={response.headers.get('location')}, "
+            f"body={response.text}"
+        )
         return response.json()["secret"], response.json()["stream_key"]
 
     async def set_destination(self, room: Room, port: int) -> None:
@@ -257,7 +260,10 @@ class Stack:
             self.admin_url(room, "program-relay"),
             json={"server_url": f"rtmps://127.0.0.1:{port}/sink", "stream_key": SINK_KEY},
         )
-        assert response.status_code == 200, response.text
+        assert response.status_code == 200, (
+            f"status={response.status_code}, location={response.headers.get('location')}, "
+            f"body={response.text}"
+        )
 
     async def publish(self, url: str) -> asyncio.subprocess.Process:
         # What OBS sends: "Server" + "/" + "Stream Key", H.264 + AAC over RTMPS.
@@ -413,6 +419,11 @@ paths:
             else:
                 pytest.fail((tmp_path / "media.log").read_text())
             client.cookies.set("user_token", create_user_token(user_id=admin.id, email=admin.email, is_admin=True))
+            csrf_response = await client.get(f"http://127.0.0.1:{ports['http']}/admin/")
+            assert csrf_response.status_code == 200, csrf_response.text
+            csrf_token = client.cookies.get("admin_csrf")
+            assert csrf_token
+            client.headers["X-CSRF-Token"] = csrf_token
             stack = Stack(client=client, event=event, rooms=rooms, manager=manager, ports=ports, tmp_path=tmp_path)
             yield stack
     finally:

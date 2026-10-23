@@ -216,7 +216,10 @@ function stopMeter() {
 
 function releaseHeaders() {
   // Bind the release to this session's secret so the server ignores a stale DELETE.
-  return sessionSecret ? {'X-Program-Session': sessionSecret} : {};
+  return {
+    'X-CSRF-Token': document.querySelector('meta[name="csrf-token"]')?.content || '',
+    ...(sessionSecret ? {'X-Program-Session': sessionSecret} : {}),
+  };
 }
 
 class SenderError extends Error {
@@ -233,8 +236,11 @@ async function mintSession() {
   // No sync_offset_ms: the server keeps the room's saved YouTube sync delay.
   const response = await fetch(card.dataset.mintUrl, {
     method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: '{}',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-CSRF-Token': document.querySelector('meta[name="csrf-token"]')?.content || '',
+    },
+    body: JSON.stringify({sync_offset_ms: 0}),
     cache: 'no-store',
   });
   let data;

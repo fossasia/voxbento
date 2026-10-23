@@ -13,7 +13,7 @@ from httpx import ASGITransport, AsyncClient
 from sqlalchemy import select
 
 from fastapi_app import app
-from portal.auth import create_user_token, hash_password, resolve_booth_role
+from portal.auth import create_user_token, decode_token, generate_admin_csrf_token, hash_password, resolve_booth_role
 from portal.booth_identity import make_booth_id
 from portal.booth_state import BoothRegistry
 from portal.database import (
@@ -51,7 +51,10 @@ async def setup_db():
 
 
 def client():
-    return AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
+    return AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+    )
 
 
 @pytest.fixture
@@ -77,11 +80,23 @@ async def world():
         await set_room_membership(s, user_id=people[ROOM_COORDINATOR], room_id=room.id, role=ROOM_COORDINATOR)
         await set_booth_membership(s, user_id=people[INTERPRETER], booth_id=booth.id, role=INTERPRETER)
         ids = {"event": event.id, "other": other.id, "room": room.id, "booth": booth.id}
-    cookies = {
-        who: {"user_token": create_user_token(user_id=uid, email=f"{who}@example.org", is_admin=who == ADMIN)}
-        for who, uid in people.items()
+    cookies = {}
+    csrf_tokens = {}
+    for who, uid in people.items():
+        token = create_user_token(
+            user_id=uid,
+            email=f"{who}@example.org",
+            is_admin=who == ADMIN,
+        )
+        csrf = generate_admin_csrf_token(str(decode_token(token)["jti"]))
+        cookies[who] = {"user_token": token, "admin_csrf": csrf}
+        csrf_tokens[who] = csrf
+    return {
+        **ids,
+        "people": people,
+        "cookies": cookies,
+        "csrf_tokens": csrf_tokens,
     }
-    return {**ids, "people": people, "cookies": cookies}
 
 
 def prefix(who: str) -> str:
@@ -122,7 +137,10 @@ async def test_create_events(world, who, allowed):
         await http.post(
             "/workspace/setup",
             data={"slug": f"new-{who}", "display_name": f"New by {who}"},
-            headers=ORIGIN,
+            headers={
+                "Origin": "http://test",
+                "X-CSRF-Token": world["csrf_tokens"][who],
+            },
             cookies=world["cookies"][who],
             follow_redirects=False,
         )
@@ -134,12 +152,17 @@ async def test_hosting_access_also_allows_creating_events(world):
     async with get_session() as s:
         u = await create_user(s, email="host@example.org", display_name="Host", password_hash="x", can_host=True)
         uid = u.id
+    host_token = create_user_token(user_id=uid, email="host@example.org")
+    host_csrf = generate_admin_csrf_token(str(decode_token(host_token)["jti"]))
     async with client() as http:
         await http.post(
             "/workspace/setup",
             data={"slug": "hosted", "display_name": "Hosted"},
-            headers=ORIGIN,
-            cookies={"user_token": create_user_token(user_id=uid, email="host@example.org")},
+            headers={
+                "Origin": "http://test",
+                "X-CSRF-Token": host_csrf,
+            },
+            cookies={"user_token": host_token, "admin_csrf": host_csrf},
         )
     assert await event_still_has("Hosted")
     async with get_session() as s:
@@ -157,7 +180,10 @@ async def test_edit_and_delete_their_event(world, who, allowed):
     async with client() as http:
         res = await http.post(
             f"{prefix(who)}/events/{world['event']}/delete",
-            headers=ORIGIN,
+            headers={
+                "Origin": "http://test",
+                "X-CSRF-Token": world["csrf_tokens"][who],
+            },
             cookies=world["cookies"][who],
             follow_redirects=False,
         )
@@ -175,21 +201,30 @@ async def test_manage_rooms_booths_members_and_invites(world, who, allowed):
         room = await http.post(
             f"{base}/rooms/",
             data={"display_name": f"Room by {who}"},
-            headers=ORIGIN,
+            headers={
+                "Origin": "http://test",
+                "X-CSRF-Token": world["csrf_tokens"][who],
+            },
             cookies=world["cookies"][who],
             follow_redirects=False,
         )
         member = await http.post(
             f"{base}/members/",
             data={"email": f"added-by-{who}@example.org", "role": INTERPRETER},
-            headers=ORIGIN,
+            headers={
+                "Origin": "http://test",
+                "X-CSRF-Token": world["csrf_tokens"][who],
+            },
             cookies=world["cookies"][who],
             follow_redirects=False,
         )
         token = await http.post(
             f"{base}/rooms/{world['room']}/booths/{world['booth']}/tokens/",
             data={"role": INTERPRETER, "label": "x"},
-            headers=ORIGIN,
+            headers={
+                "Origin": "http://test",
+                "X-CSRF-Token": world["csrf_tokens"][who],
+            },
             cookies=world["cookies"][who],
             follow_redirects=False,
         )
@@ -205,7 +240,9 @@ async def test_manage_rooms_booths_members_and_invites(world, who, allowed):
 async def test_manage_ai_provider_and_api_keys(world, who, allowed):
     async with client() as http:
         page = await http.get(
-            f"{prefix(who)}/events/{world['event']}/api-settings/", cookies=world["cookies"][who], follow_redirects=False
+            f"{prefix(who)}/events/{world['event']}/api-settings/",
+            cookies=world["cookies"][who],
+            follow_redirects=False,
         )
         keys = await http.get(
             f"{prefix(who)}/api/events/{world['event']}/api-keys", cookies=world["cookies"][who], follow_redirects=False
@@ -229,9 +266,7 @@ async def test_use_mission_control(world, who, allowed):
 @pytest.mark.parametrize(("who", "allowed"), allowed_for(ADMIN, EVENT_OWNER, ROOM_COORDINATOR))
 async def test_start_and_stop_floor_transcription(world, who, allowed):
     async with client() as http:
-        res = await http.get(
-            f"/api/rooms/{world['room']}/floor-transcription/status", cookies=world["cookies"][who]
-        )
+        res = await http.get(f"/api/rooms/{world['room']}/floor-transcription/status", cookies=world["cookies"][who])
     assert (res.status_code == 200) is allowed, res.status_code
 
 
@@ -246,7 +281,9 @@ async def test_choose_the_active_interpreter(who, allowed):
         return  # someone with no role can't join the booth at all (see test_view_booths)
     requester, _ = await registry.join_participant(booth_id, who, who, "de", "c")
     try:
-        state = await registry.set_active_interpreter(booth_id, requester.participant_id, target.participant_id, "de", "c")
+        state = await registry.set_active_interpreter(
+            booth_id, requester.participant_id, target.participant_id, "de", "c"
+        )
         changed = state["active_interpreter_id"] == target.participant_id
     except PermissionError:
         changed = False
@@ -274,7 +311,9 @@ async def test_go_live_chat_and_view_booths(world, who, allowed):
 
     registry = BoothRegistry()
     participant, _ = await registry.join_participant(booth_id, who, granted, "de", "c")
-    state = await registry.update_participant_state(booth_id, participant.participant_id, "de", "c", ingest_connected=True)
+    state = await registry.update_participant_state(
+        booth_id, participant.participant_id, "de", "c", ingest_connected=True
+    )
     me = next(p for p in state["participants"] if p["participant_id"] == participant.participant_id)
     assert me["ingest_connected"] is True and me["can_go_live"] is True
     message, _ = await registry.add_chat_message(booth_id, participant.participant_id, "hello", "de", "c")
@@ -302,12 +341,17 @@ async def test_go_live_chat_and_view_booths(world, who, allowed):
     ],
 )
 async def test_roles_can_only_be_given_where_the_table_allows(world, level, role, ok):
-    where = {"event": f"event:{world['event']}", "room": f"room:{world['room']}", "booth": f"booth:{world['booth']}"}[level]
+    where = {"event": f"event:{world['event']}", "room": f"room:{world['room']}", "booth": f"booth:{world['booth']}"}[
+        level
+    ]
     async with client() as http:
         res = await http.post(
             f"/admin/events/{world['event']}/team/add",
             data={"email": "new@example.org", "role": role, "where": where},
-            headers=ORIGIN,
+            headers={
+                **ORIGIN,
+                "X-CSRF-Token": world["csrf_tokens"][ADMIN],
+            },
             cookies=world["cookies"][ADMIN],
             follow_redirects=False,
         )
@@ -339,7 +383,10 @@ async def test_legacy_member_routes_refuse_roles_the_table_does_not_allow(world,
         res = await http.post(
             path,
             data={"email": "new@example.org", "role": role},
-            headers=ORIGIN,
+            headers={
+                **ORIGIN,
+                "X-CSRF-Token": world["csrf_tokens"][ADMIN],
+            },
             cookies=world["cookies"][ADMIN],
             follow_redirects=False,
         )

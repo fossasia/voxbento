@@ -89,7 +89,7 @@ jobs:
   # /internal/media-auth hook; nothing is mocked between the encoder, MediaMTX and the relay.
   program-relay-media:
     name: program-relay-media (MediaMTX 1.18.2)
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
       API_KEY_ENCRYPTION_KEY: "ci-test-encryption-key-must-be-32-chars-long"
@@ -451,8 +451,15 @@ jobs:
           echo "GET /admin/ → $code"
           [ "$code" = "200" ] || { echo "FAIL"; exit 1; }
 
+          # Fetch the CSRF cookie
+          csrf_resp=$(curl -s -D - -o /dev/null -b "user_token=${ADMIN_COOKIE}" "${BASE}/admin/")
+          CSRF_COOKIE=$(echo "$csrf_resp" | grep -i 'set-cookie.*admin_csrf' | sed 's/.*admin_csrf=\([^;]*\).*/\1/')
+          [ -n "$CSRF_COOKIE" ] || { echo "FAIL: no admin_csrf cookie"; exit 1; }
+
           # Create event
-          code=$(curl -s -o /dev/null -w '%{http_code}' -X POST -b "user_token=${ADMIN_COOKIE}" \
+          code=$(curl -s -o /dev/null -w '%{http_code}' -X POST \
+            -b "user_token=${ADMIN_COOKIE}; admin_csrf=${CSRF_COOKIE}" \
+            -H "X-CSRF-Token: ${CSRF_COOKIE}" \
             -d "slug=ci-smoke&display_name=CI+Smoke+Test" "${BASE}/admin/events/")
           echo "POST /admin/events/ → $code"
           [ "$code" = "303" ] || { echo "FAIL"; exit 1; }
@@ -467,10 +474,17 @@ jobs:
           echo "GET /admin/users/ → $code"
           [ "$code" = "200" ] || { echo "FAIL"; exit 1; }
 
+
           # Admin without cookie → 403
           code=$(curl -s -o /dev/null -w '%{http_code}' "${BASE}/admin/")
           echo "GET /admin/ (no cookie) → $code"
           [ "$code" = "403" ] || { echo "FAIL: expected 403"; exit 1; }
+
+          # Legacy admin_token-only authentication must be rejected
+          code=$(curl -s -o /dev/null -w '%{http_code}' \
+            -b "admin_token=legacy-smoke-token" "${BASE}/admin/")
+          echo "GET /admin/ (legacy admin_token only) → $code"
+          [ "$code" = "403" ] || { echo "FAIL: expected 403 for legacy admin_token"; exit 1; }
 
       - name: User registration and login smoke test
         run: |

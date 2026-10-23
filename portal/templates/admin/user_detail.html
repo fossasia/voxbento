@@ -9,6 +9,7 @@
 
 {% macro access_form(field, value, label, classes='btn btn-outline ud-btn', confirm='', disabled=false) -%}
 <form method="post" action="/admin/users/{{ u.id }}/access"{% if confirm %} data-confirm-message="{{ confirm }}"{% endif %}>
+  <input type="hidden" name="csrf_token" value="{{ request.state.admin_csrf_token }}" />
   <input type="hidden" name="field" value="{{ field }}" />
   <input type="hidden" name="value" value="{{ 'true' if value else 'false' }}" />
   <button type="submit" class="{{ classes }}"{% if disabled %} disabled{% endif %}>{{ label }}</button>
@@ -56,11 +57,16 @@
             {{ access_form('hosting', false, 'Remove hosting access', confirm='Remove hosting access from ' ~ u.display_name ~ '? Their existing events are kept.') }}
           {% elif pending_token and not pending_token.is_expired %}
             <span class="ud-state">Invitation pending</span>
-            <form method="post" action="/admin/users/invite/{{ pending_token.id }}/resend"><button type="submit" class="btn btn-outline ud-btn">Resend invitation</button></form>
-            <form method="post" action="/admin/users/invite/{{ pending_token.id }}/cancel"><button type="submit" class="btn btn-outline ud-btn">Cancel invitation</button></form>
+            <form method="post" action="/admin/users/invite/{{ pending_token.id }}/resend">
+              <input type="hidden" name="csrf_token" value="{{ request.state.admin_csrf_token }}" />
+              <button type="submit" class="btn btn-outline ud-btn">Resend invitation</button></form>
+            <form method="post" action="/admin/users/invite/{{ pending_token.id }}/cancel">
+              <input type="hidden" name="csrf_token" value="{{ request.state.admin_csrf_token }}" />
+              <button type="submit" class="btn btn-outline ud-btn">Cancel invitation</button></form>
           {% elif not u.password_hash %}
             <span class="ud-state">Account not set up</span>
             <form method="post" action="/admin/users/invite">
+              <input type="hidden" name="csrf_token" value="{{ request.state.admin_csrf_token }}" />
               <input type="hidden" name="email" value="{{ u.email }}" />
               <button type="submit" class="btn btn-outline ud-btn"{% if not u.is_active %} disabled{% endif %}>Send invitation</button>
             </form>
@@ -206,6 +212,7 @@
 {% if not is_self and not is_last_admin %}
 <dialog class="ul-dialog" id="ud-delete-dialog" aria-labelledby="ud-delete-title">
   <form method="post" action="/admin/users/{{ u.id }}/delete">
+    <input type="hidden" name="csrf_token" value="{{ request.state.admin_csrf_token }}" />
     <h2 class="ul-dialog-title" id="ud-delete-title">Delete {{ u.display_name }}?</h2>
     <p class="ul-dialog-text">This removes the account and all its roles in events. It can't be undone.</p>
     <label class="ud-confirm-label" for="ud-confirm-email">Type <strong>{{ u.email }}</strong> to confirm</label>

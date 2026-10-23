@@ -172,7 +172,8 @@ function initAsyncSave() {
             method: form.method || 'POST',
             body: params,
             headers: {
-              'Content-Type': 'application/x-www-form-urlencoded'
+              'Content-Type': 'application/x-www-form-urlencoded',
+              'X-CSRF-Token': document.querySelector('meta[name="csrf-token"]')?.content || ''
             },
             redirect: 'follow'
           });
@@ -373,7 +374,10 @@ window.adminAPIKeys = {
       btn.disabled = true;
       const res = await fetch(`${managementPrefix()}/api/events/${this.eventId}/api-keys`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'X-CSRF-Token': document.querySelector('meta[name="csrf-token"]')?.content || ''
+        },
         body: JSON.stringify({ name: nameInput })
       });
       
@@ -446,7 +450,10 @@ window.adminAPIKeys = {
     
     try {
       const res = await fetch(`${managementPrefix()}/api/events/${this.eventId}/api-keys/${this.revokeKeyId}`, {
-        method: 'DELETE'
+        method: 'DELETE',
+        headers: {
+          'X-CSRF-Token': document.querySelector('meta[name="csrf-token"]')?.content || ''
+        }
       });
       if (!res.ok) throw new Error('Failed to revoke');
       

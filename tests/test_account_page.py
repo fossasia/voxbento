@@ -8,7 +8,13 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from fastapi_app import app
-from portal.auth import create_user_token, hash_password, verify_password
+from portal.auth import (
+    create_user_token,
+    decode_token,
+    generate_admin_csrf_token,
+    hash_password,
+    verify_password,
+)
 from portal.database import (
     configure,
     create_event,
@@ -49,7 +55,14 @@ async def make_user(*, password: str | None = "old-password", **kwargs) -> tuple
             **kwargs,
         )
         user_id = user.id
-    return user_id, {"user_token": create_user_token(user_id=user_id, email="priya@example.org")}
+    user_token = create_user_token(user_id=user_id, email="priya@example.org")
+    session_id = str(decode_token(user_token)["jti"])
+    csrf_token = generate_admin_csrf_token(session_id)
+
+    return user_id, {
+        "user_token": user_token,
+        "admin_csrf": csrf_token,
+    }
 
 
 async def account_html(cookies: dict[str, str], query: str = "") -> str:
@@ -112,7 +125,7 @@ async def test_display_name_can_be_changed():
     async with client() as http:
         res = await http.post(
             "/account/profile",
-            data={"display_name": "  Priya   Sharma "},
+            data={"display_name": "  Priya   Sharma ", "csrf_token": cookies["admin_csrf"]},
             headers=SAME_ORIGIN,
             cookies=cookies,
             follow_redirects=False,
@@ -132,7 +145,7 @@ async def test_invalid_display_name_is_refused(name):
     async with client() as http:
         res = await http.post(
             "/account/profile",
-            data={"display_name": name},
+            data={"display_name": name, "csrf_token": cookies["admin_csrf"]},
             headers=SAME_ORIGIN,
             cookies=cookies,
             follow_redirects=False,
@@ -150,7 +163,7 @@ async def test_profile_update_rejects_cross_origin():
     async with client() as http:
         res = await http.post(
             "/account/profile",
-            data={"display_name": "Evil"},
+            data={"display_name": "Evil", "csrf_token": cookies["admin_csrf"]},
             headers={"origin": "https://evil.example"},
             cookies=cookies,
         )
