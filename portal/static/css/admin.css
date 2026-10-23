@@ -1356,6 +1356,7 @@ code { font-family: var(--font-mono); font-size: 0.85em; background: var(--color
 }
 .nav-with-count { display: inline-flex; align-items: center; gap: 8px; }
 .nav-count {
+  position: relative; /* keeps its screen-reader text inside the scrolling tab row on phones */
   display: inline-flex; align-items: center; justify-content: center;
   min-width: 20px; height: 20px; padding: 0 6px; border-radius: 999px;
   background: var(--color-primary); color: #fff; font-size: 0.75rem; font-weight: 700; line-height: 1;
@@ -1667,6 +1668,40 @@ code { font-family: var(--font-mono); font-size: 0.85em; background: var(--color
 .tm-pointer p { margin: 0; color: var(--color-text-secondary); }
 .tm-pointer strong { color: var(--color-text); }
 
+/* Email configuration keeps the existing card and table language used by Admin. */
+.email-summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; margin: 20px 0; }
+.email-summary .card { display: grid; gap: 4px; padding: 18px 20px; }
+.email-summary strong { font-size: 1.5rem; color: var(--color-text); }
+.email-summary span, .email-template-row small { color: var(--color-text-secondary); }
+.email-card { margin: 20px 0; overflow: hidden; }
+.email-template-list { display: grid; }
+.email-template-row { display: flex; justify-content: space-between; align-items: center; gap: 16px; padding: 16px 24px; border-top: 1px solid var(--color-border); color: var(--color-text); text-decoration: none; }
+.email-template-row:hover { background: var(--color-surface-2); }
+.email-template-row span:first-child { display: grid; gap: 3px; }
+.email-editor-grid { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(320px, .85fr); gap: 20px; align-items: start; }
+.email-editor-grid .form-group textarea { width: 100%; min-height: 360px; resize: vertical; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .8125rem; line-height: 1.45; }
+.email-preview { width: 100%; min-height: 560px; border: 0; background: #fff; }
+.email-editor > form { padding: 20px 24px 0; }
+.email-editor .form-group { display: grid; gap: 6px; margin-bottom: 16px; }
+.email-editor .form-group label { font-weight: 600; font-size: .875rem; color: var(--color-text); }
+.email-editor .form-group input,
+.email-editor .form-group textarea { width: 100%; padding: 10px 12px; border: 1px solid var(--color-border); border-radius: 8px; background: #fff; color: var(--color-text); font: inherit; }
+.email-editor .form-group textarea { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .8125rem; line-height: 1.5; }
+.email-editor .form-group input:focus,
+.email-editor .form-group textarea:focus { outline: 2px solid var(--color-primary); outline-offset: 1px; border-color: var(--color-primary); }
+.email-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 0 24px 20px; }
+.email-actions form { margin: 0; }
+.email-version { margin-left: auto; color: var(--color-text-secondary); font-size: .875rem; }
+.email-branding { display: grid; gap: 16px; padding: 20px 24px; justify-items: start; }
+.email-branding .form-group { display: grid; gap: 6px; width: 100%; max-width: 560px; margin: 0; }
+.email-branding .form-group label { font-weight: 600; font-size: .875rem; }
+.email-branding .form-group input { width: 100%; padding: 10px 12px; border: 1px solid var(--color-border); border-radius: 8px; font: inherit; }
+.email-check { display: inline-flex; align-items: center; gap: 8px; font-weight: 600; font-size: .9375rem; }
+.email-optional { font-weight: 400; color: var(--color-text-secondary); }
+.email-branding-preview { display: flex; align-items: center; gap: 12px; color: var(--color-text-secondary); font-size: .875rem; }
+.email-branding-preview img { height: 28px; width: auto; }
+.email-template-row > span:last-child { white-space: nowrap; color: var(--color-text-secondary); }
+
 @media (max-width: 900px) {
   .tm-add-form, .tm-link-form { grid-template-columns: 1fr 1fr; }
   .tm-field--email { grid-column: 1 / -1; }
@@ -1679,4 +1714,8 @@ code { font-family: var(--font-mono); font-size: 0.85em; background: var(--color
   .tm-people-head { padding: 0 16px; }
   .tm-people-head .tm-card-title { padding-left: 0; padding-right: 0; }
   .tm-filters input { width: 100%; }
+}
+@media (max-width: 800px) {
+  .email-summary, .email-editor-grid { grid-template-columns: 1fr; }
+  .email-template-row { padding-left: 16px; padding-right: 16px; }
 }

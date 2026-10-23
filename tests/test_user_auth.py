@@ -123,20 +123,11 @@ class TestRegistration:
         assert b"already exists" not in resp.content
 
     @pytest.mark.anyio
-    async def test_duplicate_unverified_registration_refreshes_once(self, setup_db, monkeypatch):
+    async def test_duplicate_unverified_registration_queues_once(self, setup_db):
         from sqlalchemy import select
 
-        import portal.routers.auth as auth_router
         from portal.database import create_auth_token, create_user, get_session
-        from portal.models import AuthToken
-
-        sent_tokens = []
-
-        async def fake_send_verification_email(email, token):
-            sent_tokens.append((email, token))
-            return True
-
-        monkeypatch.setattr(auth_router, "send_verification_email", fake_send_verification_email)
+        from portal.models import AuthToken, EmailDelivery
 
         async with get_session() as session:
             user = await create_user(
@@ -165,8 +156,6 @@ class TestRegistration:
         assert first.status_code == second.status_code == 200
         assert b"eligible for registration" in first.content
         assert b'href="/login"' in first.content
-        assert len(sent_tokens) == 1
-
         async with get_session() as session:
             tokens = list(
                 (await session.execute(select(AuthToken).where(AuthToken.user_id == user.id).order_by(AuthToken.id)))
@@ -176,23 +165,17 @@ class TestRegistration:
         assert len(tokens) == 2
         assert tokens[0].used_at is None
         assert sum(token.used_at is None for token in tokens) == 2
+        async with get_session() as session:
+            deliveries = list((await session.execute(select(EmailDelivery))).scalars().all())
+        assert len(deliveries) == 1
+        assert deliveries[0].notification_key == "verification"
 
     @pytest.mark.anyio
-    async def test_duplicate_registration_cannot_activate_preexisting_password(self, setup_db, monkeypatch):
-        import portal.routers.auth as auth_router
+    async def test_duplicate_registration_cannot_activate_preexisting_password(self, setup_db):
+        from sqlalchemy import select
+
         from portal.database import create_user, get_session, get_user_by_email
-
-        sent_tokens = []
-
-        async def fake_send_delayed_onboarding_email(_email, _display_name):
-            return None
-
-        async def fake_send_verification_email(_email, token):
-            sent_tokens.append(token)
-            return True
-
-        monkeypatch.setattr(auth_router, "send_verification_email", fake_send_verification_email)
-        monkeypatch.setattr(auth_router, "send_delayed_onboarding_email", fake_send_delayed_onboarding_email)
+        from portal.models import AuthToken
 
         async with get_session() as session:
             await create_user(
@@ -214,7 +197,12 @@ class TestRegistration:
                     "password_confirm": "owner-password",
                 },
             )
-            verification = await c.get(f"/auth/verify/{sent_tokens[0]}", follow_redirects=False)
+            async with get_session() as session:
+                token = await session.scalar(
+                    select(AuthToken).where(AuthToken.token_type == "verification").order_by(AuthToken.id.desc())
+                )
+            assert token is not None
+            verification = await c.get(f"/auth/verify/{token.jti}", follow_redirects=False)
             login = await c.post(
                 "/login",
                 data={"email": "preclaimed@example.com", "password": "attacker-password"},
@@ -231,17 +219,11 @@ class TestRegistration:
         assert user.password_hash is None
 
     @pytest.mark.anyio
-    async def test_duplicate_registration_preserves_old_token_when_resend_fails(self, setup_db, monkeypatch):
+    async def test_duplicate_registration_preserves_old_token_and_queues_resend(self, setup_db):
         from sqlalchemy import select
 
-        import portal.routers.auth as auth_router
         from portal.database import create_auth_token, create_user, get_session
-        from portal.models import AuthToken
-
-        async def fake_send_verification_email(_email, _token):
-            return False
-
-        monkeypatch.setattr(auth_router, "send_verification_email", fake_send_verification_email)
+        from portal.models import AuthToken, EmailDelivery
 
         async with get_session() as session:
             user = await create_user(
@@ -277,7 +259,10 @@ class TestRegistration:
             )
         assert len(tokens) == 2
         assert tokens[0].used_at is None
-        assert tokens[1].used_at is not None
+        assert tokens[1].used_at is None
+        async with get_session() as session:
+            deliveries = list((await session.execute(select(EmailDelivery))).scalars().all())
+        assert len(deliveries) == 1
 
     @pytest.mark.anyio
     async def test_register_rejects_mismatched_password_confirm(self, setup_db):

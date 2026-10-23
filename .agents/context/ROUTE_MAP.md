@@ -126,6 +126,11 @@ with `?error=invalid_role&role=…` and the page explains why.
 | POST | `/admin/users/{user_id}/toggle-active` | — | Older form endpoint; same-origin; flips Active through the same rules |
 | POST | `/admin/users/{user_id}/toggle-admin` | — | Older form endpoint; same-origin; flips Admin through the same rules |
 | POST | `/admin/users/{user_id}/delete` | — | Same-origin; `confirm_email` must equal the account's email; never your own account or the last active Admin; deletes the user and all their roles |
+| GET | `/admin/emails/` | `admin/emails.html` | Admin-only template registry and redacted delivery history |
+| GET | `/admin/emails/{key}/` | `admin/email_template.html` | Admin-only draft editor, safe preview and test-send controls |
+| POST | `/admin/emails/{key}/draft` | — | Admin + same-origin; validates allowed placeholders and saves a draft |
+| POST | `/admin/emails/{key}/publish` | — | Admin + same-origin; publishes the draft and records a revision |
+| POST | `/admin/emails/{key}/test` | — | Admin + same-origin; queues a safe example message to the signed-in Admin |
 | GET | `/admin/hosting-access/` | `admin/hosting_access.html` | "People with access" tab: hosts and pending hosting invitations, events owned, Remove access / Cancel invitation (#768) |
 | GET | `/admin/hosting-access/requests/` | `admin/hosting_access.html` | "Requests" tab: open hosting requests, newest first |
 | POST | `/admin/hosting-access/requests/{request_id}/grant` | — | Same-origin; sets `can_host`, closes request as `granted`, emails the person |

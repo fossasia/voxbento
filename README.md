@@ -103,7 +103,7 @@ uv sync --all-groups
 
 ### 3. Configure Environment
 
-Copy the example environment configuration and generate the required encryption key:
+Copy the example environment configuration and generate the required encryption key. The key encrypts stored provider keys and every queued email (sign-in links, invitations, password resets), so production refuses to start without it. Outgoing email is sent from a durable outbox once `SMTP_HOST` is set; Admins edit the email templates and see delivery status in **Admin → Emails**.
 
 ```bash
 cp .env.example .env

@@ -42,7 +42,7 @@ async def setup_db():
 
 @pytest.fixture(autouse=True)
 def no_email():
-    with patch("portal.routers.admin.send_role_invite_email", new_callable=AsyncMock) as sent:
+    with patch("portal.routers.admin.queue_notification", new_callable=AsyncMock) as sent:
         yield sent
 
 
