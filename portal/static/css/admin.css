@@ -397,70 +397,56 @@ code { font-family: var(--font-mono); font-size: 0.85em; background: var(--color
   justify-content: flex-end;
 }
 
-/* Mission Control layout */
-/* The page container (.admin-main) already sets width and gutters, so Mission
-   Control lines up with the header like every other page. */
-.mc-container {
-  margin-top: 0;
-}
-.mc-container--list { margin-top: 2rem; }
-.mc-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 1.5rem;
-}
-.mc-header h2 { margin: 0; }
-.mc-header-sub {
-  margin: 0;
-  color: var(--color-muted);
-  font-size: 0.9rem;
-}
-.mc-intro {
-  margin-bottom: 1.5rem;
-  color: var(--color-muted);
-}
-.mc-rooms-container {
-  display: flex;
-  flex-direction: column;
-  gap: 2rem;
-}
-.mc-room-group {
-  background: #e2e8f0; /* matching the user's mockup aesthetic (slate 200) */
-  border-radius: var(--radius-lg);
-  padding: 1.5rem;
-}
-.mc-room-title {
-  margin: 0 0 1.25rem 0;
-  font-size: 1.25rem;
-  font-weight: 700;
-  color: var(--color-text);
-}
-.mc-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(min(320px, 100%), 1fr));
-  gap: 1rem;
-}
-.mc-grid--cards {
-  grid-template-columns: repeat(auto-fill, minmax(min(300px, 100%), 1fr));
-}
-.mc-card { padding: 1.5rem; }
-.mc-card h3 { margin-top: 0; }
-.mc-card-meta {
-  color: var(--color-muted);
-  font-size: 0.9rem;
-}
-.mc-card-action {
-  display: inline-block;
-  margin-top: 1rem;
-}
-.mc-empty {
-  padding: 2rem;
-  text-align: center;
-}
-.mc-empty p {
-  color: var(--color-muted);
-  margin: 0;
+/* Mission Control: one section per room, one card per booth.
+   The page container (.admin-main) already sets width and gutters. */
+.mc-container { margin-top: 0; }
+.mc-header { display: flex; justify-content: space-between; align-items: flex-end; gap: 16px; margin-bottom: 1.5rem; }
+.mc-title { margin: 0 0 4px; font-size: 1.9rem; font-weight: 800; letter-spacing: -0.02em; }
+.mc-header-sub { margin: 0; color: var(--color-text-secondary); font-size: 0.95rem; }
+.mc-rooms-container { display: grid; gap: 24px; }
+.mc-loading, .mc-muted { margin: 0; color: var(--color-text-secondary); font-size: 0.875rem; }
+
+.mc-room { background: var(--color-surface-2, #f6f8fb); border: 1px solid var(--color-border); border-radius: 12px; padding: 18px; }
+.mc-room-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
+.mc-room-title { margin: 0; font-size: 1.2rem; font-weight: 700; color: var(--color-text); }
+.mc-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(300px, 100%), 1fr)); gap: 14px; }
+
+.mc-captions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.mc-captions [hidden] { display: none; }
+.mc-captions-label { font-size: 0.875rem; font-weight: 600; color: var(--color-text); }
+.mc-captions-reason { flex-basis: 100%; text-align: right; font-size: 0.8125rem; color: var(--color-text-secondary); }
+.mc-captions-reason:empty { display: none; }
+
+.mc-pill { display: inline-flex; align-items: center; padding: 3px 10px; border-radius: 999px; font-size: 0.75rem; font-weight: 600; background: #eef1f6; color: #475467; white-space: nowrap; }
+.mc-pill.is-on { background: #dcfce7; color: #166534; }
+.mc-pill.is-busy { background: #fef3c7; color: #92400e; }
+.mc-pill.is-problem { background: #fee2e2; color: #991b1b; }
+
+.mc-booth { display: flex; flex-direction: column; gap: 14px; padding: 18px; border-radius: 12px; }
+.mc-booth.is-on-air { border-color: #86efac; box-shadow: 0 0 0 1px #bbf7d0; }
+.mc-booth-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 8px; }
+.mc-booth-title { margin: 0; font-size: 1.1rem; font-weight: 700; }
+.mc-booth-code { margin-left: 6px; font-size: 0.75rem; font-weight: 600; color: var(--color-text-secondary); text-transform: uppercase; }
+.mc-booth-section { display: grid; gap: 8px; padding-top: 12px; border-top: 1px solid var(--color-border); }
+.mc-booth-label { margin: 0; font-size: 0.75rem; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; color: var(--color-text-secondary); }
+.mc-people { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.mc-person { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 0.9rem; }
+.mc-person.is-active .mc-person-name { font-weight: 700; color: var(--color-primary); }
+.mc-person-tag { margin-left: 6px; padding: 1px 6px; border-radius: 4px; background: #dbeafe; color: #1e40af; font-size: 0.6875rem; font-weight: 700; text-transform: uppercase; }
+.mc-listen-head { display: flex; align-items: center; justify-content: space-between; }
+.mc-volume { width: 100%; }
+.mc-booth-actions { display: grid; grid-template-columns: 1fr auto; gap: 8px; margin-top: auto; }
+.mc-booth-actions .btn { justify-content: center; font-weight: 600; }
+
+.mc-empty-state { padding: 40px 24px; text-align: center; background: var(--color-surface, #fff); border: 1px dashed var(--color-border); border-radius: 12px; }
+.mc-empty-title { margin: 0 0 6px; font-weight: 700; color: var(--color-text); }
+.mc-empty-state p { margin: 0; color: var(--color-text-secondary); }
+.mc-toast { position: fixed; bottom: 24px; right: 24px; z-index: 9999; padding: 12px 18px; border-radius: 8px; background: #1f2937; color: #fff; font-size: 0.9rem; }
+.mc-toast.is-error { background: #b42318; }
+
+@media (max-width: 640px) {
+  .mc-captions-reason { text-align: left; }
+  .mc-booth-actions { grid-template-columns: 1fr; }
 }
 
 .pagination {
