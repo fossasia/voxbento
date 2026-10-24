@@ -68,6 +68,12 @@ logger = logging.getLogger(__name__)
 _DUMMY_PASSWORD_HASH = "$2b$12$OEvt/xgDNq5iYebPcyO6L.ntTqE5qjv39rH/iPdAnvHg33d2vcG4e"
 
 
+def _is_retryable_sign_in_write_conflict(exc: DBAPIError) -> bool:
+    """Return whether a SQLite snapshot or lock conflict can be retried safely."""
+    message = str(exc).lower()
+    return any(marker in message for marker in ("busy", "locked", "snapshot"))
+
+
 async def _queue_verification_email(
     session,
     email: str,
@@ -276,7 +282,7 @@ async def verify_email_route(request: Request, token: str):
             user = await get_user_by_id(session, auth_token.user_id)
             if user is None or not user.is_active:
                 raise ValueError("Invalid verification link.")
-            user = await update_user(session, auth_token.user_id, email_verified=True)
+            user = await update_user(session, auth_token.user_id, email_verified=True, last_sign_in_at=utc_now())
             await queue_notification(
                 session,
                 "onboarding",
@@ -346,6 +352,15 @@ async def user_login_submit(request: Request):
     jwt_token = create_user_token(
         user_id=user.id, email=user.email, display_name=user.display_name, is_admin=user.is_admin
     )
+    for attempt in range(3):
+        try:
+            async with get_session() as session:
+                await update_user(session, user.id, last_sign_in_at=utc_now())
+            break
+        except (OperationalError, DBAPIError) as exc:
+            if attempt == 2 or not _is_retryable_sign_in_write_conflict(exc):
+                raise
+            await asyncio.sleep(0)
     redirect_to = next_url if next_url else "/account"
     response = safe_redirect(url=redirect_to, status_code=status.HTTP_303_SEE_OTHER)
     response.set_cookie(
@@ -415,7 +430,7 @@ async def redeem_magic_link(request: Request, token: str, next: str | None = Non
 
             # If they log in via magic link, we can implicitly consider their email verified
             if not user.email_verified:
-                await update_user(session, user.id, email_verified=True)
+                await update_user(session, user.id, email_verified=True, last_sign_in_at=utc_now())
                 await queue_notification(
                     session,
                     "onboarding",
@@ -424,6 +439,8 @@ async def redeem_magic_link(request: Request, token: str, next: str | None = Non
                     scheduled_at=utc_now() + timedelta(minutes=15),
                     idempotency_key=f"onboarding:{user.id}",
                 )
+            else:
+                await update_user(session, user.id, last_sign_in_at=utc_now())
 
             jwt_token = create_user_token(
                 user_id=user.id, email=user.email, display_name=user.display_name, is_admin=user.is_admin
@@ -559,13 +576,21 @@ async def reset_password_submit(request: Request, token: str):
                 )
 
             pw_hash = hash_password(password)
+            reset_user = await get_user_by_id(session, auth_token.user_id)
+            if reset_user is None:
+                raise ValueError("User not found.")
+            if not reset_user.is_active:
+                raise HTTPException(status_code=403, detail="Account deactivated")
             user = await update_user(session, auth_token.user_id, password_hash=pw_hash)
             if user is None:
                 raise ValueError("User not found.")
+            await update_user(session, user.id, last_sign_in_at=utc_now())
             await _queue_password_notice(session, user.email, user.id, "Your VoxBento password was reset.")
             jwt_token = create_user_token(
                 user_id=user.id, email=user.email, display_name=user.display_name, is_admin=user.is_admin
             )
+    except HTTPException:
+        raise
     except Exception:
         logger.exception("Failed to complete password reset for token")
         return templates.TemplateResponse(
@@ -953,6 +978,8 @@ async def invite_accept_submit(request: Request, token: str):
 
             # Perform account activation and hosting grant in the same transaction
             user.can_host = True
+            if not is_signed_in_as_user:
+                await update_user(session, user.id, last_sign_in_at=utc_now())
             user.hosting_revoked_at = None
             user.hosting_requested_at = None
             await close_open_hosting_request(session, user.id, status=HOSTING_REQUEST_GRANTED, decided_by_user_id=None)
