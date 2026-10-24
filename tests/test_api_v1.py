@@ -144,3 +144,51 @@ async def test_update_event_api_keys_only_changes_fields_sent_in_payload(event_a
         assert decrypt_val(event.encrypted_deepgram_api_key) == "old-deepgram-key"
         assert event.encrypted_gemini_api_key == old_gemini_ciphertext
         assert decrypt_val(event.encrypted_gemini_api_key) == "old-gemini-key"
+
+
+@pytest.mark.anyio
+async def test_app_creating_an_event_for_another_organizer_adds_only_the_organizer():
+    """#757: the organizer becomes Event owner; the app's developer gets no automatic access.
+
+    The developer used to be added with a "support" role, which the event-role
+    check rejects, so the whole event creation failed.
+    """
+    from sqlalchemy import select
+
+    access_token = "app-creates-event-token"
+    async with get_session() as session:
+        developer = await create_user(session, email="dev@example.com", display_name="Developer")
+        organizer = await create_user(session, email="organizer@example.com", display_name="Organizer")
+        account = DeveloperAccount(user_id=developer.id, status="approved")
+        session.add(account)
+        await session.flush()
+        app_client = OAuthClient(developer_account_id=account.id, client_id="eventyay-plugin", name="Eventyay plugin")
+        session.add(app_client)
+        seed = await create_event(session, slug="organizer-seed", display_name="Seed")
+        session.add(EventMembership(user_id=organizer.id, event_id=seed.id, role="event_owner"))
+        await session.flush()
+        session.add(
+            OAuthToken(
+                client_id=app_client.id,
+                user_id=organizer.id,
+                event_id=seed.id,
+                scopes=["events:write"],
+                access_token_hash=hashlib.sha256(access_token.encode()).hexdigest(),
+                expires_at=datetime.now(timezone.utc) + timedelta(minutes=5),
+            )
+        )
+        developer_id, organizer_id = developer.id, organizer.id
+
+    async with _client() as client:
+        response = await client.post(
+            "/api/v1/events/",
+            json={"slug": "organizers-summit", "name": "Organizer's Summit"},
+            headers={"Authorization": f"Bearer {access_token}"},
+        )
+    assert response.status_code == 201, response.text
+
+    async with get_session() as session:
+        event = (await session.execute(select(Event).where(Event.slug == "organizers-summit"))).scalar_one()
+        members = (await session.execute(select(EventMembership).where(EventMembership.event_id == event.id))).scalars().all()
+    assert {(m.user_id, m.role) for m in members} == {(organizer_id, "event_owner")}
+    assert developer_id not in {m.user_id for m in members}

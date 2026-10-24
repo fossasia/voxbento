@@ -25,6 +25,9 @@ let captionTimer = null;
 /** @type {ReturnType<typeof setInterval>|null} */
 let pollTimer = null;
 
+/** @type {number} Monotonically increasing session ID for playback identity */
+let playbackSession = 0;
+
 // ---------------------------------------------------------------------------
 // Boot
 // ---------------------------------------------------------------------------
@@ -73,6 +76,16 @@ function setupDemo(manifest) {
         if (!audioEls.has(lang.code)) {
             const a = new Audio(lang.audio_url);
             a.preload = "auto";
+            a.addEventListener("ended", () => {
+                if (activeCode !== lang.code) return;
+                if (!a.ended || !a.paused) return;
+                if (a.duration && a.currentTime < a.duration - 0.5) return;
+                if (a._playbackSession !== playbackSession) return;
+
+                playbackSession++;
+                setPlayState(false);
+                stopCaptionTimer();
+            });
             audioEls.set(lang.code, a);
         }
         langSegments.set(lang.code, lang.segments || []);
@@ -96,9 +109,8 @@ function setupDemo(manifest) {
     document.getElementById("hero-audio-toggle")?.addEventListener("click", (e) => {
         e.preventDefault(); // Prevent default checkbox toggle so JS controls state
         if (isPlaying()) {
-            audioEls.get(activeCode)?.pause();
-            setPlayState(false);
-            stopCaptionTimer();
+            const audio = audioEls.get(activeCode);
+            if (audio) pauseActiveAudio(audio);
         } else {
             const code = activeCode ?? (manifest.languages[0]?.code);
             if (!code) return;
@@ -106,10 +118,7 @@ function setupDemo(manifest) {
             activateLangButton(code);
             const audio = audioEls.get(code);
             if (!audio) return;
-            audio.currentTime = 0;
-            audio.play().catch((err) => console.error("[demo-player] hero toggle failed:", err));
-            setPlayState(true);
-            startCaptionTimer(audio);
+            playActiveAudio(audio, true);
         }
     });
 
@@ -132,14 +141,19 @@ function switchLang(code) {
     const wasPlaying = isPlaying();
     const currentTime = activeCode ? (audioEls.get(activeCode)?.currentTime ?? 0) : 0;
 
-    audioEls.get(activeCode)?.pause();
+    const prevAudio = audioEls.get(activeCode);
+    if (prevAudio) {
+        playbackSession++;
+        prevAudio.pause();
+    }
     activeCode = code;
     activateLangButton(code);
 
     const audio = audioEls.get(code);
+    if (!audio) return;
     audio.currentTime = currentTime;
     if (wasPlaying) {
-        audio.play().catch((err) => console.error("[demo-player] play failed:", err));
+        playActiveAudio(audio, false);
     }
 }
 
@@ -188,19 +202,43 @@ function activateLangButton(code) {
 // Playback
 // ---------------------------------------------------------------------------
 
+function playActiveAudio(audio, resetTime = false) {
+    if (resetTime || audio.ended || (audio.duration && audio.currentTime >= audio.duration)) {
+        audio.currentTime = 0;
+    }
+    const session = ++playbackSession;
+    audio._playbackSession = session;
+    const playPromise = audio.play();
+    if (playPromise !== undefined) {
+        playPromise.catch((err) => {
+            console.error("[demo-player] play failed:", err);
+            if (session === playbackSession) {
+                playbackSession++;
+                setPlayState(false);
+                stopCaptionTimer();
+            }
+        });
+    }
+    setPlayState(true);
+    startCaptionTimer(audio);
+}
+
+function pauseActiveAudio(audio) {
+    playbackSession++;
+    audio.pause();
+    setPlayState(false);
+    stopCaptionTimer();
+}
+
 function togglePlay() {
     if (!activeCode) return;
     const audio = audioEls.get(activeCode);
     if (!audio) return;
 
     if (isPlaying()) {
-        audio.pause();
-        setPlayState(false);
-        stopCaptionTimer();
+        pauseActiveAudio(audio);
     } else {
-        audio.play().catch((err) => console.error("[demo-player] play failed:", err));
-        setPlayState(true);
-        startCaptionTimer(audio);
+        playActiveAudio(audio);
     }
 }
 
@@ -264,10 +302,7 @@ function setupHeroSelector() {
             switchLang(code);
             if (!wasPlaying) {
                 const audio = audioEls.get(code);
-                audio.currentTime = 0;
-                audio.play().catch((err) => console.error("[demo-player] hero play failed:", err));
-                setPlayState(true);
-                startCaptionTimer(audio);
+                if (audio) playActiveAudio(audio, true);
             }
         });
     });

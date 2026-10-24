@@ -279,16 +279,20 @@ class TestAdminEventMembersRoutes:
         event, _, _ = await _seed_event_room_booth()
         await _create_test_user(email="listed@test.com", display_name="Listed")
         async with _client() as c:
-            resp = await c.get(f"/admin/events/{event.id}/members/", cookies=admin_cookie)
+            old = await c.get(f"/admin/events/{event.id}/members/", cookies=admin_cookie, follow_redirects=False)
+            resp = await c.get(f"/admin/events/{event.id}/team/", cookies=admin_cookie)
+        # The old members page moved to the event's Team page (#757).
+        assert old.status_code == 303
+        assert old.headers["location"].endswith(f"/events/{event.id}/team/")
         assert resp.status_code == 200
-        assert b"Members" in resp.content
-        # Table should show empty state because no members are assigned
-        assert b"No users have been assigned" in resp.content
+        assert b"Team" in resp.content
+        # Empty state because no one is assigned
+        assert b"No one is on the team yet" in resp.content
 
     @pytest.mark.anyio
     async def test_members_page_404_for_missing_event(self, setup_db, admin_cookie):
         async with _client() as c:
-            resp = await c.get("/admin/events/9999/members/", cookies=admin_cookie)
+            resp = await c.get("/admin/events/9999/team/", cookies=admin_cookie)
         assert resp.status_code == 404
 
     @pytest.mark.anyio
@@ -327,10 +331,10 @@ class TestAdminEventMembersRoutes:
         async with get_session() as s:
             await set_event_membership(s, user_id=user.id, event_id=event.id, role="event_owner")
         async with _client() as c:
-            resp = await c.get(f"/admin/events/{event.id}/members/", cookies=admin_cookie)
+            resp = await c.get(f"/admin/events/{event.id}/team/", cookies=admin_cookie)
         assert resp.status_code == 200
-        # The badge for event_admin should be rendered
-        assert b"badge-event_owner" in resp.content
+        assert b"tm-role--event_owner" in resp.content
+        assert b"Event owner" in resp.content
         assert b"Remove" in resp.content
 
     @pytest.mark.anyio
@@ -474,36 +478,36 @@ class TestAdminTokenRoutes:
         assert resp.status_code == 403
 
     @pytest.mark.anyio
-    async def test_booth_detail_shows_token_form(self, setup_db, admin_cookie):
+    async def test_team_page_shows_invite_link_form(self, setup_db, admin_cookie):
+        # Invite links are created on the event's Team page (#757); the booth page points there.
         event, room, booth = await _seed_event_room_booth()
         async with _client() as c:
-            resp = await c.get(
+            booth_page = await c.get(
                 f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/",
                 cookies=admin_cookie,
             )
+            resp = await c.get(f"/admin/events/{event.id}/team/", cookies=admin_cookie)
+        assert booth_page.status_code == 200
+        assert f"/admin/events/{event.id}/team/".encode() in booth_page.content
         assert resp.status_code == 200
-        assert b"Generate New Token" in resp.content
-        assert b"Generate Token" in resp.content
+        assert b"Create link" in resp.content
 
     @pytest.mark.anyio
-    async def test_booth_detail_shows_tokens(self, setup_db, admin_cookie):
+    async def test_team_page_shows_invite_links(self, setup_db, admin_cookie):
         from portal.database import create_invite_token, get_session
 
         event, room, booth = await _seed_event_room_booth()
         async with get_session() as s:
             await create_invite_token(s, booth_id=booth.id, role="interpreter", label="TestTok")
         async with _client() as c:
-            resp = await c.get(
-                f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/",
-                cookies=admin_cookie,
-            )
+            resp = await c.get(f"/admin/events/{event.id}/team/", cookies=admin_cookie)
         assert resp.status_code == 200
         assert b"TestTok" in resp.content
         assert b"Revoke" in resp.content
-        assert b"Copy Link" in resp.content
+        assert b"Copy" in resp.content
 
     @pytest.mark.anyio
-    async def test_booth_detail_shows_revoked_token(self, setup_db, admin_cookie):
+    async def test_team_page_hides_revoked_invite_links(self, setup_db, admin_cookie):
         from portal.database import create_invite_token, get_session, revoke_invite_token
 
         event, room, booth = await _seed_event_room_booth()
@@ -511,13 +515,9 @@ class TestAdminTokenRoutes:
             tok = await create_invite_token(s, booth_id=booth.id, role="interpreter", label="RevokedTok")
             await revoke_invite_token(s, tok.token)
         async with _client() as c:
-            resp = await c.get(
-                f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/",
-                cookies=admin_cookie,
-            )
+            resp = await c.get(f"/admin/events/{event.id}/team/", cookies=admin_cookie)
         assert resp.status_code == 200
-        assert b"RevokedTok" in resp.content
-        assert b"Revoked / Used" in resp.content
+        assert b"RevokedTok" not in resp.content
 
 
 # ---------------------------------------------------------------------------
@@ -578,13 +578,13 @@ class TestAccountMemberships:
 
 class TestEventDetailMembersLink:
     @pytest.mark.anyio
-    async def test_event_detail_has_members_link(self, setup_db, admin_cookie):
+    async def test_event_detail_has_team_link(self, setup_db, admin_cookie):
         event, _, _ = await _seed_event_room_booth()
         async with _client() as c:
             resp = await c.get(f"/admin/events/{event.id}/", cookies=admin_cookie)
         assert resp.status_code == 200
-        assert b"Team &amp; roles" in resp.content
-        assert f"/admin/events/{event.id}/members/".encode() in resp.content
+        assert b"Team" in resp.content
+        assert f"/admin/events/{event.id}/team/".encode() in resp.content
 
 
 # ---------------------------------------------------------------------------
@@ -740,12 +740,9 @@ class TestEndToEndAdminWorkflow:
         token_str = tokens[0].token
         assert tokens[0].label == "Alice FR booth"
 
-        # 7. Verify booth detail page shows the token
+        # 7. Verify the event's Team page shows the token
         async with _client() as c:
-            resp = await c.get(
-                f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/",
-                cookies=admin_cookie,
-            )
+            resp = await c.get(f"/admin/events/{event.id}/team/", cookies=admin_cookie)
         assert resp.status_code == 200
         assert b"Alice FR booth" in resp.content
         assert b"Revoke" in resp.content

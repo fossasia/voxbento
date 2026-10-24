@@ -43,7 +43,8 @@ class RelayDestination(BaseModel):
 
 
 class SenderSessionRequest(BaseModel):
-    sync_offset_ms: int = Field(default=0, ge=0, le=120000)
+    # Omitted keeps the room's saved YouTube sync delay, so a sender (re)start never resets it.
+    sync_offset_ms: int | None = Field(default=None, ge=0, le=120000)
 
 
 def _rtmps_server(event_slug: str, room_id: int) -> str:
@@ -235,9 +236,8 @@ async def sender_session_start(
             if not room or room.event_id != event_id or not event:
                 raise HTTPException(404, "Room not found")
             try:
-                secret = await open_sender_session(
-                    room, event, body.sync_offset_ms, settings.program_sender_session_ttl_secs
-                )
+                offset_ms = room.program_sync_offset_ms if body.sync_offset_ms is None else body.sync_offset_ms
+                secret = await open_sender_session(room, event, offset_ms, settings.program_sender_session_ttl_secs)
             except httpx.HTTPError:
                 raise HTTPException(
                     502, "Could not confirm floor availability; no session was issued. Retry."

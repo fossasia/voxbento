@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from urllib.parse import urlparse
 
-from pydantic import Field
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -116,6 +116,15 @@ class Settings(BaseSettings):
                 "PROGRAM_RELAY_ENABLED requires PROGRAM_RELAY_CONTROL_SECRET (at least 32 characters), "
                 "shared with the program-relay service. Generate one with: openssl rand -hex 32"
             )
+        # Every outgoing email is encrypted at rest in the outbox, so sign-in links,
+        # invitations and password resets cannot be sent without this key.
+        encryption_key = (self.api_key_encryption_key or "").strip()
+        if encryption_key in {"", "change-this-encryption-key-in-production", "your-secure-32-char-key-here"}:
+            raise RuntimeError(
+                "API_KEY_ENCRYPTION_KEY is not set. It encrypts stored provider keys and queued email, "
+                "so sign-in and invitation emails cannot be sent without it. "
+                "Generate one with: openssl rand -hex 32 (to rotate, list the new key first, comma-separated)"
+            )
 
     # Transcription Settings
     nvidia_function_id: str = ""
@@ -138,6 +147,19 @@ class Settings(BaseSettings):
     # Team inbox notified of each new hosting access request.
     hosting_requests_email: str = "voxbento.dev@gmail.com"
     public_base_url: str = "https://voxbento.com"
+    # Webhook Settings
+    max_webhook_subscriptions: int = 50
+    # Caption WebSocket Settings
+    max_anonymous_caption_listeners_per_booth: int = 500
+
+    @field_validator("public_base_url")
+    @classmethod
+    def validate_public_base_url(cls, value: str) -> str:
+        """Reject query strings and fragments from canonical public URLs."""
+        parsed = urlparse(value)
+        if parsed.query or parsed.fragment:
+            raise ValueError("public_base_url must not include a query string or fragment")
+        return value
 
 
 settings = Settings()

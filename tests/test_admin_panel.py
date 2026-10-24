@@ -2,7 +2,7 @@
 
 Covers:
 - Admin sign-in redirect and logout flow
-- require_admin() guard (403 without cookie)
+- require_owner_or_coordinator() guard (403 without cookie)
 - CRUD operations for events, rooms, booths
 - Dashboard with live status
 - Booth detail with WHEP URL and participant roster
@@ -451,8 +451,8 @@ class TestStaleAdminToken:
         assert resp.status_code == 403
 
     @pytest.mark.anyio
-    async def test_demoted_admin_token_denied_on_super_admin_route(self, setup_db):
-        """Super-admin-only routes (e.g. /admin/users/) also honour the demotion."""
+    async def test_demoted_admin_token_denied_on_admin_route(self, setup_db):
+        """Admin-only routes (e.g. /admin/users/) also honour the demotion."""
         user = await self._make_admin()
         cookie = {"user_token": create_user_token(user_id=user.id, email=user.email, is_admin=True)}
 
@@ -469,8 +469,8 @@ class TestStaleAdminToken:
         assert resp.status_code == 403
 
     @pytest.mark.anyio
-    async def test_event_owner_denied_on_super_admin_route(self, seed_event):
-        """A normal event owner cannot reach super-admin-only routes (e.g. /admin/users/)."""
+    async def test_event_owner_denied_on_admin_route(self, seed_event):
+        """A normal event owner cannot reach Admin-only routes (e.g. /admin/users/)."""
         event, _, _ = seed_event
         from portal.database import create_user, get_session, set_event_membership
 
@@ -513,6 +513,15 @@ class TestRequireAdmin:
         async with _client() as c:
             resp = await c.get("/admin/", cookies=admin_cookie)
         assert resp.status_code == 200
+
+    @pytest.mark.anyio
+    async def test_confirm_popup_is_a_labelled_dialog(self, admin_cookie):
+        async with _client() as c:
+            resp = await c.get("/admin/", cookies=admin_cookie)
+        assert resp.status_code == 200
+        assert '<dialog id="custom-confirm-modal"' in resp.text
+        assert 'aria-labelledby="custom-confirm-message"' in resp.text
+        assert '<div id="custom-confirm-modal"' not in resp.text
 
     @pytest.mark.anyio
     async def test_invalid_cookie_rejected(self):
@@ -1024,7 +1033,7 @@ class TestEventCRUD:
 
     @pytest.mark.anyio
     async def test_delete_event_rejects_a_room_coordinator(self, admin_cookie, seed_event):
-        """require_admin admits a room_coordinator for the whole event, and deleting one
+        """require_owner_or_coordinator admits a room_coordinator for the whole event, and deleting one
         now destroys transcripts and OAuth grant state. Match the API-key routes and
         require an event owner."""
         from portal.auth import create_user_token
@@ -1591,7 +1600,7 @@ class TestRoomCRUD:
         assert resp.status_code == 404
 
     @pytest.mark.anyio
-    async def test_delete_room_rejects_super_admin_event_mismatch(self, admin_cookie, room_scope_events):
+    async def test_delete_room_rejects_admin_event_mismatch(self, admin_cookie, room_scope_events):
         from portal.database import get_room_by_id, get_session
 
         scope = room_scope_events
@@ -1606,7 +1615,8 @@ class TestRoomCRUD:
             assert await get_room_by_id(s, scope["room_b"]) is not None
 
     @pytest.mark.anyio
-    async def test_delete_room_preserves_legacy_coordinator_access(self, room_scope_events):
+    async def test_room_coordinator_cannot_delete_room_on_legacy_path(self, room_scope_events):
+        # Managing rooms is an Event owner permission (#757), on /admin/ paths too.
         from portal.database import get_room_by_id, get_session
 
         scope = room_scope_events
@@ -1616,9 +1626,9 @@ class TestRoomCRUD:
                 cookies=scope["coordinator_cookie"],
                 follow_redirects=False,
             )
-        assert resp.status_code == 303
+        assert resp.status_code == 403
         async with get_session() as s:
-            assert await get_room_by_id(s, scope["room_a"]) is None
+            assert await get_room_by_id(s, scope["room_a"]) is not None
 
 
 # ---------------------------------------------------------------------------
@@ -1732,8 +1742,8 @@ class TestBoothCRUD:
                 cookies=admin_cookie,
                 follow_redirects=False,
             )
-        assert booths_page.status_code == 303
-        assert "duplicate_language" not in booths_page.headers["location"]
+        # A room that isn't part of the event is not found (#757), never reported as a duplicate.
+        assert booths_page.status_code == 404
         assert wizard.status_code == 303
         assert "duplicate_language" not in wizard.headers["location"]
 
@@ -1770,7 +1780,8 @@ class TestBoothCRUD:
         assert b"testcon/1/en" in resp.content
 
     @pytest.mark.anyio
-    async def test_booth_detail_shows_invite_tokens(self, admin_cookie, seed_event):
+    async def test_team_page_shows_booth_invite_links(self, admin_cookie, seed_event):
+        # Invite links moved from the booth page to the event's Team page (#757).
         event, room, booth = seed_event
         from portal.database import create_invite_token, get_session
 
@@ -1778,12 +1789,15 @@ class TestBoothCRUD:
             await create_invite_token(s, booth_id=booth.id, role="interpreter", label="Alice")
 
         async with _client() as c:
-            resp = await c.get(
+            booth_page = await c.get(
                 f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/",
                 cookies=admin_cookie,
             )
-        assert b"Alice" in resp.content
-        assert b"interpreter" in resp.content.lower()
+            team_page = await c.get(f"/admin/events/{event.id}/team/", cookies=admin_cookie)
+        assert b"Alice" not in booth_page.content
+        assert b"/team/" in booth_page.content
+        assert b"Alice" in team_page.content
+        assert b"Interpreter" in team_page.content
 
     @pytest.mark.anyio
     async def test_delete_booth(self, admin_cookie, seed_event):
@@ -2578,7 +2592,7 @@ async def test_admin_pages_have_a_toast_live_region(admin_cookie, seed_event):
     "path",
     [
         "/admin/events/{event}/",
-        "/admin/events/{event}/members/",
+        "/admin/events/{event}/team/",
         "/admin/events/{event}/api-settings/",
         "/admin/events/{event}/rooms/{room}/booths/{booth}/",
         "/admin/events/{event}/rooms/{room}/",

@@ -71,6 +71,7 @@ CI runs the checks above (except `uv run ruff format .`), and also runs a separa
 - **Backend**: FastAPI serves the frontend Jinja2 templates, handles REST API calls, and manages WebSocket connections that coordinate the live state of the booths (e.g., who is the active interpreter).
 - **Frontend**: Plain Vanilla ES modules in `portal/static/js/`. No React, no Vue, and no build steps. 
 - **Database**: We use SQLAlchemy 2.0 (async) and Alembic for migrations.
+- **Roles and permissions**: VoxBento has four roles (Admin, Event owner, Room coordinator, Interpreter), defined once in `portal/roles.py`. See the [roles table](website/docs/admin/members-and-roles.mdx) for what each role can do and where it can be given. Import role names and permissions from `portal.roles`; never type a role name elsewhere (`tests/test_roles.py` checks this). "Admin" means only the platform role.
 
 If you need more deep-dive technical context, check out our internal documentation in the `.agents/context/` directory (e.g., `ROUTE_MAP.md`, `DATABASE_MAP.md`, `AI_WORKFLOWS.md`).
 

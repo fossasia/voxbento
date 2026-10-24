@@ -56,6 +56,7 @@ Attendees receive sub-second audio via WHEP. All coordination flows through Fast
 | `portal/meeting_source.py` | Managed Jitsi floor agent lifecycle reconciler |
 | `portal/program_ingest.py` | Program Stream Ingest floor authorization and reconciliation |
 | `portal/program_relay.py` | YouTube RTMPS destination management and relay convergence |
+| `portal/outage_log.py` | `OutageLog` — reconcile-loop failures logged once per outage, with reminders and recovery |
 | `portal/user_admin.py` | Administrative access rules and user access switches |
 | `portal/static/js/interpreter-booth.js` | Interpreter UI — WebRTC/WHIP, WebSocket, Jitsi, mic controls |
 | `portal/static/js/whep-listener.js` | Listener WHEP client — RTCPeerConnection, auto-reconnect |
@@ -87,17 +88,29 @@ rtsp_url   = rtsp://mediamtx:8554/{mtx_path}    (transcription use)
 ## Role Hierarchy
 
 ```
-super_admin > event_owner > room_coordinator > interpreter > support > listener
+admin > event_owner > room_coordinator > interpreter
 ```
 
-| Role | Go Live | Set Active | Chat | Manage Booths | Manage Events |
-|---|---|---|---|---|---|
-| super_admin | ✓ | ✓ | ✓ | ✓ | ✓ |
-| event_owner | ✓ | ✓ | ✓ | ✓ | — |
-| room_coordinator | ✓ | ✓ | ✓ | — | — |
-| interpreter | ✓ | — | ✓ | — | — |
-| support | — | — | — | — | — (view only) |
-| listener | — | — | — | — | — |
+Four roles, defined once in `portal/roles.py` (#757): role names, plain-language
+labels (`role_label`), where each can be given (`EVENT_ROLES`, `ROOM_ROLES`,
+`BOOTH_ROLES`, `assignment_error`) and one `Permission` per action. Never type a
+role name elsewhere; `tests/test_roles.py` fails if you do.
+
+| Action | Admin | Event owner | Room coordinator | Interpreter |
+|---|:-:|:-:|:-:|:-:|
+| Manage users, Admins, hosting access, developer apps | ✓ | | | |
+| See all events / create events (or hosting access) | ✓ | | | |
+| Edit/delete event; manage rooms, booths, team, keys | ✓ | ✓ | | |
+| Mission Control, floor transcription, choose active interpreter | ✓ | ✓ | ✓ | |
+| Go live, booth chat, view booths | ✓ | ✓ | ✓ | ✓ |
+| Can be given per | account | event | event, room, booth | event, booth |
+
+"Admin" means only the platform role (`users.is_admin`, read from the database).
+Access checks are named after who they admit: `require_admin` (Admins),
+`require_event_owner`, `require_owner_or_coordinator`; Admins pass every check.
+Hosting access is an account setting, not a role. Listening is not a role:
+listener/embed tokens carry `kind: "listener"`. Booth participants are sent to
+browsers with `can_go_live` / `can_set_active`, so client code never compares role names.
 
 Defined in: `portal/roles.py` (`Permission` enum, `ROLE_PERMISSIONS` dict)
 Enforced at: `portal/websockets/handlers.py` (WS `_handle_join`), `portal/routers/api.py` (WHIP endpoint) + `portal/booth_state.py`
