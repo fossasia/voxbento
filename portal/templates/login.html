@@ -20,6 +20,14 @@
 
     <div id="alert-container" class="alert alert-error hidden"></div>
     <div id="success-container" class="alert alert-success hidden"></div>
+    <div id="waiting-container" class="alert alert-success login-waiting hidden" role="status">
+      <p class="login-waiting-title">We've emailed you a sign-in link.</p>
+      <p class="login-waiting-text">
+        Open it in this browser and this page continues on its own. If you open it on another
+        device or browser, you'll be signed in there instead.
+        <a href="#" id="request-new-link">Request a new link</a>
+      </p>
+    </div>
 
     <!-- Step 1: Email Only -->
     <form id="email-form" class="login-form">
@@ -72,6 +80,8 @@ document.addEventListener("DOMContentLoaded", () => {
   const userEmailDisplay = document.getElementById("user-email-display");
   const alertContainer = document.getElementById("alert-container");
   const successContainer = document.getElementById("success-container");
+  const waitingContainer = document.getElementById("waiting-container");
+  const requestNewLink = document.getElementById("request-new-link");
   const forgotPasswordLink = document.getElementById("forgot-password-link");
 
   let currentEmail = "";
@@ -85,6 +95,25 @@ document.addEventListener("DOMContentLoaded", () => {
     successContainer.textContent = msg;
     successContainer.classList.remove("hidden");
     alertContainer.classList.add("hidden");
+    waitingContainer.classList.add("hidden");
+  }
+
+  function showWaitingNotice() {
+    waitingContainer.classList.remove("hidden");
+    alertContainer.classList.add("hidden");
+    successContainer.classList.add("hidden");
+  }
+
+  if (requestNewLink) {
+    requestNewLink.addEventListener("click", (e) => {
+      e.preventDefault();
+      waitingContainer.classList.add("hidden");
+      magicLinkBtn.disabled = false;
+      magicLinkBtn.textContent = "Email me a magic link";
+      magicLinkBtn.classList.remove("hidden");
+      magicDivider.classList.remove("hidden");
+      passwordForm.classList.remove("hidden");
+    });
   }
 
   emailForm.addEventListener("submit", async (e) => {
@@ -141,14 +170,10 @@ document.addEventListener("DOMContentLoaded", () => {
       });
       
       if (res.ok) {
-        const magicData = await res.json();
         passwordForm.classList.add("hidden");
         magicDivider.classList.add("hidden");
         magicLinkBtn.classList.add("hidden");
-        showSuccess("We've sent a magic link to your email. Please check your inbox.");
-        if (magicData.poll_id && window.startMagicPoll) {
-          window.startMagicPoll(magicData.poll_id);
-        }
+        showWaitingNotice();
       } else {
         const data = await res.json();
         showError(data.detail || "Failed to send magic link");
@@ -166,6 +191,7 @@ document.addEventListener("DOMContentLoaded", () => {
     e.preventDefault();
     alertContainer.classList.add("hidden");
     successContainer.classList.add("hidden");
+    waitingContainer.classList.add("hidden");
     
     try {
       const res = await fetch("/api/auth/forgot-password", {
@@ -221,33 +247,16 @@ document.addEventListener("DOMContentLoaded", () => {
           }
       }
 
-      window.startMagicPoll = function(pollId) {
-          if (!pollId) return;
-
-          if (typeof BroadcastChannel !== 'undefined') {
-              const authChannel = new BroadcastChannel('voxbento_auth');
-              authChannel.onmessage = (e) => {
-                  const isLogin = e.data === 'logged_in' || (e.data && e.data.type === 'logged_in');
-                  if (isLogin) {
-                      const url = e.data && e.data.url ? e.data.url : null;
-                      redirectToNext(url);
-                  }
-              };
-          }
-
-          const magicTimer = setInterval(async () => {
-              try {
-                  const res = await fetch('/api/auth/magic-poll?poll_id=' + encodeURIComponent(pollId));
-                  if (res.ok) {
-                      const data = await res.json();
-                      if (data && data.authenticated) {
-                          clearInterval(magicTimer);
-                          redirectToNext();
-                      }
-                  }
-              } catch (err) {}
-          }, 1000);
-      };
+      if (typeof BroadcastChannel !== 'undefined') {
+          const authChannel = new BroadcastChannel('voxbento_auth');
+          authChannel.onmessage = (e) => {
+              const isLogin = e.data === 'logged_in' || (e.data && e.data.type === 'logged_in');
+              if (isLogin) {
+                  const url = e.data && e.data.url ? e.data.url : null;
+                  redirectToNext(url);
+              }
+          };
+      }
   })();
 </script>
 

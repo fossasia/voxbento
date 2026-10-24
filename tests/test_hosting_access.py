@@ -12,6 +12,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import select
 from starlette.requests import Request
 
 from fastapi_app import app
@@ -584,7 +585,6 @@ async def test_demo_request_hosting_rate_limit_and_user_flag():
     token = create_user_token(user_id=user_id, email="requester@example.com")
 
     async with client() as http:
-        with patch("portal.routers.public.send_demo_request_email", new_callable=AsyncMock) as mock_send:
             # 1. Normal submission
             res1 = await http.post(
                 "/api/request-demo",
@@ -601,12 +601,14 @@ async def test_demo_request_hosting_rate_limit_and_user_flag():
             )
             assert res1.status_code == 200
             assert res1.json()["ok"] is True
-            # Verify CRLF stripped in email call
-            called_info = mock_send.call_args[0][0]
-            assert "\r" not in called_info["firstName"] and "\n" not in called_info["firstName"]
-            assert "\r" not in called_info["companyName"] and "\n" not in called_info["companyName"]
-            assert called_info["user_id"] == user_id
-            assert called_info["source"] == "account"
+            # The rendered outbox message contains the cleaned form values.
+            from portal.crypto import decrypt_val
+            from portal.models import EmailDelivery
+            async with get_session() as session:
+                delivery = await session.scalar(select(EmailDelivery).order_by(EmailDelivery.id.desc()))
+            assert delivery is not None
+            body = decrypt_val(delivery.encrypted_html) or ""
+            assert "\r" not in body and "Jane" in body and "Acme Corp" in body
 
             # Hosting access is requested from the Account page form, not the demo form
             async with get_session() as session:
@@ -935,40 +937,27 @@ async def test_admin_users_table_layout_and_flash_alerts():
 
 
 @pytest.mark.anyio
-async def test_send_demo_request_email_renders_html():
-    """Verify send_demo_request_email renders the neo-brutalist HTML template and sends html subtype."""
-    from portal.email_sender import send_demo_request_email
+async def test_demo_request_template_renders_from_the_notification_registry():
+    """Demo requests use the same validated template registry as every other email."""
+    from portal.notifications import _render, _source_for_default, get_definition
 
-    sent_messages = []
-
-    with patch("portal.email_sender.FastMail.send_message", new_callable=AsyncMock) as mock_send, \
-         patch("portal.email_sender.settings.smtp_host", "localhost"):
-        mock_send.side_effect = lambda msg: sent_messages.append(msg)
-        await send_demo_request_email({
-            "email": "applicant@example.com",
-            "firstName": "Jane",
-            "lastName": "Doe",
-            "companyName": "Tech Corp",
-            "phoneNumber": "+1234567890",
-            "country": "US",
-            "industry": "Education",
-            "companySize": "11-50",
-            "languageSupport": "Live translation",
-            "notes": "Looking forward to using VoxBento",
-            "user_id": 42,
-        })
-
-    assert len(sent_messages) == 1
-    msg = sent_messages[0]
-    assert msg.subject == "New Demo Request from applicant@example.com"
-    assert any("voxbento.dev@gmail.com" in str(r) for r in msg.recipients)
-    assert "html" in str(msg.subtype)
-    assert "Jane Doe" in msg.body
-    assert "applicant@example.com" in msg.body
-    assert "Tech Corp" in msg.body
-    assert "Education" in msg.body
-    assert "Review in Admin Panel" in msg.body
-    assert "/admin/users/42/" in msg.body
+    definition = get_definition("demo_request")
+    subject, body = _render(
+        definition,
+        definition.subject,
+        _source_for_default(definition),
+        {
+            "email": "applicant@example.com", "firstName": "Jane", "lastName": "Doe",
+            "companyName": "Tech Corp", "phoneNumber": "+1234567890", "country": "US",
+            "industry": "Education", "companySize": "11-50", "languageSupport": "Live translation",
+            "notes": "Looking forward to using VoxBento", "admin_url": "https://example.invalid/admin/users/42/",
+        },
+    )
+    assert subject == "New VoxBento demo request"
+    assert "Jane Doe" in body
+    assert "applicant@example.com" in body
+    assert "Tech Corp" in body
+    assert "Open in Admin" in body
 
 
 @pytest.mark.anyio
@@ -1214,8 +1203,7 @@ async def test_anonymous_demo_request_does_not_mutate_existing_user_hosting_requ
         )
         target_id = target.id
 
-    with patch("portal.routers.public.send_demo_request_email", new_callable=AsyncMock) as mock_send:
-        async with client() as http:
+    async with client() as http:
             res = await http.post(
                 "/api/request-demo",
                 json={
@@ -1229,9 +1217,11 @@ async def test_anonymous_demo_request_does_not_mutate_existing_user_hosting_requ
             assert res.status_code == 200
             assert res.json()["ok"] is True
 
-            # Verify email sent with source="home"
-            called_info = mock_send.call_args[0][0]
-            assert called_info["source"] == "home"
+            from portal.models import EmailDelivery
+            async with get_session() as session:
+                delivery = await session.scalar(select(EmailDelivery).order_by(EmailDelivery.id.desc()))
+            assert delivery is not None
+            assert delivery.notification_key == "demo_request"
 
             # DB flag must NOT have been updated
             async with get_session() as session:
