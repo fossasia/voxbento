@@ -45,6 +45,7 @@ from portal.models import (
     TranscriptSegment,
     UsageMetric,
     User,
+    generate_public_id,
     generate_token,
     utc_now,
 )
@@ -481,9 +482,11 @@ async def create_invite_token(
     label: str = "",
     expires_at: datetime | None = None,
     created_by: str = "",
+    public_id: str | None = None,
 ) -> InviteToken:
     token = InviteToken(
         token=generate_token(),
+        public_id=public_id or generate_public_id(),
         booth_id=booth_id,
         role=role,
         label=label,
@@ -500,6 +503,15 @@ async def get_invite_token(session: AsyncSession, token_str: str) -> InviteToken
         select(InviteToken)
         .options(joinedload(InviteToken.booth).joinedload(DBBooth.event))
         .where(InviteToken.token == token_str),
+    )
+    return result.scalar_one_or_none()
+
+
+async def get_invite_token_by_public_id(session: AsyncSession, public_id: str) -> InviteToken | None:
+    result = await session.execute(
+        select(InviteToken)
+        .options(joinedload(InviteToken.booth).joinedload(DBBooth.event))
+        .where(InviteToken.public_id == public_id),
     )
     return result.scalar_one_or_none()
 

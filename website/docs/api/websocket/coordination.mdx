@@ -22,6 +22,12 @@ When establishing the WebSocket connection, `resolve_ws_auth` resolves credentia
 
 The server decodes verified credentials to determine the user's role (`interpreter`, `room_coordinator`, etc.) and identity. **The client cannot assert its own role; the server solely trusts the server-verified JWT claims.**
 
+### Authorization changes and revocation
+
+Booth broadcasts are delivered only to sockets holding a supported role for that booth. A socket that is unauthenticated, holds a role for a different booth, carries an unsupported role, or has been revoked stays connected but receives no booth state, chat, or handoff messages.
+
+If an account is demoted from Admin, deactivated, or deleted, the server revokes its live booth sockets and closes them with close code `4003`. Deactivated or deleted accounts cannot re-authenticate over WebSocket, even if their token has not expired. Live revocation is process-local and assumes the documented single-worker/single-replica deployment. Invite-link sessions are bearer capabilities rather than account sessions, so account changes do not revoke them. Event, room, and booth membership changes are re-resolved when the socket next connects.
+
 ## Outbound Messages (Client to Server)
 
 All messages sent from the client to the server must be JSON objects containing a `type` and a `payload`.

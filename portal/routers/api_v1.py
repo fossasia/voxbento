@@ -27,6 +27,7 @@ from portal.rate_limit import auth_rate_limiter
 from portal.roles import EVENT_OWNER
 from portal.transcription.constants import ProviderEnum
 from portal.transcription.worker import active_workers, start_transcription_worker, stop_transcription_worker
+from portal.websockets.revocation import revoke_booths_for_deleted_entity
 
 logger = logging.getLogger(__name__)
 
@@ -418,6 +419,7 @@ async def delete_event(
     for b in active_booths:
         await booths.remove_booth(event_slug, b["room_id"], b["language_code"])
 
+    await revoke_booths_for_deleted_entity(db, level="event", target_id=event.id)
     event.deleted_at = datetime.now(timezone.utc)
 
     audit = OAuthAuditLog(
@@ -680,6 +682,7 @@ async def delete_room(
     for b in room_booths:
         await booths.remove_booth(event_slug, b["room_id"], b["language_code"])
 
+    await revoke_booths_for_deleted_entity(db, level="room", target_id=room.id)
     await db.delete(room)
 
     audit = OAuthAuditLog(
@@ -824,6 +827,7 @@ async def delete_booth_endpoint(
 
     from portal.database import delete_booth
 
+    await revoke_booths_for_deleted_entity(db, level="booth", target_id=booth.id)
     await delete_booth(db, booth.id)
     return {"status": "deleted"}
 

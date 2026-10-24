@@ -329,7 +329,7 @@ def test_ws_join_uses_db_booth_language_when_unspecified():
     """If the client does not specify language in join, it should inherit the resolved booth language."""
     from unittest.mock import AsyncMock, patch
 
-    with patch("portal.database.get_booth_language_name", new=AsyncMock(return_value="Japanese")):
+    with patch("portal.websockets.handlers.get_booth_language_name", new=AsyncMock(return_value="Japanese")):
         with client.websocket_connect("/ws/booth/japan-booth", cookies=_ws_auth()) as ws:
             ws.send_text(
                 json.dumps(
@@ -342,6 +342,7 @@ def test_ws_join_uses_db_booth_language_when_unspecified():
                 )
             )
             msg1 = json.loads(ws.receive_text())
+            assert msg1.get("type") != "booth:error", f"Unexpected error: {msg1.get('message')}"
             msg2 = json.loads(ws.receive_text())
             joined = msg1 if msg1["type"] == "booth:joined" else msg2
             assert joined["type"] == "booth:joined"

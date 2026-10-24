@@ -172,7 +172,8 @@ from portal.user_admin import FIELDS as USER_ACCESS_FIELDS
 from portal.user_admin import AccessChange, UserAdminError, delete_user_account, is_last_active_admin, set_user_access
 from portal.user_menu import resolve_user_menu, user_menu_context
 from portal.utils import _check_mediamtx, _make_jitsi_url, get_client_ip, safe_redirect, verify_same_origin
-from portal.websockets.manager import broadcast_transcription
+from portal.websockets.manager import broadcast_transcription, manager
+from portal.websockets.revocation import revoke_booths_for_deleted_entity, revoke_membership_push
 from portal.workspace_routing import management_template_context, management_url
 
 _BASE_DIR = Path(__file__).resolve().parent.parent
@@ -1231,6 +1232,7 @@ async def admin_delete_event(request: Request, event_id: int):
     """Delete an event by ID, returning 404 if missing or redirecting with an error alert on database failure."""
     try:
         async with get_session() as session:
+            await revoke_booths_for_deleted_entity(session, level="event", target_id=event_id)
             deleted = await delete_event(session, event_id)
             if not deleted:
                 raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event not found.")
@@ -1838,6 +1840,7 @@ async def admin_delete_room(request: Request, event_id: int, room_id: int):
         room = await get_room_by_id(session, room_id)
         if room is None or room.event_id != event_id:
             raise HTTPException(status_code=404, detail="Room not found.")
+        await revoke_booths_for_deleted_entity(session, level="room", target_id=room_id)
         await delete_room(session, room_id)
     return safe_redirect(
         url=management_url(request, f"events/{event_id}/rooms/"), status_code=status.HTTP_303_SEE_OTHER
@@ -1973,6 +1976,7 @@ async def admin_add_room_member(request: Request, event_id: int, room_id: int):
             if role:
                 try:
                     await set_room_membership(session, user_id=uid, room_id=room_id, role=role)
+                    await revoke_membership_push(session, user_id=uid, level="room", target_id=room_id)
                     # Send invite
                     event = await get_event_by_id(session, event_id)
                     room = await get_room_by_id(session, room_id)
@@ -1991,6 +1995,7 @@ async def admin_add_room_member(request: Request, event_id: int, room_id: int):
                 for m in memberships:
                     if m.user_id == uid:
                         await remove_room_membership(session, m.id)
+                        await revoke_membership_push(session, user_id=uid, level="room", target_id=room_id)
                         break
     return safe_redirect(
         url=management_url(request, f"events/{event_id}/rooms/{room_id}/"),
@@ -2059,6 +2064,7 @@ async def admin_add_booth_member(request: Request, event_id: int, room_id: int, 
             if role:
                 try:
                     await set_booth_membership(session, user_id=uid, booth_id=booth_id, role=role)
+                    await revoke_membership_push(session, user_id=uid, level="booth", target_id=booth_id)
                     # Send invite
                     event = await get_event_by_id(session, event_id)
                     booth = await get_booth_by_id(session, booth_id)
@@ -2080,6 +2086,7 @@ async def admin_add_booth_member(request: Request, event_id: int, room_id: int, 
                 for m in memberships:
                     if m.user_id == uid:
                         await remove_booth_membership(session, m.id)
+                        await revoke_membership_push(session, user_id=uid, level="booth", target_id=booth_id)
                         break
     return safe_redirect(
         url=management_url(request, f"events/{event_id}/rooms/{room_id}/booths/{booth_id}/"),
@@ -2137,6 +2144,7 @@ async def admin_delete_booth(request: Request, event_id: int, room_id: int, boot
         booth = await get_booth_by_id(session, booth_id)
         if booth is None or booth.event_id != event_id or booth.room_id != room_id:
             raise HTTPException(status_code=404, detail="Booth not found.")
+        await revoke_booths_for_deleted_entity(session, level="booth", target_id=booth_id)
         await delete_booth(session, booth_id)
     return safe_redirect(
         url=management_url(request, f"events/{event_id}/rooms/{room_id}/booths/"),
@@ -2480,6 +2488,13 @@ async def apply_user_access(request: Request, user_id: int, field: str, value: b
                 context,
                 idempotency_key=f"access:{change.user_id}:{field}:{value}:{utc_now().isoformat()}",
             )
+    if field in ("admin", "active") and not value:
+        # Demotion or deactivation invalidates every live booth session for this
+        # account. The sweep runs whenever the resulting state is demoted/inactive
+        # (idempotent, does not depend on change.changed) so that retrying an
+        # interrupted request still evicts live sessions. Wrapped in asyncio.shield
+        # so client cancellation does not abort the revocation after commit.
+        await asyncio.shield(manager.close_user_sessions(change.user_id))
     return change
 
 
@@ -2912,6 +2927,8 @@ async def admin_delete_user(request: Request, user_id: int):
             )
     except UserAdminError as exc:
         return safe_redirect(url=f"/admin/users/{user_id}/?error={exc.code}", status_code=status.HTTP_303_SEE_OTHER)
+    # The account and its memberships are gone; end any live booth sessions.
+    await asyncio.shield(manager.close_user_sessions(user_id))
     return safe_redirect(url="/admin/users/?notice=deleted", status_code=status.HTTP_303_SEE_OTHER)
 
 
@@ -3175,6 +3192,7 @@ async def admin_add_event_member(request: Request, event_id: int):
             if role:
                 try:
                     await set_event_membership(session, user_id=uid, event_id=event_id, role=role)
+                    await revoke_membership_push(session, user_id=uid, level="event", target_id=event_id)
                     # Send invite
                     event = await get_event_by_id(session, event_id)
                     if event:
@@ -3190,6 +3208,7 @@ async def admin_add_event_member(request: Request, event_id: int):
                 for m in memberships:
                     if m.user_id == uid:
                         await remove_event_membership(session, m.id)
+                        await revoke_membership_push(session, user_id=uid, level="event", target_id=event_id)
                         break
     return safe_redirect(
         url=management_url(request, f"events/{event_id}/members/"), status_code=status.HTTP_303_SEE_OTHER

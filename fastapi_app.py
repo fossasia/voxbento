@@ -72,6 +72,13 @@ async def lifespan(app: FastAPI):
 
     # Reference via module attribute so test-time monkey-patching of
     # portal.webhooks.worker.webhook_worker_loop is respected.
+    import portal.websockets.reaper as _reaper_mod
+    from portal.websockets.manager import manager
+
+    manager.set_membership_checker(_reaper_mod.check_booth_memberships)
+    manager.set_token_checker(_reaper_mod.check_booth_tokens)
+    reaper_task = asyncio.create_task(_reaper_mod.session_reaper_loop())
+
     webhook_task = asyncio.create_task(_webhook_worker_mod.webhook_worker_loop())
     notification_task = asyncio.create_task(_notifications_mod.notification_worker_loop())
     ingest_task = asyncio.create_task(program_ingest.reconcile_loop()) if settings.program_ingest_enabled else None
@@ -84,6 +91,9 @@ async def lifespan(app: FastAPI):
     yield
     import contextlib
 
+    reaper_task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await reaper_task
     webhook_task.cancel()
     notification_task.cancel()
     meeting_task.cancel()

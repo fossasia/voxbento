@@ -9,12 +9,19 @@ from portal.auth import (
     WSAuthError,
     booth_session_key,
     decode_token,
+    is_invite_token_revoked,
     is_listener_token,
     resolve_booth_role,
     resolve_ws_auth,
 )
+from portal.database import get_booth_language_name, get_session, get_user_by_id
 from portal.globals import booths
 from portal.websockets.manager import (
+    REASON_ACCOUNT_DEACTIVATED,
+    REASON_AUTH_REVOKED,
+    REASON_INVITE_REVOKED,
+    REASON_SESSION_EXPIRED,
+    WS_CLOSE_REVOKED,
     Session,
     _handle_accept_handoff,
     _handle_cancel_handoff,
@@ -29,6 +36,7 @@ from portal.websockets.manager import (
     listener_manager,
     manager,
     tts_manager,
+    utc_now,
 )
 
 _log = logging.getLogger(__name__)
@@ -39,6 +47,7 @@ router = APIRouter()
 
 @router.websocket("/ws/booth/{booth_id}")
 async def ws_booth(websocket: WebSocket, booth_id: str) -> None:
+    """Handle WebSocket connections for booth coordination."""
     try:
         payload = await resolve_ws_auth(websocket, booth_id)
     except WSAuthError:
@@ -48,12 +57,52 @@ async def ws_booth(websocket: WebSocket, booth_id: str) -> None:
         await websocket.close(code=4003)
         return
 
+    user_id: int | None = None
+    if payload:
+        sub = payload.get("sub")
+        if sub is not None and not isinstance(sub, bool):
+            try:
+                user_id = int(sub)
+            except (ValueError, TypeError):
+                pass
+
+    token_id: str | None = None
+    if payload:
+        tid = payload.get("token_id")
+        if tid is not None and not isinstance(tid, bool):
+            token_id = str(tid)
+
+    revocation_epoch = (0, 0)
+    user = None
+    if user_id is not None:
+        # Snapshot before the authorization read: a read that precedes the
+        # Admin's commit can then never be paired with a post-commit snapshot.
+        # Keyed by (user_wide, booth_specific) scope so revoking another booth
+        # does not close this connection.
+        revocation_epoch = manager.revocation_epoch(user_id, booth_id)
+        async with get_session() as db_session:
+            user = await get_user_by_id(db_session, user_id)
+        if user is None or not user.is_active:
+            await websocket.close(code=WS_CLOSE_REVOKED, reason=REASON_ACCOUNT_DEACTIVATED)
+            return
+
+    token_epoch = (0, 0)
+    if token_id is not None:
+        token_epoch = manager.token_revocation_epoch(token_id, booth_id)
+        if await is_invite_token_revoked(token_id):
+            await websocket.close(code=WS_CLOSE_REVOKED, reason=REASON_INVITE_REVOKED)
+            return
+
     ws_granted_role = await resolve_booth_role(payload, booth_id)
     await websocket.accept()
 
-    from portal.database import get_booth_language_name
-
     language_name = await get_booth_language_name(booth_id)
+
+    connect_time = utc_now()
+    if user_id is not None and user is not None and user.sessions_valid_after is not None:
+        if connect_time <= user.sessions_valid_after:
+            await websocket.close(code=WS_CLOSE_REVOKED, reason=REASON_SESSION_EXPIRED)
+            return
 
     session = Session(
         booth_id=booth_id,
@@ -61,13 +110,44 @@ async def ws_booth(websocket: WebSocket, booth_id: str) -> None:
         language=language_name,
         channel_id=f"{booth_id}-audio",
         granted_role=ws_granted_role,
+        user_id=user_id,
+        invite_token_id=token_id,
         session_key=booth_session_key(payload),
+        issued_at=connect_time,
     )
+    if user_id is not None and manager.revocation_epoch(user_id, booth_id) != revocation_epoch:
+        # Authorization changed after the check above; the revocation sweep ran
+        # before this socket was registered, so it must not register now.
+        try:
+            await websocket.close(code=WS_CLOSE_REVOKED, reason=REASON_AUTH_REVOKED)
+        except (WebSocketDisconnect, RuntimeError, OSError):
+            # The socket was already closing; not registering it is what matters.
+            _log.debug("Revoked booth socket was already closing", exc_info=True)
+        return
+
+    if token_id is not None and manager.token_revocation_epoch(token_id, booth_id) != token_epoch:
+        try:
+            await websocket.close(code=WS_CLOSE_REVOKED, reason=REASON_INVITE_REVOKED)
+        except (WebSocketDisconnect, RuntimeError, OSError):
+            _log.debug("Revoked invite booth socket was already closing", exc_info=True)
+        return
+
     manager.add(websocket, session)
 
     try:
         while True:
             raw = await websocket.receive_text()
+            if session.revoked:
+                reason = REASON_INVITE_REVOKED if session.invite_token_id is not None else REASON_AUTH_REVOKED
+                try:
+                    await websocket.send_text(
+                        json.dumps({"type": "booth:error", "message": "Session authorization has been revoked."})
+                    )
+                    await websocket.close(code=WS_CLOSE_REVOKED, reason=reason)
+                except (WebSocketDisconnect, RuntimeError, OSError):
+                    # close_user_sessions() may already have closed this socket.
+                    _log.debug("Revoked booth socket was already closing", exc_info=True)
+                break
             try:
                 data = json.loads(raw)
             except json.JSONDecodeError:
@@ -223,6 +303,8 @@ async def _authorize_tts(websocket: WebSocket, room_id: int, language_code: str,
         token_lang = payload.get("language_code", "")
         token_room = payload.get("room_id")
         if token_event and token_lang:
+            if payload.get("token_id") is not None and await is_invite_token_revoked(str(payload["token_id"])):
+                raise WSAuthError("Invitation revoked.")
             if (
                 token_event != event_slug
                 or (token_room is not None and str(token_room) != str(actual_room))
@@ -267,6 +349,8 @@ async def _authorize_tts(websocket: WebSocket, room_id: int, language_code: str,
         token_lang = payload.get("language_code", "")
         token_room = payload.get("room_id")
         if token_event and token_lang:
+            if payload.get("token_id") is not None and await is_invite_token_revoked(str(payload["token_id"])):
+                raise WSAuthError("Invitation revoked.")
             if (
                 token_event != event_slug
                 or (token_room is not None and str(token_room) != str(actual_room))
