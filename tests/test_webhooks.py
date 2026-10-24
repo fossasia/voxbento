@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timedelta, timezone
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 import pytest
@@ -107,18 +107,21 @@ async def test_process_delivery_success(db):
     mock_response.raise_for_status = MagicMock()
     mock_client.post.return_value = mock_response
 
-    # Process
-    await process_delivery(mock_client, db, delivery)
+    # Process — mock DNS resolution to return a pinned IP
+    with patch("portal.webhooks.worker.resolve_and_validate_url", return_value=[("93.184.216.34", 443)]):
+        await process_delivery(mock_client, db, delivery)
 
     # Assertions
     assert delivery.status == "succeeded"
     assert delivery.attempt_count == 1
     assert delivery.last_error is None
 
-    # Assert client was called correctly
+    # Assert client was called correctly with pinned IP URL
     mock_client.post.assert_called_once()
     args, kwargs = mock_client.post.call_args
-    assert args[0] == "https://example.com/webhook"
+    assert args[0] == "https://93.184.216.34:443/webhook"
+    assert kwargs["headers"]["Host"] == "example.com"
+    assert kwargs["extensions"]["sni_hostname"] == "example.com"
 
     # Signature header embeds the timestamp: "t=<epoch>,v1=<hmac>"
     sig_header = kwargs["headers"]["X-VoxBento-Signature"]
@@ -159,7 +162,8 @@ async def test_process_delivery_http_error_retry(db):
     )
 
     # Process
-    await process_delivery(mock_client, db, delivery)
+    with patch("portal.webhooks.worker.resolve_and_validate_url", return_value=[("93.184.216.34", 443)]):
+        await process_delivery(mock_client, db, delivery)
 
     # Assertions (Failed, should retry)
     assert delivery.status == "failed"
@@ -197,7 +201,8 @@ async def test_process_delivery_circuit_breaker(db):
     mock_client.post.side_effect = httpx.RequestError("Connection timeout")
 
     # Process
-    await process_delivery(mock_client, db, delivery)
+    with patch("portal.webhooks.worker.resolve_and_validate_url", return_value=[("93.184.216.34", 443)]):
+        await process_delivery(mock_client, db, delivery)
 
     # Assertions (Dead, Circuit Breaker)
     assert delivery.status == "dead"
@@ -247,7 +252,8 @@ async def test_process_delivery_circuit_breaker_with_multiple_clients(db):
     mock_client = AsyncMock(spec=httpx.AsyncClient)
     mock_client.post.side_effect = httpx.RequestError("Connection timeout")
 
-    await process_delivery(mock_client, db, delivery)
+    with patch("portal.webhooks.worker.resolve_and_validate_url", return_value=[("93.184.216.34", 443)]):
+        await process_delivery(mock_client, db, delivery)
 
     audit_result = await db.execute(select(OAuthAuditLog))
     audits = audit_result.scalars().all()

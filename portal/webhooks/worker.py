@@ -6,6 +6,7 @@ import hmac
 import json
 import logging
 import time
+import urllib.parse
 from datetime import datetime, timedelta, timezone
 
 import httpx
@@ -14,7 +15,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from portal.database import get_session
 from portal.models import OAuthAuditLog, WebhookDelivery, WebhookSubscription
-from portal.routers.webhooks import validate_ssrf
+from portal.routers.webhooks import resolve_and_validate_url
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +62,21 @@ async def process_delivery(client: httpx.AsyncClient, db, delivery: WebhookDeliv
         return
 
     try:
-        validate_ssrf(sub.target_url)
+        safe_addrs = resolve_and_validate_url(sub.target_url)
+    except ValueError as e:
+        err_msg = str(e)
+        if "DNS resolution failed" in err_msg:
+            delivery.last_error = f"Temporary DNS failure: {e}"
+            delivery.attempt_count += 1
+            if delivery.attempt_count >= 4:
+                delivery.status = "dead"
+            else:
+                delivery.status = "failed"
+                delivery.next_attempt_at = datetime.now(timezone.utc) + timedelta(seconds=2**delivery.attempt_count)
+            return
+        delivery.status = "dead"
+        delivery.last_error = f"SSRF Validation failed at dispatch: {e}"
+        return
     except Exception as e:
         delivery.status = "dead"
         delivery.last_error = f"SSRF Validation failed at dispatch: {e}"
@@ -83,8 +98,23 @@ async def process_delivery(client: httpx.AsyncClient, db, delivery: WebhookDeliv
     success = False
     last_error = None
 
+    pinned_ip, pinned_port = safe_addrs[0]
+    parsed = urllib.parse.urlparse(sub.target_url)
+    pinned_url = urllib.parse.urlunparse(
+        parsed._replace(netloc=f"[{pinned_ip}]:{pinned_port}" if ":" in pinned_ip else f"{pinned_ip}:{pinned_port}")
+    )
+    host_header = parsed.hostname or ""
+    if parsed.port and parsed.port != 443:
+        host_header = f"{host_header}:{parsed.port}"
+    pin_headers = {**headers, "Host": host_header}
+
     try:
-        response = await client.post(sub.target_url, content=payload_str, headers=headers)
+        response = await client.post(
+            pinned_url,
+            content=payload_str,
+            headers=pin_headers,
+            extensions={"sni_hostname": parsed.hostname},
+        )
         response.raise_for_status()
         success = True
     except httpx.RequestError as e:
@@ -141,7 +171,14 @@ async def process_delivery(client: httpx.AsyncClient, db, delivery: WebhookDeliv
 
 async def webhook_worker_loop():
     """Background polling worker for webhooks."""
-    async with httpx.AsyncClient(timeout=5.0) as client:
+    # Deliveries connect to a pinned IP, so httpcore would pool them by that IP
+    # rather than the hostname and could reuse one host's TLS connection for
+    # another host sharing the address. Keep-alive is disabled so every delivery
+    # handshakes against its own certificate.
+    async with httpx.AsyncClient(
+        timeout=5.0,
+        limits=httpx.Limits(max_keepalive_connections=0),
+    ) as client:
         while True:
             try:
                 claimed = False
