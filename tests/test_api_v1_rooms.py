@@ -214,6 +214,7 @@ async def test_create_without_name_is_rejected():
         {"name": "Main Hall", "target_languages": ["x" * 40]},
         {"name": "Main Hall", "target_languages": ["zz"]},
         {"name": "Main Hall", "target_languages": ["floor"]},
+        {"name": "Main Hall", "translation_provider": "unsupported-provider"},
     ],
 )
 async def test_invalid_values_are_rejected(payload):
@@ -227,6 +228,280 @@ async def test_invalid_values_are_rejected(payload):
         )
 
     assert resp.status_code == 422
+
+
+@pytest.mark.anyio
+async def test_patch_room_settings_updates_the_room_and_returns_changed_values():
+    """Persist supported settings and return the canonical values that changed."""
+
+    from portal.database import create_room, get_session
+    from portal.models import Room
+
+    event = await _seed()
+    async with get_session() as s:
+        room = await create_room(
+            s,
+            event_id=event.id,
+            display_name="Main Hall",
+            jitsi_url="https://meet.example.org/main-hall",
+        )
+        room_id = room.id
+
+    async with _client() as c:
+        resp = await c.patch(
+            f"/api/v1/events/{event.slug}/rooms/{room_id}/settings",
+            json={
+                "name": "  Main Hall Renamed  ",
+        "audio_delay_ms": 2500,
+        "enable_transcription": True,
+        "transcription_provider": "local",
+        "transcription_model": "base",
+        "source_language": "en",
+        "translation_provider": "openai",
+            },
+            headers=_auth(),
+        )
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {
+        "status": "success",
+        "room_id": room_id,
+        "settings": {
+            "display_name": "Main Hall Renamed",
+            "audio_delay_ms": 2500,
+            "floor_transcription_enabled": True,
+            "floor_transcription_provider": "local",
+            "floor_transcription_model": "base",
+            "floor_language_code": "en",
+            "floor_translation_provider": "openai",
+        },
+    }
+
+    async with get_session() as s:
+        updated = await s.get(Room, room_id)
+        assert updated is not None
+        assert updated.audio_delay_ms == 2500
+        assert updated.floor_transcription_enabled is True
+        assert updated.floor_transcription_provider == "local"
+        assert updated.floor_transcription_model == "base"
+        assert updated.floor_language_code == "en"
+        assert updated.floor_translation_provider == "openai"
+        assert updated.display_name == "Main Hall Renamed"
+        assert updated.jitsi_url == "https://meet.example.org/main-hall"
+
+
+@pytest.mark.anyio
+async def test_patch_room_settings_rejects_empty_and_unknown_payloads():
+    """Reject empty patches and fields outside the room-settings allow-list."""
+
+    from portal.database import create_room, get_session
+
+    event = await _seed()
+    async with get_session() as s:
+        room = await create_room(s, event_id=event.id, display_name="Main Hall")
+
+    async with _client() as c:
+        empty = await c.patch(
+            f"/api/v1/events/{event.slug}/rooms/{room.id}/settings",
+            json={},
+            headers=_auth(),
+        )
+        unknown = await c.patch(
+            f"/api/v1/events/{event.slug}/rooms/{room.id}/settings",
+            json={"does_not_exist": True},
+            headers=_auth(),
+        )
+
+    assert empty.status_code == 400
+    assert "At least one room setting" in empty.json()["detail"]
+    assert unknown.status_code == 422
+
+
+@pytest.mark.anyio
+async def test_patch_room_settings_rejects_a_transcription_model_for_the_wrong_provider():
+    """Reject transcription models that are not supported by the selected provider."""
+
+    from portal.database import create_room, get_session
+
+    event = await _seed()
+    async with get_session() as s:
+        room = await create_room(s, event_id=event.id, display_name="Main Hall")
+
+    async with _client() as c:
+        resp = await c.patch(
+            f"/api/v1/events/{event.slug}/rooms/{room.id}/settings",
+            json={"transcription_provider": "deepgram", "transcription_model": "base"},
+            headers=_auth(),
+        )
+
+    assert resp.status_code == 422
+    assert "Invalid transcription model" in resp.json()["detail"]
+
+
+@pytest.mark.anyio
+async def test_patch_room_settings_rejects_an_unknown_translation_provider():
+    """Reject translation providers that have no registered worker implementation."""
+
+    from portal.database import create_room, get_session
+
+    event = await _seed()
+    async with get_session() as s:
+        room = await create_room(s, event_id=event.id, display_name="Main Hall")
+
+    async with _client() as c:
+        response = await c.patch(
+            f"/api/v1/events/{event.slug}/rooms/{room.id}/settings",
+            json={"translation_provider": "unsupported-provider"},
+            headers=_auth(),
+        )
+
+    assert response.status_code == 422
+
+
+@pytest.mark.anyio
+async def test_patch_room_settings_resolves_eventyay_room_id():
+    """Update a room when the path uses its Eventyay identifier instead of its primary key."""
+
+    from portal.database import get_session
+    from portal.models import Room
+
+    event = await _seed()
+    async with _client() as c:
+        created = await c.put(
+            f"/api/v1/events/{event.slug}/rooms/eventyay-24",
+            json={"name": "Main Hall"},
+            headers=_auth(),
+        )
+        assert created.status_code == 200
+        internal_room_id = created.json()["room_id"]
+
+        updated = await c.patch(
+            f"/api/v1/events/{event.slug}/rooms/eventyay/eventyay-24/settings",
+            json={"audio_delay_ms": 1500},
+            headers=_auth(),
+        )
+
+    assert updated.status_code == 200, updated.text
+    assert updated.json()["room_id"] == internal_room_id
+
+    async with get_session() as s:
+        room = await s.get(Room, internal_room_id)
+        assert room is not None
+        assert room.audio_delay_ms == 1500
+
+
+@pytest.mark.anyio
+async def test_patch_room_settings_requires_an_explicit_identifier_kind_on_collisions():
+    """Keep internal and Eventyay room IDs from selecting each other during updates."""
+
+    from portal.database import get_session
+    from portal.models import Room
+
+    event = await _seed()
+    async with _client() as c:
+        room_a = await c.put(
+            f"/api/v1/events/{event.slug}/rooms/2",
+            json={"name": "Room A"},
+            headers=_auth(),
+        )
+        assert room_a.status_code == 200
+        room_a_id = room_a.json()["room_id"]
+
+        room_b = await c.put(
+            f"/api/v1/events/{event.slug}/rooms/{room_a_id}",
+            json={"name": "Room B"},
+            headers=_auth(),
+        )
+        assert room_b.status_code == 200
+        room_b_id = room_b.json()["room_id"]
+        assert room_a_id != room_b_id
+
+        internal_update = await c.patch(
+            f"/api/v1/events/{event.slug}/rooms/{room_a_id}/settings",
+            json={"name": "Room A Internal Update"},
+            headers=_auth(),
+        )
+        eventyay_update = await c.patch(
+            f"/api/v1/events/{event.slug}/rooms/eventyay/{room_a_id}/settings",
+            json={"name": "Room B Eventyay Update"},
+            headers=_auth(),
+        )
+
+    assert internal_update.status_code == 200, internal_update.text
+    assert eventyay_update.status_code == 200, eventyay_update.text
+    assert internal_update.json()["room_id"] == room_a_id
+    assert eventyay_update.json()["room_id"] == room_b_id
+
+    async with get_session() as s:
+        internal_room = await s.get(Room, room_a_id)
+        eventyay_room = await s.get(Room, room_b_id)
+        assert internal_room is not None
+        assert eventyay_room is not None
+        assert internal_room.display_name == "Room A Internal Update"
+        assert eventyay_room.display_name == "Room B Eventyay Update"
+
+
+@pytest.mark.anyio
+async def test_patch_room_settings_validates_url_before_persisting():
+    """Reject an unsafe meeting URL without changing the existing room URL."""
+
+    from portal.database import create_room, get_session
+    from portal.models import Room
+
+    event = await _seed()
+    async with get_session() as s:
+        room = await create_room(s, event_id=event.id, display_name="Main Hall", jitsi_url="https://meet.example.org/main")
+        room_id = room.id
+
+    async with _client() as c:
+        response = await c.patch(
+            f"/api/v1/events/{event.slug}/rooms/{room_id}/settings",
+            json={"jitsi_url": "http://external.example.org/main"},
+            headers=_auth(),
+        )
+
+    assert response.status_code == 422
+    assert "https://" in response.json()["detail"]
+    async with get_session() as s:
+        room = await s.get(Room, room_id)
+        assert room is not None
+        assert room.jitsi_url == "https://meet.example.org/main"
+
+
+@pytest.mark.anyio
+async def test_patch_room_settings_requires_external_provider_configuration():
+    """Require event-level API access and a provider key for enabled external transcription."""
+
+    from portal.crypto import encrypt_val
+    from portal.database import create_room, get_session
+    from portal.models import Event
+
+    event = await _seed()
+    async with get_session() as s:
+        room = await create_room(s, event_id=event.id, display_name="Main Hall")
+
+    async with _client() as c:
+        response = await c.patch(
+            f"/api/v1/events/{event.slug}/rooms/{room.id}/settings",
+            json={"enable_transcription": True, "transcription_provider": "deepgram", "transcription_model": "nova-2"},
+            headers=_auth(),
+        )
+    assert response.status_code == 422
+    assert "transcription API" in response.json()["detail"]
+
+    async with get_session() as s:
+        stored_event = await s.get(Event, event.id)
+        assert stored_event is not None
+        stored_event.transcription_api_enabled = True
+        stored_event.encrypted_deepgram_api_key = encrypt_val("test-deepgram-key")
+
+    async with _client() as c:
+        response = await c.patch(
+            f"/api/v1/events/{event.slug}/rooms/{room.id}/settings",
+            json={"enable_transcription": True, "transcription_provider": "deepgram", "transcription_model": "nova-2"},
+            headers=_auth(),
+        )
+    assert response.status_code == 200, response.text
 
 
 @pytest.mark.anyio
@@ -320,5 +595,3 @@ async def test_room_endpoint_handles_non_ascii_digit_without_server_error():
         )
         assert res.status_code == 404
         assert res.json()["detail"] == "Room not found"
-
-

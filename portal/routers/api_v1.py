@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from pydantic import BaseModel, Field, field_validator
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -13,6 +13,7 @@ from portal.auth import coordinates_room, load_membership_scope, require_oauth_s
 from portal.booth_identity import make_booth_id, make_mediamtx_path, validate_language_code
 from portal.database import get_db_session
 from portal.globals import booths
+from portal.meeting_source import validate_meeting_url
 from portal.models import (
     DBBooth,
     Event,
@@ -25,8 +26,10 @@ from portal.models import (
 )
 from portal.rate_limit import auth_rate_limiter
 from portal.roles import EVENT_OWNER
-from portal.transcription.constants import ProviderEnum
+from portal.transcription.constants import ALLOWED_MODELS, ProviderEnum
+from portal.transcription.providers.base import get_api_key
 from portal.transcription.worker import active_workers, start_transcription_worker, stop_transcription_worker
+from portal.translations.constants import TranslationProviderEnum
 
 logger = logging.getLogger(__name__)
 
@@ -105,6 +108,7 @@ async def _verify_token_rbac(
     manage: bool = False,
     lock_event: bool = False,
     write_lock: bool = False,
+    room_id_kind: Literal["auto", "internal", "eventyay"] = "auto",
 ) -> Room | None:
     """Validate OAuth RBAC and optionally lock the event for a mutating request.
 
@@ -123,24 +127,27 @@ async def _verify_token_rbac(
 
     resolved_room: Room | None = None
     if room_id is not None:
-        # Check Eventyay ID first to avoid colliding with an internal autoincrement ID in the same event
-        stmt = select(Room).where(Room.event_id == event.id, Room.eventyay_room_id == str(room_id))
-        res = await db.execute(stmt)
-        resolved_room = res.scalars().first()
+        if room_id_kind in {"auto", "eventyay"}:
+            # ``auto`` keeps the existing Eventyay-ID-first behavior for legacy
+            # routes. Settings updates use an explicit identifier kind instead.
+            stmt = select(Room).where(Room.event_id == event.id, Room.eventyay_room_id == str(room_id))
+            res = await db.execute(stmt)
+            resolved_room = res.scalars().first()
 
-        parsed_id: int | None = None
-        if isinstance(room_id, int):
-            parsed_id = room_id
-        elif isinstance(room_id, str) and room_id.isascii() and room_id.isdecimal():
-            try:
-                parsed_id = int(room_id)
-            except ValueError:
-                parsed_id = None
+        if not resolved_room and room_id_kind in {"auto", "internal"}:
+            parsed_id: int | None = None
+            if isinstance(room_id, int):
+                parsed_id = room_id
+            elif room_id_kind == "auto" and isinstance(room_id, str) and room_id.isascii() and room_id.isdecimal():
+                try:
+                    parsed_id = int(room_id)
+                except ValueError:
+                    parsed_id = None
 
-        if not resolved_room and parsed_id is not None:
-            resolved_room = await db.get(Room, parsed_id)
-            if resolved_room and resolved_room.event_id != event.id:
-                resolved_room = None
+            if parsed_id is not None:
+                resolved_room = await db.get(Room, parsed_id)
+                if resolved_room and resolved_room.event_id != event.id:
+                    resolved_room = None
 
         if not resolved_room:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Room not found")
@@ -169,6 +176,8 @@ async def _verify_token_rbac(
 
 
 def _extract_room_id(room: Room | Any, room_id: int | str) -> int:
+    """Return the internal room primary key for either supported room identifier."""
+
     if room is not None and hasattr(room, "id") and isinstance(room.id, int):
         return room.id
     if isinstance(room_id, int):
@@ -442,7 +451,7 @@ class RoomUpsert(BaseModel):
     transcription_model: str | None = Field(None, max_length=40)
     source_language: str | None = Field(None, max_length=10)
     enable_translation: bool | None = None
-    translation_provider: str | None = Field(None, max_length=50)
+    translation_provider: TranslationProviderEnum | None = Field(None)
     translation_model: str | None = Field(None, max_length=100)
 
     @field_validator(
@@ -473,6 +482,125 @@ class RoomUpsert(BaseModel):
         return validated
 
 
+class RoomSettingsUpdate(BaseModel):
+    """Settings that can be changed through the versioned room API.
+
+    The API deliberately exposes an allow-list instead of accepting arbitrary
+    database attributes.  A few aliases are kept for compatibility with the
+    room sync payload used by Eventyay (for example, ``enable_transcription``
+    maps to ``floor_transcription_enabled``).
+    """
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    display_name: str | None = Field(
+        None,
+        min_length=1,
+        max_length=200,
+        validation_alias=AliasChoices("display_name", "name"),
+    )
+    jitsi_url: str | None = Field(None, max_length=500)
+    audio_delay_ms: int | None = Field(None, ge=0, le=10_000)
+    relay_booth_id: int | None = Field(None, ge=1)
+
+    floor_transcription_enabled: bool | None = Field(
+        None,
+        validation_alias=AliasChoices("floor_transcription_enabled", "enable_transcription"),
+    )
+    floor_transcription_provider: ProviderEnum | None = Field(
+        None,
+        validation_alias=AliasChoices("floor_transcription_provider", "transcription_provider"),
+    )
+    floor_transcription_model: str | None = Field(
+        None,
+        max_length=40,
+        validation_alias=AliasChoices("floor_transcription_model", "transcription_model"),
+    )
+    floor_language_code: str | None = Field(
+        None,
+        max_length=10,
+        validation_alias=AliasChoices("floor_language_code", "source_language"),
+    )
+    floor_source: Literal["jitsi_bot", "program_ingest"] | None = None
+    meeting_agent_enabled: bool | None = None
+
+    floor_translation_enabled: bool | None = Field(
+        None,
+        validation_alias=AliasChoices("floor_translation_enabled", "enable_translation"),
+    )
+    floor_translation_provider: TranslationProviderEnum | None = Field(
+        None,
+        validation_alias=AliasChoices("floor_translation_provider", "translation_provider"),
+    )
+    floor_translation_model: str | None = Field(
+        None,
+        max_length=100,
+        validation_alias=AliasChoices("floor_translation_model", "translation_model"),
+    )
+    floor_source_language_code: str | None = Field(None, max_length=20)
+    floor_ai_interpreter_persona: str | None = None
+    floor_ai_interpretation_style: str | None = None
+    floor_ai_vocabulary_enabled: bool | None = None
+
+    floor_tts_enabled: bool | None = None
+    floor_tts_provider: Literal["deepgram", "supertonic"] | None = None
+    floor_tts_voice: Literal["M1", "M2", "M3", "M4", "M5", "F1", "F2", "F3", "F4", "F5"] | None = None
+
+    @field_validator("floor_language_code", "floor_source_language_code")
+    @classmethod
+    def validate_language_code(cls, value):
+        """Normalize and validate ISO language codes before persistence."""
+
+        if value is None:
+            return value
+        return validate_language_code(value)
+
+    @field_validator(
+        "jitsi_url",
+        "floor_transcription_model",
+        "floor_language_code",
+        "floor_translation_provider",
+        "floor_translation_model",
+        "floor_source_language_code",
+        "floor_ai_interpreter_persona",
+        "floor_ai_interpretation_style",
+        mode="before",
+    )
+    @classmethod
+    def empty_string_to_none(cls, value):
+        """Treat blank optional string settings as an explicit value to clear."""
+
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
+    @field_validator("display_name", mode="before")
+    @classmethod
+    def normalize_display_name(cls, value):
+        """Trim room names while preserving validation for blank names."""
+
+        return value.strip() if isinstance(value, str) else value
+
+
+_NON_NULL_ROOM_SETTINGS = frozenset(
+    {
+        "display_name",
+        "audio_delay_ms",
+        "floor_transcription_enabled",
+        "floor_transcription_provider",
+        "floor_transcription_model",
+        "floor_source",
+        "meeting_agent_enabled",
+        "floor_translation_enabled",
+        "floor_source_language_code",
+        "floor_ai_vocabulary_enabled",
+        "floor_tts_enabled",
+        "floor_tts_provider",
+        "floor_tts_voice",
+    }
+)
+
+
 def _apply_floor_settings(room, payload_dict: dict):
     if "name" in payload_dict and payload_dict["name"] is not None:
         room.display_name = payload_dict["name"]
@@ -488,7 +616,8 @@ def _apply_floor_settings(room, payload_dict: dict):
     if "enable_translation" in payload_dict and payload_dict["enable_translation"] is not None:
         room.floor_translation_enabled = payload_dict["enable_translation"]
     if "translation_provider" in payload_dict:
-        room.floor_translation_provider = payload_dict["translation_provider"]
+        val = payload_dict["translation_provider"]
+        room.floor_translation_provider = getattr(val, "value", val)
     if "translation_model" in payload_dict:
         room.floor_translation_model = payload_dict["translation_model"]
 
@@ -694,21 +823,148 @@ async def delete_room(
     return None
 
 
-@router.patch("/events/{event_slug}/rooms/{room_id}/settings")
-async def patch_room_settings(
+async def _patch_room_settings(
     event_slug: str,
     room_id: int | str,
+    payload: RoomSettingsUpdate,
     db: AsyncSession = Depends(get_db_session),
     token: OAuthToken = Depends(require_oauth_scope("rooms:write")),
+    *,
+    room_id_kind: Literal["internal", "eventyay"],
+    request_room_id: int | str,
 ):
+    """Apply a validated partial update to an explicitly identified room."""
+
     event = await _get_event_for_request(db, event_slug, write_lock=True)
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
 
-    await _verify_token_rbac(
-        db, token, event, room_id, manage=True, lock_event=True, write_lock=True
+    room = await _verify_token_rbac(
+        db,
+        token,
+        event,
+        room_id,
+        manage=True,
+        lock_event=True,
+        write_lock=True,
+        room_id_kind=room_id_kind,
     )
-    return {"status": "success"}
+    if room is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Room not found")
+
+    updates = payload.model_dump(exclude_unset=True)
+    if not updates:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="At least one room setting is required")
+
+    null_forbidden = sorted(field for field in updates if field in _NON_NULL_ROOM_SETTINGS and updates[field] is None)
+    if null_forbidden:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"These room settings cannot be null: {', '.join(null_forbidden)}",
+        )
+
+    if "relay_booth_id" in updates and updates["relay_booth_id"] is not None:
+        relay_booth = await db.get(DBBooth, updates["relay_booth_id"])
+        if relay_booth is None or relay_booth.event_id != event.id:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Relay booth not found")
+
+    if "jitsi_url" in updates and updates["jitsi_url"] is not None:
+        try:
+            updates["jitsi_url"] = validate_meeting_url(updates["jitsi_url"])
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+
+    transcription_provider_changed = "floor_transcription_provider" in updates
+    transcription_model_changed = "floor_transcription_model" in updates
+    transcription_enabled = updates.get("floor_transcription_enabled", room.floor_transcription_enabled)
+    if transcription_provider_changed or transcription_model_changed or updates.get("floor_transcription_enabled") is True:
+        provider_value = updates.get("floor_transcription_provider", room.floor_transcription_provider)
+        model_value = updates.get("floor_transcription_model", room.floor_transcription_model)
+        provider = ProviderEnum(getattr(provider_value, "value", provider_value))
+        if model_value not in ALLOWED_MODELS[provider]:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=(
+                    f"Invalid transcription model '{model_value}' "
+                    f"for provider '{provider.value}'"
+                ),
+            )
+        if transcription_enabled and provider not in {ProviderEnum.LOCAL, ProviderEnum.NONE}:
+            if not event.transcription_api_enabled:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="Enable the event transcription API before selecting an external provider",
+                )
+            try:
+                provider_key = get_api_key(event, provider)
+            except ValueError:
+                provider_key = None
+            if not provider_key:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail=f"Configure the {provider.value} API key before enabling this provider",
+                )
+
+    for field, value in updates.items():
+        setattr(room, field, getattr(value, "value", value))
+
+    audit = OAuthAuditLog(
+        token_id=token.id,
+        client_id=token.client_id,
+        action="room.settings_updated",
+        request_path=f"/api/v1/events/{event_slug}/rooms/{request_room_id}/settings",
+        status_code=status.HTTP_200_OK,
+    )
+    db.add(audit)
+    await db.flush()
+
+    return {
+        "status": "success",
+        "room_id": room.id,
+        "settings": {field: getattr(room, field) for field in updates},
+    }
+
+
+@router.patch("/events/{event_slug}/rooms/{room_id}/settings")
+async def patch_room_settings(
+    event_slug: str,
+    room_id: int,
+    payload: RoomSettingsUpdate,
+    db: AsyncSession = Depends(get_db_session),
+    token: OAuthToken = Depends(require_oauth_scope("rooms:write")),
+):
+    """Update a room using its internal primary-key identifier."""
+
+    return await _patch_room_settings(
+        event_slug,
+        room_id,
+        payload,
+        db,
+        token,
+        room_id_kind="internal",
+        request_room_id=room_id,
+    )
+
+
+@router.patch("/events/{event_slug}/rooms/eventyay/{eventyay_room_id}/settings")
+async def patch_eventyay_room_settings(
+    event_slug: str,
+    eventyay_room_id: str,
+    payload: RoomSettingsUpdate,
+    db: AsyncSession = Depends(get_db_session),
+    token: OAuthToken = Depends(require_oauth_scope("rooms:write")),
+):
+    """Update a room using its explicit Eventyay room identifier."""
+
+    return await _patch_room_settings(
+        event_slug,
+        eventyay_room_id,
+        payload,
+        db,
+        token,
+        room_id_kind="eventyay",
+        request_room_id=f"eventyay/{eventyay_room_id}",
+    )
 
 
 @router.get("/events/{event_slug}/rooms/{room_id}/booths")
