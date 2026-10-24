@@ -21,7 +21,7 @@ In the admin or workspace panel, navigate to **Events → Rooms → [Select Room
 Voxbento merges these instructions with a system-level safety prompt requiring clean, spoken translation output without meta-commentary or Markdown markup. Empty settings retain standard translation output.
 
 :::info Shared Interpretation State
-The translated text is broadcast concurrently to listeners via the target booth's captions feed (`/ws/captions/{booth_id}`) and delivered via framed binary bundles (`/ws/tts/{room_id}/{language_code}/{booth_id}`) to the room's configured TTS engine (Deepgram Aura or Supertonic ONNX), ensuring that captions and speech share the exact same translation.
+The translated text is broadcast concurrently to listeners via the target booth's captions feed (`/ws/captions/{booth_id}`) and delivered via framed binary bundles (`/ws/tts/{booth_id}`, where `booth_id` is the AI booth `{event_slug}-{room_id}-ai-{language_code}`) to the room's configured TTS engine (Deepgram Aura or Supertonic ONNX), ensuring that captions and speech share the exact same translation.
 :::
 
 ## AI Vocabulary & Glossary CSV

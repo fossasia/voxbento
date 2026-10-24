@@ -76,6 +76,35 @@ Rooms can also define an optional listener-side audio synchronization delay. Thi
 
 In the organizer workspace, room management includes server-side search to quickly filter rooms by name within an event using case-insensitive matching against the room display name, displaying a clearable empty state when no rooms match the query.
 
+### Guided room setup
+
+Event setup follows **Event → Rooms & languages → Team & listeners**. Each room
+uses one form for its spoken language, listener languages, delivery by interpreters,
+AI or both, captions, and optional AI speech. The same form edits existing rooms.
+Room lists and the room overview summarize those choices, including AI languages
+that do not have an interpreter booth.
+
+`portal/room_setup.py` validates a room plan and applies it in one database
+transaction to the existing room, booth, and translation-language tables. Human
+languages create booths; AI languages enable floor transcription and translation;
+AI voice enables floor TTS. Service choices require event keys, the external
+transcription switch where applicable, and optional server dependencies. Local
+translation and voice language support are validated before saving. No schema
+migration or change to the audio transport is needed.
+
+Saving removes deselected idle booths and their dependent invitations and
+assignments, but retains booths reported live and explains this on the room page.
+Existing booths in the spoken language are preserved unless explicitly deselected.
+Advanced models stay unchanged when their provider stays the same. The advanced
+room tabs remain available for model, voice, prompt, vocabulary, and source settings.
+The JavaScript module progressively enhances the server-rendered form into four
+steps; server validation also handles submissions without JavaScript.
+
+The owner-only GET/POST paths are `/workspace/events/{event_id}/rooms/new` and
+`/workspace/events/{event_id}/rooms/{room_id}/setup`, with corresponding Admin
+paths. Both new POST handlers require same-origin requests. Old wizard room and
+booth POSTs remain compatible; the old booth GET redirects to Rooms & languages.
+
 ## Organizer and System Administration Routes
 
 Event management and system administration use separate public URL namespaces:
@@ -119,7 +148,7 @@ Jitsi session; they do not validate a deployment host's available disk space.
 6. **Broadcast:** Translations are saved to the database and immediately broadcast as `translated_caption` events via the target booth's caption feed (`/ws/captions/{booth_id}`).
 
 7. **Text-to-Speech (TTS):** If the room has TTS enabled for translated floor audio, the `TTSWorker` synthesizes the floor's translations into speech for each language marked for TTS in the room settings, using the room's provider: **Deepgram Aura** (cloud WebSocket) or **Supertonic** (self-hosted, in-process ONNX). Only floor segments are spoken, never a human booth's own translations, and speech is synthesized only while someone is connected to that language. A language that has a human interpreter booth, or is the floor language itself, is never offered as AI audio.
-8. **TTS Audio Delivery:** Each AI language is served as its own AI booth, `{event_slug}-{room_id}-ai-{language_code}`. The `tts_manager` streams it in structured binary bundle messages (1-byte version, 4-byte header length, JSON metadata header, and optional 24 kHz 16-bit mono PCM payload) over `/ws/tts/{booth_id}`, which is authorized before accept with the same rules as `/ws/captions/{booth_id}`. Listeners hear it through the Web Audio API, scheduled by `audio-scheduler.js` without relying on WHEP, and can read captions in a different language at the same time.
+8. **TTS Audio Delivery:** Each AI language is served as its own AI booth, `{event_slug}-{room_id}-ai-{language_code}`. The `tts_manager` streams it in structured binary bundle messages (1-byte version, 4-byte header length, JSON metadata header, and optional 24 kHz 16-bit mono PCM payload) over `/ws/tts/{booth_id}`, which is authorized before accept by the same `resolve_ws_auth` check as `/ws/booth/{booth_id}`. Listeners hear it through the Web Audio API, scheduled by `audio-scheduler.js` without relying on WHEP, and can read captions in a different language at the same time.
 
 :::info
 Transcription, Translation, and TTS workers are isolated from the main audio path. If an API provider lags, fails, or drops chunks, the core interpretation audio remains perfectly stable and unaffected.
@@ -376,3 +405,14 @@ Production deployment builds and validates a separate candidate checkout before
 updating the live checkout. The portal reads code and dependencies from its Docker
 image and receives `.env` settings through Compose. See the
 [deployment preflight](configuration/deployment.mdx#deployment-preflight).
+
+For self-hosted domains, set `PUBLIC_BASE_URL` to your public URL; the default is
+`https://voxbento.com`. This is the same setting used for email links. Public
+`GET /sitemap.xml` builds canonical URLs from `settings.public_base_url`, never
+from the request's `Host` header. It strips trailing slashes before appending the
+existing sitemap paths and XML-escapes the resulting URLs.
+
+A configured path prefix is preserved in sitemap entries: for example,
+`PUBLIC_BASE_URL=https://interpret.example.com/voxbento/` produces
+`https://interpret.example.com/voxbento/` for the home page and
+`https://interpret.example.com/voxbento/research` for the research page.

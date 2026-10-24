@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
+from html import escape
 from pathlib import Path
 
 from fastapi import APIRouter, Request, status
@@ -165,45 +166,47 @@ See those pages for specific benchmarking data and methodologies.
 
 
 @router.get("/sitemap.xml")
-async def sitemap(request: Request):
-    xml_content = """<?xml version="1.0" encoding="UTF-8"?>
+async def sitemap(request: Request) -> Response:
+    """Return the public sitemap using the configured canonical base URL."""
+    base_url = escape(settings.public_base_url.rstrip("/"), quote=False)
+    xml_content = f"""<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
   <url>
-    <loc>https://voxbento.org/</loc>
+    <loc>{base_url}/</loc>
     <changefreq>daily</changefreq>
     <priority>1.0</priority>
   </url>
   <url>
-    <loc>https://voxbento.org/research</loc>
+    <loc>{base_url}/research</loc>
     <changefreq>weekly</changefreq>
     <priority>0.9</priority>
   </url>
   <url>
-    <loc>https://voxbento.org/research/speech-ai-statistics</loc>
+    <loc>{base_url}/research/speech-ai-statistics</loc>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://voxbento.org/research/whisper-benchmark</loc>
+    <loc>{base_url}/research/whisper-benchmark</loc>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://voxbento.org/research/stt-comparison</loc>
+    <loc>{base_url}/research/stt-comparison</loc>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://voxbento.org/research/real-time-audio-latency</loc>
+    <loc>{base_url}/research/real-time-audio-latency</loc>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://voxbento.org/research/webrtc-vs-rtmp-vs-hls</loc>
+    <loc>{base_url}/research/webrtc-vs-rtmp-vs-hls</loc>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://voxbento.org/research/speech-ai-glossary</loc>
+    <loc>{base_url}/research/speech-ai-glossary</loc>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://voxbento.org/research/streaming-stt-architecture</loc>
+    <loc>{base_url}/research/streaming-stt-architecture</loc>
     <changefreq>weekly</changefreq>
   </url>
 </urlset>"""

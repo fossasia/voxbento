@@ -64,9 +64,33 @@ class ConnectionManager:
 class ListenerConnectionManager:
     def __init__(self) -> None:
         self._rooms: dict[str, set[WebSocket]] = {}
+        self._anon_rooms: dict[str, set[WebSocket]] = {}
 
-    def add(self, ws: WebSocket, booth_id: str) -> None:
+    def add(self, ws: WebSocket, booth_id: str, *, is_anonymous: bool = False) -> None:
         self._rooms.setdefault(booth_id, set()).add(ws)
+        if is_anonymous:
+            self._anon_rooms.setdefault(booth_id, set()).add(ws)
+
+    def count_anonymous(self, booth_id: str) -> int:
+        return len(self._anon_rooms.get(booth_id, set()))
+
+    def try_reserve_anonymous(self, ws: WebSocket, booth_id: str, max_anon: int) -> bool:
+        if max_anon <= 0:
+            return False
+        anon_set = self._anon_rooms.get(booth_id)
+        if anon_set is not None and len(anon_set) >= max_anon:
+            return False
+        if anon_set is None:
+            anon_set = set()
+            self._anon_rooms[booth_id] = anon_set
+        anon_set.add(ws)
+        return True
+
+    def cancel_reservation(self, ws: WebSocket, booth_id: str) -> None:
+        anon_set = self._anon_rooms.get(booth_id, set())
+        anon_set.discard(ws)
+        if not anon_set:
+            self._anon_rooms.pop(booth_id, None)
 
     def has_listeners(self, booth_id: str) -> bool:
         return bool(self._rooms.get(booth_id, set()))
@@ -76,6 +100,11 @@ class ListenerConnectionManager:
         room.discard(ws)
         if not room:
             self._rooms.pop(booth_id, None)
+
+        anon_set = self._anon_rooms.get(booth_id, set())
+        anon_set.discard(ws)
+        if not anon_set:
+            self._anon_rooms.pop(booth_id, None)
 
     async def broadcast(self, booth_id: str, message: dict) -> None:
         payload = json.dumps(message)

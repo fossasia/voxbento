@@ -8,10 +8,13 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from portal.auth import (
     WSAuthError,
     booth_session_key,
+    decode_token,
     is_listener_token,
+    listener_scope_matches,
     resolve_booth_role,
     resolve_ws_auth,
     ws_bearer_subprotocol,
+    ws_credential,
 )
 from portal.globals import booths
 from portal.websockets.manager import (
@@ -122,12 +125,37 @@ async def ws_booth(websocket: WebSocket, booth_id: str) -> None:
 @router.websocket("/ws/captions/{booth_id}")
 async def ws_captions(websocket: WebSocket, booth_id: str) -> None:
     """WebSocket endpoint for live captions. Listener tokens are limited to their own event"""
+    # The listener page offers its token as a "bearer.<token>" subprotocol; ?token= still works.
+    token = ws_credential(websocket)
+    is_anonymous = not bool(token)
+    if token:
+        try:
+            payload = decode_token(token)
+            if not (payload.get("is_admin") or payload.get("admin")):
+                if not listener_scope_matches(payload.get("event_slug", ""), booth_id):
+                    await websocket.close(code=4003)
+                    return
+        except Exception:
+            await websocket.close(code=4001)
+            return
+    else:
+        from portal.config import settings
+
+        max_anon = getattr(settings, "max_anonymous_caption_listeners_per_booth", 500)
+        if not listener_manager.try_reserve_anonymous(websocket, booth_id, max_anon):
+            await websocket.close(code=1008)
+            return
+
+    accepted = False
     try:
-        await resolve_ws_auth(websocket, booth_id)
-    except WSAuthError:
-        return
-    await websocket.accept(subprotocol=ws_bearer_subprotocol(websocket))
-    listener_manager.add(websocket, booth_id)
+        await websocket.accept(subprotocol=ws_bearer_subprotocol(websocket))
+        accepted = True
+    finally:
+        if not accepted and is_anonymous:
+            listener_manager.cancel_reservation(websocket, booth_id)
+
+    listener_manager.add(websocket, booth_id, is_anonymous=is_anonymous)
+
     try:
         while True:
             await websocket.receive_text()
@@ -141,7 +169,7 @@ async def ws_captions(websocket: WebSocket, booth_id: str) -> None:
 async def ws_tts(websocket: WebSocket, booth_id: str) -> None:
     """WebSocket endpoint for an AI booth's synthesized audio (``{event_slug}-{room_id}-ai-{language_code}``).
 
-    Uses the same authentication as ``/ws/captions/{booth_id}``.
+    Authorized before accept by ``resolve_ws_auth``, the same check ``/ws/booth/{booth_id}`` uses.
     """
     try:
         await resolve_ws_auth(websocket, booth_id)

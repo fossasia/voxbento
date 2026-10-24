@@ -11,6 +11,7 @@
 |---|---|---|---|---|
 | GET | `/` | open | `home.html` | Landing page; no event or booth lists; navbar links personalised if logged in |
 | GET | `/local` | open | `local.html` | VoxBento Local desktop console download page with client OS detection & release links |
+| GET | `/sitemap.xml` | open | — | XML sitemap; canonical URLs use `PUBLIC_BASE_URL` (default `https://voxbento.com`), not request `Host`; trailing slashes stripped, path prefix preserved, URLs XML-escaped |
 | GET | `/healthz` | open | — | JSON: `{ok, server, mediamtx_ok}` |
 | GET | `/register` | open | `register.html` | Redirects to `/account` if already logged in |
 | POST | `/register` | open | `register.html` | Creates user, sets `user_token` cookie → `/account`; if `password` is set, `password_confirm` must match (422 otherwise) |
@@ -67,7 +68,7 @@ unset is a connection with no credential at all still accepted.
 |---|---|---|
 | `/ws/booth/{booth_id}` | optional JWT via `?token=` + cookies (`session_token` or `user_token`); listener tokens rejected outright | See WebSocket Protocol in `REPOSITORY_CONTEXT.md` |
 | `/ws/captions/{booth_id}` | protected via `resolve_ws_auth` (requires `BOOTH_ACCESS_TOKEN` check, valid JWT via `?token=` or session cookies `user_token`/`session_token` in production; open in dev when unset) | Receives `booth:state`, `caption`, and `translated_caption` messages; listener captions feed. Supports `{event_slug}-{room_id}-{language_code}` (`floor-{room_id}` allowed only in unauthenticated dev) |
-| `/ws/tts/{booth_id}` | authorized before accept via `resolve_ws_auth` (same rules as `/ws/captions`); `booth_id` is an AI booth, `{event_slug}-{room_id}-ai-{language_code}` | Receives framed binary bundle messages (1-byte version `0x01`, 4-byte big-endian header length `L`, `L`-byte UTF-8 JSON header, optional 24 kHz 16-bit mono PCM payload) |
+| `/ws/tts/{booth_id}` | authorized before accept via `resolve_ws_auth` (the `/ws/booth` check); `booth_id` is an AI booth, `{event_slug}-{room_id}-ai-{language_code}` | Receives framed binary bundle messages (1-byte version `0x01`, 4-byte big-endian header length `L`, `L`-byte UTF-8 JSON header, optional 24 kHz 16-bit mono PCM payload) |
 
 ---
 
@@ -102,6 +103,10 @@ with `?error=invalid_role&role=…` and the page explains why.
 | POST | `/admin/events/{event_id}/delete` | — | Cascade-deletes event |
 | GET | `/admin/events/{event_id}/rooms/` | `admin/room_list.html` | Supports optional `search` query parameter to filter rooms server-side against `Room.display_name` (case-insensitive `ilike` match with SQL wildcard escaping for `%`, `_`, and `\\`). |
 | POST | `/admin/events/{event_id}/rooms/` | — | Creates room; auto-generates Jitsi URL |
+| GET/POST | `/admin/events/{event_id}/rooms/new` | `admin/room_setup.html` | Guided room creation: spoken/listener languages, interpreter/AI delivery, captions and voice; owner-only, POST requires same origin; `?from=setup` returns to the Rooms & languages wizard step |
+| GET/POST | `/admin/events/{event_id}/rooms/{room_id}/setup` | `admin/room_setup.html` | Owner-only edit of the same room plan; POST requires same origin and checks room/event scope; preserves live booths and explicitly retained same-language booths |
+| GET/POST | `/admin/events/{event_id}/setup/rooms` | `admin/wizard_rooms.html` | Rooms & languages step; GET links to guided room creation, legacy POST still creates a room |
+| GET/POST | `/admin/events/{event_id}/setup/booths` | — | Legacy GET redirects to Rooms & languages; legacy POST still creates a booth in this event and redirects there |
 | GET | `/admin/events/{event_id}/rooms/{room_id}/` | `admin/room_detail.html` | Room + booths |
 | POST | `/admin/events/{event_id}/rooms/{room_id}/edit` | — | Updates jitsi_url + relay_booth_id |
 | POST | `/admin/events/{event_id}/rooms/{room_id}/ai-vocabulary/upload` | — | Upload CSV glossary entries for room AI interpretation |
@@ -142,12 +147,13 @@ with `?error=invalid_role&role=…` and the page explains why.
 
 | Module | Owns |
 |---|---|
-| `portal/routers/public.py` | Home page, health check, registration |
+| `portal/routers/public.py` | Home page, sitemap, health check, registration |
 | `portal/routers/auth.py` | Login, logout, invite-token validation, and user profile page |
 | `portal/routers/interpreter.py` | Booth UI route |
 | `portal/routers/listener.py` | WHEP listener UI route |
 | `portal/routers/api.py` | Booth state REST API, WHIP URL generation |
 | `portal/routers/admin.py` | Shared event-management handlers and system-admin routes |
+| `portal/room_setup.py` | Room plan parsing, available AI services, booth/translation-language reconciliation, and room summaries; uses existing tables |
 | `portal/workspace_routing.py` | `/workspace` handler mapping, legacy organizer redirects, and template URL context |
 | `portal/websockets/manager.py` | `ws_booth` and `ws_captions` endpoints |
 | `portal/websockets/handlers.py` | Specific `_handle_*` logic for WS messages |

@@ -43,9 +43,18 @@ function initTabs() {
   });
 
   const params = new URLSearchParams(window.location.search);
+  // Links elsewhere on the page (e.g. the next-steps list) can open a tab.
+  document.querySelectorAll('[data-room-tab-link]').forEach((link) => {
+    link.addEventListener('click', (e) => {
+      e.preventDefault();
+      show(link.dataset.roomTabLink, { focus: true });
+    });
+  });
   let initial = window.location.hash.slice(1);
   // Back from a vocabulary upload: show the result where it was uploaded.
   if (!initial && [...params.keys()].some((key) => key.startsWith('vocab'))) initial = 'captions';
+  // Back from room setup: show the saved languages and the next steps.
+  if (params.has('created') || params.has('updated')) initial = 'overview';
   if (!initial) {
     try { initial = sessionStorage.getItem(storageKey) || ''; } catch (err) { console.debug('No remembered tab', err); }
   }

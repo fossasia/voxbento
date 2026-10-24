@@ -515,6 +515,15 @@ class TestRequireAdmin:
         assert resp.status_code == 200
 
     @pytest.mark.anyio
+    async def test_confirm_popup_is_a_labelled_dialog(self, admin_cookie):
+        async with _client() as c:
+            resp = await c.get("/admin/", cookies=admin_cookie)
+        assert resp.status_code == 200
+        assert '<dialog id="custom-confirm-modal"' in resp.text
+        assert 'aria-labelledby="custom-confirm-message"' in resp.text
+        assert '<div id="custom-confirm-modal"' not in resp.text
+
+    @pytest.mark.anyio
     async def test_invalid_cookie_rejected(self):
         async with _client() as c:
             resp = await c.get("/admin/", cookies={"user_token": "garbage"})
@@ -1683,7 +1692,7 @@ class TestBoothCRUD:
                 follow_redirects=False,
             )
             assert resp.status_code == 303
-            assert resp.headers["location"].endswith(f"/setup/booths?room_id={room.id}&error=duplicate_language")
+            assert resp.headers["location"].endswith(f"/setup/rooms?room_id={room.id}&error=duplicate_language")
             page = await c.get(resp.headers["location"], cookies=admin_cookie)
         assert "That room already has a booth for that language." in page.text
 
@@ -2532,17 +2541,18 @@ async def test_user_list_badge_uses_singular_for_one_user(admin_cookie):
     [
         "/admin/setup",
         "/admin/events/{event}/setup/rooms",
-        "/admin/events/{event}/setup/booths",
         "/admin/events/{event}/setup/invite",
+        "/admin/events/{event}/rooms/new",
+        "/admin/events/{event}/rooms/{room}/setup",
     ],
 )
 async def test_setup_wizard_pages_have_no_inline_styles(path, admin_cookie, seed_event):
     import re
 
-    event, _, _ = seed_event
+    event, room, _ = seed_event
 
     async with _client() as c:
-        resp = await c.get(path.format(event=event.id), cookies=admin_cookie)
+        resp = await c.get(path.format(event=event.id, room=room.id), cookies=admin_cookie)
 
     assert resp.status_code == 200
     assert not re.search(rb"\sstyle\s*=", resp.content, re.IGNORECASE)

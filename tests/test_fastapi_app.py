@@ -155,7 +155,7 @@ def test_token_redactor_handles_legacy_api_query_credentials():
         level=logging.INFO,
         pathname="",
         lineno=0,
-        msg='GET /api/events/demo/booths?access_token=secretjwt123&room_id=1',
+        msg="GET /api/events/demo/booths?access_token=secretjwt123&room_id=1",
         args=(),
         exc_info=None,
     )
@@ -242,7 +242,7 @@ def test_make_jitsi_url_full_url_unchanged():
     """A full URL stored in DEFAULT_JITSI_ROOM must not be double-prefixed."""
     from portal.utils import _make_jitsi_url
 
-    full = "https://meet.jit.si/eventyay-stage-room"
+    full = "https://meet.jit.si/test-stage-room"
     assert _make_jitsi_url("http://localhost:8080", full) == full
 
 
@@ -2109,13 +2109,13 @@ def test_embed_frame_ancestors_restricted(monkeypatch):
     """When EMBED_ALLOWED_ORIGINS is set to one origin, CSP must reflect it exactly."""
     from portal.config import settings
 
-    monkeypatch.setattr(settings, "embed_allowed_origins", "https://eventyay.com")
+    monkeypatch.setattr(settings, "embed_allowed_origins", "https://partner.example.com")
     _seed_embed_event("test-event", "en")
 
     token = _embed_listener_token(event_slug="test-event")
     res = client.get(f"/embed/test-event/en?token={token}", headers={"accept": "text/html"})
     assert res.status_code == 200, res.text
-    assert res.headers.get("content-security-policy") == "frame-ancestors https://eventyay.com"
+    assert res.headers.get("content-security-policy") == "frame-ancestors https://partner.example.com"
 
 
 def test_embed_frame_ancestors_multi_origin(monkeypatch):
@@ -2158,13 +2158,13 @@ def test_embed_postmessage_target_origin_single(monkeypatch):
     """When one origin is configured, target_origin matches it exactly."""
     from portal.config import settings
 
-    monkeypatch.setattr(settings, "embed_allowed_origins", "https://eventyay.com")
+    monkeypatch.setattr(settings, "embed_allowed_origins", "https://partner.example.com")
     _seed_embed_event("test-event", "en")
 
     token = _embed_listener_token(event_slug="test-event")
     res = client.get(f"/embed/test-event/en?token={token}", headers={"accept": "text/html"})
-    assert '"target_origin": "https://eventyay.com"' in res.text
-    assert '"allowed_origins": ["https://eventyay.com"]' in res.text
+    assert '"target_origin": "https://partner.example.com"' in res.text
+    assert '"allowed_origins": ["https://partner.example.com"]' in res.text
 
 
 def test_embed_postmessage_target_origin_multi(monkeypatch):
@@ -2214,6 +2214,115 @@ def test_embed_captions_opt_in_websocket_auth():
     # Verify the booth_id produced by make_booth_id satisfies the startswith check.
     booth_id = "test-event-1-en"  # make_booth_id("test-event", 1, 1,  "en")
     assert booth_id.startswith(f"{payload['event_slug']}-")
+
+
+def test_ws_captions_allows_anonymous():
+    """Anonymous connection to captions websocket is permitted for public subtitle streaming."""
+    with client.websocket_connect("/ws/captions/test-event-1-en"):
+        # Connected successfully without 403 / 4001
+        pass
+
+
+def test_ws_captions_rejects_invalid_token():
+    """Invalid token provided to captions websocket is rejected."""
+    from fastapi.websockets import WebSocketDisconnect
+
+    with pytest.raises(WebSocketDisconnect) as exc_info:
+        with client.websocket_connect("/ws/captions/test-event-1-en?token=invalid.jwt.token"):
+            pass
+    assert exc_info.value.code == 4001
+
+
+def test_ws_captions_token_rejects_prefix_sharing_different_event_slug():
+    """Token for 'event-a' must be rejected with 4003 when connecting to 'event-a-other-1-en'."""
+    from fastapi.websockets import WebSocketDisconnect
+
+    token_event_a = _embed_listener_token(event_slug="event-a")
+
+    # Connecting to a booth belonging to 'event-a-other' with token for 'event-a' must be rejected
+    with pytest.raises(WebSocketDisconnect) as exc_info:
+        with client.websocket_connect(f"/ws/captions/event-a-other-1-en?token={token_event_a}"):
+            pass
+    assert exc_info.value.code == 4003
+
+    # Connecting to 'event-a-1-en' with token for 'event-a' must succeed
+    with client.websocket_connect(f"/ws/captions/event-a-1-en?token={token_event_a}"):
+        pass
+
+
+def test_ws_captions_allows_cross_origin_with_ambient_cookies():
+    """Cross-origin connection from an external client with ambient cookies must not fail origin checks."""
+    headers = {"origin": "https://external-client.example.org"}
+    cookies = {"user_token": "some-ambient-cookie"}
+    with client.websocket_connect("/ws/captions/test-event-1-en", headers=headers, cookies=cookies):
+        pass
+
+
+def test_ws_captions_enforces_anonymous_admission_limit(monkeypatch):
+    """Anonymous connections are rejected with 1008 when the booth connection limit is reached.
+    Token-bearing listeners do not consume anonymous admission slots."""
+    from fastapi.websockets import WebSocketDisconnect
+
+    from portal.config import settings
+
+    monkeypatch.setattr(settings, "max_anonymous_caption_listeners_per_booth", 1)
+
+    token = _embed_listener_token(event_slug="test-limit")
+    # Token-bearing listener is active
+    with client.websocket_connect(f"/ws/captions/test-limit-1-en?token={token}"):
+        # First anonymous connection should still succeed
+        with client.websocket_connect("/ws/captions/test-limit-1-en"):
+            # Second anonymous connection exceeds limit of 1 and is rejected with 1008
+            with pytest.raises(WebSocketDisconnect) as exc_info:
+                with client.websocket_connect("/ws/captions/test-limit-1-en"):
+                    pass
+            assert exc_info.value.code == 1008
+
+
+def test_ws_captions_zero_anonymous_limit_does_not_populate_anon_rooms(monkeypatch):
+    """When max_anonymous_caption_listeners_per_booth is 0, anonymous requests are rejected
+    without creating an empty entry in listener_manager._anon_rooms."""
+    from fastapi.websockets import WebSocketDisconnect
+
+    from portal.config import settings
+    from portal.websockets.manager import listener_manager
+
+    monkeypatch.setattr(settings, "max_anonymous_caption_listeners_per_booth", 0)
+
+    booth_id = "test-zero-anon-limit"
+    assert booth_id not in listener_manager._anon_rooms
+
+    with pytest.raises(WebSocketDisconnect) as exc_info:
+        with client.websocket_connect(f"/ws/captions/{booth_id}"):
+            pass
+    assert exc_info.value.code == 1008
+
+    # Must NOT have created an empty set entry in _anon_rooms!
+    assert booth_id not in listener_manager._anon_rooms
+
+
+def test_ws_captions_releases_reservation_on_cancellation(monkeypatch):
+    """If accept() raises an exception (or is cancelled), the reservation is released."""
+    import asyncio
+
+    from starlette.websockets import WebSocket
+
+    from portal.websockets.manager import listener_manager
+
+    booth_id = "test-cancel-reservation"
+
+    async def mock_accept(self, subprotocol=None):
+        raise asyncio.CancelledError()
+
+    monkeypatch.setattr(WebSocket, "accept", mock_accept)
+
+    try:
+        with client.websocket_connect(f"/ws/captions/{booth_id}"):
+            pass
+    except BaseException:
+        pass
+
+    assert listener_manager.count_anonymous(booth_id) == 0
 
 
 def test_ws_tts_authentication(monkeypatch):
@@ -2351,7 +2460,7 @@ def test_user_cookie_reaches_a_booth_only_when_its_event_authorizes_it(monkeypat
     shortcut taken when it is unset. The membership lookup itself is stubbed —
     it has its own test — so no database work happens inside the handshake.
 
-    Only the caption and TTS feeds are driven here. Accepting a ``/ws/booth``
+    Only the TTS feed is driven here (/ws/captions is public since #974). Accepting a ``/ws/booth``
     connection and closing it without joining deadlocked CI: that handler also
     resolves a role and a language name, so a parseable booth ID opens two more
     database sessions inside the handshake. ``resolve_ws_auth`` is shared, and
@@ -2362,7 +2471,8 @@ def test_user_cookie_reaches_a_booth_only_when_its_event_authorizes_it(monkeypat
 
     monkeypatch.setattr(settings, "booth_access_token", access_token)
 
-    routes = ("/ws/tts/test-event-1-ai-fr", "/ws/captions/test-event-1-fr")
+    # /ws/captions is public since #974 and ignores cookies, so only the TTS feed is checked.
+    routes = ("/ws/tts/test-event-1-ai-fr",)
 
     async def _deny(user_id, booth_id):
         return False
@@ -2430,7 +2540,7 @@ def test_session_cookies_without_a_usable_identity_fail_closed(monkeypatch, acce
     monkeypatch.setattr(auth, "user_event_authorized", _allow)
 
     cookies = {"user_token": _signed_token(claims)}
-    for route in ("/ws/tts/test-event-1-ai-fr", "/ws/captions/test-event-1-fr"):
+    for route in ("/ws/tts/test-event-1-ai-fr",):
         assert _ws_close_code(route, cookies=cookies) == 4003, f"{route} accepted {claims}"
 
 
@@ -2447,7 +2557,7 @@ def test_a_role_token_without_booth_scope_is_refused(monkeypatch, access_token):
         {"sub": "7", "role": "listener"},
     ):
         token = _signed_token(claims)
-        for route in ("/ws/tts/test-event-1-ai-fr", "/ws/captions/test-event-1-fr"):
+        for route in ("/ws/tts/test-event-1-ai-fr",):
             assert _ws_close_code(f"{route}?token={token}") == 4003, f"{route} accepted {claims}"
 
 
@@ -2648,11 +2758,11 @@ def test_build_embed_frame_policy_variants(monkeypatch):
     monkeypatch.setattr(settings, "embed_allowed_origins", "")
     assert _build_embed_frame_policy() == ("frame-ancestors *", [], "*")
 
-    monkeypatch.setattr(settings, "embed_allowed_origins", "https://eventyay.com")
+    monkeypatch.setattr(settings, "embed_allowed_origins", "https://partner.example.com")
     assert _build_embed_frame_policy() == (
-        "frame-ancestors https://eventyay.com",
-        ["https://eventyay.com"],
-        "https://eventyay.com",
+        "frame-ancestors https://partner.example.com",
+        ["https://partner.example.com"],
+        "https://partner.example.com",
     )
 
     monkeypatch.setattr(settings, "embed_allowed_origins", "https://a.com, https://b.com")
