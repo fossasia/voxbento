@@ -10,6 +10,7 @@ from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 
 from portal.auth import get_access_flags, get_current_user, resolve_request_principal
+from portal.config import settings
 from portal.database import (
     get_session,
     get_user_by_id,
@@ -17,8 +18,8 @@ from portal.database import (
     list_memberships_for_user,
     list_room_memberships_for_user,
 )
-from portal.email_sender import send_demo_request_email
 from portal.globals import _JS_CACHE_BUST, asset_version_context
+from portal.notifications import queue_notification
 from portal.rate_limit import check_rate_limit
 from portal.roles import EVENT_OWNER, ROOM_COORDINATOR
 from portal.utils import _check_mediamtx, get_client_ip
@@ -279,9 +280,23 @@ async def request_demo(request: Request, data: DemoRequestModel):
         "source": "account" if is_authenticated else "home",
     }
 
-    try:
-        await send_demo_request_email(cleaned_data)
-        return {"ok": True}
-    except Exception as e:
-        logger.error(f"Error processing demo request: {e}", exc_info=True)
-        return {"ok": False, "detail": "An internal error occurred while processing the request."}
+    async with get_session() as session:
+        await queue_notification(
+            session,
+            "demo_request",
+            settings.hosting_requests_email,
+            {
+                "firstName": cleaned_data["firstName"],
+                "lastName": cleaned_data["lastName"],
+                "email": cleaned_data["email"],
+                "companyName": cleaned_data["companyName"],
+                "phoneNumber": cleaned_data["phoneNumber"],
+                "country": cleaned_data["country"],
+                "industry": cleaned_data["industry"],
+                "companySize": cleaned_data["companySize"],
+                "languageSupport": cleaned_data["languageSupport"],
+                "notes": cleaned_data["notes"],
+                "admin_url": f"{settings.public_base_url.rstrip('/')}/admin/users/{user_id}/" if user_id else f"{settings.public_base_url.rstrip('/')}/admin/users/",
+            },
+        )
+    return {"ok": True}

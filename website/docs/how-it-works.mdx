@@ -97,6 +97,8 @@ To transcribe or translate the original speakers without requiring external inte
 
 Event owners control the bot as a managed **Meeting source** on the room page. `rooms.meeting_agent_enabled` stores the desired state; `portal/meeting_source.py` compares it every two seconds with the bot's `/status` and the MediaMTX floor path. It restarts a failed agent with back-off up to `MEETING_AGENT_MAX_RESTARTS` times, starts the floor transcription worker only after audio arrives, and stops agents that no rooms want after a portal restart. The room has one floor owner: the meeting agent or program ingest. Switching between them requires confirmation. Meeting URLs can carry Jitsi credentials, so they are never logged or returned in status responses.
 
+Venues without a hardware encoder can send floor audio from a browser instead. The room page opens a dedicated **Program audio sender** tab that publishes the chosen sound-desk input over authenticated WHIP with a short-lived session secret. Because the stream lives in that tab, the rest of the console can be used freely. After network drops the sender retries with back-off; it stops and reports an error when the sign-in expires or another source owns the floor. It keeps the screen awake, can mute without giving up the floor, and offers a local sound check (level hint plus record-and-play-back) that never reaches listeners.
+
 ### Pipeline Steps
 
 Floor-bot dependency upgrades are checked separately in CI: the Playwright SDK
@@ -191,13 +193,28 @@ Listeners connected to the caption WebSocket receive transcription segments as t
 
 ## Shared header and user menu
 
-Every signed-in page (Admin, My events and its event pages, Mission Control,
-Account, Developer API) renders the same header from `_app_header.html`: the
-VoxBento logo with the name of the current area, the area's page links, and the
-user menu. `portal/user_menu.py` builds the menu from the request principal: My
-events, Account, Developer API (only with an approved developer app), Admin (only
-for Admins) and Logout, with the current area highlighted. A router dependency
-loads the principal once per request so templates never query the database.
+Every signed-in page (Admin, My events and its event pages, My booths, Mission
+Control, Account, Developer API) renders the same header from `_app_header.html`:
+the VoxBento logo with the name of the current area, the area's page links, and
+the user menu. `portal/user_menu.py` builds the menu from the request principal: My
+events, My booths (only for interpreters, given for an event or a booth), Account,
+Developer API (only with an approved developer app), Admin (only for Admins) and
+Logout, with the current area highlighted. A router dependency loads the principal
+once per request so templates never query the database.
+
+The interpreter booth is a work screen, so it uses a compact bar instead: the
+language, room and event names, the connection state, the same user menu and
+**Leave**, and no site footer. **My booths** (`/interpreter`) lists the person's
+booths by event and room, with **Enter booth** (and **Mission Control** for
+coordinators) next to a microphone and connection check.
+
+**Mission Control** (`/mission-control/{event}/`) shows one section per room the
+person may run. Each room shows its floor captions' state with Start and Stop
+(through `/api/rooms/{room_id}/floor-transcription/*`), and each booth card shows
+who is in the booth and who is live, a listen-in slider, Go live / Stop broadcast
+and **Open booth**. The owner's room page is split into tabs (Overview, Floor
+source, Captions & translation, Settings); the open tab is remembered per room so
+saving a setting returns to it, and without JavaScript every section shows in order.
 
 **My events** at `/workspace/` (`portal/my_events.py`) lists every event the
 person has a role in, combining event, room and booth memberships into one card
@@ -262,6 +279,35 @@ reason to the person, who can then send a new request. Granting hosting access
 any other way (the user page toggle or an accepted hosting invitation) also
 closes an open request.
 
+## Transactional email
+
+VoxBento queues transactional email in the same database transaction as the
+action that caused it. The outbox worker leases messages, retries transient SMTP
+failures, and preserves records when SMTP is not configured. Platform Admins use
+**Admin → Emails** to edit drafts, publish versioned templates, preview only
+safe sample links, send themselves a test, and review redacted delivery status.
+Templates may only use the placeholders declared for each notification and
+`{% if %}` conditions, and render in Jinja's sandbox. Rendered messages and
+account links are encrypted at rest; a queued email whose sign-in or invitation
+link has been used or has expired is not sent, and the content of finished
+emails is erased after 30 days.
+
+Every email uses one fixed layout, so they all look alike: the logo, the message
+in a white card with one button, and a footer. Admins edit only the message;
+the **Branding** setting on Admin → Emails shows or hides the logo and can use
+another https image. The default is the V symbol without the wordmark or a
+background, so it stays clean on light and dark surfaces. Its SVG source has a
+high-resolution transparent PNG export for use in email clients. Browser
+previews load the bundled mark from the current site; delivered emails use an
+absolute image URL under `PUBLIC_BASE_URL`. Mail clients that block images show
+the VoxBento alternative text until images are allowed.
+
+Besides sign-in, invitation and hosting emails, people are
+told when they are removed from a team, when an Admin changes their Admin,
+hosting, active or verified status, when their password is set, changed,
+removed or reset, and when their account is deleted. Team invitation links last
+7 days. Shareable booth invite links send no email.
+
 ## Security Layers
 
 Publishing audio to a booth is protected by three independent enforcement layers:
@@ -297,6 +343,8 @@ The reconciler reads one MediaMTX path snapshot per tick, and per-room ownership
 locks keep an unavailable room from delaying authorization for other rooms.
 Credential revocation commits before media cleanup; if cleanup is temporarily
 unavailable, the old token stays invalid while reconciliation retries the kick.
+While a dependency stays down, the reconcilers log the outage once, remind every
+5 minutes and log its recovery, rather than repeating a warning on every 2 s retry.
 Media never passes through FastAPI. Only one floor source may own a room.
 
 The existing FFmpeg/STT/aggregator/storage/translation/TTS chain is reused. Program

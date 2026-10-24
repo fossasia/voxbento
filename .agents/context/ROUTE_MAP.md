@@ -46,8 +46,9 @@
 | GET | `/api/booth/{booth_id}/whip-url` | configured token/Bearer | `{whip_url, channel_id, booth_id}` | Layer-2 active-interpreter enforcement |
 | POST | `/api/events/{event_slug}/booths` | configured token/Bearer | booth state + whip/whep URLs | Creates in-memory booth; returns 201; production protected |
 | GET | `/api/events/{event_slug}/booths` | configured token/Bearer | `{event_slug, booths:[…]}` | Lists all in-memory booths for event; production protected |
-| GET | `/api/events/{event_slug}/booths/{language_code}/state` | configured token/Bearer | booth state dict | 404 if booth not in memory; production protected |
+| GET | `/api/events/{event_slug}/booths/{language_code}/state` | configured token/Bearer, or user/session with a role in the booth | booth state dict | 404 if booth not in memory; production protected |
 | GET | `/api/events/{event_slug}/booths/{language_code}/whip-url` | configured token/Bearer | `{whip_url, channel_id, booth_id}` | Validates event ownership first; production protected |
+| POST | `/api/events/{event_slug}/rooms/{room_id}/booths/{language_code}/transcription/start` / `stop` | configured token/Bearer, or user/session whose booth role can go live (cookie-only requests must be same-origin) | `{status, …}` | Booth page calls these when the interpreter goes live or off live. An interpreter can stop only while live or when nobody is live (checked against the session that joined the live participant) |
 | GET | `/api/interpreter/status/{channel_id:path}` | open | `{channel_id, state, reachable}` | MediaMTX reachability (preflight check) |
 
 ---
@@ -117,6 +118,11 @@ with `?error=invalid_role&role=…` and the page explains why.
 | POST | `/admin/users/{user_id}/toggle-active` | — | Older form endpoint; same-origin; flips Active through the same rules |
 | POST | `/admin/users/{user_id}/toggle-admin` | — | Older form endpoint; same-origin; flips Admin through the same rules |
 | POST | `/admin/users/{user_id}/delete` | — | Same-origin; `confirm_email` must equal the account's email; never your own account or the last active Admin; deletes the user and all their roles |
+| GET | `/admin/emails/` | `admin/emails.html` | Admin-only template registry and redacted delivery history |
+| GET | `/admin/emails/{key}/` | `admin/email_template.html` | Admin-only draft editor, safe preview and test-send controls |
+| POST | `/admin/emails/{key}/draft` | — | Admin + same-origin; validates allowed placeholders and saves a draft |
+| POST | `/admin/emails/{key}/publish` | — | Admin + same-origin; publishes the draft and records a revision |
+| POST | `/admin/emails/{key}/test` | — | Admin + same-origin; queues a safe example message to the signed-in Admin |
 | GET | `/admin/hosting-access/` | `admin/hosting_access.html` | "People with access" tab: hosts and pending hosting invitations, events owned, Remove access / Cancel invitation (#768) |
 | GET | `/admin/hosting-access/requests/` | `admin/hosting_access.html` | "Requests" tab: open hosting requests, newest first |
 | POST | `/admin/hosting-access/requests/{request_id}/grant` | — | Same-origin; sets `can_host`, closes request as `granted`, emails the person |
@@ -152,6 +158,12 @@ with `?error=invalid_role&role=…` and the page explains why.
   revoke, disable and sync. Revoke returns 202 with `cleanup_pending` when the
   credential is invalidated but MediaMTX cleanup must be retried.
   `portal/routers/program_ingest.py` owns both routes.
+- `POST/DELETE /workspace/events/{event_id}/rooms/{room_id}/program-sender`:
+  event-owner, origin-checked browser sender session mint/release. `sync_offset_ms`
+  is optional; omitted keeps the room's saved sync delay.
+- `GET /workspace/events/{event_id}/rooms/{room_id}/sender/`: event-owner standalone
+  sender page (`admin/program_sender.html`, `program-sender.js`), no-store. Both
+  sender routes map to shared `/admin/...` handlers.
 - Existing floor-bot start/stop returns 409 while program ingest owns the room.
 
 ## Program relay routes (#749)

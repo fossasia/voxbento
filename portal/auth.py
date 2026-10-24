@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from portal.config import settings
 from portal.database import get_db_session
 from portal.models import User
-from portal.roles import ADMIN, EVENT_OWNER, ROLE_RANK, ROOM_COORDINATOR, highest_role, is_at_least
+from portal.roles import ADMIN, EVENT_OWNER, INTERPRETER, ROLE_RANK, ROOM_COORDINATOR, highest_role, is_at_least
 
 logger = logging.getLogger(__name__)
 
@@ -140,7 +140,7 @@ async def _current_user(payload: dict) -> User | None:
 
 
 async def load_membership_scope(db_session: AsyncSession, user_id: int) -> dict[str, set[int]]:
-    """Load the events a user owns and the events/rooms they coordinate."""
+    """Load the events a user owns or interprets in and the events/rooms they coordinate."""
     from portal.database import (
         list_booth_memberships_for_user,
         list_memberships_for_user,
@@ -161,12 +161,16 @@ async def load_membership_scope(db_session: AsyncSession, user_id: int) -> dict[
     }
     coordinated_room_ids = {room_id for room_id, _ in coordinated_rooms}
     coordinated_event_ids = {event_id for _, event_id in coordinated_rooms} | whole_event_coordinator_ids
+    # Events where the person interprets (given for the whole event or a booth): they work from the booth lobby.
+    interpreting_event_ids = {m.event_id for m in memberships if m.role == INTERPRETER}
+    interpreting_event_ids |= {bm.booth.event_id for bm in bms if bm.role == INTERPRETER and bm.booth}
 
     return {
         "owned_event_ids": owned_event_ids,
         "coordinated_event_ids": coordinated_event_ids,
         "coordinated_room_ids": coordinated_room_ids,
         "whole_event_coordinator_ids": whole_event_coordinator_ids,
+        "interpreting_event_ids": interpreting_event_ids,
     }
 
 
@@ -210,6 +214,7 @@ async def resolve_request_principal(request: Request, db_session: AsyncSession) 
             "coordinated_event_ids": set(),
             "coordinated_room_ids": set(),
             "whole_event_coordinator_ids": set(),
+            "interpreting_event_ids": set(),
             "open_hosting_requests": 0,
             "pending_developer_accounts": 0,
             "has_developer_app": False,
@@ -570,6 +575,20 @@ def get_booth_sessions(request: Request | WebSocket) -> dict[str, dict]:
         except jwt.InvalidTokenError:
             continue
     return sessions
+
+
+def booth_session_key(payload: dict | None) -> str | None:
+    """Identify a booth session: a user account, or one invite-link visit.
+
+    Every visit to an invite link gets its own ``sub``, so two people sharing a link stay apart.
+    """
+    if not isinstance(payload, dict) or not payload.get("sub") or is_listener_token(payload):
+        return None
+    if payload.get("user"):
+        return f"user:{payload['sub']}"
+    if payload.get("role"):
+        return f"invite:{payload['sub']}"
+    return None
 
 
 def get_booth_session(request: Request | WebSocket) -> dict | None:

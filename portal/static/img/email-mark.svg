@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="360" height="240" viewBox="0 0 360 240" role="img" aria-labelledby="title">
+  <title id="title">VoxBento V mark</title>
+  <defs>
+    <linearGradient id="v" x1="88" y1="16" x2="212" y2="224" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#3847f5"/>
+      <stop offset=".55" stop-color="#1765f5"/>
+      <stop offset="1" stop-color="#3847f5"/>
+    </linearGradient>
+    <linearGradient id="arm" x1="270" y1="40" x2="208" y2="194" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#1756ed"/>
+      <stop offset="1" stop-color="#1686f5"/>
+    </linearGradient>
+  </defs>
+  <!-- The existing V, sound bars and globe, redrawn as paths without a background. -->
+  <g fill="none" stroke="#13b9d5" stroke-width="7" stroke-linecap="round">
+    <path d="M22 116v16M48 92v62" stroke-width="15"/>
+    <path d="M298 61a88 88 0 0 1 38 50M337 140a88 88 0 0 1-84 74"/>
+    <path d="M290 72c29 39 25 101-29 139M271 113c4 33-4 68-18 101"/>
+    <path d="m279 91 40-8M267 128h70M261 168l58 5"/>
+  </g>
+  <path fill="url(#v)" d="M68 74c10 0 16 7 16 17v82a8 8 0 0 1-16 0ZM96 123c10 0 16 7 16 17v13a8 8 0 0 1-16 0Z"/>
+  <path fill="url(#arm)" d="m177 153 39-91c13-31 48-35 79-20-20 2-27 20-35 40l-35 102c-6 18-16 21-22 3Z"/>
+  <path fill="url(#v)" d="M78 16h27c29 0 43 18 53 46l45 126c5 16 10 27 19 36h-32c-28 0-45-14-54-41L92 53c-5-16-9-29-14-37Z"/>
+</svg>

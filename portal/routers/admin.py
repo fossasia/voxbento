@@ -93,12 +93,6 @@ from portal.database import (
     set_event_membership,
     set_room_membership,
 )
-from portal.email import (
-    send_hosting_granted_email,
-    send_hosting_invite_email,
-    send_hosting_request_declined_email,
-    send_role_invite_email,
-)
 from portal.globals import _JS_CACHE_BUST, asset_version_context, booths
 from portal.hosting_requests import DECLINE_REASON_MAX, format_event_dates, multi_line
 from portal.models import (
@@ -111,6 +105,8 @@ from portal.models import (
     AuthToken,
     BoothTranslationLanguage,
     DBBooth,
+    EmailDelivery,
+    EmailTemplate,
     Event,
     EventMembership,
     HostingRequest,
@@ -121,6 +117,18 @@ from portal.models import (
     utc_now,
 )
 from portal.my_events import list_my_events
+from portal.notifications import (
+    NOTIFICATIONS,
+    default_logo_url,
+    email_branding,
+    get_definition,
+    preview_notification,
+    publish_draft,
+    queue_notification,
+    save_draft,
+    save_email_branding,
+    template_content,
+)
 from portal.program_ingest import room_lock
 from portal.rate_limit import check_rate_limit
 from portal.roles import EVENT_OWNER, assignment_error, role_label
@@ -172,15 +180,218 @@ def _apply_api_key_updates(
             setattr(event, attribute, encrypt_val(trimmed_value))
 
 
+INVITE_LINK_SECONDS = 7 * 86400
+
+
 async def _send_admin_invite(session, user: User, role_name: str, context_name: str, target_url: str):
     token_val = secrets.token_hex(32)
-    await create_auth_token(session, jti=token_val, user_id=user.id, token_type=TOKEN_TYPE_MAGIC_LINK)
+    # Invitations wait in an inbox, so they last as long as hosting invitations, not a sign-in link's 15 minutes.
+    token = await create_auth_token(
+        session, jti=token_val, user_id=user.id, token_type=TOKEN_TYPE_MAGIC_LINK, expires_in_seconds=INVITE_LINK_SECONDS
+    )
     invite_url = f"{settings.public_base_url}/auth/magic/{token_val}?next={urllib.parse.quote(target_url)}"
-    await send_role_invite_email(user.email, invite_url, role_name, context_name)
+    await queue_notification(
+        session,
+        "role_assignment",
+        user.email,
+        {"role_name": roles_module.role_label(role_name), "context_name": context_name, "invite_url": invite_url},
+        expires_at=token.expires_at,
+        idempotency_key=f"role-invite:{token_val}",
+        auth_token_id=token.id,
+    )
 
 
 # Loads the signed-in person once per request for the shared header and user menu.
 router = APIRouter(dependencies=[Depends(resolve_user_menu)])
+
+
+def _email_sample_context(key: str) -> dict[str, object]:
+    """Use non-sensitive links and representative content in previews and test sends."""
+    values: dict[str, object] = {
+        "verification_link": "https://example.invalid/auth/verify/sample-link",
+        "magic_link": "https://example.invalid/auth/magic/sample-link",
+        "reset_link": "https://example.invalid/auth/reset/sample-link",
+        "invite_url": "https://example.invalid/auth/magic/sample-link",
+        "login_url": "https://example.invalid/login",
+        "role_name": "Interpreter",
+        "context_name": "Example Conference",
+        "is_existing_user": True,
+        "requester_name": "Alex Example",
+        "requester_email": "alex@example.invalid",
+        "organization": "Example Organization",
+        "event_name": "Example Conference",
+        "event_dates": "1–2 October 2026",
+        "languages": "English, Spanish",
+        "message": "This is a safe preview of this notification.",
+        "review_url": "https://example.invalid/admin/hosting-access/",
+        "display_name": "Alex",
+        "firstName": "Alex",
+        "lastName": "Example",
+        "email": "alex@example.invalid",
+        "companyName": "Example Organization",
+        "phoneNumber": "+1 555 0100",
+        "country": "Exampleland",
+        "industry": "Events",
+        "companySize": "50–100",
+        "languageSupport": "English, Spanish",
+        "notes": "This is a safe preview.",
+        "account_url": "https://example.invalid/account",
+        "reason": "We can only offer hosting to registered organizations at the moment.",
+        "admin_url": "https://example.invalid/admin/",
+    }
+    return {name: values[name] for name in get_definition(key).variables}
+
+
+def _email_definition(key: str):
+    """The notification for *key*, or 404 for an unknown email type."""
+    try:
+        return get_definition(key)
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Email not found.") from None
+
+
+async def _render_email_editor(
+    request: Request, db: AsyncSession, key: str, *, subject: str | None = None, html: str | None = None,
+    error: str = "", status_code: int = 200,
+):
+    definition = _email_definition(key)
+    saved_subject, saved_html, version = await template_content(db, definition.key, draft=True)
+    return templates.TemplateResponse(
+        request,
+        "admin/email_template.html",
+        {
+            "definition": definition,
+            "subject": saved_subject if subject is None else subject,
+            "html": saved_html if html is None else html,
+            "version": version,
+            "error": error,
+            "sample_context": _email_sample_context(definition.key),
+        },
+        status_code=status_code,
+    )
+
+
+@router.get("/admin/emails/", dependencies=[Depends(require_admin)])
+async def admin_emails(
+    request: Request, db: AsyncSession = Depends(get_db_session), error: str = "", logo_url: str | None = None
+):
+    deliveries = list(
+        (
+            await db.scalars(
+                select(EmailDelivery).order_by(EmailDelivery.created_at.desc()).limit(20)
+            )
+        ).all()
+    )
+    template_keys = set((await db.scalars(select(EmailTemplate.key))).all())
+    counts = dict((await db.execute(select(EmailDelivery.status, func.count()).group_by(EmailDelivery.status))).all())
+    branding = await email_branding(db)
+    return templates.TemplateResponse(
+        request,
+        "admin/emails.html",
+        {
+            "notifications": NOTIFICATIONS,
+            "template_keys": template_keys,
+            "deliveries": deliveries,
+            "counts": counts,
+            "labels": {definition.key: definition.label for definition in NOTIFICATIONS},
+            "branding": branding,
+            "logo_url": (branding.logo_url or "") if logo_url is None else logo_url,
+            "default_logo_url": default_logo_url(preview=True),
+            "error": error,
+        },
+        status_code=status.HTTP_400_BAD_REQUEST if error else status.HTTP_200_OK,
+    )
+
+
+@router.post("/admin/emails/branding", dependencies=[Depends(require_admin)])
+async def admin_email_branding(
+    request: Request,
+    show_logo: str = Form(""),
+    logo_url: str = Form(""),
+    user: dict = Depends(require_user),
+    db: AsyncSession = Depends(get_db_session),
+):
+    if not verify_same_origin(request):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid request origin.")
+    try:
+        await save_email_branding(db, show_logo=show_logo == "on", logo_url=logo_url, editor_id=int(user["sub"]))
+    except ValueError as exc:
+        return await admin_emails(request, db, error=str(exc), logo_url=logo_url)
+    return safe_redirect(url="/admin/emails/?branding=1", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@router.get("/admin/emails/{key}/", dependencies=[Depends(require_admin)])
+async def admin_email_template(key: str, request: Request, db: AsyncSession = Depends(get_db_session)):
+    return await _render_email_editor(request, db, key)
+
+
+@router.get("/admin/emails/{key}/preview", dependencies=[Depends(require_admin)])
+async def admin_email_preview(key: str, db: AsyncSession = Depends(get_db_session)) -> Response:
+    definition = _email_definition(key)
+    html = await preview_notification(db, definition.key, _email_sample_context(definition.key))
+    return Response(
+        html,
+        media_type="text/html",
+        headers={"Content-Security-Policy": "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src 'self' https:"},
+    )
+
+
+@router.post("/admin/emails/{key}/draft", dependencies=[Depends(require_admin)])
+async def admin_email_save_draft(
+    key: str,
+    request: Request,
+    subject: str = Form(...),
+    html: str = Form(...),
+    user: dict = Depends(require_user),
+    db: AsyncSession = Depends(get_db_session),
+):
+    if not verify_same_origin(request):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid request origin.")
+    safe_key = _email_definition(key).key
+    try:
+        await save_draft(db, safe_key, subject, html, int(user["sub"]))
+    except ValueError as exc:
+        return await _render_email_editor(
+            request, db, safe_key, subject=subject, html=html, error=str(exc), status_code=status.HTTP_400_BAD_REQUEST
+        )
+    return safe_redirect(url=f"/admin/emails/{safe_key}/?saved=1", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@router.post("/admin/emails/{key}/publish", dependencies=[Depends(require_admin)])
+async def admin_email_publish(
+    key: str,
+    request: Request,
+    user: dict = Depends(require_user),
+    db: AsyncSession = Depends(get_db_session),
+):
+    if not verify_same_origin(request):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid request origin.")
+    safe_key = _email_definition(key).key
+    try:
+        await publish_draft(db, safe_key, int(user["sub"]))
+    except ValueError as exc:
+        return await _render_email_editor(request, db, safe_key, error=str(exc), status_code=status.HTTP_400_BAD_REQUEST)
+    return safe_redirect(url=f"/admin/emails/{safe_key}/?published=1", status_code=status.HTTP_303_SEE_OTHER)
+
+
+@router.post("/admin/emails/{key}/test", dependencies=[Depends(require_admin)])
+async def admin_email_test(
+    key: str,
+    request: Request,
+    user: dict = Depends(require_user),
+    db: AsyncSession = Depends(get_db_session),
+):
+    if not verify_same_origin(request):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid request origin.")
+    safe_key = _email_definition(key).key
+    await queue_notification(
+        db,
+        safe_key,
+        str(user["email"]),
+        _email_sample_context(safe_key),
+        idempotency_key=f"email-test:{safe_key}:{user['sub']}:{utc_now().isoformat()}",
+    )
+    return safe_redirect(url=f"/admin/emails/{safe_key}/?test=1", status_code=status.HTTP_303_SEE_OTHER)
 
 # Common languages offered in the guided setup wizard booth picker.
 COMMON_LANGUAGES: list[tuple[str, str]] = [
@@ -324,12 +535,25 @@ async def mission_control_grid(request: Request, event_slug: str, user=Depends(r
                 }
             state["room_name"] = db_b.room.display_name if db_b.room else "Unknown Room"
             event_booths.append(state)
+        # One section per room the person may control, even before it has booths, with what
+        # the floor-caption control needs. Program ingest starts captions on its own.
+        mc_rooms = [
+            {
+                "id": room.id,
+                "name": room.display_name,
+                "floor_captions": bool(room.floor_transcription_enabled) and room.floor_transcription_provider != "none",
+                "floor_source": room.floor_source or "jitsi_bot",
+            }
+            for room in await list_rooms_for_event(session, event.id)
+            if allowed_room_ids is None or room.id in allowed_room_ids
+        ]
     return templates.TemplateResponse(
         request=request,
         name="mission_control/grid.html",
         context={
             "event": event,
             "booths": event_booths,
+            "mc_config": {"eventSlug": event.slug, "whipBase": settings.mediamtx_whip_base, "rooms": mc_rooms, "booths": event_booths},
             "whip_base": settings.mediamtx_whip_base,
             "js_version": _JS_CACHE_BUST,
             "active_nav": "mission-control",
@@ -1037,6 +1261,24 @@ async def admin_room_detail(request: Request, event_id: int, room_id: int):
             "memberships": memberships,
             **admin_flags,
         },
+    )
+
+
+@router.get("/admin/events/{event_id}/rooms/{room_id}/sender/", dependencies=[Depends(require_event_owner)])
+async def admin_room_sender(request: Request, event_id: int, room_id: int):
+    """Standalone program audio sender, meant to stay open on the sound-desk machine."""
+    async with get_session() as session:
+        event = await get_event_by_id(session, event_id)
+        if event is None:
+            raise HTTPException(status_code=404, detail="Event not found.")
+        room = await get_room_by_id(session, room_id)
+        if room is None or room.event_id != event_id:
+            raise HTTPException(status_code=404, detail="Room not found.")
+    return templates.TemplateResponse(
+        request=request,
+        name="admin/program_sender.html",
+        context={"event": event, "room": room},
+        headers={"Cache-Control": "no-store"},
     )
 
 
@@ -2047,8 +2289,26 @@ async def apply_user_access(request: Request, user_id: int, field: str, value: b
                 "verified": user.email_verified,
             }[field]
         change = await set_user_access(session, actor_id=actor_id, user_id=user_id, field=field, value=value)
-    if change.changed and field == "hosting" and value:
-        await send_hosting_granted_email(change.email, f"{settings.public_base_url.rstrip('/')}/workspace/")
+        if change.changed:
+            messages = {
+                "hosting": "Hosting access was granted." if value else "Hosting access was removed.",
+                "admin": "You are now an Admin." if value else "Your Admin access was removed.",
+                "active": "Your account was reactivated." if value else "Your account was deactivated.",
+                "verified": "Your email address was verified by an Admin." if value else "Your email verification was removed.",
+            }
+            notification_key = "hosting_granted" if field == "hosting" and value else "account_access"
+            context = (
+                {"login_url": f"{settings.public_base_url.rstrip('/')}/workspace/"}
+                if notification_key == "hosting_granted"
+                else {"message": messages[field], "login_url": f"{settings.public_base_url.rstrip('/')}/login"}
+            )
+            await queue_notification(
+                session,
+                notification_key,
+                change.email,
+                context,
+                idempotency_key=f"access:{change.user_id}:{field}:{value}:{utc_now().isoformat()}",
+            )
     return change
 
 
@@ -2134,7 +2394,7 @@ async def admin_invite_user(request: Request):
         raw_token = secrets.token_urlsafe(32)
         token_digest = hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
 
-        await create_auth_token(
+        invite_token = await create_auth_token(
             session,
             user_id=target_user.id,
             token_type=TOKEN_TYPE_HOSTING_INVITE,
@@ -2142,11 +2402,16 @@ async def admin_invite_user(request: Request):
             expires_in_seconds=7 * 86400,
         )
 
-        user_email = target_user.email
-        has_password = bool(target_user.password_hash)
-
-    invite_url = f"{settings.public_base_url.rstrip('/')}/invite/accept/{raw_token}"
-    await send_hosting_invite_email(user_email, invite_url, is_existing_user=has_password)
+        invite_url = f"{settings.public_base_url.rstrip('/')}/invite/accept/{raw_token}"
+        await queue_notification(
+            session,
+            "hosting_invite",
+            target_user.email,
+            {"invite_url": invite_url, "is_existing_user": bool(target_user.password_hash)},
+            expires_at=invite_token.expires_at,
+            idempotency_key=f"hosting-invite:{invite_token.jti}",
+            auth_token_id=invite_token.id,
+        )
     return safe_redirect(url=hosting_return_url(request, "/admin/users/", "success=invite_sent"), status_code=status.HTTP_303_SEE_OTHER)
 
 
@@ -2177,14 +2442,16 @@ async def admin_cancel_invite(request: Request, token_id: int):
     if not verify_same_origin(request):
         raise HTTPException(status_code=400, detail="Invalid request origin.")
 
+    user_id = None
     async with get_session() as session:
         tok_stmt = select(AuthToken).where(AuthToken.id == token_id, AuthToken.token_type == TOKEN_TYPE_HOSTING_INVITE)
         tok = (await session.execute(tok_stmt)).scalar_one_or_none()
         if tok:
+            user_id = tok.user_id
             await session.delete(tok)
 
     return safe_redirect(
-        url=hosting_return_url(request, "/admin/users/", "success=invite_cancelled"),
+        url=hosting_return_url(request, "/admin/users/", "success=invite_cancelled", user_id=user_id),
         status_code=status.HTTP_303_SEE_OTHER,
     )
 
@@ -2206,8 +2473,6 @@ async def admin_resend_invite(request: Request, token_id: int):
             raise HTTPException(status_code=400, detail="User is inactive or not found.")
 
         user_id = user.id
-        user_email = user.email
-        has_password = bool(user.password_hash)
 
         await session.delete(old_tok)
         await session.flush()
@@ -2215,7 +2480,7 @@ async def admin_resend_invite(request: Request, token_id: int):
         raw_token = secrets.token_urlsafe(32)
         token_digest = hashlib.sha256(raw_token.encode("utf-8")).hexdigest()
 
-        await create_auth_token(
+        invite_token = await create_auth_token(
             session,
             user_id=user_id,
             token_type=TOKEN_TYPE_HOSTING_INVITE,
@@ -2223,19 +2488,39 @@ async def admin_resend_invite(request: Request, token_id: int):
             expires_in_seconds=7 * 86400,
         )
 
-    invite_url = f"{settings.public_base_url.rstrip('/')}/invite/accept/{raw_token}"
-    await send_hosting_invite_email(user_email, invite_url, is_existing_user=has_password)
-    return safe_redirect(url="/admin/users/?success=invite_resent", status_code=status.HTTP_303_SEE_OTHER)
+        invite_url = f"{settings.public_base_url.rstrip('/')}/invite/accept/{raw_token}"
+        await queue_notification(
+            session,
+            "hosting_invite",
+            user.email,
+            {"invite_url": invite_url, "is_existing_user": bool(user.password_hash)},
+            expires_at=invite_token.expires_at,
+            idempotency_key=f"hosting-invite:{invite_token.jti}",
+            auth_token_id=invite_token.id,
+        )
+    return safe_redirect(
+        url=hosting_return_url(request, "/admin/users/", "success=invite_resent", user_id=user_id),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
 
 
 HOSTING_ACCESS_URL = "/admin/hosting-access/"
 HOSTING_REQUESTS_URL = "/admin/hosting-access/requests/"
 
 
-def hosting_return_url(request: Request, default: str, query: str) -> str:
-    """Send hosting actions taken from the Hosting access page back to it."""
+def hosting_return_url(request: Request, default: str, query: str, user_id: int | None = None) -> str:
+    """Send hosting actions taken from the Hosting access or User detail page back to it."""
     referrer = request.headers.get("referer", "")
-    base = HOSTING_ACCESS_URL if "/admin/hosting-access/" in referrer else default
+    try:
+        ref_path = urllib.parse.urlsplit(referrer).path if referrer else ""
+    except ValueError:
+        ref_path = ""
+    if user_id is not None and ref_path == f"/admin/users/{user_id}/":
+        base = f"/admin/users/{user_id}/"
+    elif ref_path == HOSTING_ACCESS_URL:
+        base = HOSTING_ACCESS_URL
+    else:
+        base = default
     return f"{base}?{query}"
 
 
@@ -2363,12 +2648,17 @@ async def admin_grant_hosting_request(request: Request, request_id: int):
         ).scalars().all()
         for tok in pending_invites:
             await session.delete(tok)
-        user_email = user.email
+        await queue_notification(
+            session,
+            "hosting_granted",
+            user.email,
+            {"login_url": f"{settings.public_base_url.rstrip('/')}/workspace/"},
+            idempotency_key=f"hosting-granted:{hosting_request.id}",
+        )
         logger.info(
             "Admin %s granted hosting request %d for user %d", principal["user_id"], hosting_request.id, user.id
         )
 
-    await send_hosting_granted_email(user_email, f"{settings.public_base_url.rstrip('/')}/workspace/")
     return safe_redirect(url=f"{HOSTING_REQUESTS_URL}?success=request_granted", status_code=status.HTTP_303_SEE_OTHER)
 
 
@@ -2395,7 +2685,13 @@ async def admin_decline_hosting_request(request: Request, request_id: int):
             decided_by_user_id=principal["user_id"],
             decline_reason=reason,
         )
-        user_email = hosting_request.user.email
+        await queue_notification(
+            session,
+            "hosting_request_declined",
+            hosting_request.user.email,
+            {"reason": reason, "account_url": f"{settings.public_base_url.rstrip('/')}/account"},
+            idempotency_key=f"hosting-declined:{hosting_request.id}",
+        )
         logger.info(
             "Admin %s declined hosting request %d for user %d",
             principal["user_id"],
@@ -2403,7 +2699,6 @@ async def admin_decline_hosting_request(request: Request, request_id: int):
             hosting_request.user_id,
         )
 
-    await send_hosting_request_declined_email(user_email, reason, f"{settings.public_base_url.rstrip('/')}/account")
     return safe_redirect(url=f"{HOSTING_REQUESTS_URL}?success=request_declined", status_code=status.HTTP_303_SEE_OTHER)
 
 
@@ -2428,11 +2723,21 @@ async def admin_delete_user(request: Request, user_id: int):
     confirm_email = form.get("confirm_email")
     try:
         async with get_session() as session:
-            await delete_user_account(
+            deleted_email = await delete_user_account(
                 session,
                 actor_id=request.state.principal["user_id"],
                 user_id=user_id,
                 confirm_email=confirm_email if isinstance(confirm_email, str) else "",
+            )
+            await queue_notification(
+                session,
+                "account_access",
+                deleted_email,
+                {
+                    "message": "Your VoxBento account was deleted by an administrator, with all its event roles.",
+                    "login_url": settings.public_base_url.rstrip("/") + "/",
+                },
+                idempotency_key=f"account-deleted:{user_id}",
             )
     except UserAdminError as exc:
         return safe_redirect(url=f"/admin/users/{user_id}/?error={exc.code}", status_code=status.HTTP_303_SEE_OTHER)
@@ -2939,6 +3244,16 @@ async def admin_developer_approve(
     account.reviewed_by = int(user["sub"])
     account.reviewed_at = datetime.now(timezone.utc)
     await db.flush()
+    account_user = await get_user_by_id(db, account.user_id)
+    if account_user is None:
+        raise HTTPException(status_code=404, detail="Account user not found")
+    await queue_notification(
+        db,
+        "developer_account",
+        account_user.email,
+        {"message": "Your developer account has been approved.", "login_url": f"{settings.public_base_url.rstrip('/')}/developer"},
+        idempotency_key=f"developer-account:{account.id}:approved",
+    )
 
     return RedirectResponse(url="/admin/developer-accounts", status_code=status.HTTP_303_SEE_OTHER)
 
@@ -2965,5 +3280,15 @@ async def admin_developer_reject(
     account.reviewed_by = int(user["sub"])
     account.reviewed_at = datetime.now(timezone.utc)
     await db.flush()
+    account_user = await get_user_by_id(db, account.user_id)
+    if account_user is None:
+        raise HTTPException(status_code=404, detail="Account user not found")
+    await queue_notification(
+        db,
+        "developer_account",
+        account_user.email,
+        {"message": "Your developer account request was not approved.", "login_url": f"{settings.public_base_url.rstrip('/')}/developer"},
+        idempotency_key=f"developer-account:{account.id}:rejected",
+    )
 
     return RedirectResponse(url="/admin/developer-accounts", status_code=status.HTTP_303_SEE_OTHER)
