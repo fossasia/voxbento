@@ -133,23 +133,7 @@ function initPickers() {
       loadTranslationModels();
     }
 
-    // TTS provider → toggle Supertonic voice picker + provider help text
-    const ttsProviderSelect = document.getElementById('floor_tts_provider');
-    if (ttsProviderSelect) {
-      const ttsVoiceGroup = document.getElementById('tts_voice_group');
-      const helpDeepgram = document.getElementById('tts_provider_help_deepgram');
-      const helpSupertonic = document.getElementById('tts_provider_help_supertonic');
-
-      function syncTtsProvider() {
-        const isSupertonic = ttsProviderSelect.value === 'supertonic';
-        if (ttsVoiceGroup) ttsVoiceGroup.hidden = !isSupertonic;
-        if (helpDeepgram) helpDeepgram.hidden = isSupertonic;
-        if (helpSupertonic) helpSupertonic.hidden = !isSupertonic;
-      }
-
-      ttsProviderSelect.addEventListener('change', syncTtsProvider);
-      syncTtsProvider();
-    }
+    // The TTS provider's voices and help text are handled by tts-voice-picker.js (loaded by admin.js).
 
     // Language tag picker
     function initLangPicker(cfg) {
@@ -257,6 +241,18 @@ function initPickers() {
       dropdownId: 'lp_floor_translation_dropdown',
       hiddenId: 'lp_floor_translation_hidden',
     });
+
+    if (document.getElementById('lp_floor_tts_tags')) {
+      initLangPicker({
+        allLanguages: JSON.parse(root.dataset.ttsLanguages || '[]'),
+        selectedCodes: JSON.parse(root.dataset.selectedTtsLanguages || '[]'),
+        inputName: 'floor_tts_languages',
+        tagsId: 'lp_floor_tts_tags',
+        searchId: 'lp_floor_tts_search',
+        dropdownId: 'lp_floor_tts_dropdown',
+        hiddenId: 'lp_floor_tts_hidden',
+      });
+    }
   }
 
 initTabs();

@@ -192,7 +192,7 @@ server-derived path) and re-checks that the holder is still the active interpret
 broadcast unlocked. Anonymous publishes get 401. A `booth:join` naming another socket's `participant_id` gets a fresh ID.
 
 Caption feed: `/ws/captions/{booth_id}` — receives `caption`, `translated_caption` + `booth:state` messages (protected by `resolve_ws_auth` when `BOOTH_ACCESS_TOKEN` is configured).
-Direct-push TTS feed: `/ws/tts/{room_id}/{language_code}/{booth_id}` — pre-authorized binary bundle stream (version byte, length-prefixed JSON header, optional 24 kHz PCM audio). Translation text is delivered concurrently over the captions feed and inside TTS bundle headers.
+Direct-push TTS feed: `/ws/tts/{booth_id}` (AI booth `{event_slug}-{room_id}-ai-{language_code}`) — pre-authorized binary bundle stream (version byte, length-prefixed JSON header, optional 24 kHz PCM audio). Translation text is delivered concurrently over the captions feed and inside TTS bundle headers.
 
 ---
 

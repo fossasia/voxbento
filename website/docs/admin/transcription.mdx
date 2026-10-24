@@ -204,15 +204,16 @@ Beyond transcription, Voxbento provides a synchronized AI translation and synthe
 ### Translated Captions Delivery
 Translated segments are broadcast to subscribers through two synchronized paths rather than a standalone translations socket:
 1. **Target Booth Captions Feed**: Real-time sentence-by-sentence translated text is delivered as `translated_caption` JSON events over `/ws/captions/{booth_id}` for the target language booth.
-2. **TTS Bundle Frames**: Translation text is also packaged in the JSON metadata header of each binary bundle emitted on `/ws/tts/{room_id}/{language_code}/{booth_id}`.
+2. **TTS Bundle Frames**: Translation text is also packaged in the JSON metadata header of each binary bundle emitted on `/ws/tts/{booth_id}` for the language's AI booth.
 
 Translations can be customized using room **AI Interpreter Persona**, **Interpretation Style**, and uploaded **Vocabulary Glossaries** (see [AI Interpretation](./ai-interpretation.mdx)).
 
 ### Direct Push Text-to-Speech (TTS)
 When "Floor Audio TTS (Direct Push)" is enabled for a room, translated segments are synthesized into natural speech via **Deepgram Aura** or self-hosted **Supertonic ONNX**. Attendees receive binary framed messages on:
 ```text
-/ws/tts/{room_id}/{language_code}/{booth_id}
+/ws/tts/{event_slug}-{room_id}-ai-{language_code}
 ```
+The socket is authorized before accept with the same rules as `/ws/booth/{booth_id}` (listener token, scoped invite, or a member's `user_token`).
 Each frame is emitted by `TTSConnectionManager.broadcast_bundle` with a structured binary layout:
 - **Version byte** (1 byte, `0x01`)
 - **Header length** (4-byte big-endian unsigned integer `L`)
