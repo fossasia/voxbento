@@ -24,10 +24,16 @@ To mitigate these vulnerabilities, we have shifted from implicit trust to explic
 
 3. **Preventing Event Existence Leaks (404/403 Consistency)**:
    - When an API endpoint (e.g., `/api/v1/events/{event_slug}`) is accessed with an OAuth token, the system validates the token's `event_id`.
-   - If a token issued for Event A is used to access Event B, the system throws a `401 Unauthorized` (which causes a `404 Not Found` for the requested event logic) to ensure that the error response does not leak whether Event B actually exists to unauthorized tokens. This prevents enumeration attacks.
+   - If a token issued for Event A is used to access Event B, `_verify_token_rbac` raises `404 Not Found` with the body `{"detail": "Event not found"}` — byte-for-byte the same response an unknown slug or a soft-deleted event produces. This holds for **every** client type: public clients are not more trusted than confidential ones, so they must not get a distinguishable `403`. A caller therefore cannot tell "no such event" from "not yours", which is what prevents enumeration attacks.
+   - `403 Forbidden` is reserved for the case where the token *is* scoped to the requested event but the underlying user has since lost access — a deactivated account (`User.is_active == False`) or a removed `EventMembership`. Such a caller already holds a token naming that event, so returning `403` leaks nothing new.
+   - Because the unauthorized and nonexistent cases are identical, endpoints resolve existence **before** RBAC (the ordering used throughout `portal/routers/api_v1.py`); no information is gained either way.
 
 ### Verification (Tests)
 These constraints are enforced and verified by our test suite in `tests/test_oauth_multi_organizer.py`:
 - `test_oauth_confidential_client_trust`: Confirms confidential clients can assume owner scopes for ownerless events.
 - `test_oauth_public_client_rejection`: Confirms public clients are rejected with a 403 when trying to assume owner scopes.
 - `test_token_reuse_wrong_organizer`: Confirms that reusing a token from Event A on Event B results in a rejection that does not leak the existence of Event B.
+
+`tests/test_api_v1_get_event.py` covers the same policy from the resource side on `GET /api/v1/events/{slug}`:
+- `test_unknown_slug_and_wrong_event_token_are_indistinguishable`: an unknown slug and an existing-but-wrong-event slug return the identical status and body, with a public client token.
+- `test_deactivated_user_token_is_rejected`: a still-unexpired token stops working once its user is deactivated.

@@ -52,7 +52,7 @@
 </head>
 <body>
 
-  <audio id="embed-audio" style="display:none"></audio>
+  <audio id="embed-audio" class="embed-audio"></audio>
 
   <div class="player {% if headless %}headless{% endif %}">
 
@@ -68,7 +68,7 @@
     {% if captions_enabled %}
     <div class="captions-box empty" id="captions-box">
       <div id="embed-caption-history"></div>
-      <div id="embed-caption-current" style="color: var(--primary);"></div>
+      <div id="embed-caption-current" class="embed-caption-current"></div>
       <div id="embed-caption-placeholder">Captions will appear here&hellip;</div>
     </div>
     {% endif %}
