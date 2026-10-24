@@ -777,6 +777,15 @@ class OAuthAuthorizationCode(Base):
     def __repr__(self) -> str:
         return f"<OAuthAuthorizationCode id={self.id} client_id={self.client_id}>"
 
+    @property
+    def is_expired(self) -> bool:
+        now = utc_now()
+        exp = self.expires_at
+        # SQLite strips timezone info; normalise to UTC-aware
+        if exp.tzinfo is None:
+            exp = exp.replace(tzinfo=timezone.utc)
+        return now >= exp
+
 
 class OAuthToken(Base):
     __tablename__ = "oauth_tokens"
@@ -802,6 +811,15 @@ class OAuthToken(Base):
 
     def __repr__(self) -> str:
         return f"<OAuthToken id={self.id} client_id={self.client_id} revoked={self.revoked}>"
+
+    @property
+    def is_expired(self) -> bool:
+        now = utc_now()
+        exp = self.expires_at
+        # SQLite strips timezone info; normalise to UTC-aware
+        if exp.tzinfo is None:
+            exp = exp.replace(tzinfo=timezone.utc)
+        return now >= exp
 
 
 class OAuthConsentGrant(Base):

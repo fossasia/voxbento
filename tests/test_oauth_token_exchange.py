@@ -214,6 +214,96 @@ async def test_token_exchange_expired_auth_code():
     assert "traceback" not in str(body).lower()
 
 
+@pytest.mark.anyio
+async def test_token_exchange_expired_auth_code_tz_aware():
+    """Expiry check works correctly when expires_at is already tz-aware (PostgreSQL behaviour)."""
+    from portal.database import create_event, create_user, get_session
+    from portal.models import DeveloperAccount, OAuthAuthorizationCode, OAuthClient
+
+    async with get_session() as s:
+        user = await create_user(s, email="tzexp@example.com", display_name="TzExp")
+        event = await create_event(s, slug="tz-exp-event", display_name="TzExp Event")
+        dev = DeveloperAccount(user_id=user.id, status="approved")
+        s.add(dev)
+        await s.flush()
+        client = OAuthClient(
+            developer_account_id=dev.id,
+            client_id="tz-exp-client",
+            name="TzExp Client",
+            is_confidential=False,
+            scopes_requested=["events:write"],
+        )
+        s.add(client)
+        await s.flush()
+
+        raw_code = secrets.token_urlsafe(32)
+        verifier, challenge = _pkce_pair()
+        s.add(
+            OAuthAuthorizationCode(
+                client_id=client.id,
+                user_id=user.id,
+                event_id=event.id,
+                scopes=["events:write"],
+                code_hash=_hash(raw_code),
+                redirect_uri="https://example.com/cb",
+                code_challenge=challenge,
+                code_challenge_method="S256",
+                expires_at=datetime.now(timezone.utc) - timedelta(seconds=1),
+                used=False,
+            )
+        )
+        await s.commit()
+        client_id_str = client.client_id
+
+    async with _client() as http:
+        response = await http.post(
+            "/oauth/token",
+            data={
+                "grant_type": "authorization_code",
+                "client_id": client_id_str,
+                "code": raw_code,
+                "redirect_uri": "https://example.com/cb",
+                "code_verifier": verifier,
+            },
+        )
+    assert response.status_code == 400
+    assert response.json().get("error") == "invalid_grant"
+
+
+@pytest.mark.anyio
+async def test_oauth_models_is_expired_property():
+    """Unit test for is_expired property on OAuthAuthorizationCode and OAuthToken."""
+    from portal.models import OAuthAuthorizationCode, OAuthToken
+
+    # 1. OAuthAuthorizationCode with tz-aware datetime
+    past_aware = datetime.now(timezone.utc) - timedelta(minutes=10)
+    future_aware = datetime.now(timezone.utc) + timedelta(minutes=10)
+    code_expired = OAuthAuthorizationCode(expires_at=past_aware)
+    code_active = OAuthAuthorizationCode(expires_at=future_aware)
+    assert code_expired.is_expired is True
+    assert code_active.is_expired is False
+
+    # 2. OAuthAuthorizationCode with naive datetime (SQLite strip simulation)
+    past_naive = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(minutes=10)
+    future_naive = datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(minutes=10)
+    code_expired_naive = OAuthAuthorizationCode(expires_at=past_naive)
+    code_active_naive = OAuthAuthorizationCode(expires_at=future_naive)
+    assert code_expired_naive.is_expired is True
+    assert code_active_naive.is_expired is False
+
+    # 3. OAuthToken with tz-aware datetime
+    token_expired = OAuthToken(expires_at=past_aware)
+    token_active = OAuthToken(expires_at=future_aware)
+    assert token_expired.is_expired is True
+    assert token_active.is_expired is False
+
+    # 4. OAuthToken with naive datetime
+    token_expired_naive = OAuthToken(expires_at=past_naive)
+    token_active_naive = OAuthToken(expires_at=future_naive)
+    assert token_expired_naive.is_expired is True
+    assert token_active_naive.is_expired is False
+
+
 # ---------------------------------------------------------------------------
 # D. Successful authorization-code exchange
 # ---------------------------------------------------------------------------
