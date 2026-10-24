@@ -376,6 +376,48 @@ def test_ws_join_rejected_without_session():
     assert "No role" in msg["message"]
 
 
+def test_ws_role_less_connection_receives_no_broadcasts():
+    """An unauthorized (role-less) socket must not receive private booth broadcasts (#809).
+
+    The handshake is still accepted so booth:join can answer with a role error,
+    but the socket is never added to the broadcast room. We prove it by having an
+    authorized interpreter join (which broadcasts booth:state to the room) while a
+    no-credential socket is open: the first message the anonymous socket ever sees
+    is its own booth:error, not the leaked broadcast.
+    """
+    with client.websocket_connect("/ws/booth/leak-test-booth") as anon:
+        with client.websocket_connect("/ws/booth/leak-test-booth", cookies=_ws_auth()) as auth:
+            auth.send_text(
+                json.dumps(
+                    {
+                        "type": "booth:join",
+                        "display_name": "Interpreter",
+                        "role": "interpreter",
+                        "language": "English",
+                        "channel_id": "leak-test-booth-audio",
+                    }
+                )
+            )
+            auth.receive_text()  # booth:joined
+            auth.receive_text()  # booth:state broadcast
+
+            anon.send_text(
+                json.dumps(
+                    {
+                        "type": "booth:join",
+                        "display_name": "Hacker",
+                        "role": "interpreter",
+                        "language": "English",
+                        "channel_id": "leak-test-booth-audio",
+                    }
+                )
+            )
+            msg = json.loads(anon.receive_text())
+
+    assert msg["type"] == "booth:error"
+    assert "No role" in msg["message"]
+
+
 def test_ws_join_then_leave_broadcasts_state():
     with client.websocket_connect("/ws/booth/leave-test-booth", cookies=_ws_auth()) as ws:
         ws.send_text(

@@ -63,7 +63,12 @@ async def ws_booth(websocket: WebSocket, booth_id: str) -> None:
         granted_role=ws_granted_role,
         session_key=booth_session_key(payload),
     )
-    manager.add(websocket, session)
+    # Only connections that carry an authorized booth role join the broadcast
+    # room; a role-less socket (e.g. anonymous when BOOTH_ACCESS_TOKEN is unset)
+    # is still accepted so booth:join can reply with a role error, but it never
+    # receives private booth:state / chat / handoff broadcasts (#809).
+    if ws_granted_role is not None:
+        manager.add(websocket, session)
 
     try:
         while True:
