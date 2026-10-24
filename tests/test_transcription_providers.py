@@ -8,6 +8,7 @@ import httpx
 import pytest
 
 import portal.globals as pg
+from portal.transcription.errors import TranscriptionAuthError
 from portal.transcription.providers.base import ProviderConfig, TranscriptionProvider, pcm_to_wav
 
 
@@ -97,8 +98,8 @@ class TestTranscriptionProviders:
 
         pg.shared_http_client = mock_client
         try:
-            # A 401 must surface (not return an empty transcript) and must not be retried.
-            with pytest.raises(httpx.HTTPStatusError):
+            # A 401 must surface as a rejected-key error (not an empty transcript) and must not be retried.
+            with pytest.raises(TranscriptionAuthError):
                 await provider.process_chunk(b"\x00" * 3200, "en", "whisper-1", config)
             mock_client.post.assert_called_once()
         finally:
