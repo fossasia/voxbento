@@ -376,6 +376,61 @@ def test_ws_join_rejected_without_session():
     assert "No role" in msg["message"]
 
 
+@pytest.mark.parametrize(
+    ("field", "value", "error"),
+    [
+        ("display_name", 123, "display_name must be a string."),
+        ("display_name", "A" * 321, "display_name must not exceed 320 characters."),
+        ("language", 5, "language must be a string."),
+        ("language", None, "language must be a string."),
+        ("language", False, "language must be a string."),
+        ("channel_id", ["x"], "channel_id must be a string."),
+    ],
+    ids=[
+        "display_name-not-string",
+        "display_name-too-long",
+        "language-not-string",
+        "language-null",
+        "language-false",
+        "channel_id-not-string",
+    ],
+)
+def test_ws_join_rejects_invalid_fields(field, value, error):
+    from unittest.mock import AsyncMock, patch
+
+    join = {
+        "type": "booth:join",
+        "display_name": "Grace",
+        "role": "interpreter",
+        "language": "French",
+        "channel_id": "join-validation-audio",
+    }
+    # A configured booth language, so a falsy language can't fail on the missing-language check instead.
+    with patch("portal.database.get_booth_language_name", new=AsyncMock(return_value="French")):
+        with client.websocket_connect("/ws/booth/join-validation-booth", cookies=_ws_auth()) as ws:
+            ws.send_text(json.dumps({**join, field: value}))
+            msg = json.loads(ws.receive_text())
+            assert msg == {"type": "booth:error", "message": error}
+
+            # The socket stays usable after the rejected join.
+            ws.send_text(json.dumps(join))
+            types = {json.loads(ws.receive_text())["type"], json.loads(ws.receive_text())["type"]}
+            assert types == {"booth:joined", "booth:state"}
+
+
+def test_ws_join_without_language_uses_booth_language():
+    from unittest.mock import AsyncMock, patch
+
+    with patch("portal.database.get_booth_language_name", new=AsyncMock(return_value="French")):
+        with client.websocket_connect("/ws/booth/join-fallback-booth", cookies=_ws_auth()) as ws:
+            ws.send_text(json.dumps({"type": "booth:join", "display_name": "Grace", "language": ""}))
+            msg1 = json.loads(ws.receive_text())
+            msg2 = json.loads(ws.receive_text())
+    joined = msg1 if msg1["type"] == "booth:joined" else msg2
+    assert joined["type"] == "booth:joined"
+    assert joined["state"]["language"] == "French"
+
+
 def test_ws_join_then_leave_broadcasts_state():
     with client.websocket_connect("/ws/booth/leave-test-booth", cookies=_ws_auth()) as ws:
         ws.send_text(

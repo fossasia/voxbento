@@ -214,6 +214,10 @@ async def _handle_join(ws: WebSocket, session: Session, data: dict) -> None:
     """
     display_name = data.get("display_name", "Interpreter")
     role = data.get("role", INTERPRETER)
+    # Check before the fallback, or a falsy non-string (null, 0, false) would be replaced.
+    if "language" in data and not isinstance(data["language"], str):
+        await ws.send_text(json.dumps({"type": "booth:error", "message": "language must be a string."}))
+        return
     language = data.get("language") or session.language
     if not language:
         await ws.send_text(

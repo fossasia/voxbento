@@ -41,7 +41,7 @@ You send JSON objects with a `type` field. The table below lists every supported
 
 | `type` | Description | Who can send |
 | --- | --- | --- |
-| `booth:join` | Join the booth. The first interpreter to join is automatically assigned as the active interpreter. | Anyone with a valid token |
+| `booth:join` | Join the booth. The first interpreter to join is automatically assigned as the active interpreter. `display_name`, `language` and `channel_id` must be strings, and `display_name` must not exceed 320 characters. | Anyone with a valid token |
 | `booth:leave` | Leave the booth. If the active interpreter leaves, an automatic handoff is triggered. | Anyone |
 | `booth:chat` | Send a text message to all booth participants. | `interpreter`, `room_coordinator`, `event_owner` |
 | `booth:set-active` | Promote a specific interpreter to the active role. | `room_coordinator`, `event_owner`, or the currently active interpreter |

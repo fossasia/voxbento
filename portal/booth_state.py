@@ -20,6 +20,10 @@ from portal.tasks import track_task
 # Booth roles come from portal.roles, the one place roles are defined (#757).
 ParticipantRole = Role
 
+# Every booth:state carries each participant's name. The booth page sends the
+# account's display name or, if that is empty, its email (String(320)).
+DISPLAY_NAME_MAX_LENGTH = 320
+
 
 def utc_now_iso() -> str:
     return datetime.now(tz=timezone.utc).isoformat()
@@ -246,6 +250,11 @@ class BoothRegistry:
         fresh ID instead of taking over that record, e.g. the active interpreter's.
         ``joined_by`` records the session that joined, for checks made outside the socket.
         """
+        for name, value in (("display_name", display_name), ("language", language), ("channel_id", channel_id)):
+            if not isinstance(value, str):
+                raise ValueError(f"{name} must be a string.")
+        if len(display_name) > DISPLAY_NAME_MAX_LENGTH:
+            raise ValueError(f"display_name must not exceed {DISPLAY_NAME_MAX_LENGTH} characters.")
         async with self._lock:
             booth = self._get_or_create_booth(booth_id, language, channel_id, room_id=room_id)
             if participant_id in booth.participants and not reclaim:
