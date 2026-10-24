@@ -401,6 +401,23 @@ the independent WHIP mode remains the default. See `docs/program-relay.md`.
 
 ## Production deployment
 
+Defaults keep debug disabled (`DEBUG=false`), so startup checks reject known-weak
+signing secrets, a missing `MEDIAMTX_AUTH_HOOK_SECRET`, and a missing or weak
+`BOOTH_ACCESS_TOKEN`. The Quick Start snippets generate separate strong values for
+`SECRET_KEY`, `API_KEY_ENCRYPTION_KEY`, `MEDIAMTX_AUTH_HOOK_SECRET`, and
+`BOOTH_ACCESS_TOKEN` for **NEW local setups only**; do not overwrite an existing
+`.env` or rotate existing keys with them. Compose shares the hook secret between
+the portal and MediaMTX. Developers may explicitly opt into `DEBUG=true` in their
+own `.env` for local-only debugging; never enable it for deployments.
+
+Production deployments must set `BOOTH_ACCESS_TOKEN` and
+`MEDIAMTX_AUTH_HOOK_SECRET` in the deployment secret store to separate strong
+values, for example generated with `openssl rand -hex 32`. The portal refuses to
+start when `BOOTH_ACCESS_TOKEN` is missing or weak, or when
+`MEDIAMTX_AUTH_HOOK_SECRET` is missing. The hook secret's strength is not measured
+by startup validation, so keep it strong and private. The same production check
+also requires `API_KEY_ENCRYPTION_KEY` for encrypted provider keys and queued email.
+
 Production deployment builds and validates a separate candidate checkout before
 updating the live checkout. The portal reads code and dependencies from its Docker
 image and receives `.env` settings through Compose. See the
