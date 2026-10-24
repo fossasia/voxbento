@@ -24,16 +24,12 @@
 <div class="alert alert-danger">{{ room.display_name }} already has a booth for that language.</div>
 {% endif %}
 
-<div class="form-card">
-  <h3>Add an interpretation booth</h3>
-  <p class="form-card-hint">Each booth is one language channel. Use a two-letter code (ISO 639-1), e.g. <code>en</code>, <code>fr</code>, <code>zh</code>.</p>
-  <form method="post" action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/booths/" class="inline-form">
-    <input type="text" name="language_code" placeholder="Code (e.g. en)" required
-           pattern="^[a-z]{2}$" maxlength="2" title="Two-letter ISO 639-1 code" class="input-code" />
-    <input type="text" name="language_name" placeholder="Language name (e.g. English)" required class="input-grow" />
-    <button type="submit" class="btn btn-primary">Add booth</button>
-  </form>
+{% if is_event_owner %}
+<div class="tm-pointer">
+  <p><strong>Adding or removing a language?</strong> Choose the room's languages, and whether an interpreter, AI or both provide each one, in the room setup. Booths follow from it.</p>
+  <a href="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/setup" class="btn btn-primary">Change languages</a>
 </div>
+{% endif %}
 
 {% if booths %}
 <table class="data-table schedule-table">
@@ -84,7 +80,7 @@
 {% else %}
 <div class="empty-state">
   <div class="empty-state-icon empty-state-icon--sm">🎧</div>
-  <p>No booths in this room. Add one above to get started.</p>
+  <p>No interpreter booths in this room.{% if is_event_owner %} <a href="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/setup">Choose languages</a> and give one to a human interpreter to add a booth.{% endif %}</p>
 </div>
 {% endif %}
 {% endblock %}

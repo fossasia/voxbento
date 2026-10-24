@@ -201,7 +201,9 @@ async def test_high_concurrency_isolation_and_capacity_limits():
     tok = create_user_token(user_id=1, email="admin@test.com", is_admin=True)
     cookies = {"user_token": tok}
 
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test", headers={"Origin": "http://test"}
+    ) as client:
         # Launch all 16 POST requests simultaneously
         tasks = []
         for slug, room_id, lang, booth_id, provider in booths:
@@ -241,7 +243,9 @@ async def test_high_concurrency_isolation_and_capacity_limits():
         assert config["api_key"] == "nvidia-key-beta", "NVIDIA booth got incorrect key!"
 
     # 3. Simulate Concurrent Shutdown
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test", headers={"Origin": "http://test"}
+    ) as client:
         stop_tasks = []
         # Try to stop all 16 booths (the 2 rate-limited ones should just gracefully do nothing)
         for slug, room_id, lang, booth_id, provider in booths:
@@ -253,3 +257,24 @@ async def test_high_concurrency_isolation_and_capacity_limits():
 
     # Verify cleanup is completely clean with no deadlocks
     assert len(active_workers) == 0
+
+
+@pytest.mark.anyio
+async def test_stop_before_task_starts_still_runs_cleanup():
+    """Stopping a session before its task's first step must still release the model ref."""
+    from portal.transcription.providers import local
+    from portal.transcription.providers.base import ProviderConfig
+    from portal.transcription.worker import State, start_transcription_worker, stop_transcription_worker
+
+    async def _noop_broadcast(*args, **kwargs):
+        pass
+
+    local._active_booths_per_model["tiny"] = 0
+    await start_transcription_worker("ev", "en", "ev-en", _noop_broadcast, "local", "tiny", ProviderConfig(api_key="x"))
+    session = active_workers["ev-en"]
+
+    # No event-loop yield between start and stop: the task has not run yet.
+    await stop_transcription_worker("ev-en")
+
+    assert session.state == State.STOPPED
+    assert local._active_booths_per_model["tiny"] == 0

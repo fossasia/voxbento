@@ -153,9 +153,26 @@ async def test_switch_states_and_safeguards(admin):
 async def test_sorting_keeps_search_and_filter(admin):
     async with client() as http:
         res = await http.get("/admin/users/?search=Hong&show=admins", cookies=admin["cookies"])
-        empty = await http.get("/admin/users/?search=nobody", cookies=admin["cookies"])
     assert 'href="?sort_by=email&sort_order=asc&search=Hong&show=admins&limit=50" class="sort-link">User' in res.text
-    assert "No users match “nobody”." in empty.text
+
+
+@pytest.mark.anyio
+async def test_empty_state_offers_clear_filters(admin):
+    await make_user("wiki@example.org", "Wikimania team", can_host=True)
+    async with client() as http:
+        search = await http.get("/admin/users/?search=nobody", cookies=admin["cookies"])
+        filtered = await http.get("/admin/users/?show=unverified", cookies=admin["cookies"])
+        listed = await http.get("/admin/users/", cookies=admin["cookies"])
+
+    assert '<div class="empty-state" role="status" aria-live="polite">' in search.text
+    assert "No users found" in search.text
+    assert "Nobody matches “nobody”." in search.text
+    assert 'href="/admin/users/" class="btn btn-outline">Clear filters</a>' in search.text
+
+    assert "No users match the selected filter." in filtered.text
+    assert 'href="/admin/users/" class="btn btn-outline">Clear filters</a>' in filtered.text
+
+    assert "Clear filters" not in listed.text
 
 
 # ---------------------------------------------------------------------------
@@ -169,7 +186,7 @@ async def test_hosting_switch_grants_and_removes_access(admin):
     async with get_session() as session:
         await create_hosting_request(session, user_id=user_id, organization="A", event_name="B", languages="en")
     async with client() as http:
-        with patch("portal.routers.admin.send_hosting_granted_email", new_callable=AsyncMock) as granted:
+        with patch("portal.routers.admin.queue_notification", new_callable=AsyncMock) as granted:
             on = await set_access(http, admin["cookies"], user_id, "hosting", True)
             again = await set_access(http, admin["cookies"], user_id, "hosting", True)
         off = await set_access(http, admin["cookies"], user_id, "hosting", False)

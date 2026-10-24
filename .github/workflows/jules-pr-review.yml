@@ -1,0 +1,65 @@
+name: Jules PR Review
+
+# Security: this runs from trusted base-branch code. Never checkout PR heads.
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review]
+  schedule:
+    - cron: '*/30 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  discover-prs:
+    name: Discover pull requests
+    if: github.event_name == 'pull_request_target' || github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      prs: ${{ steps.discover.outputs.prs }}
+    steps:
+      - name: Checkout trusted base/default branch
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Discover eligible PRs
+        id: discover
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number || '' }}
+        run: node .github/scripts/jules-review.mjs discover
+
+  review:
+    name: Jules Review #${{ matrix.pr.number }}
+    needs: discover-prs
+    if: needs.discover-prs.outputs.prs != '' && needs.discover-prs.outputs.prs != '[]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 70
+    permissions:
+      contents: read
+      pull-requests: write
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        pr: ${{ fromJson(needs.discover-prs.outputs.prs) }}
+    concurrency:
+      group: jules-review-${{ github.repository }}-${{ matrix.pr.number }}
+      cancel-in-progress: false
+    steps:
+      - name: Checkout trusted base/default branch
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Review PR via repoless Jules API
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          JULES_API_KEY: ${{ secrets.JULES_API_KEY }}
+          PR_NUMBER: ${{ matrix.pr.number }}
+        run: node .github/scripts/jules-review.mjs review

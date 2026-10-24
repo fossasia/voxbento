@@ -251,10 +251,12 @@ jobs:
           node --check portal/static/js/interpreter-booth.js
           node --check portal/static/js/whep-listener.js
           node --check portal/static/js/admin.js
+          node --check .github/scripts/jules-review.mjs
       - name: run node tests
         run: |
           node tests/test_audio_scheduler.js
           node tests/test_tts_parser.js
+          node tests/test_jules_review.mjs
 
       - name: Run unit tests
         run: uv run pytest tests/ -v

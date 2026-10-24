@@ -538,6 +538,9 @@ async def test_native_relay_detects_destination_that_stops_consuming(native):
         assert current.reason in {
             "Destination stopped accepting the stream; reconnecting.",
             "Destination unreachable.",
+            "TLS handshake with the destination failed.",
+            "No media reached the destination; reconnecting.",
+            "Relay process exited; retrying.",
             "Relaying the program feed to the destination.",
         }
         # A new session passes through the proxy: the relay reconnects and forwards again.
