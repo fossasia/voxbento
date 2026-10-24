@@ -45,6 +45,10 @@ Interpreters monitor the floor session and broadcast high-fidelity translation d
 - **🎛️ Mission Control & Coordination:** Real-time booth status monitoring, live audio meters, in-booth team chat, and coordinator controls via FastAPI WebSockets.
 - **💻 VoxBento Local:** Sovereign, 100% offline desktop application for private AI meeting intelligence and minutes on macOS, Windows, and Linux.
 
+### Listener playback
+
+Attendees can select a booth before the interpreter goes live and leave the listener page open. Playback starts automatically once the booth is live and Mission Control has unlocked broadcasting. The captions WebSocket supplies the current live/lock status even when transcription is disabled, and the page reconnects it after transient disconnects.
+
 ---
 
 ## 🏗️ Architecture
