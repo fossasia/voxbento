@@ -496,14 +496,18 @@ class TestOAuthMultiOrganizer:
 
 
 def _allow_form(client, event_id, challenge="challenge"):
+    from portal.routers.oauth import _sign_consent
+
+    redirect_uri = "http://localhost/callback"
     return {
         "client_id": client.client_id,
-        "redirect_uri": "http://localhost/callback",
+        "redirect_uri": redirect_uri,
         "response_type": "code",
         "code_challenge": challenge,
         "code_challenge_method": "S256",
         "state": "state123",
         "event_id": str(event_id),
+        "event_id_mac": _sign_consent(client.client_id, redirect_uri, challenge, event_id),
         "scope": "events:write events:read",
         "action": "allow",
     }

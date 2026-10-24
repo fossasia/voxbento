@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import hmac
 import logging
 import secrets
 import urllib.parse
@@ -34,6 +35,23 @@ from portal.utils import safe_redirect
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["oauth"])
+
+
+def _sign_consent(client_id: str, redirect_uri: str, code_challenge: str, event_id: int) -> str:
+    from portal.config import settings
+
+    msg = f"{client_id}\n{redirect_uri}\n{code_challenge}\n{event_id}"
+    return hmac.new(
+        settings.effective_jwt_secret.encode(),
+        msg.encode(),
+        hashlib.sha256,
+    ).hexdigest()
+
+
+def _verify_consent(client_id: str, redirect_uri: str, code_challenge: str, event_id: int, mac: str) -> bool:
+    if not mac.isascii() or len(mac) != 64:
+        return False
+    return hmac.compare_digest(_sign_consent(client_id, redirect_uri, code_challenge, event_id), mac)
 
 _BASE_DIR = Path(__file__).resolve().parent.parent
 templates = Jinja2Templates(directory=str(_BASE_DIR / "templates"), context_processors=[asset_version_context])
@@ -205,6 +223,7 @@ async def authorize_get(
             "code_challenge": code_challenge,
             "code_challenge_method": code_challenge_method,
             "scope_string": " ".join(effective_scopes),
+            "event_id_mac": _sign_consent(client.client_id, redirect_uri, code_challenge, evt.id),
             "current_user_email": user.get("email", "") if user else "",
             "switch_url": f"/login?switch=1&next={next_url}"
             + (f"&email={urllib.parse.quote(login_hint)}" if login_hint else ""),
@@ -220,11 +239,15 @@ async def authorize_post(
     code_challenge: Annotated[str, Form()],
     code_challenge_method: Annotated[str, Form()],
     event_id: Annotated[int, Form()],
+    event_id_mac: Annotated[str, Form()],
     scope: Annotated[str, Form()],
     action: Annotated[str, Form()],
     user: dict = Depends(require_user),
     db: AsyncSession = Depends(get_db_session),
 ):
+    if not _verify_consent(client_id, redirect_uri, code_challenge, event_id, event_id_mac):
+        raise HTTPException(status_code=400, detail="Tampered consent form.")
+
     # Re-validate client and redirect URI before any redirect response
     result = await db.execute(select(OAuthClient).where(OAuthClient.client_id == client_id))
     client = result.scalars().first()
