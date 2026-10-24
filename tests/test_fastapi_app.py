@@ -2197,9 +2197,10 @@ def test_ws_captions_rejects_invalid_token():
     """Invalid token provided to captions websocket is rejected."""
     from fastapi.websockets import WebSocketDisconnect
 
+    # The socket is accepted and then closed, so the browser receives 4001 (not 1006).
     with pytest.raises(WebSocketDisconnect) as exc_info:
-        with client.websocket_connect("/ws/captions/test-event-1-en?token=invalid.jwt.token"):
-            pass
+        with client.websocket_connect("/ws/captions/test-event-1-en?token=invalid.jwt.token") as ws:
+            ws.receive_text()
     assert exc_info.value.code == 4001
 
 
@@ -2211,8 +2212,8 @@ def test_ws_captions_token_rejects_prefix_sharing_different_event_slug():
 
     # Connecting to a booth belonging to 'event-a-other' with token for 'event-a' must be rejected
     with pytest.raises(WebSocketDisconnect) as exc_info:
-        with client.websocket_connect(f"/ws/captions/event-a-other-1-en?token={token_event_a}"):
-            pass
+        with client.websocket_connect(f"/ws/captions/event-a-other-1-en?token={token_event_a}") as ws:
+            ws.receive_text()
     assert exc_info.value.code == 4003
 
     # Connecting to 'event-a-1-en' with token for 'event-a' must succeed
