@@ -1,0 +1,64 @@
+{% extends "admin/base.html" %}
+{% block title %}Program audio sender — {{ room.display_name }}{% endblock %}
+
+{% block breadcrumb %}
+<nav class="breadcrumb">
+  <a href="{{ management_prefix }}/events/{{ event.id }}/">{{ event.display_name }}</a> <span>/</span>
+  <a href="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/">{{ room.display_name }}</a> <span>/</span>
+  <span class="breadcrumb-current" aria-current="page">Program audio sender</span>
+</nav>
+{% endblock %}
+
+{% block content %}
+<section id='program-sender' class='token-form-card program-ingest-card program-sender-page'
+  data-mint-url='{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/program-sender'
+  data-status-url='{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/program-ingest'
+  data-storage-key='voxbento.sender.{{ room.id }}'>
+  <div class='program-ingest-head'>
+    <div>
+      <p class='program-ingest-eyebrow'>{{ event.display_name }} · {{ room.display_name }}</p>
+      <h3>Program audio sender</h3>
+      <p class='program-ingest-lede'>Leave this tab open on the sound-desk computer. It keeps sending while you use other tabs, reconnects by itself after network drops, and keeps the screen awake.</p>
+    </div>
+    <span id='sender-state-badge' class='program-state-badge' data-state='idle'>Not sending</span>
+  </div>
+
+  <div id='sender-unavailable' class='program-ingest-warning' role='alert' hidden>
+    <span class='program-ingest-warning-icon' aria-hidden='true'>!</span>
+    <div>
+      <strong>Browser sending is not available</strong>
+      <p id='sender-unavailable-reason'>Ask the server operator to enable authenticated program ingest.</p>
+    </div>
+  </div>
+
+  <div class='program-sender-controls'>
+    <label for='sender-device'>Audio input</label>
+    <select id='sender-device' class='input'></select>
+
+    <div class='program-sender-meter' aria-hidden='true'>
+      <div id='sender-meter-fill' class='program-sender-meter-fill'></div>
+    </div>
+    <p id='sender-level' class='program-sender-level' data-level='none'>Start a sound check to see the input level.</p>
+
+    <div class='program-sender-actions'>
+      <button type='button' class='btn btn-primary' id='sender-start'>Start sending</button>
+      <button type='button' class='btn btn-outline' id='sender-mute' hidden aria-pressed='false'>Mute</button>
+      <button type='button' class='btn btn-outline' id='sender-stop' hidden>Stop sending</button>
+    </div>
+    <p id='sender-status' role='status' aria-live='polite'>Pick an input, run a sound check, then start sending.</p>
+  </div>
+
+  <div class='program-sender-check'>
+    <div>
+      <h4>Sound check</h4>
+      <p>Nothing here reaches listeners. Speak or play program audio and watch the meter, or record a few seconds and listen back on headphones.</p>
+    </div>
+    <div class='program-sender-actions'>
+      <button type='button' class='btn btn-outline' id='sender-test'>Test input</button>
+      <button type='button' class='btn btn-outline' id='sender-record'>Record 5 s and play back</button>
+    </div>
+    <audio id='sender-playback' class='program-sender-playback' controls hidden></audio>
+  </div>
+</section>
+<script type='module' src='/static/js/program-sender.js'></script>
+{% endblock %}

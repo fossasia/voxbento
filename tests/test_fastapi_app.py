@@ -45,8 +45,23 @@ def _interpreter_cookie(event_slug: str = "test-event", language_code: str = "en
 
 
 def _admin_user_cookie() -> dict:
-    """Return a cookies dict with a valid is_admin user_token."""
-    tok = create_user_token(user_id=1, email="admin@test.com", is_admin=True)
+    """Return a cookies dict with a valid is_admin user_token.
+
+    Admin powers come from the live user record (#757), so the Admin is created
+    in the test database first.
+    """
+    import anyio
+
+    from portal.database import create_user, get_session, get_user_by_email
+
+    async def admin_id() -> int:
+        async with get_session() as session:
+            user = await get_user_by_email(session, "admin@test.com")
+            if user is None:
+                user = await create_user(session, email="admin@test.com", display_name="Admin", is_admin=True)
+            return user.id
+
+    tok = create_user_token(user_id=anyio.run(admin_id), email="admin@test.com", is_admin=True)
     return {"user_token": tok}
 
 
@@ -1444,11 +1459,11 @@ def test_interpreter_booth_by_identity_no_role_returns_403():
     assert res.status_code == 403
 
 
-def test_interpreter_booth_admin_user_gets_super_admin_role():
-    """A user with is_admin=True gets super_admin role without needing a membership."""
+def test_interpreter_booth_admin_user_gets_admin_role():
+    """A user with is_admin=True gets the Admin role without needing a membership."""
     res = client.get("/interpreter/myevent/1/en", cookies=_admin_user_cookie())
     assert res.status_code == 200, res.text
-    assert b"data-granted-role='super_admin'" in res.content
+    assert b"data-granted-role='admin'" in res.content
 
 
 def test_full_bootstrap_flow():
@@ -2160,8 +2175,10 @@ def test_embed_captions_opt_in_websocket_auth():
     token = _embed_listener_token(event_slug="test-event")
     payload = decode_token(token)
 
-    # Verify role and event_slug claims match what resolve_ws_auth expects.
-    assert payload.get("role") == "listener"
+    # Verify the listener kind and event_slug claims match what resolve_ws_auth expects.
+    # Listening is not a role (#757), so the token carries a kind instead.
+    assert payload.get("kind") == "listener"
+    assert payload.get("role") is None
     assert payload.get("event_slug") == "test-event"
 
     # Verify the booth_id produced by make_booth_id satisfies the startswith check.

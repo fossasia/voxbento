@@ -54,7 +54,7 @@ from portal.models import (
     generate_token,
     utc_now,
 )
-from portal.roles import ALL_ROLES
+from portal.roles import BOOTH_ROLES
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -586,12 +586,12 @@ async def test_invite_token_role_validation(db: AsyncSession):
         language_code="en",
         language_name="English",
     )
-    with pytest.raises(ValueError, match="Invalid role"):
+    with pytest.raises(ValueError, match="Unknown role"):
         await create_invite_token(db, booth_id=booth.id, role="hacker")
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("role", sorted(ALL_ROLES))
+@pytest.mark.parametrize("role", sorted(BOOTH_ROLES))
 async def test_invite_token_all_valid_roles(db: AsyncSession, role: str):
     slug = f"ev-role-{role.replace('_', '-')}"
     ev = await create_event(db, slug=slug, display_name="Ev")

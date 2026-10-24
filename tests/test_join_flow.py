@@ -125,7 +125,7 @@ class TestCreateParticipantToken:
             "interpreter",
             "room_coordinator",
             "event_owner",
-            "super_admin",
+            "admin",
         ],
     )
     def test_all_roles_accepted(self, role):
@@ -360,7 +360,11 @@ class TestJoinRoute:
     @pytest.mark.anyio
     async def test_token_with_different_roles(self, _seed):
         _, _, booth = _seed
-        for role in ["interpreter", "room_coordinator", "event_owner", "super_admin"]:
+        # Invite links only give booth roles (#757).
+        for role in ["event_owner", "admin"]:
+            with pytest.raises(ValueError):
+                await self._make_token(booth.id, role=role)
+        for role in ["interpreter", "room_coordinator"]:
             token_str = await self._make_token(booth.id, role=role)
 
             from httpx import ASGITransport, AsyncClient
@@ -710,7 +714,7 @@ class TestCombinedSessionAndInvitePrecedence:
 
             booth_id = make_booth_id(seed_data["event"].slug, booth.room_id, booth.language_code)
             resolved = await resolve_booth_role(list(sessions.values()), booth_id)
-            assert resolved == "super_admin"
+            assert resolved == "admin"
 
     @pytest.mark.anyio
     async def test_invite_cannot_grant_access_to_unrelated_booth_or_event(self, seed_data):

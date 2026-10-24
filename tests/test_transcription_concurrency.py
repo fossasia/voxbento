@@ -201,7 +201,9 @@ async def test_high_concurrency_isolation_and_capacity_limits():
     tok = create_user_token(user_id=1, email="admin@test.com", is_admin=True)
     cookies = {"user_token": tok}
 
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test", headers={"Origin": "http://test"}
+    ) as client:
         # Launch all 16 POST requests simultaneously
         tasks = []
         for slug, room_id, lang, booth_id, provider in booths:
@@ -241,7 +243,9 @@ async def test_high_concurrency_isolation_and_capacity_limits():
         assert config["api_key"] == "nvidia-key-beta", "NVIDIA booth got incorrect key!"
 
     # 3. Simulate Concurrent Shutdown
-    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test", headers={"Origin": "http://test"}
+    ) as client:
         stop_tasks = []
         # Try to stop all 16 booths (the 2 rate-limited ones should just gracefully do nothing)
         for slug, room_id, lang, booth_id, provider in booths:

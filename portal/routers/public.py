@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
+from html import escape
 from pathlib import Path
 
 from fastapi import APIRouter, Request, status
@@ -9,7 +10,8 @@ from fastapi.responses import JSONResponse, PlainTextResponse, Response
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 
-from portal.auth import get_admin_flags, get_current_user, resolve_request_principal
+from portal.auth import get_access_flags, get_current_user, resolve_request_principal
+from portal.config import settings
 from portal.database import (
     get_session,
     get_user_by_id,
@@ -17,9 +19,10 @@ from portal.database import (
     list_memberships_for_user,
     list_room_memberships_for_user,
 )
-from portal.email_sender import send_demo_request_email
 from portal.globals import _JS_CACHE_BUST, asset_version_context
+from portal.notifications import queue_notification
 from portal.rate_limit import check_rate_limit
+from portal.roles import EVENT_OWNER, ROOM_COORDINATOR
 from portal.utils import _check_mediamtx, get_client_ip
 
 logger = logging.getLogger(__name__)
@@ -33,8 +36,8 @@ router = APIRouter()
 @router.get("/")
 async def home(request: Request):
     current_user = await get_current_user(request)
-    admin_flags = await get_admin_flags(request)
-    if not current_user and admin_flags.get("is_super_admin"):
+    admin_flags = await get_access_flags(request)
+    if not current_user and admin_flags.get("is_admin"):
         current_user = {"email": "admin", "display_name": "Admin", "is_admin": True}
 
     management_home = "/admin/" if current_user and current_user.get("is_admin") else "/account"
@@ -47,9 +50,9 @@ async def home(request: Request):
                 ems = await list_memberships_for_user(session, uid)
                 room_memberships = await list_room_memberships_for_user(session, uid)
                 booth_memberships = await list_booth_memberships_for_user(session, uid)
-            if (db_user and db_user.can_host) or any(em.role == "event_owner" for em in ems):
+            if (db_user and db_user.can_host) or any(em.role == EVENT_OWNER for em in ems):
                 management_home = "/workspace/"
-            elif any(rm.role == "room_coordinator" for rm in room_memberships):
+            elif any(rm.role == ROOM_COORDINATOR for rm in room_memberships):
                 management_home = "/mission-control/"
             elif booth_memberships:
                 management_home = "/interpreter"
@@ -163,45 +166,47 @@ See those pages for specific benchmarking data and methodologies.
 
 
 @router.get("/sitemap.xml")
-async def sitemap(request: Request):
-    xml_content = """<?xml version="1.0" encoding="UTF-8"?>
+async def sitemap(request: Request) -> Response:
+    """Return the public sitemap using the configured canonical base URL."""
+    base_url = escape(settings.public_base_url.rstrip("/"), quote=False)
+    xml_content = f"""<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
   <url>
-    <loc>https://voxbento.org/</loc>
+    <loc>{base_url}/</loc>
     <changefreq>daily</changefreq>
     <priority>1.0</priority>
   </url>
   <url>
-    <loc>https://voxbento.org/research</loc>
+    <loc>{base_url}/research</loc>
     <changefreq>weekly</changefreq>
     <priority>0.9</priority>
   </url>
   <url>
-    <loc>https://voxbento.org/research/speech-ai-statistics</loc>
+    <loc>{base_url}/research/speech-ai-statistics</loc>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://voxbento.org/research/whisper-benchmark</loc>
+    <loc>{base_url}/research/whisper-benchmark</loc>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://voxbento.org/research/stt-comparison</loc>
+    <loc>{base_url}/research/stt-comparison</loc>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://voxbento.org/research/real-time-audio-latency</loc>
+    <loc>{base_url}/research/real-time-audio-latency</loc>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://voxbento.org/research/webrtc-vs-rtmp-vs-hls</loc>
+    <loc>{base_url}/research/webrtc-vs-rtmp-vs-hls</loc>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://voxbento.org/research/speech-ai-glossary</loc>
+    <loc>{base_url}/research/speech-ai-glossary</loc>
     <changefreq>weekly</changefreq>
   </url>
   <url>
-    <loc>https://voxbento.org/research/streaming-stt-architecture</loc>
+    <loc>{base_url}/research/streaming-stt-architecture</loc>
     <changefreq>weekly</changefreq>
   </url>
 </urlset>"""
@@ -278,9 +283,23 @@ async def request_demo(request: Request, data: DemoRequestModel):
         "source": "account" if is_authenticated else "home",
     }
 
-    try:
-        await send_demo_request_email(cleaned_data)
-        return {"ok": True}
-    except Exception as e:
-        logger.error(f"Error processing demo request: {e}", exc_info=True)
-        return {"ok": False, "detail": "An internal error occurred while processing the request."}
+    async with get_session() as session:
+        await queue_notification(
+            session,
+            "demo_request",
+            settings.hosting_requests_email,
+            {
+                "firstName": cleaned_data["firstName"],
+                "lastName": cleaned_data["lastName"],
+                "email": cleaned_data["email"],
+                "companyName": cleaned_data["companyName"],
+                "phoneNumber": cleaned_data["phoneNumber"],
+                "country": cleaned_data["country"],
+                "industry": cleaned_data["industry"],
+                "companySize": cleaned_data["companySize"],
+                "languageSupport": cleaned_data["languageSupport"],
+                "notes": cleaned_data["notes"],
+                "admin_url": f"{settings.public_base_url.rstrip('/')}/admin/users/{user_id}/" if user_id else f"{settings.public_base_url.rstrip('/')}/admin/users/",
+            },
+        )
+    return {"ok": True}

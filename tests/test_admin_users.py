@@ -169,7 +169,7 @@ async def test_hosting_switch_grants_and_removes_access(admin):
     async with get_session() as session:
         await create_hosting_request(session, user_id=user_id, organization="A", event_name="B", languages="en")
     async with client() as http:
-        with patch("portal.routers.admin.send_hosting_granted_email", new_callable=AsyncMock) as granted:
+        with patch("portal.routers.admin.queue_notification", new_callable=AsyncMock) as granted:
             on = await set_access(http, admin["cookies"], user_id, "hosting", True)
             again = await set_access(http, admin["cookies"], user_id, "hosting", True)
         off = await set_access(http, admin["cookies"], user_id, "hosting", False)

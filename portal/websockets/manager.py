@@ -12,6 +12,7 @@ from portal.auth import can_perform_role
 from portal.booth_identity import booth_id_to_mediamtx_path
 from portal.booth_publish import TICKET_TTL_SECS, issue_ticket
 from portal.globals import booths
+from portal.roles import INTERPRETER, can_set_active
 
 
 @dataclass
@@ -22,6 +23,8 @@ class Session:
     channel_id: str
     # Role derived from the bearer cookie at WS connection time — never from client data.
     granted_role: str | None = None
+    # Key of the session that opened the socket (see portal.auth.booth_session_key); recorded at join.
+    session_key: str | None = None
 
 
 class ConnectionManager:
@@ -181,7 +184,7 @@ async def _handle_join(ws: WebSocket, session: Session, data: dict) -> None:
     and broadcasts state updates to listeners.
     """
     display_name = data.get("display_name", "Interpreter")
-    role = data.get("role", "interpreter")
+    role = data.get("role", INTERPRETER)
     language = data.get("language") or session.language
     if not language:
         await ws.send_text(
@@ -228,6 +231,7 @@ async def _handle_join(ws: WebSocket, session: Session, data: dict) -> None:
             room_id=room_id,
             # Only this socket's own record may be re-claimed by ID.
             reclaim=participant_id is not None and participant_id == session.participant_id,
+            joined_by=session.session_key,
         )
     except (ValueError, PermissionError) as exc:
         await ws.send_text(json.dumps({"type": "booth:error", "message": str(exc)}))
@@ -245,7 +249,7 @@ async def _handle_join(ws: WebSocket, session: Session, data: dict) -> None:
     )
     await manager.broadcast(session.booth_id, {"type": "booth:state", "state": state})
 
-    if role == "interpreter":
+    if role == INTERPRETER:
         await _wh_worker.enqueue_webhook(
             "booth.interpreter.joined",
             {
@@ -353,7 +357,7 @@ async def _handle_set_broadcast_unlocked(ws: WebSocket, session: Session, data: 
     Requires room coordinator or administrator privileges and a configured
     session language.
     """
-    if session.granted_role not in ("room_coordinator", "event_owner", "super_admin"):
+    if not can_set_active(session.granted_role):
         await ws.send_text(
             json.dumps({"type": "booth:error", "message": "Only Room Coordinators can manage broadcast lock."})
         )
