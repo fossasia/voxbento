@@ -153,7 +153,7 @@
       <h2 class="ud-card-title" id="ud-account">Account</h2>
       <dl class="ud-facts">
         <dt>Joined</dt><dd>{{ u.created_at.strftime('%b %d, %Y') if u.created_at else '—' }}</dd>
-        <dt>Last sign-in</dt><dd>{{ u.last_sign_in_at.strftime('%b %d, %Y, %H:%M UTC') if u.last_sign_in_at else 'Never' }}</dd>
+        <dt>Last sign-in</dt><dd>{{ u.last_sign_in_at.strftime('%b %d, %Y, %H:%M UTC') if u.last_sign_in_at else '—' }}</dd>
         <dt>Email</dt><dd>{{ 'Verified' if u.email_verified else 'Not verified' }}</dd>
         <dt>Sign-in</dt><dd>{{ 'Password' if u.password_hash else 'Email link only' }}</dd>
         <dt>Developer app</dt>

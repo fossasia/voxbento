@@ -131,7 +131,7 @@
             {% endif %}
           </td>
           <td class="ul-joined">{{ u.created_at.strftime('%b %d, %Y') if u.created_at else '—' }}</td>
-          <td class="ul-joined">{{ u.last_sign_in_at.strftime('%b %d, %Y, %H:%M UTC') if u.last_sign_in_at else 'Never' }}</td>
+          <td class="ul-joined">{{ u.last_sign_in_at.strftime('%b %d, %Y, %H:%M UTC') if u.last_sign_in_at else '—' }}</td>
           <td class="ul-open"><a href="/admin/users/{{ u.id }}/" aria-label="View {{ u.display_name }}">View</a></td>
         </tr>
         {% endfor %}

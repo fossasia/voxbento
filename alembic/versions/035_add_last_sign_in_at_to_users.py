@@ -1,7 +1,7 @@
 """add last sign-in timestamp to users
 
-Revision ID: 032
-Revises: 031
+Revision ID: 035
+Revises: 034
 """
 from __future__ import annotations
 
