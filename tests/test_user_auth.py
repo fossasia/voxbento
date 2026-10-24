@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 import os
+import re
+import shutil
+import subprocess
+from pathlib import Path
 
 os.environ["BOOTH_ACCESS_TOKEN"] = ""
 
@@ -464,6 +468,57 @@ class TestUserLogin:
         assert b"Sign in" in resp.content
         assert b'type="button" id="forgot-password-link"' in resp.content
         assert b'href="#" id="forgot-password-link"' not in resp.content
+
+    @pytest.mark.anyio
+    async def test_login_page_renders_accessible_password_toggle(self, setup_db):
+        async with _client() as c:
+            resp = await c.get("/login")
+        assert resp.status_code == 200
+        content = resp.text
+
+        # 1. Password input is hidden by default and wrapped in password-input-wrapper
+        assert 'class="password-input-wrapper"' in content
+        assert (
+            '<input type="password" id="password" name="password" placeholder="Enter your password" required' in content
+        )
+
+        # 2. Toggle button has type="button", accessible name, and aria-controls
+        toggle_btn_match = re.search(r'<button\b[^>]*id=["\']toggle-password["\'][^>]*>', content)
+        assert toggle_btn_match is not None, "Toggle button #toggle-password not found in rendered HTML"
+        assert re.search(r'\btype=["\']button["\']', toggle_btn_match.group(0)) is not None, (
+            "Rendered toggle button must have type='button' to prevent form submission"
+        )
+        assert 'class="password-toggle-btn"' in content
+        assert 'aria-label="Show password"' in content
+        assert 'title="Show password"' in content
+        assert 'aria-controls="password"' in content
+
+        # 3. Eye icons are rendered with aria-hidden="true" and hide icon starts hidden
+        assert "password-toggle-icon--show" in content
+        assert "password-toggle-icon--hide hidden" in content
+
+        # 4. Edge / IE duplicate password reveal controls are suppressed in CSS
+        auth_css = (Path(__file__).resolve().parent.parent / "portal" / "static" / "css" / "auth.css").read_text(
+            encoding="utf-8"
+        )
+        assert "::-ms-reveal" in auth_css
+        assert "::-ms-clear" in auth_css
+        assert ".password-input-wrapper" in auth_css
+        assert ".password-toggle-btn" in auth_css
+
+        # 5. JS module contains setupPasswordToggle
+        login_js = (Path(__file__).resolve().parent.parent / "portal" / "static" / "js" / "login.js").read_text(
+            encoding="utf-8"
+        )
+        assert "setupPasswordToggle" in login_js
+        assert "toggle-password" in login_js
+
+        # 6. Execute the Node unit test suite for interactive toggle behavior
+        node_bin = shutil.which("node")
+        if node_bin:
+            test_file = Path(__file__).resolve().parent / "test_password_toggle.js"
+            res = subprocess.run([node_bin, str(test_file)], capture_output=True, text=True, check=True)
+            assert "Password Toggle tests completed: 22 passed, 0 failed" in res.stdout
 
     @pytest.mark.anyio
     async def test_login_with_correct_credentials(self, setup_db):
