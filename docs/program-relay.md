@@ -149,6 +149,13 @@ The relay service retries a failed push with back-off (1 s → 30 s) while it is
 If the relay service is unreachable, relay health shows *Needs attention*; ingest and
 captions continue.
 
+**Logs during an outage.** The reconciler keeps retrying every 2 s but logs the outage
+once, not once per tick (#964): `program_relay list_unavailable` when it starts, a
+`... ongoing failures=N duration_s=S` reminder every 5 minutes while it lasts, and
+`... recovered failures=N duration_s=S` when the service answers again. A reminder that
+never ends usually means `PROGRAM_RELAY_ENABLED=true` but the `program-relay` service from
+`docker-compose.relay.yml` is not running.
+
 **What "Live" means.** The relay reports *Live* only while the bytes FFmpeg writes to the
 destination keep growing (`total_size` from FFmpeg's progress output), not merely while the
 FFmpeg process runs. Each run starts from zero, so a reconnect must forward again before it

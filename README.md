@@ -41,7 +41,7 @@ Interpreters monitor the floor session and broadcast high-fidelity translation d
 - **⚡ Sub-Second Listener Playback:** Attendees receive ultra-low latency audio via WebRTC (WHEP) powered by MediaMTX, scaling effortlessly to thousands of listeners.
 - **🤖 Live AI Transcription & Translation:** Multi-provider speech-to-text (Faster-Whisper, OpenAI, Deepgram, NVIDIA Parakeet, ElevenLabs) paired with real-time LLM translations guided by custom personas, styles, and domain vocabulary glossaries.
 - **🗣️ Direct-Push Text-to-Speech (TTS):** Synthesize live translated speech on the fly (Deepgram Aura or self-hosted Supertonic ONNX), streamed directly to attendees over binary WebSocket frames.
-- **📡 Program Stream Ingest & YouTube Relay:** Ingest clean conference audio directly from hardware video switchers (OBS, ATEM, vMix) via authenticated HTTPS WHIP, with optional automated RTMPS forwarding to YouTube.
+- **📡 Program Stream Ingest & YouTube Relay:** Ingest clean conference audio directly from hardware video switchers (OBS, ATEM, vMix) via authenticated HTTPS WHIP, or straight from a browser tab on the sound-desk computer with the program audio sender (mute, sound check, auto-reconnect), with optional automated RTMPS forwarding to YouTube.
 - **🎛️ Mission Control & Coordination:** Real-time booth status monitoring, live audio meters, in-booth team chat, and coordinator controls via FastAPI WebSockets.
 - **💻 VoxBento Local:** Sovereign, 100% offline desktop application for private AI meeting intelligence and minutes on macOS, Windows, and Linux.
 
@@ -101,7 +101,9 @@ uv sync --all-groups
 
 ### 3. Configure Environment
 
-Copy the example environment configuration and generate the required encryption key:
+Copy the example environment configuration and generate the required encryption key. The key encrypts stored provider keys and every queued email (sign-in links, invitations, password resets), so production refuses to start without it. Outgoing email is sent from a durable outbox once `SMTP_HOST` is set; Admins edit the email templates and see delivery status in **Admin → Emails**.
+
+Email branding defaults to the VoxBento V mark with a transparent background, suitable for light and dark backgrounds. Leave the logo address empty in **Admin → Emails → Branding** to use it. The SVG source is `portal/static/img/email-mark.svg`; emails use its high-resolution transparent PNG export for mail-client compatibility. Set `PUBLIC_BASE_URL` to your publicly reachable HTTPS portal URL so recipients can load the image; browser previews load the bundled image from the current site. Custom HTTPS logo images and hiding the logo are still supported. Mail apps that block images may show the VoxBento alternative text until the recipient enables images.
 
 ```bash
 cp .env.example .env
