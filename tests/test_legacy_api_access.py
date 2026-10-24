@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+from contextlib import ExitStack
 from datetime import datetime, timezone
 
 import anyio
@@ -9,9 +11,20 @@ import pytest
 from fastapi.testclient import TestClient
 
 from fastapi_app import app
-from portal.auth import create_participant_token, create_user_token
+from portal.auth import create_participant_token, create_token, create_user_token
+from portal.booth_identity import make_booth_id
 from portal.config import settings
-from portal.database import create_api_key, create_event, create_room, create_user, get_session, set_event_membership
+from portal.database import (
+    create_api_key,
+    create_event,
+    create_room,
+    create_user,
+    get_session,
+    set_booth_membership,
+    set_event_membership,
+    set_room_membership,
+)
+from portal.globals import booths
 from portal.models import DBBooth
 from portal.utils import _require_access
 
@@ -319,3 +332,336 @@ def test_global_booth_token_does_not_inherit_participant_cookie_scope(monkeypatc
         assert response.status_code == 200, response.text
     finally:
         anyio.run(dispose)
+
+
+def _seed_booth_team():
+    """One booth plus a user for each way of reaching it, and one outside it."""
+
+    async def seed():
+        async with get_session() as session:
+            event = await create_event(session, slug="team-event", display_name="Team")
+            room = await create_room(session, event_id=event.id, display_name="Main")
+            booth = DBBooth(
+                event_id=event.id,
+                room_id=room.id,
+                language_code="es",
+                language_name="Spanish",
+                transcription_enabled=True,
+                transcription_provider="local",
+                transcription_model="tiny",
+            )
+            other_booth = DBBooth(event_id=event.id, room_id=room.id, language_code="fr", language_name="French")
+            session.add_all([booth, other_booth])
+            await session.flush()
+            users = {}
+            for name, active in (
+                ("interpreter", True),
+                ("standby", True),
+                ("coordinator", True),
+                ("owner", True),
+                ("other-booth", True),
+                ("deactivated", False),
+                ("stale-admin", True),
+            ):
+                users[name] = await create_user(
+                    session, email=f"{name}@example.com", display_name=name, password_hash="hash", is_active=active
+                )
+            await set_booth_membership(session, user_id=users["interpreter"].id, booth_id=booth.id, role="interpreter")
+            await set_booth_membership(session, user_id=users["standby"].id, booth_id=booth.id, role="interpreter")
+            await set_booth_membership(session, user_id=users["deactivated"].id, booth_id=booth.id, role="interpreter")
+            await set_booth_membership(
+                session, user_id=users["other-booth"].id, booth_id=other_booth.id, role="interpreter"
+            )
+            await set_room_membership(
+                session, user_id=users["coordinator"].id, room_id=room.id, role="room_coordinator"
+            )
+            await set_event_membership(session, user_id=users["owner"].id, event_id=event.id, role="event_owner")
+            await session.commit()
+            return {name: user.id for name, user in users.items()}, room.id, booth.id
+
+    return anyio.run(seed)
+
+
+@pytest.fixture
+def booth_team(monkeypatch):
+    dispose = _setup_database()
+    calls = []
+
+    async def record_start(*args, **kwargs):
+        calls.append("start")
+
+    async def record_stop(*args, **kwargs):
+        calls.append("stop")
+
+    monkeypatch.setattr("portal.routers.api.start_transcription_worker", record_start)
+    monkeypatch.setattr("portal.routers.api.stop_transcription_worker", record_stop)
+    monkeypatch.setattr(settings, "booth_access_token", "configured-master-token")
+    monkeypatch.setattr(settings, "debug", False)
+    room_id = None
+    try:
+        user_ids, room_id, booth_id = _seed_booth_team()
+        yield user_ids, room_id, booth_id, calls
+    finally:
+        if room_id is not None:
+            # Booth state lives in memory, outside the per-test database.
+            anyio.run(booths.remove_booth, "team-event", room_id, "es")
+        anyio.run(dispose)
+
+
+# Booth page requests are same-origin; cookie-only POSTs without it are refused (CSRF).
+SAME_ORIGIN = {"Origin": "http://testserver"}
+
+
+def _user_cookies(user_ids, name, *, is_admin=False):
+    return {"user_token": create_user_token(user_id=user_ids[name], email=f"{name}@example.com", is_admin=is_admin)}
+
+
+@pytest.mark.parametrize(
+    ("name", "can_view", "can_go_live"),
+    [
+        ("interpreter", True, True),
+        ("coordinator", True, True),
+        ("owner", True, True),
+        ("other-booth", False, False),
+        ("deactivated", False, False),
+    ],
+)
+def test_signed_in_booth_team_reaches_the_booth_api(booth_team, name, can_view, can_go_live):
+    user_ids, room_id, _, calls = booth_team
+    cookies = _user_cookies(user_ids, name)
+    base = f"/api/events/team-event/rooms/{room_id}/booths/es/transcription"
+
+    state = client.get(f"/api/events/team-event/booths/es/state?room_id={room_id}", cookies=cookies)
+    assert (state.status_code == 200) is can_view, state.text
+
+    start = client.post(f"{base}/start", cookies=cookies, headers=SAME_ORIGIN)
+    stop = client.post(f"{base}/stop", cookies=cookies, headers=SAME_ORIGIN)
+    assert (start.status_code == 200) is can_go_live, start.text
+    assert (stop.status_code == 200) is can_go_live, stop.text
+    assert calls == (["start", "stop"] if can_go_live else [])
+
+
+def test_stale_admin_claim_does_not_grant_booth_access(booth_team):
+    user_ids, room_id, _, calls = booth_team
+    cookies = _user_cookies(user_ids, "stale-admin", is_admin=True)
+
+    response = client.post(
+        f"/api/events/team-event/rooms/{room_id}/booths/es/transcription/start", cookies=cookies, headers=SAME_ORIGIN
+    )
+
+    assert response.status_code == 403, response.text
+    assert calls == []
+
+
+@pytest.mark.parametrize(
+    ("role", "can_go_live"),
+    [("interpreter", True), pytest.param("support", False, id="removed-support-role")],
+)
+def test_invite_link_role_must_be_able_to_go_live(booth_team, role, can_go_live):
+    _, room_id, booth_id, calls = booth_team
+    participant = create_participant_token(
+        booth_id=booth_id, role=role, event_slug="team-event", room_id=room_id, language_code="es"
+    )
+
+    response = client.post(
+        f"/api/events/team-event/rooms/{room_id}/booths/es/transcription/start",
+        cookies={"session_token": participant},
+        headers=SAME_ORIGIN,
+    )
+
+    assert (response.status_code == 200) is can_go_live, response.text
+    assert calls == (["start"] if can_go_live else [])
+
+
+def test_booth_role_does_not_reach_another_language(booth_team):
+    user_ids, room_id, _, calls = booth_team
+
+    response = client.post(
+        f"/api/events/team-event/rooms/{room_id}/booths/fr/transcription/start",
+        cookies=_user_cookies(user_ids, "interpreter"),
+        headers=SAME_ORIGIN,
+    )
+
+    assert response.status_code == 403, response.text
+    assert calls == []
+
+
+def test_old_invite_cookie_does_not_block_a_booth_member(booth_team):
+    user_ids, room_id, booth_id, calls = booth_team
+    stale_invite = create_participant_token(
+        booth_id=booth_id, role="interpreter", event_slug="team-event", room_id=room_id + 1, language_code="es"
+    )
+    cookies = {**_user_cookies(user_ids, "interpreter"), "session_token": stale_invite}
+
+    response = client.post(
+        f"/api/events/team-event/rooms/{room_id}/booths/es/transcription/start", cookies=cookies, headers=SAME_ORIGIN
+    )
+
+    assert response.status_code == 200, response.text
+    assert calls == ["start"]
+
+
+@pytest.mark.parametrize("headers", [{"Origin": "https://attacker.example"}, {}], ids=["cross-site", "no-origin"])
+@pytest.mark.parametrize("action", ["start", "stop"])
+def test_cookie_only_transcription_post_must_be_same_origin(booth_team, headers, action):
+    user_ids, room_id, _, calls = booth_team
+
+    response = client.post(
+        f"/api/events/team-event/rooms/{room_id}/booths/es/transcription/{action}",
+        cookies=_user_cookies(user_ids, "interpreter"),
+        headers=headers,
+    )
+
+    assert response.status_code == 400, response.text
+    assert response.json()["detail"] == "Invalid request origin."
+    assert calls == []
+
+
+def test_wrong_query_token_does_not_skip_the_origin_check(booth_team):
+    user_ids, room_id, _, calls = booth_team
+
+    response = client.post(
+        f"/api/events/team-event/rooms/{room_id}/booths/es/transcription/start?token=not-the-booth-token",
+        cookies=_user_cookies(user_ids, "interpreter"),
+        headers={"Origin": "https://attacker.example"},
+    )
+
+    assert response.status_code == 400, response.text
+    assert calls == []
+
+
+def test_configured_query_token_needs_no_origin(booth_team):
+    _, room_id, _, calls = booth_team
+
+    response = client.post(
+        f"/api/events/team-event/rooms/{room_id}/booths/es/transcription/start?token=configured-master-token"
+    )
+
+    assert response.status_code == 200, response.text
+    assert calls == ["start"]
+
+
+def _join_booth(stack, room_id, cookies, name):
+    """Join the Spanish booth over /ws/booth and return the new participant id.
+
+    The socket stays open until *stack* closes, so the participant stays in the booth.
+    """
+    ws = stack.enter_context(
+        client.websocket_connect(f"/ws/booth/{make_booth_id('team-event', room_id, 'es')}", cookies=cookies)
+    )
+    ws.send_text(json.dumps({"type": "booth:join", "display_name": name, "role": "interpreter"}))
+    joined = ws.receive_json()
+    assert joined["type"] == "booth:joined", joined
+    return joined["participant_id"]
+
+
+def _stop(room_id, headers=None, **kwargs):
+    return client.post(
+        f"/api/events/team-event/rooms/{room_id}/booths/es/transcription/stop",
+        headers={**SAME_ORIGIN, **(headers or {})},
+        **kwargs,
+    )
+
+
+def test_standby_interpreter_cannot_stop_live_transcription(booth_team):
+    user_ids, room_id, _, calls = booth_team
+    with ExitStack() as stack:
+        live_id = _join_booth(stack, room_id, _user_cookies(user_ids, "interpreter"), "Live")
+        _join_booth(stack, room_id, _user_cookies(user_ids, "standby"), "Standby")
+
+        # Naming the live participant must not help; only the session that joined it counts.
+        refused = _stop(room_id, cookies=_user_cookies(user_ids, "standby"), params={"participant_id": live_id})
+        assert refused.status_code == 403, refused.text
+        assert refused.json()["detail"] == "Only the live interpreter can stop transcription."
+        assert calls == []
+
+        allowed = _stop(room_id, cookies=_user_cookies(user_ids, "interpreter"))
+        assert allowed.status_code == 200, allowed.text
+        assert calls == ["stop"]
+
+
+def test_standby_can_stop_after_taking_over_from_a_live_interpreter_who_left(booth_team):
+    user_ids, room_id, _, calls = booth_team
+    with ExitStack() as standby_stack:
+        with ExitStack() as live_stack:
+            _join_booth(live_stack, room_id, _user_cookies(user_ids, "interpreter"), "Live")
+            standby_id = _join_booth(standby_stack, room_id, _user_cookies(user_ids, "standby"), "Standby")
+        assert booths.get_booth_sync(make_booth_id("team-event", room_id, "es")).active_interpreter_id == standby_id
+
+        response = _stop(room_id, cookies=_user_cookies(user_ids, "standby"))
+
+    assert response.status_code == 200, response.text
+    assert calls == ["stop"]
+
+
+@pytest.mark.parametrize("name", ["coordinator", "owner"])
+def test_booth_managers_can_stop_while_an_interpreter_is_live(booth_team, name):
+    user_ids, room_id, _, calls = booth_team
+    with ExitStack() as stack:
+        _join_booth(stack, room_id, _user_cookies(user_ids, "interpreter"), "Live")
+
+        response = _stop(room_id, cookies=_user_cookies(user_ids, name))
+
+    assert response.status_code == 200, response.text
+    assert calls == ["stop"]
+
+
+def test_configured_token_can_stop_while_an_interpreter_is_live(booth_team):
+    user_ids, room_id, _, calls = booth_team
+    with ExitStack() as stack:
+        _join_booth(stack, room_id, _user_cookies(user_ids, "interpreter"), "Live")
+
+        response = client.post(
+            f"/api/events/team-event/rooms/{room_id}/booths/es/transcription/stop?token=configured-master-token"
+        )
+
+    assert response.status_code == 200, response.text
+    assert calls == ["stop"]
+
+
+def test_invite_link_sessions_are_told_apart(booth_team):
+    _, room_id, booth_id, calls = booth_team
+
+    def invite():
+        token = create_participant_token(
+            booth_id=booth_id, role="interpreter", event_slug="team-event", room_id=room_id, language_code="es"
+        )
+        return {"session_token": token}
+
+    live, standby = invite(), invite()
+    with ExitStack() as stack:
+        _join_booth(stack, room_id, live, "Live")
+        _join_booth(stack, room_id, standby, "Standby")
+
+        refused = _stop(room_id, cookies=standby)
+        assert refused.status_code == 403, refused.text
+        assert calls == []
+
+        allowed = _stop(room_id, cookies=live)
+        assert allowed.status_code == 200, allowed.text
+        assert calls == ["stop"]
+
+
+@pytest.mark.parametrize(
+    ("configured_token", "expected"),
+    [pytest.param("", 403, id="anyone-can-mint-it"), pytest.param("configured-master-token", 200, id="operator")],
+)
+def test_legacy_api_bearer_only_skips_the_live_check_with_a_configured_token(
+    booth_team, monkeypatch, configured_token, expected
+):
+    user_ids, room_id, _, calls = booth_team
+    # Without BOOTH_ACCESS_TOKEN (debug), the booth page gets a legacy_api token from /api/auth/token.
+    monkeypatch.setattr(settings, "booth_access_token", configured_token)
+    monkeypatch.setattr(settings, "debug", not configured_token)
+    with ExitStack() as stack:
+        _join_booth(stack, room_id, _user_cookies(user_ids, "interpreter"), "Live")
+        _join_booth(stack, room_id, _user_cookies(user_ids, "standby"), "Standby")
+
+        response = _stop(
+            room_id,
+            cookies=_user_cookies(user_ids, "standby"),
+            headers={"Authorization": f"Bearer {create_token()}"},
+        )
+
+    assert response.status_code == expected, response.text
+    assert calls == (["stop"] if expected == 200 else [])

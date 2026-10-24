@@ -86,7 +86,10 @@ All source changes affect VoxBento only, not the independent YouTube output.
 ## Browser program-audio sender
 
 For venue sound desks without a WHIP encoder, the event owner can publish the floor
-directly from the room page's **Program audio sender** panel. It selects a local
+directly from a dedicated sender page, opened in its own tab from the room page's
+**Program audio sender** panel (`GET /workspace/events/{id}/rooms/{id}/sender/`,
+event owners only). Because the stream lives in that tab, owners can navigate the
+rest of the console without stopping the floor. It selects a local
 audio input (use a USB sound-desk feed), shows a live level meter, and publishes
 Opus over authenticated WHIP to the same canonical `{event_slug}/{room_id}/floor`
 path. Media never traverses FastAPI; the browser negotiates WebRTC with MediaMTX.
@@ -110,9 +113,21 @@ that session (and only when a browser session was actually open, so a rejected s
 or stray Stop can never disconnect an encoder), leaving any encoder credential and the
 `program_ingest` floor selection intact. Rotating/revoking/switching the source from
 the ingest panel also invalidates any in-flight sender session. The sender UI state
-machine covers connecting, live, reconnecting, no-audio, permission-denied, and
+machine covers sound check, connecting, live, muted, reconnecting, no-audio, permission-denied, and
 stopped; on a transient WebRTC failure it drops the stale WHIP resource, releases the
-old session, and reconnects with a fresh one.
+old session, and reconnects with a fresh one. Reconnects never give up while the
+owner wants to send: back-off doubles to a 30 s cap and retries immediately when the
+browser comes back online. Only a refusal stops the sender: any 4xx except 429,
+such as 409 (another source owns the floor) or 401/403/404 (lost access). A peer
+that recovers by itself cancels any queued rebuild. Mute keeps the session and the floor but
+sends silence (`track.enabled = false`); the meter keeps reading the input so the
+operator can see the desk feed before unmuting. The page also holds a screen wake
+lock, warns before the tab is closed while live, remembers the chosen input per room
+in `localStorage`, re-opens a USB input that is unplugged and reconnected, and swaps
+inputs in place with `replaceTrack`. A **sound check** (meter with a good / quiet /
+clipping hint, plus a 5-second record-and-play-back) runs locally and is never
+sent to listeners. Starting without `sync_offset_ms` keeps the room's saved
+YouTube sync delay.
 
 ## Processing, recovery, and capacity
 
@@ -144,6 +159,10 @@ credentials, or upstream errors. Authentication failures are bounded to 10/IP/mi
 with a bounded process-local cache. Do not enable HTTP request-body/debug logging
 on the media-auth route. The access-log filter redacts the hook key. Monitor
 degraded/disconnected rooms and worker capacity.
+While MediaMTX or the database stays unavailable, the 2 s reconciler logs
+`program_ingest path_list_unavailable` / `program_ingest database_unavailable` once,
+then an `ongoing` reminder every 5 minutes and a `recovered` line when it clears
+(`portal/outage_log.py`, #964), instead of one line per retry.
 
 ## Synchronization
 

@@ -6,8 +6,8 @@ description: "A guide to Voxbento management navigation: System Admin (/admin), 
 
 Voxbento organizes its management interfaces into clear, privilege-scoped surfaces:
 
-- **`/admin/...`** — Central hub for site-wide administration (registered users, hosting access reviews, and platform configuration). While super-admin exclusive for global routes, specific admin pages support scoped event owners and room coordinators (including legacy room-scoped coordinator paths).
-- **`/workspace/...`** — The Event Workspace. Houses **My events** (`/workspace/`, accessible to all signed-in users including interpreters to view events they belong to) and event/room/booth configuration pages for event owners. Creating new events requires hosting access (`can_host`) or `super_admin`.
+- **`/admin/...`** — Central hub for site-wide administration (registered users, hosting access reviews, and platform configuration). It is for Admins; only a few legacy room pages under `/admin/` still let room coordinators in.
+- **`/workspace/...`** — The Event Workspace. Houses **My events** (`/workspace/`, accessible to all signed-in users including interpreters to view events they belong to) and event/room/booth configuration pages for event owners. Creating new events requires hosting access (`can_host`) or the Admin role.
 - **`/mission-control/{event_slug}/`** — The operational console for `room_coordinator` and event owner users to oversee active room broadcasts, monitor audio status, and conduct interpreter handoffs.
 
 ## 1. Global Header and Navigation
@@ -17,6 +17,7 @@ Every signed-in page renders a unified header with area links and a user profile
 - **My events (`/workspace/`)**: Lists every event you participate in or own with direct action links ("Event owner", "Room coordinator", "Enter booth"). Users with hosting access or admin rights see the **New event** button.
 - **Hosting access (`/admin/hosting-access/`)**: (Admins only). Review and approve/decline event hosting access requests, with a badge showing the number of open requests.
 - **Users (`/admin/users/`)**: (Admins only). Search and filter registered accounts, toggling **Hosting access**, **Admin**, **Active**, and **Verified** status directly in-place.
+- **Mission Control**: Not an Admin tab. Admins open it from an event's page (**Open Mission Control**) or its dashboard card; Room coordinators reach it from **My events**.
 - **Developer API**: Direct access to registered OAuth applications and webhook management for approved developer accounts.
 - **Account (`/account`)**: Manage display name, hosting access requests, developer status, and password sign-in settings.
 
@@ -24,7 +25,7 @@ Every signed-in page renders a unified header with area links and a user profile
 
 The main dashboard and My events pages use distinct card layouts tailored to their respective audiences:
 
-### Main Dashboard (`/admin/` or Event Dashboard)
+### Admin Overview (`/admin/`)
 Designed for high-level operational oversight across configured events:
 - **Total Booths**: Number of configured language channels.
 - **Live Now Metric**: Real-time count of active broadcasting booths (`● N` or `○ 0`).
@@ -35,7 +36,7 @@ Designed for high-level operational oversight across configured events:
 Designed for participants and organizers navigating their assigned events:
 - **Event Metadata**: Shows booth count and comma-separated list of configured languages (e.g. `2 booths · English, Spanish`).
 - **Your Roles**: Visual badges displaying your granted roles within the event (e.g. `Event owner`, `Room coordinator`, `Interpreter`).
-- **Action Links**: Contextual links matching your permissions, such as **Event owner** (`/workspace/events/{event_id}/`), **Mission Control** (`/mission-control/{event_slug}/`), or **Enter booth** (`/booth/{event_slug}-{room_id}-{lang}`).
+- **Action Links**: Contextual links matching your permissions, such as **Event owner** (`/workspace/events/{event_id}/`), **Mission Control** (`/mission-control/{event_slug}/`), or **Enter booth** (`/interpreter/{event_slug}/{room_id}/{lang}`). Interpreters also have **My booths** (`/interpreter`) in the user menu.
 
 ## 3. System Diagnostics & Activity Indicators
 
@@ -48,6 +49,6 @@ The main dashboard aggregates platform activity cards at the top:
 
 Voxbento enforces role separation at every route:
 
-- **`super_admin`**: Full system-wide visibility. Access to `/admin/*`, user management, and hosting access approval.
-- **`event_owner`**: Manages assigned events in `/workspace/*`, creating rooms, booths, API keys, and invite tokens.
-- **`room_coordinator`**: Scoped operational oversight via `/mission-control/{event_slug}/` for assigned rooms and stages.
+- **Admin**: Full platform visibility. Access to `/admin/*`, user management, and hosting access approval.
+- **Event owner**: Manages their events in `/workspace/*`, creating rooms, booths, API keys, and invite tokens.
+- **Room coordinator**: Scoped operational oversight via `/mission-control/{event_slug}/` for assigned rooms and stages.

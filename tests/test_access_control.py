@@ -55,8 +55,8 @@ async def _create_event(slug: str, name: str) -> object:
 
 
 @pytest.mark.anyio
-async def test_get_accessible_event_ids_super_admin_sees_all(setup_db):
-    """An active admin user → is_super_admin=True and allowed_event_ids=None."""
+async def test_get_accessible_event_ids_admin_sees_all(setup_db):
+    """An active admin user → is_admin=True and allowed_event_ids=None."""
     from portal.auth import get_accessible_event_ids
     from portal.database import create_user, get_session
 
@@ -68,15 +68,15 @@ async def test_get_accessible_event_ids_super_admin_sees_all(setup_db):
         admin = await create_user(s, email="admin@example.com", display_name="Admin", is_admin=True)
 
     req = _make_request({"user_token": create_user_token(user_id=admin.id, email="admin@example.com", is_admin=True)})
-    is_super_admin, allowed_event_ids = await get_accessible_event_ids(req, user_id=admin.id)
+    is_admin, allowed_event_ids = await get_accessible_event_ids(req, user_id=admin.id)
 
-    assert is_super_admin is True
+    assert is_admin is True
     assert allowed_event_ids is None
 
 
 @pytest.mark.anyio
 async def test_get_accessible_event_ids_user_is_admin_flag(setup_db):
-    """An active admin user → is_super_admin=True, derived from the database."""
+    """An active admin user → is_admin=True, derived from the database."""
     from portal.auth import get_accessible_event_ids
     from portal.database import create_user, get_session
 
@@ -85,9 +85,9 @@ async def test_get_accessible_event_ids_user_is_admin_flag(setup_db):
         admin = await create_user(s, email="admin@test.com", display_name="Admin", is_admin=True)
     token = create_user_token(user_id=admin.id, email="admin@test.com", is_admin=True)
     req = _make_request({"user_token": token})
-    is_super_admin, allowed_event_ids = await get_accessible_event_ids(req, user_id=admin.id)
+    is_admin, allowed_event_ids = await get_accessible_event_ids(req, user_id=admin.id)
 
-    assert is_super_admin is True
+    assert is_admin is True
     assert allowed_event_ids is None
 
 
@@ -103,9 +103,9 @@ async def test_get_accessible_event_ids_stale_admin_claim_denied(setup_db):
     await _create_event("ev1", "Event 1")
     # user_id=4242 does not exist in the database.
     req = _make_request({"user_token": create_user_token(user_id=4242, email="ghost@test.com", is_admin=True)})
-    is_super_admin, allowed_event_ids = await get_accessible_event_ids(req, user_id=4242)
+    is_admin, allowed_event_ids = await get_accessible_event_ids(req, user_id=4242)
 
-    assert is_super_admin is False
+    assert is_admin is False
     assert allowed_event_ids == set()
 
 
@@ -123,9 +123,9 @@ async def test_get_accessible_event_ids_event_owner_filtered(setup_db):
         await set_event_membership(s, user_id=user.id, event_id=ev1.id, role="event_owner")
 
     req = _make_request({})
-    is_super_admin, allowed_event_ids = await get_accessible_event_ids(req, user_id=user.id)
+    is_admin, allowed_event_ids = await get_accessible_event_ids(req, user_id=user.id)
 
-    assert is_super_admin is False
+    assert is_admin is False
     assert allowed_event_ids == {ev1.id}
 
 
@@ -139,9 +139,9 @@ async def test_get_accessible_event_ids_no_membership_returns_empty(setup_db):
     user = await _create_user()
 
     req = _make_request({})
-    is_super_admin, allowed_event_ids = await get_accessible_event_ids(req, user_id=user.id)
+    is_admin, allowed_event_ids = await get_accessible_event_ids(req, user_id=user.id)
 
-    assert is_super_admin is False
+    assert is_admin is False
     assert allowed_event_ids == set()
 
 
@@ -154,8 +154,8 @@ async def test_get_accessible_event_ids_user_id_none_returns_all_as_non_admin(se
     await _create_event("ev2", "Event 2")
 
     req = _make_request({})
-    is_super_admin, allowed_event_ids = await get_accessible_event_ids(req, user_id=None)
+    is_admin, allowed_event_ids = await get_accessible_event_ids(req, user_id=None)
 
-    assert is_super_admin is False
+    assert is_admin is False
     # None means "no filter applied" — consistent with anonymous/unauthenticated callers
     assert allowed_event_ids is None

@@ -5,7 +5,7 @@ import logging
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
-from portal.auth import WSAuthError, resolve_booth_role, resolve_ws_auth
+from portal.auth import WSAuthError, booth_session_key, is_listener_token, resolve_booth_role, resolve_ws_auth
 from portal.globals import booths
 from portal.websockets.manager import (
     Session,
@@ -37,7 +37,7 @@ async def ws_booth(websocket: WebSocket, booth_id: str) -> None:
     except WSAuthError:
         return
 
-    if payload and payload.get("role") == "listener":
+    if is_listener_token(payload):
         await websocket.close(code=4003)
         return
 
@@ -54,6 +54,7 @@ async def ws_booth(websocket: WebSocket, booth_id: str) -> None:
         language=language_name,
         channel_id=f"{booth_id}-audio",
         granted_role=ws_granted_role,
+        session_key=booth_session_key(payload),
     )
     manager.add(websocket, session)
 
@@ -171,7 +172,7 @@ async def _authorize_tts(websocket: WebSocket, room_id: int, language_code: str,
             return
 
         token_event = payload.get("event_slug", "")
-        if payload.get("role") == "listener":
+        if is_listener_token(payload):
             if not token_event or token_event != event_slug:
                 raise WSAuthError("Listener token event_slug does not match.")
             return
@@ -215,7 +216,7 @@ async def _authorize_tts(websocket: WebSocket, room_id: int, language_code: str,
             return
 
         token_event = payload.get("event_slug", "")
-        if payload.get("role") == "listener":
+        if is_listener_token(payload):
             if not token_event or token_event != event_slug:
                 raise WSAuthError("Listener token event_slug does not match.")
             return

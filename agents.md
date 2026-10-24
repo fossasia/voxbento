@@ -83,8 +83,10 @@ VoxBento is a production-grade **browser-first interpretation booth console** fo
 | `portal/meeting_source.py` | Managed Jitsi floor agent lifecycle reconciler |
 | `portal/program_ingest.py` | Floor authorization and reconciliation for Program Stream Ingest |
 | `portal/program_relay.py` | YouTube RTMPS destination management and relay health convergence |
+| `portal/outage_log.py` | `OutageLog` — reconcile loops log a repeating failure once per outage, not per tick |
 | `portal/user_admin.py` | Administrative access rules, user flags (`can_host`, `is_admin`, `is_active`, `email_verified`) |
 | `portal/templates/` | Jinja2 HTML — `base.html`, `interpreter_booth.html`, `listener-event.html`, `admin/` |
+| `portal/static/css/tokens.css` | Shared design tokens (`--vb-*` colours, radii, shadows, fonts), linked first on every page; new CSS uses these instead of new hex values |
 | `portal/static/js/interpreter-booth.js` | Booth UI — WebRTC/WHIP, WebSocket, Jitsi iframe, mic controls, level meter |
 | `portal/static/js/whep-listener.js` | WHEP playback client — RTCPeerConnection, auto-reconnect with exponential back-off |
 | `portal/static/js/admin.js` | Admin panel JS helpers |
@@ -107,24 +109,36 @@ VoxBento is a production-grade **browser-first interpretation booth console** fo
 9. **`portal.*` imports for all new Python code.**
 10. **Role is never trusted from client data.** WS handler reads `Session.granted_role` (derived from cookies at connect time).
 11. **No open redirects.** All redirects use `safe_redirect()` which validates path starts with `/` and has no netloc.
-12. **Management namespaces reflect privilege.** Event owners use `/workspace/*`; room coordinators use the room-scoped `/mission-control/*` surface. `/admin/*` is reserved for super-admin use, apart from legacy room-scoped coordinator handlers retained for compatibility. Legacy event-owner URLs redirect without changing OAuth routes or token behavior.
+12. **Management namespaces reflect privilege.** Event owners use `/workspace/*`; room coordinators use the room-scoped `/mission-control/*` surface. `/admin/*` is reserved for Admins, apart from legacy room-scoped coordinator handlers retained for compatibility. Legacy event-owner URLs redirect without changing OAuth routes or token behavior.
 
 ---
 
 ## Role Model
 
 ```
-super_admin > event_owner > room_coordinator > interpreter > support > listener
+admin > event_owner > room_coordinator > interpreter
 ```
 
-| Role | Go Live (WHIP) | Set Active | Chat | Manage Booths/Events |
-|---|---|---|---|---|
-| `super_admin` | ✓ | ✓ | ✓ | ✓ |
-| `event_owner` | ✓ | ✓ | ✓ | booths only |
-| `room_coordinator` | ✓ | ✓ | ✓ | — |
-| `interpreter` | ✓ (active only) | — | ✓ | — |
-| `support` | — | — | — | — (booth view only) |
-| `listener` | — | — | — | — |
+Four roles, defined once in `portal/roles.py` (#757): role names, plain-language
+labels (`role_label`), where each can be given (`EVENT_ROLES`, `ROOM_ROLES`,
+`BOOTH_ROLES`, `assignment_error`) and one `Permission` per action. Never type a
+role name elsewhere; `tests/test_roles.py` fails if you do.
+
+| Action | Admin | Event owner | Room coordinator | Interpreter |
+|---|:-:|:-:|:-:|:-:|
+| Manage users, Admins, hosting access, developer apps | ✓ | | | |
+| See all events / create events (or hosting access) | ✓ | | | |
+| Edit/delete event; manage rooms, booths, team, keys | ✓ | ✓ | | |
+| Mission Control, floor transcription, choose active interpreter | ✓ | ✓ | ✓ | |
+| Go live, booth chat, view booths | ✓ | ✓ | ✓ | ✓ |
+| Can be given per | account | event | event, room, booth | event, booth |
+
+"Admin" means only the platform role (`users.is_admin`, read from the database).
+Access checks are named after who they admit: `require_admin` (Admins),
+`require_event_owner`, `require_owner_or_coordinator`; Admins pass every check.
+Hosting access is an account setting, not a role. Listening is not a role:
+listener/embed tokens carry `kind: "listener"`. Booth participants are sent to
+browsers with `can_go_live` / `can_set_active`, so client code never compares role names.
 
 Defined in: `portal/roles.py`
 Enforced in: `portal/websockets/handlers.py` (`_handle_join`), `portal/routers/api.py` (WHIP URL endpoints), `portal/booth_state.py` (`set_active_interpreter`)
