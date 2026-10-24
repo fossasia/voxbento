@@ -60,6 +60,32 @@ class TestTranscriptionProviders:
         finally:
             pg.shared_http_client = None
 
+    async def test_openai_process_chunk_wav_header_matches_ffmpeg_rate(self):
+        import io
+        import wave
+
+        from portal.transcription.providers.openai import OpenAIProvider
+
+        provider = OpenAIProvider()
+        config = ProviderConfig(api_key="fake")
+
+        mock_client = MagicMock()
+        mock_client.is_closed = False
+        mock_response = MagicMock()
+        mock_response.json.return_value = {"text": "Hello"}
+        mock_client.post = AsyncMock(return_value=mock_response)
+
+        pg.shared_http_client = mock_client
+
+        try:
+            await provider.process_chunk(b"\x00" * 3200, "en", "whisper-1", config)
+            wav_data = mock_client.post.call_args.kwargs["files"]["file"][1]
+            with wave.open(io.BytesIO(wav_data)) as wf:
+                # The worker runs ffmpeg at 24 kHz for OpenAI booths
+                assert wf.getframerate() == 24000
+        finally:
+            pg.shared_http_client = None
+
     async def test_openai_process_chunk_returns_empty_on_api_error(self):
         from portal.transcription.providers.openai import OpenAIProvider
 
