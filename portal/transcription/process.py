@@ -4,10 +4,12 @@ import asyncio
 import logging
 import os
 import signal
+import sys
 from typing import Optional
 
 from portal.config import settings
 
+_IS_WINDOWS = sys.platform == "win32"
 logger = logging.getLogger(__name__)
 audio_progress: dict[str, float] = {}
 
@@ -15,7 +17,9 @@ audio_progress: dict[str, float] = {}
 class FfmpegProcess:
     """
     Robust async context manager for ffmpeg subprocess lifecycle.
-    Guarantees process group termination even during severe cascading cancellations.
+    Guarantees process group / tree termination across platforms even during severe cascading cancellations:
+    - On POSIX: Uses process groups with start_new_session=True and os.killpg().
+    - On Windows: Uses taskkill /F /T for process-tree termination with process.kill() fallback.
     """
 
     def __init__(self, rtsp_url: str, sample_rate: str, booth_id: str):
@@ -52,11 +56,13 @@ class FfmpegProcess:
             "-",
         ]
 
-        # start_new_session=True places ffmpeg and all descendants into their own process group.
-        # This is strictly required so that SIGTERM/SIGKILL can clean up the entire tree.
-        self.process = await asyncio.create_subprocess_exec(
-            *ffmpeg_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE, start_new_session=True
-        )
+        # start_new_session=True places ffmpeg and all descendants into their own process group on POSIX.
+        # On Windows, start_new_session raises ValueError, so it is omitted.
+        kwargs = {"stdout": asyncio.subprocess.PIPE, "stderr": asyncio.subprocess.PIPE}
+        if not _IS_WINDOWS:
+            kwargs["start_new_session"] = True
+
+        self.process = await asyncio.create_subprocess_exec(*ffmpeg_cmd, **kwargs)
 
         self.stderr_task = asyncio.create_task(self._log_stderr())
         logger.info(f"[{self.booth_id}] ffmpeg started (pid={self.process.pid})")
@@ -92,25 +98,65 @@ class FfmpegProcess:
             await cleanup_task
             raise
 
+    async def _kill_windows_tree(self):
+        """
+        Terminate the process and all descendants on Windows using taskkill /F /T.
+        Falls back to direct process.kill() if taskkill fails or times out.
+        """
+        try:
+            cmd = ["taskkill", "/F", "/PID", str(self.process.pid), "/T"]
+            kill_proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            try:
+                exit_code = await asyncio.wait_for(kill_proc.wait(), timeout=2.0)
+                if exit_code not in (0, 128):
+                    logger.warning(
+                        f"[{self.booth_id}] taskkill failed to tear down process tree "
+                        f"(exit code {exit_code}); falling back to direct process termination"
+                    )
+            except TimeoutError:
+                logger.debug(f"[{self.booth_id}] taskkill timed out, killing taskkill process")
+                kill_proc.kill()
+                await kill_proc.wait()
+        except Exception as e:
+            logger.debug(f"[{self.booth_id}] taskkill process tree termination failed: {e}")
+        finally:
+            # The process may have exited and been reaped while taskkill ran, in which case
+            # kill() raises ProcessLookupError. That is the desired end state, so
+            # treat it as success rather than letting it unwind the cleanup sequence.
+            try:
+                self.process.kill()
+            except ProcessLookupError:
+                logger.debug(f"[{self.booth_id}] ffmpeg process already exited before fallback termination")
+
     async def _perform_cleanup(self):
         audio_progress.pop(self.booth_id, None)
         if self.process.returncode is None:
             logger.info(f"[{self.booth_id}] Attempting termination of ffmpeg process group (pid={self.process.pid})")
 
             try:
-                # Send SIGTERM to the entire process group
-                os.killpg(self.process.pid, signal.SIGTERM)
+                # Send SIGTERM to the process group on POSIX, or terminate process tree on Windows
+                if _IS_WINDOWS:
+                    await self._kill_windows_tree()
+                else:
+                    os.killpg(self.process.pid, signal.SIGTERM)
 
                 try:
                     await asyncio.wait_for(self.process.wait(), timeout=self.termination_timeout)
-                    logger.info(f"[{self.booth_id}] ffmpeg process group terminated cleanly.")
+                    logger.info(f"[{self.booth_id}] ffmpeg process terminated cleanly.")
                 except TimeoutError:
                     logger.warning(
                         f"[{self.booth_id}] ffmpeg did not exit within {self.termination_timeout}s. Escalating to SIGKILL."
                     )
-                    os.killpg(self.process.pid, signal.SIGKILL)
+                    if _IS_WINDOWS:
+                        await self._kill_windows_tree()
+                    else:
+                        os.killpg(self.process.pid, signal.SIGKILL)
                     await self.process.wait()
-                    logger.info(f"[{self.booth_id}] ffmpeg process group killed.")
+                    logger.info(f"[{self.booth_id}] ffmpeg process killed.")
             except ProcessLookupError:
                 # The process group already exited.
                 logger.debug(f"[{self.booth_id}] Process group {self.process.pid} already exited.")

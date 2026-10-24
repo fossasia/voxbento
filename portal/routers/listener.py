@@ -11,7 +11,7 @@ import jwt
 from fastapi import APIRouter, HTTPException, Query, Request, status
 from fastapi.templating import Jinja2Templates
 
-from portal.auth import decode_token, get_booth_session
+from portal.auth import decode_token, get_booth_session, is_listener_token
 from portal.config import settings
 from portal.database import (
     get_event_by_slug,
@@ -217,7 +217,7 @@ def _verify_embed_token(token: str, event_slug: str) -> None:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid embed token.")
 
     # Explicit claim checks — .get() only, never bare key access
-    if payload.get("role") != "listener":
+    if not is_listener_token(payload):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Token is not a listener token.")
     if payload.get("purpose") != "embed":
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Token must be an embed token.")

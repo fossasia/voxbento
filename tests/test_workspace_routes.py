@@ -120,7 +120,8 @@ async def test_workspace_route_inventory_rejects_unknown_and_deep_paths(path):
 async def organizer():
     async with get_session() as session:
         event = await create_event(session, slug="shared-event", display_name="Shared Event")
-        user = await create_user(session, email="owner@example.com", display_name="Event Owner")
+        # Existing owners got hosting access in migration 029; creating events needs it.
+        user = await create_user(session, email="owner@example.com", display_name="Event Owner", can_host=True)
         await set_event_membership(session, user_id=user.id, event_id=event.id, role="event_owner")
         event_id = event.id
         user_id = user.id
@@ -175,7 +176,7 @@ async def test_workspace_form_submission_stays_in_workspace_namespace(organizer)
 
 
 @pytest.mark.anyio
-async def test_super_admin_retains_admin_namespace(organizer):
+async def test_admin_retains_admin_namespace(organizer):
     async with get_session() as s:
         admin_user = await create_user(
             s,
@@ -197,9 +198,9 @@ async def test_super_admin_retains_admin_namespace(organizer):
     assert f"/workspace/events/{organizer['event_id']}/rooms/" not in response.text
 
 
-@pytest.mark.parametrize("page", ["rooms/", "members/"])
+@pytest.mark.parametrize("page", ["rooms/", "team/"])
 @pytest.mark.anyio
-async def test_super_admin_nav_is_complete_on_event_pages(organizer, page):
+async def test_admin_nav_is_complete_on_event_pages(organizer, page):
     async with get_session() as s:
         admin_user = await create_user(
             s,
@@ -213,12 +214,13 @@ async def test_super_admin_nav_is_complete_on_event_pages(organizer, page):
         response = await http.get(f"/admin/events/{organizer['event_id']}/{page}", cookies=cookies)
 
     assert response.status_code == 200
-    assert 'href="/mission-control/"' in response.text
+    # Admins open Mission Control from each event, not from an Admin tab.
+    assert 'href="/mission-control/"' not in response.text
     assert 'href="/admin/users/"' in response.text
     assert 'href="/admin/developer-accounts"' in response.text
 
 
-@pytest.mark.parametrize("page", ["rooms/", "members/"])
+@pytest.mark.parametrize("page", ["rooms/", "team/"])
 @pytest.mark.anyio
 async def test_event_owner_event_pages_show_my_events_header(organizer, page):
     # The "My events" area has no header links (#766); the shared user menu and the
@@ -443,7 +445,7 @@ async def test_mission_control_titles_name_the_brand_once(organizer):
     assert event_list.status_code == 200
     assert "<title>Mission Control Events — Voxbento</title>" in event_list.text
     assert grid.status_code == 200
-    assert "<title>Mission Control - Shared Event — Voxbento</title>" in grid.text
+    assert "<title>Mission Control — Shared Event — Voxbento</title>" in grid.text
 
 
 @pytest.mark.anyio

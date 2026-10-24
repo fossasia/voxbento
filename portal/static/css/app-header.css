@@ -60,6 +60,8 @@
 .app-area--account { background: #e4e7ec; color: #344054; }
 .app-area--admin { background: #dbe7fe; color: #1e40af; }
 .app-area--developer { background: #ede9fe; color: #5b21b6; }
+.app-area--booths { background: #fef3c7; color: #92400e; }
+.app-area--mission-control { background: #fee2e2; color: #991b1b; }
 
 .app-header-nav { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; flex: 1 1 auto; min-width: 0; padding: 4px 0; }
 .app-header-nav a {

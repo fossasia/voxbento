@@ -233,6 +233,20 @@ Tracks which languages the translation worker should generate for a given room o
 | 015 | `015_add_floor_tts_enabled.py` | `rooms.floor_tts_enabled` |
 | 016 | `016_add_room_audio_delay.py` | `rooms.audio_delay_ms` |
 | 017 | `017_add_tts_provider_fields.py` | `rooms.floor_tts_provider`, `rooms.floor_tts_voice` |
+| 018 | `018_add_authtoken_and_user_email_verified.py` | `users.email_verified`, `auth_tokens` table |
+| 019 | `019_add_api_keys_and_usage_metrics.py` | `api_keys`, `usage_metrics` tables |
+| 020 | `020_multi_room_architecture.py` | multi-room booth support (`booths.room_id`, unique index `(room_id, language_code)`) |
+| 021 | `021_add_oauth2_and_developer_platform_models.py` | `oauth_clients`, `oauth_tokens`, `developer_accounts`, `oauth_audit_logs` |
+| 022 | `022_add_webhooks.py` | `webhooks`, `webhook_deliveries` tables |
+| 023 | `023_phase_4_models_update.py` | model relationships and index updates |
+| 024 | `024_make_oauth_audit_logs_client_id_nullable.py` | nullable `client_id` in audit logs |
+| 025 | `025_program_ingest.py` | `rooms.floor_source`, `rooms.program_key_hash`, `rooms.program_key_expires_at`, `rooms.program_sync_offset_ms`, `rooms.floor_caption_seq` |
+| 026 | `026_program_sender_session.py` | `rooms.program_session_id`, `program_connected_at`, `program_disconnected_at` |
+| 027 | `027_meeting_agent.py` | `rooms.meeting_agent_enabled` (desired state for Jitsi floor agent) |
+| 028 | `028_program_relay.py` | `rooms.program_ingest_mode`, `rooms.program_relay_server`, `rooms.program_relay_key_enc`, `rooms.program_relay_updated_at` |
+| 029 | `029_add_can_host_to_users.py` | `users.can_host`, `users.hosting_requested_at`, `hosting_invitations` table |
+| 030 | `030_hosting_requests.py` | `hosting_requests` table with partial unique index for open requests |
+| 031 | `031_add_ai_interpretation_settings.py` | `rooms.floor_ai_interpreter_persona`, `rooms.floor_ai_interpretation_style`, `rooms.floor_ai_vocabulary_enabled`, `ai_vocabulary_entries` table |
 
 Run migrations: `uv run alembic upgrade head`
 
@@ -296,6 +310,24 @@ key to its transport), nullable `program_relay_server` (normalized allow-listed 
 URL), `program_relay_key_enc` (Fernet ciphertext of the YouTube stream key; write-only,
 never serialize or log) and `program_relay_updated_at`. Helpers live in
 `portal/program_relay.py` (`store_destination`, `clear_destination`, `destination`).
+
+## Migration 034 — transactional email outbox (#962)
+
+`email_templates` stores draft and published subject/HTML for every registered
+notification type. `email_template_revisions` retains immutable published
+versions. `email_deliveries` contains the encrypted rendered subject and HTML,
+delivery status, retry lease and schedule fields, expiry, an optional
+idempotency key and an optional `auth_token_id`. That ties an email carrying a
+sign-in or invitation link to its `auth_tokens` row (a plain integer, not a
+foreign key, so the id survives the token's deletion), so the outbox suppresses
+it once the token is redeemed, revoked, expired or deleted. The worker in
+`portal/notifications.py` claims due rows, retries failed sends with back-off,
+marks pending rows past `expires_at` as expired, and erases the rendered
+subject and HTML of finished deliveries after 30 days (the audit row stays).
+No links or email content are shown in the administration history.
+`email_settings` holds one row (id 1) of branding shared by every email:
+`show_logo` (default true) and an optional https `logo_url` (empty means the
+VoxBento logo served by the site). No row means the defaults.
 
 ## Migration 027 — managed meeting agent
 

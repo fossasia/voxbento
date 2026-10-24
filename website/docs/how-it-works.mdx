@@ -48,17 +48,17 @@ The audio path goes directly from your browser to MediaMTX and then to listeners
 MediaMTX terminates the WebRTC connection from the interpreter's browser, decodes the audio, and makes it available on a named path that corresponds to the booth's identity:
 
     ```text
-    {event_slug}/{language_code}
+    {event_slug}/{room_id}/{language_code}
     ```
 
-    For example, the English booth at PyCon 2026 occupies the path `pycon2026/en`. The WHIP and WHEP URLs for that booth follow the pattern:
+    For example, the English booth in room 14 at PyCon 2026 occupies the path `pycon2026/14/en`. The WHIP and WHEP URLs for that booth follow the pattern:
 
     ```text
     # Interpreter publishes to:
-    {mediamtx_base}/pycon2026/en/whip
+    {mediamtx_base}/pycon2026/14/en/whip
     
     # Listeners connect to:
-    {mediamtx_base}/pycon2026/en/whep
+    {mediamtx_base}/pycon2026/14/en/whep
     ```
 
     MediaMTX holds these paths open even when no interpreter is currently publishing, so listener connections are never dropped between handoffs.
@@ -76,13 +76,42 @@ Rooms can also define an optional listener-side audio synchronization delay. Thi
 
 In the organizer workspace, room management includes server-side search to quickly filter rooms by name within an event using case-insensitive matching against the room display name, displaying a clearable empty state when no rooms match the query.
 
+### Guided room setup
+
+Event setup follows **Event → Rooms & languages → Team & listeners**. Each room
+uses one form for its spoken language, listener languages, delivery by interpreters,
+AI or both, captions, and optional AI speech. The same form edits existing rooms.
+Room lists and the room overview summarize those choices, including AI languages
+that do not have an interpreter booth.
+
+`portal/room_setup.py` validates a room plan and applies it in one database
+transaction to the existing room, booth, and translation-language tables. Human
+languages create booths; AI languages enable floor transcription and translation;
+AI voice enables floor TTS. Service choices require event keys, the external
+transcription switch where applicable, and optional server dependencies. Local
+translation and voice language support are validated before saving. No schema
+migration or change to the audio transport is needed.
+
+Saving removes deselected idle booths and their dependent invitations and
+assignments, but retains booths reported live and explains this on the room page.
+Existing booths in the spoken language are preserved unless explicitly deselected.
+Advanced models stay unchanged when their provider stays the same. The advanced
+room tabs remain available for model, voice, prompt, vocabulary, and source settings.
+The JavaScript module progressively enhances the server-rendered form into four
+steps; server validation also handles submissions without JavaScript.
+
+The owner-only GET/POST paths are `/workspace/events/{event_id}/rooms/new` and
+`/workspace/events/{event_id}/rooms/{room_id}/setup`, with corresponding Admin
+paths. Both new POST handlers require same-origin requests. Old wizard room and
+booth POSTs remain compatible; the old booth GET redirects to Rooms & languages.
+
 ## Organizer and System Administration Routes
 
 Event management and system administration use separate public URL namespaces:
 
 - `/workspace/...` is the event workspace for `event_owner` users. It contains event, room, booth, membership, transcription, translation, and event API-key management scoped by the existing role checks.
 - `/mission-control/...` is the room-scoped operational surface for `room_coordinator` users.
-- `/admin/...` is reserved for `super_admin` users and contains system-wide views such as user and developer-account management.
+- `/admin/...` is reserved for Admins and contains system-wide views such as user and developer-account management.
 
 Both namespaces use the same underlying management handlers, so the route split does not duplicate event-management behavior. Existing organizer bookmarks under `/admin/events/...` receive a temporary redirect to the corresponding workspace URL with their query string and HTTP method preserved. The OAuth routes remain under `/oauth/...`; shared-organizer authorization and token lifecycle behavior are therefore unchanged.
 
@@ -97,6 +126,8 @@ To transcribe or translate the original speakers without requiring external inte
 
 Event owners control the bot as a managed **Meeting source** on the room page. `rooms.meeting_agent_enabled` stores the desired state; `portal/meeting_source.py` compares it every two seconds with the bot's `/status` and the MediaMTX floor path. It restarts a failed agent with back-off up to `MEETING_AGENT_MAX_RESTARTS` times, starts the floor transcription worker only after audio arrives, and stops agents that no rooms want after a portal restart. The room has one floor owner: the meeting agent or program ingest. Switching between them requires confirmation. Meeting URLs can carry Jitsi credentials, so they are never logged or returned in status responses.
 
+Venues without a hardware encoder can send floor audio from a browser instead. The room page opens a dedicated **Program audio sender** tab that publishes the chosen sound-desk input over authenticated WHIP with a short-lived session secret. Because the stream lives in that tab, the rest of the console can be used freely. After network drops the sender retries with back-off; it stops and reports an error when the sign-in expires or another source owns the floor. It keeps the screen awake, can mute without giving up the floor, and offers a local sound check (level hint plus record-and-play-back) that never reaches listeners.
+
 ### Pipeline Steps
 
 Floor-bot dependency upgrades are checked separately in CI: the Playwright SDK
@@ -109,15 +140,15 @@ checks a 900 MB compressed base-image budget for Linux amd64 before pulling
 layers. These checks cover browser and audio dependencies without an external
 Jitsi session; they do not validate a deployment host's available disk space.
 
-1. **Audio Ingest:** The worker uses FFmpeg to pull the live audio stream from MediaMTX via RTSP (`rtsp://mediamtx:8554/{event_slug}/{language_code}` or `rtsp://mediamtx:8554/{event_slug}/floor`).
+1. **Audio Ingest:** The worker uses FFmpeg to pull the live audio stream from MediaMTX via RTSP (`rtsp://mediamtx:8554/{event_slug}/{room_id}/{language_code}` or `rtsp://mediamtx:8554/{event_slug}/{room_id}/floor`).
 2. **Transcoding:** FFmpeg transcodes the audio to PCM S16LE (mono, 16kHz or 24kHz depending on the provider) and pipes it to the selected `TranscriptionProvider`.
 3. **Speech-to-Text (Transcription):** The provider sends audio to an AI service (OpenAI, Deepgram, ElevenLabs, NVIDIA, or Local Whisper). The `CaptionAggregator` receives raw text, splitting sentences and instantly broadcasting partial updates to listeners (`/ws/captions/{channel_id}`).
 4. **Finalization:** Once a full sentence is formed, the aggregator saves it to the database as a canonical `transcript_segment`.
-5. **Text-to-Text (Translation):** If target languages are enabled, the Translation Worker detects the finalized segment and spawns parallel requests to LLMs (Anthropic, Groq, Gemini) to translate the sentence. 
-6. **Broadcast:** Translations are saved to the database and immediately broadcast via the dedicated WebSocket (`/ws/translations/{channel_id}`).
+5. **Text-to-Text (Translation & AI Interpretation):** If target languages are enabled, the Translation Worker detects the finalized segment and generates translations using LLMs (Anthropic, OpenAI, Groq, Gemini) or local NLLB. Translation prompts dynamically integrate the room's configured **AI interpreter persona** and **interpretation style**, as well as matching domain terms from the room's **AI vocabulary glossary**, ensuring consistent, conference-grade terminology.
+6. **Broadcast:** Translations are saved to the database and immediately broadcast as `translated_caption` events via the target booth's caption feed (`/ws/captions/{booth_id}`).
 
-7. **Text-to-Speech (TTS):** If the room has "Floor Audio TTS (Direct Push)" enabled, the `TTSWorker` instantly receives the finalized translated text and synthesizes speech using the room's configured provider — either **Deepgram Aura** (cloud WebSocket) or **Supertonic** (self-hosted, in-process ONNX). Both emit raw PCM (24 kHz s16le) pushed directly to listeners.
-8. **TTS Audio Delivery:** Deepgram returns synthesized speech as raw PCM binary data, which the `tts_manager` broadcasts directly to listeners over a dedicated WebSocket (`/ws/tts/{room_id}`). Listeners hear the translated audio natively via the Web Audio API with sub-second latency, bypassing the WHEP stream entirely.
+7. **Text-to-Speech (TTS):** If the room has "Floor Audio TTS (Direct Push)" enabled, the `TTSWorker` instantly receives the finalized translated text and synthesizes speech using the room's configured provider — either **Deepgram Aura** (cloud WebSocket) or **Supertonic** (self-hosted, in-process ONNX).
+8. **TTS Audio Delivery:** The synthesized audio is streamed to listeners in structured binary bundle messages (1-byte version, 4-byte header length, JSON metadata header, and optional 24 kHz 16-bit mono PCM payload) over an authorized subscription WebSocket (`/ws/tts/{room_id}/{language_code}/{booth_id}`). Listeners receive translated speech natively via the Web Audio API with sub-second latency, scheduled smoothly by `audio-scheduler.js` without relying on WHEP.
 
 :::info
 Transcription, Translation, and TTS workers are isolated from the main audio path. If an API provider lags, fails, or drops chunks, the core interpretation audio remains perfectly stable and unaffected.
@@ -125,14 +156,15 @@ Transcription, Translation, and TTS workers are isolated from the main audio pat
 
 ## Booth Identity
 
-Every booth in Voxbento is uniquely identified by two coordinates:
+Every booth in Voxbento is uniquely identified by three coordinates:
 
 | Coordinate | Format | Example |
 | --- | --- | --- |
 | `event_slug` | Lowercase alphanumeric and hyphens, 1–64 characters | `pycon2026` |
+| `room_id` | Non-negative integer representing the room / stage | `14` |
 | `language_code` | ISO 639-1 two-letter code | `en` |
 
-These two values combine to form the **MediaMTX path** (`pycon2026/en`) and the **booth ID** (`pycon2026-en`). Both are derived at runtime — there is no separate stored URL. If you change the event slug or language code, the derived URLs update automatically.
+These values combine to form the **MediaMTX path** (`pycon2026/14/en`) and the **booth ID** (`pycon2026-14-en`). Both are derived at runtime — there is no separate stored URL. If you change the event slug, room, or language code, the derived URLs update automatically.
 
 Administrators can search the event list by either slug or display name. Filtering is applied before pagination so page counts and results stay in sync. Search treats `%` and `_` literally, pagination URL-encodes reserved characters such as `&` and `#`, blank queries show all events, and out-of-range pages open the last filtered page.
 
@@ -155,21 +187,19 @@ Listeners on the HLS fallback path experience a longer gap during handoff — ro
 
 ## Roles
 
-Voxbento has three participant roles that are active during a live event:
+Voxbento defines a clear privilege hierarchy across live operations:
 
 ### Room Coordinator
 
-Manages the booth. Assigns which interpreter is active, initiates handoffs, and monitors participant state. Room coordinators can see the full participant roster and internal booth chat. They cannot publish audio themselves.
-  
+Oversees the room's booths from Mission Control. Assigns which interpreter is active, initiates handoffs, and monitors participant state. Room coordinators can participate in booth chat and can also publish audio when designated as the active broadcaster.
 
-  ### Interpreter
+### Interpreter
 
-    Monitors floor audio via the Jitsi iframe and publishes translated audio to MediaMTX via WHIP when they are the active interpreter. Only the active interpreter can go live — all others are held in standby.
-  
+Monitors floor audio via the Jitsi iframe and publishes translated audio to MediaMTX via WHIP when designated as the active interpreter. Only the active interpreter can go live — all others remain in standby.
 
-  ### Listener
+### Listeners
 
-    Receives the interpreted audio stream from MediaMTX via WHEP or HLS. Listeners connect to the event's public listener page and choose a language — no login required by default.
+Listening is not a role. Listeners receive the interpreted audio stream from MediaMTX via WHEP or HLS. They connect to the event's public listener page and choose a room and language — no login required by default.
   
 
 ## Live Captions
@@ -185,20 +215,35 @@ Captions are delivered over a dedicated WebSocket endpoint:
 For example:
 
 ```text
-/ws/captions/pycon2026-en
+/ws/captions/pycon2026-14-en
 ```
 
 Listeners connected to the caption WebSocket receive transcription segments as they are produced. The caption stream is independent of the audio stream — listeners can receive captions even while audio is playing through WHEP or HLS.
 
 ## Shared header and user menu
 
-Every signed-in page (Admin, My events and its event pages, Mission Control,
-Account, Developer API) renders the same header from `_app_header.html`: the
-VoxBento logo with the name of the current area, the area's page links, and the
-user menu. `portal/user_menu.py` builds the menu from the request principal: My
-events, Account, Developer API (only with an approved developer app), Admin (only
-for Admins) and Logout, with the current area highlighted. A router dependency
-loads the principal once per request so templates never query the database.
+Every signed-in page (Admin, My events and its event pages, My booths, Mission
+Control, Account, Developer API) renders the same header from `_app_header.html`:
+the VoxBento logo with the name of the current area, the area's page links, and
+the user menu. `portal/user_menu.py` builds the menu from the request principal: My
+events, My booths (only for interpreters, given for an event or a booth), Account,
+Developer API (only with an approved developer app), Admin (only for Admins) and
+Logout, with the current area highlighted. A router dependency loads the principal
+once per request so templates never query the database.
+
+The interpreter booth is a work screen, so it uses a compact bar instead: the
+language, room and event names, the connection state, the same user menu and
+**Leave**, and no site footer. **My booths** (`/interpreter`) lists the person's
+booths by event and room, with **Enter booth** (and **Mission Control** for
+coordinators) next to a microphone and connection check.
+
+**Mission Control** (`/mission-control/{event}/`) shows one section per room the
+person may run. Each room shows its floor captions' state with Start and Stop
+(through `/api/rooms/{room_id}/floor-transcription/*`), and each booth card shows
+who is in the booth and who is live, a listen-in slider, Go live / Stop broadcast
+and **Open booth**. The owner's room page is split into tabs (Overview, Floor
+source, Captions & translation, Settings); the open tab is remembered per room so
+saving a setting returns to it, and without JavaScript every section shows in order.
 
 **My events** at `/workspace/` (`portal/my_events.py`) lists every event the
 person has a role in, combining event, room and booth memberships into one card
@@ -221,7 +266,7 @@ email links only. Event, room and booth roles are listed on My events instead.
 
 `/admin/users/` lists every account with a search, a **Show** filter (All users,
 Admins, Hosting access, Deactivated, Email not verified) and on/off switches for
-**Hosting access**, **Admin** and **Active** in each row, changed in place without a
+**Hosting access**, **Admin**, **Active**, and **Email verified** in each row, changed in place without a
 page reload. Each switch posts to `/admin/users/{id}/access`; if the server refuses
 a change, the switch flips back and the reason is shown. `/admin/users/{id}/` shows
 the person's platform access, their roles in events (read-only, since each event's
@@ -256,12 +301,41 @@ request emails the team address in `HOSTING_REQUESTS_EMAIL`, and the Account pag
 shows the request as waiting for review until it is handled.
 
 Admins see open requests on the **Requests** tab of `/admin/hosting-access/`; the
-"Hosting access" menu item shows how many are open. Granting sets `can_host`,
+"Hosting access" menu item shows how many are open, and the "Dev Accounts" item likewise shows how many Developer API applications are waiting for review. Granting sets `can_host`,
 closes the request as `granted` and sends the "hosting access granted" email.
 Declining requires a reason, closes the request as `declined` and emails the
 reason to the person, who can then send a new request. Granting hosting access
 any other way (the user page toggle or an accepted hosting invitation) also
 closes an open request.
+
+## Transactional email
+
+VoxBento queues transactional email in the same database transaction as the
+action that caused it. The outbox worker leases messages, retries transient SMTP
+failures, and preserves records when SMTP is not configured. Platform Admins use
+**Admin → Emails** to edit drafts, publish versioned templates, preview only
+safe sample links, send themselves a test, and review redacted delivery status.
+Templates may only use the placeholders declared for each notification and
+`{% if %}` conditions, and render in Jinja's sandbox. Rendered messages and
+account links are encrypted at rest; a queued email whose sign-in or invitation
+link has been used or has expired is not sent, and the content of finished
+emails is erased after 30 days.
+
+Every email uses one fixed layout, so they all look alike: the logo, the message
+in a white card with one button, and a footer. Admins edit only the message;
+the **Branding** setting on Admin → Emails shows or hides the logo and can use
+another https image. The default is the V symbol without the wordmark or a
+background, so it stays clean on light and dark surfaces. Its SVG source has a
+high-resolution transparent PNG export for use in email clients. Browser
+previews load the bundled mark from the current site; delivered emails use an
+absolute image URL under `PUBLIC_BASE_URL`. Mail clients that block images show
+the VoxBento alternative text until images are allowed.
+
+Besides sign-in, invitation and hosting emails, people are
+told when they are removed from a team, when an Admin changes their Admin,
+hosting, active or verified status, when their password is set, changed,
+removed or reset, and when their account is deleted. Team invitation links last
+7 days. Shareable booth invite links send no email.
 
 ## Security Layers
 
@@ -270,7 +344,7 @@ Publishing audio to a booth is protected by three independent enforcement layers
 <Tabs>
   <TabItem value="role-and-active-interpreter-check" label="Role and active-interpreter check">
 
-Voxbento's server-side coordination layer rejects any attempt to activate a microphone or begin audio publishing unless the participant holds the `interpreter` role **and** is the currently designated active interpreter for that booth. Room coordinators and listeners cannot publish audio under any circumstances.
+Voxbento's server-side coordination layer rejects any attempt to activate a microphone or begin audio publishing unless the participant's role can go live (every role in `portal/roles.py`: Interpreter, Room coordinator, Event owner, Admin) **and** they are the currently designated active broadcaster for that booth. Standby participants and listeners cannot publish audio.
 
 </TabItem>
   <TabItem value="whip-url-gating" label="Publish tickets">
@@ -298,6 +372,8 @@ The reconciler reads one MediaMTX path snapshot per tick, and per-room ownership
 locks keep an unavailable room from delaying authorization for other rooms.
 Credential revocation commits before media cleanup; if cleanup is temporarily
 unavailable, the old token stays invalid while reconciliation retries the kick.
+While a dependency stays down, the reconcilers log the outage once, remind every
+5 minutes and log its recovery, rather than repeating a warning on every 2 s retry.
 Media never passes through FastAPI. Only one floor source may own a room.
 
 The existing FFmpeg/STT/aggregator/storage/translation/TTS chain is reused. Program
@@ -329,3 +405,14 @@ Production deployment builds and validates a separate candidate checkout before
 updating the live checkout. The portal reads code and dependencies from its Docker
 image and receives `.env` settings through Compose. See the
 [deployment preflight](configuration/deployment.mdx#deployment-preflight).
+
+For self-hosted domains, set `PUBLIC_BASE_URL` to your public URL; the default is
+`https://voxbento.com`. This is the same setting used for email links. Public
+`GET /sitemap.xml` builds canonical URLs from `settings.public_base_url`, never
+from the request's `Host` header. It strips trailing slashes before appending the
+existing sitemap paths and XML-escapes the resulting URLs.
+
+A configured path prefix is preserved in sitemap entries: for example,
+`PUBLIC_BASE_URL=https://interpret.example.com/voxbento/` produces
+`https://interpret.example.com/voxbento/` for the home page and
+`https://interpret.example.com/voxbento/research` for the research page.

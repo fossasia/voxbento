@@ -20,6 +20,7 @@ from portal.config import settings
 from portal.crypto import decrypt_val, encrypt_val
 from portal.globals import get_http_client
 from portal.models import Room
+from portal.outage_log import OutageLog
 
 logger = logging.getLogger(__name__)
 WHIP_MODE = "whip"
@@ -39,6 +40,7 @@ class RelayHealth:
 
 
 relay_health: dict[int, RelayHealth] = {}
+list_outage = OutageLog(logger, "program_relay list_unavailable")
 
 
 def allowed_hosts() -> set[str]:
@@ -153,8 +155,9 @@ async def sync(wanted: dict[int, tuple[str, str]], relay_rooms: set[int]) -> Non
     except Exception:  # noqa: BLE001 - never surface upstream bodies; they may contain secrets
         for room_id in wanted:
             relay_health[room_id] = RelayHealth("degraded", "Relay service unavailable; retrying automatically.")
-        logger.warning("program_relay list_unavailable")
+        list_outage.failed()
         return
+    list_outage.recovered()
     for relay_id in set(live) - {str(room_id) for room_id in wanted}:
         try:
             # A relay-mode room keeps the health explaining why its relay was stopped.

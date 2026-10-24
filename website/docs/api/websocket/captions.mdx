@@ -17,16 +17,16 @@ ws://voxbento.com/ws/captions/{booth_id}
 ```
 
 :::info
-Always use `wss://` (TLS) in production to protect the integrity of the data stream, even though this endpoint requires no authentication token.
+Always use `wss://` (TLS) in production to protect the integrity of the data stream.
 :::
 
-The `booth_id` path parameter uses the same `{event_slug}-{language_code}` format as the rest of the Voxbento API.
+The `booth_id` path parameter uses the canonical `{event_slug}-{room_id}-{language_code}` format (e.g. `pycon2026-14-en`). Note that while `floor-{room_id}` (e.g. `floor-14`) is used in local development when authentication is disabled, the `floor-{room_id}` format is not supported for caption subscriptions in protected deployments when `BOOTH_ACCESS_TOKEN` is configured (until `resolve_ws_auth` adds explicit floor-channel authorization support). Retain the canonical `{event_slug}-{room_id}-{language_code}` format as the supported option across deployments.
 
-**Example:** `wss://voxbento.com/ws/captions/pycon2026-en`
+**Example:** `wss://voxbento.com/ws/captions/pycon2026-14-en`
 
 ## Authentication
 
-No authentication is required. This endpoint is intentionally public so that listener pages, browser extensions, and broadcast tools can subscribe without managing credentials.
+In production environments where `BOOTH_ACCESS_TOKEN` is configured, connections are authenticated via `resolve_ws_auth`. Clients provide authentication using a valid participant or listener token in the `?token=` query parameter or via session cookies (`session_token` or `user_token`). In local development with `BOOTH_ACCESS_TOKEN` unset, clients can connect without credentials.
 
 ## Messages Received from the Server
 
@@ -117,7 +117,7 @@ Captions are only produced when transcription is enabled for the booth by the ev
 
 **`type`** *(string)* — Always `"booth:state"`.
 
-  **`booth_id`** *(string)* — The booth identifier in `{event_slug}-{language_code}` format.
+  **`booth_id`** *(string)* — The booth identifier in `{event_slug}-{room_id}-{language_code}` format or room floor identifier (`floor-{room_id}`).
 
   **`active_interpreter_id`** *(string | null)* — The `user_id` of the currently active interpreter, or `null` if no interpreter is streaming.
 
@@ -132,7 +132,7 @@ Captions are only produced when transcription is enabled for the booth by the ev
 The snippet below demonstrates a minimal caption subscriber that renders partial and final captions in separate styles and clears the display on a `clear` event.
 
 ```javascript
-const ws = new WebSocket('wss://voxbento.com/ws/captions/pycon2026-en');
+const ws = new WebSocket('wss://voxbento.com/ws/captions/pycon2026-14-en');
 
 const captionEl = document.getElementById('caption');
 
