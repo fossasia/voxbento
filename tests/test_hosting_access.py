@@ -1231,12 +1231,14 @@ async def test_anonymous_demo_request_does_not_mutate_existing_user_hosting_requ
 
 @pytest.mark.anyio
 async def test_demo_modal_privacy_checkbox_starts_unchecked_and_is_required():
-    """Verify demo privacy consent checkbox is unchecked by default and marked required."""
+    """Verify the demo modal keeps its required consent and external assets."""
     import re
 
     async with client() as http:
         resp_home = await http.get("/")
         assert resp_home.status_code == 200
+        assert 'css/demo-modal.css' in resp_home.text
+        assert 'js/demo-modal.js' in resp_home.text
         home_match = re.search(r"<input[^>]*id=[\"']demo-privacy[\"'][^>]*>", resp_home.text)
         assert home_match is not None, "demo-privacy checkbox not found on home page"
         tag = home_match.group(0)

@@ -137,9 +137,6 @@ document.addEventListener("DOMContentLoaded", () => {
 
   document.getElementById("mobile-request-demo-btn")?.addEventListener("click", () => {
     closeMobileMenu();
-    if (typeof window.openDemoModal === "function") {
-      window.openDemoModal();
-    }
   });
 
 });
