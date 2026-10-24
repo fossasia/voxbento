@@ -289,6 +289,23 @@
   border-color: #10b981 transparent transparent transparent;
 }
 
+.copy-wrapper.copy-failed {
+  border-color: #ef4444;
+  background: #fef2f2;
+  color: #991b1b;
+}
+
+.copy-wrapper.copy-failed .copy-tooltip {
+  opacity: 1;
+  visibility: visible;
+  transform: translateX(-50%) translateY(0) scale(1);
+  background: #dc2626;
+}
+
+.copy-wrapper.copy-failed .copy-tooltip::after {
+  border-color: #dc2626 transparent transparent transparent;
+}
+
 /* Specific styling for the modal secrets */
 .secret-box.copy-wrapper {
   width: 100%;
