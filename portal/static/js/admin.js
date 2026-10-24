@@ -214,17 +214,30 @@ function initCustomModal() {
   let pendingForm = null;
   let opener = null;
 
-  function closeModal() {
-    modalOverlay.classList.remove('active');
-    if (modalOverlay.open) modalOverlay.close();
-    pendingForm = null;
-    btnOk.disabled = false;
-    btnCancel.disabled = false;
+  function finishClose() {
+    modalOverlay.removeEventListener('transitionend', finishClose);
+    if (modalOverlay.classList.contains('active') || !modalOverlay.open) return;
+    modalOverlay.close();
     if (opener && opener.isConnected) opener.focus();
     opener = null;
   }
 
+  function closeModal() {
+    modalOverlay.classList.remove('active');
+    pendingForm = null;
+    btnOk.disabled = false;
+    btnCancel.disabled = false;
+    modalOverlay.addEventListener('transitionend', finishClose);
+    setTimeout(finishClose, 250);
+  }
+
   function openModal(message, formElement) {
+    if (typeof modalOverlay.showModal !== 'function') {
+      if (window.confirm(message)) formElement.submit();
+      return;
+    }
+    if (modalOverlay.classList.contains('active')) return;
+    if (modalOverlay.open) modalOverlay.close();
     messageEl.textContent = message;
     const randomFunny = FUNNY_WARNINGS[Math.floor(Math.random() * FUNNY_WARNINGS.length)];
     funnyEl.textContent = randomFunny;
