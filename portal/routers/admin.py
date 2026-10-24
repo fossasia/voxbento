@@ -993,6 +993,7 @@ async def admin_room_setup_create(request: Request, event_id: int):
 
 @router.get("/admin/events/{event_id}/rooms/{room_id}/setup", dependencies=[Depends(require_event_owner)])
 async def admin_room_setup_edit(request: Request, event_id: int, room_id: int):
+    source = request.query_params.get("from")
     admin_flags = await get_access_flags(request, event_id=event_id, room_id=room_id)
     async with get_session() as session:
         event = await get_event_by_id(session, event_id)
@@ -1011,6 +1012,7 @@ async def admin_room_setup_edit(request: Request, event_id: int, room_id: int):
         admin_flags=admin_flags,
         booth_codes=snapshot.booth_codes,
         live_codes=live,
+        from_setup=source == "setup",
     )
 
 
@@ -1019,6 +1021,7 @@ async def admin_room_setup_save(request: Request, event_id: int, room_id: int):
     if not verify_same_origin(request):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid request origin.")
     form = await request.form()
+    from_setup = form.get("from") == "setup"
     async with room_lock(room_id), get_session() as session:
         event = await get_event_by_id(session, event_id)
         if event is None:
@@ -1040,14 +1043,16 @@ async def admin_room_setup_save(request: Request, event_id: int, room_id: int):
                 errors=errors,
                 booth_codes=booth_codes,
                 live_codes=live,
+                from_setup=from_setup,
                 status_code=status.HTTP_400_BAD_REQUEST,
             )
         result = await apply_plan(session, event, room, plan, catalog, live_booth_codes=live)
     query = {"updated": "1"}
     if result.kept_live_booths:
         query["kept_live"] = ",".join(result.kept_live_booths)
+    target = f"events/{event_id}/setup/rooms" if from_setup else f"events/{event_id}/rooms/{room_id}/?{urllib.parse.urlencode(query)}"
     return safe_redirect(
-        url=management_url(request, f"events/{event_id}/rooms/{room_id}/?{urllib.parse.urlencode(query)}"),
+        url=management_url(request, target),
         status_code=status.HTTP_303_SEE_OTHER,
     )
 
@@ -1250,10 +1255,7 @@ async def admin_room_list(request: Request, event_id: int, search: str | None = 
         if event is None:
             raise HTTPException(status_code=404, detail="Event not found.")
         rooms = await list_rooms_for_event(session, event_id, search=search_val)
-        room_data = []
-        for room in rooms:
-            room_booths = await list_booths_for_room(session, room.id)
-            room_data.append({"room": room, "booth_count": len(room_booths)})
+        room_data = [{"room": room} for room in rooms]
         summaries = await _room_summaries(session, event, rooms)
     return templates.TemplateResponse(
         request=request,

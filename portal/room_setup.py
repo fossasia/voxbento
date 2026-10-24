@@ -284,7 +284,7 @@ async def load_snapshot(
         mode=room_mode(languages) or (MODE_INTERPRETERS if room.floor_transcription_enabled else ""),
         languages=tuple(languages),
         captions=room.floor_transcription_enabled,
-        ai_voice=room.floor_tts_enabled or not room.floor_translation_enabled,
+        ai_voice=bool(catalog.voice) and (room.floor_tts_enabled or not room.floor_translation_enabled),
         speech_engine=_available_or_first(catalog.speech, room.floor_transcription_provider),
         translation_engine=_available_or_first(catalog.translation, room.floor_translation_provider),
         voice_engine=_available_or_first(catalog.voice, room.floor_tts_provider),

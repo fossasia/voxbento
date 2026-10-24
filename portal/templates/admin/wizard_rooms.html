@@ -22,7 +22,7 @@
           <span class="setup-room-name">{{ room.display_name }}</span>
           {% include "admin/_room_summary_line.html" %}
         </div>
-        <a href="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/setup" class="btn btn-sm">Change</a>
+        <a href="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/setup?from=setup" class="btn btn-sm">Change</a>
       </li>
       {% endfor %}
     </ul>

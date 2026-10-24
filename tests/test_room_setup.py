@@ -577,3 +577,45 @@ async def test_room_lists_describe_each_rooms_languages(admin_cookie, event_room
         assert resp.status_code == 200
         assert "French" in resp.text and "delivery-tag--interpreter" in resp.text
         assert f"/events/{event.id}/rooms/new" in resp.text
+
+
+@pytest.mark.anyio
+async def test_load_snapshot_ai_voice_requires_catalog_voice(event_room):
+    event, room = event_room
+    empty_voice_catalog = room_setup.EngineCatalog(
+        speech=(),
+        translation=(),
+        voice=(),
+        locked=(),
+    )
+    async with get_session() as s:
+        db_room = await s.get(Room, room.id)
+        snapshot = await room_setup.load_snapshot(s, db_room, empty_voice_catalog)
+    assert not snapshot.plan.ai_voice
+
+
+@pytest.mark.anyio
+async def test_editing_with_from_setup_returns_to_wizard_rooms(admin_cookie, event_room):
+    event, room = event_room
+    async with _client() as c:
+        page = await c.get(f"/admin/events/{event.id}/rooms/{room.id}/setup?from=setup", cookies=admin_cookie)
+        assert page.status_code == 200
+        assert 'href="/admin/events/' f"{event.id}" '/setup/rooms" class="btn">Cancel</a>' in page.text
+        assert 'name="from" value="setup"' in page.text
+
+        resp = await c.post(
+            f"/admin/events/{event.id}/rooms/{room.id}/setup",
+            data={
+                "display_name": "Main Hall",
+                "spoken_language": "en",
+                "mode": MODE_INTERPRETERS,
+                "languages": ["es"],
+                "from": "setup",
+            },
+            headers=ORIGIN,
+            cookies=admin_cookie,
+            follow_redirects=False,
+        )
+        assert resp.status_code == 303
+        assert resp.headers["location"].endswith(f"/events/{event.id}/setup/rooms")
+

@@ -20,7 +20,7 @@
 {% block content %}
 {% if is_edit %}
   {% set form_action = management_prefix ~ '/events/' ~ event.id ~ '/rooms/' ~ room.id ~ '/setup' %}
-  {% set cancel_url = management_prefix ~ '/events/' ~ event.id ~ '/rooms/' ~ room.id ~ '/' %}
+  {% set cancel_url = management_prefix ~ '/events/' ~ event.id ~ ('/setup/rooms' if from_setup else '/rooms/' ~ room.id ~ '/') %}
 {% else %}
   {% set form_action = management_prefix ~ '/events/' ~ event.id ~ '/rooms/new' %}
   {% set cancel_url = management_prefix ~ '/events/' ~ event.id ~ ('/setup/rooms' if from_setup else '/rooms/') %}
