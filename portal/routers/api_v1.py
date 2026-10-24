@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
+from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -22,6 +23,8 @@ from portal.models import (
     OAuthToken,
     Room,
     RoomTranslationLanguage,
+    TranscriptSegment,
+    TranscriptTranslation,
 )
 from portal.rate_limit import auth_rate_limiter
 from portal.roles import EVENT_OWNER
@@ -908,11 +911,43 @@ async def get_transcription_status(
 
 
 
+def _format_timestamp(dt: datetime, sep: str = ".") -> str:
+    ms = dt.microsecond // 1000
+    return f"{dt.strftime('%H:%M:%S')}{sep}{ms:03d}"
+
+
+def _to_vtt(items: list[TranscriptSegment | TranscriptTranslation]) -> str:
+    lines = ["WEBVTT", ""]
+    for i, item in enumerate(items, 1):
+        start = _format_timestamp(item.created_at, sep=".")
+        end_dt = item.created_at + timedelta(seconds=5)
+        end = _format_timestamp(end_dt, sep=".")
+        lines.extend([str(i), f"{start} --> {end}", item.text, ""])
+    return "\n".join(lines)
+
+
+def _to_srt(items: list[TranscriptSegment | TranscriptTranslation]) -> str:
+    lines: list[str] = []
+    for i, item in enumerate(items, 1):
+        start = _format_timestamp(item.created_at, sep=",")
+        end_dt = item.created_at + timedelta(seconds=5)
+        end = _format_timestamp(end_dt, sep=",")
+        lines.extend([str(i), f"{start} --> {end}", item.text, ""])
+    return "\n".join(lines)
+
+
 @router.get("/events/{event_slug}/rooms/{room_id}/booths/{language_code}/transcripts/export")
 async def export_transcript(
     event_slug: str,
     room_id: int | str,
     language_code: str,
+    target_lang: str | None = Query(None),
+    format: str | None = Query(None, pattern="^(json|vtt|srt)$"),
+    after: datetime | None = Query(None),
+    before: datetime | None = Query(None),
+    start_time: datetime | None = Query(None),
+    end_time: datetime | None = Query(None),
+    accept: str | None = Header(None),
     db: AsyncSession = Depends(get_db_session),
     token: OAuthToken = Depends(require_oauth_scope("transcripts:read")),
 ):
@@ -921,9 +956,75 @@ async def export_transcript(
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
 
-    await _verify_token_rbac(db, token, event, room_id, lock_event=True)
+    room = await _verify_token_rbac(db, token, event, room_id, lock_event=True)
+    target_room_id = _extract_room_id(room, room_id)
 
-    return {"status": "success", "content": "Transcription export not fully implemented"}
+    after_dt = after if isinstance(after, datetime) else (start_time if isinstance(start_time, datetime) else None)
+    before_dt = before if isinstance(before, datetime) else (end_time if isinstance(end_time, datetime) else None)
+    if after_dt and after_dt.tzinfo is None:
+        after_dt = after_dt.replace(tzinfo=timezone.utc)
+    if before_dt and before_dt.tzinfo is None:
+        before_dt = before_dt.replace(tzinfo=timezone.utc)
+
+    target_lang_str = target_lang if isinstance(target_lang, str) else None
+    if target_lang_str:
+        stmt = (
+            select(TranscriptTranslation)
+            .join(TranscriptSegment, TranscriptTranslation.segment_id == TranscriptSegment.id)
+            .where(
+                TranscriptSegment.room_id == target_room_id,
+                TranscriptSegment.language_code == language_code,
+                TranscriptTranslation.language_code == target_lang_str,
+            )
+            .order_by(TranscriptSegment.created_at)
+        )
+        if after_dt:
+            stmt = stmt.where(TranscriptSegment.created_at > after_dt)
+        if before_dt:
+            stmt = stmt.where(TranscriptSegment.created_at < before_dt)
+    else:
+        stmt = (
+            select(TranscriptSegment)
+            .where(
+                TranscriptSegment.room_id == target_room_id,
+                TranscriptSegment.language_code == language_code,
+            )
+            .order_by(TranscriptSegment.created_at)
+        )
+        if after_dt:
+            stmt = stmt.where(TranscriptSegment.created_at > after_dt)
+        if before_dt:
+            stmt = stmt.where(TranscriptSegment.created_at < before_dt)
+
+    result = await db.execute(stmt)
+    items = result.scalars().all()
+
+    format_str = format if isinstance(format, str) else None
+    accept_str = accept if isinstance(accept, str) else None
+
+    if format_str:
+        resolved_format = format_str.lower()
+    elif accept_str and "text/vtt" in accept_str:
+        resolved_format = "vtt"
+    elif accept_str and ("text/srt" in accept_str or "application/x-subrip" in accept_str):
+        resolved_format = "srt"
+    else:
+        resolved_format = "json"
+
+    if resolved_format == "vtt":
+        return PlainTextResponse(_to_vtt(items), media_type="text/vtt")
+    if resolved_format == "srt":
+        return PlainTextResponse(_to_srt(items), media_type="text/plain")
+
+    return [
+        {
+            "id": item.id,
+            "text": item.text,
+            "language_code": item.language_code,
+            "created_at": item.created_at.isoformat(),
+        }
+        for item in items
+    ]
 
 
 @router.post("/events/{event_slug}/rooms/{room_id}/listener-token")
