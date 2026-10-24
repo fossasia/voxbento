@@ -11,6 +11,18 @@
     {% if request.query_params.get('error') == 'duplicate_language' %}
     <div class="alert alert-danger">That room already has a booth for that language.</div>
     {% endif %}
+    {% if request.query_params.get('error') == 'room_required' %}
+    <div class="alert alert-danger">Select a room before adding a booth.</div>
+    {% endif %}
+    {% if request.query_params.get('error') == 'room_not_found' %}
+    <div class="alert alert-danger">That room is not part of this event.</div>
+    {% endif %}
+    {% if request.query_params.get('error') == 'language_required' %}
+    <div class="alert alert-danger">Choose a language before adding a booth.</div>
+    {% endif %}
+    {% if request.query_params.get('error') == 'booth_create_failed' %}
+    <div class="alert alert-danger">The booth could not be created. Please try again.</div>
+    {% endif %}
     <p class="wizard-sub">Add each space at <strong>{{ event.display_name }}</strong> where people speak, like “Main Hall” or “Track A”. For each room you choose its language, the languages listeners can pick, and whether interpreters, AI or both provide them.</p>
 
     {% if rooms %}

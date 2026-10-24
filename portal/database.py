@@ -396,12 +396,14 @@ async def list_booths_for_event(
 
     result = await session.execute(
         select(DBBooth)
+        .join(Room, Room.id == DBBooth.room_id)
         .options(
             joinedload(DBBooth.event),
             joinedload(DBBooth.room),
             selectinload(DBBooth.translation_languages),
         )
-        .where(DBBooth.event_id == event_id)
+        # A booth must belong to the room's event; keep inconsistent rows out of every list.
+        .where(DBBooth.event_id == event_id, DBBooth.event_id == Room.event_id)
         .order_by(DBBooth.language_code)
         .limit(limit)
         .offset(offset),
@@ -424,12 +426,14 @@ async def list_all_booths_for_events(
 
     result = await session.execute(
         select(DBBooth)
+        .join(Room, Room.id == DBBooth.room_id)
         .options(
             joinedload(DBBooth.event),
             joinedload(DBBooth.room),
             selectinload(DBBooth.translation_languages),
         )
-        .where(DBBooth.event_id.in_(event_ids))
+        # A booth must belong to the room's event; keep inconsistent rows out of every list.
+        .where(DBBooth.event_id.in_(event_ids), DBBooth.event_id == Room.event_id)
         .order_by(DBBooth.event_id, DBBooth.room_id, DBBooth.language_code),
     )
     booths_by_event: dict[int, list[DBBooth]] = {eid: [] for eid in event_ids}
@@ -443,8 +447,10 @@ async def list_booths_for_room(session: AsyncSession, room_id: int) -> list[DBBo
 
     result = await session.execute(
         select(DBBooth)
+        .join(Room, Room.id == DBBooth.room_id)
         .options(joinedload(DBBooth.event), selectinload(DBBooth.translation_languages))
-        .where(DBBooth.room_id == room_id)
+        # A booth must belong to the room's event; keep inconsistent rows out of every list.
+        .where(DBBooth.room_id == room_id, DBBooth.event_id == Room.event_id)
         .order_by(DBBooth.language_code),
     )
     return list(result.scalars().all())
