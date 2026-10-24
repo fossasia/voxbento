@@ -125,12 +125,9 @@ async def ws_booth(websocket: WebSocket, booth_id: str) -> None:
         issued_at=issued_at or (datetime.min.replace(tzinfo=timezone.utc) if user_id is not None else utc_now()),
     )
     if user_id is not None and manager.revocation_epoch(user_id, booth_id) != revocation_epoch:
-        # Authorization changed after the check above; the revocation sweep ran
-        # before this socket was registered, so it must not register now.
         try:
             await websocket.close(code=WS_CLOSE_REVOKED, reason=REASON_AUTH_REVOKED)
         except (WebSocketDisconnect, RuntimeError, OSError):
-            # The socket was already closing; not registering it is what matters.
             _log.debug("Revoked booth socket was already closing", exc_info=True)
         return
 
@@ -141,7 +138,8 @@ async def ws_booth(websocket: WebSocket, booth_id: str) -> None:
             _log.debug("Revoked invite booth socket was already closing", exc_info=True)
         return
 
-    manager.add(websocket, session)
+    if ws_granted_role is not None:
+        manager.add(websocket, session)
     last_role_check = _monotonic()
 
     try:
