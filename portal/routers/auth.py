@@ -26,6 +26,7 @@ from portal.auth import (
     decode_token,
     get_current_user,
     hash_password,
+    is_cookie_secure,
     require_user,
     resolve_request_principal,
     verify_password,
@@ -111,18 +112,13 @@ def _registration_success(request: Request, email: str) -> object:
     )
 
 
-def _is_cookie_secure(request: Request) -> bool:
-    if request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https":
-        return True
-    return bool(settings.public_base_url.startswith("https://") and not settings.debug)
-
-
-def set_auth_cookie(response: Response, token: str) -> None:
+def set_auth_cookie(request: Request, response: Response, token: str) -> None:
     """Set the user authentication cookie with standard settings."""
     response.set_cookie(
         key="user_token",
         value=token,
         httponly=True,
+        secure=is_cookie_secure(request),
         samesite="lax",
         max_age=settings.jwt_expiry_seconds,
     )
@@ -163,7 +159,7 @@ async def join_via_invite(request: Request, token: str) -> RedirectResponse:
         key="session_token",
         value=jwt_token,
         httponly=True,
-        secure=_is_cookie_secure(request),
+        secure=is_cookie_secure(request),
         samesite="lax",
         max_age=settings.jwt_expiry_seconds,
     )
@@ -294,7 +290,7 @@ async def verify_email_route(request: Request, token: str):
                 key="user_token",
                 value=jwt_token,
                 httponly=True,
-                secure=_is_cookie_secure(request),
+                secure=is_cookie_secure(request),
                 samesite="lax",
                 max_age=settings.jwt_expiry_seconds,
             )
@@ -352,7 +348,7 @@ async def user_login_submit(request: Request):
         key="user_token",
         value=jwt_token,
         httponly=True,
-        secure=_is_cookie_secure(request),
+        secure=is_cookie_secure(request),
         samesite="lax",
         max_age=settings.jwt_expiry_seconds,
     )
@@ -460,7 +456,7 @@ async def redeem_magic_link(request: Request, token: str, next: str | None = Non
                 key="user_token",
                 value=jwt_token,
                 httponly=True,
-                secure=_is_cookie_secure(request),
+                secure=is_cookie_secure(request),
                 samesite="lax",
                 max_age=settings.jwt_expiry_seconds,
             )
@@ -469,7 +465,7 @@ async def redeem_magic_link(request: Request, token: str, next: str | None = Non
                 value="1",
                 max_age=15,
                 httponly=False,
-                secure=_is_cookie_secure(request),
+                secure=is_cookie_secure(request),
                 samesite="lax",
             )
             return response
@@ -583,7 +579,7 @@ async def reset_password_submit(request: Request, token: str):
         key="user_token",
         value=jwt_token,
         httponly=True,
-        secure=_is_cookie_secure(request),
+        secure=is_cookie_secure(request),
         samesite="lax",
         max_age=settings.jwt_expiry_seconds,
     )
@@ -1016,5 +1012,5 @@ async def invite_accept_submit(request: Request, token: str):
         is_admin=is_admin,
     )
     response = safe_redirect("/workspace/")
-    set_auth_cookie(response, jwt_token)
+    set_auth_cookie(request, response, jwt_token)
     return response

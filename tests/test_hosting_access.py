@@ -183,6 +183,7 @@ async def test_invite_acceptance_flow_and_primitive_copying():
         assert resp_post.status_code == 303
         assert resp_post.headers["location"] == "/workspace/"
         assert "user_token" in resp_post.cookies
+        assert "secure" in resp_post.headers["set-cookie"].lower()
 
         # Verify DB user state
         async with get_session() as session:

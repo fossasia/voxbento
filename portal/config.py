@@ -161,5 +161,10 @@ class Settings(BaseSettings):
             raise ValueError("public_base_url must not include a query string or fragment")
         return value
 
+    @property
+    def is_https(self) -> bool:
+        """Whether browsers reach the portal over HTTPS (Secure cookies, HSTS)."""
+        return urlparse(self.public_base_url).scheme == "https"
+
 
 settings = Settings()
