@@ -12,6 +12,7 @@ from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from slowapi.errors import RateLimitExceeded
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from portal import meeting_source, program_ingest
@@ -19,6 +20,7 @@ from portal.auth import require_owner_or_coordinator
 from portal.config import settings
 from portal.exceptions import RedirectRequired
 from portal.globals import asset_version_context
+from portal.limiter import limiter, rate_limit_exceeded_handler
 from portal.routers.admin import router as admin_router
 from portal.routers.api import router as api_router
 from portal.routers.api_v1 import router as api_v1_router
@@ -39,7 +41,9 @@ from portal.workspace_routing import WorkspaceRoutingMiddleware
 
 _BASE_DIR = Path(__file__).resolve().parent
 
-templates = Jinja2Templates(directory=str(_BASE_DIR / "portal" / "templates"), context_processors=[asset_version_context])
+templates = Jinja2Templates(
+    directory=str(_BASE_DIR / "portal" / "templates"), context_processors=[asset_version_context]
+)
 
 
 @asynccontextmanager
@@ -136,6 +140,8 @@ class _UvicornTokenRedactor(logging.Filter):
 
 
 app = FastAPI(title="Voxbento", version="1.0.0", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, rate_limit_exceeded_handler)
 app.add_middleware(WorkspaceRoutingMiddleware)
 
 
@@ -233,7 +239,10 @@ async def http_exception_handler(request: Request, exc: StarletteHTTPException):
                 request, "500.html", {"request": request, "detail": detail_msg}, status_code=exc.status_code
             )
         return templates.TemplateResponse(
-            request, "400.html", {"request": request, "detail": detail_msg, "status_code": exc.status_code}, status_code=exc.status_code
+            request,
+            "400.html",
+            {"request": request, "detail": detail_msg, "status_code": exc.status_code},
+            status_code=exc.status_code,
         )
     return JSONResponse({"detail": exc.detail}, status_code=exc.status_code, headers=headers)
 
@@ -281,7 +290,13 @@ app.include_router(ws_router)
 def main() -> None:
     import uvicorn
 
-    uvicorn.run("fastapi_app:app", host=settings.host, port=settings.port, reload=settings.debug)
+    uvicorn.run(
+        "fastapi_app:app",
+        host=settings.host,
+        port=settings.port,
+        reload=settings.debug,
+        forwarded_allow_ips=settings.forwarded_allow_ips,
+    )
 
 
 if __name__ == "__main__":

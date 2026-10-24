@@ -39,7 +39,9 @@ class Settings(BaseSettings):
     program_ingest_max_rooms: int = 10
     program_ingest_disconnect_grace_secs: float = 15.0
     program_ingest_stall_secs: float = 30.0
-    program_sender_session_ttl_secs: int = 150  # Browser sender publish window; long enough to negotiate, short enough to expire.
+    program_sender_session_ttl_secs: int = (
+        150  # Browser sender publish window; long enough to negotiate, short enough to expire.
+    )
     # RTMPS ingest with YouTube relay (#749). Off unless the operator deploys docker-compose.relay.yml.
     program_relay_enabled: bool = False
     program_rtmps_public_base: str = ""  # e.g. rtmps://voxbento.com:1936 (MediaMTX RTMPS listener)
@@ -151,6 +153,14 @@ class Settings(BaseSettings):
     max_webhook_subscriptions: int = 50
     # Caption WebSocket Settings
     max_anonymous_caption_listeners_per_booth: int = 500
+    # Authentication Rate Limiting (slowapi, per client IP and per account)
+    rate_limit_enabled: bool = True
+    rate_limit_register: str = "5/minute"
+    rate_limit_login: str = "10/minute"
+    rate_limit_login_account: str = "5/minute"
+    rate_limit_admin_login: str = "5/minute"
+    # Trusted proxy IPs/CIDRs for Uvicorn ProxyHeadersMiddleware (host Caddy via Docker gateway 172.28.0.1)
+    forwarded_allow_ips: str = "127.0.0.1,172.28.0.1"
 
     @field_validator("public_base_url")
     @classmethod
@@ -160,6 +170,17 @@ class Settings(BaseSettings):
         if parsed.query or parsed.fragment:
             raise ValueError("public_base_url must not include a query string or fragment")
         return value
+
+    @field_validator("forwarded_allow_ips")
+    @classmethod
+    def validate_forwarded_allow_ips(cls, v: str) -> str:
+        tokens = [t.strip() for t in v.split(",") if t.strip()]
+        if "*" in tokens:
+            raise ValueError(
+                "Wildcard '*' is forbidden for forwarded_allow_ips because port 8000 is published. "
+                "Specify explicit trusted proxy IPs or CIDR subnets (e.g. '127.0.0.1,172.28.0.1')."
+            )
+        return v
 
 
 settings = Settings()

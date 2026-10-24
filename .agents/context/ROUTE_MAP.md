@@ -14,9 +14,9 @@
 | GET | `/sitemap.xml` | open | — | XML sitemap; canonical URLs use `PUBLIC_BASE_URL` (default `https://voxbento.com`), not request `Host`; trailing slashes stripped, path prefix preserved, URLs XML-escaped |
 | GET | `/healthz` | open | — | JSON: `{ok, server, mediamtx_ok}` |
 | GET | `/register` | open | `register.html` | Redirects to `/account` if already logged in |
-| POST | `/register` | open | `register.html` | Creates user, sets `user_token` cookie → `/account`; if `password` is set, `password_confirm` must match (422 otherwise) |
+| POST | `/register` | open | `register.html` | Creates user, sets `user_token` cookie → `/account`; if `password` is set, `password_confirm` must match (422 otherwise); rate-limited by IP (`RATE_LIMIT_REGISTER`, default 5/min) |
 | GET | `/login` | open | `login.html` | Redirects to `/account` or `?next=` if logged in |
-| POST | `/login` | open | `login.html` | Verifies bcrypt, sets `user_token` cookie |
+| POST | `/login` | open | `login.html` | Verifies bcrypt, sets `user_token` cookie; protected by combined IP (`RATE_LIMIT_LOGIN`, default 10/min) + normalized HMAC-hashed account (`RATE_LIMIT_LOGIN_ACCOUNT`, default 5/min) rate limiting |
 | GET | `/logout` | open | — | Deletes `user_token` cookie → `/` |
 | GET | `/account` | user | `account.html` | Account (#767): Profile (display name), Hosting events (Request access / Request sent / has access), Developer API (apply / pending / approved / rejected / suspended), Sign-in (change, set or remove password). Roles live on My events (`/workspace/`) |
 | POST | `/account/profile` | user + same-origin | — | Changes `display_name` (whitespace collapsed, 1–200 chars, no control characters) → `/account?success=profile_saved`, or `?error=display_name` |
@@ -88,6 +88,7 @@ with `?error=invalid_role&role=…` and the page explains why.
 | GET | `/admin/` | `admin/dashboard.html` | System-wide events for Admins |
 | GET | `/workspace/` | `admin/my_events.html` | **My events** (#766): every event the user has a role in, once per event, with roles in plain language and Manage event / Open Mission Control / Enter booth buttons; New event for hosting access and Admins; `303` → `/login?next=/workspace/` when signed out |
 | GET | `/admin/events/` | `admin/event_list.html` | Search by event slug or display name with `?search=`; blank queries show all events; `%` and `_` are literal; pagination URL-encodes the term and clamps out-of-range pages |
+
 | POST | `/admin/events/` | — | Creates event (slug + display_name) |
 | GET | `/admin/events/{event_id}/` | `admin/event_detail.html` | Event + rooms + booths |
 | GET | `/admin/events/{event_id}/api-settings/` | `admin/api_settings.html` | View encrypted API keys |
@@ -202,5 +203,24 @@ with `?error=invalid_role&role=…` and the page explains why.
   meaning: `stage` is the raw floor-bot stage (`launching`, `in_meeting`, `dead`, …;
   `unknown` when the service is unreachable); the managed lifecycle is in `state`.
 
-`POST /login` requires verified email and uses the `login` rate-limit bucket:
-10 attempts per normalized email per hour. There is no separate admin sign-in form.
+---
+
+## Rate Limiting & Proxy Topology
+
+Authentication routes are protected by SlowAPI in-memory rate limiting against credential-stuffing and brute-force abuse:
+
+| Route | Keys | Default Limit | Setting |
+|---|---|---|---|
+| `POST /register` | Client IP | 5/minute | `RATE_LIMIT_REGISTER` |
+| `POST /login` | Client IP + Normalized Account HMAC | 10/minute (IP), 5/minute (Account) | `RATE_LIMIT_LOGIN`, `RATE_LIMIT_LOGIN_ACCOUNT` |
+| `GET /admin/login` | — | — | Redirects (`303`) to `/login?next=/admin/`; protected by `/login` rate limits |
+
+### 429 Responses & Headers
+- **HTML Form requests**: Return HTTP 429 rendering the error template (`429.html`) with an error message and a `Retry-After: <seconds>` response header.
+- **JSON requests**: Return HTTP 429 with `{ "detail": "Too many requests. Please try again later." }` and `Retry-After: <seconds>`.
+
+### Reverse Proxy & Client IP Propagation
+- Client IP resolution relies on `request.client.host`.
+- When deployed behind a reverse proxy (bundled Caddy on the host forwarding to Docker port 8000), Uvicorn's `ProxyHeadersMiddleware` requires `--forwarded-allow-ips` to trust the Docker bridge gateway (`172.28.0.1`) and localhost (`127.0.0.1`).
+- Setting `--forwarded-allow-ips="*"` is strictly prohibited to prevent attackers connecting directly to published port 8000 from spoofing `X-Forwarded-For`.
+

@@ -48,6 +48,7 @@ from portal.database import (
 )
 from portal.globals import _JS_CACHE_BUST, asset_version_context
 from portal.hosting_requests import format_event_dates, parse_hosting_request_form
+from portal.limiter import check_rate_limit_account, limiter
 from portal.models import HOSTING_REQUEST_GRANTED, TOKEN_TYPE_HOSTING_INVITE, AuthToken, User, utc_now
 from portal.notifications import queue_notification
 from portal.rate_limit import check_rate_limit
@@ -192,6 +193,7 @@ async def register_page(request: Request):
 
 
 @router.post("/register")
+@limiter.limit(lambda: settings.rate_limit_register)
 async def register_submit(request: Request):
     form = await request.form()
     email = form.get("email", "").strip().lower()
@@ -316,19 +318,16 @@ async def user_login_page(request: Request, next: str = "", email: str = "", swi
 
 
 @router.post("/login")
+@limiter.limit(lambda: settings.rate_limit_login)
 async def user_login_submit(request: Request):
     form = await request.form()
     email = form.get("email", "").strip().lower()
     password = form.get("password", "")
     next_url = form.get("next_url", "")
 
-    if not check_rate_limit("login", email, max_requests=10, window_seconds=3600):
-        return templates.TemplateResponse(
-            request=request,
-            name="login.html",
-            context={"error": "Too many attempts. Try again later.", "email": email, "next_url": next_url},
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-        )
+    rate_limit_resp = check_rate_limit_account(request, email, action="login")
+    if rate_limit_resp is not None:
+        return rate_limit_resp
 
     async with get_session() as session:
         user = await get_user_by_email(session, email)

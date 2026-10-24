@@ -187,7 +187,11 @@ async def _send_admin_invite(session, user: User, role_name: str, context_name: 
     token_val = secrets.token_hex(32)
     # Invitations wait in an inbox, so they last as long as hosting invitations, not a sign-in link's 15 minutes.
     token = await create_auth_token(
-        session, jti=token_val, user_id=user.id, token_type=TOKEN_TYPE_MAGIC_LINK, expires_in_seconds=INVITE_LINK_SECONDS
+        session,
+        jti=token_val,
+        user_id=user.id,
+        token_type=TOKEN_TYPE_MAGIC_LINK,
+        expires_in_seconds=INVITE_LINK_SECONDS,
     )
     invite_url = f"{settings.public_base_url}/auth/magic/{token_val}?next={urllib.parse.quote(target_url)}"
     await queue_notification(
@@ -251,8 +255,14 @@ def _email_definition(key: str):
 
 
 async def _render_email_editor(
-    request: Request, db: AsyncSession, key: str, *, subject: str | None = None, html: str | None = None,
-    error: str = "", status_code: int = 200,
+    request: Request,
+    db: AsyncSession,
+    key: str,
+    *,
+    subject: str | None = None,
+    html: str | None = None,
+    error: str = "",
+    status_code: int = 200,
 ):
     definition = _email_definition(key)
     saved_subject, saved_html, version = await template_content(db, definition.key, draft=True)
@@ -276,11 +286,7 @@ async def admin_emails(
     request: Request, db: AsyncSession = Depends(get_db_session), error: str = "", logo_url: str | None = None
 ):
     deliveries = list(
-        (
-            await db.scalars(
-                select(EmailDelivery).order_by(EmailDelivery.created_at.desc()).limit(20)
-            )
-        ).all()
+        (await db.scalars(select(EmailDelivery).order_by(EmailDelivery.created_at.desc()).limit(20))).all()
     )
     template_keys = set((await db.scalars(select(EmailTemplate.key))).all())
     counts = dict((await db.execute(select(EmailDelivery.status, func.count()).group_by(EmailDelivery.status))).all())
@@ -332,7 +338,9 @@ async def admin_email_preview(key: str, db: AsyncSession = Depends(get_db_sessio
     return Response(
         html,
         media_type="text/html",
-        headers={"Content-Security-Policy": "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src 'self' https:"},
+        headers={
+            "Content-Security-Policy": "sandbox; default-src 'none'; style-src 'unsafe-inline'; img-src 'self' https:"
+        },
     )
 
 
@@ -370,7 +378,9 @@ async def admin_email_publish(
     try:
         await publish_draft(db, safe_key, int(user["sub"]))
     except ValueError as exc:
-        return await _render_email_editor(request, db, safe_key, error=str(exc), status_code=status.HTTP_400_BAD_REQUEST)
+        return await _render_email_editor(
+            request, db, safe_key, error=str(exc), status_code=status.HTTP_400_BAD_REQUEST
+        )
     return safe_redirect(url=f"/admin/emails/{safe_key}/?published=1", status_code=status.HTTP_303_SEE_OTHER)
 
 
@@ -392,6 +402,7 @@ async def admin_email_test(
         idempotency_key=f"email-test:{safe_key}:{user['sub']}:{utc_now().isoformat()}",
     )
     return safe_redirect(url=f"/admin/emails/{safe_key}/?test=1", status_code=status.HTTP_303_SEE_OTHER)
+
 
 # Common languages offered in the guided setup wizard booth picker.
 COMMON_LANGUAGES: list[tuple[str, str]] = [
@@ -541,7 +552,8 @@ async def mission_control_grid(request: Request, event_slug: str, user=Depends(r
             {
                 "id": room.id,
                 "name": room.display_name,
-                "floor_captions": bool(room.floor_transcription_enabled) and room.floor_transcription_provider != "none",
+                "floor_captions": bool(room.floor_transcription_enabled)
+                and room.floor_transcription_provider != "none",
                 "floor_source": room.floor_source or "jitsi_bot",
             }
             for room in await list_rooms_for_event(session, event.id)
@@ -553,7 +565,12 @@ async def mission_control_grid(request: Request, event_slug: str, user=Depends(r
         context={
             "event": event,
             "booths": event_booths,
-            "mc_config": {"eventSlug": event.slug, "whipBase": settings.mediamtx_whip_base, "rooms": mc_rooms, "booths": event_booths},
+            "mc_config": {
+                "eventSlug": event.slug,
+                "whipBase": settings.mediamtx_whip_base,
+                "rooms": mc_rooms,
+                "booths": event_booths,
+            },
             "whip_base": settings.mediamtx_whip_base,
             "js_version": _JS_CACHE_BUST,
             "active_nav": "mission-control",
@@ -582,7 +599,7 @@ async def admin_logout():
 @router.get("/workspace")
 @router.get("/workspace/")
 async def my_events_page(request: Request):
-    """"My events": every event the signed-in person has a role in (#766)."""
+    """ "My events": every event the signed-in person has a role in (#766)."""
     principal = request.state.principal
     user = principal["user"]
     if user is None:
@@ -938,7 +955,9 @@ async def admin_setup_add_invite(request: Request, event_id: int):
                 await set_event_membership(session, user_id=user.id, event_id=event_id, role=role)
             except ValueError:
                 return safe_redirect(
-                    url=management_url(request, f"events/{event_id}/setup/invite?error=invalid_role&role={urllib.parse.quote(role)}"),
+                    url=management_url(
+                        request, f"events/{event_id}/setup/invite?error=invalid_role&role={urllib.parse.quote(role)}"
+                    ),
                     status_code=status.HTTP_303_SEE_OTHER,
                 )
             event = await get_event_by_id(session, event_id)
@@ -1282,7 +1301,9 @@ async def admin_room_sender(request: Request, event_id: int, room_id: int):
     )
 
 
-@router.get("/admin/events/{event_id}/rooms/{room_id}/transcripts/", dependencies=[Depends(require_owner_or_coordinator)])
+@router.get(
+    "/admin/events/{event_id}/rooms/{room_id}/transcripts/", dependencies=[Depends(require_owner_or_coordinator)]
+)
 async def admin_room_transcripts(request: Request, event_id: int, room_id: int):
     async with get_session() as session:
         event = await get_event_by_id(session, event_id)
@@ -1727,7 +1748,9 @@ async def admin_create_booth(request: Request, event_id: int, room_id: int):
     )
 
 
-@router.get("/admin/events/{event_id}/rooms/{room_id}/booths/{booth_id}/", dependencies=[Depends(require_owner_or_coordinator)])
+@router.get(
+    "/admin/events/{event_id}/rooms/{room_id}/booths/{booth_id}/", dependencies=[Depends(require_owner_or_coordinator)]
+)
 async def admin_booth_detail(request: Request, event_id: int, room_id: int, booth_id: int):
     admin_flags = await get_access_flags(request, event_id=event_id, room_id=room_id)
     async with get_session() as session:
@@ -1812,7 +1835,10 @@ async def admin_add_room_member(request: Request, event_id: int, room_id: int):
                         )
                 except ValueError:
                     return safe_redirect(
-                        url=management_url(request, f"events/{event_id}/rooms/{room_id}/?error=invalid_role&role={urllib.parse.quote(role)}"),
+                        url=management_url(
+                            request,
+                            f"events/{event_id}/rooms/{room_id}/?error=invalid_role&role={urllib.parse.quote(role)}",
+                        ),
                         status_code=status.HTTP_303_SEE_OTHER,
                     )
             else:
@@ -1828,7 +1854,8 @@ async def admin_add_room_member(request: Request, event_id: int, room_id: int):
 
 
 @router.post(
-    "/admin/events/{event_id}/rooms/{room_id}/members/{membership_id}/invite", dependencies=[Depends(require_event_owner)]
+    "/admin/events/{event_id}/rooms/{room_id}/members/{membership_id}/invite",
+    dependencies=[Depends(require_event_owner)],
 )
 async def admin_invite_room_member(request: Request, event_id: int, room_id: int, membership_id: int):
     async with get_session() as session:
@@ -1852,7 +1879,8 @@ async def admin_invite_room_member(request: Request, event_id: int, room_id: int
 
 
 @router.post(
-    "/admin/events/{event_id}/rooms/{room_id}/members/{membership_id}/delete", dependencies=[Depends(require_event_owner)]
+    "/admin/events/{event_id}/rooms/{room_id}/members/{membership_id}/delete",
+    dependencies=[Depends(require_event_owner)],
 )
 async def admin_remove_room_member(request: Request, event_id: int, room_id: int, membership_id: int):
     try:
@@ -1960,7 +1988,9 @@ async def admin_remove_booth_member(request: Request, event_id: int, room_id: in
     )
 
 
-@router.post("/admin/events/{event_id}/rooms/{room_id}/booths/{booth_id}/delete", dependencies=[Depends(require_event_owner)])
+@router.post(
+    "/admin/events/{event_id}/rooms/{room_id}/booths/{booth_id}/delete", dependencies=[Depends(require_event_owner)]
+)
 async def admin_delete_booth(request: Request, event_id: int, room_id: int, booth_id: int):
     async with get_session() as session:
         booth = await get_booth_by_id(session, booth_id)
@@ -2023,7 +2053,9 @@ async def admin_booth_translation_settings(
     )
 
 
-@router.post("/admin/events/{event_id}/rooms/{room_id}/booths/{booth_id}/edit", dependencies=[Depends(require_event_owner)])
+@router.post(
+    "/admin/events/{event_id}/rooms/{room_id}/booths/{booth_id}/edit", dependencies=[Depends(require_event_owner)]
+)
 async def admin_edit_booth(request: Request, event_id: int, room_id: int, booth_id: int):
     form = await request.form()
     language_name = form.get("language_name", "").strip()
@@ -2294,7 +2326,9 @@ async def apply_user_access(request: Request, user_id: int, field: str, value: b
                 "hosting": "Hosting access was granted." if value else "Hosting access was removed.",
                 "admin": "You are now an Admin." if value else "Your Admin access was removed.",
                 "active": "Your account was reactivated." if value else "Your account was deactivated.",
-                "verified": "Your email address was verified by an Admin." if value else "Your email verification was removed.",
+                "verified": "Your email address was verified by an Admin."
+                if value
+                else "Your email verification was removed.",
             }
             notification_key = "hosting_granted" if field == "hosting" and value else "account_access"
             context = (
@@ -2329,7 +2363,9 @@ async def admin_set_user_access(request: Request, user_id: int):
             error = exc
         else:
             if wants_json(request):
-                return JSONResponse({"ok": True, "field": change.field, "value": change.value, "message": change.message})
+                return JSONResponse(
+                    {"ok": True, "field": change.field, "value": change.value, "message": change.message}
+                )
             return user_action_redirect(request, user_id, f"notice={change.notice}")
     if wants_json(request):
         return JSONResponse({"ok": False, "detail": error.message}, status_code=error.status_code)
@@ -2378,13 +2414,10 @@ async def admin_invite_user(request: Request):
             session.add(target_user)
             await session.flush()
 
-        delete_stmt = (
-            select(AuthToken)
-            .where(
-                AuthToken.user_id == target_user.id,
-                AuthToken.token_type == TOKEN_TYPE_HOSTING_INVITE,
-                AuthToken.used_at.is_(None),
-            )
+        delete_stmt = select(AuthToken).where(
+            AuthToken.user_id == target_user.id,
+            AuthToken.token_type == TOKEN_TYPE_HOSTING_INVITE,
+            AuthToken.used_at.is_(None),
         )
         existing_tokens = (await session.execute(delete_stmt)).scalars().all()
         for et in existing_tokens:
@@ -2412,7 +2445,9 @@ async def admin_invite_user(request: Request):
             idempotency_key=f"hosting-invite:{invite_token.jti}",
             auth_token_id=invite_token.id,
         )
-    return safe_redirect(url=hosting_return_url(request, "/admin/users/", "success=invite_sent"), status_code=status.HTTP_303_SEE_OTHER)
+    return safe_redirect(
+        url=hosting_return_url(request, "/admin/users/", "success=invite_sent"), status_code=status.HTTP_303_SEE_OTHER
+    )
 
 
 @router.post("/admin/users/{user_id}/hosting", dependencies=[Depends(require_admin)])
@@ -2433,7 +2468,9 @@ async def admin_toggle_user_hosting(request: Request, user_id: int):
     if f"/admin/users/{user_id}" in referrer:
         return safe_redirect(url=f"/admin/users/{user_id}/", status_code=status.HTTP_303_SEE_OTHER)
     outcome = f"success=hosting_{'granted' if change.value else 'revoked'}"
-    return safe_redirect(url=hosting_return_url(request, "/admin/users/", outcome), status_code=status.HTTP_303_SEE_OTHER)
+    return safe_redirect(
+        url=hosting_return_url(request, "/admin/users/", outcome), status_code=status.HTTP_303_SEE_OTHER
+    )
 
 
 @router.post("/admin/users/invite/{token_id}/cancel", dependencies=[Depends(require_admin)])
@@ -2534,26 +2571,34 @@ class HostingAccessEntry:
 async def list_hosting_access_entries(session: AsyncSession) -> list[HostingAccessEntry]:
     """People with hosting access, then people with a pending hosting invitation."""
     hosts = (
-        await session.execute(
-            select(User)
-            .where(User.can_host.is_(True), User.is_admin.is_(False))
-            .order_by(func.lower(User.display_name), User.id)
-        )
-    ).scalars().all()
-    invites = (
-        await session.execute(
-            select(AuthToken)
-            .options(joinedload(AuthToken.user))
-            .join(User, User.id == AuthToken.user_id)
-            .where(
-                AuthToken.token_type == TOKEN_TYPE_HOSTING_INVITE,
-                AuthToken.used_at.is_(None),
-                AuthToken.expires_at > utc_now(),
-                User.can_host.is_(False),
+        (
+            await session.execute(
+                select(User)
+                .where(User.can_host.is_(True), User.is_admin.is_(False))
+                .order_by(func.lower(User.display_name), User.id)
             )
-            .order_by(AuthToken.created_at.desc())
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
+    invites = (
+        (
+            await session.execute(
+                select(AuthToken)
+                .options(joinedload(AuthToken.user))
+                .join(User, User.id == AuthToken.user_id)
+                .where(
+                    AuthToken.token_type == TOKEN_TYPE_HOSTING_INVITE,
+                    AuthToken.used_at.is_(None),
+                    AuthToken.expires_at > utc_now(),
+                    User.can_host.is_(False),
+                )
+                .order_by(AuthToken.created_at.desc())
+            )
+        )
+        .scalars()
+        .all()
+    )
     latest_invites: dict[int, AuthToken] = {}
     for tok in invites:
         latest_invites.setdefault(tok.user_id, tok)
@@ -2627,10 +2672,14 @@ async def admin_grant_hosting_request(request: Request, request_id: int):
         principal = await resolve_principal(request, session)
         hosting_request = await get_hosting_request(session, request_id)
         if hosting_request is None or hosting_request.status != HOSTING_REQUEST_OPEN:
-            return safe_redirect(url=f"{HOSTING_REQUESTS_URL}?error=request_not_found", status_code=status.HTTP_303_SEE_OTHER)
+            return safe_redirect(
+                url=f"{HOSTING_REQUESTS_URL}?error=request_not_found", status_code=status.HTTP_303_SEE_OTHER
+            )
         user = hosting_request.user
         if not user.is_active:
-            return safe_redirect(url=f"{HOSTING_REQUESTS_URL}?error=inactive_user", status_code=status.HTTP_303_SEE_OTHER)
+            return safe_redirect(
+                url=f"{HOSTING_REQUESTS_URL}?error=inactive_user", status_code=status.HTTP_303_SEE_OTHER
+            )
 
         user.can_host = True
         user.hosting_revoked_at = None
@@ -2638,14 +2687,18 @@ async def admin_grant_hosting_request(request: Request, request_id: int):
             session, hosting_request, status=HOSTING_REQUEST_GRANTED, decided_by_user_id=principal["user_id"]
         )
         pending_invites = (
-            await session.execute(
-                select(AuthToken).where(
-                    AuthToken.user_id == user.id,
-                    AuthToken.token_type == TOKEN_TYPE_HOSTING_INVITE,
-                    AuthToken.used_at.is_(None),
+            (
+                await session.execute(
+                    select(AuthToken).where(
+                        AuthToken.user_id == user.id,
+                        AuthToken.token_type == TOKEN_TYPE_HOSTING_INVITE,
+                        AuthToken.used_at.is_(None),
+                    )
                 )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         for tok in pending_invites:
             await session.delete(tok)
         await queue_notification(
@@ -2677,7 +2730,9 @@ async def admin_decline_hosting_request(request: Request, request_id: int):
         principal = await resolve_principal(request, session)
         hosting_request = await get_hosting_request(session, request_id)
         if hosting_request is None or hosting_request.status != HOSTING_REQUEST_OPEN:
-            return safe_redirect(url=f"{HOSTING_REQUESTS_URL}?error=request_not_found", status_code=status.HTTP_303_SEE_OTHER)
+            return safe_redirect(
+                url=f"{HOSTING_REQUESTS_URL}?error=request_not_found", status_code=status.HTTP_303_SEE_OTHER
+            )
         await close_hosting_request(
             session,
             hosting_request,
@@ -2844,7 +2899,9 @@ TEAM_NOTICES = {
 }
 
 
-async def render_team(request: Request, event_id: int, *, error: str = "", form: dict | None = None, status_code: int = 200):
+async def render_team(
+    request: Request, event_id: int, *, error: str = "", form: dict | None = None, status_code: int = 200
+):
     async with get_session() as session:
         event = await get_event_by_id(session, event_id)
         if event is None:
@@ -2871,7 +2928,9 @@ async def render_team(request: Request, event_id: int, *, error: str = "", form:
 
 
 def team_redirect(request: Request, event_id: int, notice: str) -> RedirectResponse:
-    return safe_redirect(url=management_url(request, f"events/{event_id}/team/?notice={notice}"), status_code=status.HTTP_303_SEE_OTHER)
+    return safe_redirect(
+        url=management_url(request, f"events/{event_id}/team/?notice={notice}"), status_code=status.HTTP_303_SEE_OTHER
+    )
 
 
 @router.get("/admin/events/{event_id}/team/", dependencies=[Depends(require_event_owner)])
@@ -2890,7 +2949,9 @@ async def admin_team_add(request: Request, event_id: int):
         async with get_session() as session:
             team = await load_team(session, event_id)
             place = parse_team_place(data["where"], team)
-            user, changed = await add_team_member(session, event_id=event_id, email=data["email"], role=data["role"], place=place)
+            user, changed = await add_team_member(
+                session, event_id=event_id, email=data["email"], role=data["role"], place=place
+            )
             event = await get_event_by_id(session, event_id)
             if changed:
                 try:
@@ -2937,7 +2998,11 @@ async def admin_team_resend(request: Request, event_id: int):
         first = member.assignments[0]
         try:
             await _send_admin_invite(
-                session, member.user, role_label(first.role), f"{first.place.label} at {event.display_name}", "/workspace/"
+                session,
+                member.user,
+                role_label(first.role),
+                f"{first.place.label} at {event.display_name}",
+                "/workspace/",
             )
         except Exception as e:
             logger.warning(f"Failed to resend team invite email to {member.user.email}: {e}")
@@ -3011,7 +3076,9 @@ async def admin_add_event_member(request: Request, event_id: int):
                         await _send_admin_invite(session, user, role, f"event {event.display_name}", target_url)
                 except ValueError:
                     return safe_redirect(
-                        url=management_url(request, f"events/{event_id}/members/?error=invalid_role&role={urllib.parse.quote(role)}"),
+                        url=management_url(
+                            request, f"events/{event_id}/members/?error=invalid_role&role={urllib.parse.quote(role)}"
+                        ),
                         status_code=status.HTTP_303_SEE_OTHER,
                     )
             else:
@@ -3251,7 +3318,10 @@ async def admin_developer_approve(
         db,
         "developer_account",
         account_user.email,
-        {"message": "Your developer account has been approved.", "login_url": f"{settings.public_base_url.rstrip('/')}/developer"},
+        {
+            "message": "Your developer account has been approved.",
+            "login_url": f"{settings.public_base_url.rstrip('/')}/developer",
+        },
         idempotency_key=f"developer-account:{account.id}:approved",
     )
 
@@ -3287,7 +3357,10 @@ async def admin_developer_reject(
         db,
         "developer_account",
         account_user.email,
-        {"message": "Your developer account request was not approved.", "login_url": f"{settings.public_base_url.rstrip('/')}/developer"},
+        {
+            "message": "Your developer account request was not approved.",
+            "login_url": f"{settings.public_base_url.rstrip('/')}/developer",
+        },
         idempotency_key=f"developer-account:{account.id}:rejected",
     )
 
