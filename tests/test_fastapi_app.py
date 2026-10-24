@@ -975,6 +975,32 @@ def test_ws_invalid_frame_keeps_active_interpreter_connected(raw_frame: str, exp
         assert [person["participant_id"] for person in state["participants"]] == [participant_id]
 
 
+@pytest.mark.parametrize(
+    ("body", "expected_error"),
+    [
+        ("x" * 1001, "Message must not exceed 1000 characters."),
+        (123, "Message body must be a string."),
+        (["hi"], "Message body must be a string."),
+    ],
+    ids=["too-long", "number", "list"],
+)
+def test_ws_chat_rejects_invalid_body(body, expected_error: str):
+    # One booth per case: chat history is kept in the shared in-memory registry.
+    booth_id = f"chat-limit-{type(body).__name__}-booth"
+    with client.websocket_connect(f"/ws/booth/{booth_id}", cookies=_ws_auth()) as ws:
+        _ws_join(ws, "Alice", "interpreter", "English", f"{booth_id}-audio")
+
+        ws.send_text(json.dumps({"type": "booth:chat", "body": body}))
+        assert json.loads(ws.receive_text()) == {"type": "booth:error", "message": expected_error}
+
+        # The rejected message is not stored, and a message at the limit still goes through.
+        ws.send_text(json.dumps({"type": "booth:chat", "body": "y" * 1000}))
+        responses = [json.loads(ws.receive_text()), json.loads(ws.receive_text())]
+        assert {message["type"] for message in responses} == {"booth:chat", "booth:state"}
+        state = next(message["state"] for message in responses if message["type"] == "booth:state")
+        assert [message["body"] for message in state["chat_messages"]] == ["y" * 1000]
+
+
 def test_ws_broadcast_unlock_authorized_user_can_toggle():
     """Authorized coordinator/admin session can toggle broadcast lock."""
     client.post("/api/events/broadcastok/booths", json={"language_code": "en", "room_id": 1, "language": "English"})

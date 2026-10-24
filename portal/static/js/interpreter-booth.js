@@ -1285,9 +1285,18 @@ function attemptRelayStart(attempt) {
 
 
 
+// Matches CHAT_MESSAGE_MAX_LENGTH in portal/booth_state.py. The server counts
+// code points (Python len), so count with Array.from rather than maxlength,
+// which counts an emoji as two.
+const CHAT_MESSAGE_MAX_LENGTH = 1000
+
 function sendChatMessage() {
   const body = elements.chatInput.value.trim()
   if (!body) return
+  if (Array.from(body).length > CHAT_MESSAGE_MAX_LENGTH) {
+    showError(`Message must not exceed ${CHAT_MESSAGE_MAX_LENGTH} characters.`)
+    return
+  }
   if (!state.participantId) {
     showError('Join the booth before sending messages.')
     return

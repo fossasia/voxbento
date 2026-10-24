@@ -20,6 +20,9 @@ from portal.tasks import track_task
 # Booth roles come from portal.roles, the one place roles are defined (#757).
 ParticipantRole = Role
 
+# Every booth:state carries recent chat messages, so keep each one small.
+CHAT_MESSAGE_MAX_LENGTH = 1000
+
 
 def utc_now_iso() -> str:
     return datetime.now(tz=timezone.utc).isoformat()
@@ -485,6 +488,8 @@ class BoothRegistry:
             sender = booth.participants.get(sender_id)
             if sender is None:
                 raise ValueError("Sender is not registered in booth.")
+            if not isinstance(body, str):
+                raise ValueError("Message body must be a string.")
             message = ChatMessage(
                 message_id=uuid4().hex,
                 sender_id=sender_id,
@@ -493,6 +498,8 @@ class BoothRegistry:
             )
             if not message.body:
                 raise ValueError("Message body cannot be empty.")
+            if len(message.body) > CHAT_MESSAGE_MAX_LENGTH:
+                raise ValueError(f"Message must not exceed {CHAT_MESSAGE_MAX_LENGTH} characters.")
             booth.chat_messages.append(message)
             if len(booth.chat_messages) > 500:
                 booth.chat_messages = booth.chat_messages[-500:]

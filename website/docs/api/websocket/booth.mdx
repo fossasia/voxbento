@@ -87,7 +87,7 @@ The examples below show the exact JSON structure for the most common messages.
 ```json
 {
   "type": "booth:chat",
-  "message": "Ready for handoff in 60 seconds"
+  "body": "Ready for handoff in 60 seconds"
 }
 ```
 
@@ -184,7 +184,7 @@ The examples below show the exact JSON structure for the most common messages.
   
 
   
-    The text content to broadcast. Required; empty strings are rejected.
+    The text content to broadcast. Required; must be a string of at most 1000 characters, and empty strings are rejected.
   
 
 </details>
