@@ -1,6 +1,8 @@
 // Room page (owner view): tabs, provider/model pickers and the translation language picker.
 // Values the page needs come from data attributes on #room-detail (no inline script).
 
+import { initProviderModelFiltering } from './admin.js';
+
 const root = document.getElementById('room-detail');
 
 // ── Tabs ────────────────────────────────────────────────────────────────
@@ -65,37 +67,9 @@ function initTabs() {
 // ── Captions & translation pickers (moved unchanged from the page) ───────
 
 function initPickers() {
-    const providerSelect = document.getElementById('floor_transcription_provider');
-    if (!providerSelect) return;
-    const modelSelect = document.getElementById('floor_transcription_model');
-    const allOptions = Array.from(modelSelect.options);
+  initProviderModelFiltering();
 
-    function filterModels() {
-      const selectedProvider = providerSelect.value;
-      let firstVisible = null;
-      let currentSelectedStillVisible = false;
-
-      allOptions.forEach(opt => {
-        if (opt.getAttribute('data-provider') === selectedProvider) {
-          opt.style.display = '';
-          opt.disabled = false;
-          if (!firstVisible) firstVisible = opt;
-          if (opt.selected) currentSelectedStillVisible = true;
-        } else {
-          opt.style.display = 'none';
-          opt.disabled = true;
-        }
-      });
-
-      if (!currentSelectedStillVisible && firstVisible) {
-        firstVisible.selected = true;
-      }
-    }
-
-    providerSelect.addEventListener('change', filterModels);
-    filterModels();
-
-    const transProviderSelect = document.getElementById('floor_translation_provider');
+  const transProviderSelect = document.getElementById('floor_translation_provider');
     const transModelSelect = document.getElementById('floor_translation_model');
     const initialTransModel = root.dataset.initialTranslationModel || '';
 
@@ -128,9 +102,11 @@ function initPickers() {
       }
     }
 
-    transProviderSelect.addEventListener('change', loadTranslationModels);
-    if (transProviderSelect.value) {
-      loadTranslationModels();
+    if (transProviderSelect && transModelSelect) {
+      transProviderSelect.addEventListener('change', loadTranslationModels);
+      if (transProviderSelect.value) {
+        loadTranslationModels();
+      }
     }
 
     // TTS provider → toggle Supertonic voice picker + provider help text
@@ -154,6 +130,7 @@ function initPickers() {
     // Language tag picker
     function initLangPicker(cfg) {
       const tagsEl = document.getElementById(cfg.tagsId);
+      if (!tagsEl) return;
       const searchEl = document.getElementById(cfg.searchId);
       const dropdownEl = document.getElementById(cfg.dropdownId);
       const hiddenEl = document.getElementById(cfg.hiddenId);

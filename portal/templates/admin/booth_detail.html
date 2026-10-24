@@ -139,7 +139,7 @@
       </div>
       <div class="form-group form-group--grow">
         <label for="transcription_provider">Transcription Provider</label>
-        <select id="transcription_provider" name="transcription_provider" class="input">
+        <select id="transcription_provider" name="transcription_provider" class="input" data-provider-filter="transcription_model">
           <option value="local" {% if booth.transcription_provider == 'local' %}selected{% endif %}>Local CPU (Faster-Whisper)</option>
           {% if event.transcription_api_enabled %}
           <option value="openai" {% if booth.transcription_provider == 'openai' %}selected{% endif %}>OpenAI</option>
@@ -153,7 +153,7 @@
       </div>
       <div class="form-group form-group--grow">
         <label for="transcription_model">Model Variant</label>
-        <select id="transcription_model" name="transcription_model" class="input">
+        <select id="transcription_model" name="transcription_model" class="input" data-model-filter="transcription_provider">
           <option value="tiny" data-provider="local" {% if booth.transcription_model == 'tiny' %}selected{% endif %}>Local: tiny (Fastest)</option>
           <option value="base" data-provider="local" {% if booth.transcription_model == 'base' %}selected{% endif %}>Local: base</option>
           <!-- Temporarily disabled per user request: only show tiny and base
@@ -245,36 +245,6 @@
 
 <script>
   document.addEventListener('DOMContentLoaded', function() {
-    const providerSelect = document.getElementById('transcription_provider');
-    const modelSelect = document.getElementById('transcription_model');
-    const allOptions = Array.from(modelSelect.options);
-
-    function filterModels() {
-      const selectedProvider = providerSelect.value;
-      let firstVisible = null;
-      let currentSelectedStillVisible = false;
-
-      allOptions.forEach(opt => {
-        if (opt.getAttribute('data-provider') === selectedProvider) {
-          opt.style.display = '';
-          opt.disabled = false;
-          if (!firstVisible) firstVisible = opt;
-          if (opt.selected) currentSelectedStillVisible = true;
-        } else {
-          opt.style.display = 'none';
-          opt.disabled = true;
-        }
-      });
-
-      if (!currentSelectedStillVisible && firstVisible) {
-        firstVisible.selected = true;
-      }
-    }
-
-    providerSelect.addEventListener('change', filterModels);
-    // Run once on load
-    filterModels();
-    
     // Translation Model Filtering
     const transProviderSelect = document.getElementById('translation_provider');
     const transModelSelect = document.getElementById('translation_model');

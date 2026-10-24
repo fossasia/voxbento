@@ -183,7 +183,7 @@
       </div>
       <div class="form-group form-group--grow">
         <label for="floor_transcription_provider">Provider</label>
-        <select id="floor_transcription_provider" name="floor_transcription_provider" class="input">
+        <select id="floor_transcription_provider" name="floor_transcription_provider" class="input" data-provider-filter="floor_transcription_model">
           <option value="none" {% if room.floor_transcription_provider == 'none' %}selected{% endif %}>-- None --</option>
           <option value="local" {% if room.floor_transcription_provider == 'local' %}selected{% endif %}>Local (Faster-Whisper)</option>
           <option value="openai" {% if room.floor_transcription_provider == 'openai' %}selected{% endif %}>OpenAI</option>
@@ -194,7 +194,7 @@
       </div>
       <div class="form-group form-group--grow">
         <label for="floor_transcription_model">Model</label>
-        <select id="floor_transcription_model" name="floor_transcription_model" class="input">
+        <select id="floor_transcription_model" name="floor_transcription_model" class="input" data-model-filter="floor_transcription_provider">
           <option value="none" data-provider="none" {% if room.floor_transcription_model == 'none' %}selected{% endif %}>-- None --</option>
           <option value="tiny" data-provider="local" {% if room.floor_transcription_model == 'tiny' %}selected{% endif %}>Local: tiny (Fastest)</option>
           <option value="base" data-provider="local" {% if room.floor_transcription_model == 'base' %}selected{% endif %}>Local: base</option>
