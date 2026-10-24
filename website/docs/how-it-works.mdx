@@ -416,3 +416,23 @@ A configured path prefix is preserved in sitemap entries: for example,
 `PUBLIC_BASE_URL=https://interpret.example.com/voxbento/` produces
 `https://interpret.example.com/voxbento/` for the home page and
 `https://interpret.example.com/voxbento/research` for the research page.
+
+
+## Automated code review pipeline
+
+The **Jules PR Review** workflow is a GitHub Actions automation for development and code-quality checks, separate from VoxBento's production FastAPI, MediaMTX, transcription, translation, and WebRTC systems.
+
+```text
+PR activity / every 30 minutes / manual dispatch
+  → trusted base-branch workflow discovers eligible PRs (including forks)
+  → serialize by PR number; recheck SHA and previous GitHub Actions reviews
+  → fetch limited textual patches through GitHub REST API
+  → Jules REST API repoless session (no Jules GitHub app or repository access)
+  → validate JSON verdict and patch line positions
+  → revalidate current PR head before posting
+  → GitHub review comments, or REQUEST_CHANGES for blocking findings
+```
+
+**Security boundary:** The review job executes code only from the trusted base/default branch and does not check out or run contributions from the PR. The GitHub token stays within Actions and is never sent to Jules; the Jules key is an Actions repository secret. Untrusted PR metadata and diffs are treated as data, not instructions. Jobs for a given PR are serialized without cancellation. Review history is identified by GitHub Actions bot-authored SHA markers, not author-controlled text or commit timestamps.
+
+Only eligible non-draft PRs are reviewed. An initial review is immediate; follow-ups require two newer PR commits or rewritten commit history. Scheduled discovery retries transient rate limits and defers individual PRs that could not be processed. Blocking findings request changes and cause a failing job; other verdicts result in advisory comments rather than automatic approval. Review coverage is limited by the available textual diff and stated in the posted review. Human review remains necessary. The automation becomes active after merging it into the default branch.
