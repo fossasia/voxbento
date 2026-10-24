@@ -113,7 +113,7 @@ Jitsi session; they do not validate a deployment host's available disk space.
 
 1. **Audio Ingest:** The worker uses FFmpeg to pull the live audio stream from MediaMTX via RTSP (`rtsp://mediamtx:8554/{event_slug}/{room_id}/{language_code}` or `rtsp://mediamtx:8554/{event_slug}/{room_id}/floor`).
 2. **Transcoding:** FFmpeg transcodes the audio to PCM S16LE (mono, 16kHz or 24kHz depending on the provider) and pipes it to the selected `TranscriptionProvider`.
-3. **Speech-to-Text (Transcription):** The provider sends audio to an AI service (OpenAI, Deepgram, ElevenLabs, NVIDIA, or Local Whisper). The `CaptionAggregator` receives raw text, splitting sentences and instantly broadcasting partial updates to listeners (`/ws/captions/{channel_id}`).
+3. **Speech-to-Text (Transcription):** The provider sends audio to an AI service (OpenAI, Deepgram, Atlas Cloud, ElevenLabs, NVIDIA, or Local Whisper). The Atlas Cloud adapter submits WAV chunks to Seed ASR 2.0 once and polls the asynchronous prediction. The `CaptionAggregator` receives raw text, splitting sentences and instantly broadcasting partial updates to listeners (`/ws/captions/{channel_id}`).
 4. **Finalization:** Once a full sentence is formed, the aggregator saves it to the database as a canonical `transcript_segment`.
 5. **Text-to-Text (Translation & AI Interpretation):** If target languages are enabled, the Translation Worker detects the finalized segment and generates translations using LLMs (Anthropic, OpenAI, Groq, Gemini) or local NLLB. Translation prompts dynamically integrate the room's configured **AI interpreter persona** and **interpretation style**, as well as matching domain terms from the room's **AI vocabulary glossary**, ensuring consistent, conference-grade terminology.
 6. **Broadcast:** Translations are saved to the database and immediately broadcast as `translated_caption` events via the target booth's caption feed (`/ws/captions/{booth_id}`).
@@ -175,7 +175,7 @@ Listening is not a role. Listeners receive the interpreted audio stream from Med
 
 ## Live Captions
 
-When transcription is enabled for a booth, Voxbento pipes the active interpreter's audio to a transcription backend (Whisper, OpenAI, Deepgram, ElevenLabs, or NVIDIA Riva) and broadcasts the resulting text to all listeners in real time.
+When transcription is enabled for a booth, Voxbento pipes the active interpreter's audio to a transcription backend (Whisper, OpenAI, Deepgram, Atlas Cloud Seed ASR, ElevenLabs, or NVIDIA Riva) and broadcasts the resulting text to all listeners in real time.
 
 Captions are delivered over a dedicated WebSocket endpoint:
 
