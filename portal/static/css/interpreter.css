@@ -296,6 +296,14 @@ label {
   background: linear-gradient(135deg, var(--bx-accent), #6b8cff);
   box-shadow: 0 4px 12px rgb(47 109 246 / 0.35);
   flex-shrink: 0;
+  text-decoration: none;
+}
+
+.brand-mark:hover,
+.brand-mark:focus-visible {
+  color: #fff;
+  text-decoration: none;
+  filter: brightness(1.08);
 }
 
 .brand-text {
@@ -312,10 +320,8 @@ label {
 }
 
 .brand-context {
-  font-size: 0.74rem;
+  font-size: 0.8rem;
   color: var(--bx-muted);
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -574,11 +580,23 @@ label {
   border-color: var(--bx-live-ink);
 }
 
+.header-btn--handover.state-green:hover:not(:disabled) {
+  background: var(--bx-live-ink);
+  color: #fff;
+  border-color: var(--bx-live-ink);
+  box-shadow: 0 2px 10px rgb(22 163 74 / 0.25);
+}
+
 .header-btn--handover.state-flash-yellow {
   animation: flash-yellow 0.7s ease-in-out infinite;
   color: #1c1e21;
   border-color: #d97706;
   font-weight: 700;
+}
+
+.header-btn--handover.state-flash-yellow:hover:not(:disabled) {
+  color: #1c1e21;
+  border-color: #b45309;
 }
 
 @keyframes flash-yellow {

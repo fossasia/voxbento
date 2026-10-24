@@ -37,6 +37,8 @@ class Participant:
     connected: bool = True
     joined_at: str = field(default_factory=utc_now_iso)
     updated_at: str = field(default_factory=utc_now_iso)
+    # Key of the session that joined (see portal.auth.booth_session_key). Server-only.
+    joined_by: str | None = field(default=None, repr=False)
 
 
 def participant_public_dict(participant: Participant) -> dict:
@@ -45,8 +47,10 @@ def participant_public_dict(participant: Participant) -> dict:
     Clients use ``can_go_live`` / ``can_set_active`` instead of comparing role
     names, so roles stay defined only in portal.roles.
     """
+    public = asdict(participant)
+    del public["joined_by"]
     return {
-        **asdict(participant),
+        **public,
         "role_label": role_label(participant.role),
         "can_go_live": can_go_live(participant.role),
         "can_set_active": can_set_active(participant.role),
@@ -233,12 +237,14 @@ class BoothRegistry:
         room_id: int | None = None,
         *,
         reclaim: bool = False,
+        joined_by: str | None = None,
     ) -> tuple[Participant, dict]:
         """Add a participant, auto-assigning the active slot if it is free.
 
         An ID already present in the booth is honoured only with ``reclaim``
         (the caller's own socket already holds it); anyone else naming it gets a
         fresh ID instead of taking over that record, e.g. the active interpreter's.
+        ``joined_by`` records the session that joined, for checks made outside the socket.
         """
         async with self._lock:
             booth = self._get_or_create_booth(booth_id, language, channel_id, room_id=room_id)
@@ -250,6 +256,7 @@ class BoothRegistry:
                 role=role,
                 language=language.strip() or booth.language,
                 channel_id=channel_id.strip() or booth.channel_id,
+                joined_by=joined_by,
             )
             booth.participants[participant.participant_id] = participant
             # Auto-assign active slot to any role that can go live.
@@ -551,6 +558,13 @@ class BoothRegistry:
                 raise PermissionError("Your role does not permit publishing audio.")
             if booth.active_interpreter_id != participant_id:
                 raise PermissionError("Only the active interpreter can publish audio.")
+
+    async def can_stop_live(self, booth_id: str, session_keys: set[str]) -> bool:
+        """True if nobody in the booth is live, or one of *session_keys* joined the live participant."""
+        async with self._lock:
+            booth = self._booths.get(booth_id)
+            active = booth.participants.get(booth.active_interpreter_id) if booth else None
+            return active is None or active.joined_by in session_keys
 
     async def list_booths_for_event(self, event_slug: str) -> list[dict]:
         """Return public snapshots of all booths belonging to *event_slug*."""

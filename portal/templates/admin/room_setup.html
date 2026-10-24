@@ -1,0 +1,295 @@
+{% extends "admin/base.html" %}
+{% set is_edit = room is not none %}
+{% block title %}{{ 'Room setup — ' ~ room.display_name if is_edit else 'Add a room' }} — {{ event.display_name }}{% endblock %}
+
+{% block breadcrumb %}
+<nav class="breadcrumb">
+  <a href="{{ management_prefix }}/">{{ 'My events' if is_workspace else 'Overview' }}</a> <span>/</span>
+  <a href="{{ management_prefix }}/events/">Events</a> <span>/</span>
+  <a href="{{ management_prefix }}/events/{{ event.id }}/">{{ event.display_name }}</a> <span>/</span>
+  <a href="{{ management_prefix }}/events/{{ event.id }}/rooms/">Rooms</a> <span>/</span>
+  {% if is_edit %}
+  <a href="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/">{{ room.display_name }}</a> <span>/</span>
+  <span class="breadcrumb-current" aria-current="page">Setup</span>
+  {% else %}
+  <span class="breadcrumb-current" aria-current="page">Add a room</span>
+  {% endif %}
+</nav>
+{% endblock %}
+
+{% block content %}
+{% if is_edit %}
+  {% set form_action = management_prefix ~ '/events/' ~ event.id ~ '/rooms/' ~ room.id ~ '/setup' %}
+  {% set cancel_url = management_prefix ~ '/events/' ~ event.id ~ ('/setup/rooms' if from_setup else '/rooms/' ~ room.id ~ '/') %}
+{% else %}
+  {% set form_action = management_prefix ~ '/events/' ~ event.id ~ '/rooms/new' %}
+  {% set cancel_url = management_prefix ~ '/events/' ~ event.id ~ ('/setup/rooms' if from_setup else '/rooms/') %}
+{% endif %}
+{% set api_keys_url = management_prefix ~ '/events/' ~ event.id ~ '/api-settings/' %}
+
+<div class="wizard rs" id="room-setup"
+     data-mode="{{ 'edit' if is_edit else 'create' }}"
+     data-booth-codes='{{ booth_codes | tojson }}'
+     data-live-codes='{{ live_codes | tojson }}'
+     data-delivery-labels='{{ delivery_labels | tojson }}'>
+
+  {% if from_setup %}
+    {% set step = 2 %}
+    {% include "admin/wizard_steps.html" %}
+  {% endif %}
+
+  <div class="wizard-card">
+    {% if is_edit %}
+    <h2>Room setup</h2>
+    <p class="wizard-sub">Change the language, the languages listeners can choose and how each one is delivered for <strong>{{ room.display_name }}</strong>.</p>
+    {% else %}
+    <h2>Add a room</h2>
+    <p class="wizard-sub">A room is a space at <strong>{{ event.display_name }}</strong> where people speak, like “Main Hall”. Answer four short questions; you can change any of them later.</p>
+    {% endif %}
+
+    {% if not is_edit %}
+    <ol class="rs-progress" data-rs-progress hidden>
+      <li data-rs-progress-step="1"><span class="rs-progress-num">1</span><span class="rs-progress-label">Room</span></li>
+      <li data-rs-progress-step="2"><span class="rs-progress-num">2</span><span class="rs-progress-label">Languages</span></li>
+      <li data-rs-progress-step="3"><span class="rs-progress-num">3</span><span class="rs-progress-label">Captions &amp; AI</span></li>
+      <li data-rs-progress-step="4"><span class="rs-progress-num">4</span><span class="rs-progress-label">Review</span></li>
+    </ol>
+    {% endif %}
+
+    {% if errors %}
+    <div class="alert alert-danger" role="alert">
+      <strong>Please check a few things:</strong>
+      <ul class="rs-errors">
+        {% for error in errors %}<li>{{ error }}</li>{% endfor %}
+      </ul>
+    </div>
+    {% endif %}
+
+    <form method="post" action="{{ form_action }}" id="room-setup-form">
+      {% if from_setup %}<input type="hidden" name="from" value="setup">{% endif %}
+
+      {# ── Step 1 ─────────────────────────────────────────────── #}
+      <fieldset class="rs-step" data-rs-step="1">
+        <legend class="rs-step-title"><span class="rs-step-num" aria-hidden="true">1</span>The room</legend>
+
+        <div class="field">
+          <label for="rs-name">Room name</label>
+          <input type="text" id="rs-name" name="display_name" value="{{ plan.display_name }}" maxlength="200"
+                 placeholder="e.g. Main Hall" required {% if not is_edit %}autofocus{% endif %}>
+          <span class="hint">Interpreters and listeners see this name.</span>
+        </div>
+
+        <div class="field">
+          <label for="rs-spoken">Which language do the speakers in this room use?</label>
+          <select id="rs-spoken" name="spoken_language" required data-rs-spoken>
+            <optgroup label="Common languages">
+              {% for code, name in common_languages %}
+              <option value="{{ code }}" {% if plan.spoken_language == code %}selected{% endif %}>{{ name }}</option>
+              {% endfor %}
+            </optgroup>
+            <optgroup label="All languages">
+              {% for code, name in all_languages %}
+              <option value="{{ code }}" {% if plan.spoken_language == code and code not in common_codes %}selected{% endif %}>{{ name }}</option>
+              {% endfor %}
+            </optgroup>
+          </select>
+          <span class="hint">Listeners can always hear the room as it is. Next you choose the other languages.</span>
+        </div>
+
+        <div class="rs-step-actions" data-rs-nav hidden>
+          <a href="{{ cancel_url }}" class="btn">Cancel</a>
+          <button type="button" class="btn btn-primary" data-rs-next>Continue &rarr;</button>
+        </div>
+      </fieldset>
+
+      {# ── Step 2 ─────────────────────────────────────────────── #}
+      <fieldset class="rs-step" data-rs-step="2">
+        <legend class="rs-step-title"><span class="rs-step-num" aria-hidden="true">2</span>Languages for listeners</legend>
+
+        <fieldset class="rs-group">
+          <legend class="rs-question">How will this room be interpreted?</legend>
+          <div class="rs-choices">
+            <label class="rs-choice">
+              <input type="radio" name="mode" value="interpreters" required {% if plan.mode == 'interpreters' %}checked{% endif %}>
+              <span class="rs-choice-title">Human interpreters</span>
+              <span class="rs-choice-desc">An interpreter speaks each language live from a booth.</span>
+            </label>
+            <label class="rs-choice">
+              <input type="radio" name="mode" value="ai" {% if plan.mode == 'ai' %}checked{% endif %}>
+              <span class="rs-choice-title">AI interpretation</span>
+              <span class="rs-choice-desc">The speaker is captioned, translated by AI and can be read out by an AI voice.</span>
+            </label>
+            <label class="rs-choice">
+              <input type="radio" name="mode" value="both" {% if plan.mode == 'both' %}checked{% endif %}>
+              <span class="rs-choice-title">Both</span>
+              <span class="rs-choice-desc">Choose per language: an interpreter, AI, or an interpreter with AI alongside.</span>
+            </label>
+          </div>
+        </fieldset>
+
+        <fieldset class="rs-group">
+          <legend class="rs-question">Which languages can listeners choose?</legend>
+          <p class="hint rs-hint">Pick every language you'll offer besides the room's own. Existing booths in the spoken language stay selected until you remove them.</p>
+          <div class="rs-chips" data-rs-chips>
+            {% for code, name in chip_languages %}
+            <label class="rs-chip" data-rs-chip="{{ code }}">
+              <input type="checkbox" name="languages" value="{{ code }}" {% if code in plan.deliveries %}checked{% endif %}>
+              <span>{{ name }}</span>
+            </label>
+            {% endfor %}
+          </div>
+          <div class="field rs-more">
+            <label for="rs-more">Another language</label>
+            <select id="rs-more" name="languages" data-rs-more>
+              <option value="">Choose a language…</option>
+              {% for code, name in all_languages %}
+              <option value="{{ code }}">{{ name }}</option>
+              {% endfor %}
+            </select>
+          </div>
+        </fieldset>
+
+        <fieldset class="rs-group" data-rs-delivery>
+          <legend class="rs-question">How is each language delivered?</legend>
+          <p class="hint rs-hint">Interpreter adds a booth for a person. AI uses captions, translation and, if you like, an AI voice. Interpreter + AI offers both, so listeners can choose.</p>
+          <ul class="rs-delivery-list" data-rs-delivery-list>
+            {% for code, delivery in plan.languages %}
+            <li class="rs-delivery-row" data-rs-delivery-row="{{ code }}">
+              <label class="rs-delivery-name" for="rs-delivery-{{ code }}">{{ language_name(code) }}</label>
+              <select id="rs-delivery-{{ code }}" name="delivery_{{ code }}">
+                {% for value, label in delivery_labels.items() %}
+                <option value="{{ value }}" {% if delivery == value %}selected{% endif %}>{{ label }}</option>
+                {% endfor %}
+              </select>
+            </li>
+            {% endfor %}
+          </ul>
+        </fieldset>
+
+        <template id="rs-delivery-row-template">
+          <li class="rs-delivery-row">
+            <label class="rs-delivery-name"></label>
+            <select>
+              {% for value, label in delivery_labels.items() %}
+              <option value="{{ value }}" {% if value == 'both' %}selected{% endif %}>{{ label }}</option>
+              {% endfor %}
+            </select>
+          </li>
+        </template>
+
+        <p class="rs-note" data-rs-no-languages hidden>No languages chosen yet. That's fine for a captions-only room: turn captions on in the next step.</p>
+
+        <div class="rs-step-actions" data-rs-nav hidden>
+          <button type="button" class="btn" data-rs-back>&larr; Back</button>
+          <button type="button" class="btn btn-primary" data-rs-next>Continue &rarr;</button>
+        </div>
+      </fieldset>
+
+      {# ── Step 3 ─────────────────────────────────────────────── #}
+      <fieldset class="rs-step" data-rs-step="3">
+        <legend class="rs-step-title"><span class="rs-step-num" aria-hidden="true">3</span>Captions &amp; AI</legend>
+
+        <label class="rs-toggle">
+          <input type="checkbox" name="captions" {% if plan.captions %}checked{% endif %} data-rs-captions>
+          <span>
+            <span class="rs-toggle-title">Show live captions of the speaker</span>
+            <span class="hint">Listeners can read what is said, in the room's language, as it is spoken.</span>
+          </span>
+        </label>
+        <p class="rs-note" data-rs-captions-forced hidden>AI interpretation is made from the live captions, so captions stay on while any language uses AI.</p>
+
+        <fieldset class="rs-group" data-rs-ai-output>
+          <legend class="rs-question">How should the AI languages reach listeners?</legend>
+          <div class="rs-choices rs-choices--two">
+            <label class="rs-choice">
+              <input type="radio" name="ai_output" value="voice" {% if plan.ai_voice %}checked{% endif %}>
+              <span class="rs-choice-title">Captions and an AI voice</span>
+              <span class="rs-choice-desc">Listeners read the translation and hear it spoken.</span>
+            </label>
+            <label class="rs-choice">
+              <input type="radio" name="ai_output" value="captions" {% if not plan.ai_voice %}checked{% endif %}>
+              <span class="rs-choice-title">Captions only</span>
+              <span class="rs-choice-desc">Listeners read the translation; nothing is spoken.</span>
+            </label>
+          </div>
+        </fieldset>
+
+        <fieldset class="rs-group rs-engines" data-rs-engines>
+          <legend class="rs-question">Which AI services should do the work?</legend>
+          <p class="hint rs-hint">Services with the required keys and server dependencies are listed. Language support is checked when you save. You can fine-tune models later on the room's Captions &amp; translation tab.</p>
+
+          <div class="field" data-rs-engine="speech">
+            <label for="rs-speech">Speech recognition <span class="rs-label-note">makes the captions</span></label>
+            <select id="rs-speech" name="speech_engine">
+              {% for engine in catalog.speech %}
+              <option value="{{ engine.provider }}" {% if plan.speech_engine == engine.provider %}selected{% endif %}>{{ engine.label }} — {{ engine.note }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="field" data-rs-engine="translation">
+            <label for="rs-translation">Translation <span class="rs-label-note">turns captions into other languages</span></label>
+            <select id="rs-translation" name="translation_engine">
+              {% for engine in catalog.translation %}
+              <option value="{{ engine.provider }}" {% if plan.translation_engine == engine.provider %}selected{% endif %}>{{ engine.label }} — {{ engine.note }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div class="field" data-rs-engine="voice">
+            <label for="rs-voice">AI voice <span class="rs-label-note">reads the translation aloud</span></label>
+            <select id="rs-voice" name="voice_engine">
+              {% for engine in catalog.voice %}
+              <option value="{{ engine.provider }}" {% if plan.voice_engine == engine.provider %}selected{% endif %}>{{ engine.label }} — {{ engine.note }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          {% if catalog.locked %}
+          <p class="hint rs-locked">To also use {{ catalog.locked | join(', ') }}, add the provider's API key on <a href="{{ api_keys_url }}">API keys</a> (for cloud captions, also tick “Enable External Transcription APIs” there).</p>
+          {% endif %}
+          {% if catalog.unavailable %}
+          <p class="hint rs-locked">Ask your server administrator to enable additional services: {{ catalog.unavailable | join('; ') }}.</p>
+          {% endif %}
+          {% if not catalog.voice %}
+          <p class="rs-note">No AI voice service is available yet. Use captions only, or add a Deepgram key on <a href="{{ api_keys_url }}">API keys</a>.</p>
+          {% endif %}
+        </fieldset>
+
+        <p class="rs-note" data-rs-nothing-ai hidden>Nothing to set up here: this room uses human interpreters only and no captions.</p>
+
+        <div class="rs-step-actions" data-rs-nav hidden>
+          <button type="button" class="btn" data-rs-back>&larr; Back</button>
+          <button type="button" class="btn btn-primary" data-rs-next>Continue &rarr;</button>
+        </div>
+      </fieldset>
+
+      {# ── Step 4 ─────────────────────────────────────────────── #}
+      <fieldset class="rs-step" data-rs-step="4">
+        <legend class="rs-step-title"><span class="rs-step-num" aria-hidden="true">4</span>{{ 'Review your changes' if is_edit else 'Review' }}</legend>
+        <dl class="rs-review" data-rs-review hidden></dl>
+        <ul class="rs-warnings" data-rs-warnings hidden></ul>
+        <p class="hint" data-rs-review-fallback>Check your answers above, then {{ 'save' if is_edit else 'create the room' }}.</p>
+        {% if not is_edit %}
+        <div class="rs-after">
+          <p class="rs-after-title">After you create the room</p>
+          <ol>
+            <li>Invite an interpreter to each booth from the event's Team page.</li>
+            <li>Connect the room's audio on its Floor source tab (needed for captions and AI).</li>
+            <li>Share the listener link with your audience.</li>
+          </ol>
+        </div>
+        {% endif %}
+
+        <div class="wizard-actions">
+          {% if is_edit %}
+          <a href="{{ cancel_url }}" class="btn">Cancel</a>
+          {% else %}
+          <button type="button" class="btn" data-rs-back data-rs-nav hidden>&larr; Back</button>
+          {% endif %}
+          <button type="submit" class="btn btn-primary btn-lg">{{ 'Save changes' if is_edit else 'Create room ✓' }}</button>
+        </div>
+      </fieldset>
+    </form>
+  </div>
+</div>
+
+<script type="module" src="{{ url_for('static', path='js/room-setup.js') }}?v={{ asset_version }}"></script>
+{% endblock %}

@@ -3,39 +3,6 @@
 {% block head %}
 <script src="https://cdn.tailwindcss.com"></script>
 <script src="{{ url_for('static', path='js/tailwind-config.js') }}?v={{ js_version }}"></script>
-<style>
-    /* Custom Brutalist Select styling */
-    .brutal-select {
-        appearance: none;
-        background-color: #0d0f10;
-        color: white;
-        border: 2px solid #0d0f10;
-        border-radius: 4px;
-        padding: 0.75rem 2.5rem 0.75rem 1rem;
-        font-weight: 800;
-        font-size: 0.875rem;
-        cursor: pointer;
-        transition: all 0.2s ease-in-out;
-        background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='white'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='M19 9l-7 7-7-7'%3E%3C/path%3E%3C/svg%3E");
-        background-repeat: no-repeat;
-        background-position: right 0.75rem center;
-        background-size: 1rem;
-    }
-    .brutal-select:hover:not(:disabled) {
-        background-color: #2563eb;
-        border-color: #0d0f10;
-        box-shadow: 4px 4px 0px #0d0f10;
-        transform: translateY(-2px);
-    }
-    .brutal-select:disabled {
-        opacity: 0.5;
-        cursor: not-allowed;
-    }
-    .brutal-select:focus {
-        outline: none;
-        box-shadow: 0 0 0 4px rgba(37, 99, 235, 0.5);
-    }
-</style>
 <link rel="stylesheet" href="{{ url_for('static', path='css/listener.css') }}?v={{ js_version }}" />
 {% endblock %}
 {% block content %}
@@ -75,7 +42,7 @@
         <div id="status" role="status">
             <span class="status-badge waiting">Waiting for selection...</span>
         </div>
-        <audio id="audio-player" class="w-full mt-6" autoplay style="display:none;"></audio>
+        <audio id="audio-player" class="w-full mt-6 hidden" autoplay></audio>
       </div>
     </div>
 
@@ -93,13 +60,13 @@
               <option value="stacked">Stacked</option>
             </select>
           </div>
-          <div class="flex flex-col gap-1 listener-hidden" id="translation-lang-group" style="display:none;">
+          <div class="flex flex-col gap-1 listener-control" id="translation-lang-group" hidden>
             <label for="translation-lang-select" class="font-extrabold text-[10px] uppercase tracking-widest text-gray-600">Target Language</label>
             <select id="translation-lang-select" class="brutal-select w-full">
               <option value="">Original</option>
             </select>
           </div>
-          <div class="flex flex-col gap-1 listener-hidden" id="tts-sync-group" style="display:none;">
+          <div class="flex flex-col gap-1 listener-control" id="tts-sync-group" hidden>
             <label class="font-extrabold text-[10px] uppercase tracking-widest text-gray-600">Read Aloud (TTS)</label>
             <label class="flex items-center gap-2 cursor-pointer h-[42px]">
               <input type="checkbox" id="tts-sync-toggle" class="w-5 h-5 border-2 border-[#0d0f10] rounded-none focus:ring-0 cursor-pointer">

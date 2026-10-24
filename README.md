@@ -41,7 +41,7 @@ Interpreters monitor the floor session and broadcast high-fidelity translation d
 - **⚡ Sub-Second Listener Playback:** Attendees receive ultra-low latency audio via WebRTC (WHEP) powered by MediaMTX, scaling effortlessly to thousands of listeners.
 - **🤖 Live AI Transcription & Translation:** Multi-provider speech-to-text (Faster-Whisper, OpenAI, Deepgram, NVIDIA Parakeet, ElevenLabs) paired with real-time LLM translations guided by custom personas, styles, and domain vocabulary glossaries.
 - **🗣️ Direct-Push Text-to-Speech (TTS):** Synthesize live translated speech on the fly (Deepgram Aura or self-hosted Supertonic ONNX), streamed directly to attendees over binary WebSocket frames.
-- **📡 Program Stream Ingest & YouTube Relay:** Ingest clean conference audio directly from hardware video switchers (OBS, ATEM, vMix) via authenticated HTTPS WHIP, with optional automated RTMPS forwarding to YouTube.
+- **📡 Program Stream Ingest & YouTube Relay:** Ingest clean conference audio directly from hardware video switchers (OBS, ATEM, vMix) via authenticated HTTPS WHIP, or straight from a browser tab on the sound-desk computer with the program audio sender (mute, sound check, auto-reconnect), with optional automated RTMPS forwarding to YouTube.
 - **🎛️ Mission Control & Coordination:** Real-time booth status monitoring, live audio meters, in-booth team chat, and coordinator controls via FastAPI WebSockets.
 - **💻 VoxBento Local:** Sovereign, 100% offline desktop application for private AI meeting intelligence and minutes on macOS, Windows, and Linux.
 
@@ -101,7 +101,9 @@ uv sync --all-groups
 
 ### 3. Configure Environment
 
-Copy the example environment configuration and generate the required encryption key:
+Copy the example environment configuration and generate the required encryption key. The key encrypts stored provider keys and every queued email (sign-in links, invitations, password resets), so production refuses to start without it. Outgoing email is sent from a durable outbox once `SMTP_HOST` is set; Admins edit the email templates and see delivery status in **Admin → Emails**.
+
+Email branding defaults to the VoxBento V mark with a transparent background, suitable for light and dark backgrounds. Leave the logo address empty in **Admin → Emails → Branding** to use it. The SVG source is `portal/static/img/email-mark.svg`; emails use its high-resolution transparent PNG export for mail-client compatibility. Set `PUBLIC_BASE_URL` to your publicly reachable HTTPS portal URL so recipients can load the image; browser previews load the bundled image from the current site. Custom HTTPS logo images and hiding the logo are still supported. Mail apps that block images may show the VoxBento alternative text until the recipient enables images.
 
 ```bash
 cp .env.example .env
@@ -112,6 +114,12 @@ env = re.sub(r'API_KEY_ENCRYPTION_KEY=.*', f'API_KEY_ENCRYPTION_KEY={secrets.tok
 open('.env', 'w').write(env)
 "
 ```
+
+For self-hosted domains, set `PUBLIC_BASE_URL` in `.env` to your public URL, for
+example `PUBLIC_BASE_URL=https://interpret.example.com`. It defaults to
+`https://voxbento.com` and is used for email links and canonical URLs in
+`/sitemap.xml`. Sitemap URL generation accepts trailing slashes and preserves any
+configured path prefix.
 
 ### 4. Run the Stack
 
@@ -130,6 +138,32 @@ uv run uvicorn fastapi_app:app --reload --port 8000
 ```
 
 Once running, access the application at **`http://localhost:8000`**.
+
+### Set up an event's rooms
+
+In **My events**, create or open an event and choose **Add a room**. The guided
+form collects the room name, spoken language, listener languages, and delivery by
+human interpreters, AI, or a mixture. AI languages can use translated captions
+alone or captions with an AI voice; AI always enables floor captions.
+
+The service choices use the event's configured API keys and installed server
+dependencies. Cloud speech recognition also requires **Enable External
+Transcription APIs** on the event's **API keys** page. Self-hosted translation
+uses NLLB; self-hosted voice needs the `supertonic` extra (included in the Docker
+image). Native installations can install it with
+`uv sync --python 3.13 --dev --extra supertonic`. NVIDIA additionally requires the
+`nvidia` extra and `NVIDIA_FUNCTION_ID`. Unsupported local translation or AI voice
+languages are explained when saving; choose another service or captions only for
+languages without voice support.
+
+After saving, invite interpreters from **Team**, connect audio on **Floor source**
+for captions and AI, and share the listener page. **Change languages & captions**
+reopens the same setup; **Captions & translation** retains advanced model, voice,
+prompt, and vocabulary controls. Removing an idle interpreter language also
+removes its booth, invite links, and assignments. Live booths are kept with a
+notice, and existing booths matching the spoken language remain selected until
+explicitly removed. Event owners and Admins can change setup; coordinators retain
+their operational access.
 
 ---
 

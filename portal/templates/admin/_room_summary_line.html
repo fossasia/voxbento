@@ -1,0 +1,7 @@
+{# One-line description of a room's setup. Expects `s`, a room_setup.RoomSummary. #}
+<span class="room-summary-line">
+  {%- if s.spoken_language %}{{ s.spoken_language }}{% else %}Language not set{% endif %}
+  {%- if s.languages %} · {% for line in s.languages %}{{ line.name }} <span class="delivery-tag delivery-tag--{{ line.delivery }}">{{ line.label }}</span>{{ ', ' if not loop.last }}{% endfor %}
+  {%- else %} · no listener languages yet{% endif %}
+  {%- if s.captions %} · captions on{% endif %}
+</span>
