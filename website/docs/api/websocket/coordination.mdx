@@ -90,7 +90,7 @@ This message designates a new active interpreter in the booth.
 ```
 **Authorization Policy:** Handled by `BoothRegistry.set_active_interpreter`:
 - Joined interpreters may select themselves (`requester_id == target_id`) to take over as active interpreter, even if they lack the `BOOTH_SET_ACTIVE` permission.
-- Coordinators and administrators (`room_coordinator`, `event_owner`, `super_admin`) or the currently active interpreter can assign any joined interpreter as the new active interpreter.
+- Room coordinators, Event owners and Admins (every role with `BOOTH_SET_ACTIVE` in `portal/roles.py`), or the currently active interpreter, can assign any joined interpreter as the new active interpreter. Each participant in `booth:state` carries `can_go_live` and `can_set_active`, so clients never compare role names.
 - If an unauthorized participant attempts to reassign another participant, the server rejects the request and sends a `booth:error` message back to the client.
 
 Coordinators and interpreters can also utilize the structured handoff flow using `booth:initiate-handoff`, `booth:accept-handoff`, and `booth:cancel-handoff`.

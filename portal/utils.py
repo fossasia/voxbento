@@ -9,7 +9,7 @@ from fastapi import HTTPException, Request, status
 from fastapi.responses import RedirectResponse
 from fastapi.security import HTTPAuthorizationCredentials
 
-from portal.auth import decode_token
+from portal.auth import decode_token, is_listener_token
 from portal.config import settings
 from portal.globals import booths, get_http_client
 
@@ -135,7 +135,7 @@ def _require_access(
             return
         try:
             payload = decode_token(credentials.credentials)
-            if payload.get("role") == "listener":
+            if is_listener_token(payload):
                 raise HTTPException(
                     status_code=status.HTTP_403_FORBIDDEN, detail="Listener tokens cannot be used for this API."
                 )
@@ -150,7 +150,7 @@ def _require_access(
 
     payload = session_payload if session_payload is not None else get_booth_session(request)
     if payload:
-        if payload.get("role") == "listener":
+        if is_listener_token(payload):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN, detail="Listener tokens cannot be used for this API."
             )

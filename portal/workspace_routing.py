@@ -23,11 +23,12 @@ _WORKSPACE_ROUTE_PATTERNS = (
     re.compile(r"/workspace/events/\d+/(?:setup/(?:rooms|booths|invite)|regenerate_join_code|api-settings|delete)/?"),
     re.compile(r"/workspace/events/\d+/(?:rooms|members)/?"),
     re.compile(r"/workspace/events/\d+/members/\d+/(?:invite|delete)/?"),
-    re.compile(r"/workspace/events/\d+/rooms/\d+(?:/(?:transcripts|edit|delete))?/?"),
+    re.compile(r"/workspace/events/\d+/team(?:/(?:add|remove|resend|links(?:/revoke)?)?)?"),
+    re.compile(r"/workspace/events/\d+/rooms/\d+(?:/(?:transcripts|edit|delete|sender))?/?"),
     re.compile(r"/workspace/events/by-slug/[^/]+/rooms/[^/]+/?"),
     re.compile(r"/workspace/events/by-slug/[^/]+/rooms/by-eventyay/[^/]+/?"),
     re.compile(r"/workspace/events/\d+/rooms/\d+/ai-vocabulary/(?:upload|export|delete)/?"),
-    re.compile(r"/workspace/events/\d+/rooms/\d+/(?:program-ingest|program-relay|meeting-source)"),
+    re.compile(r"/workspace/events/\d+/rooms/\d+/(?:program-ingest|program-relay|program-sender|meeting-source)"),
     re.compile(r"/workspace/events/\d+/rooms/\d+/members(?:/\d+/(?:invite|delete))?/?"),
     re.compile(r"/workspace/events/\d+/rooms/\d+/booths/?"),
     re.compile(
@@ -80,7 +81,7 @@ async def should_redirect_organizer(request: Request) -> bool:
         principal = await resolve_request_principal(request, db_session)
         if principal["user"] is None:
             return False
-        if principal["is_super_admin"]:
+        if principal["is_admin"]:
             return False
 
         event_match = _EVENT_PATH_RE.match(request.url.path)
@@ -97,19 +98,22 @@ def management_template_context(request: Request) -> dict[str, str | bool | int]
     principal = getattr(request.state, "principal", None)
     if principal:
         can_host = bool(principal.get("can_host", False))
-        is_super_admin = bool(principal.get("is_super_admin", False))
+        is_admin = bool(principal.get("is_admin", False))
         open_hosting_requests = int(principal.get("open_hosting_requests", 0))
+        pending_developer_accounts = int(principal.get("pending_developer_accounts", 0))
     else:
         can_host = False
-        is_super_admin = False
+        is_admin = False
         open_hosting_requests = 0
+        pending_developer_accounts = 0
     return {
         "management_prefix": WORKSPACE_PREFIX if is_workspace else ADMIN_PREFIX,
         "management_api_prefix": "/api/workspace" if is_workspace else "/api/admin",
         "is_workspace": is_workspace,
         "can_host": can_host,
-        "is_super_admin": is_super_admin,
+        "is_admin": is_admin,
         "open_hosting_requests": open_hosting_requests,
+        "pending_developer_accounts": pending_developer_accounts,
     }
 
 
