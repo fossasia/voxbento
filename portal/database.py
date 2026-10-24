@@ -1085,24 +1085,64 @@ async def save_transcript_segment(booth_id_str: str, text: str, room_id: int | N
     """Save a finalized transcript segment to the database asynchronously and return its ID."""
     from sqlalchemy import select
 
-    from portal.models import DBBooth, Event
+    from portal.models import DBBooth, Event, Room
 
-    parts = booth_id_str.split("-")
-    if len(parts) < 3:
-        # Fallback for floor or invalid
-        language_code = parts[-1] if parts else "floor"
-        event_slug = "-".join(parts[:-1]) if len(parts) > 1 else ""
-        parsed_room_id = room_id
-    else:
-        language_code = parts[-1]
-        parsed_room_id = int(parts[-2])
-        event_slug = "-".join(parts[:-2])
+    if not isinstance(booth_id_str, str) or not booth_id_str.strip():
+        return None
+
+    booth_id_str = booth_id_str.strip().lower()
 
     try:
         async with get_session() as session:
+            parsed_room_id: int | None = None
+            event_slug: str | None = None
+            language_code: str | None = None
+
+            # 1. Check if this is a legacy floor identifier ({event_slug}-floor) matching an explicit room_id
+            if booth_id_str.endswith("-floor") and room_id is not None:
+                candidate_slug = booth_id_str[: -len("-floor")]
+                stmt_legacy = (
+                    select(Event.slug)
+                    .join(Room, Room.event_id == Event.id)
+                    .where(Room.id == room_id, Event.slug == candidate_slug)
+                )
+                matching_event_slug = await session.scalar(stmt_legacy)
+                if matching_event_slug is not None:
+                    parsed_room_id = room_id
+                    event_slug = matching_event_slug
+                    language_code = "floor"
+
+            # 2. Canonical format: {event_slug}-{room_id}-{language_code}
+            if parsed_room_id is None:
+                parts = booth_id_str.rsplit("-", 2)
+                if len(parts) == 3:
+                    cand_event_slug = parts[0]
+                    cand_room_str = parts[1]
+                    cand_lang = parts[2]
+
+                    # Validate that the room component is strictly ASCII digits
+                    if cand_room_str.isascii() and cand_room_str.isdigit():
+                        try:
+                            candidate_room_id = int(cand_room_str)
+                        except (ValueError, TypeError):
+                            candidate_room_id = None
+                    else:
+                        candidate_room_id = None
+
+                    if candidate_room_id is not None and cand_event_slug:
+                        if cand_lang == "floor" or (
+                            len(cand_lang) == 2 and cand_lang.isascii() and cand_lang.isalpha()
+                        ):
+                            parsed_room_id = candidate_room_id
+                            event_slug = cand_event_slug
+                            language_code = cand_lang
+
+            if parsed_room_id is None or event_slug is None or language_code is None:
+                return None
+
             booth_id = None
             if language_code != "floor":
-                stmt = (
+                stmt_booth = (
                     select(DBBooth.id)
                     .join(Event)
                     .where(
@@ -1111,9 +1151,20 @@ async def save_transcript_segment(booth_id_str: str, text: str, room_id: int | N
                         DBBooth.language_code == language_code,
                     )
                 )
-                booth_id = await session.scalar(stmt)
+                booth_id = await session.scalar(stmt_booth)
+            else:
+                stmt_room = (
+                    select(Room.id)
+                    .join(Event, Room.event_id == Event.id)
+                    .where(Room.id == parsed_room_id, Event.slug == event_slug)
+                )
+                valid_room = await session.scalar(stmt_room)
+                if valid_room is None:
+                    return None
 
-            segment = TranscriptSegment(room_id=room_id, booth_id=booth_id, language_code=language_code, text=text)
+            segment = TranscriptSegment(
+                room_id=parsed_room_id, booth_id=booth_id, language_code=language_code, text=text
+            )
             session.add(segment)
             await session.flush()
             return segment.id
