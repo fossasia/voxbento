@@ -218,5 +218,11 @@ with `?error=invalid_role&role=…` and the page explains why.
   meaning: `stage` is the raw floor-bot stage (`launching`, `in_meeting`, `dead`, …;
   `unknown` when the service is unreachable); the managed lifecycle is in `state`.
 
+`POST /oauth/token` accepts an optional `event` slug for the authorization-code
+grant. A mismatch is rejected before code consumption or membership grants.
+Successful code and refresh responses include `event`. Clients must send the
+event retained by their server to enable this check; omission preserves legacy
+behavior. See `website/docs/api/authentication.mdx` for integration rollout.
+
 `POST /login` requires verified email and uses the `login` rate-limit bucket:
 10 attempts per normalized email per hour. There is no separate admin sign-in form.
