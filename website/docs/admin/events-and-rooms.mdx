@@ -87,7 +87,7 @@ On the room detail page (`/workspace/events/{event_id}/rooms/{room_id}/` or `/ad
 ### Meeting Source and Floor Audio Ingest
 - **Jitsi Meeting URL**: Custom meeting link for the room's floor audio session.
 - **Relay Booth ID**: Optional pointer to a booth whose WHEP stream acts as the source relay in this room.
-- **Floor Source**: Choose between the managed **Meeting agent** (`jitsi_bot`) or **Program stream ingest** (authenticated media ingest from an external encoder). When Program stream ingest is enabled, configure its **Delivery mode**: either *Independent outputs* (direct authenticated WHIP) or *VoxBento relays to YouTube* (RTMPS relay, where OBS sends an RTMPS stream and VoxBento forwards it to an allow-listed YouTube RTMPS destination).
+- **Floor Source**: Choose between the managed **Meeting agent** (`jitsi_bot`) or **Program stream ingest** (authenticated media ingest from an external encoder). When Program stream ingest is enabled, choose how the stream reaches YouTube: *OBS streams to YouTube itself* (direct authenticated WHIP as a second output) or *VoxBento forwards to YouTube* (OBS sends one RTMPS stream and VoxBento forwards it to an allow-listed YouTube RTMPS destination).
 
 ### Playback Audio Delay
 - **Audio delay (ms)**: Optional listener-side WHEP playback buffer (e.g. `1000` to `5000` ms) to align translated audio with delayed conference video players or external livestreams. A value of `0` uses direct sub-second playback.

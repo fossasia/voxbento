@@ -139,6 +139,12 @@ uv run uvicorn fastapi_app:app --reload --port 8000
 
 Once running, access the application at **`http://localhost:8000`**.
 
+**Optional: YouTube relay (one OBS output → VoxBento → YouTube).** On the production
+server run `scripts/setup-youtube-relay.sh` once, then open TCP 1936. It writes the relay
+settings to `.env`, reuses Caddy's certificate for RTMPS, and adds `COMPOSE_FILE` so every
+deploy keeps the relay. Organizers then follow the steps on the room page; see
+[docs/program-relay.md](docs/program-relay.md) for the walkthrough and troubleshooting.
+
 ### Set up an event's rooms
 
 In **My events**, create or open an event and choose **Add a room**. The guided

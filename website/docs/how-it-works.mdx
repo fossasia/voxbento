@@ -397,7 +397,9 @@ authenticated control API and stops relays on revoke, source switch, destination
 removal or restart; it enforces a fail-closed relay cap. The YouTube key is
 Fernet-encrypted at rest and write-only. Ingest, relay and language-processing
 health are reported separately. Relay mode puts VoxBento in the YouTube path, so
-the independent WHIP mode remains the default. See `docs/program-relay.md`.
+the independent WHIP mode remains the default. Operators enable relay mode once with
+`scripts/setup-youtube-relay.sh`, which reuses Caddy's certificate for RTMPS and pins the
+relay override into every deploy through `COMPOSE_FILE`. See `docs/program-relay.md`.
 
 ## Production deployment
 

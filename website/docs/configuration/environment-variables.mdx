@@ -92,6 +92,9 @@ These variables control external encoder ingest and YouTube RTMPS forwarding.
 | `PROGRAM_SENDER_SESSION_TTL_SECS` | `150` | Browser sender publish window for WHIP session negotiation. |
 | `PROGRAM_RELAY_ENABLED` | `false` | Enables operator-controlled RTMPS relaying to YouTube destinations via the `program-relay` service (`docker-compose.relay.yml`). |
 | `PROGRAM_RTMPS_PUBLIC_BASE` | _(none)_ | Public base RTMPS URL (e.g. `rtmps://voxbento.com:1936`) for incoming RTMP/RTMPS encoder streams. |
+| `PROGRAM_RTMPS_CERT_DIR` | _(none)_ | Directory holding the RTMPS certificate and key, e.g. Caddy's certificate directory for the hostname. MediaMTX reloads renewed files. |
+| `PROGRAM_RTMPS_CERT_NAME` | `rtmps` | File name stem inside `PROGRAM_RTMPS_CERT_DIR` (`<name>.crt`, `<name>.key`); Caddy uses the hostname. |
+| `COMPOSE_FILE` | _(none)_ | Set to `docker-compose.yml:docker-compose.relay.yml` so every `docker compose` command and the deploy workflow include relay mode. `scripts/setup-youtube-relay.sh` sets this and the variables above. |
 | `PROGRAM_RELAY_BASE` | `http://program-relay:8090` | Internal URL of the dedicated `program-relay` media service. |
 | `PROGRAM_RELAY_CONTROL_SECRET` | _(none)_ | Shared Bearer token (min 32 characters) for authenticating commands to `program-relay`. |
 | `PROGRAM_RELAY_MAX` | `4` | Maximum concurrent active YouTube relay streams. |
