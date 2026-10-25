@@ -45,6 +45,28 @@ def test_page_links_tokens_before_other_stylesheets(source):
     assert LOCAL_STYLESHEET.findall(source)[0] == "css/tokens.css"
 
 
+# Stylesheets migrated to the shared tokens: their :root only points at tokens or at each other.
+ADOPTED_STYLESHEETS = ["admin.css"]
+
+
+@pytest.mark.parametrize("stylesheet", ADOPTED_STYLESHEETS)
+def test_adopted_stylesheet_root_only_references_tokens(stylesheet):
+    css = re.sub(r"/\*.*?\*/", "", (TOKENS.parent / stylesheet).read_text(encoding="utf-8"), flags=re.S)
+    roots = re.findall(r"(?<![\w-]):root\s*{([^{}]*)}", css)
+    assert len(roots) == 1, f"{stylesheet} must have exactly one :root block"
+    declarations = {
+        name.strip(): value.strip() for name, _, value in (d.partition(":") for d in roots[0].split(";") if d.strip())
+    }
+    tokens = _token_values()
+    for name, value in declarations.items():
+        ref = re.fullmatch(r"var\((--[\w-]+)\)", value)
+        assert ref, f"{stylesheet}: {name} must be var(--vb-*) or an alias of another :root variable, not {value}"
+        target = ref.group(1)
+        assert target != name and (target in tokens or target in declarations), (
+            f"{stylesheet}: {name} points at {target}"
+        )
+
+
 def _contrast_on_white(hex_color: str) -> float:
     # Opaque #rrggbb only: an alpha channel would make the real contrast lower than computed.
     assert re.fullmatch(r"#[0-9a-fA-F]{6}", hex_color), f"text tokens must be opaque #rrggbb, got {hex_color}"
