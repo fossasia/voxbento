@@ -84,6 +84,10 @@ language (Interpreter, AI voice or AI text) and optional floor captions, which s
 on whenever a language uses AI because the AI translates from them. The same form edits existing rooms.
 Room lists and the room overview summarize those choices, including AI languages
 that do not have an interpreter booth.
+When editing a room, choose **Review changes** to see the changes and any booth
+removal warnings on a separate screen, then **Save changes**. **Back to edit**
+returns to your answers without saving. Pressing Enter before review advances
+to review instead of saving immediately.
 
 `portal/room_setup.py` validates a room plan and applies it in one database
 transaction to the existing room, booth, and translation-language tables. Human
@@ -293,6 +297,17 @@ known addresses continue to a password or magic link, and unknown addresses go t
 memberships allow. Operators should maintain at least two active administrator
 accounts; the [admin-login migration guide](https://github.com/fossasia/voxbento/blob/dev/docs/admin-password-removal-migration.md)
 documents the controlled recovery procedure.
+
+Registration has a configurable per-client-IP limit (20 attempts per minute by
+default). Operators can enable Cloudflare Turnstile on `/register`; the server
+validates the token's success, hostname and `register` action before hashing a
+password, creating an unverified account, or queueing verification email.
+Rejected challenges return 403 and verification-service outages return 503.
+The form preserves name/email and offers a fresh challenge. Turnstile defaults
+to disabled so existing deployments work until keys are provisioned. Login,
+invites and real-time media routes are unaffected. See the
+[registration protection guide](https://github.com/fossasia/voxbento/blob/dev/docs/registration-protection.md)
+for enabling it, proxy trust requirements and Cloudflare edge protection.
 
 ## Hosting access requests
 

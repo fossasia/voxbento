@@ -28,6 +28,14 @@
 
 ---
 
+Signup protection: `POST /register` allows 20 attempts per resolved client IP
+per minute (`REGISTRATION_REQUESTS_PER_MINUTE`); excess attempts return 429 with
+`Retry-After: 60`. With `REGISTRATION_TURNSTILE_ENABLED=true`, a Cloudflare token
+validated for the configured hostname and `register` action is required before
+account/email side effects (403 if rejected, 503 if unavailable). The optional
+widget and errors render in `register.html`; see `portal/registration_protection.py`
+and `docs/registration-protection.md`. Other routes are unaffected.
+
 ## Booth & Listener Pages
 
 | Method | Path | Auth | Template | Notes |

@@ -1870,3 +1870,5 @@ code { font-family: var(--font-mono); font-size: 0.85em; background: var(--color
   .setup-room { flex-direction: column; align-items: flex-start; }
 }
 .wizard-actions > .btn-lg:last-child { margin-left: auto; }
+
+.rs-change-list { margin: 12px 0 24px; padding-left: 24px; }

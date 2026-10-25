@@ -237,11 +237,23 @@
           <button type="button" class="btn" data-rs-back>&larr; Back</button>
           <button type="button" class="btn btn-primary" data-rs-next>Continue &rarr;</button>
         </div>
+        {% if is_edit %}
+        <div class="rs-step-actions" data-rs-edit-nav hidden>
+          <a href="{{ cancel_url }}" class="btn">Cancel</a>
+          <button type="button" class="btn btn-primary" data-rs-next>Review changes &rarr;</button>
+        </div>
+        {% endif %}
       </fieldset>
 
       {# ── Step 4 ─────────────────────────────────────────────── #}
       <fieldset class="rs-step" data-rs-step="4">
         <legend class="rs-step-title"><span class="rs-step-num" aria-hidden="true">4</span>{{ 'Review your changes' if is_edit else 'Review' }}</legend>
+        {% if is_edit %}
+        <div data-rs-changes hidden>
+          <h3>What will change</h3>
+          <ul class="rs-change-list" data-rs-change-list></ul>
+        </div>
+        {% endif %}
         <dl class="rs-review" data-rs-review hidden></dl>
         <ul class="rs-warnings" data-rs-warnings hidden></ul>
         <p class="hint" data-rs-review-fallback>Check your answers above, then {{ 'save' if is_edit else 'create the room' }}.</p>
@@ -259,6 +271,7 @@
         <div class="wizard-actions">
           {% if is_edit %}
           <a href="{{ cancel_url }}" class="btn">Cancel</a>
+          <button type="button" class="btn" data-rs-back data-rs-edit-nav hidden>&larr; Back to edit</button>
           {% else %}
           <button type="button" class="btn" data-rs-back data-rs-nav hidden>&larr; Back</button>
           {% endif %}

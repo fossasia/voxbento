@@ -1,9 +1,10 @@
 // Room setup (add a room / change a room's languages). Values come from data attributes
 // on #room-setup; there is no inline script. Without JavaScript the form shows every
 // step at once and still submits; this script turns it into one step at a time when
-// adding a room, keeps the per-language choices in sync and shows only the questions
-// that apply. Each language reaches listeners one way: an interpreter, an AI voice or AI
-// text. Captions are the speaker's own words and must be on whenever a language uses AI.
+// adding a room, puts the review on its own screen when changing one, keeps the
+// per-language choices in sync and shows only the questions that apply. Each language
+// reaches listeners one way: an interpreter, an AI voice or AI text. Captions are the
+// speaker's own words and stay on whenever a language uses AI.
 
 const root = document.getElementById('room-setup');
 const form = document.getElementById('room-setup-form');
@@ -48,7 +49,9 @@ if (root && form) {
   const reviewFallback = form.querySelector('[data-rs-review-fallback]');
 
   let captionsWanted = captionsBox.checked;
+  let initialReview = null;
   let current = 0;
+  const reviewStep = steps.length - 1;
 
   // ── Reading the answers ────────────────────────────────────────────────
 
@@ -246,6 +249,39 @@ if (root && form) {
     review.append(dt, dd);
   }
 
+  function reviewValues() {
+    const values = new Map();
+    const terms = [...review.querySelectorAll('dt')];
+    const details = [...review.querySelectorAll('dd')];
+    terms.forEach((term, i) => {
+      if (term.textContent !== 'Listener languages') values.set(term.textContent, details[i].textContent);
+    });
+    languages().forEach((lang) => values.set(lang.name, deliveryLabels[lang.delivery] || 'Interpreter + AI (choose one)'));
+    return values;
+  }
+
+  function renderChanges() {
+    if (isCreate || !initialReview) return;
+    const container = form.querySelector('[data-rs-changes]');
+    const list = form.querySelector('[data-rs-change-list]');
+    list.replaceChildren();
+    const currentValues = reviewValues();
+    new Set([...initialReview.keys(), ...currentValues.keys()]).forEach((key) => {
+      const before = initialReview.get(key);
+      const after = currentValues.get(key);
+      if (before === after) return;
+      const item = document.createElement('li');
+      item.textContent = `${key}: ${before || 'Not offered'} → ${after || 'Removed'}`;
+      list.append(item);
+    });
+    if (!list.childElementCount) {
+      const item = document.createElement('li');
+      item.textContent = 'No changes to your current answers.';
+      list.append(item);
+    }
+    container.hidden = false;
+  }
+
   function renderReview() {
     review.replaceChildren();
     const langs = languages();
@@ -254,11 +290,12 @@ if (root && form) {
     addReviewItem('Speakers use', selectedText(spokenSelect));
     addReviewItem(
       'Listener languages',
-      langs.length ? langs.map((l) => `${l.name}: ${deliveryLabels[l.delivery] || 'not chosen yet'}`) : 'None (captions only)',
+      langs.length ? langs.map((l) => `${l.name}: ${deliveryLabels[l.delivery] || 'not chosen yet'}`) : 'None',
     );
     const captions = ai || captionsBox.checked;
     addReviewItem('Live captions', captions ? `On, in ${spokenName()}` : 'Off');
     if (captions) addReviewItem('AI services', engineSummary.textContent);
+    renderChanges();
     review.hidden = false;
     reviewFallback.hidden = true;
 
@@ -337,10 +374,17 @@ if (root && form) {
     if (field.type === 'radio') field.setCustomValidity('');
   }
 
+  // Adding a room shows one step at a time. Changing a room shows every step on one screen
+  // and the review on the next.
+  function isShown(i) {
+    if (isCreate) return i === current;
+    return current === reviewStep ? i === reviewStep : i !== reviewStep;
+  }
+
   function show(index, { focus = true } = {}) {
     current = Math.max(0, Math.min(index, steps.length - 1));
-    steps.forEach((step, i) => { step.hidden = i !== current; });
-    [...progress.querySelectorAll('[data-rs-progress-step]')].forEach((item, i) => {
+    steps.forEach((step, i) => { step.hidden = !isShown(i); });
+    [...(progress?.querySelectorAll('[data-rs-progress-step]') || [])].forEach((item, i) => {
       item.classList.toggle('is-active', i === current);
       item.classList.toggle('is-done', i < current);
       if (i === current) item.setAttribute('aria-current', 'step');
@@ -354,13 +398,25 @@ if (root && form) {
   }
 
   function next() {
-    const problem = stepProblem(current);
-    if (problem) {
-      report(problem);
+    if (isCreate) {
+      const problem = stepProblem(current);
+      if (problem) {
+        report(problem);
+        return;
+      }
+      syncAll();
+      show(current + 1);
       return;
     }
+    for (let i = 0; i < reviewStep; i += 1) {
+      const problem = stepProblem(i);
+      if (problem) {
+        report(problem);
+        return;
+      }
+    }
     syncAll();
-    show(current + 1);
+    show(reviewStep);
   }
 
   // ── Wiring ─────────────────────────────────────────────────────────────
@@ -397,11 +453,17 @@ if (root && form) {
   });
 
   form.addEventListener('submit', (event) => {
+    // Pressing Enter before the review moves on instead of saving unseen changes.
+    if (current !== reviewStep) {
+      event.preventDefault();
+      next();
+      return;
+    }
     for (let i = 0; i < steps.length; i += 1) {
       const problem = stepProblem(i);
       if (problem) {
         event.preventDefault();
-        if (isCreate) show(i, { focus: false });
+        show(i, { focus: false });
         report(problem);
         return;
       }
@@ -409,16 +471,15 @@ if (root && form) {
     captionsValueForSubmit();
   });
 
-  if (isCreate) {
-    form.querySelectorAll('[data-rs-nav]').forEach((el) => { el.hidden = false; });
-    form.querySelectorAll('[data-rs-next]').forEach((btn) => btn.addEventListener('click', next));
-    form.querySelectorAll('[data-rs-back]').forEach((btn) => btn.addEventListener('click', () => show(current - 1)));
-    progress.hidden = false;
-    // After a rejected submit, open on the first step that needs attention.
-    const firstProblem = root.querySelector('.alert-danger') ? steps.findIndex((_, i) => stepProblem(i)) : -1;
-    syncAll();
-    show(firstProblem >= 0 ? firstProblem : 0, { focus: false });
-  } else {
-    syncAll();
-  }
+  form.querySelectorAll(isCreate ? '[data-rs-nav]' : '[data-rs-edit-nav]').forEach((el) => { el.hidden = false; });
+  form.querySelectorAll('[data-rs-next]').forEach((btn) => btn.addEventListener('click', next));
+  form.querySelectorAll('[data-rs-back]').forEach((btn) => btn.addEventListener('click', () => show(isCreate ? current - 1 : 0)));
+  if (progress) progress.hidden = false;
+  // After a rejected submit, open on the first step that needs attention.
+  const firstProblem = root.querySelector('.alert-danger') ? steps.findIndex((_, i) => stepProblem(i)) : -1;
+  syncAll();
+  // A rejected POST contains submitted answers, not the saved room baseline.
+  initialReview = root.querySelector('.alert-danger') ? null : reviewValues();
+  renderChanges();
+  show(firstProblem >= 0 ? firstProblem : 0, { focus: false });
 }

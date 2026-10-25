@@ -150,6 +150,11 @@ class Settings(BaseSettings):
     # Team inbox notified of each new hosting access request.
     hosting_requests_email: str = "voxbento.dev@gmail.com"
     public_base_url: str = "https://voxbento.com"
+    # Opt-in so existing deployments work before a Turnstile widget is provisioned.
+    registration_turnstile_enabled: bool = False
+    turnstile_site_key: str = ""
+    turnstile_secret_key: str = Field(default="", repr=False)
+    registration_requests_per_minute: int = Field(default=20, ge=1)
     # Webhook Settings
     max_webhook_subscriptions: int = 50
     # Caption WebSocket Settings

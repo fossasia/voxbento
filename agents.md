@@ -270,18 +270,38 @@ never remove a running `program-relay`.
 
 ## Documentation Requirements
 
-Every PR that adds, removes, or changes a feature **must** update these files in the same commit:
+Keep documentation scoped to the change. Routine feature PRs, bug fixes, and
+refactors **must not update `README.md` by default**. The README is a stable
+project overview and quick start, not a feature changelog or a home for detailed
+UI walkthroughs, provider options, implementation notes, or rollout instructions.
 
-- `README.md` — operational usage and setup
-- `website/docs/how-it-works.mdx` — system design
-- `agents.md` (this file) — guardrails, if they changed
-- Relevant context file in `.agents/context/` — if the change affects routes, DB schema, or transcription
+Update `README.md` only when explicitly requested, to correct an existing factual
+error or broken link, or when a change makes its installation or quick-start
+instructions inaccurate. Keep those edits minimal; document feature details in
+the relevant `website/docs/` page or focused `docs/` guide instead.
 
-Do not defer documentation to a follow-up PR.
+Update documentation in the same PR when the change affects what it describes:
+
+- Relevant `website/docs/` pages or `docs/` guides — changed usage, configuration,
+  or operational procedures.
+- `website/docs/how-it-works.mdx` — changed system design only.
+- `agents.md` — changed agent guardrails or invariants only.
+- Relevant `.agents/context/` files — changed routes, DB schema, transcription,
+  or module ownership.
+
+Do not add unrelated documentation edits just to satisfy a checklist, and do not
+append feature summaries to the README or agent guide for every PR.
 
 Password sign-in requires `User.email_verified`; everyone, admins included, signs in
 at `/login` (`login` rate-limit bucket, 10 attempts per normalized email per hour).
 `/admin/login` only redirects to `/login?next=/admin/`.
+
+Registration protection lives in `portal/registration_protection.py`. Throttle
+by the ASGI-resolved client IP, never raw forwarding headers. When
+`REGISTRATION_TURNSTILE_ENABLED` is true, validate Cloudflare success, hostname
+and `register` action before signup side effects; service failures must reject
+the signup. Turnstile defaults off for compatible rollout. See
+`docs/registration-protection.md` for configuration and proxy trust.
 
 Production deployments validate a separate candidate checkout before advancing
 the live checkout. Portal source and dependencies must come from the built image,
