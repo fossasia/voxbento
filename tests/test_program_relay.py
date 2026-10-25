@@ -209,6 +209,7 @@ def test_destination_validation_is_allowlisted_rtmps_only():
         ("rtmps://user:pass@a.rtmps.youtube.com/live2", YOUTUBE_KEY),
         ("rtmps://a.rtmps.youtube.com/live2?x=1", YOUTUBE_KEY),
         ("rtmps://a.rtmps.youtube.com", YOUTUBE_KEY),
+        ("rtmps://a.rtmps.youtube.com/" + "a" * 120 + "/" + "b" * 120 + "/c", YOUTUBE_KEY),  # > column length
         (YOUTUBE_SERVER, "key with spaces"),
         (YOUTUBE_SERVER, "../../etc"),
         (YOUTUBE_SERVER, "abc"),
@@ -226,6 +227,8 @@ def test_pasted_key_and_default_server():
         "rtmp://a.rtmp.youtube.com/live2",
         YOUTUBE_KEY,
     )
+    # Whitespace before a trailing slash must not end up in the stored key.
+    assert relay.split_pasted_key(None, f"{YOUTUBE_SERVER}/{YOUTUBE_KEY} /")[1] == YOUTUBE_KEY
 
 
 @pytest.mark.anyio

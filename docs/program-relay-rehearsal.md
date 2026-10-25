@@ -30,7 +30,7 @@ paste stream keys, VoxBento credentials or the full YouTube ingest URL into the 
 | 4 | Wait 30 s | *VoxBento → YouTube* **Live**, badge *Live on YouTube*; YouTube Studio shows *Excellent/Good* stream health and the preview plays |
 | 5 | Stream for **10 minutes** with speech | No relay restarts; YouTube health stays good; captions/translation/TTS work for listeners |
 | 6 | Check the unlisted watch page from a second device | Picture and audio match the encoder output |
-| 7 | **Replace stream key** with a new YouTube key (create a second unlisted event or reset the key) | Relay restarts once and is Live on the new event; old event ends |
+| 7 | **Replace stream key** with a new YouTube key (create a second unlisted event or reset the key) | Old event stops receiving video; relay restarts once and is Live on the new event. End the old event in YouTube Studio (with Auto-stop off it does not end by itself) |
 | 8 | `docker compose restart portal` | Relay keeps running (or resumes within one reconcile); no duplicate relay |
 | 9 | `docker compose restart program-relay` | YouTube shows a short interruption; relay health reports it and returns to Live |
 | 10 | Stop OBS for 30 s, then start again | Ingest Disconnected → Connected; relay resumes; YouTube resumes |

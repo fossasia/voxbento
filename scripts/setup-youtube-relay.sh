@@ -32,14 +32,23 @@ fail() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 env_get() { [ -f "$ENV_FILE" ] && sed -n "s/^$1=//p" "$ENV_FILE" | tail -n 1 | sed "s/^[\"']//; s/[\"']$//" || true; }
 env_set() {
   # awk reads the value from the environment, so paths and secrets need no escaping.
-  local tmp
-  tmp=$(mktemp)
-  KEY=$1 VALUE=$2 awk 'BEGIN { done = 0 }
+  # The new file is written next to .env and renamed over it, so an interrupted run never
+  # leaves a truncated .env. It keeps .env's mode (600, set below) and, as root, its owner.
+  local tmp owner
+  tmp=$(mktemp "$ENV_FILE.XXXXXX")
+  if ! KEY=$1 VALUE=$2 awk 'BEGIN { done = 0 }
     index($0, ENVIRON["KEY"] "=") == 1 { if (!done) print ENVIRON["KEY"] "=" ENVIRON["VALUE"]; done = 1; next }
     { print }
-    END { if (!done) print ENVIRON["KEY"] "=" ENVIRON["VALUE"] }' "$ENV_FILE" > "$tmp"
-  cat "$tmp" > "$ENV_FILE"
-  rm -f "$tmp"
+    END { if (!done) print ENVIRON["KEY"] "=" ENVIRON["VALUE"] }' "$ENV_FILE" > "$tmp"; then
+    rm -f "$tmp"
+    fail "Could not update $ENV_FILE"
+  fi
+  chmod 600 "$tmp"
+  if [ "$(id -u)" -eq 0 ]; then
+    owner=$(stat -c %u:%g "$ENV_FILE" 2>/dev/null || stat -f %u:%g "$ENV_FILE")
+    chown "$owner" "$tmp"
+  fi
+  mv -f "$tmp" "$ENV_FILE"
 }
 secret() { openssl rand -hex 32; }
 sudo_if_needed() { if "$@" 2>/dev/null; then return 0; fi; command -v sudo >/dev/null && sudo "$@"; }
@@ -49,6 +58,11 @@ command -v openssl >/dev/null || fail "openssl is not installed."
 [ -f "$RELAY_COMPOSE" ] || fail "Run this from the VoxBento checkout ($RELAY_COMPOSE not found)."
 [ -f "$ENV_FILE" ] || fail "$ENV_FILE not found. Create it first (see README.md)."
 umask 077
+# .env holds every production secret; make sure no other local user can read it.
+if [ -n "$(find "$ENV_FILE" -perm /077 2>/dev/null || find "$ENV_FILE" -perm +077 2>/dev/null)" ]; then
+  chmod 600 "$ENV_FILE"
+  echo "Restricted $ENV_FILE to its owner (chmod 600)"
+fi
 
 step "Public hostname"
 if [ -z "$host" ]; then

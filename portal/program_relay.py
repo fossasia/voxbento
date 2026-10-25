@@ -32,6 +32,7 @@ RELAY_CONTROL_TIMEOUT = 3.0
 RELAY_VIDEO_CODECS = {"H264"}
 RELAY_AUDIO_CODECS = {"MPEG-4 Audio"}
 YOUTUBE_DEFAULT_SERVER = "rtmps://a.rtmps.youtube.com/live2"
+SERVER_URL_MAX = 255  # rooms.program_relay_server column length
 # YouTube's plain-RTMP ingest hosts and their RTMPS equivalents.
 YOUTUBE_RTMPS_HOSTS = {"a.rtmp.youtube.com": "a.rtmps.youtube.com", "b.rtmp.youtube.com": "b.rtmps.youtube.com"}
 
@@ -77,7 +78,10 @@ def normalize_destination(server_url: str, stream_key: str) -> str:
     if not STREAM_KEY.fullmatch(stream_key.strip()):
         raise ValueError("The stream key may contain only letters, digits, '-' and '_'.")
     netloc = host if port is None else f"{host}:{port}"
-    return f"rtmps://{netloc}{path}"
+    normalized = f"rtmps://{netloc}{path}"
+    if len(normalized) > SERVER_URL_MAX:
+        raise ValueError("The server URL is too long.")
+    return normalized
 
 
 def split_pasted_key(server_url: str | None, stream_key: str) -> tuple[str, str]:
@@ -85,7 +89,7 @@ def split_pasted_key(server_url: str | None, stream_key: str) -> tuple[str, str]
     key = stream_key.strip()
     if "://" in key:
         server_url, _, key = key.rstrip("/").rpartition("/")
-    return (server_url or "").strip() or YOUTUBE_DEFAULT_SERVER, key
+    return (server_url or "").strip() or YOUTUBE_DEFAULT_SERVER, key.strip()
 
 
 def store_destination(room: Room, server_url: str | None, stream_key: str) -> None:

@@ -68,8 +68,9 @@ without captions; the *Captions and translation* row just stays off.
    **Unlisted** stream.
 2. In *Stream settings*, keep *Default stream key* (or pick a reusable key) and copy the
    **Stream key**. You do not need the Stream URL.
-3. Recommended: turn **Auto-start** on, so YouTube goes live as soon as video arrives, and
-   **Auto-stop off**, so a short reconnect does not end the broadcast.
+3. Recommended: turn **Auto-start off**, so you can check the preview before going public
+   (with it on, YouTube goes live as soon as video arrives), and **Auto-stop off**, so a
+   short reconnect does not end the broadcast.
 
 **2. Room page → Program stream ingest.**
 1. Under *How does your stream reach YouTube?* choose **VoxBento forwards to YouTube**.
@@ -103,11 +104,11 @@ shows three rows:
 | Captions and translation | **Processing** | floor audio is being transcribed |
 
 The badge at the top reads **Live on YouTube**. Check the preview in YouTube Studio
-(stream health *Good/Excellent*), then go live there if Auto-start is off. Use
+(stream health *Good/Excellent*), then click **Go live** in Studio. Use
 **Sync with the YouTube picture** to align caption/speech delay.
 
-**After the event:** stop streaming in OBS; YouTube ends the broadcast (or end it in
-Studio). The stored keys stay for the next session.
+**After the event:** stop streaming in OBS, then click **End stream** in YouTube Studio
+(with Auto-stop off, YouTube does not end it for you). The stored keys stay for the next session.
 
 **Change or stop things.**
 - *New YouTube stream / key:* paste it in step 1 → **Replace stream key**. Only the
@@ -130,7 +131,7 @@ Studio). The stored keys stay for the next session.
 | *VoxBento → YouTube: Not configured* | No YouTube key saved | Step 1: paste the key, **Save stream key** |
 | *Retrying — Destination rejected the stream key* | YouTube key wrong, reset, or the stream was deleted | Copy the current key from YouTube Studio → **Replace stream key** |
 | *Live* here, but YouTube Studio shows *No data* | Studio is showing a different stream/key | Open the stream whose key you saved |
-| YouTube preview plays but never goes public | Auto-start is off | Click **Go live** in YouTube Studio |
+| YouTube preview plays but never goes public | Auto-start is off (recommended) | Click **Go live** in YouTube Studio |
 | *The YouTube relay service on the server is not responding* | `program-relay` container not running | Operator: `docker compose ps program-relay`, `docker compose logs program-relay` |
 | *Not switched on for this server yet* | Relay mode not deployed | Operator: run `scripts/setup-youtube-relay.sh` |
 | *At capacity* | `PROGRAM_RELAY_MAX` rooms already forwarding | Stop another room's forwarding, or the operator raises the limit |
