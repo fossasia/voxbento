@@ -17,6 +17,8 @@ We use `uv` for lightning-fast Python dependency management and Docker for our m
 
 ### Setup Commands
 
+Run the environment-generation step below only for **NEW local setups**. Do not overwrite an existing `.env` or rotate existing keys with it; the command refuses to replace an existing file. The generated file is owner-readable only and is installed atomically after the complete configuration has been written.
+
 ```bash
 # 1. Clone the repository
 git clone https://github.com/fossasia/voxbento.git
@@ -26,17 +28,39 @@ cd voxbento
 uv sync --all-groups
 
 # 3. Set up your environment variables and generate required secrets
-cp .env.example .env
 uv run python -c "
 import secrets, re
-env = open('.env').read()
-env = re.sub(r'API_KEY_ENCRYPTION_KEY=.*', f'API_KEY_ENCRYPTION_KEY={secrets.token_hex(16)}', env)
-open('.env', 'w').write(env)
+import os, tempfile
+from pathlib import Path
+
+target = Path('.env')
+if target.exists():
+    raise SystemExit('.env already exists; refusing to replace it')
+env = open('.env.example').read()
+for name in (
+    'SECRET_KEY', 'API_KEY_ENCRYPTION_KEY',
+    'MEDIAMTX_AUTH_HOOK_SECRET', 'BOOTH_ACCESS_TOKEN',
+):
+    env = re.sub(rf'^{name}=.*$', f'{name}={secrets.token_hex(32)}', env, flags=re.MULTILINE)
+with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir='.', prefix='.env.', delete=False) as f:
+    os.chmod(f.name, 0o600)
+    f.write(env)
+    f.flush()
+    os.fsync(f.fileno())
+temporary = Path(f.name)
+try:
+    os.link(temporary, target)
+except FileExistsError:
+    raise SystemExit('.env already exists; refusing to replace it')
+finally:
+    temporary.unlink(missing_ok=True)
 "
 
 # 4. Start the entire stack (FastAPI, MediaMTX, and Jitsi)
 docker compose up -d --build
 ```
+
+Defaults keep debug disabled (`DEBUG=false`) and startup secret checks active. Developers may explicitly set `DEBUG=true` in their own `.env` for local-only debugging; never enable it for deployments.
 
 You can now visit the app at `http://localhost:8000`. 
 To access the admin panel, sign in with an account having admin privileges at `http://localhost:8000/login?next=/admin/`.
@@ -71,6 +95,7 @@ CI runs the checks above (except `uv run ruff format .`), and also runs a separa
 - **Backend**: FastAPI serves the frontend Jinja2 templates, handles REST API calls, and manages WebSocket connections that coordinate the live state of the booths (e.g., who is the active interpreter).
 - **Frontend**: Plain Vanilla ES modules in `portal/static/js/`. No React, no Vue, and no build steps. 
 - **Database**: We use SQLAlchemy 2.0 (async) and Alembic for migrations.
+- **Roles and permissions**: VoxBento has four roles (Admin, Event owner, Room coordinator, Interpreter), defined once in `portal/roles.py`. See the [roles table](website/docs/admin/members-and-roles.mdx) for what each role can do and where it can be given. Import role names and permissions from `portal.roles`; never type a role name elsewhere (`tests/test_roles.py` checks this). "Admin" means only the platform role.
 
 If you need more deep-dive technical context, check out our internal documentation in the `.agents/context/` directory (e.g., `ROUTE_MAP.md`, `DATABASE_MAP.md`, `AI_WORKFLOWS.md`).
 

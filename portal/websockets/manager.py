@@ -12,6 +12,7 @@ from portal.auth import can_perform_role
 from portal.booth_identity import booth_id_to_mediamtx_path
 from portal.booth_publish import TICKET_TTL_SECS, issue_ticket
 from portal.globals import booths
+from portal.roles import INTERPRETER, can_set_active
 
 
 @dataclass
@@ -22,6 +23,8 @@ class Session:
     channel_id: str
     # Role derived from the bearer cookie at WS connection time — never from client data.
     granted_role: str | None = None
+    # Key of the session that opened the socket (see portal.auth.booth_session_key); recorded at join.
+    session_key: str | None = None
 
 
 class ConnectionManager:
@@ -61,9 +64,33 @@ class ConnectionManager:
 class ListenerConnectionManager:
     def __init__(self) -> None:
         self._rooms: dict[str, set[WebSocket]] = {}
+        self._anon_rooms: dict[str, set[WebSocket]] = {}
 
-    def add(self, ws: WebSocket, booth_id: str) -> None:
+    def add(self, ws: WebSocket, booth_id: str, *, is_anonymous: bool = False) -> None:
         self._rooms.setdefault(booth_id, set()).add(ws)
+        if is_anonymous:
+            self._anon_rooms.setdefault(booth_id, set()).add(ws)
+
+    def count_anonymous(self, booth_id: str) -> int:
+        return len(self._anon_rooms.get(booth_id, set()))
+
+    def try_reserve_anonymous(self, ws: WebSocket, booth_id: str, max_anon: int) -> bool:
+        if max_anon <= 0:
+            return False
+        anon_set = self._anon_rooms.get(booth_id)
+        if anon_set is not None and len(anon_set) >= max_anon:
+            return False
+        if anon_set is None:
+            anon_set = set()
+            self._anon_rooms[booth_id] = anon_set
+        anon_set.add(ws)
+        return True
+
+    def cancel_reservation(self, ws: WebSocket, booth_id: str) -> None:
+        anon_set = self._anon_rooms.get(booth_id, set())
+        anon_set.discard(ws)
+        if not anon_set:
+            self._anon_rooms.pop(booth_id, None)
 
     def has_listeners(self, booth_id: str) -> bool:
         return bool(self._rooms.get(booth_id, set()))
@@ -73,6 +100,11 @@ class ListenerConnectionManager:
         room.discard(ws)
         if not room:
             self._rooms.pop(booth_id, None)
+
+        anon_set = self._anon_rooms.get(booth_id, set())
+        anon_set.discard(ws)
+        if not anon_set:
+            self._anon_rooms.pop(booth_id, None)
 
     async def broadcast(self, booth_id: str, message: dict) -> None:
         payload = json.dumps(message)
@@ -181,7 +213,7 @@ async def _handle_join(ws: WebSocket, session: Session, data: dict) -> None:
     and broadcasts state updates to listeners.
     """
     display_name = data.get("display_name", "Interpreter")
-    role = data.get("role", "interpreter")
+    role = data.get("role", INTERPRETER)
     language = data.get("language") or session.language
     if not language:
         await ws.send_text(
@@ -228,6 +260,7 @@ async def _handle_join(ws: WebSocket, session: Session, data: dict) -> None:
             room_id=room_id,
             # Only this socket's own record may be re-claimed by ID.
             reclaim=participant_id is not None and participant_id == session.participant_id,
+            joined_by=session.session_key,
         )
     except (ValueError, PermissionError) as exc:
         await ws.send_text(json.dumps({"type": "booth:error", "message": str(exc)}))
@@ -245,7 +278,7 @@ async def _handle_join(ws: WebSocket, session: Session, data: dict) -> None:
     )
     await manager.broadcast(session.booth_id, {"type": "booth:state", "state": state})
 
-    if role == "interpreter":
+    if role == INTERPRETER:
         await _wh_worker.enqueue_webhook(
             "booth.interpreter.joined",
             {
@@ -353,7 +386,7 @@ async def _handle_set_broadcast_unlocked(ws: WebSocket, session: Session, data: 
     Requires room coordinator or administrator privileges and a configured
     session language.
     """
-    if session.granted_role not in ("room_coordinator", "event_owner", "super_admin"):
+    if not can_set_active(session.granted_role):
         await ws.send_text(
             json.dumps({"type": "booth:error", "message": "Only Room Coordinators can manage broadcast lock."})
         )
@@ -363,7 +396,12 @@ async def _handle_set_broadcast_unlocked(ws: WebSocket, session: Session, data: 
             json.dumps({"type": "booth:error", "message": "Language must be specified or configured for this booth."})
         )
         return
-    unlocked = bool(data.get("unlocked"))
+    unlocked = data.get("unlocked")
+    # bool() would turn "false" into True and a missing field into False, so a
+    # malformed message could put the booth live or stop it by accident.
+    if not isinstance(unlocked, bool):
+        await ws.send_text(json.dumps({"type": "booth:error", "message": "unlocked must be a boolean."}))
+        return
     try:
         state = await booths.set_broadcast_unlocked(session.booth_id, unlocked, session.language, session.channel_id)
         # Locking the booth must immediately stop everything tied to it: the

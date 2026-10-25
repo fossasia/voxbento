@@ -3,70 +3,275 @@
 </p>
 
 <p align="center">
-  Browser-first, real-time interpretation for live events.
+  <b>Browser-first, real-time simultaneous interpretation for live events.</b>
 </p>
 
 <p align="center">
-  <a href="https://voxbento.com"><img src="https://img.shields.io/badge/live-voxbento.com-2ea44f" alt="Documentation"></a>
+  <a href="https://github.com/fossasia/voxbento/actions/workflows/tests.yml"><img src="https://github.com/fossasia/voxbento/actions/workflows/tests.yml/badge.svg" alt="CI Status"></a>
+  <a href="https://www.python.org/downloads/release/python-3130/"><img src="https://img.shields.io/badge/python-3.13-3776ab.svg?style=flat&logo=python&logoColor=white" alt="Python 3.13"></a>
+  <a href="https://voxbento.com"><img src="https://img.shields.io/badge/live-voxbento.com-2ea44f" alt="Live Demo"></a>
   <a href="https://docs.voxbento.com"><img src="https://img.shields.io/badge/docs-docs.voxbento.com-1f6feb" alt="Documentation"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-2ea44f" alt="License: Apache 2.0"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-2ea44f.svg" alt="License: Apache 2.0"></a>
 </p>
 
-VoxBento is a real-time interpretation platform for live events. Interpreters monitor the floor in Jitsi and publish translated audio from the browser, while attendees listen with low-latency WebRTC playback.
-
-**Quick links:** [Documentation](https://docs.voxbento.com) · [Contributing](CONTRIBUTING.md) · [VoxBento Local](https://voxbento.com/local)
-
-### Why VoxBento
-
-- **Browser-first workflow:** No native install needed for interpreter booths.
-- **Low-latency delivery:** WebRTC-based broadcast path for live interpretation.
-- **Built for operations:** Role-based booth coordination for organizers and interpreters.
-
----
-
-## Signed-in pages
-
-Every signed-in page shares one header: the VoxBento logo with the current area
-(**Admin**, **My events** or **Account**), that area's page links, and a user menu
-in the top right with the person's name. The menu always lists **My events**,
-**Account** and **Logout**, plus **Developer API** for users with an approved
-developer app and **Admin** for Admins. **My events** (`/workspace/`) lists every
-event the person has a role in, with a button to where they work. **Account**
-(`/account`) holds the person's display name, hosting and developer access, and
-sign-in settings (change, set or remove a password).
-Admins manage accounts at **Admin → Users**: search and filter everyone, and turn
-hosting access, Admin, Active, and Email Verification on or off right from the list.
-
-## Hosting access
-
-Only people with hosting access can create events. A signed-in user without it
-selects **Request access** on their Account page and fills in a short form
-(organization, event name and dates, languages, optional message). The team inbox
-in `HOSTING_REQUESTS_EMAIL` (default `voxbento.dev@gmail.com`) is emailed about
-each new request. Admins review requests under **Admin → Hosting access → Requests**:
-**Grant access** gives the person hosting access straight away, **Decline** asks for
-a reason that is emailed to them. A person has at most one open request at a time.
-
-## Floor Audio & AI Interpretation
-
-- **Meeting Source**: Managed headless floor bot automatically joins Jitsi sessions and streams conference floor audio.
-- **Program Stream Ingest**: Accepts direct broadcast audio from hardware encoders via authenticated HTTPS WHIP.
-- **RTMPS Relay**: Optional YouTube RTMPS forwarding via the dedicated `program-relay` service without re-encoding.
-- **AI Interpretation**: Real-time LLM translations guided by room personas, tone styles, and customizable domain vocabulary CSV glossaries.
-- **Direct-Push TTS**: Instant synthesized speech streamed to attendees over WebSocket (Deepgram Aura or self-hosted Supertonic ONNX).
+<p align="center">
+  <a href="#-about-voxbento">About</a> •
+  <a href="#-key-features">Features</a> •
+  <a href="#-architecture">Architecture</a> •
+  <a href="#-quick-start">Quick Start</a> •
+  <a href="#-testing--code-quality">Testing</a> •
+  <a href="#-project-structure">Project Structure</a> •
+  <a href="#-contributing">Contributing</a> •
+  <a href="https://docs.voxbento.com">Docs</a>
+</p>
 
 ---
 
-## Setup
+## 🎧 About VoxBento
 
-For detailed API documentation, environment variables, and configuration, visit [docs.voxbento.com](https://docs.voxbento.com). Native development setup details can also be found in [CONTRIBUTING.md](CONTRIBUTING.md).
+**VoxBento** is a real-time, browser-first simultaneous interpretation and audio broadcast platform built for live conferences and hybrid events. 
+
+Interpreters monitor the floor session and broadcast high-fidelity translation directly from their browser using WebRTC with sub-second latency. Attendees receive translated audio on any device through lightweight WebRTC playback, while optional AI pipelines provide live transcription, contextual translation, and synthetic speech concurrently.
 
 ---
 
-## VoxBento Local (Desktop App)
+## ✨ Key Features
 
-VoxBento Local is our sovereign, 100% on-device AI meeting intelligence and interpretation desktop console available for macOS (Apple Silicon & Intel), Windows, and Linux.
+- **🎙️ Browser-First Interpreter Booth:** Zero software installation. Interpreters join, test microphones, go live, and coordinate shift handoffs smoothly via WebRTC (WHIP).
+- **⚡ Sub-Second Listener Playback:** Attendees receive ultra-low latency audio via WebRTC (WHEP) powered by MediaMTX, scaling effortlessly to thousands of listeners.
+- **🤖 Live AI Transcription & Translation:** Multi-provider speech-to-text (Faster-Whisper, OpenAI, Deepgram, NVIDIA Parakeet, ElevenLabs) paired with real-time LLM translations guided by custom personas, styles, and domain vocabulary glossaries.
+- **🗣️ Direct-Push Text-to-Speech (TTS):** Synthesize live translated speech on the fly (Deepgram Aura or self-hosted Supertonic ONNX), streamed directly to attendees over binary WebSocket frames.
+- **📡 Program Stream Ingest & YouTube Relay:** Ingest clean conference audio directly from hardware video switchers (OBS, ATEM, vMix) via authenticated HTTPS WHIP, or straight from a browser tab on the sound-desk computer with the program audio sender (mute, sound check, auto-reconnect), with optional automated RTMPS forwarding to YouTube.
+- **🎛️ Mission Control & Coordination:** Real-time booth status monitoring, live audio meters, in-booth team chat, and coordinator controls via FastAPI WebSockets.
+- **💻 VoxBento Local:** Sovereign, 100% offline desktop application for private AI meeting intelligence and minutes on macOS, Windows, and Linux.
 
-- **Download**: Visit [`/local`](https://voxbento.org/local) for platform-detected desktop packages (.dmg, .exe, .deb, .AppImage).
-- **Source Code & Releases**: Built at [github.com/ArnavBallinCode/voxa](https://github.com/ArnavBallinCode/voxa).
-- **Air-Gapped & Sovereign**: Whisper live transcription and Qwen 3.5 structured meeting minutes run completely on-device via Apple Metal and NVIDIA CUDA acceleration.
+---
+
+## 🏗️ Architecture
+
+**Signup abuse protection:** Registration limits each resolved client IP to 20
+attempts per minute. Enable server-verified Cloudflare Turnstile by configuring
+`TURNSTILE_SITE_KEY`, `TURNSTILE_SECRET_KEY`, and
+`REGISTRATION_TURNSTILE_ENABLED=true`. Turnstile is off by default for compatible
+rollout; see [registration protection](docs/registration-protection.md) for
+setup, trusted proxies, failure behavior and rollback.
+
+VoxBento isolates the real-time media plane from application coordination. Media streams flow directly through **MediaMTX**, ensuring that Python never processes or relays live interpreter microphone data.
+
+```
+                         ┌─────────────────────────────────────────────────────────┐
+                         │                    MediaMTX Server                      │
+                         │                                                         │
+[ Interpreter Mic ] ────►│  /event/room/lang/whip (WHIP Ingest)                    ├────► [ Attendees (WHEP) ]
+                         │                                                         │
+[ Floor Audio / OBS ] ──►│  /event/room/floor (WHIP / RTMPS Ingest)                ├────► [ Optional YouTube Relay ]
+                         └───────────────────────────┬─────────────────────────────┘
+                                                     │ RTSP (8554)
+                                                     ▼
+                                         ┌───────────────────────┐
+                                         │  AI Pipeline Subsystem│
+                                         │  (STT → LLM → TTS)    │
+                                         └───────────┬───────────┘
+                                                     │ WebSocket
+                                                     ▼
+                                         [ Live Captions & Speech ]
+
+───────────────────────────────────────────────────────────────────────────────────────────
+   Control Plane: FastAPI + WebSockets + SQLite/PostgreSQL (Booth State, Auth, Coordination)
+```
+
+---
+
+## 🚀 Quick Start
+
+Get VoxBento up and running locally in a few simple steps.
+
+### Prerequisites
+
+- [Python 3.13+](https://www.python.org/downloads/)
+- [uv](https://github.com/astral-sh/uv) (Extremely fast Python package manager)
+- [Docker](https://www.docker.com/) & Docker Compose
+- [Node.js](https://nodejs.org/) (for client-side syntax checks)
+
+### 1. Clone the Repository
+
+```bash
+git clone https://github.com/fossasia/voxbento.git
+cd voxbento
+```
+
+### 2. Install Dependencies
+
+```bash
+uv sync --all-groups
+```
+
+### 3. Configure Environment
+
+For **NEW local setups only**, copy the example configuration and generate separate strong secrets. Do not overwrite an existing `.env` or rotate existing keys with this command; it refuses to replace an existing file. The generated file is owner-readable only.
+
+The encryption key protects stored provider keys and queued email (sign-in links,
+invitations and password resets). Outgoing email is sent from a durable outbox once
+`SMTP_HOST` is set; Admins edit email templates and see delivery status in
+**Admin → Emails**. Email branding defaults to the transparent VoxBento V mark.
+
+```bash
+uv run python -c "
+import secrets, re
+import os, tempfile
+from pathlib import Path
+
+target = Path('.env')
+if target.exists():
+    raise SystemExit('.env already exists; refusing to replace it')
+env = open('.env.example').read()
+for name in (
+    'SECRET_KEY', 'API_KEY_ENCRYPTION_KEY',
+    'MEDIAMTX_AUTH_HOOK_SECRET', 'BOOTH_ACCESS_TOKEN',
+):
+    env = re.sub(rf'^{name}=.*$', f'{name}={secrets.token_hex(32)}', env, flags=re.MULTILINE)
+with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir='.', prefix='.env.', delete=False) as f:
+    os.chmod(f.name, 0o600)
+    f.write(env)
+    f.flush()
+    os.fsync(f.fileno())
+temporary = Path(f.name)
+try:
+    os.link(temporary, target)
+except FileExistsError:
+    raise SystemExit('.env already exists; refusing to replace it')
+finally:
+    temporary.unlink(missing_ok=True)
+"
+```
+
+Defaults keep debug disabled (`DEBUG=false`) and startup secret checks active. Developers may explicitly set `DEBUG=true` in their own `.env` for local-only debugging; never enable it for deployments.
+
+For production, configure `BOOTH_ACCESS_TOKEN` and `MEDIAMTX_AUTH_HOOK_SECRET` with separate strong values, for example from `openssl rand -hex 32`. Startup rejects a missing or weak `BOOTH_ACCESS_TOKEN` and a missing `MEDIAMTX_AUTH_HOOK_SECRET`; it does not measure the hook secret's strength, so keep it strong and private.
+
+For self-hosted domains, set `PUBLIC_BASE_URL` in `.env` to your public URL, for
+example `PUBLIC_BASE_URL=https://interpret.example.com`. It defaults to
+`https://voxbento.com` and is used for email links and canonical URLs in
+`/sitemap.xml`. Sitemap URL generation accepts trailing slashes and preserves any
+configured path prefix.
+
+### 4. Run the Stack
+
+**Option A: Using Docker (Recommended for full stack)**
+```bash
+docker compose up -d --build
+```
+
+**Option B: Native Development (Faster backend iteration)**
+```bash
+# Run database migrations
+uv run alembic upgrade head
+
+# Start the FastAPI application with live reload
+uv run uvicorn fastapi_app:app --reload --port 8000
+```
+
+Once running, access the application at **`http://localhost:8000`**.
+
+### Set up an event's rooms
+
+In **My events**, create or open an event and choose **Add a room**. The guided
+form collects the room name, spoken language and listener languages, then one
+delivery per language: **Interpreter** (a person in a booth), **AI voice**
+(translated and read aloud, with text to read along) or **AI text** (translated
+text only). The **Captions** step covers the speaker's own words: captions are
+optional for interpreter-only rooms and always on when any language uses AI. The
+AI services are chosen automatically and can be changed under **AI services ·
+Advanced**. Rooms that previously offered a language as both an interpreter and
+AI ask the organizer to choose one before saving.
+
+The service choices use the event's configured API keys and installed server
+dependencies. Cloud speech recognition also requires **Enable External
+Transcription APIs** on the event's **API keys** page. Self-hosted translation
+uses NLLB; self-hosted voice needs the `supertonic` extra (included in the Docker
+image). Native installations can install it with
+`uv sync --python 3.13 --dev --extra supertonic`. NVIDIA additionally requires the
+`nvidia` extra and `NVIDIA_FUNCTION_ID`. Unsupported local translation or AI voice
+languages are explained next to the language and again when saving; choose AI
+text or another voice service for languages without voice support.
+
+After saving, invite interpreters from **Team**, connect audio on **Floor source**
+for captions and AI, and share the listener page. **Change languages & captions**
+reopens the same setup; **Captions & translation** retains advanced model, voice,
+prompt, and vocabulary controls. Removing an idle interpreter language also
+removes its booth, invite links, and assignments. Live booths are kept with a
+notice, and existing booths matching the spoken language remain selected until
+explicitly removed. Event owners and Admins can change setup; coordinators retain
+their operational access.
+
+---
+
+## 🧪 Testing & Code Quality
+
+Before submitting changes, make sure all tests and linter checks pass:
+
+```bash
+# Run the test suite
+uv run pytest tests/ -v
+
+# Run Python linter and formatter checks
+uv run ruff check .
+uv run ruff format --check .
+
+# Run JavaScript syntax checks
+node --check portal/static/js/interpreter-booth.js
+node --check portal/static/js/whep-listener.js
+node --check portal/static/js/admin.js
+```
+
+---
+
+## 📁 Project Structure
+
+Here is a quick overview of how the codebase is organized:
+
+```text
+voxbento/
+├── fastapi_app.py          # FastAPI application lifespan & router aggregation
+├── portal/
+│   ├── routers/            # HTTP endpoints (admin, workspace, API, auth)
+│   ├── websockets/         # WebSocket handlers & real-time connection managers
+│   ├── transcription/      # STT providers (Whisper, Deepgram, NVIDIA, ElevenLabs)
+│   ├── translations/       # Real-time LLM translation & vocabulary glossaries
+│   ├── tts/                # Text-to-speech providers (Deepgram Aura & Supertonic)
+│   ├── models.py           # SQLAlchemy database models
+│   ├── database.py         # Async database session & CRUD helpers
+│   ├── templates/          # Jinja2 HTML templates
+│   └── static/js/          # Vanilla ES module frontend (zero build steps)
+├── mediamtx.yml            # MediaMTX WebRTC (WHIP/WHEP) & RTSP streaming config
+├── docker-compose.yml      # Container orchestration (portal, mediamtx, jitsi)
+└── tests/                  # Comprehensive pytest test suite
+```
+
+---
+
+## 💻 VoxBento Local (Desktop App)
+
+Looking for an on-device, sovereign AI meeting intelligence tool? 
+
+**VoxBento Local** runs 100% locally on your computer with zero cloud dependencies:
+- **Download**: Visit [`/local`](https://voxbento.com/local) for macOS, Windows, and Linux packages.
+- **Air-Gapped & Sovereign**: Live speech transcription and meeting minutes powered by local Whisper and Qwen models accelerated by Apple Metal and NVIDIA CUDA.
+- **Source Code**: Developed at [github.com/ArnavBallinCode/voxa](https://github.com/ArnavBallinCode/voxa).
+
+---
+
+## 🤝 Contributing
+
+We love contributions! Whether you are fixing a bug, adding new transcription providers, improving the documentation, or polishing the UI, you are very welcome here.
+
+1. **Find an issue:** Check our [Issue Tracker](https://github.com/fossasia/voxbento/issues) for issues labeled [`good first issue`](https://github.com/fossasia/voxbento/labels/good%20first%20issue) or [`help wanted`](https://github.com/fossasia/voxbento/labels/help%20wanted).
+2. **Read the guide:** Check [CONTRIBUTING.md](CONTRIBUTING.md) for full development workflows and conventions.
+3. **Branch convention:** Create a branch for your work (`feat/your-feature` or `fix/your-fix`).
+4. **Keep it atomic:** Keep commits focused, write tests for new functionality, and open a Pull Request against `dev`.
+
+---
+
+## 📄 License
+
+VoxBento is open-source software licensed under the [Apache License 2.0](LICENSE).

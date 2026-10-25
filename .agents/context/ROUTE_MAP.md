@@ -11,6 +11,7 @@
 |---|---|---|---|---|
 | GET | `/` | open | `home.html` | Landing page; no event or booth lists; navbar links personalised if logged in |
 | GET | `/local` | open | `local.html` | VoxBento Local desktop console download page with client OS detection & release links |
+| GET | `/sitemap.xml` | open | — | XML sitemap; canonical URLs use `PUBLIC_BASE_URL` (default `https://voxbento.com`), not request `Host`; trailing slashes stripped, path prefix preserved, URLs XML-escaped |
 | GET | `/healthz` | open | — | JSON: `{ok, server, mediamtx_ok}` |
 | GET | `/register` | open | `register.html` | Redirects to `/account` if already logged in |
 | POST | `/register` | open | `register.html` | Creates user, sets `user_token` cookie → `/account`; if `password` is set, `password_confirm` must match (422 otherwise) |
@@ -26,6 +27,14 @@
 | GET | `/join/{token}` | open | — | Validates invite token, sets `session_token` → booth or listener |
 
 ---
+
+Signup protection: `POST /register` allows 20 attempts per resolved client IP
+per minute (`REGISTRATION_REQUESTS_PER_MINUTE`); excess attempts return 429 with
+`Retry-After: 60`. With `REGISTRATION_TURNSTILE_ENABLED=true`, a Cloudflare token
+validated for the configured hostname and `register` action is required before
+account/email side effects (403 if rejected, 503 if unavailable). The optional
+widget and errors render in `register.html`; see `portal/registration_protection.py`
+and `docs/registration-protection.md`. Other routes are unaffected.
 
 ## Booth & Listener Pages
 
@@ -46,8 +55,9 @@
 | GET | `/api/booth/{booth_id}/whip-url` | configured token/Bearer | `{whip_url, channel_id, booth_id}` | Layer-2 active-interpreter enforcement |
 | POST | `/api/events/{event_slug}/booths` | configured token/Bearer | booth state + whip/whep URLs | Creates in-memory booth; returns 201; production protected |
 | GET | `/api/events/{event_slug}/booths` | configured token/Bearer | `{event_slug, booths:[…]}` | Lists all in-memory booths for event; production protected |
-| GET | `/api/events/{event_slug}/booths/{language_code}/state` | configured token/Bearer | booth state dict | 404 if booth not in memory; production protected |
+| GET | `/api/events/{event_slug}/booths/{language_code}/state` | configured token/Bearer, or user/session with a role in the booth | booth state dict | 404 if booth not in memory; production protected |
 | GET | `/api/events/{event_slug}/booths/{language_code}/whip-url` | configured token/Bearer | `{whip_url, channel_id, booth_id}` | Validates event ownership first; production protected |
+| POST | `/api/events/{event_slug}/rooms/{room_id}/booths/{language_code}/transcription/start` / `stop` | configured token/Bearer, or user/session whose booth role can go live (cookie-only requests must be same-origin) | `{status, …}` | Booth page calls these when the interpreter goes live or off live. An interpreter can stop only while live or when nobody is live (checked against the session that joined the live participant) |
 | GET | `/api/interpreter/status/{channel_id:path}` | open | `{channel_id, state, reachable}` | MediaMTX reachability (preflight check) |
 
 ---
@@ -64,7 +74,18 @@
 
 ## Management Surfaces (`/workspace/*` and `/admin/*`)
 
-`/workspace/*` is the canonical event-management surface for event owners. Room coordinators use `/mission-control/*`, which filters the operational view to their assigned rooms. `/admin/*` is reserved for super admins, apart from legacy room-scoped coordinator handlers retained for compatibility. All admin and workspace routes require a `user_token` with `is_admin=True`, or the appropriate `event_owner` / `room_coordinator` membership for scoped routes. The paths in the table below name the shared `/admin` handler routes; current event-management paths have explicit event-owner mappings formed by replacing `/admin` with `/workspace`. Likewise, the listed `/api/admin/providers/...` and `/api/admin/events/...` routes have explicit `/api/workspace/...` event-owner mappings. New admin routes are not exposed through the workspace unless they are added to that allowlist.
+`/workspace/*` is the canonical event-management surface for event owners. Room coordinators use `/mission-control/*`, which filters the operational view to their assigned rooms. `/admin/*` is reserved for Admins, apart from legacy room-scoped coordinator handlers retained for compatibility. All admin and workspace routes require a `user_token` with `is_admin=True`, or the appropriate `event_owner` / `room_coordinator` membership for scoped routes. The paths in the table below name the shared `/admin` handler routes; current event-management paths have explicit event-owner mappings formed by replacing `/admin` with `/workspace`. Likewise, the listed `/api/admin/providers/...` and `/api/admin/events/...` routes have explicit `/api/workspace/...` event-owner mappings. New admin routes are not exposed through the workspace unless they are added to that allowlist.
+
+**Access checks (#757).** Routes use dependencies named after who they admit (Admins pass all of them):
+`require_admin` (Admins only), `require_event_owner` (owners of the event in the path),
+`require_owner_or_coordinator` (owners, or coordinators of the room in the path) and
+`require_room_event_access` (floor transcription: owners and coordinators of the room).
+Every change to an event, its rooms, booths, members, invite links, keys and settings, and the
+setup, keys and members pages, use `require_event_owner`; coordinators keep read-only room and
+booth pages, transcripts, Mission Control and floor transcription. A Room coordinator given per
+event coordinates every room of it; given per booth, that booth's room. Role assignments are
+checked with `portal.roles.assignment_error` before anything is created; a refused one redirects
+with `?error=invalid_role&role=…` and the page explains why.
 
 `/workspace/` itself is **My events** (#766): its own route, open to every signed-in user, not mapped onto the admin dashboard. Legacy organizer requests to `/admin/` still redirect there. Legacy organizer requests to allowlisted event-management paths under `/admin/events...`, `/admin/setup...`, or their management API equivalents receive a `307` redirect to the matching workspace URL. The redirect preserves the HTTP method and query string. System-only and unknown routes, including `/admin/users/`, `/admin/developer-accounts`, and `/admin/login`, have no workspace equivalent. OAuth routes under `/oauth/*` are unchanged. General workspace entry points such as the dashboard and setup require ownership of at least one event; routes containing `{event_id}` require ownership of that specific event.
 
@@ -72,7 +93,7 @@
 |---|---|---|---|
 | GET | `/admin/login` | — | `303` → `/login?next=/admin/` (admins use the shared sign-in page) |
 | GET | `/admin/logout` | — | Deletes session cookies → `/login` |
-| GET | `/admin/` | `admin/dashboard.html` | System-wide events for super admins |
+| GET | `/admin/` | `admin/dashboard.html` | System-wide events for Admins |
 | GET | `/workspace/` | `admin/my_events.html` | **My events** (#766): every event the user has a role in, once per event, with roles in plain language and Manage event / Open Mission Control / Enter booth buttons; New event for hosting access and Admins; `303` → `/login?next=/workspace/` when signed out |
 | GET | `/admin/events/` | `admin/event_list.html` | Search by event slug or display name with `?search=`; blank queries show all events; `%` and `_` are literal; pagination URL-encodes the term and clamps out-of-range pages |
 | POST | `/admin/events/` | — | Creates event (slug + display_name) |
@@ -82,6 +103,10 @@
 | POST | `/admin/events/{event_id}/delete` | — | Cascade-deletes event |
 | GET | `/admin/events/{event_id}/rooms/` | `admin/room_list.html` | Supports optional `search` query parameter to filter rooms server-side against `Room.display_name` (case-insensitive `ilike` match with SQL wildcard escaping for `%`, `_`, and `\\`). |
 | POST | `/admin/events/{event_id}/rooms/` | — | Creates room; auto-generates Jitsi URL |
+| GET/POST | `/admin/events/{event_id}/rooms/new` | `admin/room_setup.html` | Guided room creation: spoken/listener languages, interpreter/AI delivery, captions and voice; owner-only, POST requires same origin; `?from=setup` returns to the Rooms & languages wizard step |
+| GET/POST | `/admin/events/{event_id}/rooms/{room_id}/setup` | `admin/room_setup.html` | Owner-only edit of the same room plan; POST requires same origin and checks room/event scope; preserves live booths and explicitly retained same-language booths |
+| GET/POST | `/admin/events/{event_id}/setup/rooms` | `admin/wizard_rooms.html` | Rooms & languages step; GET links to guided room creation, legacy POST still creates a room |
+| GET/POST | `/admin/events/{event_id}/setup/booths` | — | Legacy GET redirects to Rooms & languages; legacy POST still creates a booth in this event and redirects there |
 | GET | `/admin/events/{event_id}/rooms/{room_id}/` | `admin/room_detail.html` | Room + booths |
 | POST | `/admin/events/{event_id}/rooms/{room_id}/edit` | — | Updates jitsi_url + relay_booth_id |
 | POST | `/admin/events/{event_id}/rooms/{room_id}/ai-vocabulary/upload` | — | Upload CSV glossary entries for room AI interpretation |
@@ -106,6 +131,11 @@
 | POST | `/admin/users/{user_id}/toggle-active` | — | Older form endpoint; same-origin; flips Active through the same rules |
 | POST | `/admin/users/{user_id}/toggle-admin` | — | Older form endpoint; same-origin; flips Admin through the same rules |
 | POST | `/admin/users/{user_id}/delete` | — | Same-origin; `confirm_email` must equal the account's email; never your own account or the last active Admin; deletes the user and all their roles |
+| GET | `/admin/emails/` | `admin/emails.html` | Admin-only template registry and redacted delivery history |
+| GET | `/admin/emails/{key}/` | `admin/email_template.html` | Admin-only draft editor, safe preview and test-send controls |
+| POST | `/admin/emails/{key}/draft` | — | Admin + same-origin; validates allowed placeholders and saves a draft |
+| POST | `/admin/emails/{key}/publish` | — | Admin + same-origin; publishes the draft and records a revision |
+| POST | `/admin/emails/{key}/test` | — | Admin + same-origin; queues a safe example message to the signed-in Admin |
 | GET | `/admin/hosting-access/` | `admin/hosting_access.html` | "People with access" tab: hosts and pending hosting invitations, events owned, Remove access / Cancel invitation (#768) |
 | GET | `/admin/hosting-access/requests/` | `admin/hosting_access.html` | "Requests" tab: open hosting requests, newest first |
 | POST | `/admin/hosting-access/requests/{request_id}/grant` | — | Same-origin; sets `can_host`, closes request as `granted`, emails the person |
@@ -117,12 +147,13 @@
 
 | Module | Owns |
 |---|---|
-| `portal/routers/public.py` | Home page, health check, registration |
+| `portal/routers/public.py` | Home page, sitemap, health check, registration |
 | `portal/routers/auth.py` | Login, logout, invite-token validation, and user profile page |
 | `portal/routers/interpreter.py` | Booth UI route |
 | `portal/routers/listener.py` | WHEP listener UI route |
 | `portal/routers/api.py` | Booth state REST API, WHIP URL generation |
 | `portal/routers/admin.py` | Shared event-management handlers and system-admin routes |
+| `portal/room_setup.py` | Room plan parsing, available AI services, booth/translation-language reconciliation, and room summaries; uses existing tables |
 | `portal/workspace_routing.py` | `/workspace` handler mapping, legacy organizer redirects, and template URL context |
 | `portal/websockets/manager.py` | `ws_booth` and `ws_captions` endpoints |
 | `portal/websockets/handlers.py` | Specific `_handle_*` logic for WS messages |
@@ -141,16 +172,25 @@
   revoke, disable and sync. Revoke returns 202 with `cleanup_pending` when the
   credential is invalidated but MediaMTX cleanup must be retried.
   `portal/routers/program_ingest.py` owns both routes.
+- `POST/DELETE /workspace/events/{event_id}/rooms/{room_id}/program-sender`:
+  event-owner, origin-checked browser sender session mint/release. `sync_offset_ms`
+  is optional; omitted keeps the room's saved sync delay.
+- `GET /workspace/events/{event_id}/rooms/{room_id}/sender/`: event-owner standalone
+  sender page (`admin/program_sender.html`, `program-sender.js`), no-store. Both
+  sender routes map to shared `/admin/...` handlers.
 - Existing floor-bot start/stop returns 409 while program ingest owns the room.
 
 ## Program relay routes (#749)
 
 - `POST .../program-ingest` also accepts `mode` (`whip` | `rtmps_relay`) on enable;
   relay-mode enable/rotate responses add `stream_key` (`floor?key=<secret>`). Status
-  adds `mode`, `relay_available`, `rtmps_server`, write-only `destination`
+  adds `mode`, `relay_available`, `relay_service_down` (last relay-service call failed),
+  `rtmps_server`, write-only `destination`
   (`configured`, `server_url`, `updated_at`) and `health.{ingest,relay,processing}`.
 - `PUT/DELETE /workspace/events/{event_id}/rooms/{room_id}/program-relay`: event-owner,
-  origin-checked. PUT `{server_url, stream_key}` validates RTMPS + allow-listed host and
+  origin-checked. PUT `{server_url?, stream_key}` (server defaults to YouTube's primary RTMPS
+  ingest; a full `<server>/<key>` URL in `stream_key` is split; YouTube's `rtmp://a|b.rtmp.youtube.com`
+  is rewritten to its RTMPS host) validates RTMPS + allow-listed host and
   stores the key encrypted (422 invalid, 409 relay disabled). DELETE clears it and stops
   the relay (202 + `cleanup_pending` if the relay service is unreachable).
 - `/internal/media-auth` accepts `protocol: rtmp` only for relay-mode rooms with query

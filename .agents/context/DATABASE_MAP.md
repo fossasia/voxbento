@@ -207,6 +207,7 @@ Unique index on `(segment_id, language_code)`.
 | `language_code` | String(20) | ISO 639-1 target language |
 | `language_name` | String(100) | Human readable |
 | `enabled` | Boolean | Default True |
+| `tts_enabled` | Boolean | Room table only. Default True; False for an AI text language (translated, never spoken). Migration 035 |
 
 Tracks which languages the translation worker should generate for a given room or booth.
 
@@ -310,6 +311,34 @@ key to its transport), nullable `program_relay_server` (normalized allow-listed 
 URL), `program_relay_key_enc` (Fernet ciphertext of the YouTube stream key; write-only,
 never serialize or log) and `program_relay_updated_at`. Helpers live in
 `portal/program_relay.py` (`store_destination`, `clear_destination`, `destination`).
+
+## Migration 035 — per-language AI voice (#1005)
+
+`room_translation_languages.tts_enabled` (Boolean, default true, server default true)
+records whether an AI language is **AI voice** (spoken by floor TTS) or **AI text**
+(translated for reading only). Room setup writes it; `portal/tts/worker.py` synthesizes
+only enabled languages with `tts_enabled`, and the listener page offers spoken
+translation only for them. `rooms.floor_tts_enabled` stays the room-wide switch and is
+on when at least one language is AI voice. Existing rows default to spoken, which keeps
+rooms whose TTS was already on unchanged.
+
+## Migration 034 — transactional email outbox (#962)
+
+`email_templates` stores draft and published subject/HTML for every registered
+notification type. `email_template_revisions` retains immutable published
+versions. `email_deliveries` contains the encrypted rendered subject and HTML,
+delivery status, retry lease and schedule fields, expiry, an optional
+idempotency key and an optional `auth_token_id`. That ties an email carrying a
+sign-in or invitation link to its `auth_tokens` row (a plain integer, not a
+foreign key, so the id survives the token's deletion), so the outbox suppresses
+it once the token is redeemed, revoked, expired or deleted. The worker in
+`portal/notifications.py` claims due rows, retries failed sends with back-off,
+marks pending rows past `expires_at` as expired, and erases the rendered
+subject and HTML of finished deliveries after 30 days (the audit row stays).
+No links or email content are shown in the administration history.
+`email_settings` holds one row (id 1) of branding shared by every email:
+`show_logo` (default true) and an optional https `logo_url` (empty means the
+VoxBento logo served by the site). No row means the defaults.
 
 ## Migration 027 — managed meeting agent
 

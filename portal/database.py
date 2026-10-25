@@ -48,6 +48,7 @@ from portal.models import (
     generate_token,
     utc_now,
 )
+from portal.roles import EVENT_OWNER
 
 logger = logging.getLogger(__name__)
 
@@ -172,7 +173,7 @@ async def create_event(
         membership = EventMembership(
             event_id=ev.id,
             user_id=owner_user_id,
-            role="event_owner",
+            role=EVENT_OWNER,
         )
         session.add(membership)
         await session.flush()
@@ -759,6 +760,12 @@ async def count_open_hosting_requests(session: AsyncSession) -> int:
     return (await session.execute(stmt)).scalar_one()
 
 
+async def count_pending_developer_accounts(session: AsyncSession) -> int:
+    """Developer API applications waiting for an Admin to approve or reject them."""
+    stmt = select(func.count(DeveloperAccount.id)).where(DeveloperAccount.status == "pending")
+    return (await session.execute(stmt)).scalar_one()
+
+
 async def close_hosting_request(
     session: AsyncSession,
     hosting_request: HostingRequest,
@@ -1111,7 +1118,7 @@ async def save_transcript_segment(booth_id_str: str, text: str, room_id: int | N
             await session.flush()
             return segment.id
     except Exception as e:
-        logger.error(f"Failed to save transcript segment: {e}")
+        logger.error("Failed to save transcript segment: %s", e, exc_info=True)
         return None
 
 
