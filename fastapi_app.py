@@ -13,6 +13,7 @@ from fastapi.openapi.utils import get_openapi
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from slowapi.errors import RateLimitExceeded
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from portal import meeting_source, program_ingest
@@ -20,6 +21,7 @@ from portal.auth import require_owner_or_coordinator
 from portal.config import settings
 from portal.exceptions import RedirectRequired
 from portal.globals import asset_version_context
+from portal.limiter import limiter, rate_limit_exceeded_handler
 from portal.rate_limit import auth_rate_limiter, token_rate_limiter
 from portal.routers.admin import router as admin_router
 from portal.routers.api import router as api_router
@@ -50,9 +52,9 @@ async def _rate_limit_cleanup_loop(interval_seconds: float = 300.0) -> None:
     """Periodically purge expired rate limit entries to prevent unbounded memory growth."""
     while True:
         await asyncio.sleep(interval_seconds)
-        for name, limiter in (("auth", auth_rate_limiter), ("token", token_rate_limiter)):
+        for name, rlimiter in (("auth", auth_rate_limiter), ("token", token_rate_limiter)):
             try:
-                await limiter.cleanup()
+                await rlimiter.cleanup()
             except Exception:
                 logging.exception("Rate limit cleanup error (%s)", name)
 
@@ -142,6 +144,8 @@ class _UvicornTokenRedactor(logging.Filter):
 
 
 app = FastAPI(title="Voxbento", version="1.0.0", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, rate_limit_exceeded_handler)
 app.add_middleware(WorkspaceRoutingMiddleware)
 
 
@@ -290,7 +294,13 @@ app.include_router(ws_router)
 def main() -> None:
     import uvicorn
 
-    uvicorn.run("fastapi_app:app", host=settings.host, port=settings.port, reload=settings.debug)
+    uvicorn.run(
+        "fastapi_app:app",
+        host=settings.host,
+        port=settings.port,
+        reload=settings.debug,
+        forwarded_allow_ips=settings.forwarded_allow_ips,
+    )
 
 
 if __name__ == "__main__":

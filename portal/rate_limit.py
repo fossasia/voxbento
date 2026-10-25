@@ -4,6 +4,8 @@ import asyncio
 import time
 from threading import Lock
 
+from portal.config import settings
+
 # Simple in-memory rate limiter for auth endpoints.
 # Format: { "action:identifier": (window_seconds, [timestamp1, timestamp2, ...]) }
 # The window is stored per key so expired keys can be swept without knowing which
@@ -41,9 +43,13 @@ def check_rate_limit(action: str, identifier: str, max_requests: int, window_sec
 
     Returns True if allowed, False if rate limited.
     """
+    if not settings.rate_limit_enabled:
+        return True
+
     global _last_sweep
 
-    key = f"{action}:{identifier}"
+    norm_identifier = identifier.strip().lower()
+    key = f"{action}:{norm_identifier}"
     now = time.time()
     cutoff = now - window_seconds
 
