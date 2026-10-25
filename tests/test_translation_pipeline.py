@@ -551,11 +551,15 @@ def test_enabled_translation_langs_filters_disabled():
     from portal.translations.worker import _enabled_translation_langs
 
     class _Lang:
+        """Mock language model with an enabled flag."""
+
         def __init__(self, code, enabled):
             self.language_code = code
             self.enabled = enabled
 
     class _Owner:
+        """Mock owner (Room or DBBooth) containing translation languages."""
+
         translation_languages = [_Lang("en", True), _Lang("fr", False), _Lang("es", True)]
 
     result = _enabled_translation_langs(_Owner())
@@ -592,6 +596,7 @@ async def test_broadcast_source_language_with_and_without_target_booth():
 
 
 def _make_resolved_job():
+    """Create a mock resolved translation job for task builder unit tests."""
     from unittest.mock import MagicMock
 
     from portal.translations.worker import _ResolvedTranslation
@@ -645,6 +650,7 @@ async def test_translation_provider_exception_degrades_gracefully(db_data, mock_
     worker = TranslationWorker(mock_broadcast)
 
     async def boom(provider, model, api_key, text, lang_name, source_lang_name, **kwargs):
+        """Simulate an unexpected provider failure."""
         raise RuntimeError("provider exploded")
 
     with (
@@ -672,3 +678,43 @@ async def test_translation_provider_exception_degrades_gracefully(db_data, mock_
     # ...while the source-language bypass still succeeds.
     en_call = next(c for c in calls if c.args[1] == "en")
     assert en_call.args[8] is None
+
+
+@pytest.mark.anyio
+async def test_translate_and_broadcast_queue_full_drops_and_broadcasts_failure(db_data, mock_broadcast):
+    """When the language queue depth reaches 15, drop segment and broadcast pipeline_failed."""
+    from portal.translations import worker as worker_module
+
+    worker = TranslationWorker(mock_broadcast)
+    queue_key = "floor:fr"
+    worker_module.LANGUAGE_QUEUES[queue_key] = 15
+
+    try:
+        with patch(
+            "portal.websockets.manager.TTSConnectionManager.broadcast_bundle", new_callable=AsyncMock
+        ) as mock_bundle:
+            await worker._translate_and_broadcast(
+                event=db_data["event"],
+                room=db_data["room"],
+                provider="local",
+                model="m",
+                api_key="k",
+                lang_code="fr",
+                lang_name="French",
+                source_lang_code="en",
+                source_lang_name="English",
+                segment_id=db_data["segment"].id,
+                text="Hello world",
+                booth_id_str="floor",
+                uuid_segment_id="qfull-uuid",
+                seq=10,
+            )
+        assert mock_bundle.call_count == 1
+        args = mock_bundle.call_args.args
+        assert args[1] == "fr"
+        assert args[5] == 10  # seq
+        assert args[8] == "pipeline_failed"  # error status
+        assert worker_module.LANGUAGE_QUEUES[queue_key] == 15  # not incremented
+    finally:
+        worker_module.LANGUAGE_QUEUES[queue_key] = 0
+

@@ -51,6 +51,8 @@ class _ResolvedTranslation:
 
 @dataclass
 class _JobContext:
+    """Resolved room, provider, model, enabled languages and source language code."""
+
     room: Room
     provider: str
     model: str
@@ -295,6 +297,7 @@ class TranslationWorker:
         return tasks
 
     def _get_translation_api_key(self, event: Event, provider: str) -> str | None:
+        """Resolve the API key for the given event and translation provider."""
         return get_translation_api_key(event, provider)
 
     async def _translate_and_broadcast(
@@ -319,15 +322,14 @@ class TranslationWorker:
         from portal.websockets.manager import tts_manager
 
         queue_key = f"{booth_id_str}:{lang_code}"
-        if queue_key not in LANGUAGE_QUEUES:
-            LANGUAGE_QUEUES[queue_key] = 0
-        if queue_key not in LANGUAGE_SEMAPHORES:
-            LANGUAGE_SEMAPHORES[queue_key] = asyncio.Semaphore(2)
+        sem = LANGUAGE_SEMAPHORES.setdefault(queue_key, asyncio.Semaphore(2))
+        q_depth = LANGUAGE_QUEUES.setdefault(queue_key, 0)
 
-        sem = LANGUAGE_SEMAPHORES[queue_key]
-
-        if LANGUAGE_QUEUES[queue_key] >= 3:
-            logger.warning(f"[{booth_id_str}] Dropping translation for {lang_code}: Queue full (>3)")
+        if q_depth >= 15:
+            logger.warning(f"[{booth_id_str}] Queue full for {lang_code}. Dropping segment {seq}.")
+            await tts_manager.broadcast_bundle(
+                room.id, lang_code, booth_id_str, b"", uuid_segment_id, seq, text, "", "pipeline_failed"
+            )
             return
 
         LANGUAGE_QUEUES[queue_key] += 1
