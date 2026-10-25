@@ -56,11 +56,19 @@
 
 ## WebSocket Endpoints
 
+All three run `resolve_ws_auth()` (`portal/auth.py`): a JWT offered as a `bearer.<token>`
+subprotocol or `?token=`, otherwise the `admin_token` / `user_token` / `session_token` cookie.
+Every credential is scoped to the booth it opens — a listener token to its own event slug, an
+invite token to its event, room and language, and a registered-user cookie to the events the user
+holds an event, room or booth membership in. Admins are exempt. Any other signed token fails
+closed: a role without that scope, or a cookie with no user ID. Only when `BOOTH_ACCESS_TOKEN` is
+unset is a connection with no credential at all still accepted.
+
 | Path | Auth | Protocol |
 |---|---|---|
-| `/ws/booth/{booth_id}` | optional JWT via `?token=` + cookies (`session_token` or `user_token`) | See WebSocket Protocol in `REPOSITORY_CONTEXT.md` |
+| `/ws/booth/{booth_id}` | optional JWT via `?token=` + cookies (`session_token` or `user_token`); listener tokens rejected outright | See WebSocket Protocol in `REPOSITORY_CONTEXT.md` |
 | `/ws/captions/{booth_id}` | protected via `resolve_ws_auth` (requires `BOOTH_ACCESS_TOKEN` check, valid JWT via `?token=` or session cookies `user_token`/`session_token` in production; open in dev when unset) | Receives `booth:state`, `caption`, and `translated_caption` messages; listener captions feed. Supports `{event_slug}-{room_id}-{language_code}` (`floor-{room_id}` allowed only in unauthenticated dev) |
-| `/ws/tts/{room_id}/{language_code}/{booth_id}` | pre-authorized (JWT query param, session token, or listener join code cookie) | Receives framed binary bundle messages (1-byte version `0x01`, 4-byte big-endian header length `L`, `L`-byte UTF-8 JSON header, optional 24 kHz 16-bit mono PCM payload) |
+| `/ws/tts/{booth_id}` | authorized before accept via `resolve_ws_auth` (the `/ws/booth` check); `booth_id` is an AI booth, `{event_slug}-{room_id}-ai-{language_code}` | Receives framed binary bundle messages (1-byte version `0x01`, 4-byte big-endian header length `L`, `L`-byte UTF-8 JSON header, optional 24 kHz 16-bit mono PCM payload) |
 
 ---
 

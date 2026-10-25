@@ -93,8 +93,7 @@ async def lifespan(app: FastAPI):
 
     dg.track_task(asyncio.create_task(_gen()))
 
-    logging.getLogger("uvicorn.access").addFilter(_UvicornTokenRedactor())
-    logging.getLogger("uvicorn.access").addFilter(_HealthCheckFilter())
+    _install_log_filters()
     yield
 
     tasks_to_cancel = [webhook_task, notification_task, rate_limit_cleanup_task, meeting_task]
@@ -106,6 +105,13 @@ async def lifespan(app: FastAPI):
 
     if pg.shared_http_client:
         await pg.shared_http_client.aclose()
+
+
+def _install_log_filters() -> None:
+    logging.getLogger("uvicorn.access").addFilter(_UvicornTokenRedactor())
+    # WebSocket handshakes ("WebSocket /ws/...?token=... [accepted]") are logged by uvicorn.error.
+    logging.getLogger("uvicorn.error").addFilter(_UvicornTokenRedactor())
+    logging.getLogger("uvicorn.access").addFilter(_HealthCheckFilter())
 
 
 class _HealthCheckFilter(logging.Filter):

@@ -115,6 +115,36 @@ def test_token_redactor_handles_split_args():
     assert "[REDACTED]" in output
 
 
+def test_token_redactor_covers_websocket_handshakes():
+    """Uvicorn logs WebSocket handshakes, token included, through uvicorn.error."""
+    import logging
+
+    from fastapi_app import _install_log_filters, _UvicornTokenRedactor
+
+    loggers = [logging.getLogger("uvicorn.error"), logging.getLogger("uvicorn.access")]
+    saved = [list(lg.filters) for lg in loggers]
+    try:
+        _install_log_filters()
+        assert any(isinstance(f, _UvicornTokenRedactor) for f in loggers[0].filters)
+    finally:
+        for lg, filters in zip(loggers, saved):
+            lg.filters = filters
+
+    record = logging.LogRecord(
+        name="uvicorn.error",
+        level=logging.INFO,
+        pathname="",
+        lineno=0,
+        msg='%s - "WebSocket %s" [accepted]',
+        args=("127.0.0.1:1234", "/ws/tts/test-event-1-ai-de?token=secretjwt123"),
+        exc_info=None,
+    )
+    _UvicornTokenRedactor().filter(record)
+    output = record.getMessage()
+    assert "secretjwt123" not in output
+    assert "/ws/tts/test-event-1-ai-de?token=[REDACTED]" in output
+
+
 def test_token_redactor_handles_legacy_api_query_credentials():
     import logging
 
@@ -2319,421 +2349,325 @@ def test_ws_captions_releases_reservation_on_cancellation(monkeypatch):
     assert listener_manager.count_anonymous(booth_id) == 0
 
 
-# ── TTS WebSocket Auth tests ──────────────────────────────────────────────────
-
-
-def test_ws_tts_rejects_anonymous():
-    """Anonymous connection to TTS websocket without auth is rejected."""
+def test_ws_tts_authentication(monkeypatch):
+    """/ws/tts uses the same authentication as /ws/captions."""
     from fastapi.websockets import WebSocketDisconnect
 
+    from portal.auth import create_listener_token
+    from portal.config import settings
+
+    monkeypatch.setattr(settings, "booth_access_token", "secret-test-token")
+
+    # 1. No token -> fails
     with pytest.raises(WebSocketDisconnect) as exc_info:
-        with client.websocket_connect("/ws/tts/1/en/testcon-1-en"):
-            pass
+        with client.websocket_connect("/ws/tts/test-event-1-ai-fr") as ws:
+            ws.receive_text()
+    assert exc_info.value.code == 4001
+
+    # 2. Invalid token -> fails
+    with pytest.raises(WebSocketDisconnect) as exc_info:
+        with client.websocket_connect("/ws/tts/test-event-1-ai-fr?token=invalid") as ws:
+            ws.receive_text()
+    assert exc_info.value.code == 4001
+
+    # 3. Listener token for another event -> fails
+    other = create_listener_token(event_slug="other-event")
+    with pytest.raises(WebSocketDisconnect) as exc_info:
+        with client.websocket_connect(f"/ws/tts/test-event-1-ai-fr?token={other}") as ws:
+            ws.receive_text()
     assert exc_info.value.code == 4003
 
+    # 4. Valid listener token -> accepted (the server waits for the client, so just close)
+    token = create_listener_token(event_slug="test-event")
+    with client.websocket_connect(f"/ws/tts/test-event-1-ai-fr?token={token}"):
+        pass
 
-def test_ws_tts_accepts_listener_cookie():
-    """Listener cookie is accepted if it matches the event."""
-    import anyio
 
-    from portal.database import Event, Room, get_session
+def _ws_close_code(url: str, cookies: dict | None = None, subprotocols: list[str] | None = None) -> int | None:
+    """Connect to *url* and return the server's close code, or None if it accepted.
 
-    async def setup():
-        async with get_session() as session:
-            ev = Event(slug="ttstest", display_name="TTS", listener_join_code="secret123")
-            session.add(ev)
-            await session.flush()
-            room = Room(display_name="r", event_id=ev.id, audio_delay_ms=0)
-            session.add(room)
-            await session.flush()
-            return room.id
+    Never reads from the socket: an accepted connection would block forever,
+    because these endpoints wait for the client to speak first.
+    """
+    from fastapi.websockets import WebSocketDisconnect
 
-    room_id = anyio.run(setup)
+    try:
+        with client.websocket_connect(url, cookies=cookies or {}, subprotocols=subprotocols):
+            return None
+    except WebSocketDisconnect as exc:
+        return exc.code
 
-    # Needs valid Origin if testing cookie fallback
-    headers = {"Origin": "http://testserver"}
 
-    with client.websocket_connect(
-        f"/ws/tts/{room_id}/en/ttstest-{room_id}-en", cookies={"listener_code_ttstest": "secret123"}, headers=headers
+def test_listener_token_cannot_reach_an_event_whose_slug_extends_its_own(monkeypatch):
+    """A token for "test-event" must not open booths owned by "test-event-other"."""
+    from portal.auth import create_listener_token
+    from portal.config import settings
+
+    monkeypatch.setattr(settings, "booth_access_token", "secret-test-token")
+
+    token = create_listener_token(event_slug="test-event")
+
+    for booth_id in ("test-event-other-1-ai-fr", "test-event-other-1-fr", "test-event-other-1-floor"):
+        for route in ("/ws/tts", "/ws/captions"):
+            assert _ws_close_code(f"{route}/{booth_id}?token={token}") == 4003, f"{route}/{booth_id} was accepted"
+
+    # The event's own booths still work, AI and human alike.
+    for booth_id in ("test-event-1-ai-fr", "test-event-1-fr", "test-event-1-floor"):
+        assert _ws_close_code(f"/ws/captions/{booth_id}?token={token}") is None
+
+    # An event slug that itself ends in "-ai" is not confused for an AI booth.
+    ai_slug_token = create_listener_token(event_slug="test-ai")
+    assert _ws_close_code(f"/ws/captions/test-ai-1-fr?token={ai_slug_token}") is None
+    assert _ws_close_code(f"/ws/tts/test-ai-1-ai-fr?token={ai_slug_token}") is None
+
+
+def test_listener_scope_matches_compares_the_whole_event_slug():
+    from portal.auth import listener_scope_matches
+
+    assert listener_scope_matches("demo", "demo-1-fr")
+    assert listener_scope_matches("demo", "demo-1-ai-fr")
+    assert listener_scope_matches("demo", "demo-1-floor")
+    assert listener_scope_matches("demo-ai", "demo-ai-2-ai-de")
+    # A slug that merely prefixes the booth's owner is rejected.
+    assert not listener_scope_matches("demo", "demo-other-1-fr")
+    assert not listener_scope_matches("demo", "demo-other-1-ai-fr")
+    # Empty and unparseable scopes fail closed.
+    assert not listener_scope_matches("", "demo-1-fr")
+    assert not listener_scope_matches("demo", "not-a-booth")
+    # MediaMTX-style paths compare their first segment exactly.
+    assert listener_scope_matches("demo", "demo/1/fr")
+    assert not listener_scope_matches("demo", "demo-other/1/fr")
+
+
+def test_ws_accepts_a_bearer_subprotocol_instead_of_a_query_token(monkeypatch):
+    """The listener page sends its token as a subprotocol so it stays out of request lines."""
+    from fastapi.websockets import WebSocketDisconnect
+
+    from portal.auth import create_listener_token
+    from portal.config import settings
+
+    monkeypatch.setattr(settings, "booth_access_token", "secret-test-token")
+
+    token = create_listener_token(event_slug="test-event")
+
+    # A valid token offered as "bearer.<token>" is accepted, and the server echoes
+    # the subprotocol back — a browser drops the connection if it does not.
+    for path in ("/ws/tts/test-event-1-ai-fr", "/ws/captions/test-event-1-fr"):
+        with client.websocket_connect(path, subprotocols=[f"bearer.{token}"]) as ws:
+            assert ws.accepted_subprotocol == f"bearer.{token}"
+
+    # The scope check still applies to a subprotocol credential.
+    other = create_listener_token(event_slug="other-event")
+    with pytest.raises(WebSocketDisconnect) as exc_info:
+        with client.websocket_connect("/ws/tts/test-event-1-ai-fr", subprotocols=[f"bearer.{other}"]) as ws:
+            ws.receive_text()
+    assert exc_info.value.code == 4003
+
+    # An unrelated subprotocol carries no credential and is not echoed back.
+    with pytest.raises(WebSocketDisconnect) as exc_info:
+        with client.websocket_connect("/ws/tts/test-event-1-ai-fr", subprotocols=["graphql-ws"]) as ws:
+            ws.receive_text()
+    assert exc_info.value.code == 4001
+
+
+def _user_cookie(user_id: int = 7, *, is_admin: bool = False) -> dict:
+    from portal.auth import create_user_token
+
+    return {"user_token": create_user_token(user_id=user_id, email="user@test.com", is_admin=is_admin)}
+
+
+@pytest.mark.parametrize("access_token", ["secret-test-token", ""])
+def test_user_cookie_reaches_a_booth_only_when_its_event_authorizes_it(monkeypatch, access_token):
+    """The WebSocket handshake rejects an unscoped user cookie the event does not authorize.
+
+    Both cookie paths are covered: the one guarded by booth_access_token and the
+    shortcut taken when it is unset. The membership lookup itself is stubbed —
+    it has its own test — so no database work happens inside the handshake.
+
+    Only the TTS feed is driven here (/ws/captions is public since #974). Accepting a ``/ws/booth``
+    connection and closing it without joining deadlocked CI: that handler also
+    resolves a role and a language name, so a parseable booth ID opens two more
+    database sessions inside the handshake. ``resolve_ws_auth`` is shared, and
+    ``/ws/booth`` keeps its own rejection tests.
+    """
+    import portal.auth as auth
+    from portal.config import settings
+
+    monkeypatch.setattr(settings, "booth_access_token", access_token)
+
+    # /ws/captions is public since #974 and ignores cookies, so only the TTS feed is checked.
+    routes = ("/ws/tts/test-event-1-ai-fr",)
+
+    async def _deny(user_id, booth_id):
+        return False
+
+    monkeypatch.setattr(auth, "user_event_authorized", _deny)
+    for route in routes:
+        assert _ws_close_code(route, cookies=_user_cookie()) == 4003, f"{route} accepted a non-member"
+
+    async def _allow(user_id, booth_id):
+        return True
+
+    monkeypatch.setattr(auth, "user_event_authorized", _allow)
+    for route in routes:
+        assert _ws_close_code(route, cookies=_user_cookie()) is None, f"{route} rejected a member"
+
+    # An admin user still reaches every booth without a membership row.
+    monkeypatch.setattr(auth, "user_event_authorized", _deny)
+    assert _ws_close_code("/ws/tts/test-event-1-ai-fr", cookies=_admin_user_cookie()) is None
+
+
+def _signed_token(claims: dict) -> str:
+    """Sign *claims* with the portal's own secret, as if the portal had issued them."""
+    from datetime import datetime, timedelta, timezone
+
+    import jwt
+
+    from portal.config import settings
+
+    now = datetime.now(timezone.utc)
+    return jwt.encode(
+        {**claims, "iat": now, "exp": now + timedelta(minutes=5)},
+        settings.effective_jwt_secret,
+        algorithm="HS256",
+    )
+
+
+# Validly signed sessions that name no event, no booth and no usable user. None
+# of them may reach a booth, whatever the membership lookup would say.
+_UNSCOPED_SESSIONS = [
+    pytest.param({}, id="no-claims"),
+    pytest.param({"email": "user@test.com", "is_admin": False}, id="missing-sub"),
+    pytest.param({"sub": "", "email": "user@test.com", "is_admin": False}, id="empty-sub"),
+    pytest.param({"sub": "7", "role": "interpreter"}, id="role-without-scope"),
+    pytest.param({"sub": "7", "role": "interpreter", "event_slug": "test-event"}, id="role-without-language"),
+    pytest.param({"sub": "7", "role": "listener"}, id="listener-without-event"),
+]
+
+
+@pytest.mark.parametrize("access_token", ["secret-test-token", ""])
+@pytest.mark.parametrize("claims", _UNSCOPED_SESSIONS)
+def test_session_cookies_without_a_usable_identity_fail_closed(monkeypatch, access_token, claims):
+    """Only admin claims, a scoped invite or a member's user_token may pass the cookie check.
+
+    The membership lookup is stubbed to allow everything, so a pass here could
+    only come from the token shape itself being trusted.
+    """
+    import portal.auth as auth
+    from portal.config import settings
+
+    monkeypatch.setattr(settings, "booth_access_token", access_token)
+
+    async def _allow(user_id, booth_id):
+        return True
+
+    monkeypatch.setattr(auth, "user_event_authorized", _allow)
+
+    cookies = {"user_token": _signed_token(claims)}
+    for route in ("/ws/tts/test-event-1-ai-fr",):
+        assert _ws_close_code(route, cookies=cookies) == 4003, f"{route} accepted {claims}"
+
+
+@pytest.mark.parametrize("access_token", ["secret-test-token", ""])
+def test_a_role_token_without_booth_scope_is_refused(monkeypatch, access_token):
+    """Every role the portal issues carries its scope; a bare role is not trusted everywhere."""
+    from portal.config import settings
+
+    monkeypatch.setattr(settings, "booth_access_token", access_token)
+
+    for claims in (
+        {"sub": "7", "role": "interpreter"},
+        {"sub": "7", "role": "interpreter", "event_slug": "test-event"},
+        {"sub": "7", "role": "listener"},
     ):
-        pass  # Connection accepted
+        token = _signed_token(claims)
+        for route in ("/ws/tts/test-event-1-ai-fr",):
+            assert _ws_close_code(f"{route}?token={token}") == 4003, f"{route} accepted {claims}"
 
 
-def test_ws_tts_rejects_mismatched_origin_scheme():
-    import anyio
-    from fastapi.websockets import WebSocketDisconnect
+@pytest.mark.parametrize("access_token", ["secret-test-token", ""])
+def test_credentials_for_one_event_cannot_subscribe_to_another_events_tts(monkeypatch, access_token):
+    """Every credential scoped to test-event is refused on other-event's AI booth, and still works on its own."""
+    import portal.auth as auth
+    from portal.auth import create_listener_token
+    from portal.booth_identity import booth_id_event_slug
+    from portal.config import settings
 
-    from portal.database import Event, Room, get_session
+    monkeypatch.setattr(settings, "booth_access_token", access_token)
 
-    async def setup():
-        async with get_session() as session:
-            ev = Event(slug="ttstest-scheme", display_name="TTS Scheme", listener_join_code="secret123")
-            session.add(ev)
-            await session.flush()
-            room = Room(display_name="r", event_id=ev.id, audio_delay_ms=0)
-            session.add(room)
-            await session.flush()
-            return room.id
+    # Stand-in for a user whose only membership is in test-event. The lookup
+    # itself is checked against real rows in test_ws_event_authorization.py.
+    async def _member_of_test_event(user_id, booth_id):
+        return booth_id_event_slug(booth_id) == "test-event"
 
-    room_id = anyio.run(setup)
+    monkeypatch.setattr(auth, "user_event_authorized", _member_of_test_event)
 
-    # Websocket URL is http://testserver/ws/tts/...
-    # An Origin of https://testserver should be rejected because scheme does not match
-    headers = {"Origin": "https://testserver"}
+    own, other = "/ws/tts/test-event-1-ai-fr", "/ws/tts/other-event-1-ai-fr"
+    listener = create_listener_token(event_slug="test-event")
+    interpreter = _interpreter_cookie(event_slug="test-event", language_code="fr")
 
-    with pytest.raises(WebSocketDisconnect) as exc_info:
-        with client.websocket_connect(
-            f"/ws/tts/{room_id}/en/ttstest-scheme-{room_id}-en",
-            cookies={"listener_code_ttstest-scheme": "secret123"},
-            headers=headers,
-        ):
-            pass
-    assert exc_info.value.code == 4003
+    assert _ws_close_code(f"{other}?token={listener}") == 4003
+    assert _ws_close_code(other, subprotocols=[f"bearer.{listener}"]) == 4003
+    assert _ws_close_code(f"{other}?token={interpreter['session_token']}") == 4003
+    assert _ws_close_code(other, cookies=interpreter) == 4003
+    assert _ws_close_code(other, cookies=_user_cookie()) == 4003
+    # Nor does an invite carry its interpreter role into another event's booth.
+    assert _ws_close_code("/ws/booth/other-event-1-fr", cookies=interpreter) == 4003
 
-
-def test_ws_tts_rejects_mismatched_room():
-    import anyio
-
-    from portal.database import Event, Room, get_session
-
-    async def setup():
-        async with get_session() as session:
-            ev = Event(slug="ttstest2", display_name="TTS 2", listener_join_code="secret123")
-            session.add(ev)
-            await session.flush()
-            room = Room(display_name="r", event_id=ev.id, audio_delay_ms=0)
-            session.add(room)
-            await session.flush()
-            return room.id
-
-    room_id = anyio.run(setup)
-
-    from fastapi.websockets import WebSocketDisconnect
-
-    headers = {"Origin": "http://testserver"}
-
-    with pytest.raises(WebSocketDisconnect) as exc_info:
-        with client.websocket_connect(
-            f"/ws/tts/{room_id + 1}/en/ttstest2-{room_id}-en",
-            cookies={"listener_code_ttstest2": "secret123"},
-            headers=headers,
-        ):
-            pass
-    assert exc_info.value.code == 4003
-
-    with pytest.raises(WebSocketDisconnect) as exc_info:
-        with client.websocket_connect(
-            f"/ws/tts/{room_id}/en/ttstest2-{room_id + 1}-en",
-            cookies={"listener_code_ttstest2": "secret123"},
-            headers=headers,
-        ):
-            pass
-    assert exc_info.value.code == 4003
+    # The same listener token and member session do open their own event's AI booth.
+    assert _ws_close_code(f"{own}?token={listener}") is None
+    assert _ws_close_code(own, cookies=_user_cookie()) is None
 
 
-def test_ws_tts_cleanup_on_disconnect():
-    import anyio
-
-    from portal.database import Event, Room, get_session
-
-    async def setup():
-        async with get_session() as session:
-            ev = Event(slug="ttstest3", display_name="TTS 3", listener_join_code="secret123")
-            session.add(ev)
-            await session.flush()
-            room = Room(display_name="r", event_id=ev.id, audio_delay_ms=0)
-            session.add(room)
-            await session.flush()
-            return room.id
-
-    room_id = anyio.run(setup)
-
-    headers = {"Origin": "http://testserver"}
-
-    # We can check the internal tts_manager state.
+def test_ws_tts_cleanup_on_disconnect(monkeypatch):
+    """A closed TTS socket is dropped from its AI booth's subscriber set."""
+    from portal.auth import create_listener_token
+    from portal.config import settings
     from portal.websockets.manager import tts_manager
 
-    key = tts_manager._get_key(room_id, "en", f"ttstest3-{room_id}-en")
-    initial_count = len(tts_manager._rooms.get(key, set()))
+    monkeypatch.setattr(settings, "booth_access_token", "secret-test-token")
 
-    with client.websocket_connect(
-        f"/ws/tts/{room_id}/en/ttstest3-{room_id}-en", cookies={"listener_code_ttstest3": "secret123"}, headers=headers
-    ):
-        assert len(tts_manager._rooms.get(key, set())) == initial_count + 1
+    booth_id = "ttstest3-1-ai-fr"
+    token = create_listener_token(event_slug="ttstest3")
+    initial_count = len(tts_manager._rooms.get(booth_id, set()))
 
-    # After exit, the context manager closes the websocket
+    with client.websocket_connect(f"/ws/tts/{booth_id}?token={token}"):
+        assert len(tts_manager._rooms.get(booth_id, set())) == initial_count + 1
+
     import time
 
     time.sleep(0.1)  # allow time for cleanup
-    assert len(tts_manager._rooms.get(key, set())) == initial_count
+    assert len(tts_manager._rooms.get(booth_id, set())) == initial_count
 
 
-def test_ws_tts_rejects_unscoped_query_token():
+def test_ws_tts_registered_user_cookie_needs_event_membership(monkeypatch):
+    """Against real rows: a user_token opens an AI booth only for an event the user belongs to."""
     import anyio
-    import jwt
-    from fastapi.websockets import WebSocketDisconnect
 
+    from portal.auth import create_user_token
     from portal.config import settings
-    from portal.database import Event, Room, get_session
-
-    async def setup():
-        async with get_session() as session:
-            ev = Event(slug="ttstest-unscoped", display_name="TTS Unscoped", listener_join_code="secret123")
-            session.add(ev)
-            await session.flush()
-            room = Room(display_name="r", event_id=ev.id, audio_delay_ms=0)
-            session.add(room)
-            await session.flush()
-            return room.id
-
-    room_id = anyio.run(setup)
-
-    unscoped_token = jwt.encode({"sub": "user1", "role": "viewer"}, settings.effective_jwt_secret, algorithm="HS256")
-
-    with pytest.raises(WebSocketDisconnect) as exc_info:
-        with client.websocket_connect(f"/ws/tts/{room_id}/en/ttstest-unscoped-{room_id}-en?token={unscoped_token}"):
-            pass
-    assert exc_info.value.code == 4003
-
-
-def test_ws_tts_accepts_and_rejects_scoped_tokens():
-    import anyio
-    from fastapi.websockets import WebSocketDisconnect
-
-    from portal.auth import create_listener_token, create_participant_token
-    from portal.database import Event, Room, get_session
-
-    async def setup():
-        async with get_session() as session:
-            ev = Event(slug="ttstest-scoped", display_name="TTS Scoped", listener_join_code="secret123")
-            session.add(ev)
-            await session.flush()
-            room = Room(display_name="r", event_id=ev.id, audio_delay_ms=0)
-            session.add(room)
-            await session.flush()
-            return room.id
-
-    room_id = anyio.run(setup)
-
-    # Valid listener token
-    listener_tok = create_listener_token(event_slug="ttstest-scoped")
-    with client.websocket_connect(f"/ws/tts/{room_id}/en/ttstest-scoped-{room_id}-en?token={listener_tok}"):
-        pass
-
-    # Listener token with mismatched event
-    bad_listener_tok = create_listener_token(event_slug="other-event")
-    with pytest.raises(WebSocketDisconnect) as exc_info:
-        with client.websocket_connect(f"/ws/tts/{room_id}/en/ttstest-scoped-{room_id}-en?token={bad_listener_tok}"):
-            pass
-    assert exc_info.value.code == 4003
-
-    # Valid participant token
-    part_tok = create_participant_token(
-        booth_id=1,
-        role="interpreter",
-        event_slug="ttstest-scoped",
-        room_id=room_id,
-        language_code="en",
-    )
-    with client.websocket_connect(f"/ws/tts/{room_id}/en/ttstest-scoped-{room_id}-en?token={part_tok}"):
-        pass
-
-    # Participant token with wrong language
-    bad_part_tok = create_participant_token(
-        booth_id=1,
-        role="interpreter",
-        event_slug="ttstest-scoped",
-        room_id=room_id,
-        language_code="fr",
-    )
-    with pytest.raises(WebSocketDisconnect) as exc_info:
-        with client.websocket_connect(f"/ws/tts/{room_id}/en/ttstest-scoped-{room_id}-en?token={bad_part_tok}"):
-            pass
-    assert exc_info.value.code == 4003
-
-
-def test_ws_tts_rejects_unpermitted_registered_user_cookie():
-    """Registered user without membership or listener join code is rejected."""
-    import anyio
-    from fastapi.websockets import WebSocketDisconnect
-
-    from portal.auth import create_user_token
-    from portal.database import Event, Room, get_session
-
-    async def setup():
-        async with get_session() as session:
-            ev = Event(slug="ttstest-unauth-user", display_name="TTS Unauth User", listener_join_code="secret123")
-            session.add(ev)
-            await session.flush()
-            room = Room(display_name="r", event_id=ev.id, audio_delay_ms=0)
-            session.add(room)
-            await session.flush()
-            return room.id
-
-    room_id = anyio.run(setup)
-
-    user_tok = create_user_token(user_id=8888, email="unauth@example.com", is_admin=False)
-    headers = {"Origin": "http://testserver"}
-
-    with pytest.raises(WebSocketDisconnect) as exc_info:
-        with client.websocket_connect(
-            f"/ws/tts/{room_id}/en/ttstest-unauth-user-{room_id}-en",
-            cookies={"user_token": user_tok},
-            headers=headers,
-        ):
-            pass
-    assert exc_info.value.code == 4003
-
-
-def test_ws_tts_accepts_permitted_registered_user_cookie():
-    """Registered user with membership to the event/booth is accepted."""
-    import anyio
-
-    from portal.auth import create_user_token
-    from portal.database import (
-        create_booth,
-        create_event,
-        create_room,
-        create_user,
-        get_session,
-    )
+    from portal.database import create_event, create_room, create_user, get_session
     from portal.models import EventMembership
+
+    monkeypatch.setattr(settings, "booth_access_token", "secret-test-token")
 
     async def setup():
         async with get_session() as session:
             user = await create_user(session, email="owner@example.com", display_name="Owner")
             ev = await create_event(session, slug="ttstest-auth-user", display_name="TTS Auth User")
             room = await create_room(session, event_id=ev.id, display_name="Main Room")
-            await create_booth(session, event_id=ev.id, room_id=room.id, language_code="en", language_name="English")
             session.add(EventMembership(user_id=user.id, event_id=ev.id, role="event_owner"))
             await session.flush()
             return user.id, room.id
 
     user_id, room_id = anyio.run(setup)
+    route = f"/ws/tts/ttstest-auth-user-{room_id}-ai-fr"
 
-    user_tok = create_user_token(user_id=user_id, email="owner@example.com", is_admin=False)
-    headers = {"Origin": "http://testserver"}
+    outsider = create_user_token(user_id=8888, email="unauth@example.com", is_admin=False)
+    assert _ws_close_code(route, cookies={"user_token": outsider}) == 4003
 
-    with client.websocket_connect(
-        f"/ws/tts/{room_id}/en/ttstest-auth-user-{room_id}-en",
-        cookies={"user_token": user_tok},
-        headers=headers,
-    ):
-        pass
-
-
-def test_ws_tts_accepts_registered_user_with_listener_cookie():
-    """Registered user without membership but with valid listener code is accepted."""
-    import anyio
-
-    from portal.auth import create_user_token
-    from portal.database import Event, Room, get_session
-
-    async def setup():
-        async with get_session() as session:
-            ev = Event(slug="ttstest-reg-listener", display_name="TTS Reg Listener", listener_join_code="secret123")
-            session.add(ev)
-            await session.flush()
-            room = Room(display_name="r", event_id=ev.id, audio_delay_ms=0)
-            session.add(room)
-            await session.flush()
-            return room.id
-
-    room_id = anyio.run(setup)
-
-    user_tok = create_user_token(user_id=9999, email="attendee@example.com", is_admin=False)
-    headers = {"Origin": "http://testserver"}
-
-    with client.websocket_connect(
-        f"/ws/tts/{room_id}/en/ttstest-reg-listener-{room_id}-en",
-        cookies={
-            "user_token": user_tok,
-            "listener_code_ttstest-reg-listener": "secret123",
-        },
-        headers=headers,
-    ):
-        pass
-
-
-def test_ws_tts_rejects_unscoped_session_cookie():
-    """Unscoped session_token cookie is rejected."""
-    import anyio
-    import jwt
-    from fastapi.websockets import WebSocketDisconnect
-
-    from portal.config import settings
-    from portal.database import Event, Room, get_session
-
-    async def setup():
-        async with get_session() as session:
-            ev = Event(slug="ttstest-unscoped-sess", display_name="TTS Unscoped Sess", listener_join_code="secret123")
-            session.add(ev)
-            await session.flush()
-            room = Room(display_name="r", event_id=ev.id, audio_delay_ms=0)
-            session.add(room)
-            await session.flush()
-            return room.id
-
-    room_id = anyio.run(setup)
-
-    unscoped_tok = jwt.encode({"sub": "user1", "role": "viewer"}, settings.effective_jwt_secret, algorithm="HS256")
-    headers = {"Origin": "http://testserver"}
-
-    with pytest.raises(WebSocketDisconnect) as exc_info:
-        with client.websocket_connect(
-            f"/ws/tts/{room_id}/en/ttstest-unscoped-sess-{room_id}-en",
-            cookies={"session_token": unscoped_tok},
-            headers=headers,
-        ):
-            pass
-    assert exc_info.value.code == 4003
-
-
-def test_ws_tts_accepts_translated_target_language():
-    """Translated TTS target may differ from source booth language.
-
-    Regression for the translation pipeline key
-    (room_id, target_lang, source_booth_id): a French listener on an
-    English source booth subscribes to /ws/tts/{room}/fr/{slug}-{room}-en.
-    Room and event scope must still match; only the language is allowed
-    to differ.
-    """
-    import anyio
-
-    from portal.auth import create_participant_token
-    from portal.database import Event, Room, get_session
-
-    async def setup():
-        async with get_session() as session:
-            ev = Event(slug="ttstest-translated", display_name="TTS Translated", listener_join_code="secret123")
-            session.add(ev)
-            await session.flush()
-            room = Room(display_name="r", event_id=ev.id, audio_delay_ms=0)
-            session.add(room)
-            await session.flush()
-            return room.id
-
-    room_id = anyio.run(setup)
-    headers = {"Origin": "http://testserver"}
-
-    # Listener-cookie path with translated target.
-    with client.websocket_connect(
-        f"/ws/tts/{room_id}/fr/ttstest-translated-{room_id}-en",
-        cookies={"listener_code_ttstest-translated": "secret123"},
-        headers=headers,
-    ):
-        pass
-
-    # Participant token scoped to the target language is accepted.
-    fr_tok = create_participant_token(
-        booth_id=1,
-        role="interpreter",
-        event_slug="ttstest-translated",
-        room_id=room_id,
-        language_code="fr",
-    )
-    with client.websocket_connect(f"/ws/tts/{room_id}/fr/ttstest-translated-{room_id}-en?token={fr_tok}"):
-        pass
+    member = create_user_token(user_id=user_id, email="owner@example.com", is_admin=False)
+    assert _ws_close_code(route, cookies={"user_token": member}) is None
 
 
 # ── Refactor coverage: missing event, context keys, allowlists, CSP policy ──

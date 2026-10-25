@@ -15,6 +15,14 @@ _config_cache: dict[int, tuple[float, dict | None]] = {}
 _CONFIG_TTL_SECONDS = 300.0
 
 
+def invalidate_room_config(room_id: int) -> None:
+    """Drop a room's cached TTS config so the next synthesis reloads it.
+
+    Called when a room's TTS settings are saved, so a new voice or provider
+    takes effect at once rather than after the cache TTL.
+    """
+    _config_cache.pop(room_id, None)
+
 
 async def _load_config_cached(room_id: int) -> dict | None:
     now = time.monotonic()
