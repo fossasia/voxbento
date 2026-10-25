@@ -7,6 +7,7 @@ import math
 import re
 import secrets
 import urllib.parse
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
@@ -110,6 +111,7 @@ from portal.models import (
     Event,
     EventMembership,
     HostingRequest,
+    Room,
     RoomTranslationLanguage,
     TranscriptSegment,
     TranscriptTranslation,
@@ -132,6 +134,22 @@ from portal.notifications import (
 from portal.program_ingest import room_lock
 from portal.rate_limit import check_rate_limit
 from portal.roles import EVENT_OWNER, assignment_error, role_label
+from portal.room_setup import ALL_LANGUAGES as ROOM_ALL_LANGUAGES
+from portal.room_setup import COMMON_LANGUAGES as ROOM_COMMON_LANGUAGES
+from portal.room_setup import DELIVERY_LABELS as ROOM_DELIVERY_LABELS
+from portal.room_setup import (
+    EngineCatalog,
+    RoomPlan,
+    RoomSummary,
+    apply_plan,
+    blank_plan,
+    default_jitsi_url,
+    engine_catalog,
+    load_snapshot,
+    parse_plan,
+    summarize,
+)
+from portal.room_setup import language_name as room_language_name
 from portal.team import ROLE_CHOICES as TEAM_ROLE_CHOICES
 from portal.team import TeamError, load_team
 from portal.team import add_member as add_team_member
@@ -149,6 +167,7 @@ from portal.translations.vocabulary import (
     serialize_vocabulary_csv,
     validate_vocabulary_scope,
 )
+from portal.tts.worker import invalidate_config as invalidate_tts_config
 from portal.user_admin import ERROR_MESSAGES as USER_ADMIN_ERRORS
 from portal.user_admin import FIELDS as USER_ACCESS_FIELDS
 from portal.user_admin import AccessChange, UserAdminError, delete_user_account, is_last_active_admin, set_user_access
@@ -392,31 +411,6 @@ async def admin_email_test(
         idempotency_key=f"email-test:{safe_key}:{user['sub']}:{utc_now().isoformat()}",
     )
     return safe_redirect(url=f"/admin/emails/{safe_key}/?test=1", status_code=status.HTTP_303_SEE_OTHER)
-
-# Common languages offered in the guided setup wizard booth picker.
-COMMON_LANGUAGES: list[tuple[str, str]] = [
-    ("en", "English"),
-    ("es", "Spanish"),
-    ("fr", "French"),
-    ("de", "German"),
-    ("zh", "Chinese"),
-    ("ar", "Arabic"),
-    ("pt", "Portuguese"),
-    ("ru", "Russian"),
-    ("ja", "Japanese"),
-    ("hi", "Hindi"),
-    ("it", "Italian"),
-    ("ko", "Korean"),
-    ("nl", "Dutch"),
-    ("tr", "Turkish"),
-    ("pl", "Polish"),
-    ("uk", "Ukrainian"),
-    ("vi", "Vietnamese"),
-    ("id", "Indonesian"),
-    ("th", "Thai"),
-    ("sv", "Swedish"),
-]
-
 
 def _slugify(text: str) -> str:
     """Derive a URL-safe event slug from free text."""
@@ -801,6 +795,20 @@ async def admin_setup_create_event(request: Request, principal: dict = Depends(r
     )
 
 
+def _live_booth_codes(event_slug: str, room_id: int, codes: Iterable[str]) -> frozenset[str]:
+    live = set()
+    for code in codes:
+        mem_booth = booths.get_booth_sync(make_booth_id(event_slug, room_id, code))
+        if mem_booth is not None and mem_booth.ingest_status == "connected":
+            live.add(code)
+    return frozenset(live)
+
+
+async def _room_summaries(session: AsyncSession, event: Event, rooms: Sequence[Room]) -> dict[int, RoomSummary]:
+    catalog = engine_catalog(event)
+    return {room.id: summarize(room, await load_snapshot(session, room, catalog)) for room in rooms}
+
+
 @router.get("/admin/events/{event_id}/setup/rooms", dependencies=[Depends(require_event_owner)])
 async def admin_setup_rooms(request: Request, event_id: int):
     admin_flags = await get_access_flags(request, event_id=event_id)
@@ -809,13 +817,17 @@ async def admin_setup_rooms(request: Request, event_id: int):
         if event is None:
             raise HTTPException(status_code=404, detail="Event not found.")
         rooms = await list_rooms_for_event(session, event_id)
+        summaries = await _room_summaries(session, event, rooms)
     return templates.TemplateResponse(
-        request=request, name="admin/wizard_rooms.html", context={"event": event, "rooms": rooms, **admin_flags}
+        request=request,
+        name="admin/wizard_rooms.html",
+        context={"event": event, "rooms": rooms, "summaries": summaries, **admin_flags},
     )
 
 
 @router.post("/admin/events/{event_id}/setup/rooms", dependencies=[Depends(require_event_owner)])
 async def admin_setup_add_room(request: Request, event_id: int):
+    # Compatibility for forms opened before room setup was consolidated.
     form = await request.form()
     display_name = form.get("display_name", "").strip()
     if display_name:
@@ -833,28 +845,6 @@ async def admin_setup_add_room(request: Request, event_id: int):
     )
 
 
-@router.get("/admin/events/{event_id}/setup/booths", dependencies=[Depends(require_event_owner)])
-async def admin_setup_booths(request: Request, event_id: int):
-    admin_flags = await get_access_flags(request, event_id=event_id)
-    async with get_session() as session:
-        event = await get_event_by_id(session, event_id)
-        if event is None:
-            raise HTTPException(status_code=404, detail="Event not found.")
-        rooms = await list_rooms_for_event(session, event_id)
-        booths_by_room = {room.id: await list_booths_for_room(session, room.id) for room in rooms}
-    return templates.TemplateResponse(
-        request=request,
-        name="admin/wizard_booths.html",
-        context={
-            "event": event,
-            "rooms": rooms,
-            "booths_by_room": booths_by_room,
-            "common_languages": COMMON_LANGUAGES,
-            **admin_flags,
-        },
-    )
-
-
 @router.post("/admin/events/{event_id}/setup/booths", dependencies=[Depends(require_event_owner)])
 async def admin_setup_add_booth(request: Request, event_id: int):
     form = await request.form()
@@ -866,7 +856,7 @@ async def admin_setup_add_booth(request: Request, event_id: int):
     if room_id_str.isdigit():
         async with get_session() as session:
             room = await get_room_by_id(session, int(room_id_str))
-    if room is not None and room.event_id != event_id:
+    if room is None or room.event_id != event_id:
         # Only this event's rooms; the wizard just shows the form again.
         room_id_str = ""
     if room_id_str and language_code:
@@ -882,19 +872,192 @@ async def admin_setup_add_booth(request: Request, event_id: int):
             )
             if not created:
                 error = "duplicate_language"
-        except Exception as e:
-            logger.warning(f"Error creating booth in setup wizard: {e}")
+        except (ValueError, IntegrityError) as e:
+            logger.warning("Error creating booth in setup wizard: %s", e)
 
     query = {}
     if room_id_str:
         query["room_id"] = room_id_str
     if error:
         query["error"] = error
-    redirect_url = management_url(request, f"events/{event_id}/setup/booths")
+    redirect_url = management_url(request, f"events/{event_id}/setup/rooms")
     if query:
         redirect_url += f"?{urllib.parse.urlencode(query)}"
 
     return safe_redirect(url=redirect_url, status_code=status.HTTP_303_SEE_OTHER)
+
+
+@router.get("/admin/events/{event_id}/setup/booths", dependencies=[Depends(require_event_owner)])
+async def admin_setup_booths(request: Request, event_id: int):
+    """Booths are now chosen inside each room's setup; old links land on the Rooms step."""
+    return safe_redirect(
+        url=management_url(request, f"events/{event_id}/setup/rooms"),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
+
+
+def _room_setup_response(
+    request: Request,
+    *,
+    event: Event,
+    room: Room | None,
+    plan: RoomPlan,
+    catalog: EngineCatalog,
+    admin_flags: dict,
+    errors: Sequence[str] = (),
+    booth_codes: Sequence[str] = (),
+    live_codes: frozenset[str] = frozenset(),
+    from_setup: bool = False,
+    status_code: int = status.HTTP_200_OK,
+) -> Response:
+    chosen = [code for code, _ in plan.languages]
+    chip_codes = list(dict.fromkeys([code for code, _ in ROOM_COMMON_LANGUAGES] + chosen))
+    return templates.TemplateResponse(
+        request=request,
+        name="admin/room_setup.html",
+        context={
+            "event": event,
+            "room": room,
+            "plan": plan,
+            "catalog": catalog,
+            "errors": errors,
+            "chip_languages": [(code, room_language_name(code)) for code in chip_codes],
+            "all_languages": ROOM_ALL_LANGUAGES,
+            "common_languages": ROOM_COMMON_LANGUAGES,
+            "common_codes": [code for code, _ in ROOM_COMMON_LANGUAGES],
+            "language_name": room_language_name,
+            "delivery_labels": ROOM_DELIVERY_LABELS,
+            "booth_codes": list(booth_codes),
+            "live_codes": sorted(live_codes),
+            "from_setup": from_setup,
+            **admin_flags,
+        },
+        status_code=status_code,
+    )
+
+
+@router.get("/admin/events/{event_id}/rooms/new", dependencies=[Depends(require_event_owner)])
+async def admin_room_setup_new(request: Request, event_id: int, source: str | None = Query(None, alias="from")):
+    admin_flags = await get_access_flags(request, event_id=event_id)
+    async with get_session() as session:
+        event = await get_event_by_id(session, event_id)
+        if event is None:
+            raise HTTPException(status_code=404, detail="Event not found.")
+    catalog = engine_catalog(event)
+    return _room_setup_response(
+        request,
+        event=event,
+        room=None,
+        plan=blank_plan(catalog),
+        catalog=catalog,
+        admin_flags=admin_flags,
+        from_setup=source == "setup",
+    )
+
+
+@router.post("/admin/events/{event_id}/rooms/new", dependencies=[Depends(require_event_owner)])
+async def admin_room_setup_create(request: Request, event_id: int):
+    if not verify_same_origin(request):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid request origin.")
+    form = await request.form()
+    from_setup = form.get("from") == "setup"
+    async with get_session() as session:
+        event = await get_event_by_id(session, event_id)
+        if event is None:
+            raise HTTPException(status_code=404, detail="Event not found.")
+        catalog = engine_catalog(event)
+        plan, errors = parse_plan(form, catalog)
+        if errors:
+            admin_flags = await get_access_flags(request, event_id=event_id)
+            return _room_setup_response(
+                request,
+                event=event,
+                room=None,
+                plan=plan,
+                catalog=catalog,
+                admin_flags=admin_flags,
+                errors=errors,
+                from_setup=from_setup,
+                status_code=status.HTTP_400_BAD_REQUEST,
+            )
+        room = await create_room(
+            session,
+            event_id=event_id,
+            display_name=plan.display_name,
+            jitsi_url=default_jitsi_url(event.slug, plan.display_name),
+        )
+        await apply_plan(session, event, room, plan, catalog)
+        room_id = room.id
+    target = f"events/{event_id}/setup/rooms" if from_setup else f"events/{event_id}/rooms/{room_id}/?created=1"
+    return safe_redirect(url=management_url(request, target), status_code=status.HTTP_303_SEE_OTHER)
+
+
+@router.get("/admin/events/{event_id}/rooms/{room_id}/setup", dependencies=[Depends(require_event_owner)])
+async def admin_room_setup_edit(request: Request, event_id: int, room_id: int):
+    source = request.query_params.get("from")
+    admin_flags = await get_access_flags(request, event_id=event_id, room_id=room_id)
+    async with get_session() as session:
+        event = await get_event_by_id(session, event_id)
+        if event is None:
+            raise HTTPException(status_code=404, detail="Event not found.")
+        room = await room_in_event(session, event_id, room_id)
+        catalog = engine_catalog(event)
+        snapshot = await load_snapshot(session, room, catalog)
+    live = _live_booth_codes(event.slug, room_id, snapshot.booth_codes)
+    return _room_setup_response(
+        request,
+        event=event,
+        room=room,
+        plan=snapshot.plan,
+        catalog=catalog,
+        admin_flags=admin_flags,
+        booth_codes=snapshot.booth_codes,
+        live_codes=live,
+        from_setup=source == "setup",
+    )
+
+
+@router.post("/admin/events/{event_id}/rooms/{room_id}/setup", dependencies=[Depends(require_event_owner)])
+async def admin_room_setup_save(request: Request, event_id: int, room_id: int):
+    if not verify_same_origin(request):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid request origin.")
+    form = await request.form()
+    from_setup = form.get("from") == "setup"
+    async with room_lock(room_id), get_session() as session:
+        event = await get_event_by_id(session, event_id)
+        if event is None:
+            raise HTTPException(status_code=404, detail="Event not found.")
+        room = await room_in_event(session, event_id, room_id)
+        catalog = engine_catalog(event)
+        booth_codes = [b.language_code for b in await list_booths_for_room(session, room_id)]
+        plan, errors = parse_plan(form, catalog, existing_booth_codes=booth_codes)
+        live = _live_booth_codes(event.slug, room_id, booth_codes)
+        if errors:
+            admin_flags = await get_access_flags(request, event_id=event_id, room_id=room_id)
+            return _room_setup_response(
+                request,
+                event=event,
+                room=room,
+                plan=plan,
+                catalog=catalog,
+                admin_flags=admin_flags,
+                errors=errors,
+                booth_codes=booth_codes,
+                live_codes=live,
+                from_setup=from_setup,
+                status_code=status.HTTP_400_BAD_REQUEST,
+            )
+        result = await apply_plan(session, event, room, plan, catalog, live_booth_codes=live)
+    # The session has committed: drop the old voice settings so AI text languages stop speaking now.
+    invalidate_tts_config(room_id)
+    query = {"updated": "1"}
+    if result.kept_live_booths:
+        query["kept_live"] = ",".join(result.kept_live_booths)
+    target = f"events/{event_id}/setup/rooms" if from_setup else f"events/{event_id}/rooms/{room_id}/?{urllib.parse.urlencode(query)}"
+    return safe_redirect(
+        url=management_url(request, target),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
 
 
 @router.get("/admin/events/{event_id}/setup/invite", dependencies=[Depends(require_event_owner)])
@@ -973,6 +1136,7 @@ async def admin_event_detail(request: Request, event_id: int):
             raise HTTPException(status_code=404, detail="Event not found.")
         rooms = await list_rooms_for_event(session, event_id)
         db_booths = await list_booths_for_event(session, event_id)
+        summaries = await _room_summaries(session, event, rooms)
     # Keep each room's booths together, in the same order as the Rooms list.
     room_order = {room.id: index for index, room in enumerate(rooms)}
     db_booths.sort(key=lambda b: (room_order.get(b.room_id, len(room_order)), b.language_code))
@@ -988,6 +1152,7 @@ async def admin_event_detail(request: Request, event_id: int):
         context={
             "event": event,
             "rooms": rooms,
+            "summaries": summaries,
             "booths": booth_statuses,
             "live_count": sum((1 for bs in booth_statuses if bs["is_live"])),
             **admin_flags,
@@ -1093,14 +1258,18 @@ async def admin_room_list(request: Request, event_id: int, search: str | None = 
         if event is None:
             raise HTTPException(status_code=404, detail="Event not found.")
         rooms = await list_rooms_for_event(session, event_id, search=search_val)
-        room_data = []
-        for room in rooms:
-            room_booths = await list_booths_for_room(session, room.id)
-            room_data.append({"room": room, "booth_count": len(room_booths)})
+        room_data = [{"room": room} for room in rooms]
+        summaries = await _room_summaries(session, event, rooms)
     return templates.TemplateResponse(
         request=request,
         name="admin/room_list.html",
-        context={"event": event, "room_data": room_data, "search": search_val or "", **admin_flags},
+        context={
+            "event": event,
+            "room_data": room_data,
+            "summaries": summaries,
+            "search": search_val or "",
+            **admin_flags,
+        },
     )
 
 
@@ -1115,11 +1284,7 @@ async def admin_create_room(request: Request, event_id: int):
         )
     async with get_session() as session:
         ev = await get_event_by_id(session, event_id)
-        jitsi_url = None
-        if ev:
-            clean_name = re.sub("[^a-zA-Z0-9]+", "", display_name)
-            room_id_str = f"Voxbento-{ev.slug}-{clean_name}"
-            jitsi_url = _make_jitsi_url(settings.effective_jitsi_base_url, room_id_str)
+        jitsi_url = default_jitsi_url(ev.slug, display_name) if ev else None
         await create_room(session, event_id=event_id, display_name=display_name, jitsi_url=jitsi_url)
     return safe_redirect(
         url=management_url(request, f"events/{event_id}/rooms/"), status_code=status.HTTP_303_SEE_OTHER
@@ -1221,6 +1386,7 @@ async def admin_room_detail(request: Request, event_id: int, room_id: int):
         if room is None or room.event_id != event_id:
             raise HTTPException(status_code=404, detail="Room not found.")
         db_booths = await list_booths_for_room(session, room_id)
+        snapshot = await load_snapshot(session, room, engine_catalog(event))
         vocabulary_entries = list(
             await session.scalars(
                 select(AIVocabularyEntry)
@@ -1244,6 +1410,9 @@ async def admin_room_detail(request: Request, event_id: int, room_id: int):
     enabled_translation_language_codes = [lang.language_code for lang in room.translation_languages if lang.enabled]
     async with get_session() as session:
         memberships = await list_memberships_for_room(session, room_id)
+    kept_live = [
+        room_language_name(code) for code in request.query_params.get("kept_live", "").split(",") if code.strip()
+    ]
     return templates.TemplateResponse(
         request=request,
         name="admin/room_detail.html",
@@ -1251,6 +1420,11 @@ async def admin_room_detail(request: Request, event_id: int, room_id: int):
             "event": event,
             "room": room,
             "booths": booth_statuses,
+            "summary": summarize(room, snapshot),
+            "booths_by_code": {bs["db"].language_code: bs for bs in booth_statuses},
+            "just_created": request.query_params.get("created") == "1",
+            "just_updated": request.query_params.get("updated") == "1",
+            "kept_live_languages": kept_live,
             "fallback_jitsi_url": fallback_jitsi_url,
             "translation_languages_dataset": translation_languages_dataset,
             "enabled_translation_language_codes": enabled_translation_language_codes,

@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>{% block title %}{{ user_menu.area_label if user_menu else 'VoxBento' }}{% endblock %} — Voxbento</title>
     <link rel="icon" type="image/x-icon" href="{{ url_for('static', path='img/favicon.ico') }}" />
+    <link rel="stylesheet" href="{{ url_for('static', path='css/tokens.css') }}?v={{ asset_version }}" />
     <link rel="stylesheet" href="{{ url_for('static', path='css/fonts.css') }}?v={{ asset_version }}" />
     <link rel="stylesheet" href="{{ url_for('static', path='css/admin.css') }}?v={{ asset_version }}" />
     <link rel="stylesheet" href="{{ url_for('static', path='css/app-header.css') }}?v={{ asset_version }}" />
@@ -41,7 +42,7 @@
     </main>
 
     <!-- Custom Confirm Modal -->
-    <div id="custom-confirm-modal" class="custom-modal-overlay">
+    <dialog id="custom-confirm-modal" class="custom-modal-overlay" aria-labelledby="custom-confirm-message" aria-describedby="custom-confirm-funny">
       <div class="custom-modal">
         <div class="custom-modal-header">
           <span class="brand-text brand-text--modal">VoxBento</span>
@@ -55,7 +56,7 @@
           <button id="custom-confirm-ok" class="btn btn-danger" type="button">Confirm</button>
         </div>
       </div>
-    </div>
+    </dialog>
 
     <!-- Toast container for transient feedback (e.g. copy success/failure). Visible text plus
          aria-live so both sighted and assistive-tech users get the same confirmation. -->

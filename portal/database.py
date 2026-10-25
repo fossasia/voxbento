@@ -1118,7 +1118,7 @@ async def save_transcript_segment(booth_id_str: str, text: str, room_id: int | N
             await session.flush()
             return segment.id
     except Exception as e:
-        logger.error(f"Failed to save transcript segment: {e}")
+        logger.error("Failed to save transcript segment: %s", e, exc_info=True)
         return None
 
 

@@ -48,7 +48,7 @@
   <a href="{{ management_prefix }}/events/{{ event.id }}/setup/rooms" class="tile">
     <span class="tile-icon">🧭</span>
     <span class="tile-title">Guided setup</span>
-    <span class="tile-desc">Resume the step-by-step wizard</span>
+    <span class="tile-desc">Step by step: rooms, languages, team</span>
   </a>
 </div>
 
@@ -163,19 +163,21 @@
     <div class="section-header">
       <h2>Rooms ({{ rooms|length }})</h2>
       {% if is_event_owner %}
-      <a href="{{ management_prefix }}/events/{{ event.id }}/rooms/" class="btn btn-sm">Manage rooms</a>
+      <a href="{{ management_prefix }}/events/{{ event.id }}/rooms/new" class="btn btn-sm btn-primary">+ Add a room</a>
       {% endif %}
     </div>
     {% if rooms %}
-    <ul class="item-list">
+    <ul class="item-list room-summary-list">
       {% for room in rooms %}
+      {% set s = summaries[room.id] %}
       <li>
         <a href="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/">{{ room.display_name }}</a>
+        {% include "admin/_room_summary_line.html" %}
       </li>
       {% endfor %}
     </ul>
     {% else %}
-    <p class="muted">No rooms yet. <a href="{{ management_prefix }}/events/{{ event.id }}/setup/rooms">Add one</a>.</p>
+    <p class="muted">No rooms yet.{% if is_event_owner %} <a href="{{ management_prefix }}/events/{{ event.id }}/rooms/new">Add your first room</a> to choose its languages.{% endif %}</p>
     {% endif %}
   </div>
 
@@ -222,7 +224,7 @@
       </tbody>
     </table>
     {% else %}
-    <p class="muted">No booths configured. <a href="{{ management_prefix }}/events/{{ event.id }}/setup/booths">Add booths</a>.</p>
+    <p class="muted">No interpreter booths yet. A booth is added for each language you give to a human interpreter in a room's setup.</p>
     {% endif %}
   </div>
 </div>

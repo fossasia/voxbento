@@ -39,52 +39,92 @@
 {% endif %}
 
 <section class="room-panel" id="room-panel-overview"{% if is_event_owner %} role="tabpanel" aria-labelledby="room-tab-overview"{% endif %} data-room-panel="overview">
-<!-- Interpretation Schedule Table (replaces manual spreadsheet) -->
+{% set setup_url = management_prefix ~ '/events/' ~ event.id ~ '/rooms/' ~ room.id ~ '/setup' %}
+{% if just_created %}
+<div class="room-next" role="status">
+  <h2>{{ room.display_name }} is set up. Here's what's next</h2>
+  <ol class="room-next-list">
+    {% if booths %}
+    <li>
+      <span><strong>Invite interpreters.</strong> Each booth below needs someone to speak into it.</span>
+      <a href="{{ management_prefix }}/events/{{ event.id }}/team/" class="btn btn-sm">Open Team</a>
+    </li>
+    {% endif %}
+    {% if summary.captions %}
+    <li>
+      <span><strong>Connect the room's audio.</strong> Captions{{ ' and AI' if room.floor_translation_enabled else '' }} start once VoxBento hears the room.</span>
+      <a href="#source" class="btn btn-sm" data-room-tab-link="source">Floor source</a>
+    </li>
+    {% endif %}
+    <li>
+      <span><strong>Share the listener page.</strong> Listeners pick {{ room.display_name }} and a language there.</span>
+      <a href="/listener/{{ event.slug }}" target="_blank" rel="noopener" class="btn btn-sm">Listener page ↗</a>
+    </li>
+  </ol>
+</div>
+{% elif just_updated %}
+<div class="alert alert-success" role="status">Room setup saved.</div>
+{% endif %}
+{% if kept_live_languages %}
+<div class="alert alert-warning" role="status">{{ kept_live_languages | join(', ') }} {{ 'booth is' if kept_live_languages|length == 1 else 'booths are' }} live right now, so {{ 'it was' if kept_live_languages|length == 1 else 'they were' }} kept. Change the setup again after the session to remove {{ 'it' if kept_live_languages|length == 1 else 'them' }}.</div>
+{% endif %}
+
 <div class="section-card section-card--spaced-lg">
   <div class="section-header">
-    <h2>Booths</h2>
-    <a href="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/booths/" class="btn btn-sm btn-primary">Manage Booths</a>
+    <h2>Languages</h2>
+    {% if is_event_owner %}
+    <a href="{{ setup_url }}" class="btn btn-sm btn-primary">Change languages &amp; captions</a>
+    {% endif %}
   </div>
 
-  {% if booths %}
+  <ul class="room-facts">
+    <li>Speakers use <strong>{{ summary.spoken_language or 'not set' }}</strong></li>
+    <li>Interpretation <strong>{{ summary.mode_label }}</strong></li>
+    <li>Live captions <strong>{{ 'On' if summary.captions else 'Off' }}</strong></li>
+    {% if room.floor_translation_enabled %}<li>AI voice <strong>{{ 'On' if summary.ai_voice else 'Off' }}</strong></li>{% endif %}
+  </ul>
+
+  {% if summary.languages %}
   <table class="data-table schedule-table">
     <thead>
       <tr>
         <th scope="col">Language</th>
+        <th scope="col">Delivered by</th>
         <th scope="col">Status</th>
-        <th scope="col">Links</th>
-        <th scope="col"><span class="visually-hidden">Manage</span></th>
+        <th scope="col"><span class="visually-hidden">Links</span></th>
       </tr>
     </thead>
     <tbody>
-      {% for bs in booths %}
-      <tr class="{{ 'row-live' if bs.is_live else '' }}">
-        <td><strong>{{ bs.db.language_name }}</strong> <code>{{ bs.db.language_code }}</code></td>
+      {% for line in summary.languages %}
+      {% set bs = booths_by_code.get(line.code) %}
+      <tr class="{{ 'row-live' if bs and bs.is_live else '' }}">
+        <td><strong>{{ line.name }}</strong> <code>{{ line.code }}</code></td>
+        <td><span class="delivery-tag delivery-tag--{{ line.delivery }}">{{ line.label }}</span></td>
         <td>
-          {% if bs.is_live %}
-          <span class="status-live">● Live</span>
+          {% if bs and bs.is_live %}
+          <span class="status-live">● Interpreter live</span>
+          {% elif bs %}
+          <span class="status-offline">○ Interpreter not live</span>
           {% else %}
-          <span class="status-offline">○ Not live</span>
+          <span class="status-offline">AI, runs with the room audio</span>
           {% endif %}
         </td>
         <td>
+          {% if bs %}
           <div class="room-booth-links">
             <a href="/interpreter/{{ event.slug }}/{{ bs.db.room_id }}/{{ bs.db.language_code }}" target="_blank" rel="noopener" class="link-external">Open booth ↗</a>
-            <a href="/listener/{{ event.slug }}" target="_blank" rel="noopener" class="link-external">Listener page ↗</a>
+            <a href="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/booths/{{ bs.db.id }}/">Booth settings</a>
           </div>
-        </td>
-        <td>
-          <a href="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/booths/{{ bs.db.id }}/" class="btn btn-sm">Settings</a>
+          {% endif %}
         </td>
       </tr>
       {% endfor %}
     </tbody>
   </table>
   {% else %}
-  <p class="muted">No booths in this room. <a href="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/booths/">Add booths</a>.</p>
+  <p class="muted">No listener languages yet.{% if is_event_owner %} <a href="{{ setup_url }}">Choose languages</a> and whether interpreters, AI or both provide them.{% endif %}</p>
   {% endif %}
 </div>
-
 
 {% if is_event_owner %}
   <div class="token-form-card token-form-card--spaced">
@@ -119,7 +159,7 @@
 </section>
 
 <section class="room-panel" id="room-panel-captions" role="tabpanel" aria-labelledby="room-tab-captions" data-room-panel="captions">
-  <p class="room-panel-intro">Live captions of the floor audio, AI translation into other languages, the vocabulary used for both, and translated speech for listeners.</p>
+  <p class="room-panel-intro">Live captions of the floor audio, AI translation into other languages, the vocabulary used for both, and translated speech for listeners. To switch captions or AI on or off, or change which languages use AI, use <a href="{{ setup_url }}">Change languages &amp; captions</a>; fine-tune providers, models and prompts here.</p>
 <form method="post" action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/edit" class="token-form">
   <input type="hidden" name="form_section" value="transcription">
   <div class="token-form-card token-form-card--spaced">

@@ -588,7 +588,7 @@ def relay_request(room: Room, event: Event, path: MediaPath | None) -> tuple[str
         return None
     if not (room.program_relay_server and room.program_relay_key_enc):
         program_relay.relay_health[room.id] = program_relay.RelayHealth(
-            "unconfigured", "Add the YouTube RTMPS server URL and stream key."
+            "unconfigured", "Add the YouTube stream key to start relaying."
         )
         return None
     if not path or not path.ready or not path.source:

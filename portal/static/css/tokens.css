@@ -1,0 +1,49 @@
+/* Shared design tokens (#243). Linked first on every page so any stylesheet can use them.
+   Only --vb-* custom properties live here: nothing else reads these names yet, so this
+   file changes no page on its own. Stylesheets adopt them by pointing their local
+   variables at them, e.g. --color-primary: var(--vb-color-primary). */
+
+:root {
+  /* Brand */
+  --vb-color-primary: #2563eb;
+  --vb-color-primary-hover: #1d4ed8;
+  --vb-color-primary-active: #1e40af;
+  --vb-color-primary-subtle: #eef4ff;
+  --vb-color-primary-border: #cddffb;
+
+  /* Surfaces */
+  --vb-color-bg: #eef1f7;
+  --vb-color-surface: #ffffff;
+  --vb-color-surface-2: #f7f9fc;
+  --vb-color-border: #e2e7f0;
+  --vb-color-border-strong: #d0d7e6;
+
+  /* Text */
+  --vb-color-text: #101828;
+  --vb-color-text-secondary: #5b6577;
+  --vb-color-muted: #6b7484;
+
+  /* Status. Success, warning, live and offline are for fills, dots and badges; they
+     are too light for text on white, so green text uses --vb-color-success-text (4.8:1). */
+  --vb-color-danger: #dc2626;
+  --vb-color-danger-hover: #b91c1c;
+  --vb-color-success: #16a34a;
+  --vb-color-success-text: #12833f;
+  --vb-color-warning: #f59e0b;
+  --vb-color-live: #16a34a;
+  --vb-color-offline: #9ca3af;
+
+  /* Radius scale: each area picks a step */
+  --vb-radius-sm: 8px;
+  --vb-radius-md: 12px;
+  --vb-radius-lg: 16px;
+
+  /* Shadows */
+  --vb-shadow-sm: 0 1px 2px rgba(16,24,40,0.04), 0 1px 3px rgba(16,24,40,0.06);
+  --vb-shadow-md: 0 4px 12px rgba(16,24,40,0.08);
+  --vb-shadow-lg: 0 12px 32px rgba(16,24,40,0.12);
+
+  /* Typography */
+  --vb-font: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  --vb-font-mono: 'SF Mono', 'Fira Code', ui-monospace, monospace;
+}

@@ -76,6 +76,42 @@ Rooms can also define an optional listener-side audio synchronization delay. Thi
 
 In the organizer workspace, room management includes server-side search to quickly filter rooms by name within an event using case-insensitive matching against the room display name, displaying a clearable empty state when no rooms match the query.
 
+### Guided room setup
+
+Event setup follows **Event → Rooms & languages → Team & listeners**. Each room
+uses one form for its spoken language, listener languages, one delivery per
+language (Interpreter, AI voice or AI text) and optional floor captions, which stay
+on whenever a language uses AI because the AI translates from them. The same form edits existing rooms.
+Room lists and the room overview summarize those choices, including AI languages
+that do not have an interpreter booth.
+When editing a room, choose **Review changes** to see the changes and any booth
+removal warnings on a separate screen, then **Save changes**. **Back to edit**
+returns to your answers without saving. Pressing Enter before review advances
+to review instead of saving immediately.
+
+`portal/room_setup.py` validates a room plan and applies it in one database
+transaction to the existing room, booth, and translation-language tables. Human
+languages create booths; AI languages enable floor transcription and translation;
+AI voice languages enable floor TTS for that language only
+(`room_translation_languages.tts_enabled`, migration 035), so AI text languages are
+translated but never spoken. Service choices require event keys, the external
+transcription switch where applicable, and optional server dependencies. Local
+translation and per-language voice support are validated before saving. The audio
+transport is unchanged.
+
+Saving removes deselected idle booths and their dependent invitations and
+assignments, but retains booths reported live and explains this on the room page.
+Existing booths in the spoken language are preserved unless explicitly deselected.
+Advanced models stay unchanged when their provider stays the same. The advanced
+room tabs remain available for model, voice, prompt, vocabulary, and source settings.
+The JavaScript module progressively enhances the server-rendered form into four
+steps; server validation also handles submissions without JavaScript.
+
+The owner-only GET/POST paths are `/workspace/events/{event_id}/rooms/new` and
+`/workspace/events/{event_id}/rooms/{room_id}/setup`, with corresponding Admin
+paths. Both new POST handlers require same-origin requests. Old wizard room and
+booth POSTs remain compatible; the old booth GET redirects to Rooms & languages.
+
 ## Organizer and System Administration Routes
 
 Event management and system administration use separate public URL namespaces:
@@ -262,6 +298,17 @@ memberships allow. Operators should maintain at least two active administrator
 accounts; the [admin-login migration guide](https://github.com/fossasia/voxbento/blob/dev/docs/admin-password-removal-migration.md)
 documents the controlled recovery procedure.
 
+Registration has a configurable per-client-IP limit (20 attempts per minute by
+default). Operators can enable Cloudflare Turnstile on `/register`; the server
+validates the token's success, hostname and `register` action before hashing a
+password, creating an unverified account, or queueing verification email.
+Rejected challenges return 403 and verification-service outages return 503.
+The form preserves name/email and offers a fresh challenge. Turnstile defaults
+to disabled so existing deployments work until keys are provisioned. Login,
+invites and real-time media routes are unaffected. See the
+[registration protection guide](https://github.com/fossasia/voxbento/blob/dev/docs/registration-protection.md)
+for enabling it, proxy trust requirements and Cloudflare edge protection.
+
 ## Hosting access requests
 
 Creating events requires hosting access (`users.can_host`). Signed-in users without
@@ -368,11 +415,45 @@ authenticated control API and stops relays on revoke, source switch, destination
 removal or restart; it enforces a fail-closed relay cap. The YouTube key is
 Fernet-encrypted at rest and write-only. Ingest, relay and language-processing
 health are reported separately. Relay mode puts VoxBento in the YouTube path, so
-the independent WHIP mode remains the default. See `docs/program-relay.md`.
+the independent WHIP mode remains the default. Operators enable relay mode once with
+`scripts/setup-youtube-relay.sh`, which reuses Caddy's certificate for RTMPS and pins the
+relay override into every deploy through `COMPOSE_FILE`. The RTMPS hostname must
+resolve directly to the server: Cloudflare's standard web proxy does not carry
+RTMPS on TCP 1936. Production uses `rtmps.voxbento.com`; Caddy manages its certificate,
+while MediaMTX terminates the encoder connection. The cloud firewall must allow
+inbound TCP 1936 as well. See `docs/program-relay.md`.
 
 ## Production deployment
+
+Defaults keep debug disabled (`DEBUG=false`), so startup checks reject known-weak
+signing secrets, a missing `MEDIAMTX_AUTH_HOOK_SECRET`, and a missing or weak
+`BOOTH_ACCESS_TOKEN`. The Quick Start snippets generate separate strong values for
+`SECRET_KEY`, `API_KEY_ENCRYPTION_KEY`, `MEDIAMTX_AUTH_HOOK_SECRET`, and
+`BOOTH_ACCESS_TOKEN` for **NEW local setups only**; do not overwrite an existing
+`.env` or rotate existing keys with them. Compose shares the hook secret between
+the portal and MediaMTX. Developers may explicitly opt into `DEBUG=true` in their
+own `.env` for local-only debugging; never enable it for deployments.
+
+Production deployments must set `BOOTH_ACCESS_TOKEN` and
+`MEDIAMTX_AUTH_HOOK_SECRET` in the deployment secret store to separate strong
+values, for example generated with `openssl rand -hex 32`. The portal refuses to
+start when `BOOTH_ACCESS_TOKEN` is missing or weak, or when
+`MEDIAMTX_AUTH_HOOK_SECRET` is missing. The hook secret's strength is not measured
+by startup validation, so keep it strong and private. The same production check
+also requires `API_KEY_ENCRYPTION_KEY` for encrypted provider keys and queued email.
 
 Production deployment builds and validates a separate candidate checkout before
 updating the live checkout. The portal reads code and dependencies from its Docker
 image and receives `.env` settings through Compose. See the
 [deployment preflight](configuration/deployment.mdx#deployment-preflight).
+
+For self-hosted domains, set `PUBLIC_BASE_URL` to your public URL; the default is
+`https://voxbento.com`. This is the same setting used for email links. Public
+`GET /sitemap.xml` builds canonical URLs from `settings.public_base_url`, never
+from the request's `Host` header. It strips trailing slashes before appending the
+existing sitemap paths and XML-escapes the resulting URLs.
+
+A configured path prefix is preserved in sitemap entries: for example,
+`PUBLIC_BASE_URL=https://interpret.example.com/voxbento/` produces
+`https://interpret.example.com/voxbento/` for the home page and
+`https://interpret.example.com/voxbento/research` for the research page.

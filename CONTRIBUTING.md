@@ -17,6 +17,8 @@ We use `uv` for lightning-fast Python dependency management and Docker for our m
 
 ### Setup Commands
 
+Run the environment-generation step below only for **NEW local setups**. Do not overwrite an existing `.env` or rotate existing keys with it; the command refuses to replace an existing file. The generated file is owner-readable only and is installed atomically after the complete configuration has been written.
+
 ```bash
 # 1. Clone the repository
 git clone https://github.com/fossasia/voxbento.git
@@ -26,17 +28,39 @@ cd voxbento
 uv sync --all-groups
 
 # 3. Set up your environment variables and generate required secrets
-cp .env.example .env
 uv run python -c "
 import secrets, re
-env = open('.env').read()
-env = re.sub(r'API_KEY_ENCRYPTION_KEY=.*', f'API_KEY_ENCRYPTION_KEY={secrets.token_hex(16)}', env)
-open('.env', 'w').write(env)
+import os, tempfile
+from pathlib import Path
+
+target = Path('.env')
+if target.exists():
+    raise SystemExit('.env already exists; refusing to replace it')
+env = open('.env.example').read()
+for name in (
+    'SECRET_KEY', 'API_KEY_ENCRYPTION_KEY',
+    'MEDIAMTX_AUTH_HOOK_SECRET', 'BOOTH_ACCESS_TOKEN',
+):
+    env = re.sub(rf'^{name}=.*$', f'{name}={secrets.token_hex(32)}', env, flags=re.MULTILINE)
+with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir='.', prefix='.env.', delete=False) as f:
+    os.chmod(f.name, 0o600)
+    f.write(env)
+    f.flush()
+    os.fsync(f.fileno())
+temporary = Path(f.name)
+try:
+    os.link(temporary, target)
+except FileExistsError:
+    raise SystemExit('.env already exists; refusing to replace it')
+finally:
+    temporary.unlink(missing_ok=True)
 "
 
 # 4. Start the entire stack (FastAPI, MediaMTX, and Jitsi)
 docker compose up -d --build
 ```
+
+Defaults keep debug disabled (`DEBUG=false`) and startup secret checks active. Developers may explicitly set `DEBUG=true` in their own `.env` for local-only debugging; never enable it for deployments.
 
 You can now visit the app at `http://localhost:8000`. 
 To access the admin panel, sign in with an account having admin privileges at `http://localhost:8000/login?next=/admin/`.

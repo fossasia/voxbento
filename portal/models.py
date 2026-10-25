@@ -295,6 +295,8 @@ class RoomTranslationLanguage(Base):
     language_code: Mapped[str] = mapped_column(String(20))
     language_name: Mapped[str] = mapped_column(String(100))
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default="1")
+    # False for AI text languages: translated for reading, never spoken.
+    tts_enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default="1")
 
     room: Mapped[Room] = relationship(back_populates="translation_languages")
 

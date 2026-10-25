@@ -1157,10 +1157,17 @@ class TestMagicLinkAuthentication:
             resp = await c.get("/login")
         assert resp.status_code == 200
         content = resp.text
-        # Acceptance criteria checks:
         assert "/api/auth/magic-poll" not in content
         assert "startMagicPoll" not in content
-        assert "voxbento_auth" in content
+        assert "login.js" in content
+        from pathlib import Path
+
+        login_js = (Path(__file__).resolve().parent.parent / "portal" / "static" / "js" / "login.js").read_text(
+            encoding="utf-8"
+        )
+        assert "voxbento_auth" in login_js
+        assert "/api/auth/magic-poll" not in login_js
+        assert "startMagicPoll" not in login_js
         text = re.sub(r"\s+", " ", re.sub(r"<[^>]+>", "", content))
         assert "Open it in this browser and this page continues on its own." in text
         assert "If you open it on another device or browser, you'll be signed in there instead." in text

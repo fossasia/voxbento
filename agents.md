@@ -66,6 +66,7 @@ VoxBento is a production-grade **browser-first interpretation booth console** fo
 |---|---|
 | `fastapi_app.py` | Application lifespan, router aggregation, global exception handlers |
 | `portal/routers/` | All HTTP routes (pages, admin, REST API), Jinja2 template rendering |
+| `portal/room_setup.py` | Room plan parsing, available AI services, booth/translation-language reconciliation, and room summaries |
 | `portal/workspace_routing.py` | `/workspace` handler mapping, legacy organizer redirects, management URL/template namespace helpers |
 | `portal/websockets/` | WebSocket connection manager, message handlers (`_handle_join`, etc.) |
 | `portal/booth_state.py` | In-memory `BoothRegistry`, `Booth`, `Participant`, handoff policy, chat history |
@@ -86,6 +87,7 @@ VoxBento is a production-grade **browser-first interpretation booth console** fo
 | `portal/outage_log.py` | `OutageLog` — reconcile loops log a repeating failure once per outage, not per tick |
 | `portal/user_admin.py` | Administrative access rules, user flags (`can_host`, `is_admin`, `is_active`, `email_verified`) |
 | `portal/templates/` | Jinja2 HTML — `base.html`, `interpreter_booth.html`, `listener-event.html`, `admin/` |
+| `portal/static/css/tokens.css` | Shared design tokens (`--vb-*` colours, radii, shadows, fonts), linked first on every page; new CSS uses these instead of new hex values |
 | `portal/static/js/interpreter-booth.js` | Booth UI — WebRTC/WHIP, WebSocket, Jitsi iframe, mic controls, level meter |
 | `portal/static/js/whep-listener.js` | WHEP playback client — RTCPeerConnection, auto-reconnect with exponential back-off |
 | `portal/static/js/admin.js` | Admin panel JS helpers |
@@ -260,7 +262,9 @@ Program relay (#749): `portal/program_relay.py` owns the YouTube destination
 service (`program-relay/relay.py`, the media plane; `docker-compose.relay.yml`);
 migration 028 adds `program_ingest_mode`, which binds the program key to WHIP or RTMPS.
 Never log, return or forward FFmpeg text containing the destination. Read
-`docs/program-relay.md` before changing relay mode.
+`docs/program-relay.md` before changing relay mode. Relay deployments select the override
+with `COMPOSE_FILE` in `.env` (`scripts/setup-youtube-relay.sh`); the deploy workflow must
+never remove a running `program-relay`.
 
 ---
 
@@ -278,6 +282,13 @@ Do not defer documentation to a follow-up PR.
 Password sign-in requires `User.email_verified`; everyone, admins included, signs in
 at `/login` (`login` rate-limit bucket, 10 attempts per normalized email per hour).
 `/admin/login` only redirects to `/login?next=/admin/`.
+
+Registration protection lives in `portal/registration_protection.py`. Throttle
+by the ASGI-resolved client IP, never raw forwarding headers. When
+`REGISTRATION_TURNSTILE_ENABLED` is true, validate Cloudflare success, hostname
+and `register` action before signup side effects; service failures must reject
+the signup. Turnstile defaults off for compatible rollout. See
+`docs/registration-protection.md` for configuration and proxy trust.
 
 Production deployments validate a separate candidate checkout before advancing
 the live checkout. Portal source and dependencies must come from the built image,

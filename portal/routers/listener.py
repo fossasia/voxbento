@@ -126,7 +126,9 @@ async def listen_event_page(request: Request, event_slug: str, code: str | None 
     rooms_data = []
     for r in rooms:
         lang_data = [
-            {"code": lang.language_code, "name": lang.language_name} for lang in r.translation_languages if lang.enabled
+            {"code": lang.language_code, "name": lang.language_name, "tts_enabled": lang.tts_enabled}
+            for lang in r.translation_languages
+            if lang.enabled
         ]
         rooms_data.append(
             {

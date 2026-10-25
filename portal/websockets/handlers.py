@@ -5,7 +5,14 @@ import logging
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
-from portal.auth import WSAuthError, booth_session_key, is_listener_token, resolve_booth_role, resolve_ws_auth
+from portal.auth import (
+    WSAuthError,
+    booth_session_key,
+    decode_token,
+    is_listener_token,
+    resolve_booth_role,
+    resolve_ws_auth,
+)
 from portal.globals import booths
 from portal.websockets.manager import (
     Session,
@@ -115,12 +122,48 @@ async def ws_booth(websocket: WebSocket, booth_id: str) -> None:
 @router.websocket("/ws/captions/{booth_id}")
 async def ws_captions(websocket: WebSocket, booth_id: str) -> None:
     """WebSocket endpoint for live captions. Listener tokens are limited to their own event"""
+    token = websocket.query_params.get("token", "")
+    is_anonymous = not bool(token)
+    if token:
+        try:
+            payload = decode_token(token)
+            if not (payload.get("is_admin") or payload.get("admin")):
+                token_event = payload.get("event_slug", "")
+                booth_event: str | None = None
+                try:
+                    from portal.booth_identity import parse_booth_id
+
+                    booth_event, _, _ = parse_booth_id(booth_id)
+                except ValueError:
+                    if "/" in booth_id:
+                        booth_event = booth_id.split("/")[0]
+                    elif "-" in booth_id:
+                        booth_event = booth_id.rsplit("-", 1)[0]
+
+                if not token_event or booth_event != token_event:
+                    await websocket.close(code=4003)
+                    return
+        except Exception:
+            await websocket.close(code=4001)
+            return
+    else:
+        from portal.config import settings
+
+        max_anon = getattr(settings, "max_anonymous_caption_listeners_per_booth", 500)
+        if not listener_manager.try_reserve_anonymous(websocket, booth_id, max_anon):
+            await websocket.close(code=1008)
+            return
+
+    accepted = False
     try:
-        await resolve_ws_auth(websocket, booth_id)
-    except WSAuthError:
-        return
-    await websocket.accept()
-    listener_manager.add(websocket, booth_id)
+        await websocket.accept()
+        accepted = True
+    finally:
+        if not accepted and is_anonymous:
+            listener_manager.cancel_reservation(websocket, booth_id)
+
+    listener_manager.add(websocket, booth_id, is_anonymous=is_anonymous)
+
     try:
         while True:
             await websocket.receive_text()
