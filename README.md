@@ -142,9 +142,14 @@ Once running, access the application at **`http://localhost:8000`**.
 ### Set up an event's rooms
 
 In **My events**, create or open an event and choose **Add a room**. The guided
-form collects the room name, spoken language, listener languages, and delivery by
-human interpreters, AI, or a mixture. AI languages can use translated captions
-alone or captions with an AI voice; AI always enables floor captions.
+form collects the room name, spoken language and listener languages, then one
+delivery per language: **Interpreter** (a person in a booth), **AI voice**
+(translated and read aloud, with text to read along) or **AI text** (translated
+text only). The **Captions** step covers the speaker's own words: captions are
+optional for interpreter-only rooms and always on when any language uses AI. The
+AI services are chosen automatically and can be changed under **AI services ·
+Advanced**. Rooms that previously offered a language as both an interpreter and
+AI ask the organizer to choose one before saving.
 
 The service choices use the event's configured API keys and installed server
 dependencies. Cloud speech recognition also requires **Enable External
@@ -153,8 +158,8 @@ uses NLLB; self-hosted voice needs the `supertonic` extra (included in the Docke
 image). Native installations can install it with
 `uv sync --python 3.13 --dev --extra supertonic`. NVIDIA additionally requires the
 `nvidia` extra and `NVIDIA_FUNCTION_ID`. Unsupported local translation or AI voice
-languages are explained when saving; choose another service or captions only for
-languages without voice support.
+languages are explained next to the language and again when saving; choose AI
+text or another voice service for languages without voice support.
 
 After saving, invite interpreters from **Team**, connect audio on **Floor source**
 for captions and AI, and share the listener page. **Change languages & captions**

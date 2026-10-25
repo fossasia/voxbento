@@ -79,18 +79,21 @@ In the organizer workspace, room management includes server-side search to quick
 ### Guided room setup
 
 Event setup follows **Event → Rooms & languages → Team & listeners**. Each room
-uses one form for its spoken language, listener languages, delivery by interpreters,
-AI or both, captions, and optional AI speech. The same form edits existing rooms.
+uses one form for its spoken language, listener languages, one delivery per
+language (Interpreter, AI voice or AI text) and optional floor captions, which stay
+on whenever a language uses AI because the AI translates from them. The same form edits existing rooms.
 Room lists and the room overview summarize those choices, including AI languages
 that do not have an interpreter booth.
 
 `portal/room_setup.py` validates a room plan and applies it in one database
 transaction to the existing room, booth, and translation-language tables. Human
 languages create booths; AI languages enable floor transcription and translation;
-AI voice enables floor TTS. Service choices require event keys, the external
+AI voice languages enable floor TTS for that language only
+(`room_translation_languages.tts_enabled`, migration 035), so AI text languages are
+translated but never spoken. Service choices require event keys, the external
 transcription switch where applicable, and optional server dependencies. Local
-translation and voice language support are validated before saving. No schema
-migration or change to the audio transport is needed.
+translation and per-language voice support are validated before saving. The audio
+transport is unchanged.
 
 Saving removes deselected idle booths and their dependent invitations and
 assignments, but retains booths reported live and explains this on the room page.

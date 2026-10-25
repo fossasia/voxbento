@@ -57,16 +57,22 @@ async def _load_config(room_id: int) -> dict | None:
             logger.error(f"[TTS] Failed to initialise TTS provider '{tts_provider_name}': {e}")
             return None
 
+        # Languages set to AI text are translated but never spoken.
+        voice_languages = {
+            lang.language_code for lang in room.translation_languages if lang.enabled and lang.tts_enabled
+        }
+
     return {
         "tts_provider": tts_provider,
         "voice": tts_voice,
+        "voice_languages": voice_languages,
     }
 
 
 async def synthesize(room_id: int, text: str, language_code: str) -> bytes | None:
     """Atomic TTS synthesis for the Server-Side Sync pipeline."""
     cfg = await _load_config_cached(room_id)
-    if not cfg:
+    if not cfg or language_code not in cfg["voice_languages"]:
         return None
 
     tts_provider = cfg["tts_provider"]

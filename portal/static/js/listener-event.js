@@ -935,6 +935,8 @@ languageSelect.addEventListener("change", function () {
         var opt = document.createElement("option");
         opt.value = lang.code;
         opt.textContent = lang.name;
+        // AI text languages are read only; only AI voice languages can be heard.
+        opt.dataset.voice = lang.tts_enabled === false ? "0" : "1";
         translationLangSelect.appendChild(opt);
         if (lang.code === currentSelection) optionExists = true;
       });
@@ -968,7 +970,7 @@ languageSelect.addEventListener("change", function () {
     sourceData &&
     sourceData.translation_enabled &&
     sourceData.translation_languages &&
-    sourceData.translation_languages.length > 0
+    sourceData.translation_languages.some((lang) => lang.tts_enabled !== false)
   ) {
     ttsSyncGroup.hidden = false;
   } else {
@@ -1032,7 +1034,13 @@ function applyTtsOverlay() {
   var languageCode = selectedOpt ? selectedOpt.dataset.languageCode : null;
   var roomId = parseInt(roomSelect.value, 10);
   var rData = roomsData.find((r) => r.id.toString() === roomId.toString());
-  var canSyncTts = languageCode === "floor" && rData && rData.floor_tts_enabled;
+  var targetOpt =
+    translationLangSelect.options[translationLangSelect.selectedIndex];
+  var canSyncTts =
+    languageCode === "floor" &&
+    rData &&
+    rData.floor_tts_enabled &&
+    !(targetOpt && targetOpt.dataset.voice === "0");
   var targetLangValue = translationLangSelect.value;
   var boothObjId = selectedOpt ? selectedOpt.dataset.boothObjId : null;
   var boothId = selectedOpt ? selectedOpt.dataset.boothId : null;
