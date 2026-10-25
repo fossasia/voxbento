@@ -316,6 +316,7 @@ async def _handle_authorization_code_grant(
     code: str | None,
     redirect_uri: str | None,
     code_verifier: str | None,
+    event: str | None = None,
 ) -> dict | JSONResponse:
     if not code or not redirect_uri or not code_verifier:
         return JSONResponse(status_code=400, content={"error": "invalid_request"})
@@ -341,6 +342,15 @@ async def _handle_authorization_code_grant(
     if not verify_pkce(code_verifier, auth_code.code_challenge, auth_code.code_challenge_method):
         return JSONResponse(
             status_code=400, content={"error": "invalid_grant", "error_description": "PKCE verification failed"}
+        )
+
+    # The event on the code was chosen in the browser (#925). A client that sends the event it
+    # started the flow for gets the code rejected when they differ, before any membership changes.
+    code_event = await db.get(Event, auth_code.event_id)
+    if code_event is None or (event is not None and event != code_event.slug):
+        return JSONResponse(
+            status_code=400,
+            content={"error": "invalid_grant", "error_description": "Code was issued for another event"},
         )
 
     # Atomically claim the authorization code
@@ -418,6 +428,7 @@ async def _handle_authorization_code_grant(
         "expires_in": 3600,
         "refresh_token": refresh_token_raw,
         "scope": " ".join(auth_code.scopes),
+        "event": code_event.slug,
     }
 
 
@@ -521,6 +532,7 @@ async def _handle_refresh_token_grant(
         "expires_in": 3600,
         "refresh_token": new_refresh_token_raw,
         "scope": " ".join(token_record.scopes),
+        "event": token_record.event.slug,
     }
 
 
@@ -534,6 +546,7 @@ async def token_exchange(
     redirect_uri: Annotated[str | None, Form()] = None,
     code_verifier: Annotated[str | None, Form()] = None,
     refresh_token: Annotated[str | None, Form()] = None,
+    event: Annotated[str | None, Form()] = None,
     db: AsyncSession = Depends(get_db_session),
 ):
     # Basic client validation
@@ -550,7 +563,7 @@ async def token_exchange(
             return JSONResponse(status_code=401, content={"error": "invalid_client"})
 
     if grant_type == "authorization_code":
-        return await _handle_authorization_code_grant(db, client, code, redirect_uri, code_verifier)
+        return await _handle_authorization_code_grant(db, client, code, redirect_uri, code_verifier, event)
 
     elif grant_type == "refresh_token":
         return await _handle_refresh_token_grant(db, client, refresh_token)
