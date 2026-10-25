@@ -118,8 +118,11 @@ class Settings(BaseSettings):
             )
         # Every outgoing email is encrypted at rest in the outbox, so sign-in links,
         # invitations and password resets cannot be sent without this key.
-        encryption_key = (self.api_key_encryption_key or "").strip()
-        if encryption_key in {"", "change-this-encryption-key-in-production", "your-secure-32-char-key-here"}:
+        encryption_keys = [
+            key.strip() for key in (self.api_key_encryption_key or "").split(",") if key.strip()
+        ]
+        weak_encryption_keys = {"change-this-encryption-key-in-production", "your-secure-32-char-key-here"}
+        if not encryption_keys or any(key in weak_encryption_keys or len(key) < 32 for key in encryption_keys):
             raise RuntimeError(
                 "API_KEY_ENCRYPTION_KEY is not set. It encrypts stored provider keys and queued email, "
                 "so sign-in and invitation emails cannot be sent without it. "

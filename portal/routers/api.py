@@ -635,7 +635,7 @@ async def list_event_booths(
                             "type": "ai",
                             "label": f"{tl.language_name} (AI)",
                             "is_ai": True,
-                            "floor_tts_enabled": room.floor_tts_enabled,
+                            "floor_tts_enabled": room.floor_tts_enabled and tl.tts_enabled,
                         }
                         booth_list.append(ai_stream)
 

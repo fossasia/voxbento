@@ -167,6 +167,7 @@ from portal.translations.vocabulary import (
     serialize_vocabulary_csv,
     validate_vocabulary_scope,
 )
+from portal.tts.worker import invalidate_config as invalidate_tts_config
 from portal.user_admin import ERROR_MESSAGES as USER_ADMIN_ERRORS
 from portal.user_admin import FIELDS as USER_ACCESS_FIELDS
 from portal.user_admin import AccessChange, UserAdminError, delete_user_account, is_last_active_admin, set_user_access
@@ -1047,6 +1048,8 @@ async def admin_room_setup_save(request: Request, event_id: int, room_id: int):
                 status_code=status.HTTP_400_BAD_REQUEST,
             )
         result = await apply_plan(session, event, room, plan, catalog, live_booth_codes=live)
+    # The session has committed: drop the old voice settings so AI text languages stop speaking now.
+    invalidate_tts_config(room_id)
     query = {"updated": "1"}
     if result.kept_live_booths:
         query["kept_live"] = ",".join(result.kept_live_booths)

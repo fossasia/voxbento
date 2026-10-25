@@ -192,8 +192,16 @@ def test_destination_validation_is_allowlisted_rtmps_only():
     assert relay.normalize_destination("rtmps://b.rtmps.youtube.com:443/live2", YOUTUBE_KEY) == (
         "rtmps://b.rtmps.youtube.com:443/live2"
     )
+    # YouTube Studio shows plain RTMP by default; it maps to the same ingest over RTMPS.
+    assert relay.normalize_destination("rtmp://a.rtmp.youtube.com/live2", YOUTUBE_KEY) == YOUTUBE_SERVER
+    assert relay.normalize_destination("rtmp://b.rtmp.youtube.com:1935/live2", YOUTUBE_KEY) == (
+        "rtmps://b.rtmps.youtube.com/live2"
+    )
     rejected = [
         ("rtmp://a.rtmps.youtube.com/live2", YOUTUBE_KEY),
+        ("rtmp://evil.example/live2", YOUTUBE_KEY),
+        ("rtmp://a.rtmp.youtube.com:8080/live2", YOUTUBE_KEY),
+        ("rtmp://b.rtmp.youtube.com/live2?backup=1", YOUTUBE_KEY),
         ("https://a.rtmps.youtube.com/live2", YOUTUBE_KEY),
         ("rtmps://evil.example/live2", YOUTUBE_KEY),
         ("rtmps://127.0.0.1/live2", YOUTUBE_KEY),
@@ -201,6 +209,7 @@ def test_destination_validation_is_allowlisted_rtmps_only():
         ("rtmps://user:pass@a.rtmps.youtube.com/live2", YOUTUBE_KEY),
         ("rtmps://a.rtmps.youtube.com/live2?x=1", YOUTUBE_KEY),
         ("rtmps://a.rtmps.youtube.com", YOUTUBE_KEY),
+        ("rtmps://a.rtmps.youtube.com/" + "a" * 120 + "/" + "b" * 120 + "/c", YOUTUBE_KEY),  # > column length
         (YOUTUBE_SERVER, "key with spaces"),
         (YOUTUBE_SERVER, "../../etc"),
         (YOUTUBE_SERVER, "abc"),
@@ -208,6 +217,32 @@ def test_destination_validation_is_allowlisted_rtmps_only():
     for server, key in rejected:
         with pytest.raises(ValueError):
             relay.normalize_destination(server, key)
+
+
+def test_pasted_key_and_default_server():
+    assert relay.split_pasted_key(None, f" {YOUTUBE_KEY} ") == (relay.YOUTUBE_DEFAULT_SERVER, YOUTUBE_KEY)
+    assert relay.split_pasted_key("", YOUTUBE_KEY) == (relay.YOUTUBE_DEFAULT_SERVER, YOUTUBE_KEY)
+    # A whole "<server>/<key>" URL pasted into the key field wins over the server field.
+    assert relay.split_pasted_key(YOUTUBE_SERVER, f"rtmp://a.rtmp.youtube.com/live2/{YOUTUBE_KEY}") == (
+        "rtmp://a.rtmp.youtube.com/live2",
+        YOUTUBE_KEY,
+    )
+    # Whitespace before a trailing slash must not end up in the stored key.
+    assert relay.split_pasted_key(None, f"{YOUTUBE_SERVER}/{YOUTUBE_KEY} /")[1] == YOUTUBE_KEY
+
+
+@pytest.mark.anyio
+async def test_destination_key_only_defaults_to_youtube(relay_env):
+    client, event, room = relay_env["client"], relay_env["event"], relay_env["rooms"][0]
+    response = await client.put(relay_url(event, room), json={"stream_key": YOUTUBE_KEY})
+    assert response.status_code == 200, response.text
+    assert response.json()["server_url"] == relay.YOUTUBE_DEFAULT_SERVER
+    pasted = f"rtmp://a.rtmp.youtube.com/live2/{YOUTUBE_KEY}"
+    response = await client.put(relay_url(event, room), json={"server_url": "", "stream_key": pasted})
+    assert response.status_code == 200, response.text
+    async with get_session() as session:
+        stored = await session.get(Room, room.id)
+        assert relay.destination(stored) == f"{YOUTUBE_SERVER}/{YOUTUBE_KEY}"
 
 
 @pytest.mark.anyio
@@ -247,11 +282,11 @@ async def test_destination_encrypted_write_only_rotatable_and_revocable(relay_en
 @pytest.mark.anyio
 async def test_request_validation_errors_never_echo_the_stream_key(relay_env):
     client, event, room = relay_env["client"], relay_env["event"], relay_env["rooms"][0]
-    long_key = "k" * 200 + "-unique-tail"
+    long_key = "k" * 450 + "-unique-tail"
     for payload in [
         {"server_url": YOUTUBE_SERVER, "stream_key": long_key},  # over max_length
         {"server_url": YOUTUBE_SERVER, "stream_key": [long_key]},  # wrong type
-        {"stream_key": long_key},  # "missing" reports the whole body as its input
+        {"server_url": YOUTUBE_SERVER, "key": long_key},  # "missing" reports the whole body as its input
     ]:
         response = await client.put(relay_url(event, room), json=payload)
         assert response.status_code == 422, response.text

@@ -262,7 +262,9 @@ Program relay (#749): `portal/program_relay.py` owns the YouTube destination
 service (`program-relay/relay.py`, the media plane; `docker-compose.relay.yml`);
 migration 028 adds `program_ingest_mode`, which binds the program key to WHIP or RTMPS.
 Never log, return or forward FFmpeg text containing the destination. Read
-`docs/program-relay.md` before changing relay mode.
+`docs/program-relay.md` before changing relay mode. Relay deployments select the override
+with `COMPOSE_FILE` in `.env` (`scripts/setup-youtube-relay.sh`); the deploy workflow must
+never remove a running `program-relay`.
 
 ---
 
