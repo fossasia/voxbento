@@ -167,7 +167,11 @@ async def _require_access(
                     except (TypeError, ValueError):
                         uid = 0
                     user = await get_user_by_id(db_session, uid)
-                    if user and user.is_active and user.is_admin:
+                    if user is None or not user.is_active:
+                        raise HTTPException(
+                            status_code=status.HTTP_403_FORBIDDEN, detail="User is not a member of this event"
+                        )
+                    if user.is_admin:
                         return
                     memberships = await list_memberships_for_user(db_session, uid)
                     rms = await list_room_memberships_for_user(db_session, uid)

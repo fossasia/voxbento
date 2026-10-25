@@ -16,7 +16,6 @@ from portal.auth import (
     decode_token,
     get_booth_session,
     get_booth_sessions,
-    is_listener_token,
     load_membership_scope,
     resolve_booth_role,
     security,
@@ -96,18 +95,7 @@ async def _verify_event_access(
         if payload.get("admin") and not payload.get("user"):
             return
         if not payload.get("user"):
-            if payload.get("role") == "listener" or is_listener_token(payload):
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN, detail="Listener tokens cannot be used for this API."
-                )
-            token_event = payload.get("event_slug")
-            if not token_event:
-                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Token missing event scope")
-            if event_id is not None:
-                ev = await session.get(Event, event_id)
-                if ev and ev.slug == token_event:
-                    return
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Token event scope mismatch")
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Participant tokens cannot use this API.")
 
         try:
             user_id = int(payload.get("sub", ""))

@@ -2812,18 +2812,16 @@ def test_delete_booth_routes_differentiated():
 
     anyio.run(_setup_db)
 
-    token = create_participant_token(
-        booth_id=999, role="interpreter", event_slug="route-test", room_id=999, language_code="en"
-    )
+    auth_token = "test-booth-token"
 
     prev_env = os.environ.get("BOOTH_ACCESS_TOKEN")
     prev_setting = settings.booth_access_token
-    os.environ["BOOTH_ACCESS_TOKEN"] = "test-booth-token"
-    settings.booth_access_token = "test-booth-token"
+    os.environ["BOOTH_ACCESS_TOKEN"] = auth_token
+    settings.booth_access_token = auth_token
 
     try:
         # Internal route
-        res = client.delete("/api/events/route-test/rooms/1/booths/en", headers={"Authorization": "Bearer " + token})
+        res = client.delete("/api/events/route-test/rooms/1/booths/en", headers={"Authorization": "Bearer " + auth_token})
         assert res.status_code == 204
 
         client.post("/api/events/route-test/booths", json={"language_code": "en", "room_id": 1, "language": "English"})
@@ -2831,13 +2829,13 @@ def test_delete_booth_routes_differentiated():
         # External route (original path shape but with string ID)
         res2 = client.delete(
             "/api/events/route-test/rooms/test-eventyay-123/booths/en",
-            headers={"Authorization": "Bearer " + token},
+            headers={"Authorization": "Bearer " + auth_token},
         )
         assert res2.status_code == 204
 
         # Verify booth was removed from registry
         res3 = client.get(
-            "/api/events/route-test/booths", headers={"Authorization": "Bearer " + token}
+            "/api/events/route-test/booths", headers={"Authorization": "Bearer " + auth_token}
         )
         assert res3.status_code == 200
         assert not any(b.get("language_code") == "en" for b in res3.json()["booths"])
@@ -2881,11 +2879,13 @@ def test_check_scope_security_fixes():
         wrong_event_participant_payload, settings.effective_jwt_secret, algorithm="HS256"
     )
 
-    # 3. Scoped token with CORRECT event_slug -> allowed
+    # 3. Scoped token with CORRECT event_slug -> allowed for booth resource
     correct_participant_payload = {
         "sub": "user123",
         "role": "interpreter",
         "event_slug": "route-test",
+        "room_id": 1,
+        "language_code": "fr",
         "iat": now,
         "exp": now + datetime.timedelta(seconds=3600),
     }
@@ -2956,11 +2956,17 @@ def test_check_scope_security_fixes():
         assert res2.status_code == 403
         assert "event scope mismatch" in res2.json()["detail"].lower()
 
-        # Test 3: Correct event_slug -> Allowed
-        res3 = client.get(
+        # Test 3: Correct event_slug -> Allowed on booth resource, rejected on event management
+        res3_booth = client.get(
+            "/api/events/route-test/booths/fr/state", headers={"Authorization": f"Bearer {correct_participant_jwt}"}
+        )
+        assert res3_booth.status_code == 200
+
+        res3_list = client.get(
             "/api/events/route-test/booths", headers={"Authorization": f"Bearer {correct_participant_jwt}"}
         )
-        assert res3.status_code == 200
+        assert res3_list.status_code == 403
+        assert "participant tokens cannot use this api" in res3_list.json()["detail"].lower()
 
         # Test 4: Global token without event_slug -> Allowed
         res4 = client.get("/api/events/route-test/booths", headers={"Authorization": f"Bearer {global_jwt}"})
@@ -2974,6 +2980,18 @@ def test_check_scope_security_fixes():
         # Test 6: Ordinary user WITH membership -> Allowed
         res6 = client.get("/api/events/route-test/booths", headers={"Authorization": f"Bearer {owner_jwt}"})
         assert res6.status_code == 200
+
+        # Test 7: Inactive user WITH membership -> Rejected
+        async def _deactivate_user():
+            async with get_session() as session:
+                user = await session.scalar(select(User).where(User.id == 1))
+                user.is_active = False
+                await session.commit()
+        anyio.run(_deactivate_user)
+
+        res7 = client.get("/api/events/route-test/booths", headers={"Authorization": f"Bearer {owner_jwt}"})
+        assert res7.status_code == 403
+        assert "not a member" in res7.json()["detail"].lower()
 
     finally:
         settings.booth_access_token = prev_setting
