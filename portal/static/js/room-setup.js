@@ -377,7 +377,12 @@ if (root && form) {
     moreSelect.value = '';
     syncAll();
   });
-  deliveryList.addEventListener('change', syncAll);
+  deliveryList.addEventListener('change', (event) => {
+    // A new choice replaces any earlier "AI voice can't be used" error on this language.
+    event.target.closest('[data-rs-delivery-row]')?.querySelectorAll('input[type="radio"]')
+      .forEach((radio) => radio.setCustomValidity(''));
+    syncAll();
+  });
   captionsBox.addEventListener('change', () => {
     captionsWanted = captionsBox.checked;
     captionsBox.setCustomValidity('');

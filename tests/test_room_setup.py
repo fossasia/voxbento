@@ -762,3 +762,21 @@ async def test_unsupported_ai_voice_is_not_saved(admin_cookie, event_room):
     assert resp.status_code == 400
     assert "AI voice isn&#39;t supported for Marathi" in resp.text
     assert await _booth_codes(room.id) == ["fr"]
+
+
+@pytest.mark.anyio
+async def test_saving_drops_the_rooms_cached_voice_settings(admin_cookie, event_room):
+    from portal.tts import worker
+
+    event, room = event_room
+    worker._config_cache[room.id] = (float("inf"), {"voice_languages": {"fr"}})
+    worker._config_cache[room.id + 1] = (float("inf"), None)
+    data = {"display_name": "Main Hall", "spoken_language": "en", "languages": ["fr"], "delivery_fr": AI_TEXT}
+    async with _client() as c:
+        resp = await c.post(
+            f"/admin/events/{event.id}/rooms/{room.id}/setup", data=data, headers=ORIGIN, cookies=admin_cookie
+        )
+    assert resp.status_code == 303
+    assert room.id not in worker._config_cache
+    assert room.id + 1 in worker._config_cache
+    worker._config_cache.pop(room.id + 1)

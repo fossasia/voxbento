@@ -15,6 +15,10 @@ _config_cache: dict[int, tuple[float, dict | None]] = {}
 _CONFIG_TTL_SECONDS = 300.0
 
 
+def invalidate_config(room_id: int) -> None:
+    """Forget a room's cached voice settings so the next synthesis reads the saved ones."""
+    _config_cache.pop(room_id, None)
+
 
 async def _load_config_cached(room_id: int) -> dict | None:
     now = time.monotonic()
