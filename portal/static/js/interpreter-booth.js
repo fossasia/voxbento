@@ -1285,9 +1285,28 @@ function attemptRelayStart(attempt) {
 
 
 
+// Matches CHAT_MESSAGE_MAX_LENGTH in portal/booth_state.py. The server counts
+// code points (Python len), so count with Array.from rather than maxlength,
+// which counts an emoji as two.
+const CHAT_MESSAGE_MAX_LENGTH = 1000
+
+// The characters Python's str.strip() removes. String.prototype.trim() differs:
+// it keeps U+001C–U+001F and U+0085 and removes U+FEFF.
+const _PY_WHITESPACE = '[\\t-\\r\\x1c-\\x20\\x85\\xa0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000]'
+const _PY_STRIP_RE = new RegExp(`^${_PY_WHITESPACE}+|${_PY_WHITESPACE}+$`, 'g')
+
+// Trim like the server so the length check sees the same text it will store.
+function stripLikeServer(text) {
+  return text.replace(_PY_STRIP_RE, '')
+}
+
 function sendChatMessage() {
-  const body = elements.chatInput.value.trim()
+  const body = stripLikeServer(elements.chatInput.value)
   if (!body) return
+  if (Array.from(body).length > CHAT_MESSAGE_MAX_LENGTH) {
+    showError(`Message must not exceed ${CHAT_MESSAGE_MAX_LENGTH} characters.`)
+    return
+  }
   if (!state.participantId) {
     showError('Join the booth before sending messages.')
     return
