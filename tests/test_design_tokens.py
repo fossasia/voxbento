@@ -57,14 +57,20 @@ def test_adopted_stylesheet_root_only_references_tokens(stylesheet):
     declarations = {
         name.strip(): value.strip() for name, _, value in (d.partition(":") for d in roots[0].split(";") if d.strip())
     }
-    tokens = _token_values()
+    refs = {}
     for name, value in declarations.items():
         ref = re.fullmatch(r"var\((--[\w-]+)\)", value)
         assert ref, f"{stylesheet}: {name} must be var(--vb-*) or an alias of another :root variable, not {value}"
-        target = ref.group(1)
-        assert target != name and (target in tokens or target in declarations), (
-            f"{stylesheet}: {name} points at {target}"
-        )
+        refs[name] = ref.group(1)
+    tokens = _token_values()
+    # Follow each alias chain: it must end at a shared token, without looping back on itself.
+    for name, target in refs.items():
+        seen = {name}
+        while target in refs:
+            assert target not in seen, f"{stylesheet}: {name} is part of an alias cycle"
+            seen.add(target)
+            target = refs[target]
+        assert target in tokens, f"{stylesheet}: {name} resolves to undefined {target}"
 
 
 def _contrast_on_white(hex_color: str) -> float:
