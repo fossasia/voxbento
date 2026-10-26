@@ -181,7 +181,7 @@ test('an invalid answer is reported and retried, with its session released on te
 
 function audioHarness(options = {}) {
   const h = harness({ delay: 1000 });
-  const contexts = [], nodes = [], listeners = new Map();
+  const contexts = [], nodes = [], listeners = new Map(), sinks = [];
   class Node {
     constructor(kind) { this.kind = kind; this.connections = []; nodes.push(this); }
     connect(target) { this.connections.push(target); }
@@ -206,13 +206,18 @@ function audioHarness(options = {}) {
   }
   h.context.window = options.unavailable ? {} : { AudioContext };
   h.context.document = {
+    createElement() {
+      const sink = { srcObject: null, muted: false, paused: true, play() { this.paused = false; return Promise.resolve(); }, pause() { this.paused = true; } };
+      sinks.push(sink);
+      return sink;
+    },
     addEventListener(type, handler) { listeners.set(type, handler); },
     removeEventListener(type) { listeners.delete(type); },
   };
   const inputTrack = { stopped: false, stop() { this.stopped = true; } };
   const stream = { id: 'original', getTracks: () => [inputTrack] };
   const track = () => h.peers.at(-1).dispatch('track', { track: { kind: 'audio' }, streams: [stream] });
-  return { ...h, contexts, nodes, listeners, stream, inputTrack, track };
+  return { ...h, contexts, nodes, listeners, sinks, stream, inputTrack, track };
 }
 
 test('delayed audio reaches only the controlled media element, never a separate speaker output', async () => {
@@ -269,4 +274,27 @@ test('network recovery preserves TTS overlay muting', async () => {
   h.runTimers(); await flush(); h.track();
   assert.equal(h.audio.muted, true);
   h.client.stop();
+});
+
+test('network recovery does not resume audio the listener paused', async () => {
+  const h = audioHarness(); h.start(); await flush(); h.track();
+  h.audio.paused = true;
+  h.peers[0].connectionState = 'failed'; h.peers[0].dispatch('connectionstatechange');
+  h.runTimers(); await flush(); h.track();
+  assert.equal(h.audio.paused, true);
+  assert.equal(h.states.at(-1).audioActive, false);
+  h.client.stop();
+});
+
+// Chromium needs a playing remote-stream sink to keep delivering samples to Web Audio.
+test('delayed playback keeps an inaudible receiver sink alive and releases it on Stop', async () => {
+  const h = audioHarness(); h.start(); await flush(); h.track();
+  const sink = h.sinks[0];
+  assert.ok(sink, 'a muted sink must keep the incoming WebRTC stream rendering');
+  assert.equal(sink.srcObject, h.stream);
+  assert.equal(sink.muted, true);
+  assert.equal(sink.paused, false);
+  h.client.stop();
+  assert.equal(sink.srcObject, null);
+  assert.equal(sink.paused, true);
 });

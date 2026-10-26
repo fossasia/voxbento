@@ -28,11 +28,13 @@ function createWhepClient() {
   let _audioEl = null;
   let _audioDelayMs = 0;
   let currentStream = null;
+  let playOnTrack = true;
   let delayedAudio = {
     context: null,
     source: null,
     delay: null,
     output: null,
+    receiver: null,
     resumeHandler: null,
   };
 
@@ -106,6 +108,11 @@ function createWhepClient() {
       delayedAudio.delay.disconnect();
       delayedAudio.delay = null;
     }
+    if (delayedAudio.receiver) {
+      delayedAudio.receiver.pause();
+      delayedAudio.receiver.srcObject = null;
+      delayedAudio.receiver = null;
+    }
     if (delayedAudio.output) {
       delayedAudio.output.stream.getTracks().forEach((track) => track.stop());
       delayedAudio.output = null;
@@ -139,6 +146,12 @@ function createWhepClient() {
       attachDirectStream(stream, autoplay);
       return;
     }
+
+    // Chromium requires a playing remote-stream sink to deliver WebRTC samples to Web Audio.
+    delayedAudio.receiver = document.createElement('audio');
+    delayedAudio.receiver.muted = true;
+    delayedAudio.receiver.srcObject = stream;
+    delayedAudio.receiver.play().catch((err) => log('Muted WebRTC sink blocked: ' + err.message));
 
     const delaySeconds = _audioDelayMs / 1000;
     delayedAudio.source = ctx.createMediaStreamSource(stream);
@@ -211,10 +224,11 @@ function createWhepClient() {
         log('Remote track received: kind=' + event.track.kind);
         if (event.track.kind === 'audio') {
           const stream = event.streams[0] || new MediaStream([event.track]);
+          if (_audioEl.srcObject) playOnTrack = !_audioEl.paused;
           if (_audioDelayMs > 0) {
-            attachDelayedStream(stream);
+            attachDelayedStream(stream, playOnTrack);
           } else {
-            attachDirectStream(stream);
+            attachDirectStream(stream, playOnTrack);
           }
         }
         emitState();
@@ -309,6 +323,7 @@ function createWhepClient() {
       if (previous.peer) previous.peer.close();
     }
     if (_audioEl) {
+      if (!closeDelayedContext && _audioEl.srcObject) playOnTrack = !_audioEl.paused;
       _audioEl.srcObject = null;
     }
     currentStream = null;
@@ -329,6 +344,7 @@ function createWhepClient() {
     start(opts) {
       cleanup();
       reconnectDelay = 100;
+      playOnTrack = true;
       _whepUrl = opts.whepUrl;
       _audioEl = opts.audioEl;
       _audioDelayMs = Math.max(0, parseInt(opts.audioDelayMs || 0, 10) || 0);
