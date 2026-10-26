@@ -126,6 +126,7 @@ async def ws_captions(websocket: WebSocket, booth_id: str) -> None:
     token = websocket.query_params.get("token", "")
     is_anonymous = not bool(token)
     if token:
+        reject_code: int | None = None
         try:
             payload = decode_token(token)
             if not (payload.get("is_admin") or payload.get("admin")):
@@ -142,10 +143,15 @@ async def ws_captions(websocket: WebSocket, booth_id: str) -> None:
                         booth_event = booth_id.rsplit("-", 1)[0]
 
                 if not token_event or booth_event != token_event:
-                    await websocket.close(code=4003)
-                    return
+                    reject_code = 4003
         except Exception:
-            await websocket.close(code=4001)
+            reject_code = 4001
+        if reject_code is not None:
+            # Accept before closing: a close before accept() becomes an HTTP 403 and
+            # browsers only report 1006, so clients could not tell a bad or expired
+            # token (stop) from a dropped connection (reconnect).
+            await websocket.accept()
+            await websocket.close(code=reject_code)
             return
     else:
         from portal.config import settings
