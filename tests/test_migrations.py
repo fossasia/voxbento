@@ -153,3 +153,74 @@ def test_migration_018_downgrade_backfills_passwordless_accounts():
         assert hashes["grace@example.org"] == migration.UNUSABLE_PASSWORD_HASH
     finally:
         os.unlink(db_path)
+
+
+def _create_pre_039_transcript_segments(db_path: str) -> None:
+    """Recreate transcript_segments exactly as migration 010 left it: no secondary index."""
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute(
+            """
+            CREATE TABLE transcript_segments (
+                id INTEGER NOT NULL,
+                room_id INTEGER NOT NULL,
+                booth_id INTEGER,
+                language_code VARCHAR(10) NOT NULL,
+                text TEXT NOT NULL,
+                created_at DATETIME NOT NULL,
+                PRIMARY KEY (id),
+                FOREIGN KEY(room_id) REFERENCES rooms (id) ON DELETE CASCADE,
+                FOREIGN KEY(booth_id) REFERENCES booths (id) ON DELETE CASCADE
+            )
+            """
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _indexes(db_path: str, table: str) -> dict[str, list[str]]:
+    conn = sqlite3.connect(db_path)
+    try:
+        names = [row[1] for row in conn.execute(f"PRAGMA index_list({table})")]
+        return {name: [row[2] for row in conn.execute(f"PRAGMA index_info({name})")] for name in names}
+    finally:
+        conn.close()
+
+
+def test_migration_039_indexes_transcript_segments():
+    """Migration 039 must index the transcript export predicate and the booth cascade (#1033).
+
+    ``transcript_segments`` arrives from 010 with no secondary index at all, so the
+    export in ``api_v1.py`` scanned the table and sorted into a temporary B-tree,
+    and the ``ON DELETE CASCADE`` from ``booths`` scanned the child table once per
+    deleted parent. The composite carries ``created_at`` so the export sort is
+    served from the index too. ``booth_id`` gets its own index because it is not a
+    leading column of that composite.
+    """
+    migration = _load_migration("039_add_transcript_segment_indexes.py")
+
+    fd, db_path = tempfile.mkstemp(suffix=".db")
+    os.close(fd)
+    try:
+        _create_pre_039_transcript_segments(db_path)
+        assert _indexes(db_path, "transcript_segments") == {}, "010 leaves the table unindexed"
+
+        _run(db_path, migration.upgrade)
+
+        indexes = _indexes(db_path, "transcript_segments")
+        assert indexes.get("ix_transcript_segments_room_language_created") == [
+            "room_id",
+            "language_code",
+            "created_at",
+        ]
+        assert indexes.get("ix_transcript_segments_booth_id") == ["booth_id"]
+
+        # Re-running must not fail on indexes that already exist.
+        _run(db_path, migration.upgrade)
+        assert len(_indexes(db_path, "transcript_segments")) == 2
+
+        _run(db_path, migration.downgrade)
+        assert _indexes(db_path, "transcript_segments") == {}
+    finally:
+        os.unlink(db_path)
