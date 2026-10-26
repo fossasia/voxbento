@@ -32,7 +32,7 @@ function createWhepClient() {
     context: null,
     source: null,
     delay: null,
-    stream: null,
+    output: null,
     resumeHandler: null,
   };
 
@@ -48,17 +48,11 @@ function createWhepClient() {
       peerConnection: pc ? pc.connectionState : 'closed',
       ice:            pc ? pc.iceConnectionState : 'closed',
       signaling:      pc ? pc.signalingState : 'closed',
-      audioActive:    _audioDelayMs > 0 ? isDelayedAudioActive() : (_audioEl ? !_audioEl.paused && _audioEl.srcObject !== null : false),
+      audioActive:    Boolean(_audioEl && !_audioEl.paused && _audioEl.srcObject &&
+        (!delayedAudio.output || delayedAudio.context.state === 'running')),
       whepUrl:        _whepUrl,
       retrying:       retrying,
     });
-  }
-
-  function isDelayedAudioActive() {
-    return (
-      (delayedAudio.stream !== null && delayedAudio.context !== null && delayedAudio.context.state !== 'closed') ||
-      (_audioEl ? !_audioEl.paused && _audioEl.srcObject !== null : false)
-    );
   }
 
   function removeResumeHandler() {
@@ -72,7 +66,11 @@ function createWhepClient() {
   function resumeDelayedContext() {
     const ctx = delayedAudio.context;
     if (!ctx || ctx.state !== 'suspended') return;
-    ctx.resume().then(removeResumeHandler).catch((err) => {
+    ctx.resume().then(() => {
+      if (delayedAudio.context !== ctx) return;
+      if (ctx.state === 'running') removeResumeHandler();
+      emitState();
+    }).catch((err) => {
       log('AudioContext resume blocked: ' + err.message);
     });
   }
@@ -108,7 +106,10 @@ function createWhepClient() {
       delayedAudio.delay.disconnect();
       delayedAudio.delay = null;
     }
-    delayedAudio.stream = null;
+    if (delayedAudio.output) {
+      delayedAudio.output.stream.getTracks().forEach((track) => track.stop());
+      delayedAudio.output = null;
+    }
     if (closeContext && delayedAudio.context) {
       const ctx = delayedAudio.context;
       delayedAudio.context = null;
@@ -118,33 +119,37 @@ function createWhepClient() {
     }
   }
 
-  function attachDirectStream(stream) {
-    cleanupDelayedGraph(true);
-    currentStream = stream;
-    _audioEl.muted = false;
-    _audioEl.srcObject = stream;
-    _audioEl.play().catch((err) => log('Autoplay blocked: ' + err.message));
+  function playAudio(autoplay) {
+    if (!autoplay) return;
+    _audioEl.play().then(emitState).catch((err) => log('Autoplay blocked: ' + err.message));
   }
 
-  function attachDelayedStream(stream) {
-    cleanupDelayedGraph(false);
+  function attachDirectStream(stream, autoplay = true) {
+    cleanupDelayedGraph(true);
     currentStream = stream;
     _audioEl.srcObject = stream;
-    _audioEl.muted = true;
-    _audioEl.play().catch((err) => log('Muted audio sink blocked: ' + err.message));
+    playAudio(autoplay);
+  }
+
+  function attachDelayedStream(stream, autoplay = true) {
+    cleanupDelayedGraph(false);
+    currentStream = stream;
     const ctx = prepareDelayedContext();
     if (!ctx) {
-      _audioEl.muted = false;
+      attachDirectStream(stream, autoplay);
       return;
     }
 
     const delaySeconds = _audioDelayMs / 1000;
-    delayedAudio.stream = stream;
     delayedAudio.source = ctx.createMediaStreamSource(stream);
     delayedAudio.delay = ctx.createDelay(Math.max(delaySeconds, 1));
     delayedAudio.delay.delayTime.value = delaySeconds;
+    delayedAudio.output = ctx.createMediaStreamDestination();
     delayedAudio.source.connect(delayedAudio.delay);
-    delayedAudio.delay.connect(ctx.destination);
+    delayedAudio.delay.connect(delayedAudio.output);
+    // The element remains the only audible output, including its playback and volume controls.
+    _audioEl.srcObject = delayedAudio.output.stream;
+    playAudio(autoplay);
   }
 
   // ── WHEP negotiation ──────────────────────────────────────────────────
@@ -305,7 +310,6 @@ function createWhepClient() {
     }
     if (_audioEl) {
       _audioEl.srcObject = null;
-      _audioEl.muted = false;
     }
     currentStream = null;
     cleanupDelayedGraph(closeDelayedContext);
@@ -342,10 +346,11 @@ function createWhepClient() {
       if (nextDelayMs === _audioDelayMs) return;
       _audioDelayMs = nextDelayMs;
       if (currentStream) {
+        const autoplay = !_audioEl.paused;
         if (_audioDelayMs > 0) {
-          attachDelayedStream(currentStream);
+          attachDelayedStream(currentStream, autoplay);
         } else {
-          attachDirectStream(currentStream);
+          attachDirectStream(currentStream, autoplay);
         }
       }
       emitState();

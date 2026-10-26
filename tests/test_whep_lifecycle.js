@@ -17,7 +17,7 @@ function deferred() {
 function response(location = '/sessions/1', body = Promise.resolve('answer')) {
   return { ok: true, status: 201, headers: { get: () => location }, text: () => body };
 }
-function harness() {
+function harness(options = {}) {
   const peers = [], requests = [], states = [], timers = new Map(), logs = [];
   let timerId = 0;
   class Peer {
@@ -54,7 +54,7 @@ function harness() {
   });
   const client = vm.runInContext(source + '\ncreateWhepClient();', context);
   const start = (url = 'https://media.test/a/whep', audioEl = audio) => client.start({
-    whepUrl: url, audioEl, onState: (s) => states.push(s), onLog: (s) => logs.push(s),
+    whepUrl: url, audioEl, audioDelayMs: options.delay || 0, onState: (s) => states.push(s), onLog: (s) => logs.push(s),
   });
   const posts = () => requests.filter((r) => r.options.method === 'POST');
   const deletes = () => requests.filter((r) => r.options.method === 'DELETE').map((r) => r.url);
@@ -177,4 +177,96 @@ test('an invalid answer is reported and retried, with its session released on te
   h.client.stop();
   assert.deepEqual(h.deletes(), ['https://media.test/sessions/1']);
   assert.equal(h.timers.size, 0);
+});
+
+function audioHarness(options = {}) {
+  const h = harness({ delay: 1000 });
+  const contexts = [], nodes = [], listeners = new Map();
+  class Node {
+    constructor(kind) { this.kind = kind; this.connections = []; nodes.push(this); }
+    connect(target) { this.connections.push(target); }
+    disconnect() { this.connections = []; }
+  }
+  class AudioContext {
+    constructor() {
+      this.state = options.suspended ? 'suspended' : 'running';
+      this.destination = new Node('speakers');
+      contexts.push(this);
+    }
+    resume() { return options.suspended ? Promise.resolve() : Promise.resolve().then(() => { this.state = 'running'; }); }
+    close() { this.state = 'closed'; return Promise.resolve(); }
+    createMediaStreamSource(stream) { const node = new Node('source'); node.input = stream; return node; }
+    createDelay() { const node = new Node('delay'); node.delayTime = { value: 0 }; return node; }
+    createMediaStreamDestination() {
+      const node = new Node('output');
+      const track = { stopped: false, stop() { this.stopped = true; } };
+      node.stream = { id: 'delayed', getTracks: () => [track] };
+      return node;
+    }
+  }
+  h.context.window = options.unavailable ? {} : { AudioContext };
+  h.context.document = {
+    addEventListener(type, handler) { listeners.set(type, handler); },
+    removeEventListener(type) { listeners.delete(type); },
+  };
+  const inputTrack = { stopped: false, stop() { this.stopped = true; } };
+  const stream = { id: 'original', getTracks: () => [inputTrack] };
+  const track = () => h.peers.at(-1).dispatch('track', { track: { kind: 'audio' }, streams: [stream] });
+  return { ...h, contexts, nodes, listeners, stream, inputTrack, track };
+}
+
+test('delayed audio reaches only the controlled media element, never a separate speaker output', async () => {
+  const h = audioHarness(); h.start(); await flush(); h.track();
+  const output = h.nodes.find((n) => n.kind === 'output');
+  assert.ok(output, 'the delay needs a media-stream output');
+  assert.equal(h.audio.srcObject, output.stream);
+  assert.equal(h.audio.muted, false);
+  const delay = h.nodes.find((n) => n.kind === 'delay');
+  assert.deepEqual(delay.connections, [output]);
+  assert.equal(delay.delayTime.value, 1);
+  assert.equal(h.nodes.some((n) => n.connections.includes(h.contexts[0].destination)), false);
+  h.client.stop();
+  assert.equal(output.stream.getTracks()[0].stopped, true);
+  assert.equal(h.inputTrack.stopped, false);
+});
+
+test('changing delay preserves pause, mute and volume including the return to direct playback', async () => {
+  const h = audioHarness(); h.start(); await flush(); h.track();
+  h.audio.paused = true; h.audio.muted = true; h.audio.volume = 0.25;
+  h.client.setAudioDelayMs(2000);
+  assert.equal(h.audio.paused, true);
+  assert.equal(h.audio.muted, true);
+  assert.equal(h.audio.volume, 0.25);
+  assert.equal(h.states.at(-1).audioActive, false);
+  h.client.setAudioDelayMs(0);
+  assert.equal(h.audio.srcObject, h.stream);
+  assert.equal(h.audio.paused, true);
+  assert.equal(h.audio.muted, true);
+  assert.equal(h.audio.volume, 0.25);
+  h.client.stop();
+});
+
+test('a suspended delay context is not reported as audible playback', async () => {
+  const h = audioHarness({ suspended: true }); h.start(); await flush(); h.track();
+  assert.equal(h.audio.paused, false);
+  assert.equal(h.states.at(-1).audioActive, false);
+  h.client.stop();
+  assert.equal(h.listeners.size, 0);
+});
+
+test('without Web Audio, delayed playback falls back to the controlled original stream', async () => {
+  const h = audioHarness({ unavailable: true }); h.start(); await flush(); h.track();
+  assert.equal(h.audio.srcObject, h.stream);
+  assert.equal(h.audio.muted, false);
+  assert.equal(h.states.at(-1).audioActive, true);
+  h.client.stop();
+});
+
+test('network recovery preserves TTS overlay muting', async () => {
+  const h = audioHarness(); h.start(); await flush(); h.track();
+  h.audio.muted = true;
+  h.peers[0].connectionState = 'failed'; h.peers[0].dispatch('connectionstatechange');
+  h.runTimers(); await flush(); h.track();
+  assert.equal(h.audio.muted, true);
+  h.client.stop();
 });
