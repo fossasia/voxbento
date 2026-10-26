@@ -256,6 +256,8 @@ jobs:
         run: |
           node tests/test_audio_scheduler.js
           node tests/test_tts_parser.js
+          node tests/test_listener_event.js
+          node tests/test_whep_listener.js
           node tests/test_jules_review.mjs
 
       - name: Run unit tests

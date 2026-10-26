@@ -340,6 +340,22 @@ No links or email content are shown in the administration history.
 `show_logo` (default true) and an optional https `logo_url` (empty means the
 VoxBento logo served by the site). No row means the defaults.
 
+## Migrations 036–038 — live booth session revocation
+
+Migration 036 adds nullable `users.sessions_valid_after`; Admin demotion and
+account deactivation advance it so existing booth sockets can be evicted.
+SQLite returns this value without timezone information; comparisons treat those
+values as UTC. Migration 037 adds nullable `invite_tokens.revoked_at`.
+Migration 038 adds a unique, non-null `invite_tokens.public_id`, backfilling
+existing invitations without changing their bearer link tokens.
+
+New participant JWTs carry that public ID as `token_id` for invitation revocation.
+Legacy participant JWTs without `token_id` remain compatible until expiry but
+cannot be individually matched to a revoked invitation. Apply migrations before
+starting the new portal image. `portal/websockets/revocation.py` pushes scoped
+closures; `portal/websockets/reaper.py` checks database state as a fallback.
+These mechanisms retain the supported single-process deployment model.
+
 ## Migration 027 — managed meeting agent
 
 Room field `meeting_agent_enabled` (Boolean, default false): the durable desired

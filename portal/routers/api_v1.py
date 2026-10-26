@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
-from typing import Any
+from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -22,11 +22,14 @@ from portal.models import (
     OAuthToken,
     Room,
     RoomTranslationLanguage,
+    TranscriptSegment,
+    TranscriptTranslation,
 )
 from portal.rate_limit import auth_rate_limiter
 from portal.roles import EVENT_OWNER
 from portal.transcription.constants import ProviderEnum
 from portal.transcription.worker import active_workers, start_transcription_worker, stop_transcription_worker
+from portal.websockets.revocation import revoke_booths_for_deleted_entity
 
 logger = logging.getLogger(__name__)
 
@@ -478,6 +481,7 @@ async def delete_event(
     for b in active_booths:
         await booths.remove_booth(event_slug, b["room_id"], b["language_code"])
 
+    await revoke_booths_for_deleted_entity(db, level="event", target_id=event.id)
     event.deleted_at = datetime.now(timezone.utc)
 
     audit = OAuthAuditLog(
@@ -740,6 +744,7 @@ async def delete_room(
     for b in room_booths:
         await booths.remove_booth(event_slug, b["room_id"], b["language_code"])
 
+    await revoke_booths_for_deleted_entity(db, level="room", target_id=room.id)
     await db.delete(room)
 
     audit = OAuthAuditLog(
@@ -884,6 +889,7 @@ async def delete_booth_endpoint(
 
     from portal.database import delete_booth
 
+    await revoke_booths_for_deleted_entity(db, level="booth", target_id=booth.id)
     await delete_booth(db, booth.id)
     return {"status": "deleted"}
 
@@ -967,23 +973,86 @@ async def get_transcription_status(
     return {"room_id": target_room_id, "statuses": statuses}
 
 
+def _format_timestamp(dt: datetime) -> str:
+    """Normalize naive datetimes to UTC before formatting as ISO 8601 string."""
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.isoformat()
+
 
 @router.get("/events/{event_slug}/rooms/{room_id}/booths/{language_code}/transcripts/export")
 async def export_transcript(
     event_slug: str,
     room_id: int | str,
     language_code: str,
+    target_lang: Annotated[
+        str | None,
+        Query(
+            min_length=1,
+            description="Return translations in this language instead of source segments",
+        ),
+    ] = None,
     db: AsyncSession = Depends(get_db_session),
     token: OAuthToken = Depends(require_oauth_scope("transcripts:read")),
 ):
-    result = await db.execute(select(Event).where(Event.slug == event_slug))
+    """Export source transcript segments or translations for a room booth in chronological order."""
+    target_lang = target_lang if isinstance(target_lang, str) else None
+
+    result = await db.execute(select(Event).where(Event.slug == event_slug, Event.deleted_at.is_(None)))
     event = result.scalars().first()
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
 
-    await _verify_token_rbac(db, token, event, room_id, lock_event=True)
+    room = await _verify_token_rbac(db, token, event, room_id, lock_event=True)
+    target_room_id = _extract_room_id(room, room_id)
 
-    return {"status": "success", "content": "Transcription export not fully implemented"}
+    # Validate that the booth exists within this event/room
+    result = await db.execute(
+        select(DBBooth).where(
+            DBBooth.room_id == target_room_id,
+            DBBooth.language_code == language_code,
+            DBBooth.event_id == event.id,
+        )
+    )
+    booth = result.scalars().first()
+    if not booth:
+        raise HTTPException(status_code=404, detail="Booth not found")
+
+    if target_lang:
+        stmt = (
+            select(TranscriptSegment, TranscriptTranslation)
+            .join(TranscriptSegment, TranscriptTranslation.segment_id == TranscriptSegment.id)
+            .where(
+                TranscriptSegment.room_id == target_room_id,
+                TranscriptSegment.language_code == language_code,
+                TranscriptTranslation.language_code == target_lang,
+            )
+            .order_by(TranscriptSegment.created_at, TranscriptSegment.id)
+        )
+        result = await db.execute(stmt)
+        segments = [
+            {"id": seg.id, "text": tr.text, "created_at": _format_timestamp(seg.created_at)} for seg, tr in result.all()
+        ]
+    else:
+        stmt = (
+            select(TranscriptSegment)
+            .where(
+                TranscriptSegment.room_id == target_room_id,
+                TranscriptSegment.language_code == language_code,
+            )
+            .order_by(TranscriptSegment.created_at, TranscriptSegment.id)
+        )
+        result = await db.execute(stmt)
+        rows = result.scalars().all()
+        segments = [{"id": r.id, "text": r.text, "created_at": _format_timestamp(r.created_at)} for r in rows]
+
+    return {
+        "event_slug": event_slug,
+        "room_id": target_room_id,
+        "language_code": language_code,
+        "target_lang": target_lang,
+        "segments": segments,
+    }
 
 
 @router.post("/events/{event_slug}/rooms/{room_id}/listener-token")

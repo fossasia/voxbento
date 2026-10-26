@@ -67,7 +67,7 @@ and `docs/registration-protection.md`. Other routes are unaffected.
 | Path | Auth | Protocol |
 |---|---|---|
 | `/ws/booth/{booth_id}` | optional JWT via `?token=` + cookies (`session_token` or `user_token`) | See WebSocket Protocol in `REPOSITORY_CONTEXT.md` |
-| `/ws/captions/{booth_id}` | protected via `resolve_ws_auth` (requires `BOOTH_ACCESS_TOKEN` check, valid JWT via `?token=` or session cookies `user_token`/`session_token` in production; open in dev when unset) | Receives `booth:state`, `caption`, and `translated_caption` messages; listener captions feed. Supports `{event_slug}-{room_id}-{language_code}` (`floor-{room_id}` allowed only in unauthenticated dev) |
+| `/ws/captions/{booth_id}` | optional JWT via `?token=` (always validated); cookies (`session_token` or `user_token`) required when `BOOTH_ACCESS_TOKEN` is set, otherwise open | Receives `booth:state` (listener-safe live/lock status, sent on connect and on change), `caption`, and `translated_caption` messages; listener captions feed. Supports `{event_slug}-{room_id}-{language_code}` (`floor-{room_id}` allowed only in unauthenticated dev) |
 | `/ws/tts/{room_id}/{language_code}/{booth_id}` | pre-authorized (JWT query param, session token, or listener join code cookie) | Receives framed binary bundle messages (1-byte version `0x01`, 4-byte big-endian header length `L`, `L`-byte UTF-8 JSON header, optional 24 kHz 16-bit mono PCM payload) |
 
 ---

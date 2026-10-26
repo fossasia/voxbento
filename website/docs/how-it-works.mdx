@@ -66,6 +66,21 @@ MediaMTX terminates the WebRTC connection from the interpreter's browser, decode
 
 Listeners connect to the WHEP endpoint for their chosen language. WHEP (WebRTC HTTP Egress Protocol) is the mirror of WHIP — it negotiates a WebRTC session from the server side and streams audio to the listener's browser with sub-second latency.
 
+The listener page shows **Live (WebRTC)** only when the WHEP client reports both
+a connected peer and active audio playback. Selecting a source or receiving
+translation text alone does not mark WebRTC audio live. Failed WHEP requests
+report a separate retry flag, so the badge can show **Reconnecting...** even
+before ICE starts; successful negotiation or stopping the client clears it.
+
+Caption following is tracked from scroll events. New captions and translations
+scroll to the end only while following is enabled. Moving more than 40 pixels
+from the bottom pauses following until the listener returns near the bottom.
+Changing rooms or sources clears captions, resets following, and restores the
+waiting placeholder.
+
+
+Before starting booth playback, the listener page waits for a live and unlocked status on `/ws/captions/{booth_id}`. This socket sends the current status on connection and updates when listener-visible state changes, even when transcription is disabled, so attendees who arrive early start listening without reloading. Status contains only booth identity, broadcast lock, and ingest status; interpreter participants and private booth chat stay inside the booth. The page reconnects after transient socket disconnects and stops playback when an unlocked booth is locked.
+
     For devices that do not handle WebRTC reliably, MediaMTX also produces HLS segments on a separate port. The listener page loads hls.js and falls back to HLS automatically when WHEP is unavailable. HLS introduces roughly three seconds of additional latency but works on virtually any device.
 
     :::tip

@@ -155,6 +155,7 @@ async def join_via_invite(request: Request, token: str) -> RedirectResponse:
         event_slug=tok.booth.event.slug,
         room_id=tok.booth.room_id,
         language_code=tok.booth.language_code,
+        token_id=tok.public_id,
     )
 
     redirect_url = "/interpreter"

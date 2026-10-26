@@ -191,7 +191,7 @@ Booth WHIP publishing is authenticated (#783): MediaMTX forwards the `Authorizat
 server-derived path) and re-checks that the holder is still the active interpreter and that Mission Control has
 broadcast unlocked. Anonymous publishes get 401. A `booth:join` naming another socket's `participant_id` gets a fresh ID.
 
-Caption feed: `/ws/captions/{booth_id}` — receives `caption`, `translated_caption` + `booth:state` messages (protected by `resolve_ws_auth` when `BOOTH_ACCESS_TOKEN` is configured).
+Caption feed: `/ws/captions/{booth_id}` receives `caption`, `translated_caption` + `booth:state` messages. Auth goes through `resolve_ws_auth()`: a `?token=` JWT is always validated and scope-checked (listener tokens to the booth's event, participant tokens to the booth). Without a token the feed is open unless `BOOTH_ACCESS_TOKEN` is set; then it rejects a foreign `Origin` and requires a `session_token` or `user_token` cookie with the same scope checks. Rejections close with 4001 (missing/invalid credentials) or 4003 (scope or origin mismatch). Its `booth:state` carries only `booth_id`, `event_slug`, `room_id`, `language_code`, `broadcast_unlocked` and `ingest_status` (never participants or booth chat), is sent once on connect if the booth exists, and again whenever one of those fields changes.
 Direct-push TTS feed: `/ws/tts/{room_id}/{language_code}/{booth_id}` — pre-authorized binary bundle stream (version byte, length-prefixed JSON header, optional 24 kHz PCM audio). Translation text is delivered concurrently over the captions feed and inside TTS bundle headers.
 
 ---
