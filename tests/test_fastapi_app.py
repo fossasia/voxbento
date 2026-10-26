@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 
@@ -125,7 +126,7 @@ def test_token_redactor_handles_legacy_api_query_credentials():
         level=logging.INFO,
         pathname="",
         lineno=0,
-        msg='GET /api/events/demo/booths?access_token=secretjwt123&room_id=1',
+        msg="GET /api/events/demo/booths?access_token=secretjwt123&room_id=1",
         args=(),
         exc_info=None,
     )
@@ -212,7 +213,7 @@ def test_make_jitsi_url_full_url_unchanged():
     """A full URL stored in DEFAULT_JITSI_ROOM must not be double-prefixed."""
     from portal.utils import _make_jitsi_url
 
-    full = "https://meet.jit.si/eventyay-stage-room"
+    full = "https://meet.jit.si/test-stage-room"
     assert _make_jitsi_url("http://localhost:8080", full) == full
 
 
@@ -329,7 +330,7 @@ def test_ws_join_uses_db_booth_language_when_unspecified():
     """If the client does not specify language in join, it should inherit the resolved booth language."""
     from unittest.mock import AsyncMock, patch
 
-    with patch("portal.database.get_booth_language_name", new=AsyncMock(return_value="Japanese")):
+    with patch("portal.websockets.handlers.get_booth_language_name", new=AsyncMock(return_value="Japanese")):
         with client.websocket_connect("/ws/booth/japan-booth", cookies=_ws_auth()) as ws:
             ws.send_text(
                 json.dumps(
@@ -342,6 +343,7 @@ def test_ws_join_uses_db_booth_language_when_unspecified():
                 )
             )
             msg1 = json.loads(ws.receive_text())
+            assert msg1.get("type") != "booth:error", f"Unexpected error: {msg1.get('message')}"
             msg2 = json.loads(ws.receive_text())
             joined = msg1 if msg1["type"] == "booth:joined" else msg2
             assert joined["type"] == "booth:joined"
@@ -975,6 +977,32 @@ def test_ws_invalid_frame_keeps_active_interpreter_connected(raw_frame: str, exp
         assert [person["participant_id"] for person in state["participants"]] == [participant_id]
 
 
+@pytest.mark.parametrize(
+    ("body", "expected_error"),
+    [
+        ("x" * 1001, "Message must not exceed 1000 characters."),
+        (123, "Message body must be a string."),
+        (["hi"], "Message body must be a string."),
+    ],
+    ids=["too-long", "number", "list"],
+)
+def test_ws_chat_rejects_invalid_body(body, expected_error: str):
+    # One booth per case: chat history is kept in the shared in-memory registry.
+    booth_id = f"chat-limit-{type(body).__name__}-booth"
+    with client.websocket_connect(f"/ws/booth/{booth_id}", cookies=_ws_auth()) as ws:
+        _ws_join(ws, "Alice", "interpreter", "English", f"{booth_id}-audio")
+
+        ws.send_text(json.dumps({"type": "booth:chat", "body": body}))
+        assert json.loads(ws.receive_text()) == {"type": "booth:error", "message": expected_error}
+
+        # The rejected message is not stored, and a message at the limit still goes through.
+        ws.send_text(json.dumps({"type": "booth:chat", "body": "y" * 1000}))
+        responses = [json.loads(ws.receive_text()), json.loads(ws.receive_text())]
+        assert {message["type"] for message in responses} == {"booth:chat", "booth:state"}
+        state = next(message["state"] for message in responses if message["type"] == "booth:state")
+        assert [message["body"] for message in state["chat_messages"]] == ["y" * 1000]
+
+
 def test_ws_broadcast_unlock_authorized_user_can_toggle():
     """Authorized coordinator/admin session can toggle broadcast lock."""
     client.post("/api/events/broadcastok/booths", json={"language_code": "en", "room_id": 1, "language": "English"})
@@ -989,6 +1017,30 @@ def test_ws_broadcast_unlock_authorized_user_can_toggle():
 
     assert msg["type"] == "booth:state"
     assert msg["state"]["broadcast_unlocked"] is True
+
+
+@pytest.mark.parametrize("payload", [{"unlocked": "false"}, {"unlocked": 1}, {}])
+def test_ws_broadcast_unlock_rejects_non_boolean(payload):
+    """A non-boolean or missing unlocked value is rejected and leaves the booth as it was."""
+    booth = "broadcastbad-en"
+    channel = "broadcastbad/en"
+
+    with client.websocket_connect(f"/ws/booth/{booth}", cookies=_ws_auth()) as ws:
+        _pid, _state = _ws_join(ws, "Coord", "room_coordinator", "English", channel)
+
+        ws.send_text(json.dumps({"type": "booth:set-broadcast-unlocked", "unlocked": True}))
+        assert json.loads(ws.receive_text())["state"]["broadcast_unlocked"] is True
+
+        ws.send_text(json.dumps({"type": "booth:set-broadcast-unlocked", **payload}))
+        msg = json.loads(ws.receive_text())
+        assert msg == {"type": "booth:error", "message": "unlocked must be a boolean."}
+
+        # The booth is still live: a valid chat round-trip returns the unchanged state.
+        ws.send_text(json.dumps({"type": "booth:chat", "body": "still live?"}))
+        assert json.loads(ws.receive_text())["type"] == "booth:chat"
+        state = json.loads(ws.receive_text())["state"]
+
+    assert state["broadcast_unlocked"] is True
 
 
 def test_ws_broadcast_unlock_interpreter_rejected():
@@ -1008,6 +1060,153 @@ def test_ws_broadcast_unlock_interpreter_rejected():
 
     assert msg["type"] == "booth:error"
     assert "Only Room Coordinators" in msg["message"]
+
+
+_LISTENER_STATE_KEYS = {"booth_id", "event_slug", "room_id", "language_code", "broadcast_unlocked", "ingest_status"}
+
+
+def test_ws_listener_notified_when_booth_goes_live():
+    """A listener who connected before go-live is told when the booth goes live."""
+    booth = "golive-1-fr"
+    with client.websocket_connect(f"/ws/captions/{booth}", cookies=_ws_auth()) as listener:
+        with client.websocket_connect(f"/ws/booth/{booth}", cookies=_ws_auth()) as ws:
+            _ws_join(ws, "Eve", "interpreter", "French", f"{booth}-audio")
+            before = json.loads(listener.receive_text())
+
+            ws.send_text(json.dumps({"type": "booth:update-state", "mic_active": True, "ingest_connected": True}))
+            ws.receive_text()
+            live = json.loads(listener.receive_text())
+
+    assert before["type"] == "booth:state"
+    assert before["state"]["ingest_status"] == "disconnected"
+    assert live["type"] == "booth:state"
+    assert live["state"]["ingest_status"] == "connected"
+    assert set(live["state"]) == _LISTENER_STATE_KEYS
+
+
+def test_ws_captions_sends_current_state_on_connect():
+    """A listener who connects to an already live booth gets its status immediately."""
+    booth = "golive-1-de"
+    with client.websocket_connect(f"/ws/booth/{booth}", cookies=_ws_auth()) as ws:
+        _ws_join(ws, "Eve", "interpreter", "German", f"{booth}-audio")
+        ws.send_text(json.dumps({"type": "booth:update-state", "mic_active": True, "ingest_connected": True}))
+        ws.receive_text()
+
+        with client.websocket_connect(f"/ws/captions/{booth}", cookies=_ws_auth()) as listener:
+            msg = json.loads(listener.receive_text())
+
+    assert msg["type"] == "booth:state"
+    assert msg["state"]["ingest_status"] == "connected"
+    assert set(msg["state"]) == _LISTENER_STATE_KEYS
+
+
+def test_ws_listener_state_excludes_booth_internals():
+    """Listeners only get live/lock changes, never booth chat or participants."""
+    booth = "golive-1-es"
+    with client.websocket_connect(f"/ws/captions/{booth}", cookies=_ws_auth()) as listener:
+        with client.websocket_connect(f"/ws/booth/{booth}", cookies=_ws_auth()) as ws:
+            _ws_join(ws, "Coord", "room_coordinator", "Spanish", f"{booth}-audio")
+            listener.receive_text()  # status after join
+
+            # Chat changes only interpreter-side state, so listeners get nothing.
+            ws.send_text(json.dumps({"type": "booth:chat", "body": "booth-only note"}))
+            ws.receive_text()  # booth:chat
+            ws.receive_text()  # booth:state
+
+            ws.send_text(json.dumps({"type": "booth:set-broadcast-unlocked", "unlocked": True}))
+            ws.receive_text()
+            raw = listener.receive_text()
+
+    msg = json.loads(raw)
+    assert msg["type"] == "booth:state"
+    assert msg["state"]["broadcast_unlocked"] is True
+    assert set(msg["state"]) == _LISTENER_STATE_KEYS
+    assert "booth-only note" not in raw
+
+
+class _RecordingWebSocket:
+    def __init__(self) -> None:
+        self.sent: list[str] = []
+
+    async def send_text(self, text: str) -> None:
+        self.sent.append(text)
+
+
+@pytest.mark.anyio
+async def test_listener_status_uses_newest_booth_state():
+    """A broadcast that finishes late must not hand listeners an older status."""
+    from portal.globals import booths
+    from portal.websockets.manager import broadcast_booth_state, listener_manager
+
+    booth = "golive-1-it"
+    _participant, stale = await booths.join_participant(
+        booth_id=booth, display_name="Eve", role="interpreter", language="Italian", channel_id=f"{booth}-audio"
+    )
+    await booths.set_broadcast_unlocked(booth, True, "Italian", f"{booth}-audio")
+
+    ws = _RecordingWebSocket()
+    listener_manager.add(ws, booth)
+    try:
+        assert stale["broadcast_unlocked"] is False
+        await broadcast_booth_state(booth, stale)
+    finally:
+        listener_manager.remove(ws, booth)
+
+    assert json.loads(ws.sent[-1])["state"]["broadcast_unlocked"] is True
+
+
+def test_ws_captions_unknown_booth_leaves_no_state_lock():
+    """Connections to arbitrary booth IDs must not leave per-booth locks behind."""
+    from portal.websockets.manager import listener_manager
+
+    for i in range(3):
+        with client.websocket_connect(f"/ws/captions/no-such-booth-{i}", cookies=_ws_auth()):
+            pass
+
+    assert not any(key.startswith("no-such-booth-") for key in listener_manager._state_locks)
+
+
+class _BlockingWebSocket(_RecordingWebSocket):
+    def __init__(self) -> None:
+        super().__init__()
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def send_text(self, text: str) -> None:
+        self.entered.set()
+        await self.release.wait()
+        await super().send_text(text)
+
+
+@pytest.mark.anyio
+async def test_listener_state_lock_serializes_then_cleans_up():
+    """Overlapping status sends for one booth share a lock, which is dropped once idle."""
+    from portal.globals import booths
+    from portal.websockets.manager import listener_manager
+
+    booth = "golive-1-nl"
+    _participant, state = await booths.join_participant(
+        booth_id=booth, display_name="Eve", role="interpreter", language="Dutch", channel_id=f"{booth}-audio"
+    )
+    first = _BlockingWebSocket()
+    other = _RecordingWebSocket()
+    listener_manager.add(other, booth)
+    try:
+        initial = asyncio.create_task(listener_manager.send_booth_state(first, booth))
+        await first.entered.wait()
+        broadcast = asyncio.create_task(listener_manager.broadcast_booth_state(booth, state))
+        await asyncio.sleep(0)
+
+        assert listener_manager._state_locks[booth].users == 2
+        assert other.sent == []
+
+        first.release.set()
+        await asyncio.gather(initial, broadcast)
+    finally:
+        listener_manager.remove(other, booth)
+
+    assert len(other.sent) == 1
+    assert booth not in listener_manager._state_locks
 
 
 def test_ws_initiate_handoff_active_interpreter_sets_offered_state():
@@ -2120,13 +2319,13 @@ def test_embed_frame_ancestors_restricted(monkeypatch):
     """When EMBED_ALLOWED_ORIGINS is set to one origin, CSP must reflect it exactly."""
     from portal.config import settings
 
-    monkeypatch.setattr(settings, "embed_allowed_origins", "https://eventyay.com")
+    monkeypatch.setattr(settings, "embed_allowed_origins", "https://partner.example.com")
     _seed_embed_event("test-event", "en")
 
     token = _embed_listener_token(event_slug="test-event")
     res = client.get(f"/embed/test-event/en?token={token}", headers={"accept": "text/html"})
     assert res.status_code == 200, res.text
-    assert res.headers.get("content-security-policy") == "frame-ancestors https://eventyay.com"
+    assert res.headers.get("content-security-policy") == "frame-ancestors https://partner.example.com"
 
 
 def test_embed_frame_ancestors_multi_origin(monkeypatch):
@@ -2169,13 +2368,13 @@ def test_embed_postmessage_target_origin_single(monkeypatch):
     """When one origin is configured, target_origin matches it exactly."""
     from portal.config import settings
 
-    monkeypatch.setattr(settings, "embed_allowed_origins", "https://eventyay.com")
+    monkeypatch.setattr(settings, "embed_allowed_origins", "https://partner.example.com")
     _seed_embed_event("test-event", "en")
 
     token = _embed_listener_token(event_slug="test-event")
     res = client.get(f"/embed/test-event/en?token={token}", headers={"accept": "text/html"})
-    assert '"target_origin": "https://eventyay.com"' in res.text
-    assert '"allowed_origins": ["https://eventyay.com"]' in res.text
+    assert '"target_origin": "https://partner.example.com"' in res.text
+    assert '"allowed_origins": ["https://partner.example.com"]' in res.text
 
 
 def test_embed_postmessage_target_origin_multi(monkeypatch):
@@ -2225,6 +2424,116 @@ def test_embed_captions_opt_in_websocket_auth():
     # Verify the booth_id produced by make_booth_id satisfies the startswith check.
     booth_id = "test-event-1-en"  # make_booth_id("test-event", 1, 1,  "en")
     assert booth_id.startswith(f"{payload['event_slug']}-")
+
+
+def test_ws_captions_allows_anonymous():
+    """Anonymous connection to captions websocket is permitted for public subtitle streaming."""
+    with client.websocket_connect("/ws/captions/test-event-1-en"):
+        # Connected successfully without 403 / 4001
+        pass
+
+
+def test_ws_captions_rejects_invalid_token():
+    """Invalid token provided to captions websocket is rejected."""
+    from fastapi.websockets import WebSocketDisconnect
+
+    # The socket is accepted and then closed, so the browser receives 4001 (not 1006).
+    with pytest.raises(WebSocketDisconnect) as exc_info:
+        with client.websocket_connect("/ws/captions/test-event-1-en?token=invalid.jwt.token") as ws:
+            ws.receive_text()
+    assert exc_info.value.code == 4001
+
+
+def test_ws_captions_token_rejects_prefix_sharing_different_event_slug():
+    """Token for 'event-a' must be rejected with 4003 when connecting to 'event-a-other-1-en'."""
+    from fastapi.websockets import WebSocketDisconnect
+
+    token_event_a = _embed_listener_token(event_slug="event-a")
+
+    # Connecting to a booth belonging to 'event-a-other' with token for 'event-a' must be rejected
+    with pytest.raises(WebSocketDisconnect) as exc_info:
+        with client.websocket_connect(f"/ws/captions/event-a-other-1-en?token={token_event_a}") as ws:
+            ws.receive_text()
+    assert exc_info.value.code == 4003
+
+    # Connecting to 'event-a-1-en' with token for 'event-a' must succeed
+    with client.websocket_connect(f"/ws/captions/event-a-1-en?token={token_event_a}"):
+        pass
+
+
+def test_ws_captions_allows_cross_origin_with_ambient_cookies():
+    """Cross-origin connection from an external client with ambient cookies must not fail origin checks."""
+    headers = {"origin": "https://external-client.example.org"}
+    cookies = {"user_token": "some-ambient-cookie"}
+    with client.websocket_connect("/ws/captions/test-event-1-en", headers=headers, cookies=cookies):
+        pass
+
+
+def test_ws_captions_enforces_anonymous_admission_limit(monkeypatch):
+    """Anonymous connections are rejected with 1008 when the booth connection limit is reached.
+    Token-bearing listeners do not consume anonymous admission slots."""
+    from fastapi.websockets import WebSocketDisconnect
+
+    from portal.config import settings
+
+    monkeypatch.setattr(settings, "max_anonymous_caption_listeners_per_booth", 1)
+
+    token = _embed_listener_token(event_slug="test-limit")
+    # Token-bearing listener is active
+    with client.websocket_connect(f"/ws/captions/test-limit-1-en?token={token}"):
+        # First anonymous connection should still succeed
+        with client.websocket_connect("/ws/captions/test-limit-1-en"):
+            # Second anonymous connection exceeds limit of 1 and is rejected with 1008
+            with pytest.raises(WebSocketDisconnect) as exc_info:
+                with client.websocket_connect("/ws/captions/test-limit-1-en"):
+                    pass
+            assert exc_info.value.code == 1008
+
+
+def test_ws_captions_zero_anonymous_limit_does_not_populate_anon_rooms(monkeypatch):
+    """When max_anonymous_caption_listeners_per_booth is 0, anonymous requests are rejected
+    without creating an empty entry in listener_manager._anon_rooms."""
+    from fastapi.websockets import WebSocketDisconnect
+
+    from portal.config import settings
+    from portal.websockets.manager import listener_manager
+
+    monkeypatch.setattr(settings, "max_anonymous_caption_listeners_per_booth", 0)
+
+    booth_id = "test-zero-anon-limit"
+    assert booth_id not in listener_manager._anon_rooms
+
+    with pytest.raises(WebSocketDisconnect) as exc_info:
+        with client.websocket_connect(f"/ws/captions/{booth_id}"):
+            pass
+    assert exc_info.value.code == 1008
+
+    # Must NOT have created an empty set entry in _anon_rooms!
+    assert booth_id not in listener_manager._anon_rooms
+
+
+def test_ws_captions_releases_reservation_on_cancellation(monkeypatch):
+    """If accept() raises an exception (or is cancelled), the reservation is released."""
+    import asyncio
+
+    from starlette.websockets import WebSocket
+
+    from portal.websockets.manager import listener_manager
+
+    booth_id = "test-cancel-reservation"
+
+    async def mock_accept(self, subprotocol=None):
+        raise asyncio.CancelledError()
+
+    monkeypatch.setattr(WebSocket, "accept", mock_accept)
+
+    try:
+        with client.websocket_connect(f"/ws/captions/{booth_id}"):
+            pass
+    except BaseException:
+        pass
+
+    assert listener_manager.count_anonymous(booth_id) == 0
 
 
 # ── TTS WebSocket Auth tests ──────────────────────────────────────────────────
@@ -2756,11 +3065,11 @@ def test_build_embed_frame_policy_variants(monkeypatch):
     monkeypatch.setattr(settings, "embed_allowed_origins", "")
     assert _build_embed_frame_policy() == ("frame-ancestors *", [], "*")
 
-    monkeypatch.setattr(settings, "embed_allowed_origins", "https://eventyay.com")
+    monkeypatch.setattr(settings, "embed_allowed_origins", "https://partner.example.com")
     assert _build_embed_frame_policy() == (
-        "frame-ancestors https://eventyay.com",
-        ["https://eventyay.com"],
-        "https://eventyay.com",
+        "frame-ancestors https://partner.example.com",
+        ["https://partner.example.com"],
+        "https://partner.example.com",
     )
 
     monkeypatch.setattr(settings, "embed_allowed_origins", "https://a.com, https://b.com")
@@ -2891,13 +3200,23 @@ def test_check_scope_security_fixes():
     }
     correct_participant_jwt = jwt.encode(correct_participant_payload, settings.effective_jwt_secret, algorithm="HS256")
 
-    # 4. Global token WITHOUT event_slug -> allowed
-    global_payload = {
+    # 4. Untrusted token claiming admin WITHOUT valid global authorization or DB user
+    untrusted_admin_payload = {
         "admin": True,
         "iat": now,
         "exp": now + datetime.timedelta(seconds=3600),
     }
-    global_jwt = jwt.encode(global_payload, settings.effective_jwt_secret, algorithm="HS256")
+    untrusted_admin_jwt = jwt.encode(untrusted_admin_payload, settings.effective_jwt_secret, algorithm="HS256")
+
+    # 4b. Untrusted user token claiming admin but DB user has is_admin=False
+    untrusted_fake_admin_payload = {
+        "sub": "999",
+        "user": True,
+        "is_admin": True,
+        "iat": now,
+        "exp": now + datetime.timedelta(seconds=3600),
+    }
+    untrusted_fake_admin_jwt = jwt.encode(untrusted_fake_admin_payload, settings.effective_jwt_secret, algorithm="HS256")
 
     # 5. Ordinary user token WITHOUT event_slug -> must be rejected (no membership)
     ordinary_user_payload = {
@@ -2923,11 +3242,11 @@ def test_check_scope_security_fixes():
     settings.booth_access_token = "test-booth-token"
 
     try:
-        # Create event and booth to test against using a global token
+        # Create event and booth to test against using the verified booth access token
         client.post(
             "/api/events/route-test/booths",
             json={"language_code": "fr", "room_id": 1, "language": "French"},
-            headers={"Authorization": f"Bearer {global_jwt}"},
+            headers={"Authorization": f"Bearer {settings.booth_access_token}"},
         )
 
         # Assign event ownership to user 1
@@ -2968,9 +3287,52 @@ def test_check_scope_security_fixes():
         assert res3_list.status_code == 403
         assert "participant tokens cannot use this api" in res3_list.json()["detail"].lower()
 
-        # Test 4: Global token without event_slug -> Allowed
-        res4 = client.get("/api/events/route-test/booths", headers={"Authorization": f"Bearer {global_jwt}"})
-        assert res4.status_code == 200
+        # Test 4a: Untrusted token with admin claim alone -> MUST BE REJECTED
+        res4_untrusted = client.get(
+            "/api/events/route-test/booths", headers={"Authorization": f"Bearer {untrusted_admin_jwt}"}
+        )
+        assert res4_untrusted.status_code == 403
+
+        # Test 4b: Untrusted user claiming admin with non-admin DB record -> MUST BE REJECTED
+        res4_fake = client.get(
+            "/api/events/route-test/booths", headers={"Authorization": f"Bearer {untrusted_fake_admin_jwt}"}
+        )
+        assert res4_fake.status_code == 403
+
+        # Test 4c: Legitimate global credential (configured BOOTH_ACCESS_TOKEN) -> Allowed
+        res4_token = client.get(
+            "/api/events/route-test/booths", headers={"Authorization": f"Bearer {settings.booth_access_token}"}
+        )
+        assert res4_token.status_code == 200
+
+        # Test 4d: Legitimate legacy API token with configured BOOTH_ACCESS_TOKEN -> Allowed
+        from portal.auth import create_token
+
+        legacy_jwt = create_token()
+        res4_legacy = client.get(
+            "/api/events/route-test/booths", headers={"Authorization": f"Bearer {legacy_jwt}"}
+        )
+        assert res4_legacy.status_code == 200
+
+        # Test 4e: Legitimate validated administrator identity in DB -> Allowed
+        async def _add_admin():
+            async with get_session() as session:
+                admin_user = User(id=2, email="admin@example.com", display_name="Admin", is_admin=True, is_active=True)
+                session.add(admin_user)
+                await session.commit()
+
+        anyio.run(_add_admin)
+
+        admin_payload = {
+            "sub": "2",
+            "user": True,
+            "is_admin": True,
+            "iat": now,
+            "exp": now + datetime.timedelta(seconds=3600),
+        }
+        admin_jwt = jwt.encode(admin_payload, settings.effective_jwt_secret, algorithm="HS256")
+        res4_admin = client.get("/api/events/route-test/booths", headers={"Authorization": f"Bearer {admin_jwt}"})
+        assert res4_admin.status_code == 200
 
         # Test 5: Ordinary user without membership -> Rejected
         res5 = client.get("/api/events/route-test/booths", headers={"Authorization": f"Bearer {ordinary_user_jwt}"})

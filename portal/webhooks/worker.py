@@ -10,6 +10,7 @@ from datetime import datetime, timedelta, timezone
 
 import httpx
 from sqlalchemy import select, update
+from sqlalchemy.exc import SQLAlchemyError
 
 from portal.database import get_session
 from portal.models import OAuthAuditLog, WebhookDelivery, WebhookSubscription
@@ -94,34 +95,44 @@ async def process_delivery(client: httpx.AsyncClient, db, delivery: WebhookDeliv
     if success:
         delivery.status = "succeeded"
         delivery.last_error = None
-        if sub.consecutive_failures > 0:
-            sub.consecutive_failures = 0
-            db.add(sub)
+        try:
+            await db.refresh(sub)
+            if sub.consecutive_failures > 0:
+                sub.consecutive_failures = 0
+                db.add(sub)
+        except SQLAlchemyError as err:
+            logger.debug("Failed to refresh subscription %s on delivery success: %s", sub.id, err)
     else:
         delivery.last_error = last_error
         if delivery.attempt_count >= 4:
             delivery.status = "dead"
-            sub.consecutive_failures += 1
+            try:
+                await db.refresh(sub)
+                sub.consecutive_failures += 1
 
-            if sub.consecutive_failures >= 5:
-                sub.is_active = False
+                if sub.consecutive_failures >= 5:
+                    sub.is_active = False
 
-                from portal.models import OAuthClient
-                client_result = await db.execute(
-                    select(OAuthClient)
-                    .where(OAuthClient.developer_account_id == sub.developer_account_id)
-                    .order_by(OAuthClient.id)
-                )
-                dev_client = client_result.scalars().first()
+                    from portal.models import OAuthClient
 
-                audit = OAuthAuditLog(
-                    client_id=dev_client.id if dev_client else None,
-                    action="webhook.circuit_breaker_tripped",
-                    request_path=f"/dispatch/{sub.id}",
-                    status_code=500,
-                )
-                db.add(audit)
-            db.add(sub)
+                    client_result = await db.execute(
+                        select(OAuthClient)
+                        .where(OAuthClient.developer_account_id == sub.developer_account_id)
+                        .order_by(OAuthClient.id)
+                    )
+                    dev_client = client_result.scalars().first()
+
+                    audit = OAuthAuditLog(
+                        client_id=dev_client.id if dev_client else None,
+                        action="webhook.circuit_breaker_tripped",
+                        request_path=f"/dispatch/{sub.id}",
+                        status_code=500,
+                    )
+                    db.add(audit)
+                db.add(sub)
+            except SQLAlchemyError as err:
+                logger.debug("Failed to refresh subscription %s on delivery failure: %s", sub.id, err)
+
         else:
             delivery.status = "failed"
             backoff_seconds = 2**delivery.attempt_count

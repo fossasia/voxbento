@@ -145,9 +145,7 @@ async def _require_access(
                 status_code=status.HTTP_403_FORBIDDEN, detail="Listener tokens cannot be used for this API."
             )
         token_event = payload.get("event_slug")
-        is_global = (payload.get("admin") and not payload.get("user")) or (
-            payload.get("purpose") == "legacy_api" and bool(settings.booth_access_token)
-        )
+        is_global = payload.get("purpose") == "legacy_api" and bool(settings.booth_access_token)
         is_ordinary_user = payload.get("user")
 
         if expected_event_slug:

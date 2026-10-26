@@ -1,0 +1,67 @@
+{% extends "admin/base.html" %}
+
+{% block title %}{{ definition.label }} email{% endblock %}
+
+{% block breadcrumb %}
+<nav class="breadcrumb" aria-label="Breadcrumb">
+  <a href="/admin/">Overview</a> <span>/</span>
+  <a href="/admin/emails/">Emails</a> <span>/</span>
+  <span class="breadcrumb-current" aria-current="page">{{ definition.label }}</span>
+</nav>
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <div>
+    <h1>{{ definition.label }}</h1>
+    <p>
+      Available placeholders:
+      {% for name in definition.variables|sort %}<code>{{ '{{' }} {{ name }} {{ '}}' }}</code>{% if not loop.last %}, {% endif %}{% endfor %}.
+      Use <code>{{ '{%' }} if … {{ '%}' }}</code> for optional parts.
+    </p>
+  </div>
+</div>
+
+{% if error %}
+<p class="alert alert-danger" role="alert">{{ error }}</p>
+{% elif request.query_params.get('saved') %}
+<p class="alert alert-success" role="status">Draft saved. The preview shows this draft.</p>
+{% elif request.query_params.get('published') %}
+<p class="alert alert-success" role="status">Published. New emails use this version; emails already queued keep theirs.</p>
+{% elif request.query_params.get('test') %}
+<p class="alert alert-success" role="status">A test email with example links was queued for your address.</p>
+{% endif %}
+
+<div class="email-editor-grid">
+  <section class="card email-card email-editor">
+    <form id="email-draft" method="post" action="/admin/emails/{{ definition.key }}/draft">
+      <div class="form-group">
+        <label for="subject">Subject</label>
+        <input id="subject" name="subject" value="{{ subject }}" required />
+      </div>
+      <div class="form-group">
+        <label for="html">Email HTML</label>
+        <textarea id="html" name="html" rows="20" required>{{ html }}</textarea>
+      </div>
+    </form>
+    <div class="email-actions">
+      <button class="btn btn-primary" type="submit" form="email-draft">Save draft</button>
+      <form method="post" action="/admin/emails/{{ definition.key }}/publish">
+        <button class="btn btn-outline" type="submit">Publish draft</button>
+      </form>
+      <form method="post" action="/admin/emails/{{ definition.key }}/test">
+        <button class="btn btn-outline" type="submit">Send me a test</button>
+      </form>
+      <span class="email-version">{{ 'Published version ' ~ version if version else 'Using the built-in version' }}</span>
+    </div>
+  </section>
+
+  <section class="card email-card">
+    <div class="card-header">
+      <h2>Preview</h2>
+      <p>Links in the preview and in test emails point to example.invalid and can't open an account.</p>
+    </div>
+    <iframe class="email-preview" sandbox src="/admin/emails/{{ definition.key }}/preview" title="{{ definition.label }} email preview"></iframe>
+  </section>
+</div>
+{% endblock %}

@@ -259,19 +259,27 @@ class Stack:
         )
         assert response.status_code == 200, response.text
 
-    async def publish(self, url: str) -> asyncio.subprocess.Process:
-        # What OBS sends: "Server" + "/" + "Stream Key", H.264 + AAC over RTMPS.
+    async def publish(self, url: str, *rtmp_options: str) -> asyncio.subprocess.Process:
+        # "Server" + "/" + "Stream Key" as one URL, H.264 + AAC over RTMPS.
         process = await asyncio.create_subprocess_exec(
             "ffmpeg", "-hide_banner", "-loglevel", "error", "-re",
             "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=25",
             "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000",
             "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency", "-g", "50",
             "-pix_fmt", "yuv420p", "-b:v", "1500k",
-            "-c:a", "aac", "-b:a", "96k", "-tls_verify", "0", "-f", "flv", url,
+            "-c:a", "aac", "-b:a", "96k", "-tls_verify", "0", *rtmp_options, "-f", "flv", url,
             stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
         )  # fmt: skip
         self.processes.append(process)
         return process
+
+    async def publish_like_obs(self, room: Room, stream_key: str) -> asyncio.subprocess.Process:
+        """OBS sends the whole Server path as the RTMP app and the Stream Key as the stream name."""
+        server = self.server_url(room)
+        app = server.split("/", 3)[3]
+        return await self.publish(
+            f"{server}/{stream_key}", "-rtmp_app", app, "-rtmp_tcurl", server, "-rtmp_playpath", stream_key
+        )
 
     async def rejected(self, url: str, path: str) -> bool:
         """The real MediaMTX auth callback refused the publish: FFmpeg failed and nothing went live."""
@@ -462,6 +470,16 @@ async def test_native_rtmps_publish_is_authorized_for_exactly_one_room(native):
     log = (native.tmp_path / "media.log").read_text()
     assert secret not in log and other_secret not in log
     assert encoder.returncode is None and other_encoder.returncode is None
+
+
+async def test_native_obs_style_server_and_stream_key_publish(native):
+    """The values the room page shows work when pasted into OBS's separate Server and Stream Key fields."""
+    room = native.rooms[0]
+    _, stream_key = await native.enable(room)
+    encoder = await native.publish_like_obs(room, stream_key)
+    assert await wait_path(native.floor(room)) is not None, (native.tmp_path / "media.log").read_text()
+    assert len(await native.rtmps_publishers(native.floor(room))) == 1
+    assert encoder.returncode is None
 
 
 async def test_native_revoke_kicks_the_active_rtmps_connection(native):

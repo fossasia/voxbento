@@ -14,11 +14,54 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from portal.config import settings
 from portal.database import get_db_session
 from portal.models import User
-from portal.roles import ADMIN, EVENT_OWNER, ROLE_RANK, ROOM_COORDINATOR, highest_role, is_at_least
+from portal.roles import ADMIN, EVENT_OWNER, INTERPRETER, ROLE_RANK, ROOM_COORDINATOR, highest_role, is_at_least
 
 logger = logging.getLogger(__name__)
 
 security = HTTPBearer(auto_error=False)
+
+_REVOKED_TOKEN_CACHE: dict[str, tuple[float, bool]] = {}
+
+
+def invalidate_token_revocation_cache(token_str: str | None = None) -> None:
+    """Invalidate the short-lived in-memory cache for revoked tokens."""
+    if token_str is None:
+        _REVOKED_TOKEN_CACHE.clear()
+    else:
+        _REVOKED_TOKEN_CACHE.pop(str(token_str), None)
+
+
+async def is_invite_token_revoked(token_str: str, ttl: float = 5.0) -> bool:
+    """Check if an invite token is revoked in the database with a short TTL cache."""
+    import asyncio
+    import time
+    now_mono = time.monotonic()
+    key = str(token_str)
+    cached = _REVOKED_TOKEN_CACHE.get(key)
+    if cached is not None and (now_mono - cached[0] < ttl):
+        return cached[1]
+
+    from portal.database import get_invite_token_by_public_id, get_session
+    for attempt in range(2):
+        try:
+            async with get_session() as session:
+                tok = await get_invite_token_by_public_id(session, key)
+                revoked = (tok is None) or (tok.revoked_at is not None)
+                _REVOKED_TOKEN_CACHE[key] = (now_mono, revoked)
+                return revoked
+        except Exception:
+            if attempt == 0:
+                logger.warning(
+                    "Transient error checking token revocation for public_id %s; retrying once", key
+                )
+                await asyncio.sleep(0.05)
+                continue
+            logger.exception(
+                "Error checking token revocation for public_id %s after retry; failing closed", key
+            )
+            # Fail closed on database errors without poisoning the cache
+            return True
+    return True
 
 
 def hash_password(password: str) -> str:
@@ -39,7 +82,15 @@ def create_token() -> str:
     return jwt.encode(payload, settings.effective_jwt_secret, algorithm="HS256")
 
 
-def create_participant_token(*, booth_id: int, role: str, event_slug: str, room_id: int, language_code: str) -> str:
+def create_participant_token(
+    *,
+    booth_id: int,
+    role: str,
+    event_slug: str,
+    room_id: int,
+    language_code: str,
+    token_id: str | int | None = None,
+) -> str:
     """Create a JWT with role claims for a participant who joined via invite link."""
     now = datetime.now(timezone.utc)
     payload = {
@@ -49,6 +100,7 @@ def create_participant_token(*, booth_id: int, role: str, event_slug: str, room_
         "event_slug": event_slug,
         "room_id": room_id,
         "language_code": language_code,
+        "token_id": str(token_id) if token_id is not None else None,
         "iat": now,
         "exp": now + timedelta(seconds=settings.jwt_expiry_seconds),
     }
@@ -140,7 +192,7 @@ async def _current_user(payload: dict) -> User | None:
 
 
 async def load_membership_scope(db_session: AsyncSession, user_id: int) -> dict[str, set[int]]:
-    """Load the events a user owns and the events/rooms they coordinate."""
+    """Load the events a user owns or interprets in and the events/rooms they coordinate."""
     from portal.database import (
         list_booth_memberships_for_user,
         list_memberships_for_user,
@@ -161,12 +213,16 @@ async def load_membership_scope(db_session: AsyncSession, user_id: int) -> dict[
     }
     coordinated_room_ids = {room_id for room_id, _ in coordinated_rooms}
     coordinated_event_ids = {event_id for _, event_id in coordinated_rooms} | whole_event_coordinator_ids
+    # Events where the person interprets (given for the whole event or a booth): they work from the booth lobby.
+    interpreting_event_ids = {m.event_id for m in memberships if m.role == INTERPRETER}
+    interpreting_event_ids |= {bm.booth.event_id for bm in bms if bm.role == INTERPRETER and bm.booth}
 
     return {
         "owned_event_ids": owned_event_ids,
         "coordinated_event_ids": coordinated_event_ids,
         "coordinated_room_ids": coordinated_room_ids,
         "whole_event_coordinator_ids": whole_event_coordinator_ids,
+        "interpreting_event_ids": interpreting_event_ids,
     }
 
 
@@ -210,6 +266,7 @@ async def resolve_request_principal(request: Request, db_session: AsyncSession) 
             "coordinated_event_ids": set(),
             "coordinated_room_ids": set(),
             "whole_event_coordinator_ids": set(),
+            "interpreting_event_ids": set(),
             "open_hosting_requests": 0,
             "pending_developer_accounts": 0,
             "has_developer_app": False,
@@ -722,6 +779,12 @@ async def resolve_ws_auth(websocket: WebSocket, booth_id: str) -> dict:
             await websocket.close(code=4003)
             raise WSAuthError("Participant cookie scope does not match booth_id.")
 
+    token_id = payload.get("token_id")
+    if token_id is not None:
+        if await is_invite_token_revoked(str(token_id)):
+            await websocket.close(code=4003)
+            raise WSAuthError("Invitation revoked.")
+
     return payload
 
 
@@ -760,6 +823,8 @@ async def resolve_booth_role(
 
         # 2. Direct role claim (e.g. invite token or mock payload)
         if "role" in sess:
+            if sess.get("token_id") is not None and await is_invite_token_revoked(str(sess["token_id"])):
+                continue
             role = sess["role"]
             scope_matches = True
             token_event = sess.get("event_slug")

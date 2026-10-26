@@ -87,6 +87,8 @@ var audioEl = document.getElementById("audio-player");
 var statusEl = document.getElementById("status");
 var captionsBox = document.getElementById("live-captions");
 var captionsWs = null;
+var captionsRetryTimer = null;
+var captionsRetryDelayMs = 1000;
 
 var ttsWs = null;
 var audioCtx = null;
@@ -94,6 +96,7 @@ var nextStartTime = 0;
 var currentAudioDelayMs = 0;
 var currentRoomId = null;
 var currentSourceType = null;
+var whepAudioLive = false;
 /** @type {ReturnType<typeof window.AudioScheduler.create>|null} */
 var audioScheduler = null;
 
@@ -114,7 +117,7 @@ function setStatus(text, cls) {
 }
 
 function showAudioPlayer(show) {
-  audioEl.style.display = show ? "block" : "none";
+  audioEl.classList.toggle("hidden", !show);
   if (show && currentAudioDelayMs === 0) {
     audioEl.setAttribute("controls", "");
   } else {
@@ -123,14 +126,17 @@ function showAudioPlayer(show) {
 }
 
 function onState(s) {
-  if (s.peerConnection === "connected" && s.audioActive) {
+  whepAudioLive = s.peerConnection === "connected" && s.audioActive;
+  if (whepAudioLive) {
     setStatus("Live (WebRTC)", "live");
     showAudioPlayer(true);
   } else if (s.peerConnection === "connecting" || s.ice === "checking") {
     setStatus("Connecting...", "recovering");
   } else if (
     s.peerConnection === "failed" ||
-    s.peerConnection === "disconnected"
+    s.peerConnection === "disconnected" ||
+    // A failed WHEP request schedules a retry before ICE ever starts.
+    s.retrying
   ) {
     setStatus("Reconnecting...", "recovering");
   } else if (s.peerConnection === "connected") {
@@ -144,6 +150,7 @@ var pendingWhepUrl = null; // WHEP URL to start once live
 var pendingAudioDelayMs = 0;
 var pendingTtsLang = null; // TTS language to start once live
 var pendingRoomId = null;
+var lastBroadcastUnlocked = null; // last broadcast_unlocked seen for the selected booth
 var segmentStore = Object.create(null);
 var expectedSeq = null;
 var isSegmentPlaying = false;
@@ -167,6 +174,7 @@ function stopCurrentStream() {
   currentAudioDelayMs = 0;
   pendingTtsLang = null;
   pendingRoomId = null;
+  lastBroadcastUnlocked = null;
   currentRoomId = null;
   currentSourceType = null;
 
@@ -187,14 +195,22 @@ function stopCurrentStream() {
     audioScheduler = null;
   }
 
+  if (captionsRetryTimer) {
+    clearTimeout(captionsRetryTimer);
+    captionsRetryTimer = null;
+  }
+  captionsRetryDelayMs = 1000;
   if (captionsWs) {
-    captionsWs.close();
+    var closingWs = captionsWs;
     captionsWs = null;
+    closingWs.close();
   }
   showAudioPlayer(false);
   audioEl.muted = false;
   document.getElementById("caption-history").innerHTML = "";
   document.getElementById("caption-current").innerHTML = "";
+  followCaptions = true;
+  document.getElementById("waiting-text").classList.remove("listener-hidden");
 
   setStatus("Waiting for selection...", "waiting");
 }
@@ -367,16 +383,52 @@ function startWhepAndCaptions(whepUrl, boothId, audioDelayMs) {
 function openCaptionsWs(boothId) {
   if (!boothId) return;
   var wsProto = window.location.protocol === "https:" ? "wss:" : "ws:";
-  captionsWs = new WebSocket(
+  var ws = new WebSocket(
     wsProto + "//" + window.location.host + "/ws/captions/" + boothId,
   );
-  captionsWs.onmessage = handleCaptionsMessage;
+  captionsWs = ws;
+  ws.onmessage = handleCaptionsMessage;
+  ws.onopen = function () {
+    captionsRetryDelayMs = 1000;
+  };
+  ws.onclose = function (event) {
+    // stopCurrentStream() clears captionsWs before closing it, so this only
+    // reconnects sockets that dropped on their own. The server resends the
+    // booth status on connect, so a pending stream still starts. 4001/4003
+    // are auth rejections, which retrying won't fix.
+    if (captionsWs !== ws || event.code === 4001 || event.code === 4003) return;
+    captionsWs = null;
+    captionsRetryTimer = setTimeout(function () {
+      captionsRetryTimer = null;
+      openCaptionsWs(boothId);
+    }, captionsRetryDelayMs);
+    captionsRetryDelayMs = Math.min(captionsRetryDelayMs * 2, 15000);
+  };
 }
+
+// Follow new captions only until the listener scrolls away from the end, so
+// reading back isn't undone by the next partial. Decided on scroll rather than
+// per caption because rows can grow after they render (late styles, wrapping)
+// without the listener moving.
+var CAPTIONS_FOLLOW_THRESHOLD_PX = 40;
+var followCaptions = true;
+var captionsAutoScrollTop = 0;
+
+function scrollCaptionsToEnd() {
+  captionsBox.scrollTop = captionsBox.scrollHeight;
+  captionsAutoScrollTop = captionsBox.scrollTop;
+}
+
+captionsBox.addEventListener("scroll", function () {
+  followCaptions =
+    captionsBox.scrollTop === captionsAutoScrollTop ||
+    captionsBox.scrollHeight - captionsBox.scrollTop - captionsBox.clientHeight <=
+      CAPTIONS_FOLLOW_THRESHOLD_PX;
+});
 
 function renderItem(data) {
   var historyBox = document.getElementById("caption-history");
   var currentBox = document.getElementById("caption-current");
-  var captionsBox = document.getElementById("live-captions");
   var mode = captionModeSelect ? captionModeSelect.value : "original";
 
   if (data.type === "caption") {
@@ -391,7 +443,7 @@ function renderItem(data) {
         if (!existingBlock) {
           var block = document.createElement("div");
           block.className =
-            "mb-4 pb-4 border-b border-gray-200 last:border-b-0 w-full flex flex-col gap-1";
+            "caption-history-block mb-4 pb-4 border-b border-gray-200 last:border-b-0 w-full flex flex-col gap-1";
           if (data.segment_id) {
             block.id = "segment-" + data.segment_id;
           }
@@ -406,7 +458,7 @@ function renderItem(data) {
           srcDiv.querySelector(".untrusted-text").textContent = data.text;
 
           if (mode === "translated") {
-            srcDiv.style.display = "none";
+            srcDiv.classList.add("listener-hidden");
           }
 
           block.appendChild(srcDiv);
@@ -430,7 +482,7 @@ function renderItem(data) {
     } else if (data.status === "clear") {
       currentBox.textContent = "";
     }
-    captionsBox.scrollTop = captionsBox.scrollHeight;
+    if (followCaptions) scrollCaptionsToEnd();
   } else if (data.type === "translation") {
     if (data.language_code === translationLangSelect.value) {
       var tgtLangOpt =
@@ -445,7 +497,7 @@ function renderItem(data) {
       tDiv.querySelector(".untrusted-text").textContent = data.text;
 
       if (mode === "original") {
-        tDiv.style.display = "none";
+        tDiv.classList.add("listener-hidden");
       }
 
       var block = data.segment_id
@@ -461,18 +513,19 @@ function renderItem(data) {
           existingTDiv.querySelector(".untrusted-text").textContent = data.text;
         } else {
           block.appendChild(tDiv);
+          applyCaptionMode();
         }
       } else {
         // Fallback if we missed the original caption
         block = document.createElement("div");
         block.className =
-          "mb-4 pb-4 border-b border-gray-200 last:border-b-0 w-full flex flex-col gap-1";
+          "caption-history-block mb-4 pb-4 border-b border-gray-200 last:border-b-0 w-full flex flex-col gap-1";
         block.appendChild(tDiv);
         historyBox.appendChild(block);
         while (historyBox.children.length > 50)
           historyBox.removeChild(historyBox.firstChild);
       }
-      captionsBox.scrollTop = captionsBox.scrollHeight;
+      if (followCaptions) scrollCaptionsToEnd();
     }
   }
 }
@@ -655,7 +708,11 @@ function handleCaptionsMessage(event) {
     if (data.type === "booth:state") {
       var bstate = data.state || {};
       // If we were waiting for the broadcast to go live, start WHEP or TTS now.
-      if (bstate.ingest_status === "connected") {
+      // A locked booth stays silent for listeners even if ingest reports connected.
+      if (
+        bstate.ingest_status === "connected" &&
+        bstate.broadcast_unlocked === true
+      ) {
         if (pendingWhepUrl) {
           var url = pendingWhepUrl;
           var delayMs = pendingAudioDelayMs;
@@ -676,10 +733,12 @@ function handleCaptionsMessage(event) {
           setStatus("Live (TTS Audio)", "live");
         }
       }
-      // If broadcast was locked, tear down (floor booths are never locked this way).
-      if (bstate.broadcast_unlocked === false) {
-        WhepListener.stop();
-        showAudioPlayer(false);
+      // Booths start locked, so only tear down when the organizers lock a
+      // booth that was unlocked (floor booths are never locked this way).
+      var wasUnlocked = lastBroadcastUnlocked === true;
+      lastBroadcastUnlocked = bstate.broadcast_unlocked;
+      if (wasUnlocked && bstate.broadcast_unlocked === false) {
+        stopCurrentStream();
         setStatus("Broadcast is currently locked by the organizers.", "error");
         roomSelect.value = "";
         languageSelect.innerHTML =
@@ -689,14 +748,14 @@ function handleCaptionsMessage(event) {
         captionModeSelect.value = "original";
         translationLangSelect.innerHTML = "";
         var transGroup = document.getElementById("translation-lang-group");
-        if (transGroup) transGroup.style.display = "none";
+        if (transGroup) transGroup.hidden = true;
         applyCaptionMode();
       }
       return;
     }
 
     if (data.type === "caption") {
-      if (waitingText) waitingText.style.display = "none";
+      if (waitingText) waitingText.classList.add("listener-hidden");
 
       if (data.status === "partial") {
         var sid = data.segment_id;
@@ -767,9 +826,9 @@ function applyCaptionMode() {
 
   // Process current box
   if (mode === "translated") {
-    currentBox.style.display = "none";
+    currentBox.classList.add("listener-hidden");
   } else {
-    currentBox.style.display = "block";
+    currentBox.classList.remove("listener-hidden");
   }
 
   // Process history blocks
@@ -784,19 +843,19 @@ function applyCaptionMode() {
       block.querySelector(".translation-text");
 
     if (srcDiv) {
-      srcDiv.style.display = mode === "translated" ? "none" : "block";
+      srcDiv.classList.toggle("listener-hidden", mode === "translated");
     }
     if (tgtDiv) {
-      tgtDiv.style.display = mode === "original" ? "none" : "block";
+      tgtDiv.classList.toggle("listener-hidden", mode === "original");
     }
 
     // Hide the whole block if it becomes empty
-    var hasVisibleSrc = srcDiv && srcDiv.style.display !== "none";
-    var hasVisibleTgt = tgtDiv && tgtDiv.style.display !== "none";
+    var hasVisibleSrc = srcDiv && !srcDiv.classList.contains("listener-hidden");
+    var hasVisibleTgt = tgtDiv && !tgtDiv.classList.contains("listener-hidden");
     if (!hasVisibleSrc && !hasVisibleTgt) {
-      block.style.display = "none";
+      block.classList.add("listener-hidden");
     } else {
-      block.style.display = "flex";
+      block.classList.remove("listener-hidden");
     }
   }
 }
@@ -816,7 +875,7 @@ roomSelect.addEventListener("change", function () {
     captionModeSelect.value = "original";
     applyCaptionMode();
     var transGroup = document.getElementById("translation-lang-group");
-    if (transGroup) transGroup.style.display = "none";
+    if (transGroup) transGroup.hidden = true;
     return;
   }
 
@@ -847,7 +906,7 @@ roomSelect.addEventListener("change", function () {
   translationLangSelect.innerHTML = "";
   applyCaptionMode();
   var transGroup = document.getElementById("translation-lang-group");
-  if (transGroup) transGroup.style.display = "none";
+  if (transGroup) transGroup.hidden = true;
 });
 
 var ttsSyncEnabled = false;
@@ -916,7 +975,7 @@ languageSelect.addEventListener("change", function () {
       bData.translation_languages &&
       bData.translation_languages.length > 0
     ) {
-      if (transGroup) transGroup.style.display = "flex";
+      if (transGroup) transGroup.hidden = false;
       captionModeSelect.disabled = false;
 
       // Preserve current selection if possible
@@ -934,6 +993,8 @@ languageSelect.addEventListener("change", function () {
         var opt = document.createElement("option");
         opt.value = lang.code;
         opt.textContent = lang.name;
+        // AI text languages are read only; only AI voice languages can be heard.
+        opt.dataset.voice = lang.tts_enabled === false ? "0" : "1";
         translationLangSelect.appendChild(opt);
         if (lang.code === currentSelection) optionExists = true;
       });
@@ -948,13 +1009,13 @@ languageSelect.addEventListener("change", function () {
         captionModeSelect.value = "original";
       }
     } else {
-      if (transGroup) transGroup.style.display = "none";
+      if (transGroup) transGroup.hidden = true;
       captionModeSelect.disabled = true;
       captionModeSelect.value = "original";
       translationLangSelect.innerHTML = "";
     }
   } else {
-    if (transGroup) transGroup.style.display = "none";
+    if (transGroup) transGroup.hidden = true;
     captionModeSelect.disabled = true;
     captionModeSelect.value = "original";
     translationLangSelect.innerHTML = "";
@@ -967,11 +1028,11 @@ languageSelect.addEventListener("change", function () {
     sourceData &&
     sourceData.translation_enabled &&
     sourceData.translation_languages &&
-    sourceData.translation_languages.length > 0
+    sourceData.translation_languages.some((lang) => lang.tts_enabled !== false)
   ) {
-    ttsSyncGroup.style.display = "flex";
+    ttsSyncGroup.hidden = false;
   } else {
-    ttsSyncGroup.style.display = "none";
+    ttsSyncGroup.hidden = true;
     ttsSyncEnabled = false;
     if (ttsSyncToggle) ttsSyncToggle.checked = false;
   }
@@ -995,27 +1056,14 @@ languageSelect.addEventListener("change", function () {
         // Floor audio has no WHIP ingest — start WHEP immediately.
         startWhepAndCaptions(whepUrl, null, selectedAudioDelayMs);
       } else {
-        // Check booth live status before starting WHEP to avoid phantom timer.
-        fetch("/api/events/" + eventSlug + "/booths/" + languageCode + "/state?room_id=" + roomId)
-          .then(function (r) {
-            return r.ok ? r.json() : null;
-          })
-          .then(function (bstate) {
-            if (bstate && bstate.ingest_status === "connected") {
-              startWhepAndCaptions(whepUrl, null, selectedAudioDelayMs);
-            } else {
-              // Not live yet — wait for booth:state via WS
-              pendingWhepUrl = whepUrl;
-              pendingAudioDelayMs = selectedAudioDelayMs;
-              pendingBoothId = boothId;
-              setStatus("Broadcast not live yet — waiting...", "waiting");
-              showAudioPlayer(false);
-            }
-          })
-          .catch(function () {
-            // Can't determine state — start anyway
-            startWhepAndCaptions(whepUrl, null, selectedAudioDelayMs);
-          });
+        // Wait for the booth to be live before starting WHEP. The captions
+        // socket sends the booth's current status when it connects and again
+        // whenever it changes, and handleCaptionsMessage starts playback.
+        pendingWhepUrl = whepUrl;
+        pendingAudioDelayMs = selectedAudioDelayMs;
+        pendingBoothId = boothId;
+        setStatus("Broadcast not live yet — waiting...", "waiting");
+        showAudioPlayer(false);
       }
     } else {
       startWhepAndCaptions(whepUrl, null, selectedAudioDelayMs);
@@ -1031,7 +1079,13 @@ function applyTtsOverlay() {
   var languageCode = selectedOpt ? selectedOpt.dataset.languageCode : null;
   var roomId = parseInt(roomSelect.value, 10);
   var rData = roomsData.find((r) => r.id.toString() === roomId.toString());
-  var canSyncTts = languageCode === "floor" && rData && rData.floor_tts_enabled;
+  var targetOpt =
+    translationLangSelect.options[translationLangSelect.selectedIndex];
+  var canSyncTts =
+    languageCode === "floor" &&
+    rData &&
+    rData.floor_tts_enabled &&
+    !(targetOpt && targetOpt.dataset.voice === "0");
   var targetLangValue = translationLangSelect.value;
   var boothObjId = selectedOpt ? selectedOpt.dataset.boothObjId : null;
   var boothId = selectedOpt ? selectedOpt.dataset.boothId : null;
@@ -1060,14 +1114,14 @@ function applyTtsOverlay() {
       setStatus("Live (" + langName + " TTS)", "live");
     } else {
       audioEl.muted = false;
-      if (currentRoomId && languageSelect.value && !pendingWhepUrl) {
+      if (whepAudioLive) {
         setStatus("Live (WebRTC + Translation)", "live");
       }
     }
   } else {
     audioEl.muted = false;
-    // If we are currently connected to WHEP, refresh the badge to WebRTC
-    if (currentRoomId && languageSelect.value && !pendingWhepUrl) {
+    // If WHEP audio is already playing, refresh the badge to WebRTC
+    if (whepAudioLive) {
       setStatus("Live (WebRTC)", "live");
     }
   }

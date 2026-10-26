@@ -70,9 +70,10 @@ description: Use this skill to review pull requests for VoxBento. Covers correct
 - [ ] `uv run pytest tests/ -v` passes.
 
 ### 9. Documentation
-- [ ] `README.md` updated if user-facing behavior changed.
+- [ ] `README.md` changes follow `agents.md`: explicit request, factual/link correction, or installation/quick-start accuracy; routine features do not require README edits.
+- [ ] Changed usage or operations documented in the relevant `website/docs/` page or `docs/` guide.
 - [ ] `website/docs/how-it-works.mdx` updated if system design changed.
-- [ ] Relevant context file in `.github/.agents/context/` updated.
+- [ ] Relevant `.agents/context/` files updated if routes, DB schema, transcription, or module ownership changed.
 - [ ] `agents.md` updated if invariants changed.
 
 ---

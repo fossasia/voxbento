@@ -136,6 +136,8 @@ async def set_user_access(
             if not value and await is_last_active_admin(session, user):
                 raise UserAdminError("last_admin")
             user.is_admin = value
+            if not value:
+                user.sessions_valid_after = utc_now()
         elif field == "verified":
             if user.id == actor_id and not value:
                 raise UserAdminError("self_verified", 403)
@@ -148,6 +150,8 @@ async def set_user_access(
             if not value and await is_last_active_admin(session, user):
                 raise UserAdminError("last_admin")
             user.is_active = value
+            if not value:
+                user.sessions_valid_after = utc_now()
         await session.flush()
         logger.info("Admin %s set %s=%s for user %d", actor_id, field, value, user.id)
 

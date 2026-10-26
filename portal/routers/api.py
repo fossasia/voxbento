@@ -16,6 +16,7 @@ from portal.auth import (
     decode_token,
     get_booth_session,
     get_booth_sessions,
+    is_invite_token_revoked,
     load_membership_scope,
     resolve_booth_role,
     security,
@@ -91,8 +92,6 @@ async def _verify_event_access(
                     return
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid auth token.")
         if payload.get("purpose") == "legacy_api" and configured_token:
-            return
-        if payload.get("admin") and not payload.get("user"):
             return
         if not payload.get("user"):
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Participant tokens cannot use this API.")
@@ -269,6 +268,9 @@ async def _verify_resource_access(
                 raise
             payload = participant_payload
         else:
+            if payload and not payload.get("user") and payload.get("token_id") is not None:
+                if await is_invite_token_revoked(str(payload["token_id"])):
+                    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invitation revoked.")
             return payload
     if credentials is None and payload and not payload.get("user") and request.cookies.get("user_token"):
         try:
@@ -280,6 +282,9 @@ async def _verify_resource_access(
             # independently scoped participant session from being used.
             pass
         else:
+            if payload and not payload.get("user") and payload.get("token_id") is not None:
+                if await is_invite_token_revoked(str(payload["token_id"])):
+                    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invitation revoked.")
             return payload
     if payload and payload.get("user") and not (settings.debug and payload.get("is_admin")):
         await _verify_event_access(
@@ -302,6 +307,9 @@ async def _verify_resource_access(
         await _require_access(
             request, credentials, token, expected_event_slug=event.slug, session_payload=payload
         )
+    if payload and not payload.get("user") and payload.get("token_id") is not None:
+        if await is_invite_token_revoked(str(payload["token_id"])):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invitation revoked.")
     if not is_global_credential:
         _verify_participant_scope(
             request,
@@ -646,7 +654,7 @@ async def list_event_booths(
                             "type": "ai",
                             "label": f"{tl.language_name} (AI)",
                             "is_ai": True,
-                            "floor_tts_enabled": room.floor_tts_enabled,
+                            "floor_tts_enabled": room.floor_tts_enabled and tl.tts_enabled,
                         }
                         booth_list.append(ai_stream)
 

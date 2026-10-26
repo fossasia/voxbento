@@ -7,6 +7,7 @@ person is:
 | Entry         | Who sees it                              |
 |---------------|------------------------------------------|
 | My events     | Everyone                                 |
+| My booths     | Interpreters (for an event or a booth)   |
 | Account       | Everyone                                 |
 | Developer API | Users with an approved developer app     |
 | Admin         | Admins                                   |
@@ -23,18 +24,23 @@ from portal.auth import resolve_request_principal
 from portal.database import get_session
 
 AREA_EVENTS = "events"
+AREA_BOOTHS = "booths"
+AREA_MISSION_CONTROL = "mission-control"
 AREA_ACCOUNT = "account"
 AREA_DEVELOPER = "developer"
 AREA_ADMIN = "admin"
 
 AREA_LABELS = {
     AREA_EVENTS: "My events",
+    AREA_BOOTHS: "My booths",
+    AREA_MISSION_CONTROL: "Mission Control",
     AREA_ACCOUNT: "Account",
     AREA_DEVELOPER: "Developer API",
     AREA_ADMIN: "Admin",
 }
 
 MY_EVENTS_URL = "/workspace/"
+MY_BOOTHS_URL = "/interpreter"
 
 
 @dataclass(frozen=True)
@@ -78,7 +84,11 @@ def area_for_request(request: Request, *, is_admin: bool) -> str:
         return AREA_ACCOUNT
     if path.startswith("/developer"):
         return AREA_DEVELOPER
-    if getattr(request.state, "is_workspace", False) or path.startswith(("/workspace", "/mission-control")):
+    if path == "/interpreter" or path.startswith("/interpreter/"):
+        return AREA_BOOTHS
+    if path.startswith("/mission-control"):
+        return AREA_MISSION_CONTROL
+    if getattr(request.state, "is_workspace", False) or path.startswith("/workspace"):
         return AREA_EVENTS
     # Room coordinators still reach a few legacy /admin/ room pages; for them
     # those pages are part of their events, not the Admin area.
@@ -87,11 +97,11 @@ def area_for_request(request: Request, *, is_admin: bool) -> str:
     return AREA_EVENTS
 
 
-def menu_entries(*, is_admin: bool, has_developer_app: bool) -> tuple[MenuEntry, ...]:
-    entries = [
-        MenuEntry(AREA_EVENTS, "My events", MY_EVENTS_URL, "calendar"),
-        MenuEntry(AREA_ACCOUNT, "Account", "/account", "user"),
-    ]
+def menu_entries(*, is_admin: bool, has_developer_app: bool, interprets: bool = False) -> tuple[MenuEntry, ...]:
+    entries = [MenuEntry(AREA_EVENTS, "My events", MY_EVENTS_URL, "calendar")]
+    if interprets:
+        entries.append(MenuEntry(AREA_BOOTHS, "My booths", MY_BOOTHS_URL, "mic"))
+    entries.append(MenuEntry(AREA_ACCOUNT, "Account", "/account", "user"))
     if has_developer_app:
         entries.append(MenuEntry(AREA_DEVELOPER, "Developer API", "/developer", "code"))
     if is_admin:
@@ -115,7 +125,11 @@ def user_menu_context(request: Request) -> dict[str, UserMenu | None]:
             display_name=user.display_name,
             email=user.email,
             area=area_for_request(request, is_admin=is_admin),
-            entries=menu_entries(is_admin=is_admin, has_developer_app=bool(principal.get("has_developer_app"))),
+            entries=menu_entries(
+                is_admin=is_admin,
+                has_developer_app=bool(principal.get("has_developer_app")),
+                interprets=bool(principal.get("interpreting_event_ids")),
+            ),
         )
     }
 

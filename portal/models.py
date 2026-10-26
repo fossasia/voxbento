@@ -43,6 +43,10 @@ def generate_token() -> str:
     return secrets.token_hex(TOKEN_LENGTH // 2)
 
 
+def generate_public_id() -> str:
+    return secrets.token_urlsafe(12)
+
+
 # ---------------------------------------------------------------------------
 # Base
 # ---------------------------------------------------------------------------
@@ -295,6 +299,8 @@ class RoomTranslationLanguage(Base):
     language_code: Mapped[str] = mapped_column(String(20))
     language_name: Mapped[str] = mapped_column(String(100))
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default="1")
+    # False for AI text languages: translated for reading, never spoken.
+    tts_enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default="1")
 
     room: Mapped[Room] = relationship(back_populates="translation_languages")
 
@@ -378,11 +384,13 @@ class InviteToken(Base):
     __tablename__ = "invite_tokens"
 
     token: Mapped[str] = mapped_column(String(TOKEN_LENGTH), primary_key=True, default=generate_token)
+    public_id: Mapped[str] = mapped_column(String(32), unique=True, index=True, nullable=False, default=generate_public_id)
     booth_id: Mapped[int] = mapped_column(ForeignKey("booths.id", ondelete="CASCADE"))
     role: Mapped[str] = mapped_column(String(20))
     label: Mapped[str] = mapped_column(String(200), default="")
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
     used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
     created_by: Mapped[str] = mapped_column(String(200), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
@@ -408,6 +416,10 @@ class InviteToken(Base):
     @property
     def is_used(self) -> bool:
         return self.used_at is not None
+
+    @property
+    def is_revoked(self) -> bool:
+        return self.revoked_at is not None
 
     def __repr__(self) -> str:
         return f"<InviteToken token={self.token[:8]}… role={self.role!r}>"
@@ -478,6 +490,7 @@ class User(Base):
     can_host: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
     hosting_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
     hosting_revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
+    sessions_valid_after: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
     memberships: Mapped[list[EventMembership]] = relationship(
@@ -876,3 +889,82 @@ class WebhookDelivery(Base):
 
     def __repr__(self) -> str:
         return f"<WebhookDelivery id={self.id} status={self.status!r} attempt={self.attempt_count}>"
+
+
+# ---------------------------------------------------------------------------
+# Email notification outbox
+# ---------------------------------------------------------------------------
+
+
+class EmailTemplate(Base):
+    """The editable, published version of a named transactional email."""
+
+    __tablename__ = "email_templates"
+
+    key: Mapped[str] = mapped_column(String(80), primary_key=True)
+    draft_subject: Mapped[str | None] = mapped_column(Text, nullable=True)
+    draft_html: Mapped[str | None] = mapped_column(Text, nullable=True)
+    published_subject: Mapped[str | None] = mapped_column(Text, nullable=True)
+    published_html: Mapped[str | None] = mapped_column(Text, nullable=True)
+    published_version: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    updated_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+
+
+class EmailTemplateRevision(Base):
+    """Immutable audit trail for each published template version."""
+
+    __tablename__ = "email_template_revisions"
+    __table_args__ = (UniqueConstraint("template_key", "version", name="uq_email_template_revision"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    template_key: Mapped[str] = mapped_column(ForeignKey("email_templates.key", ondelete="CASCADE"), index=True)
+    version: Mapped[int] = mapped_column(Integer)
+    subject: Mapped[str] = mapped_column(Text)
+    html: Mapped[str] = mapped_column(Text)
+    published_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    published_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class EmailSettings(Base):
+    """Branding shared by every email (one row, id 1). No row means the defaults."""
+
+    __tablename__ = "email_settings"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    show_logo: Mapped[bool] = mapped_column(Boolean, default=True, server_default=sa.true())
+    # An https image URL; empty means the VoxBento logo served by this site.
+    logo_url: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    updated_by_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
+
+
+class EmailDelivery(Base):
+    """An encrypted rendered message awaiting SMTP delivery or its audit record."""
+
+    __tablename__ = "email_deliveries"
+    __table_args__ = (
+        Index("ix_email_deliveries_due", "status", "scheduled_at"),
+        Index("ix_email_deliveries_created", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    notification_key: Mapped[str] = mapped_column(String(80), index=True)
+    recipient: Mapped[str] = mapped_column(String(320))
+    encrypted_subject: Mapped[str] = mapped_column(Text)
+    encrypted_html: Mapped[str] = mapped_column(Text)
+    template_version: Mapped[int] = mapped_column(Integer, default=0)
+    status: Mapped[str] = mapped_column(String(20), default="pending", server_default="pending")
+    attempt_count: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
+    scheduled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    claimed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    claim_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    accepted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    failed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # The sign-in or invitation token this email links to. Deliberately not a foreign key:
+    # once the token is deleted the id must stay, so the outbox finds no token and drops the email.
+    auth_token_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    last_error: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    idempotency_key: Mapped[str | None] = mapped_column(String(255), unique=True, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)

@@ -1,29 +1,28 @@
 {% extends 'admin/base.html' %}
 
-{% block title %}Mission Control - {{ event.display_name }}{% endblock %}
+{% block title %}Mission Control — {{ event.display_name }}{% endblock %}
+
+{% block breadcrumb %}
+<nav class="breadcrumb" aria-label="Breadcrumb">
+  <a href="/workspace/">My events</a> <span>/</span>
+  <span class="breadcrumb-current" aria-current="page">{{ event.display_name }}</span>
+</nav>
+{% endblock %}
 
 {% block content %}
-<div class="mc-container">
+<div class="mc-container" id="mission-control" data-config='{{ mc_config | tojson }}'>
   <div class="mc-header">
     <div>
-      <h2>Mission Control: {{ event.display_name }}</h2>
-      <p class="mc-header-sub">Monitor and control booths in real-time.</p>
+      <h1 class="mc-title">{{ event.display_name }}</h1>
+      <p class="mc-header-sub">Choose who is live in each booth, listen in, and run the floor captions for your rooms.</p>
     </div>
-    <a href="javascript:history.back()" class="btn btn-sm">Back to Events</a>
   </div>
 
-  <div id="rooms-container" class="mc-rooms-container">
-    <!-- Room grids injected here by JS -->
+  <div id="rooms-container" class="mc-rooms-container" aria-live="polite">
+    <p class="mc-loading">Loading booths…</p>
   </div>
 </div>
 
-<script>
-  window.MISSION_CONTROL_CONFIG = {
-    eventSlug: "{{ event.slug }}",
-    whipBase: "{{ whip_base }}",
-    initialBooths: {{ booths | tojson | safe }}
-  };
-</script>
 <script src="{{ url_for('static', path='js/whep-listener.js') }}?v={{ js_version }}"></script>
 <script type="module" src="{{ url_for('static', path='js/mission-control.js') }}?v={{ js_version }}"></script>
 {% endblock %}
