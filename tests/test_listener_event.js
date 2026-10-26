@@ -34,7 +34,7 @@ class FakeElement {
     this.tagName = tagName.toUpperCase();
     this.children = [];
     this.parentNode = null;
-    this.style = {};
+    this.style = { setProperty(name, value) { this[name] = value; }, removeProperty(name) { delete this[name]; } };
     this.dataset = {};
     this.attributes = {};
     this.className = '';
@@ -214,6 +214,9 @@ function make(tagName, id) {
 
 [
   'toggle-captions-btn',
+  'caption-size-down',
+  'caption-size-up',
+  'jump-to-latest',
   'share-event-btn',
   'share-event-status',
   'audio-player',
@@ -418,7 +421,12 @@ async function run() {
   assert(historyBox.children[historyBox.children.length - 1].textContent.includes('Ligne 44'), 'translations render in the matching caption row');
   assert(captionsBox.scrollTop === readingPosition, 'translations preserve the reading position while scrolled up');
 
-  captionsBox.scrollTop = captionsBox.scrollHeight;
+  const jumpButton = document.getElementById('jump-to-latest');
+  assert(!jumpButton.hidden, 'new captions offer Jump to latest while reading older lines');
+  jumpButton.dispatchEvent(new Event('click'));
+  assert(captionsBox.scrollTop === captionsBox.scrollHeight - captionsBox.clientHeight,
+    'Jump to latest returns to the newest caption');
+  assert(jumpButton.hidden, 'Jump to latest hides after returning to live');
   socket.onmessage({ data: JSON.stringify({ ...translation, seq: 45, text: 'Ligne 45' }) });
   assert(
     captionsBox.scrollTop === captionsBox.scrollHeight - captionsBox.clientHeight,
