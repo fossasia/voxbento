@@ -39,6 +39,7 @@ Interpreters monitor the floor session and broadcast high-fidelity translation d
 
 - **🎙️ Browser-First Interpreter Booth:** Zero software installation. Interpreters join, test microphones, go live, and coordinate shift handoffs smoothly via WebRTC (WHIP).
 - **⚡ Sub-Second Listener Playback:** Attendees receive ultra-low latency audio via WebRTC (WHEP) powered by MediaMTX, scaling effortlessly to thousands of listeners.
+  Clearing the listener source stops pending WHEP requests and retries; selecting another source discards responses from the previous one.
 - **🤖 Live AI Transcription & Translation:** Multi-provider speech-to-text (Faster-Whisper, OpenAI, Deepgram, NVIDIA Parakeet, ElevenLabs) paired with real-time LLM translations guided by custom personas, styles, and domain vocabulary glossaries.
 - **🗣️ Direct-Push Text-to-Speech (TTS):** Synthesize live translated speech on the fly (Deepgram Aura or self-hosted Supertonic ONNX), streamed directly to attendees over binary WebSocket frames.
 - **📡 Program Stream Ingest & YouTube Relay:** Send conference floor audio from an encoder or browser, with optional RTMPS forwarding to YouTube.

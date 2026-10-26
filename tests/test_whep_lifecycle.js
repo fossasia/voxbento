@@ -1,0 +1,180 @@
+'use strict';
+
+// Run with: node --test tests/test_whep_lifecycle.js
+const assert = require('node:assert/strict');
+const { test } = require('node:test');
+const fs = require('node:fs');
+const path = require('node:path');
+const vm = require('node:vm');
+
+const source = fs.readFileSync(path.join(__dirname, '../portal/static/js/whep-listener.js'), 'utf8');
+const flush = () => new Promise((resolve) => setImmediate(resolve));
+function deferred() {
+  let resolve, reject;
+  const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
+  return { promise, resolve, reject };
+}
+function response(location = '/sessions/1', body = Promise.resolve('answer')) {
+  return { ok: true, status: 201, headers: { get: () => location }, text: () => body };
+}
+function harness() {
+  const peers = [], requests = [], states = [], timers = new Map(), logs = [];
+  let timerId = 0;
+  class Peer {
+    constructor() {
+      this.connectionState = 'new';
+      this.iceConnectionState = 'new';
+      this.signalingState = 'stable';
+      this.iceGatheringState = 'complete';
+      this.listeners = new Map();
+      this.answers = [];
+      peers.push(this);
+    }
+    addTransceiver() {}
+    addEventListener(type, handler) { this.listeners.set(type, handler); }
+    removeEventListener(type) { this.listeners.delete(type); }
+    dispatch(type, event = {}) { this.listeners.get(type)?.(event); }
+    async createOffer() { return this.offer ? this.offer.promise : { type: 'offer', sdp: 'offer' }; }
+    async setLocalDescription(value) { this.localDescription = value; }
+    async setRemoteDescription(value) { this.answers.push(value); }
+    close() { this.connectionState = 'closed'; }
+  }
+  const audio = { srcObject: null, muted: false, paused: true, play() { this.paused = false; return Promise.resolve(); } };
+  const context = vm.createContext({
+    RTCPeerConnection: Peer, URL, AbortController,
+    fetch(url, options) {
+      if (options.method === 'DELETE') { requests.push({ url, options }); return Promise.resolve({ ok: true }); }
+      const pending = deferred();
+      requests.push({ url, options, ...pending });
+      // Deliberately allow settlement after abort to exercise already delivered responses.
+      return pending.promise;
+    },
+    setTimeout(fn) { const id = ++timerId; timers.set(id, fn); return id; },
+    clearTimeout(id) { timers.delete(id); },
+  });
+  const client = vm.runInContext(source + '\ncreateWhepClient();', context);
+  const start = (url = 'https://media.test/a/whep', audioEl = audio) => client.start({
+    whepUrl: url, audioEl, onState: (s) => states.push(s), onLog: (s) => logs.push(s),
+  });
+  const posts = () => requests.filter((r) => r.options.method === 'POST');
+  const deletes = () => requests.filter((r) => r.options.method === 'DELETE').map((r) => r.url);
+  const runTimers = () => { const pending = [...timers.values()]; timers.clear(); pending.forEach((fn) => fn()); };
+  return { client, context, start, audio, peers, posts, deletes, states, timers, logs, runTimers };
+}
+
+test('a pending request failure after Stop cannot retry', async () => {
+  const h = harness(); h.start(); await flush();
+  const request = h.posts()[0]; h.client.stop();
+  request.reject(new Error('network lost')); await flush();
+  assert.equal(h.states.at(-1).retrying, false);
+  assert.equal(h.timers.size, 0);
+  h.runTimers(); await flush();
+  assert.equal(h.posts().length, 1);
+  assert.equal(request.options.signal.aborted, true);
+});
+
+test('a late success after Stop releases its WHEP resource without applying the answer', async () => {
+  const h = harness(); h.start(); await flush();
+  h.client.stop(); h.posts()[0].resolve(response('/sessions/late')); await flush();
+  assert.equal(h.peers[0].answers.length, 0);
+  assert.deepEqual(h.deletes(), ['https://media.test/sessions/late']);
+  assert.equal(h.states.at(-1).peerConnection, 'closed');
+});
+
+test('an old answer body settling after a new source starts cannot change the new peer', async () => {
+  const h = harness(), body = deferred(); h.start(); await flush();
+  h.posts()[0].resolve(response('old-session', body.promise)); await flush();
+  h.start('https://other.test/b/whep'); await flush();
+  h.posts()[1].resolve(response('/sessions/new')); await flush();
+  body.resolve('old answer'); await flush();
+  assert.equal(h.peers[0].answers.length, 0);
+  assert.equal(h.peers[1].answers.length, 1);
+  assert.equal(h.peers[1].answers[0].sdp, 'answer');
+  assert.deepEqual(h.deletes(), ['https://media.test/a/old-session']);
+  h.client.stop();
+  assert.deepEqual(h.deletes(), ['https://media.test/a/old-session', 'https://other.test/sessions/new']);
+});
+
+test('failure of a replaced source cannot schedule retries or notify its replacement', async () => {
+  const h = harness(); h.start(); await flush();
+  h.start('https://other.test/b/whep'); await flush();
+  const statesBefore = h.states.length;
+  h.posts()[0].reject(new Error('old failure')); await flush();
+  assert.equal(h.timers.size, 0);
+  assert.equal(h.states.length, statesBefore);
+  assert.equal(h.posts()[1].options.signal.aborted, false);
+  h.client.stop();
+});
+
+test('late peer events cannot attach old audio or reconnect', async () => {
+  const h = harness(); h.start(); await flush();
+  const old = h.peers[0]; h.start('https://media.test/b/whep'); await flush();
+  old.dispatch('track', { track: { kind: 'audio' }, streams: [{ id: 'old' }] });
+  old.connectionState = 'failed'; old.dispatch('connectionstatechange'); old.dispatch('iceconnectionstatechange');
+  assert.equal(h.audio.srcObject, null);
+  assert.equal(h.timers.size, 0);
+  h.client.stop();
+});
+
+test('Stop during offer creation prevents any WHEP POST', async () => {
+  const h = harness(), offer = deferred();
+  // Set the asynchronous offer before the negotiation continuation runs.
+  const Peer = h.context.RTCPeerConnection;
+  Peer.prototype.createOffer = () => offer.promise;
+  h.start(); h.client.stop();
+  offer.resolve({ type: 'offer', sdp: 'late' }); await flush();
+  assert.equal(h.posts().length, 0);
+  assert.equal(h.timers.size, 0);
+});
+
+test('current failures retry once and a successful attempt resets the reported state', async () => {
+  const h = harness(); h.start(); await flush();
+  h.posts()[0].reject(new Error('offline')); await flush();
+  h.peers[0].connectionState = 'failed'; h.peers[0].dispatch('connectionstatechange');
+  assert.equal(h.timers.size, 1);
+  assert.equal(h.states.at(-1).retrying, true);
+  h.runTimers(); await flush();
+  h.posts()[1].resolve(response()); await flush();
+  assert.equal(h.states.at(-1).retrying, false);
+  assert.equal(h.peers[1].answers.length, 1);
+  h.client.stop(); h.client.stop();
+  assert.deepEqual(h.deletes(), ['https://media.test/sessions/1']);
+});
+
+test('Start detaches the previous audio element as well as its peer', async () => {
+  const h = harness(); h.start(); await flush();
+  h.peers[0].dispatch('track', { track: { kind: 'audio' }, streams: [{ id: 'a' }] });
+  assert.notEqual(h.audio.srcObject, null);
+  const nextAudio = { ...h.audio, srcObject: null };
+  h.start('https://media.test/b/whep', nextAudio); await flush();
+  assert.equal(h.audio.srcObject, null);
+  h.client.stop();
+});
+
+test('Stop during ICE gathering removes its timeout and listener', async () => {
+  const h = harness();
+  const Peer = h.context.RTCPeerConnection;
+  const original = Peer.prototype.setLocalDescription;
+  Peer.prototype.setLocalDescription = async function (value) {
+    this.iceGatheringState = 'gathering';
+    await original.call(this, value);
+  };
+  h.start(); await flush();
+  assert.equal(h.timers.size, 1);
+  h.client.stop(); await flush();
+  assert.equal(h.timers.size, 0);
+  assert.equal(h.peers[0].listeners.has('icegatheringstatechange'), false);
+  assert.equal(h.posts().length, 0);
+});
+
+test('an invalid answer is reported and retried, with its session released on teardown', async () => {
+  const h = harness();
+  h.context.RTCPeerConnection.prototype.setRemoteDescription = async () => { throw new Error('invalid SDP'); };
+  h.start(); await flush();
+  h.posts()[0].resolve(response()); await flush();
+  assert.equal(h.states.at(-1).retrying, true);
+  assert.match(h.logs.at(-2), /invalid SDP/);
+  h.client.stop();
+  assert.deepEqual(h.deletes(), ['https://media.test/sessions/1']);
+  assert.equal(h.timers.size, 0);
+});

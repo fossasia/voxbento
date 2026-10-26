@@ -12,10 +12,8 @@
 
 function createWhepClient() {
 
-  /** @type {RTCPeerConnection|null} */
-  let pc = null;
-  /** @type {string|null} WHEP resource URL returned via Location header */
-  let resourceUrl = null;
+  // Only the current attempt may attach audio, report state or schedule a retry.
+  let attempt = null;
   /** @type {number|null} */
   let reconnectTimer = null;
   /** Exponential back-off delay (ms). */
@@ -45,6 +43,7 @@ function createWhepClient() {
   }
 
   function emitState() {
+    const pc = attempt ? attempt.peer : null;
     _onState({
       peerConnection: pc ? pc.connectionState : 'closed',
       ice:            pc ? pc.iceConnectionState : 'closed',
@@ -155,112 +154,129 @@ function createWhepClient() {
    * Returns a promise that resolves when gathering is "complete" or after
    * the given timeout (whichever comes first).
    */
-  function waitForIce(peerConn, timeoutMs) {
+  function waitForIce(current, timeoutMs) {
+    const peer = current.peer;
     return new Promise((resolve) => {
-      if (peerConn.iceGatheringState === 'complete') {
+      if (peer.iceGatheringState === 'complete') {
         resolve();
         return;
       }
-      const timer = setTimeout(resolve, timeoutMs);
-      peerConn.addEventListener('icegatheringstatechange', function handler() {
-        if (peerConn.iceGatheringState === 'complete') {
-          clearTimeout(timer);
-          peerConn.removeEventListener('icegatheringstatechange', handler);
-          resolve();
-        }
-      });
+      function finish() {
+        clearTimeout(timer);
+        peer.removeEventListener('icegatheringstatechange', onChange);
+        current.cancelIce = null;
+        resolve();
+      }
+      function onChange() {
+        if (peer.iceGatheringState === 'complete') finish();
+      }
+      const timer = setTimeout(finish, timeoutMs);
+      current.cancelIce = finish;
+      peer.addEventListener('icegatheringstatechange', onChange);
     });
+  }
+
+  function releaseResource(current) {
+    if (!current.resourceUrl) return;
+    const url = current.resourceUrl;
+    current.resourceUrl = null;
+    // Teardown is independent of the negotiation's aborted signal.
+    fetch(url, { method: 'DELETE' }).catch((err) => log('WHEP session cleanup failed: ' + err.message));
   }
 
   async function connect() {
     cleanup(false);
+    const current = {
+      peer: null,
+      url: _whepUrl,
+      controller: new AbortController(),
+      resourceUrl: null,
+      cancelIce: null,
+    };
+    attempt = current;
 
-    log('Creating RTCPeerConnection...');
-    pc = new RTCPeerConnection({
-      iceServers: [],         // local-only, no STUN/TURN needed for dev
-    });
-
-    // We want to receive audio only.
-    pc.addTransceiver('audio', { direction: 'recvonly' });
-
-    // Attach incoming track to <audio>.
-    pc.addEventListener('track', (event) => {
-      log('Remote track received: kind=' + event.track.kind);
-      if (event.track.kind === 'audio') {
-        const stream = event.streams[0] || new MediaStream([event.track]);
-        if (_audioDelayMs > 0) {
-          attachDelayedStream(stream);
-        } else {
-          attachDirectStream(stream);
-        }
-      }
-      emitState();
-    });
-
-    // State change listeners.
-    pc.addEventListener('connectionstatechange', () => {
-      log('PeerConnection state: ' + pc.connectionState);
-      emitState();
-      if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
-        scheduleReconnect();
-      }
-    });
-
-    pc.addEventListener('iceconnectionstatechange', () => {
-      log('ICE state: ' + pc.iceConnectionState);
-      emitState();
-    });
-
-    // Create offer.
-    const offer = await pc.createOffer();
-    await pc.setLocalDescription(offer);
-
-    // Wait for ICE candidates (100 ms — local dev needs no STUN).
-    await waitForIce(pc, 100);
-
-    const offerSdp = pc.localDescription.sdp;
-    log('Sending WHEP offer to ' + _whepUrl);
-
-    let response;
     try {
-      response = await fetch(_whepUrl, {
+      log('Creating RTCPeerConnection...');
+      const peer = new RTCPeerConnection({ iceServers: [] });
+      current.peer = peer;
+      peer.addTransceiver('audio', { direction: 'recvonly' });
+
+      peer.addEventListener('track', (event) => {
+        if (attempt !== current) return;
+        log('Remote track received: kind=' + event.track.kind);
+        if (event.track.kind === 'audio') {
+          const stream = event.streams[0] || new MediaStream([event.track]);
+          if (_audioDelayMs > 0) {
+            attachDelayedStream(stream);
+          } else {
+            attachDirectStream(stream);
+          }
+        }
+        emitState();
+      });
+      peer.addEventListener('connectionstatechange', () => {
+        if (attempt !== current) return;
+        log('PeerConnection state: ' + peer.connectionState);
+        emitState();
+        if (peer.connectionState === 'failed' || peer.connectionState === 'disconnected') {
+          scheduleReconnect(current);
+        }
+      });
+      peer.addEventListener('iceconnectionstatechange', () => {
+        if (attempt !== current) return;
+        log('ICE state: ' + peer.iceConnectionState);
+        emitState();
+      });
+
+      const offer = await peer.createOffer();
+      if (attempt !== current) return;
+      await peer.setLocalDescription(offer);
+      if (attempt !== current) return;
+      await waitForIce(current, 100);
+      if (attempt !== current) return;
+
+      log('Sending WHEP offer to ' + current.url);
+      const response = await fetch(current.url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/sdp' },
-        body: offerSdp,
+        body: peer.localDescription.sdp,
+        signal: current.controller.signal,
       });
+      if (response.ok) {
+        const location = response.headers.get('Location');
+        if (location) current.resourceUrl = new URL(location, current.url).href;
+      }
+      if (attempt !== current) {
+        releaseResource(current);
+        return;
+      }
+      if (!response.ok) {
+        const body = await response.text();
+        if (attempt !== current) return;
+        log('WHEP error ' + response.status + ': ' + body);
+        scheduleReconnect(current);
+        return;
+      }
+
+      const answerSdp = await response.text();
+      if (attempt !== current) return;
+      await peer.setRemoteDescription({ type: 'answer', sdp: answerSdp });
+      if (attempt !== current) return;
+      reconnectDelay = 100;
+      retrying = false;
+      log('WHEP session established');
+      emitState();
     } catch (err) {
-      log('WHEP fetch failed: ' + err.message);
-      scheduleReconnect();
-      return;
+      if (attempt !== current) return;
+      log('WHEP negotiation failed: ' + err.message);
+      scheduleReconnect(current);
     }
-
-    if (!response.ok) {
-      const body = await response.text().catch(() => '');
-      log('WHEP error ' + response.status + ': ' + body);
-      scheduleReconnect();
-      return;
-    }
-
-    // Save resource URL for teardown.
-    const location = response.headers.get('Location');
-    if (location) {
-      // Location may be relative or absolute.
-      resourceUrl = new URL(location, _whepUrl).href;
-    }
-
-    const answerSdp = await response.text();
-    await pc.setRemoteDescription({ type: 'answer', sdp: answerSdp });
-
-    reconnectDelay = 100;  // reset back-off on success
-    retrying = false;
-    log('WHEP session established');
-    emitState();
   }
 
   // ── reconnect ──────────────────────────────────────────────────────────
 
-  function scheduleReconnect() {
-    if (reconnectTimer) return;
+  function scheduleReconnect(current) {
+    if (attempt !== current || reconnectTimer) return;
     retrying = true;
     const delay = reconnectDelay;
     reconnectDelay = Math.min(reconnectDelay * 1.5, 8000);
@@ -268,29 +284,25 @@ function createWhepClient() {
     emitState();
     reconnectTimer = setTimeout(() => {
       reconnectTimer = null;
-      connect();
+      if (attempt === current) connect();
     }, delay);
   }
 
   // ── cleanup ────────────────────────────────────────────────────────────
 
   function cleanup(closeDelayedContext = true) {
+    const previous = attempt;
+    attempt = null;
     if (reconnectTimer) {
       clearTimeout(reconnectTimer);
       reconnectTimer = null;
     }
-
-    if (resourceUrl) {
-      // Best-effort DELETE to release the WHEP session on the server.
-      fetch(resourceUrl, { method: 'DELETE' }).catch(() => {});
-      resourceUrl = null;
+    if (previous) {
+      previous.controller.abort();
+      if (previous.cancelIce) previous.cancelIce();
+      releaseResource(previous);
+      if (previous.peer) previous.peer.close();
     }
-
-    if (pc) {
-      pc.close();
-      pc = null;
-    }
-
     if (_audioEl) {
       _audioEl.srcObject = null;
       _audioEl.muted = false;
@@ -311,6 +323,8 @@ function createWhepClient() {
      * @param {function}        opts.onLog    – called with log string
      */
     start(opts) {
+      cleanup();
+      reconnectDelay = 100;
       _whepUrl = opts.whepUrl;
       _audioEl = opts.audioEl;
       _audioDelayMs = Math.max(0, parseInt(opts.audioDelayMs || 0, 10) || 0);

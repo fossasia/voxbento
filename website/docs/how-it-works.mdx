@@ -66,6 +66,8 @@ MediaMTX terminates the WebRTC connection from the interpreter's browser, decode
 
 Listeners connect to the WHEP endpoint for their chosen language. WHEP (WebRTC HTTP Egress Protocol) is the mirror of WHIP — it negotiates a WebRTC session from the server side and streams audio to the listener's browser with sub-second latency.
 
+Clearing a listener selection cancels its pending WHEP negotiation and retries. Each attempt owns its peer and session URL, so late responses from a previous source cannot change the current stream. Returned sessions from discarded attempts are released.
+
 The listener page shows **Live (WebRTC)** only when the WHEP client reports both
 a connected peer and active audio playback. Selecting a source or receiving
 translation text alone does not mark WebRTC audio live. Failed WHEP requests
