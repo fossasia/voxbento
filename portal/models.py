@@ -274,12 +274,12 @@ class DBBooth(Base):
 
 class TranscriptSegment(Base):
     __tablename__ = "transcript_segments"
-    # The transcript export filters on room_id + language_code and orders by created_at,
-    # so created_at rides along as the third key column to satisfy that sort from the index.
+    # The transcript export filters on room_id + language_code and orders by (created_at, id),
+    # so both ride along after the equality columns and the sort comes from the index.
     # booth_id is indexed on its own because it is not a leading column of the composite,
     # and its ON DELETE CASCADE needs an index that PostgreSQL does not create itself.
     __table_args__ = (
-        Index("ix_transcript_segments_room_language_created", "room_id", "language_code", "created_at"),
+        Index("ix_transcript_segments_room_language_created", "room_id", "language_code", "created_at", "id"),
         Index("ix_transcript_segments_booth_id", "booth_id"),
     )
 

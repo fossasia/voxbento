@@ -10,8 +10,6 @@ from __future__ import annotations
 
 from typing import Sequence, Union
 
-import sqlalchemy as sa
-
 from alembic import op
 
 # revision identifiers, used by Alembic.
@@ -24,33 +22,36 @@ ROOM_LANGUAGE_CREATED = "ix_transcript_segments_room_language_created"
 BOOTH_ID = "ix_transcript_segments_booth_id"
 
 
-def _existing_indexes() -> set[str]:
-    return {index["name"] for index in sa.inspect(op.get_bind()).get_indexes("transcript_segments")}
-
-
 def upgrade() -> None:
     """Index the transcript export predicate and the booth cascade path (#1033).
 
     ``transcript_segments`` was created in 010 with a primary key and two foreign
     keys but no secondary index, so the export in ``portal/routers/api_v1.py``
-    scanned the table and sorted into a temporary B-tree, and the ``ON DELETE
-    CASCADE`` from ``booths`` scanned the child table once per deleted parent.
+    filtered and sorted over the table with nothing to support it, and the
+    ``ON DELETE CASCADE`` from ``booths`` scanned the child table once per
+    deleted parent.
+
+    ``id`` closes the composite because the export orders by ``(created_at, id)``.
+    Without it PostgreSQL still sorts the rows that tie on ``created_at``; SQLite
+    hid that because its index entries already carry the rowid.
+
+    ``if_not_exists`` does two jobs. The container command applies migrations on
+    startup, so two instances can race between observing an index absent and
+    creating it, and a duplicate-index error would abort one migration. It also
+    means this revision never reflects the live schema, which is what allows
+    ``alembic upgrade --sql`` to emit the statements instead of failing on a mock
+    connection.
     """
-    existing = _existing_indexes()
-    if ROOM_LANGUAGE_CREATED not in existing:
-        op.create_index(
-            ROOM_LANGUAGE_CREATED,
-            "transcript_segments",
-            ["room_id", "language_code", "created_at"],
-        )
-    if BOOTH_ID not in existing:
-        op.create_index(BOOTH_ID, "transcript_segments", ["booth_id"])
+    op.create_index(
+        ROOM_LANGUAGE_CREATED,
+        "transcript_segments",
+        ["room_id", "language_code", "created_at", "id"],
+        if_not_exists=True,
+    )
+    op.create_index(BOOTH_ID, "transcript_segments", ["booth_id"], if_not_exists=True)
 
 
 def downgrade() -> None:
     """Drop the transcript segment indexes."""
-    existing = _existing_indexes()
-    if BOOTH_ID in existing:
-        op.drop_index(BOOTH_ID, table_name="transcript_segments")
-    if ROOM_LANGUAGE_CREATED in existing:
-        op.drop_index(ROOM_LANGUAGE_CREATED, table_name="transcript_segments")
+    op.drop_index(BOOTH_ID, table_name="transcript_segments", if_exists=True)
+    op.drop_index(ROOM_LANGUAGE_CREATED, table_name="transcript_segments", if_exists=True)
