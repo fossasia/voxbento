@@ -62,6 +62,7 @@ class TranscriptionWorkerSession:
         self.state = State.STARTING
         self.stop_event = asyncio.Event()
         self.task: asyncio.Task | None = None
+        self.loop_entered = False
 
         from portal.booth_identity import make_mediamtx_path
 
@@ -82,7 +83,7 @@ class TranscriptionWorkerSession:
         logger.info(f"[{self.booth_id}][{self.session_id}] Session stopping")
         self.state = State.STOPPING
         self.stop_event.set()
-        if self.task:
+        if self.task and self.loop_entered:
             self.task.cancel()
 
     async def wait_until_stopped(self):
@@ -95,6 +96,7 @@ class TranscriptionWorkerSession:
                 logger.error(f"[{self.booth_id}][{self.session_id}] Task ended with exception: {e}")
 
     async def _run_loop(self):
+        self.loop_entered = True
         retry_count = 0
         try:
             while self.state != State.STOPPING:

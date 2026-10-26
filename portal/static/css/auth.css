@@ -427,3 +427,8 @@ body:has(.login-page) .portal-footer {
   .admin-main { padding: 16px; }
   .header-nav { gap: 12px; }
 }
+
+/* "Check your email" notice after asking for a sign-in link */
+.login-waiting-title { margin: 0 0 8px; font-weight: 600; }
+.login-waiting-text { margin: 0; font-size: 0.9em; line-height: 1.45; }
+.login-waiting-text a { color: inherit; font-weight: 600; text-decoration: underline; }

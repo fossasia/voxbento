@@ -41,7 +41,7 @@ Interpreters monitor the floor session and broadcast high-fidelity translation d
 - **⚡ Sub-Second Listener Playback:** Attendees receive ultra-low latency audio via WebRTC (WHEP) powered by MediaMTX, scaling effortlessly to thousands of listeners.
 - **🤖 Live AI Transcription & Translation:** Multi-provider speech-to-text (Faster-Whisper, OpenAI, Deepgram, NVIDIA Parakeet, ElevenLabs) paired with real-time LLM translations guided by custom personas, styles, and domain vocabulary glossaries.
 - **🗣️ Direct-Push Text-to-Speech (TTS):** Synthesize live translated speech on the fly (Deepgram Aura or self-hosted Supertonic ONNX), streamed directly to attendees over binary WebSocket frames.
-- **📡 Program Stream Ingest & YouTube Relay:** Ingest clean conference audio directly from hardware video switchers (OBS, ATEM, vMix) via authenticated HTTPS WHIP, or straight from a browser tab on the sound-desk computer with the program audio sender (mute, sound check, auto-reconnect), with optional automated RTMPS forwarding to YouTube.
+- **📡 Program Stream Ingest & YouTube Relay:** Send conference floor audio from an encoder or browser, with optional RTMPS forwarding to YouTube.
 - **🎛️ Mission Control & Coordination:** Real-time booth status monitoring, live audio meters, in-booth team chat, and coordinator controls via FastAPI WebSockets.
 - **💻 VoxBento Local:** Sovereign, 100% offline desktop application for private AI meeting intelligence and minutes on macOS, Windows, and Linux.
 
@@ -101,17 +101,48 @@ uv sync --all-groups
 
 ### 3. Configure Environment
 
-Copy the example environment configuration and generate the required encryption key:
+For **NEW local setups only**, copy the example configuration and generate separate strong secrets. Do not overwrite an existing `.env` or rotate existing keys with this command; it refuses to replace an existing file. The generated file is owner-readable only.
+
+The encryption key protects stored provider keys and queued email.
 
 ```bash
-cp .env.example .env
 uv run python -c "
 import secrets, re
-env = open('.env').read()
-env = re.sub(r'API_KEY_ENCRYPTION_KEY=.*', f'API_KEY_ENCRYPTION_KEY={secrets.token_hex(16)}', env)
-open('.env', 'w').write(env)
+import os, tempfile
+from pathlib import Path
+
+target = Path('.env')
+if target.exists():
+    raise SystemExit('.env already exists; refusing to replace it')
+env = open('.env.example').read()
+for name in (
+    'SECRET_KEY', 'API_KEY_ENCRYPTION_KEY',
+    'MEDIAMTX_AUTH_HOOK_SECRET', 'BOOTH_ACCESS_TOKEN',
+):
+    env = re.sub(rf'^{name}=.*$', f'{name}={secrets.token_hex(32)}', env, flags=re.MULTILINE)
+with tempfile.NamedTemporaryFile(mode='w', encoding='utf-8', dir='.', prefix='.env.', delete=False) as f:
+    os.chmod(f.name, 0o600)
+    f.write(env)
+    f.flush()
+    os.fsync(f.fileno())
+temporary = Path(f.name)
+try:
+    os.link(temporary, target)
+except FileExistsError:
+    raise SystemExit('.env already exists; refusing to replace it')
+finally:
+    temporary.unlink(missing_ok=True)
 "
 ```
+
+Defaults keep debug disabled (`DEBUG=false`) and startup secret checks active. Developers may explicitly set `DEBUG=true` in their own `.env` for local-only debugging; never enable it for deployments.
+
+For production, configure `BOOTH_ACCESS_TOKEN` and `MEDIAMTX_AUTH_HOOK_SECRET` with separate strong values, for example from `openssl rand -hex 32`. Startup rejects a missing or weak `BOOTH_ACCESS_TOKEN` and a missing `MEDIAMTX_AUTH_HOOK_SECRET`; it does not measure the hook secret's strength, so keep it strong and private.
+
+For self-hosted domains, set `PUBLIC_BASE_URL` in `.env` to your public URL
+for email links and canonical URLs. See the
+[deployment guide](website/docs/configuration/deployment.mdx) for production setup
+and [registration protection](docs/registration-protection.md) for signup controls.
 
 ### 4. Run the Stack
 
@@ -130,6 +161,9 @@ uv run uvicorn fastapi_app:app --reload --port 8000
 ```
 
 Once running, access the application at **`http://localhost:8000`**.
+
+For event and room setup, see the [events and rooms guide](website/docs/admin/events-and-rooms.mdx).
+For pipeline details and advanced configuration, see [how it works](website/docs/how-it-works.mdx).
 
 ---
 

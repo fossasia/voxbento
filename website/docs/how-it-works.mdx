@@ -66,6 +66,21 @@ MediaMTX terminates the WebRTC connection from the interpreter's browser, decode
 
 Listeners connect to the WHEP endpoint for their chosen language. WHEP (WebRTC HTTP Egress Protocol) is the mirror of WHIP — it negotiates a WebRTC session from the server side and streams audio to the listener's browser with sub-second latency.
 
+The listener page shows **Live (WebRTC)** only when the WHEP client reports both
+a connected peer and active audio playback. Selecting a source or receiving
+translation text alone does not mark WebRTC audio live. Failed WHEP requests
+report a separate retry flag, so the badge can show **Reconnecting...** even
+before ICE starts; successful negotiation or stopping the client clears it.
+
+Caption following is tracked from scroll events. New captions and translations
+scroll to the end only while following is enabled. Moving more than 40 pixels
+from the bottom pauses following until the listener returns near the bottom.
+Changing rooms or sources clears captions, resets following, and restores the
+waiting placeholder.
+
+
+Before starting booth playback, the listener page waits for a live and unlocked status on `/ws/captions/{booth_id}`. This socket sends the current status on connection and updates when listener-visible state changes, even when transcription is disabled, so attendees who arrive early start listening without reloading. Status contains only booth identity, broadcast lock, and ingest status; interpreter participants and private booth chat stay inside the booth. The page reconnects after transient socket disconnects and stops playback when an unlocked booth is locked.
+
     For devices that do not handle WebRTC reliably, MediaMTX also produces HLS segments on a separate port. The listener page loads hls.js and falls back to HLS automatically when WHEP is unavailable. HLS introduces roughly three seconds of additional latency but works on virtually any device.
 
     :::tip
@@ -75,6 +90,42 @@ You do not need to configure the fallback manually. The listener page tries WHEP
 Rooms can also define an optional listener-side audio synchronization delay. This is useful when attendees are watching delayed livestream video, delayed captions, embedded conference players, or external media while listening to Voxbento audio. For example, use `1000` ms for a one-second caption delay, `2000` ms for a lightly delayed player, `5000` ms for a typical embedded stream, or `8000` ms for a platform with a larger broadcast buffer. When the room delay is `0` ms, listener playback uses the same direct WHEP-to-HTML-audio path as normal and adds no Web Audio graph or extra latency.
 
 In the organizer workspace, room management includes server-side search to quickly filter rooms by name within an event using case-insensitive matching against the room display name, displaying a clearable empty state when no rooms match the query.
+
+### Guided room setup
+
+Event setup follows **Event → Rooms & languages → Team & listeners**. Each room
+uses one form for its spoken language, listener languages, one delivery per
+language (Interpreter, AI voice or AI text) and optional floor captions, which stay
+on whenever a language uses AI because the AI translates from them. The same form edits existing rooms.
+Room lists and the room overview summarize those choices, including AI languages
+that do not have an interpreter booth.
+When editing a room, choose **Review changes** to see the changes and any booth
+removal warnings on a separate screen, then **Save changes**. **Back to edit**
+returns to your answers without saving. Pressing Enter before review advances
+to review instead of saving immediately.
+
+`portal/room_setup.py` validates a room plan and applies it in one database
+transaction to the existing room, booth, and translation-language tables. Human
+languages create booths; AI languages enable floor transcription and translation;
+AI voice languages enable floor TTS for that language only
+(`room_translation_languages.tts_enabled`, migration 035), so AI text languages are
+translated but never spoken. Service choices require event keys, the external
+transcription switch where applicable, and optional server dependencies. Local
+translation and per-language voice support are validated before saving. The audio
+transport is unchanged.
+
+Saving removes deselected idle booths and their dependent invitations and
+assignments, but retains booths reported live and explains this on the room page.
+Existing booths in the spoken language are preserved unless explicitly deselected.
+Advanced models stay unchanged when their provider stays the same. The advanced
+room tabs remain available for model, voice, prompt, vocabulary, and source settings.
+The JavaScript module progressively enhances the server-rendered form into four
+steps; server validation also handles submissions without JavaScript.
+
+The owner-only GET/POST paths are `/workspace/events/{event_id}/rooms/new` and
+`/workspace/events/{event_id}/rooms/{room_id}/setup`, with corresponding Admin
+paths. Both new POST handlers require same-origin requests. Old wizard room and
+booth POSTs remain compatible; the old booth GET redirects to Rooms & languages.
 
 ## Organizer and System Administration Routes
 
@@ -193,13 +244,28 @@ Listeners connected to the caption WebSocket receive transcription segments as t
 
 ## Shared header and user menu
 
-Every signed-in page (Admin, My events and its event pages, Mission Control,
-Account, Developer API) renders the same header from `_app_header.html`: the
-VoxBento logo with the name of the current area, the area's page links, and the
-user menu. `portal/user_menu.py` builds the menu from the request principal: My
-events, Account, Developer API (only with an approved developer app), Admin (only
-for Admins) and Logout, with the current area highlighted. A router dependency
-loads the principal once per request so templates never query the database.
+Every signed-in page (Admin, My events and its event pages, My booths, Mission
+Control, Account, Developer API) renders the same header from `_app_header.html`:
+the VoxBento logo with the name of the current area, the area's page links, and
+the user menu. `portal/user_menu.py` builds the menu from the request principal: My
+events, My booths (only for interpreters, given for an event or a booth), Account,
+Developer API (only with an approved developer app), Admin (only for Admins) and
+Logout, with the current area highlighted. A router dependency loads the principal
+once per request so templates never query the database.
+
+The interpreter booth is a work screen, so it uses a compact bar instead: the
+language, room and event names, the connection state, the same user menu and
+**Leave**, and no site footer. **My booths** (`/interpreter`) lists the person's
+booths by event and room, with **Enter booth** (and **Mission Control** for
+coordinators) next to a microphone and connection check.
+
+**Mission Control** (`/mission-control/{event}/`) shows one section per room the
+person may run. Each room shows its floor captions' state with Start and Stop
+(through `/api/rooms/{room_id}/floor-transcription/*`), and each booth card shows
+who is in the booth and who is live, a listen-in slider, Go live / Stop broadcast
+and **Open booth**. The owner's room page is split into tabs (Overview, Floor
+source, Captions & translation, Settings); the open tab is remembered per room so
+saving a setting returns to it, and without JavaScript every section shows in order.
 
 **My events** at `/workspace/` (`portal/my_events.py`) lists every event the
 person has a role in, combining event, room and booth memberships into one card
@@ -247,6 +313,17 @@ memberships allow. Operators should maintain at least two active administrator
 accounts; the [admin-login migration guide](https://github.com/fossasia/voxbento/blob/dev/docs/admin-password-removal-migration.md)
 documents the controlled recovery procedure.
 
+Registration has a configurable per-client-IP limit (20 attempts per minute by
+default). Operators can enable Cloudflare Turnstile on `/register`; the server
+validates the token's success, hostname and `register` action before hashing a
+password, creating an unverified account, or queueing verification email.
+Rejected challenges return 403 and verification-service outages return 503.
+The form preserves name/email and offers a fresh challenge. Turnstile defaults
+to disabled so existing deployments work until keys are provisioned. Login,
+invites and real-time media routes are unaffected. See the
+[registration protection guide](https://github.com/fossasia/voxbento/blob/dev/docs/registration-protection.md)
+for enabling it, proxy trust requirements and Cloudflare edge protection.
+
 ## Hosting access requests
 
 Creating events requires hosting access (`users.can_host`). Signed-in users without
@@ -263,6 +340,35 @@ Declining requires a reason, closes the request as `declined` and emails the
 reason to the person, who can then send a new request. Granting hosting access
 any other way (the user page toggle or an accepted hosting invitation) also
 closes an open request.
+
+## Transactional email
+
+VoxBento queues transactional email in the same database transaction as the
+action that caused it. The outbox worker leases messages, retries transient SMTP
+failures, and preserves records when SMTP is not configured. Platform Admins use
+**Admin → Emails** to edit drafts, publish versioned templates, preview only
+safe sample links, send themselves a test, and review redacted delivery status.
+Templates may only use the placeholders declared for each notification and
+`{% if %}` conditions, and render in Jinja's sandbox. Rendered messages and
+account links are encrypted at rest; a queued email whose sign-in or invitation
+link has been used or has expired is not sent, and the content of finished
+emails is erased after 30 days.
+
+Every email uses one fixed layout, so they all look alike: the logo, the message
+in a white card with one button, and a footer. Admins edit only the message;
+the **Branding** setting on Admin → Emails shows or hides the logo and can use
+another https image. The default is the V symbol without the wordmark or a
+background, so it stays clean on light and dark surfaces. Its SVG source has a
+high-resolution transparent PNG export for use in email clients. Browser
+previews load the bundled mark from the current site; delivered emails use an
+absolute image URL under `PUBLIC_BASE_URL`. Mail clients that block images show
+the VoxBento alternative text until images are allowed.
+
+Besides sign-in, invitation and hosting emails, people are
+told when they are removed from a team, when an Admin changes their Admin,
+hosting, active or verified status, when their password is set, changed,
+removed or reset, and when their account is deleted. Team invitation links last
+7 days. Shareable booth invite links send no email.
 
 ## Security Layers
 
@@ -299,6 +405,8 @@ The reconciler reads one MediaMTX path snapshot per tick, and per-room ownership
 locks keep an unavailable room from delaying authorization for other rooms.
 Credential revocation commits before media cleanup; if cleanup is temporarily
 unavailable, the old token stays invalid while reconciliation retries the kick.
+While a dependency stays down, the reconcilers log the outage once, remind every
+5 minutes and log its recovery, rather than repeating a warning on every 2 s retry.
 Media never passes through FastAPI. Only one floor source may own a room.
 
 The existing FFmpeg/STT/aggregator/storage/translation/TTS chain is reused. Program
@@ -322,11 +430,45 @@ authenticated control API and stops relays on revoke, source switch, destination
 removal or restart; it enforces a fail-closed relay cap. The YouTube key is
 Fernet-encrypted at rest and write-only. Ingest, relay and language-processing
 health are reported separately. Relay mode puts VoxBento in the YouTube path, so
-the independent WHIP mode remains the default. See `docs/program-relay.md`.
+the independent WHIP mode remains the default. Operators enable relay mode once with
+`scripts/setup-youtube-relay.sh`, which reuses Caddy's certificate for RTMPS and pins the
+relay override into every deploy through `COMPOSE_FILE`. The RTMPS hostname must
+resolve directly to the server: Cloudflare's standard web proxy does not carry
+RTMPS on TCP 1936. Production uses `rtmps.voxbento.com`; Caddy manages its certificate,
+while MediaMTX terminates the encoder connection. The cloud firewall must allow
+inbound TCP 1936 as well. See `docs/program-relay.md`.
 
 ## Production deployment
+
+Defaults keep debug disabled (`DEBUG=false`), so startup checks reject known-weak
+signing secrets, a missing `MEDIAMTX_AUTH_HOOK_SECRET`, and a missing or weak
+`BOOTH_ACCESS_TOKEN`. The Quick Start snippets generate separate strong values for
+`SECRET_KEY`, `API_KEY_ENCRYPTION_KEY`, `MEDIAMTX_AUTH_HOOK_SECRET`, and
+`BOOTH_ACCESS_TOKEN` for **NEW local setups only**; do not overwrite an existing
+`.env` or rotate existing keys with them. Compose shares the hook secret between
+the portal and MediaMTX. Developers may explicitly opt into `DEBUG=true` in their
+own `.env` for local-only debugging; never enable it for deployments.
+
+Production deployments must set `BOOTH_ACCESS_TOKEN` and
+`MEDIAMTX_AUTH_HOOK_SECRET` in the deployment secret store to separate strong
+values, for example generated with `openssl rand -hex 32`. The portal refuses to
+start when `BOOTH_ACCESS_TOKEN` is missing or weak, or when
+`MEDIAMTX_AUTH_HOOK_SECRET` is missing. The hook secret's strength is not measured
+by startup validation, so keep it strong and private. The same production check
+also requires `API_KEY_ENCRYPTION_KEY` for encrypted provider keys and queued email.
 
 Production deployment builds and validates a separate candidate checkout before
 updating the live checkout. The portal reads code and dependencies from its Docker
 image and receives `.env` settings through Compose. See the
 [deployment preflight](configuration/deployment.mdx#deployment-preflight).
+
+For self-hosted domains, set `PUBLIC_BASE_URL` to your public URL; the default is
+`https://voxbento.com`. This is the same setting used for email links. Public
+`GET /sitemap.xml` builds canonical URLs from `settings.public_base_url`, never
+from the request's `Host` header. It strips trailing slashes before appending the
+existing sitemap paths and XML-escapes the resulting URLs.
+
+A configured path prefix is preserved in sitemap entries: for example,
+`PUBLIC_BASE_URL=https://interpret.example.com/voxbento/` produces
+`https://interpret.example.com/voxbento/` for the home page and
+`https://interpret.example.com/voxbento/research` for the research page.

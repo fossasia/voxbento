@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>{% block title %}{{ user_menu.area_label if user_menu else 'VoxBento' }}{% endblock %} — Voxbento</title>
     <link rel="icon" type="image/x-icon" href="{{ url_for('static', path='img/favicon.ico') }}" />
+    <link rel="stylesheet" href="{{ url_for('static', path='css/tokens.css') }}?v={{ asset_version }}" />
     <link rel="stylesheet" href="{{ url_for('static', path='css/fonts.css') }}?v={{ asset_version }}" />
     <link rel="stylesheet" href="{{ url_for('static', path='css/admin.css') }}?v={{ asset_version }}" />
     <link rel="stylesheet" href="{{ url_for('static', path='css/app-header.css') }}?v={{ asset_version }}" />
@@ -24,6 +25,7 @@
         </a>
         <a href="/admin/events/" class="{{ 'is-active' if _path.startswith('/admin/events') or _path.startswith('/admin/setup') else '' }}">Events</a>
         <a href="/admin/users/" class="{{ 'is-active' if _path.startswith('/admin/users') else '' }}">Users</a>
+        <a href="/admin/emails/" class="{{ 'is-active' if _path.startswith('/admin/emails') else '' }}">Emails</a>
         <a href="/admin/developer-accounts" class="{{ 'is-active' if _path.startswith('/admin/developer-accounts') else '' }}">
           Dev Accounts
           {% if pending_developer_accounts|default(0) %}
@@ -40,7 +42,7 @@
     </main>
 
     <!-- Custom Confirm Modal -->
-    <div id="custom-confirm-modal" class="custom-modal-overlay">
+    <dialog id="custom-confirm-modal" class="custom-modal-overlay" aria-labelledby="custom-confirm-message" aria-describedby="custom-confirm-funny">
       <div class="custom-modal">
         <div class="custom-modal-header">
           <span class="brand-text brand-text--modal">VoxBento</span>
@@ -54,7 +56,7 @@
           <button id="custom-confirm-ok" class="btn btn-danger" type="button">Confirm</button>
         </div>
       </div>
-    </div>
+    </dialog>
 
     <!-- Toast container for transient feedback (e.g. copy success/failure). Visible text plus
          aria-live so both sighted and assistive-tech users get the same confirmation. -->
@@ -62,5 +64,6 @@
 
     <script type="module" src="{{ url_for('static', path='js/admin.js') }}?v={{ asset_version }}"></script>
     <script type="module" src="{{ url_for('static', path='js/user-menu.js') }}?v={{ asset_version }}"></script>
+    {% include "_auth_sync.html" %}
   </body>
 </html>

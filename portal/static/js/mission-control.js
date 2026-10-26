@@ -1,67 +1,77 @@
 /**
- * Mission Control — Live Booth Matrix
+ * Mission Control — live booth matrix for one event
  *
  * Connects to each booth's WebSocket as a silent observer (no booth:join).
- * Coordinators / admins can:
- *   - Monitor all configured booths for the event in real-time
- *   - See which interpreters are present and speaking
- *   - Listen in via a per-booth audio volume slider (WHEP)
- *   - Toggle Go Live / Stop per booth
+ * Coordinators, event owners and Admins can:
+ *   - See every booth of the rooms they run, grouped by room
+ *   - See who is in each booth, who is live and who is speaking
+ *   - Listen in through a per-booth volume slider (WHEP)
+ *   - Turn a booth's broadcast on or off
+ *   - Start and stop the floor captions of each room
+ *   - Open a booth themselves
+ *
+ * The page passes its data in data-config on #mission-control (no inline script).
  */
 
-const config = window.MISSION_CONTROL_CONFIG;
+const root = document.getElementById('mission-control');
+const config = JSON.parse(root?.dataset.config || '{}');
 const roomsContainer = document.getElementById('rooms-container');
 
 /** @type {Map<string, {state:object, ws:WebSocket|null, whep:object|null, audioElement:HTMLAudioElement|null, currentVolume:number, pendingFocusId:string}>} */
 const boothMap = new Map();
 
+function el(tag, className, text) {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (text !== undefined) node.textContent = text;
+  return node;
+}
+
 function init() {
-  if (!config.initialBooths || config.initialBooths.length === 0) {
-    const emptyDiv = document.createElement('div');
-    emptyDiv.className = 'card';
-    emptyDiv.style.cssText = 'padding:2rem;text-align:center;grid-column:1/-1;';
-    const p = document.createElement('p');
-    p.style.cssText = 'color:var(--color-muted);margin:0;';
-    p.textContent = 'No booths are configured for this event yet.';
-    emptyDiv.appendChild(p);
-    roomsContainer.innerHTML = '';
-    roomsContainer.appendChild(emptyDiv);
+  const rooms = config.rooms || [];
+  const booths = config.booths || [];
+  roomsContainer.innerHTML = '';
+
+  if (rooms.length === 0 && booths.length === 0) {
+    const empty = el('div', 'mc-empty-state');
+    empty.append(
+      el('p', 'mc-empty-title', 'No rooms or booths yet'),
+      el('p', '', "Once the event's owners add rooms and booths, they appear here."),
+    );
+    roomsContainer.appendChild(empty);
     return;
   }
 
-  // Group booths by room_id
-  const rooms = new Map();
-  config.initialBooths.forEach(b => {
-    if (!rooms.has(b.room_id)) {
-      rooms.set(b.room_id, {
-        room_name: b.room_name || `Room ${b.room_id}`,
-        booths: []
-      });
+  // Rooms in the order the server sent them; a booth whose room is unknown still gets a section.
+  const roomOrder = rooms.map((room) => room.id);
+  booths.forEach((b) => {
+    if (!roomOrder.includes(b.room_id)) {
+      roomOrder.push(b.room_id);
+      rooms.push({ id: b.room_id, name: b.room_name || `Room ${b.room_id}`, floor_captions: false });
     }
-    rooms.get(b.room_id).booths.push(b);
   });
 
-  roomsContainer.innerHTML = '';
-  
-  // Create room groups
-  rooms.forEach((roomInfo, roomId) => {
-    const roomGroup = document.createElement('div');
-    roomGroup.className = 'mc-room-group';
-    
-    const roomTitle = document.createElement('h3');
-    roomTitle.className = 'mc-room-title';
-    roomTitle.textContent = `Room: ${roomInfo.room_name}`;
-    roomGroup.appendChild(roomTitle);
-    
-    const roomGrid = document.createElement('div');
-    roomGrid.className = 'mc-grid';
-    roomGrid.id = `booth-grid-${roomId}`;
-    roomGroup.appendChild(roomGrid);
-    
-    roomsContainer.appendChild(roomGroup);
+  rooms.forEach((room) => {
+    const section = el('section', 'mc-room');
+    section.setAttribute('aria-labelledby', `mc-room-title-${room.id}`);
+
+    const head = el('div', 'mc-room-head');
+    const title = el('h2', 'mc-room-title', room.name);
+    title.id = `mc-room-title-${room.id}`;
+    head.appendChild(title);
+    head.appendChild(renderFloorCaptions(room));
+    section.appendChild(head);
+
+    const grid = el('div', 'mc-grid');
+    grid.id = `booth-grid-${room.id}`;
+    if (!booths.some((b) => b.room_id === room.id)) {
+      grid.appendChild(el('p', 'mc-muted', 'No booths in this room yet.'));
+    }
+    section.appendChild(grid);
+    roomsContainer.appendChild(section);
   });
 
-  config.initialBooths.forEach(b => {
+  booths.forEach((b) => {
     boothMap.set(b.booth_id, {
       state: b,
       ws: null,
@@ -73,6 +83,88 @@ function init() {
     renderCard(b.booth_id);
     connectWs(b.booth_id);
   });
+}
+
+// ---------------------------------------------------------------------------
+// Floor captions (one per room) — uses the coordinator floor-transcription API
+// ---------------------------------------------------------------------------
+
+const CAPTION_STATES = {
+  stopped: ['Off', 'is-off'],
+  starting: ['Starting…', 'is-busy'],
+  joined: ['Joining audio…', 'is-busy'],
+  receiving: ['On', 'is-on'],
+  reconnecting: ['Reconnecting…', 'is-busy'],
+  degraded: ['Needs attention', 'is-problem'],
+};
+
+function renderFloorCaptions(room) {
+  const box = el('div', 'mc-captions');
+  if (!room.floor_captions) {
+    box.appendChild(el('span', 'mc-muted', 'Floor captions are off for this room.'));
+    return box;
+  }
+  const label = el('span', 'mc-captions-label', 'Floor captions');
+  const status = el('span', 'mc-pill', 'Checking…');
+  box.append(label, status);
+
+  if (room.floor_source === 'program_ingest') {
+    status.textContent = 'From the program feed';
+    status.title = 'Captions start automatically when the program feed sends audio.';
+    return box;
+  }
+
+  const start = el('button', 'btn btn-sm btn-outline', 'Start');
+  start.type = 'button';
+  start.id = `mc-captions-start-${room.id}`;
+  const stop = el('button', 'btn btn-sm btn-outline', 'Stop');
+  stop.type = 'button';
+  stop.id = `mc-captions-stop-${room.id}`;
+  const reason = el('span', 'mc-captions-reason');
+  box.append(start, stop, reason);
+
+  async function refresh() {
+    try {
+      const res = await fetch(`/api/rooms/${room.id}/floor-transcription/status`);
+      if (!res.ok) throw new Error(String(res.status));
+      const data = await res.json();
+      const [text, tone] = CAPTION_STATES[data.state] || [String(data.state || 'Unknown').replace(/_/g, ' '), 'is-busy'];
+      status.textContent = text;
+      status.className = `mc-pill ${tone}`;
+      reason.textContent = data.state === 'stopped' ? '' : data.reason || '';
+      start.hidden = data.enabled;
+      stop.hidden = !data.enabled;
+    } catch (err) {
+      status.textContent = 'Unavailable';
+      status.className = 'mc-pill is-problem';
+      console.debug('Floor caption status failed', err);
+    }
+  }
+
+  async function send(action) {
+    start.disabled = true;
+    stop.disabled = true;
+    try {
+      const res = await fetch(`/api/rooms/${room.id}/floor-transcription/${action}`, { method: 'POST' });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        showToast(body.detail || `Couldn't ${action} the floor captions.`, 'error');
+      }
+    } catch (err) {
+      showToast(`Couldn't ${action} the floor captions.`, 'error');
+      console.debug('Floor caption request failed', err);
+    } finally {
+      start.disabled = false;
+      stop.disabled = false;
+      refresh();
+    }
+  }
+
+  start.addEventListener('click', () => send('start'));
+  stop.addEventListener('click', () => send('stop'));
+  refresh();
+  setInterval(refresh, 15000);
+  return box;
 }
 
 // ---------------------------------------------------------------------------
@@ -97,7 +189,7 @@ function connectWs(boothId) {
     try { data = JSON.parse(e.data); } catch { return; }
 
     if (data.type === 'booth:state') {
-      entry.state = data.state;
+      entry.state = { ...data.state, room_name: entry.state.room_name };
       renderCard(boothId);
     }
     // Silently ignore booth:joined — we do not join as a participant.
@@ -119,7 +211,7 @@ function connectWs(boothId) {
 function setBroadcastLive(boothId, goLive) {
   const entry = boothMap.get(boothId);
   if (!entry || !entry.ws || entry.ws.readyState !== WebSocket.OPEN) {
-    showToast(`Cannot reach booth — WebSocket not connected.`, 'error');
+    showToast("Can't reach this booth right now. Try again in a moment.", 'error');
     return;
   }
   entry.ws.send(JSON.stringify({
@@ -163,10 +255,8 @@ function renderCard(boothId) {
 
   let card = document.getElementById(`mc-card-${boothId}`);
   if (!card) {
-    card = document.createElement('div');
+    card = el('article', 'card mc-booth');
     card.id = `mc-card-${boothId}`;
-    card.className = 'card';
-    card.style.cssText = 'padding:1.25rem;display:flex;flex-direction:column;gap:1rem;';
 
     const audio = document.createElement('audio');
     audio.autoplay = true;
@@ -175,30 +265,16 @@ function renderCard(boothId) {
     card.appendChild(audio);
 
     const roomGrid = document.getElementById(`booth-grid-${s.room_id}`);
-    if (roomGrid) {
-      roomGrid.appendChild(card);
-    } else {
-      roomsContainer.appendChild(card); // fallback
-    }
+    (roomGrid || roomsContainer).appendChild(card);
   }
 
-  // Interpreters and rows
   // Everyone who can go live, as decided by the server (portal/roles.py).
   const interpreters = (s.participants || []).filter((p) => p.can_go_live);
-
-  // Broadcast control
   const isWsOpen = entry.ws && entry.ws.readyState === WebSocket.OPEN;
   const isLive = s.broadcast_unlocked;
-  let btnClass = isLive ? 'btn-danger' : 'btn-success';
-  let btnText = isLive ? 'Stop' : 'Go Live';
-  let isDisabled = false;
-  
-  if (!isWsOpen) {
-    btnClass = 'btn-outline';
-    btnText = 'Connecting...';
-    isDisabled = true;
-  }
+  const onAir = s.ingest_status === 'connected';
 
+  // Keep keyboard focus across re-renders (#873).
   const active = document.activeElement;
   let focusedId = '';
   if (card.contains(active)) {
@@ -209,131 +285,76 @@ function renderCard(boothId) {
   entry.pendingFocusId = '';
 
   card.innerHTML = '';
+  card.classList.toggle('is-on-air', onAir);
 
-  const headerDiv = document.createElement('div');
-  headerDiv.style.cssText = 'display:flex;justify-content:space-between;align-items:flex-start;';
-  
-  const titleDiv = document.createElement('div');
-  const h3 = document.createElement('h3');
-  h3.style.margin = '0';
-  h3.textContent = s.language + ' ';
-  const langCodeSpan = document.createElement('span');
-  langCodeSpan.style.cssText = 'font-size:0.8rem;font-weight:normal;color:var(--color-muted);';
-  langCodeSpan.textContent = `(${s.language_code})`;
-  h3.appendChild(langCodeSpan);
-  titleDiv.appendChild(h3);
-  
-  const roomDiv = document.createElement('div');
-  roomDiv.style.cssText = 'font-size:0.8rem;color:var(--color-muted);margin-top:0.2rem;';
-  roomDiv.textContent = s.room_name ? s.room_name : `Room ID: ${s.room_id ?? 'N/A'}`;
-  titleDiv.appendChild(roomDiv);
-  headerDiv.appendChild(titleDiv);
-  
-  const ingestSpan = document.createElement('span');
-  if (s.ingest_status === 'connected') {
-    ingestSpan.className = 'status-badge status-success';
-    ingestSpan.textContent = '● Ingest Live';
-  } else {
-    ingestSpan.className = 'status-badge';
-    ingestSpan.textContent = '○ No Ingest';
-  }
-  headerDiv.appendChild(ingestSpan);
-  card.appendChild(headerDiv);
+  // Header: language and on-air state
+  const head = el('div', 'mc-booth-head');
+  const title = el('h3', 'mc-booth-title', s.language);
+  title.appendChild(el('span', 'mc-booth-code', s.language_code));
+  head.appendChild(title);
+  head.appendChild(el('span', `mc-pill ${onAir ? 'is-on' : 'is-off'}`, onAir ? '● On air' : 'Not on air'));
+  card.appendChild(head);
 
-  const interpContainer = document.createElement('div');
-  interpContainer.style.cssText = 'border-top:1px solid var(--color-border);padding-top:0.75rem;';
-  const interpH4 = document.createElement('h4');
-  interpH4.style.cssText = 'margin:0 0 0.5rem 0;font-size:0.8rem;text-transform:uppercase;color:var(--color-muted);';
-  interpH4.textContent = 'Interpreters';
-  interpContainer.appendChild(interpH4);
-
+  // Interpreters
+  const people = el('div', 'mc-booth-section');
+  people.appendChild(el('p', 'mc-booth-label', 'Interpreters'));
   if (interpreters.length) {
-    interpreters.forEach(p => {
+    const list = el('ul', 'mc-people');
+    interpreters.forEach((p) => {
       const isActive = p.participant_id === s.active_interpreter_id;
-      const isMuted = !p.mic_active;
-      const row = document.createElement('div');
-      row.style.cssText = 'display:flex;align-items:center;justify-content:space-between;font-size:0.85rem;padding:0.25rem 0;';
-      
-      const nameSpan = document.createElement('span');
-      if (isActive) {
-        nameSpan.style.cssText = 'font-weight:bold;color:var(--color-primary);';
-      }
-      nameSpan.textContent = p.display_name;
-      if (isActive) {
-        const activeEm = document.createElement('em');
-        activeEm.style.fontWeight = 'normal';
-        activeEm.textContent = ' (active)';
-        nameSpan.appendChild(activeEm);
-      }
-      row.appendChild(nameSpan);
-
-      const statusSpan = document.createElement('span');
-      statusSpan.className = `status-badge ${isMuted ? '' : 'status-success'}`;
-      statusSpan.textContent = isMuted ? 'Muted' : '▶ Speaking';
-      row.appendChild(statusSpan);
-      interpContainer.appendChild(row);
+      const row = el('li', `mc-person${isActive ? ' is-active' : ''}`);
+      const name = el('span', 'mc-person-name', p.display_name);
+      if (isActive) name.appendChild(el('span', 'mc-person-tag', 'live'));
+      row.appendChild(name);
+      row.appendChild(el('span', `mc-pill ${p.mic_active ? 'is-on' : 'is-off'}`, p.mic_active ? 'Speaking' : 'Muted'));
+      list.appendChild(row);
     });
+    people.appendChild(list);
   } else {
-    const noInterpDiv = document.createElement('div');
-    noInterpDiv.style.cssText = 'font-size:0.85rem;color:var(--color-muted);';
-    noInterpDiv.textContent = 'No interpreters present';
-    interpContainer.appendChild(noInterpDiv);
+    people.appendChild(el('p', 'mc-muted', 'Nobody is in this booth.'));
   }
-  card.appendChild(interpContainer);
+  card.appendChild(people);
 
-  const volContainer = document.createElement('div');
-  volContainer.style.cssText = 'border-top:1px solid var(--color-border);padding-top:0.75rem;display:flex;flex-direction:column;gap:0.5rem;';
-  const volHeader = document.createElement('div');
-  volHeader.style.cssText = 'display:flex;align-items:center;justify-content:space-between;';
-  const volLabel = document.createElement('label');
-  volLabel.style.cssText = 'font-size:0.8rem;font-weight:500;';
-  volLabel.textContent = 'Monitor Audio';
-  volHeader.appendChild(volLabel);
-  const volSpan = document.createElement('span');
-  volSpan.id = `mc-vol-lbl-${boothId}`;
-  volSpan.style.cssText = 'font-size:0.8rem;color:var(--color-muted);';
-  volSpan.textContent = entry.currentVolume > 0 ? `${entry.currentVolume}%` : '0%';
-  volHeader.appendChild(volSpan);
-  volContainer.appendChild(volHeader);
-  
+  // Listen in
+  const listen = el('div', 'mc-booth-section');
+  const listenHead = el('div', 'mc-listen-head');
+  const volLabel = el('label', 'mc-booth-label', 'Listen in');
+  volLabel.htmlFor = `mc-vol-${boothId}`;
+  const volValue = el('span', 'mc-muted', `${entry.currentVolume > 0 ? entry.currentVolume : 0}%`);
+  volValue.id = `mc-vol-lbl-${boothId}`;
+  listenHead.append(volLabel, volValue);
   const volInput = document.createElement('input');
   volInput.type = 'range';
   volInput.id = `mc-vol-${boothId}`;
+  volInput.className = 'mc-volume';
   volInput.min = '0';
   volInput.max = '100';
-  volInput.value = entry.currentVolume > 0 ? entry.currentVolume.toString() : '0';
-  volInput.style.width = '100%';
-  volContainer.appendChild(volInput);
-  card.appendChild(volContainer);
+  volInput.value = String(entry.currentVolume > 0 ? entry.currentVolume : 0);
+  listen.append(listenHead, volInput);
+  card.appendChild(listen);
 
-  const btnContainer = document.createElement('div');
-  btnContainer.style.cssText = 'margin-top:auto;padding-top:1rem;';
-  const btn = document.createElement('button');
+  // Actions: broadcast toggle and open the booth
+  const actions = el('div', 'mc-booth-actions');
+  const btn = el('button', `btn ${!isWsOpen ? 'btn-outline' : isLive ? 'btn-danger' : 'btn-success'}`);
+  btn.type = 'button';
   btn.id = `mc-live-${boothId}`;
-  btn.className = `btn ${btnClass}`;
-  btn.style.cssText = 'width:100%;font-weight:600;';
-  if (isDisabled) {
-    btn.disabled = true;
-  }
-  btn.textContent = btnText;
-  btnContainer.appendChild(btn);
-  card.appendChild(btnContainer);
+  btn.textContent = !isWsOpen ? 'Connecting…' : isLive ? 'Stop broadcast' : 'Go live';
+  btn.disabled = !isWsOpen;
+  const open = el('a', 'btn btn-outline', 'Open booth');
+  open.href = `/interpreter/${encodeURIComponent(config.eventSlug)}/${s.room_id}/${encodeURIComponent(s.language_code)}`;
+  open.id = `mc-open-${boothId}`;
+  actions.append(btn, open);
+  card.appendChild(actions);
 
   card.appendChild(entry.audioElement);
 
   volInput.addEventListener('input', (e) => {
     const val = parseInt(e.target.value, 10);
-    volSpan.textContent = `${val}%`;
+    volValue.textContent = `${val}%`;
     entry.currentVolume = val;
   });
-
-  volInput.addEventListener('change', (e) => {
-    handleVolumeChange(boothId, e.target.value);
-  });
-
-  btn.addEventListener('click', () => {
-    setBroadcastLive(boothId, !isLive);
-  });
+  volInput.addEventListener('change', (e) => handleVolumeChange(boothId, e.target.value));
+  btn.addEventListener('click', () => setBroadcastLive(boothId, !isLive));
 
   const focusTarget = focusedId ? document.getElementById(focusedId) : null;
   if (focusTarget && !focusTarget.disabled) {
@@ -348,9 +369,12 @@ function renderCard(boothId) {
 // ---------------------------------------------------------------------------
 
 function showToast(msg, type = 'info') {
-  const t = document.createElement('div');
-  t.textContent = msg;
-  t.style.cssText = `position:fixed;bottom:1.5rem;right:1.5rem;padding:0.75rem 1.25rem;border-radius:6px;font-size:0.9rem;z-index:9999;background:${type === 'error' ? '#c0392b' : '#2c3e50'};color:#fff;`;
+  if (typeof window.showToast === 'function') {
+    window.showToast(msg, type);
+    return;
+  }
+  const t = el('div', `mc-toast${type === 'error' ? ' is-error' : ''}`, msg);
+  t.setAttribute('role', 'status');
   document.body.appendChild(t);
   setTimeout(() => t.remove(), 4000);
 }
@@ -364,4 +388,8 @@ document.addEventListener('focusin', (e) => {
   });
 });
 
-document.addEventListener('DOMContentLoaded', init);
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', init);
+} else {
+  init();
+}

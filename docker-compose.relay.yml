@@ -1,16 +1,24 @@
 # Opt-in RTMPS ingest + YouTube relay (#749). Read docs/program-relay.md first.
 #
-#   docker compose -f docker-compose.yml -f docker-compose.relay.yml config --quiet
-#   docker compose -f docker-compose.yml -f docker-compose.relay.yml up -d
+# Set up with one command, which writes the settings below into .env:
 #
-# Requires in .env: PROGRAM_INGEST_ENABLED=true, MEDIAMTX_AUTH_HOOK_SECRET,
-# PROGRAM_RELAY_CONTROL_SECRET (openssl rand -hex 32), PROGRAM_RTMPS_PUBLIC_BASE
-# (e.g. rtmps://voxbento.com:1936) and PROGRAM_RTMPS_CERT_DIR containing
-# rtmps.crt + rtmps.key for that hostname. Rollback: drop this file from the
-# command and recreate; the WHIP dual-output mode is unaffected.
+#   scripts/setup-youtube-relay.sh
+#
+# The script adds COMPOSE_FILE=docker-compose.yml:docker-compose.relay.yml to .env,
+# so plain `docker compose up -d` and the production deploy workflow always include
+# this file. Without that line, the next deploy removes program-relay and closes 1936.
+#
+# Settings read from .env: MEDIAMTX_AUTH_HOOK_SECRET, PROGRAM_RELAY_CONTROL_SECRET
+# (openssl rand -hex 32), PROGRAM_RTMPS_PUBLIC_BASE (e.g. rtmps://voxbento.com:1936),
+# PROGRAM_RTMPS_CERT_DIR and PROGRAM_RTMPS_CERT_NAME (<name>.crt + <name>.key in that
+# directory, e.g. Caddy's certificate directory for the hostname; MediaMTX reloads them
+# when Caddy renews). Rollback: remove COMPOSE_FILE from .env and run
+# `docker compose up -d --remove-orphans`; the WHIP dual-output mode is unaffected.
 services:
   portal:
     environment:
+      # Relay mode is a kind of program ingest, so it needs both switches.
+      PROGRAM_INGEST_ENABLED: "true"
       PROGRAM_RELAY_ENABLED: "true"
       PROGRAM_RTMPS_PUBLIC_BASE: "${PROGRAM_RTMPS_PUBLIC_BASE:?set PROGRAM_RTMPS_PUBLIC_BASE, e.g. rtmps://voxbento.com:1936}"
       PROGRAM_RELAY_BASE: "http://program-relay:8090"
@@ -24,10 +32,11 @@ services:
       MTX_RTMP: "yes"
       MTX_RTMPENCRYPTION: "strict"
       MTX_RTMPSADDRESS: ":1936"
-      MTX_RTMPSERVERKEY: "/certs/rtmps.key"
-      MTX_RTMPSERVERCERT: "/certs/rtmps.crt"
+      MTX_RTMPSERVERKEY: "/certs/${PROGRAM_RTMPS_CERT_NAME:-rtmps}.key"
+      MTX_RTMPSERVERCERT: "/certs/${PROGRAM_RTMPS_CERT_NAME:-rtmps}.crt"
     volumes:
-      - "${PROGRAM_RTMPS_CERT_DIR:?set PROGRAM_RTMPS_CERT_DIR to a directory with rtmps.crt and rtmps.key}:/certs:ro"
+      # A directory, not single files, so renewed certificates (new files) stay visible.
+      - "${PROGRAM_RTMPS_CERT_DIR:?set PROGRAM_RTMPS_CERT_DIR (run scripts/setup-youtube-relay.sh)}:/certs:ro"
     ports:
       # Public contribution ingest. Every publish is checked by /internal/media-auth.
       - "1936:1936"
@@ -45,6 +54,11 @@ services:
       RELAY_ALLOWED_HOSTS: "${PROGRAM_RELAY_ALLOWED_HOSTS:-a.rtmps.youtube.com,b.rtmps.youtube.com}"
     depends_on:
       - mediamtx
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8090/healthz', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
     read_only: true
     tmpfs: [/tmp]
     cap_drop: [ALL]

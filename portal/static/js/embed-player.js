@@ -91,16 +91,19 @@
       var wsProto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
       var urlPath = new URL(CAPTION_URL).pathname;
       var wsUrl = wsProto + '//' + window.location.host + urlPath + '?token=' + encodeURIComponent(EMBED_TOKEN);
-      var captionWs = new WebSocket(wsUrl);
+      var captionWs = null;
+      var captionRetryDelayMs = 1000;
 
       var historyEl = document.getElementById('embed-caption-history');
       var currentEl = document.getElementById('embed-caption-current');
       var maxHistoryDOM = 50;
+      // How close to the bottom (in px) still counts as "following" the captions.
+      var FOLLOW_THRESHOLD_PX = 40;
       
       var captionHistoryHeadless = [];
       var maxHistoryHeadless = 2;
 
-      captionWs.onmessage = function(ev) {
+      function handleCaptionMessage(ev) {
         try {
           var msg = JSON.parse(ev.data);
           var isValid = false;
@@ -151,7 +154,11 @@
                 }
               }, config.target_origin);
             } else {
-              // Visible UI: build a DOM history like Voxbento's main listener UI
+              // Visible UI: build a DOM history like Voxbento's main listener UI.
+              // Follow new captions only while the viewer is already at the bottom,
+              // so scrolling up to re-read a line is not undone by the next partial.
+              var followLatest =
+                captionsEl.scrollHeight - captionsEl.scrollTop - captionsEl.clientHeight <= FOLLOW_THRESHOLD_PX;
               if (status === 'clear') {
                 currentEl.textContent = '';
               } else if (status === 'final') {
@@ -173,16 +180,37 @@
               } else {
                 captionsEl.classList.remove('empty');
               }
-              captionsEl.scrollTop = captionsEl.scrollHeight;
+              if (followLatest) {
+                captionsEl.scrollTop = captionsEl.scrollHeight;
+              }
 
             }
           }
         } catch (_) {}
-      };
+      }
 
-      captionWs.onclose = function(ev) {
-        if (ev.code === 4001) { setExpired(); }
-      };
+      function openCaptionWs() {
+        var ws = new WebSocket(wsUrl);
+        captionWs = ws;
+        ws.onopen = function() {
+          captionRetryDelayMs = 1000;
+        };
+        ws.onmessage = handleCaptionMessage;
+        ws.onclose = function(ev) {
+          if (ev.code === 4001) { setExpired(); return; }
+          // 4003: the token is for another event, so reconnecting cannot help.
+          if (ev.code === 4003 || captionWs !== ws) return;
+          // Any other close (network drop, server restart, proxy timeout) would
+          // otherwise stop captions until the host page is reloaded.
+          captionWs = null;
+          // Wait between half and all of the current delay, so embeds dropped by the same
+          // restart do not all reconnect at the same moment.
+          setTimeout(openCaptionWs, captionRetryDelayMs * (0.5 + Math.random() / 2));
+          captionRetryDelayMs = Math.min(captionRetryDelayMs * 2, 15000);
+        };
+      }
+
+      openCaptionWs();
     }
 
     if (config.headless) {

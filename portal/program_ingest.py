@@ -32,6 +32,7 @@ from portal.config import settings
 from portal.database import get_session
 from portal.globals import get_http_client
 from portal.models import Event, Room
+from portal.outage_log import OutageLog
 from portal.transcription.process import audio_progress
 from portal.transcription.providers.base import ProviderConfig, ProviderEnum, get_api_key
 from portal.transcription.worker import start_transcription_worker, stop_transcription_worker
@@ -119,6 +120,8 @@ class IngestHealth:
 
 health: dict[int, IngestHealth] = {}
 failures: OrderedDict[str, tuple[float, int]] = OrderedDict()
+path_list_outage = OutageLog(logger, "program_ingest path_list_unavailable")
+database_outage = OutageLog(logger, "program_ingest database_unavailable")
 PROGRAM_SECRET_KDF_ROUNDS = 120_000
 
 
@@ -585,7 +588,7 @@ def relay_request(room: Room, event: Event, path: MediaPath | None) -> tuple[str
         return None
     if not (room.program_relay_server and room.program_relay_key_enc):
         program_relay.relay_health[room.id] = program_relay.RelayHealth(
-            "unconfigured", "Add the YouTube RTMPS server URL and stream key."
+            "unconfigured", "Add the YouTube stream key to start relaying."
         )
         return None
     if not path or not path.ready or not path.source:
@@ -738,8 +741,10 @@ async def reconcile_once() -> None:
                 "Media control unavailable; retrying automatically.",
             )
             current.ingest_state, current.ingest_reason = current.state, current.reason
-        logger.warning("program_ingest path_list_unavailable")
+        path_list_outage.failed()
         return
+    if ids:
+        path_list_outage.recovered()
     wanted: dict[int, tuple[str, str]] = {}
     for room_id in ids:
         try:
@@ -775,5 +780,7 @@ async def reconcile_loop() -> None:
         try:
             await reconcile_once()
         except SQLAlchemyError:
-            logger.warning("program_ingest database_unavailable")
+            database_outage.failed()
+        else:
+            database_outage.recovered()
         await asyncio.sleep(2)
