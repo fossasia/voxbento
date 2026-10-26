@@ -72,7 +72,7 @@ without captions; the *Captions and translation* row just stays off.
    (with it on, YouTube goes live as soon as video arrives), and **Auto-stop off**, so a
    short reconnect does not end the broadcast.
 
-**2. Room page → Program stream ingest.**
+**2. Room page → Room audio → From streaming software.**
 1. Under *How does your stream reach YouTube?* choose **VoxBento forwards to YouTube**.
 2. Step **1 — Add your YouTube stream key:** paste the key and click **Save stream key**.
    You can also paste the full URL (`rtmp://a.rtmp.youtube.com/live2/<key>`); VoxBento
@@ -118,7 +118,7 @@ The badge at the top reads **Live on YouTube**. Check the preview in YouTube Stu
 - *Lock out the encoder:* **Revoke stream key** disconnects OBS immediately; the old key
   stops working.
 - *Leave relay mode:* choose **OBS streams to YouTube itself** and click **Switch…**, or
-  **Switch to Jitsi bot**. Both stop forwarding and replace the credential.
+  **Switch to the online meeting**. Both stop forwarding and replace the credential.
 
 ## Troubleshooting
 
@@ -309,7 +309,7 @@ spawned. No old process outlives a successful stop or replacement.
 
 ## Rollback
 
-1. In each relay room choose *OBS streams to YouTube itself* (or *Switch to Jitsi bot*)
+1. In each relay room choose *OBS streams to YouTube itself* (or *Switch to the online meeting*)
    and reconfigure the encoder to stream to YouTube directly.
 2. Remove `COMPOSE_FILE` from `.env` (or drop `docker-compose.relay.yml` from it) and run
    `docker compose up -d --remove-orphans`: `program-relay` is removed and port 1936

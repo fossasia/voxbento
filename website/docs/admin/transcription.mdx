@@ -209,7 +209,7 @@ Translated segments are broadcast to subscribers through two synchronized paths 
 Translations can be customized using room **AI Interpreter Persona**, **Interpretation Style**, and uploaded **Vocabulary Glossaries** (see [AI Interpretation](./ai-interpretation.mdx)).
 
 ### Direct Push Text-to-Speech (TTS)
-When "Floor Audio TTS (Direct Push)" is enabled for a room, translated segments are synthesized into natural speech via **Deepgram Aura** or self-hosted **Supertonic ONNX**. Attendees receive binary framed messages on:
+When a room language uses **AI voice**, translated segments are synthesized into natural speech via **Deepgram Aura** or self-hosted **Supertonic ONNX**. Attendees receive binary framed messages on:
 ```text
 /ws/tts/{room_id}/{language_code}/{booth_id}
 ```

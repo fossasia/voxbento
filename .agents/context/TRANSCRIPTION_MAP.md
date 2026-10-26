@@ -180,7 +180,7 @@ may disable them. Available cloud speech engines require the event key and
 ID, and Supertonic requires its optional package. Local translation and voice
 language support are checked on save. Advanced models are preserved when the
 provider is unchanged. This configures the existing pipeline; audio still needs
-to be connected through Floor source, and existing reconcilers own worker lifecycle.
+to be connected through the room page's Room audio tab, and existing reconcilers own worker lifecycle.
 
 Transcription is configured per-booth via:
 - `POST /admin/events/{event_id}/rooms/{room_id}/booths/{booth_id}/transcription-settings`
