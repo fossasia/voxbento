@@ -77,6 +77,18 @@ function createWhepClient() {
     });
   }
 
+  function updateDelayedContextState() {
+    const ctx = delayedAudio.context;
+    if (ctx && ctx.state === 'suspended' && !delayedAudio.resumeHandler) {
+      delayedAudio.resumeHandler = resumeDelayedContext;
+      document.addEventListener('click', delayedAudio.resumeHandler);
+      document.addEventListener('touchend', delayedAudio.resumeHandler);
+      document.addEventListener('pointerup', delayedAudio.resumeHandler);
+    } else if (!ctx || ctx.state !== 'suspended') {
+      removeResumeHandler();
+    }
+  }
+
   function prepareDelayedContext() {
     const AudioCtor = window.AudioContext || window.webkitAudioContext;
     if (!AudioCtor) {
@@ -84,14 +96,15 @@ function createWhepClient() {
       return null;
     }
     if (!delayedAudio.context || delayedAudio.context.state === 'closed') {
-      delayedAudio.context = new AudioCtor();
+      const ctx = new AudioCtor();
+      delayedAudio.context = ctx;
+      ctx.onstatechange = () => {
+        if (delayedAudio.context !== ctx) return;
+        updateDelayedContextState();
+        emitState();
+      };
     }
-    if (delayedAudio.context.state === 'suspended' && !delayedAudio.resumeHandler) {
-      delayedAudio.resumeHandler = resumeDelayedContext;
-      document.addEventListener('click', delayedAudio.resumeHandler);
-      document.addEventListener('touchend', delayedAudio.resumeHandler);
-      document.addEventListener('pointerup', delayedAudio.resumeHandler);
-    }
+    updateDelayedContextState();
     resumeDelayedContext();
     return delayedAudio.context;
   }
@@ -120,6 +133,7 @@ function createWhepClient() {
     if (closeContext && delayedAudio.context) {
       const ctx = delayedAudio.context;
       delayedAudio.context = null;
+      ctx.onstatechange = null;
       if (ctx.state !== 'closed') {
         ctx.close().catch((err) => log('AudioContext close failed: ' + err.message));
       }
@@ -199,7 +213,23 @@ function createWhepClient() {
     const url = current.resourceUrl;
     current.resourceUrl = null;
     // Teardown is independent of the negotiation's aborted signal.
-    fetch(url, { method: 'DELETE' }).catch((err) => log('WHEP session cleanup failed: ' + err.message));
+    fetch(url, { method: 'DELETE', credentials: 'omit', redirect: 'error' })
+      .catch((err) => log('WHEP session cleanup failed: ' + err.message));
+  }
+
+  function sessionResourceUrl(location, endpoint) {
+    try {
+      const base = new URL(endpoint);
+      const resource = new URL(location, base);
+      if ((resource.protocol === 'https:' || resource.protocol === 'http:') &&
+          resource.origin === base.origin && !resource.username && !resource.password) {
+        return resource.href;
+      }
+      log('Ignoring WHEP session URL outside the media origin');
+    } catch (err) {
+      log('Invalid WHEP session URL: ' + err.message);
+    }
+    return null;
   }
 
   async function connect() {
@@ -210,6 +240,7 @@ function createWhepClient() {
       controller: new AbortController(),
       resourceUrl: null,
       cancelIce: null,
+      requestTimer: null,
     };
     attempt = current;
 
@@ -220,7 +251,7 @@ function createWhepClient() {
       peer.addTransceiver('audio', { direction: 'recvonly' });
 
       peer.addEventListener('track', (event) => {
-        if (attempt !== current) return;
+        if (attempt !== current || current.controller.signal.aborted) return;
         log('Remote track received: kind=' + event.track.kind);
         if (event.track.kind === 'audio') {
           const stream = event.streams[0] || new MediaStream([event.track]);
@@ -234,7 +265,7 @@ function createWhepClient() {
         emitState();
       });
       peer.addEventListener('connectionstatechange', () => {
-        if (attempt !== current) return;
+        if (attempt !== current || current.controller.signal.aborted) return;
         log('PeerConnection state: ' + peer.connectionState);
         emitState();
         if (peer.connectionState === 'failed' || peer.connectionState === 'disconnected') {
@@ -242,19 +273,26 @@ function createWhepClient() {
         }
       });
       peer.addEventListener('iceconnectionstatechange', () => {
-        if (attempt !== current) return;
+        if (attempt !== current || current.controller.signal.aborted) return;
         log('ICE state: ' + peer.iceConnectionState);
         emitState();
       });
 
       const offer = await peer.createOffer();
-      if (attempt !== current) return;
+      if (attempt !== current || current.controller.signal.aborted) return;
       await peer.setLocalDescription(offer);
-      if (attempt !== current) return;
+      if (attempt !== current || current.controller.signal.aborted) return;
       await waitForIce(current, 100);
-      if (attempt !== current) return;
+      if (attempt !== current || current.controller.signal.aborted) return;
 
       log('Sending WHEP offer to ' + current.url);
+      // Bound both response headers and body so a stalled intermediary cannot stop recovery.
+      current.requestTimer = setTimeout(() => {
+        if (attempt !== current) return;
+        current.controller.abort();
+        log('WHEP request timed out');
+        scheduleReconnect(current);
+      }, 15000);
       const response = await fetch(current.url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/sdp' },
@@ -263,32 +301,35 @@ function createWhepClient() {
       });
       if (response.ok) {
         const location = response.headers.get('Location');
-        if (location) current.resourceUrl = new URL(location, current.url).href;
+        if (location) current.resourceUrl = sessionResourceUrl(location, current.url);
       }
-      if (attempt !== current) {
+      if (attempt !== current || current.controller.signal.aborted) {
         releaseResource(current);
         return;
       }
       if (!response.ok) {
         const body = await response.text();
-        if (attempt !== current) return;
+        if (attempt !== current || current.controller.signal.aborted) return;
         log('WHEP error ' + response.status + ': ' + body);
         scheduleReconnect(current);
         return;
       }
 
       const answerSdp = await response.text();
-      if (attempt !== current) return;
+      if (attempt !== current || current.controller.signal.aborted) return;
       await peer.setRemoteDescription({ type: 'answer', sdp: answerSdp });
-      if (attempt !== current) return;
+      if (attempt !== current || current.controller.signal.aborted) return;
       reconnectDelay = 100;
       retrying = false;
       log('WHEP session established');
       emitState();
     } catch (err) {
-      if (attempt !== current) return;
+      if (attempt !== current || current.controller.signal.aborted) return;
       log('WHEP negotiation failed: ' + err.message);
       scheduleReconnect(current);
+    } finally {
+      clearTimeout(current.requestTimer);
+      current.requestTimer = null;
     }
   }
 
@@ -317,17 +358,20 @@ function createWhepClient() {
       reconnectTimer = null;
     }
     if (previous) {
+      clearTimeout(previous.requestTimer);
+      previous.requestTimer = null;
       previous.controller.abort();
       if (previous.cancelIce) previous.cancelIce();
       releaseResource(previous);
       if (previous.peer) previous.peer.close();
     }
-    if (_audioEl) {
-      if (!closeDelayedContext && _audioEl.srcObject) playOnTrack = !_audioEl.paused;
-      _audioEl.srcObject = null;
+    // Keep the current player attached during recovery so Pause/Play still updates
+    // its state while the replacement negotiates. Stop and source changes detach it.
+    if (closeDelayedContext) {
+      if (_audioEl) _audioEl.srcObject = null;
+      currentStream = null;
+      cleanupDelayedGraph(true);
     }
-    currentStream = null;
-    cleanupDelayedGraph(closeDelayedContext);
   }
 
   // ── public API ─────────────────────────────────────────────────────────
