@@ -403,29 +403,10 @@ async def create_event(
         if existing_event.deleted_at is not None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event not found")
 
-        # Verify caller is authorized to modify memberships on this existing event
-        is_authorized = False
-        if token.event_id == existing_event.id:
-            is_authorized = True
-        elif token.user_id:
-            user_mem = (
-                (
-                    await db.execute(
-                        select(EventMembership).where(
-                            EventMembership.user_id == token.user_id,
-                            EventMembership.event_id == existing_event.id,
-                            EventMembership.role == EVENT_OWNER,
-                        )
-                    )
-                )
-                .scalars()
-                .first()
-            )
-            if user_mem:
-                is_authorized = True
-
-        if not is_authorized:
+        if token.event_id != existing_event.id:
             raise HTTPException(status_code=403, detail="Not authorized to manage memberships for this event.")
+
+        await _verify_token_rbac(db, token, existing_event, manage=True)
 
         # Update the display name if the event already exists (e.g. from OAuth auto-provisioning)
         if existing_event.display_name != payload.name:
@@ -435,6 +416,12 @@ async def create_event(
         await _ensure_event_memberships(db, existing_event.id, token.user_id, payload.organizer_emails)
         return {"id": existing_event.id, "slug": existing_event.slug, "name": existing_event.display_name}
     else:
+        # A retained token must not bootstrap new ownership after its grant loses access.
+        authorizing_event = await db.get(Event, token.event_id)
+        if authorizing_event is None:
+            raise HTTPException(status_code=404, detail="Event not found")
+        await _verify_token_rbac(db, token, authorizing_event, manage=True, lock_event=True, write_lock=True)
+
         event = Event(slug=slug, display_name=payload.name)
         db.add(event)
         await db.flush()

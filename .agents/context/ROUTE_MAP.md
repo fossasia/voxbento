@@ -62,6 +62,15 @@ and `docs/registration-protection.md`. Other routes are unaffected.
 
 ---
 
+## OAuth API v1 event provisioning
+
+`POST /api/v1/events/` requires `events:write` and current management access.
+An existing slug must match the token's event scope; a different existing event
+returns 403. Removed or demoted public-client owners and inactive accounts get
+403 before any event or membership changes. New-event creation checks and locks
+the grant's original event; a deleted authorizing event returns 404. Active Admins
+and trusted confidential clients retain their management access.
+
 ## WebSocket Endpoints
 
 | Path | Auth | Protocol |
