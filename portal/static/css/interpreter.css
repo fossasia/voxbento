@@ -607,12 +607,12 @@ label {
 .header-btn--leave {
   background: #fff;
   color: var(--bx-danger);
-  border-color: #f3c9d3;
+  border-color: color-mix(in srgb, var(--vb-color-danger) 25%, var(--bx-surface));
   padding: 0.45rem 0.85rem;
 }
 
-.header-btn--leave:hover {
-  background: #fff1f4;
+.header-btn--leave:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--vb-color-danger) 6%, var(--bx-surface));
   border-color: var(--bx-danger);
   color: var(--bx-danger);
   box-shadow: none;
@@ -1089,11 +1089,11 @@ label {
 }
 
 .toast-error {
-  background-color: #e53e3e;
+  background-color: var(--vb-color-danger);
 }
 
 .toast-info {
-  background-color: #3182ce;
+  background-color: var(--vb-color-primary);
 }
 
 .toast-fade {
