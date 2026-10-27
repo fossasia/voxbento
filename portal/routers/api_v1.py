@@ -25,6 +25,7 @@ from portal.models import (
     RoomTranslationLanguage,
     TranscriptSegment,
     TranscriptTranslation,
+    User,
 )
 from portal.rate_limit import auth_rate_limiter
 from portal.roles import EVENT_OWNER
@@ -404,10 +405,20 @@ async def create_event(
         if existing_event.deleted_at is not None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event not found")
 
-        if token.event_id != existing_event.id:
-            raise HTTPException(status_code=403, detail="Not authorized to manage memberships for this event.")
-
-        await _verify_token_rbac(db, token, existing_event, manage=True)
+        if token.event_id == existing_event.id:
+            await _verify_token_rbac(db, token, existing_event, manage=True)
+        else:
+            # Outside the token's scope only a current owner passes, e.g. retrying a creation.
+            user = await db.get(User, token.user_id)
+            owner_membership = await db.scalar(
+                select(EventMembership.id).where(
+                    EventMembership.user_id == token.user_id,
+                    EventMembership.event_id == existing_event.id,
+                    EventMembership.role == EVENT_OWNER,
+                )
+            )
+            if user is None or not user.is_active or owner_membership is None:
+                raise HTTPException(status_code=403, detail="Not authorized to manage memberships for this event.")
 
         # Update the display name if the event already exists (e.g. from OAuth auto-provisioning)
         if existing_event.display_name != payload.name:

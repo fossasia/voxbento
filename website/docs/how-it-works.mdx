@@ -142,7 +142,9 @@ Both namespaces use the same underlying management handlers, so the route split 
 Room deletion checks that the requested room belongs to the event specified in the workspace URL before removing it and its dependent booths, invites, and memberships. An unknown room or a room from another event returns HTTP 404 without deleting any data.
 
 API v1 event upserts recheck current account state and event-management access.
-An existing event must match the token's event scope. Creating a new event checks
+An existing event outside the token's event scope can only be updated by an
+active user who currently owns it, which lets a client retry an event it created.
+Creating a new event checks
 the grant's original event and holds its mutation lock through the request, so a
 removed public-client organizer, a deactivated account, or a deleted authorizing
 event cannot bootstrap new ownership. Active Admins and trusted confidential

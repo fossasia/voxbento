@@ -159,16 +159,23 @@ async def test_new_event_creation_requires_current_access_to_authorizing_event(a
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("confidential", [False, True])
-async def test_existing_event_upsert_rejects_token_scoped_to_another_owned_event(access, confidential):
+@pytest.mark.parametrize(
+    ("state", "expected"),
+    [("owner", 201), ("coordinator", 403), ("inactive", 403), ("admin", 403), ("confidential", 403)],
+)
+async def test_existing_event_upsert_outside_token_scope_requires_current_ownership(access, state, expected):
     _, user_id, client_id, _ = access
     async with get_session() as session:
-        client = await session.get(OAuthClient, client_id)
-        client.is_confidential = confidential
         other = Event(slug="other-event", display_name="Other event")
         session.add(other)
         await session.flush()
-        session.add(EventMembership(user_id=user_id, event_id=other.id, role=EVENT_OWNER))
+        role = EVENT_OWNER if state in ("owner", "inactive") else ROOM_COORDINATOR
+        session.add(EventMembership(user_id=user_id, event_id=other.id, role=role))
+        user = await session.get(User, user_id)
+        user.is_active = state != "inactive"
+        user.is_admin = state == "admin"
+        client = await session.get(OAuthClient, client_id)
+        client.is_confidential = state == "confidential"
         other_id = other.id
 
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
@@ -176,10 +183,10 @@ async def test_existing_event_upsert_rejects_token_scoped_to_another_owned_event
             "/api/v1/events/", headers=HEADERS, json={"slug": "other-event", "name": "Changed"}
         )
 
-    assert response.status_code == 403
+    assert response.status_code == expected
     async with get_session() as session:
         other = await session.get(Event, other_id)
-        assert other.display_name == "Other event"
+        assert other.display_name == ("Changed" if expected == 201 else "Other event")
 
 
 @pytest.mark.anyio
@@ -197,6 +204,11 @@ async def test_new_event_creation_preserves_active_organizer_provisioning(access
 
     assert response.status_code == 201
     assert response.json() == {"status": "success", "event_slug": "new-event"}
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        retry = await client.post("/api/v1/events/", headers=HEADERS, json={"slug": "new-event", "name": "New event"})
+
+    assert retry.status_code == 201
     async with get_session() as session:
         event = await session.scalar(select(Event).where(Event.slug == "new-event"))
         membership = await session.scalar(
