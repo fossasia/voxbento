@@ -444,6 +444,9 @@ async def _create_booth_unless_duplicate(
     *, event_id: int, room_id: int, language_code: str, language_name: str
 ) -> bool:
     """Create a booth for a room unless a booth with that language already exists."""
+    # Validated before the session opens, so a rejected code provisions nothing.
+    # Both callers already handle ValueError from this helper.
+    language_code = validate_booth_language_code(language_code)
     try:
         async with get_session() as session:
             room = await get_room_by_id(session, room_id)

@@ -1,4 +1,10 @@
-"""Booth language codes: the reserved `floor` marker cannot name a real booth (#1046)."""
+"""The reserved `floor` marker cannot be used as a real booth language (#1046).
+
+`validate_language_code` accepts `floor` so stream paths can name the room floor.
+Every path that writes a real booth must therefore use the stricter validator, and
+these tests pin each one: the ORM, the legacy in-memory registry, the admin helper
+and the API v1 endpoint.
+"""
 
 from __future__ import annotations
 
@@ -70,7 +76,7 @@ async def seed_data():
     return event, room, token_str
 
 
-class TestBoothLanguageCode:
+class TestBoothLanguageCodeApi:
     @pytest.mark.anyio
     async def test_create_booth_rejects_floor(self, seed_data):
         """`floor` marks the room floor captions, so it cannot name a real booth."""
@@ -119,3 +125,56 @@ class TestBoothLanguageCode:
         with pytest.raises(ValueError):
             validate_booth_language_code("floor")
         assert validate_booth_language_code("de") == "de"
+
+
+class TestBoothLanguageCodeModel:
+    @pytest.mark.anyio
+    async def test_model_rejects_floor(self):
+        """The ORM validator is the backstop: every DBBooth write passes through it."""
+        from portal.models import DBBooth
+
+        with pytest.raises(ValueError):
+            DBBooth(event_id=1, room_id=1, language_code="floor", language_name="Floor")
+
+        assert DBBooth(event_id=1, room_id=1, language_code="de", language_name="German").language_code == "de"
+
+
+class TestBoothLanguageCodeRegistry:
+    @pytest.mark.anyio
+    async def test_registry_rejects_floor_without_provisioning(self):
+        """The legacy registry must raise before it registers or provisions anything."""
+        from portal.booth_state import BoothRegistry
+
+        registry = BoothRegistry()
+
+        with pytest.raises(ValueError):
+            await registry.create_booth(event_slug="some-event", language_code="floor", language="Floor", room_id=1)
+
+        assert registry._booths == {}
+
+        created = await registry.create_booth(event_slug="some-event", language_code="de", language="German", room_id=1)
+        assert created["language_code"] == "de"
+
+
+class TestBoothLanguageCodeAdmin:
+    @pytest.mark.anyio
+    async def test_admin_helper_rejects_floor(self, seed_data):
+        """The admin creation helper is shared by the setup wizard and the booth form."""
+        from sqlalchemy import select
+
+        from portal.database import get_session
+        from portal.models import DBBooth
+        from portal.routers.admin import _create_booth_unless_duplicate
+
+        event, room, _token = seed_data
+
+        with pytest.raises(ValueError):
+            await _create_booth_unless_duplicate(
+                event_id=event.id, room_id=room.id, language_code="floor", language_name="Floor"
+            )
+
+        async with get_session() as session:
+            row = await session.scalar(
+                select(DBBooth).where(DBBooth.room_id == room.id, DBBooth.language_code == "floor")
+            )
+            assert row is None
