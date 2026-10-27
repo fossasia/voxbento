@@ -51,16 +51,6 @@ Interpreters monitor the floor session and broadcast high-fidelity translation d
 
 VoxBento isolates the real-time media plane from application coordination. Media streams flow directly through **MediaMTX**, ensuring that Python never processes or relays live interpreter microphone data.
 
-API v1 event upserts check the account and permissions behind the OAuth grant on
-every request. Removing or demoting a public-client organizer, or deactivating an
-account, prevents a retained token from restoring ownership or creating another
-event. Updating an existing event requires a token scoped to that event; trusted
-confidential clients retain their organizer-provisioning behavior for active accounts.
-
-API v1 room deletion supports rooms whose relay source is one of their own booths.
-Deleting an idle room removes its dependent data and clears references to its
-booths from surviving rooms. A room with a publishing booth still returns HTTP 409.
-
 ```
                          ┌─────────────────────────────────────────────────────────┐
                          │                    MediaMTX Server                      │
