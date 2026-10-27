@@ -222,6 +222,15 @@ Max concurrent workers: 10 (`MAX_TOTAL_WORKERS`).
 
 ---
 
+## Pull Request Target Branch
+
+- Create feature and fix branches from `dev`, and target all pull requests to `dev`.
+- Always specify the base explicitly when creating a PR: `gh pr create --base dev`.
+- Verify the PR's base branch is `dev` before reporting it as ready. Do not rely on
+  GitHub's default branch or target `main` unless the user explicitly requests it.
+
+---
+
 ## Validation Before Submitting Changes
 
 ```bash
