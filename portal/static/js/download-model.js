@@ -78,14 +78,16 @@ export function initLocalModelDownloader() {
 
   async function saveAndDownload(names) {
     try {
-      await fetch(form.getAttribute('action'), { method: 'POST', body: new FormData(form), redirect: 'follow' });
+      const response = await fetch(form.getAttribute('action'), { method: 'POST', body: new FormData(form), redirect: 'follow' });
+      if (!response.ok) throw new Error(`Could not save AI settings (${response.status})`);
       for (const name of names) {
-        await DOWNLOADS[name].trigger(prefix, DOWNLOADS[name].model());
+        const downloadResponse = await DOWNLOADS[name].trigger(prefix, DOWNLOADS[name].model());
+        if (!downloadResponse.ok) throw new Error(`Could not start ${name} download (${downloadResponse.status})`);
         await watch(prefix, name);
       }
     } catch (err) {
       console.error('Could not save or start the download', err);
-      window.location.reload();
+      alert('Could not save the settings or start the download. Please try again.');
     }
   }
 

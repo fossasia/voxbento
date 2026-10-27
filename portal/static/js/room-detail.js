@@ -97,7 +97,8 @@ function initAiSettings() {
         opt.disabled = !visible.includes(opt);
       });
       if (!visible.some((opt) => opt.selected) && visible.length) visible[0].selected = true;
-      speechModel.closest('details').hidden = visible.length < 2;
+      const modelDetails = speechModel.closest('details');
+      if (modelDetails) modelDetails.hidden = visible.length < 2;
     };
     speechProvider.addEventListener('change', filterModels);
     filterModels();
