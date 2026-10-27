@@ -67,7 +67,7 @@ and `docs/registration-protection.md`. Other routes are unaffected.
 | Path | Auth | Protocol |
 |---|---|---|
 | `/ws/booth/{booth_id}` | optional JWT via `?token=` + cookies (`session_token` or `user_token`) | See WebSocket Protocol in `REPOSITORY_CONTEXT.md` |
-| `/ws/captions/{booth_id}` | protected via `resolve_ws_auth` (requires `BOOTH_ACCESS_TOKEN` check, valid JWT via `?token=` or session cookies `user_token`/`session_token` in production; open in dev when unset) | Receives `booth:state`, `caption`, and `translated_caption` messages; listener captions feed. Supports `{event_slug}-{room_id}-{language_code}` (`floor-{room_id}` allowed only in unauthenticated dev) |
+| `/ws/captions/{booth_id}` | optional JWT via `?token=` (always validated); cookies (`session_token` or `user_token`) required when `BOOTH_ACCESS_TOKEN` is set, otherwise open | Receives `booth:state` (listener-safe live/lock status, sent on connect and on change), `caption`, and `translated_caption` messages; listener captions feed. Supports `{event_slug}-{room_id}-{language_code}` (`floor-{room_id}` allowed only in unauthenticated dev) |
 | `/ws/tts/{room_id}/{language_code}/{booth_id}` | pre-authorized (JWT query param, session token, or listener join code cookie) | Receives framed binary bundle messages (1-byte version `0x01`, 4-byte big-endian header length `L`, `L`-byte UTF-8 JSON header, optional 24 kHz 16-bit mono PCM payload) |
 
 ---
@@ -217,6 +217,12 @@ with `?error=invalid_role&role=…` and the page explains why.
   the legacy `running`, `stage` and `bot_reachable` fields with their original
   meaning: `stage` is the raw floor-bot stage (`launching`, `in_meeting`, `dead`, …;
   `unknown` when the service is unreachable); the managed lifecycle is in `state`.
+
+`POST /oauth/token` accepts an optional `event` slug for the authorization-code
+grant. A mismatch is rejected before code consumption or membership grants.
+Successful code and refresh responses include `event`. Clients must send the
+event retained by their server to enable this check; omission preserves legacy
+behavior. See `website/docs/api/authentication.mdx` for integration rollout.
 
 `POST /login` requires verified email and uses the `login` rate-limit bucket:
 10 attempts per normalized email per hour. There is no separate admin sign-in form.

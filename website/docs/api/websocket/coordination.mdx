@@ -22,9 +22,22 @@ When establishing the WebSocket connection, `resolve_ws_auth` resolves credentia
 
 The server decodes verified credentials to determine the user's role (`interpreter`, `room_coordinator`, etc.) and identity. **The client cannot assert its own role; the server solely trusts the server-verified JWT claims.**
 
+### Authorization changes and revocation
+
+Booth broadcasts are delivered only to sockets holding a supported role for that booth. A socket that is unauthenticated, holds a role for a different booth, carries an unsupported role, or has been revoked stays connected but receives no booth state, chat, or handoff messages.
+
+If an account is demoted from Admin, deactivated, or deleted, the server revokes its live booth sockets and closes them with close code `4003`. Deactivated or deleted accounts cannot re-authenticate over WebSocket, even if their token has not expired. Live revocation is process-local and assumes the documented single-worker/single-replica deployment. Invite-link sessions are bearer capabilities rather than account sessions, so account changes do not revoke them. Membership removal closes affected booth sockets, and current permissions are resolved again on connection. Broadcast delivery also rechecks membership; a database-check failure withholds that message without revoking otherwise valid sockets.
+
+Apply Alembic migrations 036–038 before starting the updated portal. Existing
+invite links retain their tokens; new participant sessions carry a separate
+public invitation ID so revoking the invitation can close its sockets. Older
+participant JWTs without that ID remain valid until expiry and cannot be
+individually revoked by this mechanism. Account-based sockets are unaffected by
+that invitation compatibility exception.
+
 ## Outbound Messages (Client to Server)
 
-All messages sent from the client to the server must be JSON objects containing a `type` and a `payload`.
+All messages sent from the client to the server are JSON objects with a `type` field. Every other field sits next to `type` at the top level; there is no `payload` wrapper.
 
 ### 1. Join a Booth
 The first message sent after connection MUST be `booth:join`. The server will not broadcast your presence or send you state updates until this is received.
@@ -32,9 +45,7 @@ The first message sent after connection MUST be `booth:join`. The server will no
 ```json
 {
   "type": "booth:join",
-  "payload": {
-    "name": "Arnav Angarkar"
-  }
+  "display_name": "Arnav Angarkar"
 }
 ```
 
@@ -43,10 +54,8 @@ Participants should continually update the server on their WebRTC status.
 ```json
 {
   "type": "booth:update-state",
-  "payload": {
-    "mic_active": true,
-    "ingest_connected": true
-  }
+  "mic_active": true,
+  "ingest_connected": true
 }
 ```
 
@@ -55,9 +64,7 @@ Sending an internal chat message to the booth.
 ```json
 {
   "type": "booth:chat",
-  "payload": {
-    "body": "Ready in 30 seconds."
-  }
+  "body": "Ready in 30 seconds."
 }
 ```
 
@@ -83,9 +90,7 @@ This message designates a new active interpreter in the booth.
 ```json
 {
   "type": "booth:set-active",
-  "payload": {
-    "target_id": "participant-uuid-here"
-  }
+  "target_id": "participant-uuid-here"
 }
 ```
 **Authorization Policy:** Handled by `BoothRegistry.set_active_interpreter`:
@@ -103,15 +108,21 @@ Every time a participant joins, leaves, updates their mic status, or the active 
 ```json
 {
   "type": "booth:state",
-  "booth_id": "pycon2026-14-en",
-  "active_interpreter_id": "participant-uuid-here",
-  "participants": {
-    "participant-uuid-here": {
-      "name": "Arnav Angarkar",
-      "role": "interpreter",
-      "mic_active": false,
-      "ingest_connected": false
-    }
+  "state": {
+    "booth_id": "pycon2026-14-en",
+    "active_interpreter_id": "participant-uuid-here",
+    "ingest_status": "disconnected",
+    "participants": [
+      {
+        "participant_id": "participant-uuid-here",
+        "display_name": "Arnav Angarkar",
+        "role": "interpreter",
+        "mic_active": false,
+        "ingest_connected": false,
+        "can_go_live": true,
+        "can_set_active": false
+      }
+    ]
   }
 }
 ```
@@ -123,11 +134,13 @@ Received when another participant sends a message.
 ```json
 {
   "type": "booth:chat",
-  "id": "message-uuid",
-  "sender_id": "participant-uuid",
-  "sender_name": "Arnav Angarkar",
-  "body": "Ready in 30 seconds.",
-  "timestamp": "2026-06-16T10:00:00Z"
+  "message": {
+    "message_id": "message-uuid",
+    "sender_id": "participant-uuid",
+    "sender_name": "Arnav Angarkar",
+    "body": "Ready in 30 seconds.",
+    "sent_at": "2026-06-16T10:00:00+00:00"
+  }
 }
 ```
 

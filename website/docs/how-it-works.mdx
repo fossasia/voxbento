@@ -66,6 +66,21 @@ MediaMTX terminates the WebRTC connection from the interpreter's browser, decode
 
 Listeners connect to the WHEP endpoint for their chosen language. WHEP (WebRTC HTTP Egress Protocol) is the mirror of WHIP — it negotiates a WebRTC session from the server side and streams audio to the listener's browser with sub-second latency.
 
+The listener page shows **Live (WebRTC)** only when the WHEP client reports both
+a connected peer and active audio playback. Selecting a source or receiving
+translation text alone does not mark WebRTC audio live. Failed WHEP requests
+report a separate retry flag, so the badge can show **Reconnecting...** even
+before ICE starts; successful negotiation or stopping the client clears it.
+
+Caption following is tracked from scroll events. New captions and translations
+scroll to the end only while following is enabled. Moving more than 40 pixels
+from the bottom pauses following until the listener returns near the bottom.
+Changing rooms or sources clears captions, resets following, and restores the
+waiting placeholder.
+
+
+Before starting booth playback, the listener page waits for a live and unlocked status on `/ws/captions/{booth_id}`. This socket sends the current status on connection and updates when listener-visible state changes, even when transcription is disabled, so attendees who arrive early start listening without reloading. Status contains only booth identity, broadcast lock, and ingest status; interpreter participants and private booth chat stay inside the booth. The page reconnects after transient socket disconnects and stops playback when an unlocked booth is locked.
+
     For devices that do not handle WebRTC reliably, MediaMTX also produces HLS segments on a separate port. The listener page loads hls.js and falls back to HLS automatically when WHEP is unavailable. HLS introduces roughly three seconds of additional latency but works on virtually any device.
 
     :::tip
@@ -79,9 +94,11 @@ In the organizer workspace, room management includes server-side search to quick
 ### Guided room setup
 
 Event setup follows **Event → Rooms & languages → Team & listeners**. Each room
-uses one form for its spoken language, listener languages, one delivery per
-language (Interpreter, AI voice or AI text) and optional floor captions, which stay
-on whenever a language uses AI because the AI translates from them. The same form edits existing rooms.
+uses one three-step form (Room, Languages, Review) for its spoken language, listener
+languages, one delivery per language (Interpreter, AI voice or AI captions) and optional
+captions of the speaker's words, which stay on whenever a language uses AI because the AI
+translates from them. AI services are pre-selected and can be changed on the Review step.
+The same form edits existing rooms (**Edit languages** on the room page).
 Room lists and the room overview summarize those choices, including AI languages
 that do not have an interpreter booth.
 When editing a room, choose **Review changes** to see the changes and any booth
@@ -93,7 +110,7 @@ to review instead of saving immediately.
 transaction to the existing room, booth, and translation-language tables. Human
 languages create booths; AI languages enable floor transcription and translation;
 AI voice languages enable floor TTS for that language only
-(`room_translation_languages.tts_enabled`, migration 035), so AI text languages are
+(`room_translation_languages.tts_enabled`, migration 035), so AI captions languages are
 translated but never spoken. Service choices require event keys, the external
 transcription switch where applicable, and optional server dependencies. Local
 translation and per-language voice support are validated before saving. The audio
@@ -154,7 +171,7 @@ Jitsi session; they do not validate a deployment host's available disk space.
 5. **Text-to-Text (Translation & AI Interpretation):** If target languages are enabled, the Translation Worker detects the finalized segment and generates translations using LLMs (Anthropic, OpenAI, Groq, Gemini) or local NLLB. Translation prompts dynamically integrate the room's configured **AI interpreter persona** and **interpretation style**, as well as matching domain terms from the room's **AI vocabulary glossary**, ensuring consistent, conference-grade terminology.
 6. **Broadcast:** Translations are saved to the database and immediately broadcast as `translated_caption` events via the target booth's caption feed (`/ws/captions/{booth_id}`).
 
-7. **Text-to-Speech (TTS):** If the room has "Floor Audio TTS (Direct Push)" enabled, the `TTSWorker` instantly receives the finalized translated text and synthesizes speech using the room's configured provider — either **Deepgram Aura** (cloud WebSocket) or **Supertonic** (self-hosted, in-process ONNX).
+7. **Text-to-Speech (TTS):** If a room language uses **AI voice**, the `TTSWorker` instantly receives the finalized translated text and synthesizes speech using the room's configured provider — either **Deepgram Aura** (cloud WebSocket) or **Supertonic** (self-hosted, in-process ONNX).
 8. **TTS Audio Delivery:** The synthesized audio is streamed to listeners in structured binary bundle messages (1-byte version, 4-byte header length, JSON metadata header, and optional 24 kHz 16-bit mono PCM payload) over an authorized subscription WebSocket (`/ws/tts/{room_id}/{language_code}/{booth_id}`). Listeners receive translated speech natively via the Web Audio API with sub-second latency, scheduled smoothly by `audio-scheduler.js` without relying on WHEP.
 
 :::info
@@ -248,9 +265,13 @@ coordinators) next to a microphone and connection check.
 person may run. Each room shows its floor captions' state with Start and Stop
 (through `/api/rooms/{room_id}/floor-transcription/*`), and each booth card shows
 who is in the booth and who is live, a listen-in slider, Go live / Stop broadcast
-and **Open booth**. The owner's room page is split into tabs (Overview, Floor
-source, Captions & translation, Settings); the open tab is remembered per room so
-saving a setting returns to it, and without JavaScript every section shows in order.
+and **Open booth**. The owner's room page is split into tabs (Languages, Room audio,
+AI settings, Settings); the open tab is remembered per room so saving a setting returns
+to it, and without JavaScript every section shows in order. Only the room setup form
+switches captions and AI on or off or changes which languages use them; the AI settings
+tab saves services, models, voice, translator instructions and the glossary
+(`form_section=ai`). Room audio asks how VoxBento hears the room (online meeting,
+streaming software, or a sound-desk computer) and shows only that source's panel.
 
 **My events** at `/workspace/` (`portal/my_events.py`) lists every event the
 person has a role in, combining event, room and booth memberships into one card

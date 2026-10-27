@@ -11,11 +11,11 @@ Voxbento can apply room-specific instructions to AI-generated translated caption
 
 ## Persona and Style Configuration
 
-In the admin or workspace panel, navigate to **Events → Rooms → [Select Room]** and locate the **Floor Audio Translation** section:
+In the admin or workspace panel, navigate to **Events → Rooms → [Select Room]**, open the **AI settings** tab and expand **Instructions for the AI translator** (shown when a language uses AI voice or AI captions):
 
-- **AI Interpreter Persona**: Defines the interpreter's role, background, and domain expertise. For example:
+- **What is this event about?** (stored as the AI interpreter persona): Defines the interpreter's role, background, and domain expertise. For example:
   > *"A professional simultaneous interpreter specializing in open-source software, cloud infrastructure, and developer conferences."*
-- **AI Interpretation Style**: Governs tone, output formatting, and translation conventions. For example:
+- **How should it translate?** (stored as the AI interpretation style): Governs tone, output formatting, and translation conventions. For example:
   > *"Maintain formal conference tone, preserve API and code symbol names verbatim, keep issue numbers intact, and translate spoken utterances without summarizing."*
 
 Voxbento merges these instructions with a system-level safety prompt requiring clean, spoken translation output without meta-commentary or Markdown markup. Empty settings retain standard translation output.
@@ -30,7 +30,7 @@ Event owners manage custom glossaries to enforce accurate translation of brand n
 
 ### Uploading a Glossary
 
-On the room detail page, expand the **AI interpretation vocabulary** card. Upload a UTF-8 CSV file (up to 2 MB) to append terms to the existing glossary or replace it entirely.
+On the room page's **AI settings** tab, use the **Glossary** card. Upload a UTF-8 CSV file (up to 2 MB) to append terms to the existing glossary or replace it entirely.
 
 #### CSV Format
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 
@@ -329,7 +330,7 @@ def test_ws_join_uses_db_booth_language_when_unspecified():
     """If the client does not specify language in join, it should inherit the resolved booth language."""
     from unittest.mock import AsyncMock, patch
 
-    with patch("portal.database.get_booth_language_name", new=AsyncMock(return_value="Japanese")):
+    with patch("portal.websockets.handlers.get_booth_language_name", new=AsyncMock(return_value="Japanese")):
         with client.websocket_connect("/ws/booth/japan-booth", cookies=_ws_auth()) as ws:
             ws.send_text(
                 json.dumps(
@@ -342,6 +343,7 @@ def test_ws_join_uses_db_booth_language_when_unspecified():
                 )
             )
             msg1 = json.loads(ws.receive_text())
+            assert msg1.get("type") != "booth:error", f"Unexpected error: {msg1.get('message')}"
             msg2 = json.loads(ws.receive_text())
             joined = msg1 if msg1["type"] == "booth:joined" else msg2
             assert joined["type"] == "booth:joined"
@@ -1058,6 +1060,153 @@ def test_ws_broadcast_unlock_interpreter_rejected():
 
     assert msg["type"] == "booth:error"
     assert "Only Room Coordinators" in msg["message"]
+
+
+_LISTENER_STATE_KEYS = {"booth_id", "event_slug", "room_id", "language_code", "broadcast_unlocked", "ingest_status"}
+
+
+def test_ws_listener_notified_when_booth_goes_live():
+    """A listener who connected before go-live is told when the booth goes live."""
+    booth = "golive-1-fr"
+    with client.websocket_connect(f"/ws/captions/{booth}", cookies=_ws_auth()) as listener:
+        with client.websocket_connect(f"/ws/booth/{booth}", cookies=_ws_auth()) as ws:
+            _ws_join(ws, "Eve", "interpreter", "French", f"{booth}-audio")
+            before = json.loads(listener.receive_text())
+
+            ws.send_text(json.dumps({"type": "booth:update-state", "mic_active": True, "ingest_connected": True}))
+            ws.receive_text()
+            live = json.loads(listener.receive_text())
+
+    assert before["type"] == "booth:state"
+    assert before["state"]["ingest_status"] == "disconnected"
+    assert live["type"] == "booth:state"
+    assert live["state"]["ingest_status"] == "connected"
+    assert set(live["state"]) == _LISTENER_STATE_KEYS
+
+
+def test_ws_captions_sends_current_state_on_connect():
+    """A listener who connects to an already live booth gets its status immediately."""
+    booth = "golive-1-de"
+    with client.websocket_connect(f"/ws/booth/{booth}", cookies=_ws_auth()) as ws:
+        _ws_join(ws, "Eve", "interpreter", "German", f"{booth}-audio")
+        ws.send_text(json.dumps({"type": "booth:update-state", "mic_active": True, "ingest_connected": True}))
+        ws.receive_text()
+
+        with client.websocket_connect(f"/ws/captions/{booth}", cookies=_ws_auth()) as listener:
+            msg = json.loads(listener.receive_text())
+
+    assert msg["type"] == "booth:state"
+    assert msg["state"]["ingest_status"] == "connected"
+    assert set(msg["state"]) == _LISTENER_STATE_KEYS
+
+
+def test_ws_listener_state_excludes_booth_internals():
+    """Listeners only get live/lock changes, never booth chat or participants."""
+    booth = "golive-1-es"
+    with client.websocket_connect(f"/ws/captions/{booth}", cookies=_ws_auth()) as listener:
+        with client.websocket_connect(f"/ws/booth/{booth}", cookies=_ws_auth()) as ws:
+            _ws_join(ws, "Coord", "room_coordinator", "Spanish", f"{booth}-audio")
+            listener.receive_text()  # status after join
+
+            # Chat changes only interpreter-side state, so listeners get nothing.
+            ws.send_text(json.dumps({"type": "booth:chat", "body": "booth-only note"}))
+            ws.receive_text()  # booth:chat
+            ws.receive_text()  # booth:state
+
+            ws.send_text(json.dumps({"type": "booth:set-broadcast-unlocked", "unlocked": True}))
+            ws.receive_text()
+            raw = listener.receive_text()
+
+    msg = json.loads(raw)
+    assert msg["type"] == "booth:state"
+    assert msg["state"]["broadcast_unlocked"] is True
+    assert set(msg["state"]) == _LISTENER_STATE_KEYS
+    assert "booth-only note" not in raw
+
+
+class _RecordingWebSocket:
+    def __init__(self) -> None:
+        self.sent: list[str] = []
+
+    async def send_text(self, text: str) -> None:
+        self.sent.append(text)
+
+
+@pytest.mark.anyio
+async def test_listener_status_uses_newest_booth_state():
+    """A broadcast that finishes late must not hand listeners an older status."""
+    from portal.globals import booths
+    from portal.websockets.manager import broadcast_booth_state, listener_manager
+
+    booth = "golive-1-it"
+    _participant, stale = await booths.join_participant(
+        booth_id=booth, display_name="Eve", role="interpreter", language="Italian", channel_id=f"{booth}-audio"
+    )
+    await booths.set_broadcast_unlocked(booth, True, "Italian", f"{booth}-audio")
+
+    ws = _RecordingWebSocket()
+    listener_manager.add(ws, booth)
+    try:
+        assert stale["broadcast_unlocked"] is False
+        await broadcast_booth_state(booth, stale)
+    finally:
+        listener_manager.remove(ws, booth)
+
+    assert json.loads(ws.sent[-1])["state"]["broadcast_unlocked"] is True
+
+
+def test_ws_captions_unknown_booth_leaves_no_state_lock():
+    """Connections to arbitrary booth IDs must not leave per-booth locks behind."""
+    from portal.websockets.manager import listener_manager
+
+    for i in range(3):
+        with client.websocket_connect(f"/ws/captions/no-such-booth-{i}", cookies=_ws_auth()):
+            pass
+
+    assert not any(key.startswith("no-such-booth-") for key in listener_manager._state_locks)
+
+
+class _BlockingWebSocket(_RecordingWebSocket):
+    def __init__(self) -> None:
+        super().__init__()
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
+
+    async def send_text(self, text: str) -> None:
+        self.entered.set()
+        await self.release.wait()
+        await super().send_text(text)
+
+
+@pytest.mark.anyio
+async def test_listener_state_lock_serializes_then_cleans_up():
+    """Overlapping status sends for one booth share a lock, which is dropped once idle."""
+    from portal.globals import booths
+    from portal.websockets.manager import listener_manager
+
+    booth = "golive-1-nl"
+    _participant, state = await booths.join_participant(
+        booth_id=booth, display_name="Eve", role="interpreter", language="Dutch", channel_id=f"{booth}-audio"
+    )
+    first = _BlockingWebSocket()
+    other = _RecordingWebSocket()
+    listener_manager.add(other, booth)
+    try:
+        initial = asyncio.create_task(listener_manager.send_booth_state(first, booth))
+        await first.entered.wait()
+        broadcast = asyncio.create_task(listener_manager.broadcast_booth_state(booth, state))
+        await asyncio.sleep(0)
+
+        assert listener_manager._state_locks[booth].users == 2
+        assert other.sent == []
+
+        first.release.set()
+        await asyncio.gather(initial, broadcast)
+    finally:
+        listener_manager.remove(other, booth)
+
+    assert len(other.sent) == 1
+    assert booth not in listener_manager._state_locks
 
 
 def test_ws_initiate_handoff_active_interpreter_sets_offered_state():
@@ -2247,9 +2396,10 @@ def test_ws_captions_rejects_invalid_token():
     """Invalid token provided to captions websocket is rejected."""
     from fastapi.websockets import WebSocketDisconnect
 
+    # The socket is accepted and then closed, so the browser receives 4001 (not 1006).
     with pytest.raises(WebSocketDisconnect) as exc_info:
-        with client.websocket_connect("/ws/captions/test-event-1-en?token=invalid.jwt.token"):
-            pass
+        with client.websocket_connect("/ws/captions/test-event-1-en?token=invalid.jwt.token") as ws:
+            ws.receive_text()
     assert exc_info.value.code == 4001
 
 
@@ -2261,8 +2411,8 @@ def test_ws_captions_token_rejects_prefix_sharing_different_event_slug():
 
     # Connecting to a booth belonging to 'event-a-other' with token for 'event-a' must be rejected
     with pytest.raises(WebSocketDisconnect) as exc_info:
-        with client.websocket_connect(f"/ws/captions/event-a-other-1-en?token={token_event_a}"):
-            pass
+        with client.websocket_connect(f"/ws/captions/event-a-other-1-en?token={token_event_a}") as ws:
+            ws.receive_text()
     assert exc_info.value.code == 4003
 
     # Connecting to 'event-a-1-en' with token for 'event-a' must succeed
