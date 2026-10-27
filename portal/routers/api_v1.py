@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from portal.auth import coordinates_room, load_membership_scope, require_oauth_scope
 from portal.booth_identity import make_booth_id, make_mediamtx_path, validate_language_code
+from portal.database import delete_room as delete_db_room
 from portal.database import get_db_session
 from portal.globals import booths
 from portal.models import (
@@ -732,7 +733,7 @@ async def delete_room(
         await booths.remove_booth(event_slug, b["room_id"], b["language_code"])
 
     await revoke_booths_for_deleted_entity(db, level="room", target_id=room.id)
-    await db.delete(room)
+    await delete_db_room(db, room.id)
 
     audit = OAuthAuditLog(
         token_id=token.id,
