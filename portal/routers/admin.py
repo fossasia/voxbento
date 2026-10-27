@@ -21,6 +21,7 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
+from starlette.datastructures import FormData
 
 from portal import meeting_source
 from portal import roles as roles_module
@@ -136,10 +137,8 @@ from portal.notifications import (
 from portal.program_ingest import room_lock
 from portal.rate_limit import check_rate_limit
 from portal.roles import EVENT_OWNER, assignment_error, role_label
-from portal.room_setup import ALL_LANGUAGES as ROOM_ALL_LANGUAGES
-from portal.room_setup import COMMON_LANGUAGES as ROOM_COMMON_LANGUAGES
-from portal.room_setup import DELIVERY_LABELS as ROOM_DELIVERY_LABELS
 from portal.room_setup import (
+    AI_VOICE,
     EngineCatalog,
     RoomPlan,
     RoomSummary,
@@ -149,8 +148,16 @@ from portal.room_setup import (
     engine_catalog,
     load_snapshot,
     parse_plan,
+    room_audio_choice,
     summarize,
 )
+from portal.room_setup import ALL_LANGUAGES as ROOM_ALL_LANGUAGES
+from portal.room_setup import COMMON_LANGUAGES as ROOM_COMMON_LANGUAGES
+from portal.room_setup import DELIVERY_EXPLANATIONS as ROOM_DELIVERY_EXPLANATIONS
+from portal.room_setup import DELIVERY_HINTS as ROOM_DELIVERY_HINTS
+from portal.room_setup import DELIVERY_LABELS as ROOM_DELIVERY_LABELS
+from portal.room_setup import SPEECH_MODELS as ROOM_SPEECH_MODELS
+from portal.room_setup import VOICE_PRESETS as ROOM_VOICE_PRESETS
 from portal.room_setup import language_name as room_language_name
 from portal.team import ROLE_CHOICES as TEAM_ROLE_CHOICES
 from portal.team import TeamError, load_team
@@ -954,6 +961,8 @@ def _room_setup_response(
             "common_codes": [code for code, _ in ROOM_COMMON_LANGUAGES],
             "language_name": room_language_name,
             "delivery_labels": ROOM_DELIVERY_LABELS,
+            "delivery_hints": ROOM_DELIVERY_HINTS,
+            "delivery_explanations": ROOM_DELIVERY_EXPLANATIONS,
             "booth_codes": list(booth_codes),
             "live_codes": sorted(live_codes),
             "from_setup": from_setup,
@@ -1414,7 +1423,8 @@ async def admin_room_detail(request: Request, event_id: int, room_id: int):
         if room is None or room.event_id != event_id:
             raise HTTPException(status_code=404, detail="Room not found.")
         db_booths = await list_booths_for_room(session, room_id)
-        snapshot = await load_snapshot(session, room, engine_catalog(event))
+        catalog = engine_catalog(event)
+        snapshot = await load_snapshot(session, room, catalog)
         vocabulary_entries = list(
             await session.scalars(
                 select(AIVocabularyEntry)
@@ -1431,11 +1441,6 @@ async def admin_room_detail(request: Request, event_id: int, room_id: int):
     clean_name = re.sub("[^a-zA-Z0-9]+", "", room.display_name)
     room_id_str = f"Voxbento-{event.slug}-{clean_name}"
     fallback_jitsi_url = _make_jitsi_url(settings.effective_jitsi_base_url, room_id_str)
-    translation_languages_dataset = [
-        {"code": lang.alpha_2, "name": lang.name} for lang in pycountry.languages if hasattr(lang, "alpha_2")
-    ]
-    translation_languages_dataset.sort(key=lambda x: x["name"])
-    enabled_translation_language_codes = [lang.language_code for lang in room.translation_languages if lang.enabled]
     async with get_session() as session:
         memberships = await list_memberships_for_room(session, room_id)
     kept_live = [
@@ -1454,8 +1459,14 @@ async def admin_room_detail(request: Request, event_id: int, room_id: int):
             "just_updated": request.query_params.get("updated") == "1",
             "kept_live_languages": kept_live,
             "fallback_jitsi_url": fallback_jitsi_url,
-            "translation_languages_dataset": translation_languages_dataset,
-            "enabled_translation_language_codes": enabled_translation_language_codes,
+            "catalog": catalog,
+            "audio_choice": room_audio_choice(room),
+            "speech_models": ROOM_SPEECH_MODELS,
+            "voice_presets": ROOM_VOICE_PRESETS,
+            "ai_language_names": [room_language_name(code) for code in snapshot.plan.ai_languages],
+            "voice_language_names": [
+                room_language_name(code) for code, delivery in snapshot.plan.languages if delivery == AI_VOICE
+            ],
             "vocabulary_entries": vocabulary_entries,
             "vocabulary_imported": request.query_params.get("vocab_imported"),
             "vocabulary_warnings": request.query_params.get("vocab_warnings"),
@@ -1500,6 +1511,38 @@ async def admin_room_transcripts(request: Request, event_id: int, room_id: int):
         name="admin/room_transcripts.html",
         context={"event": event, "room": room, "booths": booths, **admin_flags},
     )
+
+
+def _apply_ai_settings(room: Room, form: FormData, catalog: EngineCatalog) -> None:
+    """Save the room page's AI settings: services, models, voice and translator instructions.
+
+    What a room offers (captions on or off, which languages use AI) belongs to the room setup
+    form, so this never switches anything on or off. A service the event can't use, or one
+    left out of the form, keeps the room's current choice.
+    """
+    speech = catalog.find("speech", str(form.get("floor_transcription_provider", "")))
+    if speech:
+        model = str(form.get("floor_transcription_model", ""))
+        allowed = {value for value, _ in ROOM_SPEECH_MODELS.get(speech.provider, ())}
+        room.floor_transcription_provider = speech.provider
+        room.floor_transcription_model = model if model in allowed else speech.model
+
+    translation = catalog.find("translation", str(form.get("floor_translation_provider", "")))
+    if translation:
+        model = str(form.get("floor_translation_model", "")).strip()[:100]
+        room.floor_translation_provider = translation.provider
+        room.floor_translation_model = model or translation.model
+    if "floor_ai_interpreter_persona" in form:
+        room.floor_ai_interpreter_persona = str(form.get("floor_ai_interpreter_persona", "")).strip() or None
+        room.floor_ai_interpretation_style = str(form.get("floor_ai_interpretation_style", "")).strip() or None
+        room.floor_ai_vocabulary_enabled = form.get("floor_ai_vocabulary_enabled") == "on"
+
+    voice = catalog.find("voice", str(form.get("floor_tts_provider", "")))
+    if voice:
+        room.floor_tts_provider = voice.provider
+        preset = str(form.get("floor_tts_voice", "")).strip().upper()
+        if preset in {value for value, _ in ROOM_VOICE_PRESETS}:
+            room.floor_tts_voice = preset
 
 
 @router.post("/admin/events/{event_id}/rooms/{room_id}/edit", dependencies=[Depends(require_event_owner)])
@@ -1585,6 +1628,12 @@ async def admin_edit_room(request: Request, event_id: int, room_id: int):
             room.floor_tts_enabled = floor_tts_enabled
             room.floor_tts_provider = floor_tts_provider
             room.floor_tts_voice = floor_tts_voice
+
+        if form_section == "ai":
+            event = await get_event_by_id(session, event_id)
+            if event is None:
+                raise HTTPException(status_code=404, detail="Event not found.")
+            _apply_ai_settings(room, form, engine_catalog(event))
         await session.flush()
     return safe_redirect(
         url=management_url(request, f"events/{event_id}/rooms/{room_id}/"),

@@ -93,7 +93,7 @@ VoxBento is a production-grade **browser-first interpretation booth console** fo
 | `portal/static/js/admin.js` | Admin panel JS helpers |
 | `mediamtx.yml` | MediaMTX config — WHIP/WHEP paths, RTSP, Control API, `overridePublisher` |
 | `docker-compose.yml` | portal + mediamtx + jitsi-web/prosody/jicofo/jvb |
-| `alembic/versions/` | 31 migrations (001–031); run `uv run alembic upgrade head` |
+| `alembic/versions/` | 38 migrations (001–038); run `uv run alembic upgrade head` |
 
 ---
 
@@ -219,6 +219,15 @@ Max concurrent workers: 10 (`MAX_TOTAL_WORKERS`).
 | MediaMTX ICE/UDP | 8189 | UDP |
 | Jitsi Web | 8443 / 8080 | HTTPS / HTTP |
 | JVB | 10000 | UDP |
+
+---
+
+## Pull Request Target Branch
+
+- Create feature and fix branches from `dev`, and target all pull requests to `dev`.
+- Always specify the base explicitly when creating a PR: `gh pr create --base dev`.
+- Verify the PR's base branch is `dev` before reporting it as ready. Do not rely on
+  GitHub's default branch or target `main` unless the user explicitly requests it.
 
 ---
 
