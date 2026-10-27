@@ -1,7 +1,8 @@
 """Guided room setup: the spoken language, listener languages and how each is delivered.
 
 One form describes a room in plain terms (who speaks, which languages listeners pick,
-whether each uses an interpreter, AI voice or AI text, and optional floor captions) and this
+whether each uses an interpreter, an AI voice or AI captions, and optional captions of the
+speaker's own words) and this
 module turns it into the booths and floor caption/translation/voice settings the rest
 of VoxBento runs on. The same plan creates a room and edits an existing one.
 """
@@ -30,11 +31,25 @@ AI_VOICE = "ai_voice"
 AI_TEXT = "ai_text"
 BOTH = "both"  # Existing dual deliveries require an explicit choice when edited.
 DELIVERIES = (INTERPRETER, AI_VOICE, AI_TEXT)
+# The words the setup form and the room page both use for each delivery, so a person
+# sees one name for one thing everywhere. AI_TEXT keeps its stored value.
 DELIVERY_LABELS = {
     INTERPRETER: "Interpreter",
     AI_VOICE: "AI voice",
-    AI_TEXT: "AI text",
+    AI_TEXT: "AI captions",
 }
+DELIVERY_HINTS = {
+    INTERPRETER: "A person interprets live",
+    AI_VOICE: "AI translates and speaks it",
+    AI_TEXT: "AI translates it as text only",
+}
+# Said once under the question, for what the buttons can't say.
+DELIVERY_EXPLANATIONS = "AI voice also shows the translation as text."
+
+# Supertonic's preset voices, by stored value.
+VOICE_PRESETS: tuple[tuple[str, str], ...] = tuple(
+    [(f"F{n}", f"Female voice {n}") for n in range(1, 6)] + [(f"M{n}", f"Male voice {n}") for n in range(1, 6)]
+)
 
 # Room-level answer to "How will this room be interpreted?". "both" lets each
 # language choose; the other two apply one delivery to every language.
@@ -123,8 +138,8 @@ def voice_languages_for(provider: str) -> Iterable[str]:
     return DEEPGRAM_VOICE_MAPPING if provider == "deepgram" else SUPERTONIC_SUPPORTED_LANGS
 
 
-_KEY_ADDED = "API key added"
-_SELF_HOSTED = "Runs on this server, no API key; downloads a model the first time"
+_KEY_ADDED = "uses your API key"
+_SELF_HOSTED = "free, downloads the first time it's used"
 
 # (provider, default model, label, event key attribute). Cloud first: they are faster
 # and more accurate than the self-hosted fallback when the event has a key for them.
@@ -141,6 +156,21 @@ _TRANSLATION_ENGINES = (
     ("groq", "openai/gpt-oss-120b", "Groq", "encrypted_groq_api_key"),
     ("openrouter", "meta-llama/llama-3.3-70b-instruct", "OpenRouter", "encrypted_openrouter_api_key"),
 )
+
+
+# The caption models each speech service offers, with a plain description, recommended first.
+SPEECH_MODELS: dict[str, tuple[tuple[str, str], ...]] = {
+    "deepgram": (("nova-2", "Nova 2"),),
+    "elevenlabs": (("scribe_v2_realtime", "Scribe v2, streaming"),),
+    "openai": (
+        ("whisper-1", "Whisper"),
+        ("gpt-4o-mini-transcribe", "GPT-4o mini transcribe"),
+        ("gpt-4o-transcribe", "GPT-4o transcribe, more accurate"),
+        ("gpt-realtime-whisper", "Realtime Whisper, lowest delay"),
+    ),
+    "nvidia": (("parakeet-rnnt", "Parakeet RNNT"), ("parakeet-ctc", "Parakeet CTC")),
+    "local": (("tiny", "Tiny, fastest"), ("base", "Base, more accurate but slower")),
+}
 
 
 _BRANDS = {
@@ -172,21 +202,21 @@ def engine_catalog(event: Event) -> EngineCatalog:
             speech.append(Engine(provider, model, label, _KEY_ADDED))
         else:
             locked.append(_BRANDS[provider])
-    speech.append(Engine("local", "tiny", "Whisper, self-hosted", _SELF_HOSTED))
+    speech.append(Engine("local", "tiny", "Whisper (built in)", _SELF_HOSTED))
 
     for provider, model, label, key_attr in _TRANSLATION_ENGINES:
         if getattr(event, key_attr):
             translation.append(Engine(provider, model, label, _KEY_ADDED))
         else:
             locked.append(_BRANDS[provider])
-    translation.append(Engine("local", "nllb-200-distilled-600M", "NLLB, self-hosted", _SELF_HOSTED))
+    translation.append(Engine("local", "nllb-200-distilled-600M", "NLLB (built in)", _SELF_HOSTED))
 
     if event.encrypted_deepgram_api_key:
         voice.append(Engine("deepgram", "aura", "Deepgram Aura", _KEY_ADDED))
     else:
         locked.append(_BRANDS["deepgram"])
     if find_spec("supertonic") is not None:
-        voice.append(Engine("supertonic", "supertonic", "Supertonic, self-hosted", _SELF_HOSTED))
+        voice.append(Engine("supertonic", "supertonic", "Supertonic (built in)", _SELF_HOSTED))
     else:
         unavailable.append("Supertonic needs the server's supertonic extra")
 
@@ -334,7 +364,7 @@ def parse_plan(
             continue
         delivery = str(form.get(f"delivery_{code}", "")).strip()
         if delivery not in DELIVERIES:
-            errors.append(f"Choose Interpreter, AI voice or AI text for {language_name(code)}.")
+            errors.append(f"Choose Interpreter, AI voice or AI captions for {language_name(code)}.")
             delivery = ""
         languages.append((code, delivery))
     if len(languages) > MAX_LANGUAGES:
@@ -358,14 +388,14 @@ def parse_plan(
     )
 
     if plan.uses_speech_recognition and catalog.find("speech", plan.speech_engine) is None:
-        errors.append("Choose a speech recognition service for captions.")
+        errors.append("Choose a service to make the captions.")
     if ai_languages and catalog.find("translation", plan.translation_engine) is None:
-        errors.append("Choose a translation service for the AI languages.")
+        errors.append("Choose a service to translate the AI languages.")
     voice = catalog.find("voice", plan.voice_engine)
     if plan.ai_voice and voice is None:
         errors.append(
             f"AI voice isn't available for {', '.join(language_name(code) for code in plan.voice_languages)}: "
-            "no voice service is set up for this event. Choose AI text, or add a Deepgram key on API keys."
+            "no voice service is set up for this event. Choose AI captions, or add a Deepgram key on API keys."
         )
     if ai_languages and plan.translation_engine == "local":
         unsupported = [
@@ -376,7 +406,7 @@ def parse_plan(
         ]
         if unsupported:
             errors.append(
-                f"Local translation doesn't support {', '.join(unsupported)}. "
+                f"The built-in translator doesn't support {', '.join(unsupported)}. "
                 "Choose another translation service or change the AI languages."
             )
     if plan.ai_voice and voice is not None:
@@ -385,8 +415,8 @@ def parse_plan(
         if unsupported:
             errors.append(
                 f"AI voice isn't supported for {', '.join(unsupported)}: {voice.label} can't speak "
-                f"{'it' if len(unsupported) == 1 else 'them'}. Choose AI text so listeners can read it, "
-                "or Interpreter, or another voice under AI services · Advanced."
+                f"{'it' if len(unsupported) == 1 else 'them'}. Choose AI captions so listeners can read it, "
+                "or Interpreter, or another voice under AI services in the review step."
             )
     return plan, tuple(errors)
 
@@ -518,8 +548,8 @@ class RoomSummary:
             return "Captions only"
         mode = room_mode([(line.code, line.delivery) for line in self.languages])
         return {
-            MODE_INTERPRETERS: "Human interpreters",
-            MODE_AI: "AI interpretation",
+            MODE_INTERPRETERS: "Interpreters",
+            MODE_AI: "AI",
             MODE_BOTH: "Interpreters and AI",
         }.get(mode, "Not set up yet")
 
@@ -527,7 +557,7 @@ class RoomSummary:
 def summarize(room: Room, snapshot: RoomSnapshot) -> RoomSummary:
     plan = snapshot.plan
     lines = tuple(
-        LanguageLine(code, language_name(code), delivery, DELIVERY_LABELS.get(delivery, "Interpreter + AI"))
+        LanguageLine(code, language_name(code), delivery, DELIVERY_LABELS.get(delivery, "Interpreter and AI"))
         for code, delivery in plan.languages
     )
     return RoomSummary(
@@ -536,3 +566,22 @@ def summarize(room: Room, snapshot: RoomSnapshot) -> RoomSummary:
         ai_voice=plan.ai_voice and bool(plan.ai_languages),
         languages=lines,
     )
+
+
+# ── Room audio ───────────────────────────────────────────────────────────
+
+AUDIO_MEETING = "meeting"
+AUDIO_ENCODER = "encoder"
+AUDIO_DESK = "desk"
+
+
+def room_audio_choice(room: Room) -> str:
+    """Which way VoxBento hears the room today, so the Room audio tab opens on it ('' if none yet)."""
+    if room.floor_source == "program_ingest":
+        if room.program_key_hash:
+            return AUDIO_ENCODER
+        if room.program_session_secret_hash:
+            return AUDIO_DESK
+    if room.meeting_agent_enabled:
+        return AUDIO_MEETING
+    return ""

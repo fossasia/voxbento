@@ -15,7 +15,7 @@ The floor-bot is a headless Playwright/Chromium container that joins the main Ji
 
 - **floor-bot container**: Runs `bot.py` via an HTTP server. It listens on port 8080 for `/start` and `/stop` commands.
 - **PulseAudio Socket**: `/tmp/pulse-{event_slug}.sock` acts as the bridge. Chromium outputs to this socket, and FFmpeg reads from it.
-- **MediaMTX RTSP Path**: Audio is pushed to `rtsp://mediamtx:8554/{event_slug}/floor`.
+- **MediaMTX RTSP Path**: Audio is pushed to `rtsp://mediamtx:8554/{event_slug}/{room_id}/floor`.
 - **FastAPI Backend**: Admin routes `/api/rooms/{room_id}/floor-transcription/start` trigger the bot to join the Jitsi room and immediately spawn the transcription worker pointing to the floor channel.
 
 ## Local Development vs. Production
@@ -63,4 +63,4 @@ If FFmpeg reports loop/sync errors (`Non-monotonous DTS`), check the sample rate
 
 **Check FFmpeg/MediaMTX Streaming:**
 `docker compose logs -f mediamtx`
-*(Look for: `[path {event_slug}/floor] stream is online`)*
+*(Look for: `[path {event_slug}/{room_id}/floor] stream is online`)*
