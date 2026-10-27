@@ -89,12 +89,24 @@ async def room_access():
                 BoothMembership(user_id=user.id, booth_id=booth.id, role=INTERPRETER),
                 InviteToken(token="room-delete-invite", booth_id=booth.id, role=INTERPRETER),
                 BoothTranslationLanguage(booth_id=booth.id, language_code="en", language_name="English"),
+                RoomMembership(user_id=user.id, room_id=other_room.id, role=ROOM_COORDINATOR),
+                BoothMembership(user_id=user.id, booth_id=other_booth.id, role=INTERPRETER),
+                InviteToken(token="other-room-invite", booth_id=other_booth.id, role=INTERPRETER),
+                BoothTranslationLanguage(booth_id=other_booth.id, language_code="en", language_name="English"),
             ]
         )
         segment = TranscriptSegment(room_id=room.id, booth_id=booth.id, language_code="de", text="Hallo")
-        session.add(segment)
+        other_segment = TranscriptSegment(
+            room_id=other_room.id, booth_id=other_booth.id, language_code="fr", text="Bonjour"
+        )
+        session.add_all([segment, other_segment])
         await session.flush()
-        session.add(TranscriptTranslation(segment_id=segment.id, language_code="en", text="Hello"))
+        session.add_all(
+            [
+                TranscriptTranslation(segment_id=segment.id, language_code="en", text="Hello"),
+                TranscriptTranslation(segment_id=other_segment.id, language_code="en", text="Good morning"),
+            ]
+        )
         return room.id, booth.id, relaying_room.id, other_room.id, other_booth.id
 
 
@@ -120,15 +132,21 @@ async def test_delete_room_clears_relay_references_and_dependents(room_access, s
         assert (await session.get(Room, relaying_room_id)).relay_booth_id is None
         assert (await session.get(Room, other_room_id)).relay_booth_id == other_booth_id
         assert await session.get(DBBooth, other_booth_id) is not None
-        for model in (
-            RoomMembership,
-            BoothMembership,
-            InviteToken,
-            BoothTranslationLanguage,
-            TranscriptSegment,
-            TranscriptTranslation,
+        # Only the other room's dependents remain, so an over-broad delete fails here.
+        for column, kept_id in (
+            (RoomMembership.room_id, other_room_id),
+            (BoothMembership.booth_id, other_booth_id),
+            (InviteToken.booth_id, other_booth_id),
+            (BoothTranslationLanguage.booth_id, other_booth_id),
+            (TranscriptSegment.room_id, other_room_id),
         ):
-            assert await session.scalar(select(model)) is None
+            assert (await session.scalars(select(column))).all() == [kept_id]
+        translated_rooms = await session.scalars(
+            select(TranscriptSegment.room_id).join(
+                TranscriptTranslation, TranscriptTranslation.segment_id == TranscriptSegment.id
+            )
+        )
+        assert translated_rooms.all() == [other_room_id]
         audit = await session.scalar(select(OAuthAuditLog).where(OAuthAuditLog.action == "room.deleted"))
         assert audit is not None
         assert audit.status_code == 204
