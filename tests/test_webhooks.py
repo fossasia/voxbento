@@ -23,7 +23,16 @@ from portal.models import (
 )
 from portal.routers.webhooks import validate_ssrf
 from portal.webhooks import worker
-from portal.webhooks.worker import claim_due_deliveries, process_delivery, run_worker_iteration, sign_payload
+from portal.webhooks.worker import (
+    DeliveryAttempt,
+    claim_due_deliveries,
+    load_delivery_job,
+    process_delivery,
+    record_delivery_attempt,
+    recover_stale_claims,
+    run_worker_iteration,
+    sign_payload,
+)
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -237,6 +246,21 @@ async def test_process_delivery_timeout_retries(worker_db):
 
 
 @pytest.mark.anyio
+async def test_process_delivery_invalid_url_is_recorded(worker_db):
+    delivery_id, _, _ = await seed_delivery()
+
+    mock_client = AsyncMock(spec=httpx.AsyncClient)
+    mock_client.post.side_effect = httpx.InvalidURL("invalid URL")
+
+    await process_delivery(mock_client, delivery_id)
+
+    async with database.get_session() as session:
+        delivery = await session.get(WebhookDelivery, delivery_id)
+        assert delivery.status == "failed"
+        assert delivery.last_error.startswith("Invalid URL:")
+
+
+@pytest.mark.anyio
 async def test_process_delivery_circuit_breaker(worker_db):
     delivery_id, subscription_id, _ = await seed_delivery(
         attempt_count=3,  # Next attempt will be 4th (max)
@@ -293,14 +317,15 @@ async def test_process_delivery_circuit_breaker_with_multiple_clients(worker_db)
 
 @pytest.mark.anyio
 async def test_atomic_queue_claim(worker_db):
-    """Two workers cannot claim the same delivery and the batch limit is honoured."""
+    """Two concurrent workers cannot claim the same delivery."""
     await seed_delivery(delivery_count=15, status="pending")
     now = datetime.now(timezone.utc)
 
-    async with database.get_session() as session:
-        claimed1 = await claim_due_deliveries(session, now)
-    async with database.get_session() as session:
-        claimed2 = await claim_due_deliveries(session, now)
+    async def claim_once() -> list[int]:
+        async with database.get_session() as session:
+            return await claim_due_deliveries(session, now)
+
+    claimed1, claimed2 = await asyncio.gather(claim_once(), claim_once())
 
     assert len(claimed1) == 10
     assert len(claimed2) == 5
@@ -323,6 +348,85 @@ async def test_worker_recovers_expired_claim(worker_db):
     async with database.get_session() as session:
         delivery = await session.get(WebhookDelivery, delivery_id)
         assert delivery.status == "succeeded"
+
+
+@pytest.mark.anyio
+async def test_worker_isolates_unexpected_delivery_failure(worker_db, monkeypatch):
+    """One failing dispatch does not strand the rest of the claimed batch."""
+    await seed_delivery(delivery_count=2, status="pending")
+    real_process_delivery = worker.process_delivery
+    calls = 0
+
+    async def flaky_process_delivery(client, delivery_id, job=None):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("boom")
+        await real_process_delivery(client, delivery_id, job)
+
+    monkeypatch.setattr(worker, "process_delivery", flaky_process_delivery)
+    mock_client = successful_client()
+
+    claimed = await run_worker_iteration(mock_client)
+
+    assert claimed == 2
+    mock_client.post.assert_called_once()
+    async with database.get_session() as session:
+        deliveries = list((await session.scalars(select(WebhookDelivery).order_by(WebhookDelivery.id))).all())
+    assert [delivery.status for delivery in deliveries] == ["failed", "succeeded"]
+    assert [delivery.attempt_count for delivery in deliveries] == [1, 1]
+    assert deliveries[0].last_error == "Unexpected dispatch error."
+
+
+@pytest.mark.anyio
+async def test_recovery_dead_letters_exhausted_claim(worker_db):
+    now = datetime.now(timezone.utc)
+    delivery_id, subscription_id, _ = await seed_delivery(
+        status="delivering",
+        next_attempt_at=now - timedelta(seconds=5),
+        attempt_count=3,
+        consecutive_failures=4,
+    )
+
+    async with database.get_session() as session:
+        recovered = await recover_stale_claims(session, now)
+    async with database.get_session() as session:
+        delivery = await session.get(WebhookDelivery, delivery_id)
+        subscription = await session.get(WebhookSubscription, subscription_id)
+        audits = (await session.execute(select(OAuthAuditLog))).scalars().all()
+
+    assert recovered == 1
+    assert delivery.status == "dead"
+    assert delivery.attempt_count == 4
+    assert subscription.consecutive_failures == 5
+    assert subscription.is_active is False
+    assert len(audits) == 1
+
+
+@pytest.mark.anyio
+async def test_late_worker_cannot_overwrite_reclaimed_delivery(worker_db):
+    """A worker whose lease expired must not write over a newer claim."""
+    now = datetime.now(timezone.utc)
+    delivery_id, _, _ = await seed_delivery(
+        status="delivering",
+        next_attempt_at=now - timedelta(seconds=5),
+    )
+    async with database.get_session() as session:
+        stale_job = await load_delivery_job(session, delivery_id)
+    assert stale_job is not None
+
+    async with database.get_session() as session:
+        await recover_stale_claims(session, now)
+    async with database.get_session() as session:
+        claimed = await claim_due_deliveries(session, now)
+    assert claimed == [delivery_id]
+
+    async with database.get_session() as session:
+        await record_delivery_attempt(session, stale_job, DeliveryAttempt(success=True))
+
+    async with database.get_session() as session:
+        delivery = await session.get(WebhookDelivery, delivery_id)
+        assert delivery.status == "delivering"
 
 
 @pytest.mark.anyio
