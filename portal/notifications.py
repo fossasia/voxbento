@@ -121,7 +121,7 @@ class _PlainTextParser(HTMLParser):
             return
         values = dict(attrs)
         style = re.sub(r"\s+", "", (values.get("style") or "").lower())
-        if self._hidden or tag in self._SKIPPED or "display:none" in style:
+        if self._hidden or tag in self._SKIPPED or "hidden" in values or "display:none" in style:
             self._hidden.append(tag)
             return
         if tag in self._BLOCKS:
@@ -143,9 +143,11 @@ class _PlainTextParser(HTMLParser):
         if tag == "a" and self._links:
             href, start = self._links.pop()
             label = " ".join("".join(self.parts[start:]).split())
-            scheme = re.match(r"(https?://|mailto:)", href, re.IGNORECASE)
-            if scheme and href[scheme.end() :].rstrip("/") != label.rstrip("/"):
-                self.parts.append(f" ({href})" if label else href)
+            scheme = re.match(r"(https?://|mailto:|tel:)", href, re.IGNORECASE)
+            if scheme:
+                shown = href if scheme.group(1).lower().startswith("http") else href[scheme.end() :]
+                if shown.rstrip("/") != label.rstrip("/"):
+                    self.parts.append(f" ({href})" if label else href)
         elif tag in self._BLOCKS:
             self.parts.append("\n\n")
 

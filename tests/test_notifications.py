@@ -622,7 +622,7 @@ async def test_plain_text_drops_hidden_preheader_and_markup():
         '<img src="https://example.com/logo.png" alt="Logo"></body></html>'
     )
     assert _plain_text(html) == (
-        "Hello & welcome\n\nLine one\nLine two\n\nvoxbento.com · Open (https://example.com/x)\n"
+        "Hello & welcome\n\nLine one\nLine two\n\nvoxbento.com (https://voxbento.com) · Open (https://example.com/x)\n"
     )
 
 
@@ -641,3 +641,17 @@ async def test_plain_text_does_not_keep_line_breaks_typed_into_submitted_text():
 @pytest.mark.anyio
 async def test_plain_text_writes_out_links_with_an_uppercase_scheme():
     assert _plain_text('<a href="HTTPS://example.com/x">Open</a>') == "Open (HTTPS://example.com/x)\n"
+
+
+@pytest.mark.anyio
+async def test_plain_text_skips_elements_with_the_hidden_attribute():
+    assert _plain_text("<p>Shown</p><div hidden><p>Secret</p></div>") == "Shown\n"
+
+
+@pytest.mark.anyio
+async def test_plain_text_writes_out_phone_and_email_links_only_when_the_label_hides_them():
+    html = (
+        '<p><a href="tel:+12025550123">Call us</a></p><p><a href="tel:+12025550123">+12025550123</a></p>'
+        '<p><a href="mailto:help@example.com">help@example.com</a></p>'
+    )
+    assert _plain_text(html) == "Call us (tel:+12025550123)\n\n+12025550123\n\nhelp@example.com\n"
