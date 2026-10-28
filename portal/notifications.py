@@ -4,14 +4,16 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import urllib.parse
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
 
-from fastapi_mail import ConnectionConfig, FastMail, MessageSchema, MessageType
+from fastapi_mail import ConnectionConfig, FastMail, MessageSchema, MessageType, MultipartSubtypeEnum
 from fastapi_mail.errors import ConnectionErrors
 from jinja2 import FileSystemLoader, TemplateSyntaxError, meta, nodes, select_autoescape
 from jinja2.sandbox import SandboxedEnvironment
@@ -90,6 +92,7 @@ def _mail_config() -> ConnectionConfig:
         MAIL_USERNAME=settings.smtp_user,
         MAIL_PASSWORD=settings.smtp_password,
         MAIL_FROM=settings.smtp_from_email,
+        MAIL_FROM_NAME=settings.smtp_from_name or None,
         MAIL_PORT=settings.smtp_port,
         MAIL_SERVER=settings.smtp_host,
         MAIL_STARTTLS=settings.smtp_port == 587,
@@ -97,6 +100,59 @@ def _mail_config() -> ConnectionConfig:
         USE_CREDENTIALS=bool(settings.smtp_user and settings.smtp_password),
         VALIDATE_CERTS=True,
     )
+
+
+class _PlainTextParser(HTMLParser):
+    _BLOCKS = frozenset({"p", "div", "tr", "table", "li", "ul", "ol", "h1", "h2", "h3", "h4", "h5", "h6", "blockquote"})
+    _SKIPPED = frozenset({"head", "style", "script", "title"})
+    _VOID = frozenset({"br", "img", "hr", "meta", "link", "input", "col", "area", "base", "source", "wbr"})
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.parts: list[str] = []
+        self._hidden: list[str] = []
+        self._links: list[tuple[str, int]] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag in self._VOID:
+            if tag in {"br", "hr"} and not self._hidden:
+                self.parts.append("\n")
+            return
+        values = dict(attrs)
+        style = re.sub(r"\s+", "", (values.get("style") or "").lower())
+        if self._hidden or tag in self._SKIPPED or "display:none" in style:
+            self._hidden.append(tag)
+            return
+        if tag in self._BLOCKS:
+            self.parts.append("\n\n")
+        if tag == "a":
+            self._links.append((values.get("href") or "", len(self.parts)))
+
+    def handle_endtag(self, tag: str) -> None:
+        if self._hidden:
+            if self._hidden[-1] == tag:
+                self._hidden.pop()
+            return
+        if tag == "a" and self._links:
+            href, start = self._links.pop()
+            label = " ".join("".join(self.parts[start:]).split())
+            shown = re.sub(r"^(https?://|mailto:)", "", href).rstrip("/")
+            if href.startswith(("http://", "https://", "mailto:")) and shown != label.rstrip("/"):
+                self.parts.append(f" ({href})" if label else href)
+        elif tag in self._BLOCKS:
+            self.parts.append("\n\n")
+
+    def handle_data(self, data: str) -> None:
+        if not self._hidden:
+            self.parts.append(data)
+
+
+def _plain_text(html: str) -> str:
+    parser = _PlainTextParser()
+    parser.feed(html)
+    parser.close()
+    lines = (" ".join(line.split()) for line in "".join(parser.parts).splitlines())
+    return re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip() + "\n"
 
 
 def get_definition(key: str) -> NotificationDefinition:
@@ -353,7 +409,14 @@ async def _send_delivery(delivery_id: int) -> None:
                     delivery.last_error = "SMTP is not configured."
             logger.warning("Email delivery %s was retained because SMTP is not configured", delivery_id)
             return
-        message = MessageSchema(subject=subject, recipients=[recipient], body=html, subtype=MessageType.html)
+        message = MessageSchema(
+            subject=subject,
+            recipients=[recipient],
+            body=_plain_text(html),
+            subtype=MessageType.plain,
+            alternative_body=html,
+            multipart_subtype=MultipartSubtypeEnum.alternative,
+        )
         await FastMail(_mail_config()).send_message(message)
     except (ConnectionErrors, ConnectionError, TimeoutError, OSError, ValueError) as exc:
         await _record_failure(delivery_id, str(exc))

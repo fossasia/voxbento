@@ -561,3 +561,70 @@ async def test_a_failing_purge_does_not_stop_sending(monkeypatch):
         await notifications.notification_worker_loop()
     # Deliveries ran on both loops even though the purge failed.
     assert sent == 2
+
+
+async def _send_and_capture(monkeypatch, key, context):
+    import email
+
+    monkeypatch.setattr("portal.notifications.settings.smtp_host", "smtp.example.invalid")
+    sent = []
+
+    async def capture(self, message):
+        sent.append(email.message_from_bytes((await self._prepare_message(message)).as_bytes()))
+
+    monkeypatch.setattr("portal.notifications.FastMail.send_message", capture)
+    async with get_session() as session:
+        await queue_notification(session, key, "person@example.com", context)
+    assert await process_due_deliveries() == 1
+    assert len(sent) == 1
+    return sent[0]
+
+
+@pytest.mark.anyio
+async def test_email_is_sent_from_a_named_sender(monkeypatch):
+    from email.utils import parseaddr
+
+    monkeypatch.setattr("portal.notifications.settings.smtp_from_email", "noreply@example.com")
+    monkeypatch.setattr("portal.notifications.settings.smtp_from_name", "VoxBento")
+    sent = await _send_and_capture(monkeypatch, "verification", {"verification_link": "https://example.invalid/v"})
+    assert parseaddr(sent["From"]) == ("VoxBento", "noreply@example.com")
+
+
+@pytest.mark.anyio
+async def test_empty_sender_name_sends_the_bare_address(monkeypatch):
+    monkeypatch.setattr("portal.notifications.settings.smtp_from_email", "noreply@example.com")
+    monkeypatch.setattr("portal.notifications.settings.smtp_from_name", "")
+    sent = await _send_and_capture(monkeypatch, "verification", {"verification_link": "https://example.invalid/v"})
+    assert sent["From"] == "noreply@example.com"
+
+
+@pytest.mark.anyio
+async def test_email_has_a_plain_text_part_before_the_html_part(monkeypatch):
+    sent = await _send_and_capture(
+        monkeypatch, "verification", {"verification_link": "https://example.invalid/auth/verify/abc"}
+    )
+    alternative = next(part for part in sent.walk() if part.get_content_type() == "multipart/alternative")
+    plain, html = alternative.get_payload()
+    assert plain.get_content_type() == "text/plain"
+    assert html.get_content_type() == "text/html"
+    text = plain.get_payload(decode=True).decode()
+    assert "Confirm your email address" in text
+    assert "Confirm email address (https://example.invalid/auth/verify/abc)" in text
+    assert "<" not in text
+    assert 'href="https://example.invalid/auth/verify/abc"' in html.get_payload(decode=True).decode()
+
+
+@pytest.mark.anyio
+async def test_plain_text_drops_hidden_preheader_and_markup():
+    from portal.notifications import _plain_text
+
+    html = (
+        "<html><head><title>Subject</title><style>p{color:red}</style></head><body>"
+        '<span style="display: none">Subject</span>'
+        "<h1>Hello &amp; welcome</h1><p>Line one<br>Line two</p>"
+        '<p><a href="https://voxbento.com">voxbento.com</a> · <a href="https://example.com/x">Open</a></p>'
+        '<img src="https://example.com/logo.png" alt="Logo"></body></html>'
+    )
+    assert _plain_text(html) == (
+        "Hello & welcome\n\nLine one\nLine two\n\nvoxbento.com · Open (https://example.com/x)\n"
+    )
