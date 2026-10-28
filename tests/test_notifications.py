@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import email
+from email.utils import parseaddr
 from html.parser import HTMLParser
 
 import pytest
@@ -9,7 +11,7 @@ from sqlalchemy import select
 
 from portal.database import configure, create_auth_token, create_user, dispose, get_session, init_db, revoke_auth_token
 from portal.models import EmailDelivery, EmailTemplateRevision
-from portal.notifications import process_due_deliveries, publish_draft, queue_notification, save_draft
+from portal.notifications import _plain_text, process_due_deliveries, publish_draft, queue_notification, save_draft
 
 
 @pytest.fixture(autouse=True)
@@ -564,8 +566,6 @@ async def test_a_failing_purge_does_not_stop_sending(monkeypatch):
 
 
 async def _send_and_capture(monkeypatch, key, context):
-    import email
-
     monkeypatch.setattr("portal.notifications.settings.smtp_host", "smtp.example.invalid")
     sent = []
 
@@ -582,8 +582,6 @@ async def _send_and_capture(monkeypatch, key, context):
 
 @pytest.mark.anyio
 async def test_email_is_sent_from_a_named_sender(monkeypatch):
-    from email.utils import parseaddr
-
     monkeypatch.setattr("portal.notifications.settings.smtp_from_email", "noreply@example.com")
     monkeypatch.setattr("portal.notifications.settings.smtp_from_name", "VoxBento")
     sent = await _send_and_capture(monkeypatch, "verification", {"verification_link": "https://example.invalid/v"})
@@ -616,8 +614,6 @@ async def test_email_has_a_plain_text_part_before_the_html_part(monkeypatch):
 
 @pytest.mark.anyio
 async def test_plain_text_drops_hidden_preheader_and_markup():
-    from portal.notifications import _plain_text
-
     html = (
         "<html><head><title>Subject</title><style>p{color:red}</style></head><body>"
         '<span style="display: none">Subject</span>'
@@ -628,3 +624,20 @@ async def test_plain_text_drops_hidden_preheader_and_markup():
     assert _plain_text(html) == (
         "Hello & welcome\n\nLine one\nLine two\n\nvoxbento.com · Open (https://example.com/x)\n"
     )
+
+
+@pytest.mark.anyio
+async def test_plain_text_keeps_table_labels_apart_from_their_values():
+    html = "<table><tr><td>Organization</td><td>Acme</td></tr><tr><td>Event</td><td>PyCon</td></tr></table>"
+    assert _plain_text(html) == "Organization: Acme\n\nEvent: PyCon\n"
+
+
+@pytest.mark.anyio
+async def test_plain_text_does_not_keep_line_breaks_typed_into_submitted_text():
+    html = "<p>Thanks.</p><div>Hello\n\nVoxBento Security Team:\nreset your password here</div>"
+    assert _plain_text(html) == "Thanks.\n\nHello VoxBento Security Team: reset your password here\n"
+
+
+@pytest.mark.anyio
+async def test_plain_text_writes_out_links_with_an_uppercase_scheme():
+    assert _plain_text('<a href="HTTPS://example.com/x">Open</a>') == "Open (HTTPS://example.com/x)\n"

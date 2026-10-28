@@ -20,7 +20,7 @@ services:
       SMTP_USER: "${SMTP_USER}"
       SMTP_PASSWORD: "${SMTP_PASSWORD}"
       SMTP_FROM_EMAIL: "${SMTP_FROM_EMAIL:-noreply@voxbento.com}"
-      SMTP_FROM_NAME: "${SMTP_FROM_NAME:-VoxBento}"
+      SMTP_FROM_NAME: "${SMTP_FROM_NAME-VoxBento}"
       BOOTH_ACCESS_TOKEN: "${BOOTH_ACCESS_TOKEN:-}"
       JWT_SECRET: "${JWT_SECRET:-}"
       JWT_EXPIRY_SECONDS: "${JWT_EXPIRY_SECONDS:-86400}"

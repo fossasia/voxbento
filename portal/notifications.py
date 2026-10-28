@@ -112,6 +112,7 @@ class _PlainTextParser(HTMLParser):
         self.parts: list[str] = []
         self._hidden: list[str] = []
         self._links: list[tuple[str, int]] = []
+        self._cells = 0
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         if tag in self._VOID:
@@ -125,7 +126,13 @@ class _PlainTextParser(HTMLParser):
             return
         if tag in self._BLOCKS:
             self.parts.append("\n\n")
-        if tag == "a":
+        if tag == "tr":
+            self._cells = 0
+        elif tag in {"td", "th"}:
+            if self._cells:
+                self.parts.append(": ")
+            self._cells += 1
+        elif tag == "a":
             self._links.append((values.get("href") or "", len(self.parts)))
 
     def handle_endtag(self, tag: str) -> None:
@@ -136,15 +143,15 @@ class _PlainTextParser(HTMLParser):
         if tag == "a" and self._links:
             href, start = self._links.pop()
             label = " ".join("".join(self.parts[start:]).split())
-            shown = re.sub(r"^(https?://|mailto:)", "", href).rstrip("/")
-            if href.startswith(("http://", "https://", "mailto:")) and shown != label.rstrip("/"):
+            scheme = re.match(r"(https?://|mailto:)", href, re.IGNORECASE)
+            if scheme and href[scheme.end() :].rstrip("/") != label.rstrip("/"):
                 self.parts.append(f" ({href})" if label else href)
         elif tag in self._BLOCKS:
             self.parts.append("\n\n")
 
     def handle_data(self, data: str) -> None:
         if not self._hidden:
-            self.parts.append(data)
+            self.parts.append(re.sub(r"\s+", " ", data))
 
 
 def _plain_text(html: str) -> str:
