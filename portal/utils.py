@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import time
 from urllib.parse import urlparse
 
@@ -12,6 +13,8 @@ from fastapi.security import HTTPAuthorizationCredentials
 from portal.auth import decode_token, is_listener_token
 from portal.config import settings
 from portal.globals import booths, get_http_client
+
+logger = logging.getLogger(__name__)
 
 
 def safe_redirect(url: str, status_code: int = status.HTTP_303_SEE_OTHER) -> RedirectResponse:
@@ -78,14 +81,20 @@ async def _ensure_mediamtx_path(channel_id: str) -> None:
     all_others path, so we create named paths via the Control API.
 
     Uses ADD first; if the path already exists, PATCHes it to ensure
-    alwaysAvailable is set (handles MediaMTX restarts where the runtime
-    config was lost while the portal's in-memory cache was stale).
+    alwaysAvailable is set. A path listed in the cache but no longer in
+    MediaMTX's config (the media server restarted on its own) is created again.
     """
-    if channel_id in _created_paths:
-        return
     api_base = settings.mediamtx_api_base
     if not api_base:
         return
+    if channel_id in _created_paths:
+        # MediaMTX can restart without the portal, lose every path added at
+        # runtime, and leave this cache claiming they are still there.
+        still_configured = await _mediamtx_path_configured(channel_id)
+        if still_configured is not False:
+            return
+        _created_paths.discard(channel_id)
+        logger.info("mediamtx path_lost channel_id=%s", channel_id)
     body = {
         "alwaysAvailable": True,
         "alwaysAvailableTracks": [{"codec": "Opus"}],
@@ -114,6 +123,15 @@ async def _ensure_mediamtx_path(channel_id: str) -> None:
                 _created_paths.add(channel_id)
     except (httpx.ConnectError, httpx.TimeoutException, httpx.RequestError, RuntimeError):
         pass  # Non-fatal; path will use all_others defaults
+
+
+async def _mediamtx_path_configured(channel_id: str) -> bool | None:
+    """Is the path still in MediaMTX's config? None if the API can't be reached."""
+    try:
+        r = await get_http_client().get(f"{settings.mediamtx_api_base}/v3/config/paths/get/{channel_id}", timeout=3.0)
+    except (httpx.ConnectError, httpx.TimeoutException, httpx.RequestError, RuntimeError):
+        return None
+    return r.status_code == 200
 
 
 def _require_access(
