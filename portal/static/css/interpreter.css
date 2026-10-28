@@ -283,25 +283,22 @@ label {
   min-width: 0;
 }
 
+/* VoxBento V mark (img/email-mark.svg), linking back to My booths */
 .brand-mark {
-  width: 34px;
-  height: 34px;
-  border-radius: 10px;
-  display: grid;
-  place-items: center;
-  font-weight: 800;
-  font-size: 1.05rem;
-  color: #fff;
-  background: linear-gradient(135deg, var(--bx-accent), #6b8cff);
-  box-shadow: 0 4px 12px color-mix(in srgb, var(--bx-accent) 35%, transparent);
+  display: flex;
+  align-items: center;
   flex-shrink: 0;
-  text-decoration: none;
+  border-radius: var(--bx-radius-sm);
+}
+
+.brand-mark img {
+  display: block;
+  width: auto;
+  height: 34px;
 }
 
 .brand-mark:hover,
 .brand-mark:focus-visible {
-  color: #fff;
-  text-decoration: none;
   filter: brightness(1.08);
 }
 
