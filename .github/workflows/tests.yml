@@ -43,6 +43,12 @@ jobs:
              [ -z "$BASE_SHA" ] || [ "$BASE_SHA" = "0000000000000000000000000000000000000000" ]; then
             echo "changed=true" >> "$GITHUB_OUTPUT"
           else
+            if ! git rev-parse --verify "${BASE_SHA}^{commit}" >/dev/null 2>&1; then
+              echo "Base commit $BASE_SHA is unavailable; running floor-bot checks conservatively."
+              echo "changed=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+
             git diff --name-only "$BASE_SHA" HEAD > /tmp/floor-bot-changed-files
             if grep -Eq '^(floor-bot/|docker-compose\.yml$|\.github/workflows/tests\.yml$|tests/(floor_bot_container_smoke|check_floor_bot_image_size|test_floor_bot_dependencies)\.py$)' /tmp/floor-bot-changed-files; then
               echo "changed=true" >> "$GITHUB_OUTPUT"
@@ -262,6 +268,7 @@ jobs:
           node tests/test_jules_review.mjs
           node tests/test_booth_reconnect.mjs
           node tests/test_booth_socket.mjs
+          node tests/test_room_ai.mjs
 
       - name: Run unit tests
         run: uv run pytest tests/ -v

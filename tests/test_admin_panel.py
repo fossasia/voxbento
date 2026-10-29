@@ -1272,7 +1272,7 @@ class TestRoomCRUD:
                 cookies=admin_cookie,
             )
         assert resp.status_code == 200
-        assert b"Audio Synchronization Delay (ms)" in resp.content
+        assert b"Listener delay (milliseconds)" in resp.content
         assert b'name="audio_delay_ms"' in resp.content
 
     @pytest.mark.anyio
@@ -1305,6 +1305,13 @@ class TestRoomCRUD:
     @pytest.mark.anyio
     async def test_room_vocabulary_upload_preview_and_export(self, admin_cookie, seed_event):
         event, room, _ = seed_event
+        from portal.database import get_room_by_id, get_session
+
+        # The glossary is part of the AI settings, shown when the room uses AI translation.
+        async with get_session() as session:
+            ai_room = await get_room_by_id(session, room.id)
+            ai_room.floor_transcription_enabled = True
+            ai_room.floor_translation_enabled = True
         csv_content = (
             "source_term,target_language,target_term,description,case_sensitive,match_type,priority\n"
             "Voxbento,all,Voxbento,Product name,true,exact,100\n"
@@ -1325,7 +1332,7 @@ class TestRoomCRUD:
 
             page = await c.get(upload.headers["location"], cookies=admin_cookie)
             assert page.status_code == 200
-            assert b"Imported 4 rows" in page.content
+            assert b"Added 4 terms" in page.content
             assert b"Voxbento" in page.content
             assert b"WebRTC" in page.content
 

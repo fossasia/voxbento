@@ -78,8 +78,8 @@ token. Revocation is committed before media cleanup: if MediaMTX cannot confirm
 the disconnect, the API returns `202` with `cleanup_pending: true`, the old token
 remains invalid, and reconciliation retries cleanup. Revoke keeps program
 ownership (it does not silently restart the bot).
-“Switch to Jitsi bot” explicitly returns ownership; connect the meeting from the
-room's **Meeting source** card. Connecting the meeting while program ingest owns
+“Switch to the online meeting” explicitly returns ownership; connect the meeting from the
+room's **Room audio → From the online meeting** panel. Connecting the meeting while program ingest owns
 the floor asks for confirmation, then performs the same switch.
 All source changes affect VoxBento only, not the independent YouTube output.
 
@@ -87,7 +87,7 @@ All source changes affect VoxBento only, not the independent YouTube output.
 
 For venue sound desks without a WHIP encoder, the event owner can publish the floor
 directly from a dedicated sender page, opened in its own tab from the room page's
-**Program audio sender** panel (`GET /workspace/events/{id}/rooms/{id}/sender/`,
+**Room audio → From a computer at the sound desk** panel (`GET /workspace/events/{id}/rooms/{id}/sender/`,
 event owners only). Because the stream lives in that tab, owners can navigate the
 rest of the console without stopping the floor. It selects a local
 audio input (use a USB sound-desk feed), shows a live level meter, and publishes
@@ -204,7 +204,7 @@ and differs by viewer/network; this is manual calibration, not frame-accurate sy
   This last external/encoder rehearsal is required before production sign-off;
   an automated local test cannot establish it.
 
-Rollback: disable/revoke room ingest and click **Connect meeting** in the room's Meeting source,
+Rollback: disable/revoke room ingest and click **Connect meeting** in the room's Room audio → From the online meeting panel,
 then set the feature flag false. Keep the floor authentication boundary and
 private ports; do not restore anonymous public floor publishing. Migration 025
 supports downgrade, but back up first: downgrade removes program configuration
