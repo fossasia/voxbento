@@ -12,6 +12,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 from fastapi import WebSocket, WebSocketDisconnect
+from sqlalchemy.exc import SQLAlchemyError
 
 import portal.webhooks.worker as _wh_worker
 from portal.auth import WSAuthError, can_perform_role
@@ -626,10 +627,13 @@ class TTSConnectionManager:
                 if authorize is not None:
                     await authorize()
                 await ws.send_bytes(frame)
-            except WSAuthError:
+            except (WSAuthError, SQLAlchemyError) as exc:
                 self.remove(ws, room_id, language_code, booth_id)
+                code = WS_CLOSE_REVOKED if isinstance(exc, WSAuthError) else 1011
+                if code == 1011:
+                    logger.error("TTS authorization database check failed; disconnecting subscriber")
                 try:
-                    await asyncio.wait_for(ws.close(code=WS_CLOSE_REVOKED), timeout=2.0)
+                    await asyncio.wait_for(ws.close(code=code), timeout=2.0)
                 except (WebSocketDisconnect, RuntimeError, OSError, TimeoutError):
                     pass
             except Exception:

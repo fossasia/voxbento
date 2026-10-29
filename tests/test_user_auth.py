@@ -826,6 +826,7 @@ class TestPasswordReset:
             user_after = await get_user_by_id(s, user.id)
             assert user_after is not None
             assert user_after.password_hash == original_hash
+            assert user_after.sessions_valid_after is None
             assert verify_password("originalpassword123", user_after.password_hash) is True
             assert verify_password("brandnewpassword123", user_after.password_hash) is False
 

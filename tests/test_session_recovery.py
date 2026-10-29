@@ -19,6 +19,7 @@ from portal.database import (
     create_auth_token,
     create_booth,
     create_event,
+    create_invite_token,
     create_room,
     create_user,
     dispose,
@@ -323,3 +324,125 @@ def test_existing_tts_subscriber_stops_when_token_expires(recovery, monkeypatch)
         with pytest.raises(WebSocketDisconnect) as exc:
             socket.receive_bytes()
         assert exc.value.code == 4003
+
+
+def test_reset_cookie_cannot_skip_password_on_hosting_invite(recovery):
+    import hashlib
+
+    from portal.models import TOKEN_TYPE_HOSTING_INVITE
+
+    client, (_, target, _, _, _) = recovery
+    stolen = old_token(target)
+    raw_invite = "recovery-hosting-invite"
+
+    async def invite():
+        async with get_session() as db:
+            return await create_auth_token(
+                db,
+                user_id=target.id,
+                token_type=TOKEN_TYPE_HOSTING_INVITE,
+                jti=hashlib.sha256(raw_invite.encode()).hexdigest(),
+            )
+
+    asyncio.run(invite())
+    assert reset_password(client, target).status_code == 303
+    client.cookies.clear()
+    client.cookies.set("user_token", stolen)
+    response = client.post(
+        f"/invite/accept/{raw_invite}",
+        data={},
+        headers={"Origin": "https://testserver"},
+        follow_redirects=False,
+    )
+    assert response.status_code == 400
+    assert "user_token" not in response.cookies
+    response = client.post(
+        f"/invite/accept/{raw_invite}",
+        data={"password": "new-recovery-password"},
+        headers={"Origin": "https://testserver"},
+        follow_redirects=False,
+    )
+    assert response.status_code == 303
+    assert client.get("/admin/users/").status_code == 200
+
+
+@pytest.mark.parametrize("channel", ["tts", "booth"])
+@pytest.mark.parametrize("revoked_invite", [False, True])
+def test_revoked_account_cookie_does_not_override_valid_invite(recovery, channel, revoked_invite):
+    client, (_, target, event, room, booth) = recovery
+    stolen = old_token(target)
+
+    async def invitation():
+        async with get_session() as db:
+            token = await create_invite_token(db, booth_id=booth.id, role=INTERPRETER)
+            if revoked_invite:
+                token.revoked_at = datetime.now(timezone.utc)
+            return token.public_id
+
+    participant = create_participant_token(
+        booth_id=booth.id,
+        role=INTERPRETER,
+        event_slug=event.slug,
+        room_id=room.id,
+        language_code="en",
+        token_id=asyncio.run(invitation()),
+    )
+    assert reset_password(client, target).status_code == 303
+    client.cookies.clear()
+    client.cookies.set("user_token", stolen)
+    client.cookies.set("session_token", participant)
+    path = tts_path(room) if channel == "tts" else f"/ws/booth/recovery-test-{room.id}-en"
+    if revoked_invite:
+        with pytest.raises(WebSocketDisconnect) as exc:
+            with client.websocket_connect(path):
+                pass
+        assert exc.value.code == 4003
+        return
+    with client.websocket_connect(path) as socket:
+        if channel == "tts":
+            broadcast(client, room)
+            assert socket.receive_bytes().endswith(b"private-pcm")
+        else:
+            socket.send_json({"type": "booth:join", "display_name": "Invited interpreter"})
+            assert socket.receive_json()["type"] == "booth:joined"
+
+
+@pytest.mark.anyio
+async def test_tts_authorization_database_failure_disconnects_without_delivery():
+    from sqlalchemy.exc import OperationalError
+
+    from portal.websockets.manager import TTSConnectionManager
+
+    class Socket:
+        def __init__(self):
+            self.frames = []
+            self.closed = None
+
+        async def send_bytes(self, data):
+            self.frames.append(data)
+
+        async def close(self, code=1000, reason=""):
+            self.closed = code
+
+    async def unavailable():
+        raise OperationalError("SELECT users", {}, RuntimeError("database unavailable"))
+
+    socket = Socket()
+    manager = TTSConnectionManager()
+    manager.add(socket, 1, "en", "recovery-test-1-en", authorize=unavailable)
+    await manager.broadcast_bundle(1, "en", "recovery-test-1-en", b"private", "segment", 1)
+    assert socket.frames == []
+    assert socket.closed == 1011
+    assert not manager.has_listeners(1, "en", "recovery-test-1-en")
+
+
+def test_listener_routes_reject_reset_account_cookie_without_join_code(recovery):
+    client, (_, target, _, room, _) = recovery
+    stolen = old_token(target)
+    assert reset_password(client, target).status_code == 303
+    client.cookies.clear()
+    client.cookies.set("user_token", stolen)
+    response = client.get(f"/listener/recovery-test/rooms/{room.id}/audio-delay")
+    assert response.status_code == 403
+    page = client.get("/listener/recovery-test")
+    assert "listener-event.js" not in page.text

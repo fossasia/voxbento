@@ -28,6 +28,7 @@ from portal.auth import (
     hash_password,
     require_user,
     resolve_request_principal,
+    user_session_is_valid,
     verify_password,
 )
 from portal.config import settings
@@ -859,14 +860,16 @@ async def remove_password_api(request: Request):
     return {"status": "ok"}
 
 
-def _extract_cookie_user_id(request: Request) -> str | None:
+def _extract_cookie_user_id(request: Request, user: User) -> str | None:
     cookie = request.cookies.get("user_token")
     if not cookie:
         return None
     try:
         payload = decode_token(cookie)
         sub = payload.get("sub")
-        return str(sub) if sub is not None else None
+        if payload.get("user") and str(sub) == str(user.id) and user_session_is_valid(user, payload):
+            return str(sub)
+        return None
     except jwt.PyJWTError:
         return None
     except Exception as exc:
@@ -904,7 +907,7 @@ async def invite_accept_page(request: Request, token: str):
                 },
             )
 
-        is_signed_in_as_user = _extract_cookie_user_id(request) == str(user.id)
+        is_signed_in_as_user = _extract_cookie_user_id(request, user) == str(user.id)
         has_password = bool(user.password_hash)
 
         return templates.TemplateResponse(
@@ -951,7 +954,7 @@ async def invite_accept_submit(request: Request, token: str):
             if user is None or not user.is_active:
                 raise HTTPException(status_code=403, detail="Account is deactivated.")
 
-            is_signed_in_as_user = _extract_cookie_user_id(request) == str(user.id)
+            is_signed_in_as_user = _extract_cookie_user_id(request, user) == str(user.id)
             has_existing_password = bool(user.password_hash)
 
             if has_existing_password and not user.email_verified:

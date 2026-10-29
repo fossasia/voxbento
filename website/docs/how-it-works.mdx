@@ -407,13 +407,18 @@ the JWT issuance time against that cutoff on HTTP requests, booth pages and boot
 WebSocket connections. User JWT issuance retains fractional seconds so the fresh
 recovery session works even when it is issued in the same second as the cutoff.
 Existing booth sockets are closed after the transaction commits; reconnecting
-with the old token cannot renew its authorization.
+with the old token cannot renew its authorization. Listener pages and hosting
+invitation acceptance also validate the account session; an old cookie cannot
+skip a hosting invitation's password check and obtain a fresh session.
 
 TTS subscriptions authorize Admins from their current account record, rather
 than an Admin claim saved at sign-in. Each subscription rechecks its credentials
 before sending a text/audio bundle, so existing connections cannot keep receiving
 after access is revoked or the token expires. Listener and invitation credentials
 keep their existing scope checks, including independent listener-code access.
+A revoked account cookie does not hide a separately valid invitation cookie.
+If a TTS authorization database check fails, the subscriber is disconnected with
+code 1011 before any bundle is sent, instead of remaining silently connected.
 
 ## Program floor source
 

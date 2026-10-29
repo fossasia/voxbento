@@ -41,7 +41,9 @@ User-token authentication checks the current active account and rejects JWTs
 issued at or before `users.sessions_valid_after`. Password reset advances that
 cutoff in the same transaction as the password change and token redemption.
 Booth connections retain JWT issuance time for the session reaper, not their
-connection time.
+connection time. Hosting-invite password bypasses require a current user session;
+matching the JWT subject alone is insufficient. A valid invitation or listener-code
+credential remains usable alongside a revoked account cookie.
 
 ## Booth & Listener Pages
 
@@ -49,7 +51,7 @@ connection time.
 |---|---|---|---|---|
 | GET | `/interpreter/{event_slug}/{language_code}` | session or user | `interpreter_booth.html` | **Preferred URL**; resolves Jitsi URL, relay WHEP, mediamtx path |
 | GET | `/interpreter/{booth_id}` | session or user | `interpreter_booth.html` | Legacy free-form booth ID; no event scope |
-| GET | `/listener/{event_slug}` | session or user | `listener-event.html` | Lists rooms/booths for event with WHEP URLs |
+| GET | `/listener/{event_slug}` | current user session or valid listener join code | `listener-event.html` | Lists rooms/booths for event with WHEP URLs; revoked user cookies fall back to the join form |
 
 ---
 

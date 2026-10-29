@@ -278,7 +278,7 @@ async def _authorize_tts(websocket: WebSocket, room_id: int, language_code: str,
 
     import jwt
 
-    from portal.auth import WSAuthError, decode_token, get_booth_session, resolve_booth_role
+    from portal.auth import WSAuthError, decode_token, get_booth_sessions, resolve_booth_role
     from portal.booth_identity import parse_booth_id, validate_language_code
     from portal.config import settings
     from portal.database import get_event_by_slug, get_session
@@ -352,13 +352,15 @@ async def _authorize_tts(websocket: WebSocket, room_id: int, language_code: str,
             raise WSAuthError("Origin mismatch.")
 
     # 2. JWT in cookie
-    payload = get_booth_session(websocket)
+    sessions = get_booth_sessions(websocket)
+    payload = sessions.get("user_token") or sessions.get("session_token")
+    if payload and payload.get("user"):
+        user = await resolve_session_user(payload)
+        if user is None:
+            payload = sessions.get("session_token")
+        elif user.is_admin:
+            return
     if payload:
-        if payload.get("user"):
-            user = await resolve_session_user(payload)
-            if user is not None and user.is_admin:
-                return
-
         token_event = payload.get("event_slug", "")
         if is_listener_token(payload):
             if not token_event or token_event != event_slug:

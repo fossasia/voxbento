@@ -737,6 +737,8 @@ async def resolve_ws_auth(websocket: WebSocket, booth_id: str) -> dict:
     sessions = get_booth_sessions(websocket)
     user_sess = sessions.get("user_token")
     invite_sess = sessions.get("session_token")
+    if user_sess and invite_sess and user_sess.get("user") and await resolve_session_user(user_sess) is None:
+        user_sess = None
     if user_sess and (user_sess.get("is_admin") or user_sess.get("admin")):
         payload = user_sess
     elif user_sess and invite_sess:
