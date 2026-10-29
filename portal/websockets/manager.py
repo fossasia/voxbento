@@ -620,11 +620,16 @@ class TTSConnectionManager:
         # Frame: [1-byte version][4-byte length L][L-bytes header][audio_bytes]
         frame = struct.pack(">BI", 1, len(header_bytes)) + header_bytes + audio_bytes
 
-        async def deliver(ws: WebSocket) -> None:
+        sockets = [(ws, self._authorizers.get(ws)) for ws in list(self._rooms.get(key, set()))]
+
+        async def deliver(ws: WebSocket, authorize: Callable[[], Awaitable[None]] | None) -> None:
             try:
-                authorize = self._authorizers.get(ws)
+                if ws not in self._rooms.get(key, set()):
+                    return
                 if authorize is not None:
                     await authorize()
+                if ws not in self._rooms.get(key, set()):
+                    return
                 await ws.send_bytes(frame)
             except (WSAuthError, SQLAlchemyError) as exc:
                 self.remove(ws, room_id, language_code, booth_id)
@@ -638,7 +643,7 @@ class TTSConnectionManager:
             except Exception:
                 self.remove(ws, room_id, language_code, booth_id)
 
-        await asyncio.gather(*(deliver(ws) for ws in list(self._rooms.get(key, set()))))
+        await asyncio.gather(*(deliver(ws, authorize) for ws, authorize in sockets))
 
 
 manager = ConnectionManager()

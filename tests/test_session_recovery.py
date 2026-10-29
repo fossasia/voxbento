@@ -643,3 +643,86 @@ async def test_tts_subscribers_do_not_wait_for_another_authorization():
     finally:
         release.set()
         await task
+
+
+def test_caption_session_lookup_failure_allows_client_retry(recovery, monkeypatch):
+    from sqlalchemy.exc import OperationalError
+
+    import portal.websockets.handlers as handlers
+
+    client, (_, target, _, room, _) = recovery
+
+    async def unavailable(payload):
+        raise OperationalError("SELECT users", {}, RuntimeError("database unavailable"))
+
+    monkeypatch.setattr(handlers, "resolve_session_user", unavailable)
+    token = old_token(target)
+    with client.websocket_connect(f"/ws/captions/recovery-test-{room.id}-en?token={token}") as socket:
+        with pytest.raises(WebSocketDisconnect) as exc:
+            socket.receive_json()
+        assert exc.value.code == 1011
+
+
+@pytest.mark.anyio
+async def test_overlapping_tts_broadcast_cannot_send_after_authorizer_removed():
+    from portal.auth import WSAuthError
+    from portal.websockets.manager import TTSConnectionManager
+
+    closing = asyncio.Event()
+    release = asyncio.Event()
+    frames = []
+
+    class Socket:
+        async def send_bytes(self, data):
+            frames.append(data)
+
+        async def close(self, code=1000, reason=""):
+            closing.set()
+            await release.wait()
+
+    async def revoked():
+        raise WSAuthError("Revoked")
+
+    manager = TTSConnectionManager()
+    socket = Socket()
+    manager.add(socket, 1, "en", "recovery-test-1-en", authorize=revoked)
+    tasks = [
+        asyncio.create_task(manager.broadcast_bundle(1, "en", "recovery-test-1-en", b"private", "segment", seq))
+        for seq in (1, 2)
+    ]
+    try:
+        await asyncio.wait_for(closing.wait(), timeout=1)
+        await asyncio.sleep(0)
+        assert frames == []
+    finally:
+        release.set()
+        await asyncio.gather(*tasks)
+
+
+@pytest.mark.anyio
+async def test_tts_authorization_cannot_resume_delivery_after_removal():
+    from portal.websockets.manager import TTSConnectionManager
+
+    checking = asyncio.Event()
+    release = asyncio.Event()
+    frames = []
+
+    class Socket:
+        async def send_bytes(self, data):
+            frames.append(data)
+
+    async def authorize():
+        checking.set()
+        await release.wait()
+
+    manager = TTSConnectionManager()
+    socket = Socket()
+    manager.add(socket, 1, "en", "recovery-test-1-en", authorize=authorize)
+    task = asyncio.create_task(manager.broadcast_bundle(1, "en", "recovery-test-1-en", b"private", "segment", 1))
+    try:
+        await asyncio.wait_for(checking.wait(), timeout=1)
+        manager.remove(socket, 1, "en", "recovery-test-1-en")
+    finally:
+        release.set()
+        await task
+    assert frames == []

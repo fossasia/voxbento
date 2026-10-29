@@ -5,6 +5,7 @@ import logging
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from sqlalchemy.exc import SQLAlchemyError
 
 from portal.auth import (
     WSAuthError,
@@ -234,6 +235,9 @@ async def ws_captions(websocket: WebSocket, booth_id: str) -> None:
 
                 if not token_event or booth_event != token_event:
                     reject_code = 4003
+        except SQLAlchemyError:
+            _log.exception("Caption session lookup failed")
+            reject_code = 1011
         except Exception:
             reject_code = 4001
         if reject_code is not None:
