@@ -373,3 +373,8 @@ transaction; the MediaMTX auth callback reserves a session before negotiation.
 Final floor sequence increments atomically and survives worker/portal restarts.
 Raw credentials are only returned at create/rotate. YouTube keys exist only in
 relay mode, encrypted (migration 028).
+
+## OAuth Tables & Expiration Handling (#980)
+
+- `oauth_authorization_codes`: stores authorization codes with `expires_at: DateTime(tz)`. Exposes `is_expired` property that normalizes SQLite-stripped naive datetimes to UTC-aware before comparison against `utc_now()`.
+- `oauth_tokens`: stores access and refresh token hashes with `expires_at: DateTime(tz)`. Exposes `is_expired` property used across token exchange and `require_oauth_scope` API dependencies to enforce consistent expiry boundaries across SQLite and PostgreSQL backends.

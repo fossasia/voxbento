@@ -137,7 +137,7 @@ Event management and system administration use separate public URL namespaces:
 - `/mission-control/...` is the room-scoped operational surface for `room_coordinator` users.
 - `/admin/...` is reserved for Admins and contains system-wide views such as user and developer-account management.
 
-Both namespaces use the same underlying management handlers, so the route split does not duplicate event-management behavior. Existing organizer bookmarks under `/admin/events/...` receive a temporary redirect to the corresponding workspace URL with their query string and HTTP method preserved. The OAuth routes remain under `/oauth/...`; shared-organizer authorization and token lifecycle behavior are therefore unchanged.
+Both namespaces use the same underlying management handlers, so the route split does not duplicate event-management behavior. Existing organizer bookmarks under `/admin/events/...` receive a temporary redirect to the corresponding workspace URL with their query string and HTTP method preserved. The OAuth routes remain under `/oauth/...`; shared-organizer authorization and token lifecycle behavior are therefore unchanged. Authorization codes and OAuth tokens enforce instant-based expiration checks with UTC timezone normalization across database backends (handling SQLite timezone-naive stripping in local development and PostgreSQL timezone-aware timestamps in production).
 
 Room deletion checks that the requested room belongs to the event specified in the workspace URL before removing it and its dependent booths, invites, and memberships. An unknown room or a room from another event returns HTTP 404 without deleting any data.
 

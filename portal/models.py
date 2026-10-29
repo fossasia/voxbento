@@ -788,7 +788,18 @@ class OAuthAuthorizationCode(Base):
     event: Mapped[Event] = relationship()
 
     def __repr__(self) -> str:
+        """Return string representation of OAuthAuthorizationCode."""
         return f"<OAuthAuthorizationCode id={self.id} client_id={self.client_id}>"
+
+    @property
+    def is_expired(self) -> bool:
+        """Check if authorization code is expired, safely normalizing naive datetimes."""
+        now = utc_now()
+        exp = self.expires_at
+        # SQLite strips timezone info; normalise to UTC-aware
+        if exp.tzinfo is None:
+            exp = exp.replace(tzinfo=timezone.utc)
+        return now >= exp
 
 
 class OAuthToken(Base):
@@ -814,7 +825,18 @@ class OAuthToken(Base):
     event: Mapped[Event] = relationship()
 
     def __repr__(self) -> str:
+        """Return string representation of OAuthToken."""
         return f"<OAuthToken id={self.id} client_id={self.client_id} revoked={self.revoked}>"
+
+    @property
+    def is_expired(self) -> bool:
+        """Check if OAuth token is expired, safely normalizing naive datetimes."""
+        now = utc_now()
+        exp = self.expires_at
+        # SQLite strips timezone info; normalise to UTC-aware
+        if exp.tzinfo is None:
+            exp = exp.replace(tzinfo=timezone.utc)
+        return now >= exp
 
 
 class OAuthConsentGrant(Base):
