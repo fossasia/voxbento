@@ -482,4 +482,3 @@ class TestGetEventConfidentialClient:
 
         assert resp.status_code == 403
         assert resp.json()["detail"] == "User account is inactive"
-

@@ -102,7 +102,7 @@ async def _verify_event_access(
             user_id = 0
         user = await get_user_by_id(session, user_id)
         if user is None or not user.is_active:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid or inactive user.")
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User is not a member of this event")
         if user.is_admin:
             return
 
@@ -121,7 +121,7 @@ async def _verify_event_access(
                 booth_role = await resolve_booth_role({"sub": str(user.id)}, booth_id)
                 if booth_role is not None and has_permission(booth_role, booth_permission):
                     return
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Event access required.")
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User is not a member of this event")
 
     if not configured_token and settings.debug:
         return
@@ -304,7 +304,9 @@ async def _verify_resource_access(
             session, request, event.id, room_id=room_id, credentials=credentials, token=token
         )
     else:
-        _require_access(request, credentials, token, session_payload=payload)
+        await _require_access(
+            request, credentials, token, expected_event_slug=event.slug, session_payload=payload
+        )
     if payload and not payload.get("user") and payload.get("token_id") is not None:
         if await is_invite_token_revoked(str(payload["token_id"])):
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invitation revoked.")
@@ -361,7 +363,9 @@ async def provision_listener_token(
         return {"token": token}
 
 
-@router.delete("/events/{event_slug}/rooms/{room_id}/booths/{language_code}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/events/{event_slug}/rooms/{room_id:int}/booths/{language_code}", status_code=status.HTTP_204_NO_CONTENT
+)
 async def delete_booth_by_language(
     request: Request,
     event_slug: str,
@@ -371,6 +375,7 @@ async def delete_booth_by_language(
     credentials: HTTPAuthorizationCredentials | None = Depends(security),
 ):
     """Delete a booth from an event."""
+    await _require_access(request, credentials, token, expected_event_slug=event_slug)
     booth_id = make_booth_id(event_slug, room_id, language_code)
     room_db_id = room_id
     async with get_session() as session:
@@ -418,6 +423,7 @@ async def create_event_booth(
     Returns the booth state including derived booth_id, MediaMTX path,
     WHIP URL, and WHEP URL.
     """
+    await _require_access(request, credentials, token, expected_event_slug=event_slug)
     async with get_session() as session:
         # Get or Create Event
         event_query = await session.execute(select(Event).where(Event.slug == event_slug, Event.deleted_at.is_(None)))
@@ -550,6 +556,8 @@ async def delete_event_booth(
     credentials: HTTPAuthorizationCredentials | None = Depends(security),
 ):
     """Delete a booth provisioned via API."""
+    await _require_access(request, credentials, token, expected_event_slug=event_slug)
+
     booth_id = ""
     room_id = 0
     async with get_session() as session:
@@ -608,6 +616,8 @@ async def list_event_booths(
     credentials: HTTPAuthorizationCredentials | None = Depends(security),
 ) -> dict:
     """List all booths for an event."""
+    await _require_access(request, credentials, token, expected_event_slug=event_slug)
+
     async with get_session() as session:
         event = await session.scalar(select(Event).where(Event.slug == event_slug, Event.deleted_at.is_(None)))
         if not event:
@@ -625,7 +635,6 @@ async def list_event_booths(
         b["label"] = f"{b.get('language_name', b.get('language_code', ''))} (Human)"
 
     async with get_session() as session:
-
         stmt = select(Event).where(Event.slug == event_slug, Event.deleted_at.is_(None)).options(
             selectinload(Event.rooms).selectinload(Room.translation_languages)
         )

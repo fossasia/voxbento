@@ -322,3 +322,32 @@ async def test_room_endpoint_handles_non_ascii_digit_without_server_error():
         assert res.json()["detail"] == "Room not found"
 
 
+@pytest.mark.anyio
+async def test_api_v1_delete_room_consumer_route():
+    """Verify consumer-facing API v1 room deletion path used by eventyay-interpretation:
+    DELETE /api/v1/events/{event_slug}/rooms/{eventyay_room_id}
+    """
+    event = await _seed()
+
+    async with _client() as c:
+        # 1. Create a room via PUT /api/v1/events/{slug}/rooms/{eventyay_room_id}
+        put_res = await c.put(
+            f"/api/v1/events/{event.slug}/rooms/eventyay-room-99",
+            json={"name": "Eventyay Room", "target_languages": ["fr"]},
+            headers=_auth(),
+        )
+        assert put_res.status_code == 200
+
+        # 2. Delete room via DELETE /api/v1/events/{slug}/rooms/{eventyay_room_id}
+        del_res = await c.delete(
+            f"/api/v1/events/{event.slug}/rooms/eventyay-room-99",
+            headers=_auth(),
+        )
+        assert del_res.status_code == 204
+
+        # 3. Confirm room is deleted (GET returns 404)
+        get_res = await c.get(
+            f"/api/v1/events/{event.slug}/rooms/eventyay-room-99/booths",
+            headers=_auth(),
+        )
+        assert get_res.status_code == 404

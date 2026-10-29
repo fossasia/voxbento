@@ -12,6 +12,7 @@ from fastapi.security import HTTPAuthorizationCredentials
 from portal.auth import decode_token, is_listener_token
 from portal.config import settings
 from portal.globals import booths, get_http_client
+from portal.roles import EVENT_OWNER, ROOM_COORDINATOR
 
 
 def safe_redirect(url: str, status_code: int = status.HTTP_303_SEE_OTHER) -> RedirectResponse:
@@ -116,13 +117,14 @@ async def _ensure_mediamtx_path(channel_id: str) -> None:
         pass  # Non-fatal; path will use all_others defaults
 
 
-def _require_access(
+async def _require_access(
     request: Request,
     credentials: HTTPAuthorizationCredentials | None,
     token_query: str | None = None,
+    expected_event_slug: str | None = None,
     session_payload: dict | None = None,
 ) -> None:
-    """Allow request with a valid credential, or anonymously in debug mode."""
+    """Allow request if access is unset, or if a valid JWT or legacy token is provided; scoped JWTs must match the requested event, while global/admin JWTs without an event_slug are accepted."""
     if not settings.booth_access_token:
         if not settings.debug:
             raise HTTPException(
@@ -130,30 +132,88 @@ def _require_access(
                 detail="BOOTH_ACCESS_TOKEN is not configured on this server.",
             )
         return
-    if credentials is not None:
-        if credentials.credentials == settings.booth_access_token:
-            return
-        try:
-            payload = decode_token(credentials.credentials)
-            if is_listener_token(payload):
-                raise HTTPException(
-                    status_code=status.HTTP_403_FORBIDDEN, detail="Listener tokens cannot be used for this API."
-                )
-            return
-        except pyjwt.InvalidTokenError:
-            pass
+
+    if credentials is not None and credentials.credentials == settings.booth_access_token:
+        return
+
     if token_query and token_query == settings.booth_access_token:
         return
+
+    async def _check_scope(payload: dict) -> None:
+        if payload.get("role") == "listener" or is_listener_token(payload):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN, detail="Listener tokens cannot be used for this API."
+            )
+        token_event = payload.get("event_slug")
+        is_global = payload.get("purpose") == "legacy_api" and bool(settings.booth_access_token)
+        is_ordinary_user = payload.get("user")
+
+        if expected_event_slug:
+            if is_global:
+                return
+            if is_ordinary_user:
+                from portal.database import (
+                    get_session,
+                    get_user_by_id,
+                    list_memberships_for_user,
+                    list_room_memberships_for_user,
+                )
+
+                async with get_session() as db_session:
+                    try:
+                        uid = int(payload.get("sub", 0))
+                    except (TypeError, ValueError):
+                        uid = 0
+                    user = await get_user_by_id(db_session, uid)
+                    if user is None or not user.is_active:
+                        raise HTTPException(
+                            status_code=status.HTTP_403_FORBIDDEN, detail="User is not a member of this event"
+                        )
+                    if user.is_admin:
+                        return
+                    memberships = await list_memberships_for_user(db_session, uid)
+                    rms = await list_room_memberships_for_user(db_session, uid)
+                    is_owner = any(
+                        m.event.slug == expected_event_slug and m.role == EVENT_OWNER for m in memberships
+                    )
+                    is_coordinator = any(
+                        rm.room.event.slug == expected_event_slug and rm.role == ROOM_COORDINATOR for rm in rms
+                    )
+                    if not (is_owner or is_coordinator):
+                        raise HTTPException(
+                            status_code=status.HTTP_403_FORBIDDEN, detail="User is not a member of this event"
+                        )
+                return
+
+            if not token_event:
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Token missing event scope")
+            if token_event and token_event != expected_event_slug:
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Token event scope mismatch")
+
+    if credentials is not None:
+        try:
+            payload = decode_token(credentials.credentials)
+            await _check_scope(payload)
+            return
+        except pyjwt.InvalidTokenError:
+            if credentials.scheme.lower() == "bearer":
+                from portal.database import get_session, verify_api_key
+
+                async with get_session() as db_session:
+                    key = await verify_api_key(db_session, credentials.credentials)
+                    if key:
+                        if expected_event_slug and key.event.slug != expected_event_slug:
+                            raise HTTPException(
+                                status_code=status.HTTP_403_FORBIDDEN, detail="Token event scope mismatch"
+                            )
+                        return
 
     # Cookie Fallback
     from portal.auth import get_booth_session
 
     payload = session_payload if session_payload is not None else get_booth_session(request)
     if payload:
-        if is_listener_token(payload):
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN, detail="Listener tokens cannot be used for this API."
-            )
+        await _check_scope(payload)
         return
 
     raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid or missing auth token.")

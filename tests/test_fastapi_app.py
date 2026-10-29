@@ -1928,6 +1928,47 @@ def test_event_booth_whip_url_standby_rejected():
             assert res.status_code == 403
 
 
+def test_api_cross_event_idor_rejected():
+    """An event-scoped JWT for Event A must not be able to delete a booth in Event B."""
+    import os
+
+    from portal.auth import create_participant_token
+    from portal.config import settings
+
+    # 1. Create Event B and its booth (while auth is disabled)
+    res_b = client.post(
+        "/api/events/event-b-idor/booths", json={"language_code": "fr", "room_id": 1, "language": "French"}
+    )
+    assert res_b.status_code == 201
+
+    # 2. Generate an interpreter token scoped to Event A
+    token_a = create_participant_token(
+        booth_id=999, role="interpreter", event_slug="event-a-idor", room_id=999, language_code="en"
+    )
+
+    # Enable auth so _require_access actually validates the token
+    os.environ["BOOTH_ACCESS_TOKEN"] = "test-booth-token"
+    settings.booth_access_token = "test-booth-token"
+
+    try:
+        # 3. Attempt to delete Event B's booth using Event A's token
+        delete_res = client.delete(
+            "/api/events/event-b-idor/rooms/1/booths/fr", headers={"Authorization": f"Bearer {token_a}"}
+        )
+
+        # 4. Assert that the request is rejected
+        assert delete_res.status_code == 403
+    finally:
+        os.environ["BOOTH_ACCESS_TOKEN"] = ""
+        settings.booth_access_token = ""
+
+    # Verify if the booth was actually deleted
+    list_res = client.get("/api/events/event-b-idor/booths")
+    assert list_res.status_code == 200
+    booths = list_res.json().get("booths", [])
+    assert any(b["language_code"] == "fr" for b in booths), "Booth was permanently deleted by the IDOR!"
+
+
 def test_cross_event_listing_isolation():
     """Booths created under event A must not appear in event B listing."""
     client.post("/api/events/isolatea/booths", json={"language_code": "en", "room_id": 1, "language": "English"})
@@ -3056,3 +3097,263 @@ def test_embed_rendered_html_uses_sanitized_theme_values():
     assert '"audio_delay_ms"' in res.text
     # CSP header is still emitted with the sanitized policy.
     assert "frame-ancestors" in res.headers.get("content-security-policy", "")
+
+
+def test_delete_booth_routes_differentiated():
+    import os
+
+    import anyio
+    from sqlalchemy import select
+
+    from portal.auth import create_participant_token
+    from portal.config import settings
+    from portal.database import get_session
+    from portal.models import Event, Room
+
+    client.post("/api/events/route-test/booths", json={"language_code": "en", "room_id": 1, "language": "English"})
+
+    async def _setup_db():
+        async with get_session() as session:
+            room = await session.scalar(select(Room).join(Event).where(Event.slug == "route-test"))
+            room.eventyay_room_id = "test-eventyay-123"
+            session.add(room)
+            await session.commit()
+
+    anyio.run(_setup_db)
+
+    auth_token = "test-booth-token"
+
+    prev_env = os.environ.get("BOOTH_ACCESS_TOKEN")
+    prev_setting = settings.booth_access_token
+    os.environ["BOOTH_ACCESS_TOKEN"] = auth_token
+    settings.booth_access_token = auth_token
+
+    try:
+        # Internal route
+        res = client.delete("/api/events/route-test/rooms/1/booths/en", headers={"Authorization": "Bearer " + auth_token})
+        assert res.status_code == 204
+
+        client.post("/api/events/route-test/booths", json={"language_code": "en", "room_id": 1, "language": "English"})
+
+        # External route (original path shape but with string ID)
+        res2 = client.delete(
+            "/api/events/route-test/rooms/test-eventyay-123/booths/en",
+            headers={"Authorization": "Bearer " + auth_token},
+        )
+        assert res2.status_code == 204
+
+        # Verify booth was removed from registry
+        res3 = client.get(
+            "/api/events/route-test/booths", headers={"Authorization": "Bearer " + auth_token}
+        )
+        assert res3.status_code == 200
+        assert not any(b.get("language_code") == "en" for b in res3.json()["booths"])
+    finally:
+        if prev_env is None:
+            os.environ.pop("BOOTH_ACCESS_TOKEN", None)
+        else:
+            os.environ["BOOTH_ACCESS_TOKEN"] = prev_env
+        settings.booth_access_token = prev_setting
+
+
+def test_check_scope_security_fixes():
+    """Verify that participant tokens with missing event_slug are rejected,
+    while global tokens without event_slug are allowed."""
+    import datetime
+
+    import jwt
+
+    from portal.config import settings
+
+    now = datetime.datetime.now(datetime.timezone.utc)
+
+    # 1. Scoped token with missing event_slug -> must be rejected
+    malformed_participant_payload = {
+        "sub": "user123",
+        "role": "interpreter",
+        "iat": now,
+        "exp": now + datetime.timedelta(seconds=3600),
+    }
+    bad_participant_jwt = jwt.encode(malformed_participant_payload, settings.effective_jwt_secret, algorithm="HS256")
+
+    # 2. Scoped token with DIFFERENT event_slug -> must be rejected
+    wrong_event_participant_payload = {
+        "sub": "user123",
+        "role": "interpreter",
+        "event_slug": "wrong-event",
+        "iat": now,
+        "exp": now + datetime.timedelta(seconds=3600),
+    }
+    wrong_participant_jwt = jwt.encode(
+        wrong_event_participant_payload, settings.effective_jwt_secret, algorithm="HS256"
+    )
+
+    # 3. Scoped token with CORRECT event_slug -> allowed for booth resource
+    correct_participant_payload = {
+        "sub": "user123",
+        "role": "interpreter",
+        "event_slug": "route-test",
+        "room_id": 1,
+        "language_code": "fr",
+        "iat": now,
+        "exp": now + datetime.timedelta(seconds=3600),
+    }
+    correct_participant_jwt = jwt.encode(correct_participant_payload, settings.effective_jwt_secret, algorithm="HS256")
+
+    # 4. Untrusted token claiming admin WITHOUT valid global authorization or DB user
+    untrusted_admin_payload = {
+        "admin": True,
+        "iat": now,
+        "exp": now + datetime.timedelta(seconds=3600),
+    }
+    untrusted_admin_jwt = jwt.encode(untrusted_admin_payload, settings.effective_jwt_secret, algorithm="HS256")
+
+    # 4b. Untrusted user token claiming admin but DB user has is_admin=False
+    untrusted_fake_admin_payload = {
+        "sub": "999",
+        "user": True,
+        "is_admin": True,
+        "iat": now,
+        "exp": now + datetime.timedelta(seconds=3600),
+    }
+    untrusted_fake_admin_jwt = jwt.encode(untrusted_fake_admin_payload, settings.effective_jwt_secret, algorithm="HS256")
+
+    # 5. Ordinary user token WITHOUT event_slug -> must be rejected (no membership)
+    ordinary_user_payload = {
+        "sub": "999", # User without membership
+        "user": True,
+        "is_admin": False,
+        "iat": now,
+        "exp": now + datetime.timedelta(seconds=3600),
+    }
+    ordinary_user_jwt = jwt.encode(ordinary_user_payload, settings.effective_jwt_secret, algorithm="HS256")
+
+    # 6. Ordinary user token WITHOUT event_slug but WITH membership -> must be allowed
+    owner_payload = {
+        "sub": "1", # User with membership (we'll insert this)
+        "user": True,
+        "is_admin": False,
+        "iat": now,
+        "exp": now + datetime.timedelta(seconds=3600),
+    }
+    owner_jwt = jwt.encode(owner_payload, settings.effective_jwt_secret, algorithm="HS256")
+
+    prev_setting = settings.booth_access_token
+    settings.booth_access_token = "test-booth-token"
+
+    try:
+        # Create event and booth to test against using the verified booth access token
+        client.post(
+            "/api/events/route-test/booths",
+            json={"language_code": "fr", "room_id": 1, "language": "French"},
+            headers={"Authorization": f"Bearer {settings.booth_access_token}"},
+        )
+
+        # Assign event ownership to user 1
+        import anyio
+        from sqlalchemy import select
+
+        from portal.database import Event, EventMembership, User, get_session
+        async def _add_membership():
+            async with get_session() as session:
+                ev = await session.scalar(select(Event).where(Event.slug == "route-test"))
+                user = await session.scalar(select(User).where(User.id == 1))
+                if not user:
+                    user = User(id=1, email="test@example.com", display_name="Test")
+                    session.add(user)
+                session.add(EventMembership(event_id=ev.id, user_id=1, role="event_owner"))
+                await session.commit()
+        anyio.run(_add_membership)
+
+        # Test 1: Missing event_slug -> Rejected
+        res1 = client.get("/api/events/route-test/booths", headers={"Authorization": f"Bearer {bad_participant_jwt}"})
+        assert res1.status_code == 403
+        assert "missing event scope" in res1.json()["detail"].lower()
+
+        # Test 2: Different event_slug -> Rejected
+        res2 = client.get("/api/events/route-test/booths", headers={"Authorization": f"Bearer {wrong_participant_jwt}"})
+        assert res2.status_code == 403
+        assert "event scope mismatch" in res2.json()["detail"].lower()
+
+        # Test 3: Correct event_slug -> Allowed on booth resource, rejected on event management
+        res3_booth = client.get(
+            "/api/events/route-test/booths/fr/state", headers={"Authorization": f"Bearer {correct_participant_jwt}"}
+        )
+        assert res3_booth.status_code == 200
+
+        res3_list = client.get(
+            "/api/events/route-test/booths", headers={"Authorization": f"Bearer {correct_participant_jwt}"}
+        )
+        assert res3_list.status_code == 403
+        assert "participant tokens cannot use this api" in res3_list.json()["detail"].lower()
+
+        # Test 4a: Untrusted token with admin claim alone -> MUST BE REJECTED
+        res4_untrusted = client.get(
+            "/api/events/route-test/booths", headers={"Authorization": f"Bearer {untrusted_admin_jwt}"}
+        )
+        assert res4_untrusted.status_code == 403
+
+        # Test 4b: Untrusted user claiming admin with non-admin DB record -> MUST BE REJECTED
+        res4_fake = client.get(
+            "/api/events/route-test/booths", headers={"Authorization": f"Bearer {untrusted_fake_admin_jwt}"}
+        )
+        assert res4_fake.status_code == 403
+
+        # Test 4c: Legitimate global credential (configured BOOTH_ACCESS_TOKEN) -> Allowed
+        res4_token = client.get(
+            "/api/events/route-test/booths", headers={"Authorization": f"Bearer {settings.booth_access_token}"}
+        )
+        assert res4_token.status_code == 200
+
+        # Test 4d: Legitimate legacy API token with configured BOOTH_ACCESS_TOKEN -> Allowed
+        from portal.auth import create_token
+
+        legacy_jwt = create_token()
+        res4_legacy = client.get(
+            "/api/events/route-test/booths", headers={"Authorization": f"Bearer {legacy_jwt}"}
+        )
+        assert res4_legacy.status_code == 200
+
+        # Test 4e: Legitimate validated administrator identity in DB -> Allowed
+        async def _add_admin():
+            async with get_session() as session:
+                admin_user = User(id=2, email="admin@example.com", display_name="Admin", is_admin=True, is_active=True)
+                session.add(admin_user)
+                await session.commit()
+
+        anyio.run(_add_admin)
+
+        admin_payload = {
+            "sub": "2",
+            "user": True,
+            "is_admin": True,
+            "iat": now,
+            "exp": now + datetime.timedelta(seconds=3600),
+        }
+        admin_jwt = jwt.encode(admin_payload, settings.effective_jwt_secret, algorithm="HS256")
+        res4_admin = client.get("/api/events/route-test/booths", headers={"Authorization": f"Bearer {admin_jwt}"})
+        assert res4_admin.status_code == 200
+
+        # Test 5: Ordinary user without membership -> Rejected
+        res5 = client.get("/api/events/route-test/booths", headers={"Authorization": f"Bearer {ordinary_user_jwt}"})
+        assert res5.status_code == 403
+        assert "not a member" in res5.json()["detail"].lower()
+
+        # Test 6: Ordinary user WITH membership -> Allowed
+        res6 = client.get("/api/events/route-test/booths", headers={"Authorization": f"Bearer {owner_jwt}"})
+        assert res6.status_code == 200
+
+        # Test 7: Inactive user WITH membership -> Rejected
+        async def _deactivate_user():
+            async with get_session() as session:
+                user = await session.scalar(select(User).where(User.id == 1))
+                user.is_active = False
+                await session.commit()
+        anyio.run(_deactivate_user)
+
+        res7 = client.get("/api/events/route-test/booths", headers={"Authorization": f"Bearer {owner_jwt}"})
+        assert res7.status_code == 403
+        assert "not a member" in res7.json()["detail"].lower()
+
+    finally:
+        settings.booth_access_token = prev_setting
