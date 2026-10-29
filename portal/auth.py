@@ -173,9 +173,19 @@ def token_issued_at(payload: dict) -> datetime | None:
         return None
 
 
+def user_session_version(user: User) -> str:
+    """Stable credential-snapshot version, including SQLite's naive UTC dates."""
+    cutoff = user.sessions_valid_after
+    if cutoff is None:
+        return ""
+    return cutoff.replace(tzinfo=timezone.utc).isoformat() if cutoff.tzinfo is None else cutoff.isoformat()
+
+
 def user_session_is_valid(user: User | None, payload: dict) -> bool:
     """Honor account revocation for every consumer of a user session."""
     if user is None or not user.is_active:
+        return False
+    if "session_version" in payload and payload["session_version"] != user_session_version(user):
         return False
     cutoff = user.sessions_valid_after
     if cutoff is None:
@@ -553,7 +563,15 @@ async def get_access_flags(request: Request, event_id: int | None = None, room_i
     return flags
 
 
-def create_user_token(*, user_id: int, email: str, display_name: str = "", is_admin: bool = False) -> str:
+def create_user_token(
+    *,
+    user_id: int,
+    email: str,
+    display_name: str = "",
+    is_admin: bool = False,
+    issued_at: datetime | None = None,
+    session_version: str | None = None,
+) -> str:
     """Create a JWT for a registered user session."""
     now = datetime.now(timezone.utc)
     # Datetime JWT claims lose fractional seconds, invalidating a fresh recovery
@@ -564,9 +582,11 @@ def create_user_token(*, user_id: int, email: str, display_name: str = "", is_ad
         "display_name": display_name,
         "is_admin": is_admin,
         "user": True,
-        "iat": now.timestamp(),
+        "iat": (issued_at or now).timestamp(),
         "exp": now + timedelta(seconds=settings.jwt_expiry_seconds),
     }
+    if session_version is not None:
+        payload["session_version"] = session_version
     return jwt.encode(payload, settings.effective_jwt_secret, algorithm="HS256")
 
 
@@ -845,7 +865,7 @@ async def resolve_booth_role(
             if user is None:
                 continue
             if user.is_admin:
-                roles.append(ADMIN)
+                return ADMIN
         elif sess.get("is_admin") or sess.get("admin"):
             roles.append(ADMIN)
 

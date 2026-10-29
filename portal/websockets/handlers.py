@@ -212,7 +212,14 @@ async def ws_captions(websocket: WebSocket, booth_id: str) -> None:
         reject_code: int | None = None
         try:
             payload = decode_token(token)
-            if not (payload.get("is_admin") or payload.get("admin")):
+            if payload.get("user"):
+                user = await resolve_session_user(payload)
+                if user is None:
+                    reject_code = 4003
+                is_admin = user is not None and user.is_admin
+            else:
+                is_admin = bool(payload.get("is_admin") or payload.get("admin"))
+            if not is_admin:
                 token_event = payload.get("event_slug", "")
                 booth_event: str | None = None
                 try:
@@ -320,7 +327,7 @@ async def _authorize_tts(websocket: WebSocket, room_id: int, language_code: str,
         token_lang = payload.get("language_code", "")
         token_room = payload.get("room_id")
         if token_event and token_lang:
-            if payload.get("token_id") is not None and await is_invite_token_revoked(str(payload["token_id"])):
+            if payload.get("token_id") is not None and await is_invite_token_revoked(str(payload["token_id"]), ttl=0):
                 raise WSAuthError("Invitation revoked.")
             if (
                 token_event != event_slug
@@ -353,14 +360,17 @@ async def _authorize_tts(websocket: WebSocket, room_id: int, language_code: str,
 
     # 2. JWT in cookie
     sessions = get_booth_sessions(websocket)
-    payload = sessions.get("user_token") or sessions.get("session_token")
-    if payload and payload.get("user"):
-        user = await resolve_session_user(payload)
-        if user is None:
-            payload = sessions.get("session_token")
-        elif user.is_admin:
-            return
-    if payload:
+    for payload in sessions.values():
+        if payload.get("user"):
+            user_payload = {k: v for k, v in payload.items() if k != "role"}
+            user_role = await resolve_booth_role(user_payload, booth_id)
+            if not user_role and target_lang != actual_lang:
+                target_booth_id = f"{event_slug}-{actual_room}-{target_lang}"
+                user_role = await resolve_booth_role(user_payload, target_booth_id)
+            if user_role:
+                return
+            continue
+
         token_event = payload.get("event_slug", "")
         if is_listener_token(payload):
             if not token_event or token_event != event_slug:
@@ -370,7 +380,7 @@ async def _authorize_tts(websocket: WebSocket, room_id: int, language_code: str,
         token_lang = payload.get("language_code", "")
         token_room = payload.get("room_id")
         if token_event and token_lang:
-            if payload.get("token_id") is not None and await is_invite_token_revoked(str(payload["token_id"])):
+            if payload.get("token_id") is not None and await is_invite_token_revoked(str(payload["token_id"]), ttl=0):
                 raise WSAuthError("Invitation revoked.")
             if (
                 token_event != event_slug
@@ -380,18 +390,7 @@ async def _authorize_tts(websocket: WebSocket, room_id: int, language_code: str,
                 raise WSAuthError("Participant token scope does not match.")
             return
 
-        if payload.get("user"):
-            user_payload = {k: v for k, v in payload.items() if k != "role"}
-            user_role = await resolve_booth_role(user_payload, booth_id)
-            if not user_role and target_lang != actual_lang:
-                target_booth_id = f"{event_slug}-{actual_room}-{target_lang}"
-                user_role = await resolve_booth_role(user_payload, target_booth_id)
-            if user_role:
-                return
-            if not websocket.cookies.get(f"listener_code_{event_slug}"):
-                raise WSAuthError("Token scope is required.")
-        else:
-            raise WSAuthError("Token scope is required.")
+        raise WSAuthError("Token scope is required.")
 
     # 3. Listener code cookie
     cookie_code = websocket.cookies.get(f"listener_code_{event_slug}")

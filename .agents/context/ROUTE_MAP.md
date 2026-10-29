@@ -40,6 +40,10 @@ and `docs/registration-protection.md`. Other routes are unaffected.
 User-token authentication checks the current active account and rejects JWTs
 issued at or before `users.sessions_valid_after`. Password reset advances that
 cutoff in the same transaction as the password change and token redemption.
+It also invalidates outstanding magic sign-in links. Password and magic-link
+sign-ins timestamp the credential read and bind the cutoff version, so an
+in-flight sign-in cannot outlive a concurrent recovery. The interpreter lobby
+and account-authenticated caption subscriptions enforce the same cutoff.
 Booth connections retain JWT issuance time for the session reaper, not their
 connection time. Hosting-invite password bypasses require a current user session;
 matching the JWT subject alone is insufficient. A valid invitation or listener-code

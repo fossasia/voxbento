@@ -446,3 +446,200 @@ def test_listener_routes_reject_reset_account_cookie_without_join_code(recovery)
     assert response.status_code == 403
     page = client.get("/listener/recovery-test")
     assert "listener-event.js" not in page.text
+
+
+def test_password_reset_invalidates_outstanding_magic_links(recovery):
+    client, (_, target, _, _, _) = recovery
+
+    async def issue_link():
+        async with get_session() as db:
+            return await create_auth_token(db, user_id=target.id, token_type="magic_link")
+
+    link = asyncio.run(issue_link())
+    assert reset_password(client, target).status_code == 303
+    client.cookies.clear()
+    response = client.get(f"/auth/magic/{link.jti}", follow_redirects=False)
+    assert response.status_code == 400
+    assert "user_token" not in response.cookies
+    fresh_link = asyncio.run(issue_link())
+    assert client.get(f"/auth/magic/{fresh_link.jti}", follow_redirects=False).status_code == 303
+    assert client.get("/admin/users/").status_code == 200
+
+
+def test_recovered_membership_is_hidden_from_interpreter_lobby(recovery):
+    from portal.auth import resolve_booth_role
+
+    client, (_, target, event, room, _) = recovery
+
+    async def assign():
+        async with get_session() as db:
+            await set_event_membership(db, user_id=target.id, event_id=event.id, role=EVENT_OWNER)
+
+    asyncio.run(assign())
+    token = old_token(target)
+    client.cookies.set("user_token", token)
+    assert client.get("/interpreter").context["my_booths"]
+    assert reset_password(client, target).status_code == 303
+    client.cookies.clear()
+    client.cookies.set("user_token", token)
+    assert asyncio.run(resolve_booth_role(decode_token(token), f"{event.slug}-{room.id}-en")) is None
+    response = client.get("/interpreter", follow_redirects=False)
+    assert response.status_code == 303 or not response.context["my_booths"]
+
+
+def test_recovered_admin_query_token_cannot_open_captions(recovery):
+    from portal.websockets.manager import listener_manager
+
+    client, (_, target, _, room, _) = recovery
+    token = old_token(target)
+    assert reset_password(client, target).status_code == 303
+    booth_id = f"recovery-test-{room.id}-en"
+    with client.websocket_connect(f"/ws/captions/{booth_id}?token={token}") as socket:
+        client.portal.call(listener_manager.broadcast, booth_id, {"type": "caption", "text": "private"})
+        with pytest.raises(WebSocketDisconnect) as exc:
+            socket.receive_json()
+        assert exc.value.code == 4003
+
+
+@pytest.mark.parametrize("revoked", [False, True])
+def test_unrelated_active_account_does_not_shadow_tts_invite(recovery, revoked):
+    client, (_, target, event, room, booth) = recovery
+
+    async def prepare():
+        async with get_session() as db:
+            user = await get_user_by_id(db, target.id)
+            user.is_admin = False
+            invitation = await create_invite_token(db, booth_id=booth.id, role=INTERPRETER)
+            if revoked:
+                invitation.revoked_at = datetime.now(timezone.utc)
+            return invitation.public_id
+
+    participant = create_participant_token(
+        booth_id=booth.id,
+        role=INTERPRETER,
+        event_slug=event.slug,
+        room_id=room.id,
+        language_code="en",
+        token_id=asyncio.run(prepare()),
+    )
+    client.cookies.set("user_token", old_token(target))
+    client.cookies.set("session_token", participant)
+    if revoked:
+        with pytest.raises(WebSocketDisconnect):
+            with client.websocket_connect(tts_path(room)):
+                pass
+    else:
+        with client.websocket_connect(tts_path(room)) as socket:
+            broadcast(client, room)
+            assert socket.receive_bytes().endswith(b"private-pcm")
+
+
+def test_tts_delivery_observes_invite_revocation_despite_cached_grant(recovery):
+    from portal.auth import is_invite_token_revoked
+    from portal.models import InviteToken
+
+    client, (_, _, event, room, booth) = recovery
+
+    async def invite():
+        async with get_session() as db:
+            return await create_invite_token(db, booth_id=booth.id, role=INTERPRETER)
+
+    invitation = asyncio.run(invite())
+    token = create_participant_token(
+        booth_id=booth.id,
+        role=INTERPRETER,
+        event_slug=event.slug,
+        room_id=room.id,
+        language_code="en",
+        token_id=invitation.public_id,
+    )
+    with client.websocket_connect(tts_path(room) + "?token=" + token) as socket:
+        broadcast(client, room)
+        assert socket.receive_bytes().endswith(b"private-pcm")
+        assert not asyncio.run(is_invite_token_revoked(invitation.public_id))
+
+        async def revoke():
+            async with get_session() as db:
+                row = await db.get(InviteToken, invitation.token)
+                row.revoked_at = datetime.now(timezone.utc)
+
+        asyncio.run(revoke())
+        broadcast(client, room)
+        with pytest.raises(WebSocketDisconnect) as exc:
+            socket.receive_bytes()
+        assert exc.value.code == 4003
+
+
+@pytest.mark.parametrize("cutoff_before_login", [False, True])
+def test_login_snapshot_cannot_mint_valid_session_after_recovery(recovery, monkeypatch, cutoff_before_login):
+    import portal.routers.auth as routes
+
+    client, (_, target, _, _, _) = recovery
+    original = routes.get_user_by_email
+
+    async def read_before_reset(db, email):
+        snapshot = await original(db, email)
+        async with get_session() as reset_db:
+            row = await get_user_by_id(reset_db, target.id)
+            row.password_hash = "replaced-password-hash"
+            row.sessions_valid_after = datetime.now(timezone.utc) - timedelta(seconds=5 if cutoff_before_login else 0)
+        return snapshot
+
+    monkeypatch.setattr(routes, "get_user_by_email", read_before_reset)
+    response = client.post(
+        "/login", data={"email": target.email, "password": "old-recovery-password"}, follow_redirects=False
+    )
+    assert response.status_code in (303, 403)
+    assert client.get("/admin/users/", follow_redirects=False).status_code == 403
+
+
+def test_auth_token_redemption_rejects_stale_unused_snapshot(recovery, monkeypatch):
+    import portal.database as database
+
+    _, (_, target, _, _, _) = recovery
+
+    async def redeem_twice():
+        async with get_session() as db:
+            token = await create_auth_token(db, user_id=target.id, token_type="password_reset")
+        async with get_session() as db:
+            stale = await database.get_auth_token(db, token.jti)
+        async with get_session() as db:
+            await database.redeem_auth_token(db, token.jti, "password_reset")
+
+        async def stale_read(db, jti):
+            return stale
+
+        monkeypatch.setattr(database, "get_auth_token", stale_read)
+        async with get_session() as db:
+            with pytest.raises(ValueError, match="already been used"):
+                await database.redeem_auth_token(db, token.jti, "password_reset")
+
+    asyncio.run(redeem_twice())
+
+
+@pytest.mark.anyio
+async def test_tts_subscribers_do_not_wait_for_another_authorization():
+    from portal.websockets.manager import TTSConnectionManager
+
+    sent = asyncio.Event()
+    release = asyncio.Event()
+
+    class Socket:
+        async def send_bytes(self, data):
+            sent.set()
+
+    async def slow_authorizer():
+        await release.wait()
+
+    slow, fast = Socket(), Socket()
+    manager = TTSConnectionManager()
+    manager.add(slow, 1, "en", "recovery-test-1-en", authorize=slow_authorizer)
+    manager.add(fast, 1, "en", "recovery-test-1-en")
+    # Use a deterministic iteration order so the slow subscriber is checked first.
+    manager._rooms[manager._get_key(1, "en", "recovery-test-1-en")] = [slow, fast]
+    task = asyncio.create_task(manager.broadcast_bundle(1, "en", "recovery-test-1-en", b"pcm", "segment", 1))
+    try:
+        await asyncio.wait_for(sent.wait(), timeout=0.2)
+    finally:
+        release.set()
+        await task

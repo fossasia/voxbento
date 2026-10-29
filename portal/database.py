@@ -1089,8 +1089,20 @@ async def redeem_auth_token(session: AsyncSession, jti: str, expected_type: str)
     if tok.token_type != expected_type:
         raise ValueError("Invalid token type.")
 
-    tok.used_at = datetime.now(tz=timezone.utc)
-    await session.flush()
+    now = datetime.now(tz=timezone.utc)
+    result = await session.execute(
+        sa.update(AuthToken)
+        .where(
+            AuthToken.jti == jti,
+            AuthToken.token_type == expected_type,
+            AuthToken.used_at.is_(None),
+            AuthToken.expires_at > now,
+        )
+        .values(used_at=now)
+        .execution_options(synchronize_session="fetch")
+    )
+    if result.rowcount != 1:
+        raise ValueError("Token has already been used or has expired.")
     return tok
 
 

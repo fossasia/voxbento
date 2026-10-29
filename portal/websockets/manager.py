@@ -620,8 +620,7 @@ class TTSConnectionManager:
         # Frame: [1-byte version][4-byte length L][L-bytes header][audio_bytes]
         frame = struct.pack(">BI", 1, len(header_bytes)) + header_bytes + audio_bytes
 
-        dead: list[WebSocket] = []
-        for ws in list(self._rooms.get(key, set())):
+        async def deliver(ws: WebSocket) -> None:
             try:
                 authorize = self._authorizers.get(ws)
                 if authorize is not None:
@@ -637,10 +636,9 @@ class TTSConnectionManager:
                 except (WebSocketDisconnect, RuntimeError, OSError, TimeoutError):
                     pass
             except Exception:
-                dead.append(ws)
-        if dead:
-            for ws in dead:
                 self.remove(ws, room_id, language_code, booth_id)
+
+        await asyncio.gather(*(deliver(ws) for ws in list(self._rooms.get(key, set()))))
 
 
 manager = ConnectionManager()

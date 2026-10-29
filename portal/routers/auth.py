@@ -29,6 +29,7 @@ from portal.auth import (
     require_user,
     resolve_request_principal,
     user_session_is_valid,
+    user_session_version,
     verify_password,
 )
 from portal.config import settings
@@ -45,6 +46,7 @@ from portal.database import (
     get_user_by_id,
     redeem_auth_token,
     redeem_invite_token,
+    revoke_auth_tokens,
     update_user,
 )
 from portal.globals import _JS_CACHE_BUST, asset_version_context
@@ -370,6 +372,8 @@ async def user_login_submit(request: Request):
             status_code=status.HTTP_429_TOO_MANY_REQUESTS,
         )
 
+    # Bind this session to the credential snapshot, before any database await.
+    authenticated_at = utc_now()
     async with get_session() as session:
         user = await get_user_by_email(session, email)
 
@@ -384,7 +388,12 @@ async def user_login_submit(request: Request):
         )
 
     jwt_token = create_user_token(
-        user_id=user.id, email=user.email, display_name=user.display_name, is_admin=user.is_admin
+        user_id=user.id,
+        email=user.email,
+        display_name=user.display_name,
+        is_admin=user.is_admin,
+        issued_at=authenticated_at,
+        session_version=user_session_version(user),
     )
     redirect_to = next_url if next_url else "/account"
     response = safe_redirect(url=redirect_to, status_code=status.HTTP_303_SEE_OTHER)
@@ -446,6 +455,7 @@ async def request_magic_link(request: Request):
 
 @router.get("/auth/magic/{token}")
 async def redeem_magic_link(request: Request, token: str, next: str | None = None):
+    authenticated_at = utc_now()
     async with get_session() as session:
         try:
             auth_token = await redeem_auth_token(session, token, "magic_link")
@@ -466,7 +476,12 @@ async def redeem_magic_link(request: Request, token: str, next: str | None = Non
                 )
 
             jwt_token = create_user_token(
-                user_id=user.id, email=user.email, display_name=user.display_name, is_admin=user.is_admin
+                user_id=user.id,
+                email=user.email,
+                display_name=user.display_name,
+                is_admin=user.is_admin,
+                issued_at=authenticated_at,
+                session_version=user_session_version(user),
             )
 
             def _is_local_oauth_path(u: str | None) -> bool:
@@ -603,6 +618,7 @@ async def reset_password_submit(request: Request, token: str):
             if user is None:
                 raise ValueError("User not found.")
             user.sessions_valid_after = utc_now()
+            await revoke_auth_tokens(session, user_id=user.id, token_type="magic_link")
             await _queue_password_notice(session, user.email, user.id, "Your VoxBento password was reset.")
             jwt_token = create_user_token(
                 user_id=user.id, email=user.email, display_name=user.display_name, is_admin=user.is_admin
