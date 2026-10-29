@@ -76,7 +76,7 @@ services:
   mediamtx:
     # Program-ingest kick endpoints are verified against this exact API version.
     # Re-run tests/test_program_ingest_media.py before changing the pin.
-    image: bluenviron/mediamtx:1.21.2
+    image: bluenviron/mediamtx:1.21.3
     volumes:
       - ./mediamtx.yml:/mediamtx.yml:ro
     environment:
