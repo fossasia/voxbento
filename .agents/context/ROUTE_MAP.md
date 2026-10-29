@@ -18,6 +18,7 @@
 | GET | `/login` | open | `login.html` | Redirects to `/account` or `?next=` if logged in |
 | POST | `/login` | open | `login.html` | Verifies bcrypt, sets `user_token` cookie |
 | GET | `/logout` | open | — | Deletes `user_token` cookie → `/` |
+| POST | `/auth/reset/{token}` | password-reset token | `reset_password.html` on error | Redeems token, changes password and advances the account session cutoff atomically; closes previous booth sockets after commit and sets a fresh `user_token` |
 | GET | `/account` | user | `account.html` | Account (#767): Profile (display name), Hosting events (Request access / Request sent / has access), Developer API (apply / pending / approved / rejected / suspended), Sign-in (change, set or remove password). Roles live on My events (`/workspace/`) |
 | POST | `/account/profile` | user + same-origin | — | Changes `display_name` (whitespace collapsed, 1–200 chars, no control characters) → `/account?success=profile_saved`, or `?error=display_name` |
 | POST | `/api/auth/set-password` | user | — | JSON `{password, current_password}`; `current_password` is required when the user already has a password (403 otherwise); min 8 chars |
@@ -35,6 +36,12 @@ validated for the configured hostname and `register` action is required before
 account/email side effects (403 if rejected, 503 if unavailable). The optional
 widget and errors render in `register.html`; see `portal/registration_protection.py`
 and `docs/registration-protection.md`. Other routes are unaffected.
+
+User-token authentication checks the current active account and rejects JWTs
+issued at or before `users.sessions_valid_after`. Password reset advances that
+cutoff in the same transaction as the password change and token redemption.
+Booth connections retain JWT issuance time for the session reaper, not their
+connection time.
 
 ## Booth & Listener Pages
 
@@ -68,7 +75,7 @@ and `docs/registration-protection.md`. Other routes are unaffected.
 |---|---|---|
 | `/ws/booth/{booth_id}` | optional JWT via `?token=` + cookies (`session_token` or `user_token`) | See WebSocket Protocol in `REPOSITORY_CONTEXT.md` |
 | `/ws/captions/{booth_id}` | optional JWT via `?token=` (always validated); cookies (`session_token` or `user_token`) required when `BOOTH_ACCESS_TOKEN` is set, otherwise open | Receives `booth:state` (listener-safe live/lock status, sent on connect and on change), `caption`, and `translated_caption` messages; listener captions feed. Supports `{event_slug}-{room_id}-{language_code}` (`floor-{room_id}` allowed only in unauthenticated dev) |
-| `/ws/tts/{room_id}/{language_code}/{booth_id}` | pre-authorized (JWT query param, session token, or listener join code cookie) | Receives framed binary bundle messages (1-byte version `0x01`, 4-byte big-endian header length `L`, `L`-byte UTF-8 JSON header, optional 24 kHz 16-bit mono PCM payload) |
+| `/ws/tts/{room_id}/{language_code}/{booth_id}` | JWT query param, session/user token, or listener join code cookie; current account state and session cutoff checked for user tokens, credentials rechecked before each bundle | Receives framed binary bundle messages (1-byte version `0x01`, 4-byte big-endian header length `L`, `L`-byte UTF-8 JSON header, optional 24 kHz 16-bit mono PCM payload) |
 
 ---
 

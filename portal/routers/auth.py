@@ -55,6 +55,7 @@ from portal.registration_protection import limit_registration, verify_registrati
 from portal.schemas.auth import TokenRequest, TokenResponse
 from portal.user_menu import resolve_user_menu, user_menu_context
 from portal.utils import safe_redirect, verify_same_origin
+from portal.websockets.manager import REASON_SESSION_EXPIRED, manager
 
 _BASE_DIR = Path(__file__).resolve().parent.parent
 templates = Jinja2Templates(
@@ -600,6 +601,7 @@ async def reset_password_submit(request: Request, token: str):
             user = await update_user(session, auth_token.user_id, password_hash=pw_hash)
             if user is None:
                 raise ValueError("User not found.")
+            user.sessions_valid_after = utc_now()
             await _queue_password_notice(session, user.email, user.id, "Your VoxBento password was reset.")
             jwt_token = create_user_token(
                 user_id=user.id, email=user.email, display_name=user.display_name, is_admin=user.is_admin
@@ -615,6 +617,8 @@ async def reset_password_submit(request: Request, token: str):
             },
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         )
+
+    await asyncio.shield(manager.close_user_sessions(user.id, reason=REASON_SESSION_EXPIRED))
 
     response = safe_redirect(url="/account", status_code=status.HTTP_303_SEE_OTHER)
     response.set_cookie(

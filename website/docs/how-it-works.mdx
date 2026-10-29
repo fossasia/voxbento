@@ -401,6 +401,20 @@ MediaMTX is configured to allow only one publisher per stream path at a time. Ev
 Password sign-in requires a verified email address. `/login` allows 10 attempts
 per email address per hour.
 
+Password recovery commits the new password and a `users.sessions_valid_after`
+cutoff together with redemption of the reset token. Account authentication checks
+the JWT issuance time against that cutoff on HTTP requests, booth pages and booth
+WebSocket connections. User JWT issuance retains fractional seconds so the fresh
+recovery session works even when it is issued in the same second as the cutoff.
+Existing booth sockets are closed after the transaction commits; reconnecting
+with the old token cannot renew its authorization.
+
+TTS subscriptions authorize Admins from their current account record, rather
+than an Admin claim saved at sign-in. Each subscription rechecks its credentials
+before sending a text/audio bundle, so existing connections cannot keep receiving
+after access is revoked or the token expires. Listener and invitation credentials
+keep their existing scope checks, including independent listener-code access.
+
 ## Program floor source
 
 An optional program-ingest mode replaces only the Jitsi audio adapter. The encoder

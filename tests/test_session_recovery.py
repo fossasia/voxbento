@@ -1,0 +1,325 @@
+"""Account recovery and access revocation must invalidate previously issued credentials."""
+
+from __future__ import annotations
+
+import asyncio
+from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
+
+import jwt
+import pytest
+from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
+
+from fastapi_app import app
+from portal.auth import create_listener_token, create_participant_token, create_user_token, decode_token, hash_password
+from portal.config import settings
+from portal.database import (
+    configure,
+    create_auth_token,
+    create_booth,
+    create_event,
+    create_room,
+    create_user,
+    dispose,
+    get_session,
+    get_user_by_id,
+    init_db,
+    set_event_membership,
+)
+from portal.models import Event, Room, User
+from portal.roles import EVENT_OWNER, INTERPRETER
+from portal.user_admin import set_user_access
+from portal.websockets.manager import tts_manager
+
+_PASSWORD_HASH = hash_password("old-recovery-password")
+
+
+@pytest.fixture
+def recovery(monkeypatch):
+    @asynccontextmanager
+    async def lifespan(app):
+        # These tests exercise routes and database commits without external media workers.
+        yield
+
+    monkeypatch.setattr(app.router, "lifespan_context", lifespan)
+    monkeypatch.setattr(settings, "booth_access_token", "recovery-test-access")
+
+    async def setup():
+        configure("sqlite+aiosqlite://")
+        await init_db()
+        async with get_session() as db:
+            actor = await create_user(db, email="actor@example.com", display_name="Actor", is_admin=True)
+            target = await create_user(
+                db,
+                email="target@example.com",
+                display_name="Target",
+                is_admin=True,
+                email_verified=True,
+                password_hash=_PASSWORD_HASH,
+            )
+            event = await create_event(db, slug="recovery-test", display_name="Private event")
+            room = await create_room(db, event_id=event.id, display_name="Private room")
+            booth = await create_booth(
+                db,
+                event_id=event.id,
+                room_id=room.id,
+                language_code="en",
+                language_name="English",
+            )
+        return actor, target, event, room, booth
+
+    rows = asyncio.run(setup())
+    with TestClient(app, base_url="https://testserver") as client:
+        yield client, rows
+    asyncio.run(dispose())
+
+
+def old_token(user: User) -> str:
+    payload = decode_token(create_user_token(user_id=user.id, email=user.email, is_admin=user.is_admin))
+    payload["iat"] = int((datetime.now(timezone.utc) - timedelta(minutes=10)).timestamp())
+    return jwt.encode(payload, settings.effective_jwt_secret, algorithm="HS256")
+
+
+def reset_password(client: TestClient, user: User):
+    async def issue_reset():
+        async with get_session() as db:
+            return await create_auth_token(db, user_id=user.id, token_type="password_reset")
+
+    reset = asyncio.run(issue_reset())
+    return client.post(f"/auth/reset/{reset.jti}", data={"password": "new-recovery-password"}, follow_redirects=False)
+
+
+def tts_path(room: Room) -> str:
+    return f"/ws/tts/{room.id}/en/recovery-test-{room.id}-en"
+
+
+def broadcast(client: TestClient, room: Room) -> None:
+    client.portal.call(
+        tts_manager.broadcast_bundle,
+        room.id,
+        "en",
+        f"recovery-test-{room.id}-en",
+        b"private-pcm",
+        "recovery-segment",
+        1,
+        "Confidential speech",
+        "Private translation",
+    )
+
+
+@pytest.mark.parametrize("endpoint", ["/admin/users/", "/account", "/api/events/recovery-test/booths"])
+def test_password_reset_rejects_old_cookie_and_preserves_recovery_session(recovery, endpoint):
+    client, (_, target, _, _, _) = recovery
+    stolen = old_token(target)
+    client.cookies.set("user_token", stolen)
+    assert client.get(endpoint, follow_redirects=False).status_code == 200
+    client.cookies.clear()
+    response = reset_password(client, target)
+    assert response.status_code == 303
+    assert client.get(endpoint, follow_redirects=False).status_code == 200
+    client.cookies.clear()
+    client.cookies.set("user_token", stolen)
+    assert client.get(endpoint, follow_redirects=False).status_code in (303, 401, 403)
+
+
+@pytest.mark.parametrize("change", ["admin", "active", "delete"])
+@pytest.mark.parametrize("transport", ["query", "cookie"])
+def test_revoked_admin_cannot_open_tts(recovery, change, transport):
+    client, (actor, target, _, room, _) = recovery
+    token = old_token(target)
+
+    async def revoke():
+        async with get_session() as db:
+            if change == "delete":
+                await db.delete(await get_user_by_id(db, target.id))
+            else:
+                await set_user_access(db, actor_id=actor.id, user_id=target.id, field=change, value=False)
+
+    asyncio.run(revoke())
+    path = tts_path(room)
+    if transport == "query":
+        path += "?token=" + token
+    else:
+        client.cookies.set("user_token", token)
+    with pytest.raises(WebSocketDisconnect) as exc:
+        with client.websocket_connect(path):
+            pass
+    assert exc.value.code == 4003
+
+
+@pytest.mark.parametrize("credential", ["admin", "listener", "invite", "owner"])
+def test_valid_tts_credentials_receive_bundles(recovery, credential):
+    client, (_, target, event, room, booth) = recovery
+    if credential == "listener":
+        token = create_listener_token(event_slug=event.slug)
+    elif credential == "invite":
+        token = create_participant_token(
+            booth_id=booth.id,
+            role=INTERPRETER,
+            event_slug=event.slug,
+            room_id=room.id,
+            language_code="en",
+        )
+    else:
+        if credential == "owner":
+
+            async def assign():
+                async with get_session() as db:
+                    user = await get_user_by_id(db, target.id)
+                    user.is_admin = False
+                    await set_event_membership(db, user_id=target.id, event_id=event.id, role=EVENT_OWNER)
+
+            asyncio.run(assign())
+        token = create_user_token(user_id=target.id, email=target.email, is_admin=credential == "admin")
+        client.cookies.set("user_token", token)
+    path = tts_path(room)
+    if credential in ("listener", "invite"):
+        path += "?token=" + token
+    with client.websocket_connect(path) as socket:
+        broadcast(client, room)
+        frame = socket.receive_bytes()
+        assert b"Confidential speech" in frame
+        assert frame.endswith(b"private-pcm")
+
+
+@pytest.mark.parametrize("change", ["reset", "admin", "active", "delete"])
+def test_existing_tts_subscriber_receives_no_bundle_after_revocation(recovery, change):
+    client, (actor, target, _, room, _) = recovery
+    token = old_token(target)
+    with client.websocket_connect(tts_path(room) + "?token=" + token) as socket:
+        broadcast(client, room)
+        assert socket.receive_bytes().endswith(b"private-pcm")
+        if change == "reset":
+            assert reset_password(client, target).status_code == 303
+        else:
+
+            async def revoke():
+                async with get_session() as db:
+                    if change == "delete":
+                        await db.delete(await get_user_by_id(db, target.id))
+                    else:
+                        await set_user_access(db, actor_id=actor.id, user_id=target.id, field=change, value=False)
+
+            asyncio.run(revoke())
+        broadcast(client, room)
+        with pytest.raises(WebSocketDisconnect) as exc:
+            socket.receive_bytes()
+        assert exc.value.code == 4003
+
+
+def test_old_cookie_cannot_reconnect_to_booth_after_password_reset(recovery):
+    client, (_, target, _, room, _) = recovery
+    token = old_token(target)
+    assert reset_password(client, target).status_code == 303
+    client.cookies.clear()
+    client.cookies.set("user_token", token)
+    with pytest.raises(WebSocketDisconnect) as exc:
+        with client.websocket_connect(f"/ws/booth/recovery-test-{room.id}-en") as socket:
+            socket.send_json({"type": "booth:join", "display_name": "Old session"})
+            socket.receive_json()
+    assert exc.value.code == 4003
+
+
+@pytest.mark.parametrize("naive_cutoff", [False, True])
+def test_new_session_in_same_second_as_revocation_is_usable(recovery, monkeypatch, naive_cutoff):
+    import portal.auth as auth
+
+    client, (_, target, _, _, _) = recovery
+    cutoff = (datetime.now(timezone.utc) - timedelta(minutes=1)).replace(microsecond=600000)
+
+    async def revoke():
+        async with get_session() as db:
+            user = await get_user_by_id(db, target.id)
+            user.sessions_valid_after = cutoff.replace(tzinfo=None) if naive_cutoff else cutoff
+
+    asyncio.run(revoke())
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cutoff + timedelta(microseconds=1)
+
+    monkeypatch.setattr(auth, "datetime", Clock)
+    token = create_user_token(user_id=target.id, email=target.email, is_admin=True)
+    client.cookies.set("user_token", token)
+    assert client.get("/admin/users/").status_code == 200
+    payload = decode_token(token)
+    payload["iat"] = int(cutoff.timestamp())
+    client.cookies.clear()
+    client.cookies.set("user_token", jwt.encode(payload, settings.effective_jwt_secret, algorithm="HS256"))
+    assert client.get("/admin/users/", follow_redirects=False).status_code == 403
+
+
+def test_password_reset_closes_existing_booth_socket(recovery):
+    client, (_, target, _, room, _) = recovery
+    client.cookies.set("user_token", old_token(target))
+    with client.websocket_connect(f"/ws/booth/recovery-test-{room.id}-en") as socket:
+        socket.send_json({"type": "booth:join", "display_name": "Old session"})
+        assert socket.receive_json()["type"] == "booth:joined"
+        client.cookies.clear()
+        assert reset_password(client, target).status_code == 303
+        with pytest.raises(WebSocketDisconnect) as exc:
+            # Drain the initial state frame if it was queued before the reset.
+            for _ in range(3):
+                socket.receive_json()
+        assert exc.value.code == 4003
+
+
+def test_revoked_user_cookie_does_not_override_valid_listener_code(recovery):
+    client, (actor, target, event, room, _) = recovery
+    token = old_token(target)
+
+    async def revoke():
+        async with get_session() as db:
+            await set_user_access(db, actor_id=actor.id, user_id=target.id, field="active", value=False)
+            row = await db.get(Event, event.id)
+            row.listener_join_code = "independent-listener-code"
+
+    asyncio.run(revoke())
+    client.cookies.set("user_token", token)
+    client.cookies.set("listener_code_recovery-test", "independent-listener-code")
+    with client.websocket_connect(tts_path(room)) as socket:
+        broadcast(client, room)
+        assert socket.receive_bytes().endswith(b"private-pcm")
+
+
+def test_revoking_one_tts_subscriber_preserves_other_listeners(recovery):
+    client, (actor, target, event, room, _) = recovery
+    token = old_token(target)
+    listener_token = create_listener_token(event_slug=event.slug)
+    with (
+        client.websocket_connect(tts_path(room) + "?token=" + token) as revoked_socket,
+        client.websocket_connect(tts_path(room) + "?token=" + listener_token) as listener_socket,
+    ):
+
+        async def revoke():
+            async with get_session() as db:
+                await set_user_access(db, actor_id=actor.id, user_id=target.id, field="admin", value=False)
+
+        asyncio.run(revoke())
+        broadcast(client, room)
+        assert listener_socket.receive_bytes().endswith(b"private-pcm")
+        with pytest.raises(WebSocketDisconnect) as exc:
+            revoked_socket.receive_bytes()
+        assert exc.value.code == 4003
+
+
+def test_existing_tts_subscriber_stops_when_token_expires(recovery, monkeypatch):
+    client, (_, target, _, room, _) = recovery
+    now = datetime.now(timezone.utc)
+    payload = decode_token(old_token(target))
+    payload["exp"] = (now + timedelta(seconds=60)).timestamp()
+    token = jwt.encode(payload, settings.effective_jwt_secret, algorithm="HS256")
+
+    class Clock(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return now + timedelta(seconds=120)
+
+    with client.websocket_connect(tts_path(room) + "?token=" + token) as socket:
+        monkeypatch.setattr("jwt.api_jwt.datetime", Clock)
+        broadcast(client, room)
+        with pytest.raises(WebSocketDisconnect) as exc:
+            socket.receive_bytes()
+        assert exc.value.code == 4003

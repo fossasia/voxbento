@@ -240,7 +240,7 @@ def _patches(booth_role=None, room_role=None, event_role=None, is_admin=False):
         patch("portal.database.list_booth_memberships_for_user", AsyncMock(return_value=booth)),
         patch("portal.database.list_room_memberships_for_user", AsyncMock(return_value=room)),
         patch("portal.database.list_memberships_for_user", AsyncMock(return_value=event)),
-        patch("portal.auth.user_is_active_admin", AsyncMock(return_value=is_admin)),
+        patch("portal.auth.resolve_session_user", AsyncMock(return_value=SimpleNamespace(is_admin=is_admin))),
     )
 
 

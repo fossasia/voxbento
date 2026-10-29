@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from fastapi import WebSocket, WebSocketDisconnect
 
 import portal.webhooks.worker as _wh_worker
-from portal.auth import can_perform_role
+from portal.auth import WSAuthError, can_perform_role
 from portal.booth_identity import booth_id_to_mediamtx_path
 from portal.booth_publish import TICKET_TTL_SECS, issue_ticket
 from portal.globals import booths
@@ -559,15 +559,27 @@ logger = logging.getLogger(__name__)
 class TTSConnectionManager:
     def __init__(self) -> None:
         self._rooms: dict[str, set[WebSocket]] = {}
+        self._authorizers: dict[WebSocket, Callable[[], Awaitable[None]]] = {}
 
     def _get_key(self, room_id: int, language_code: str, booth_id: str) -> str:
         return f"{room_id}-{language_code}-{booth_id}"
 
-    def add(self, ws: WebSocket, room_id: int, language_code: str, booth_id: str) -> None:
+    def add(
+        self,
+        ws: WebSocket,
+        room_id: int,
+        language_code: str,
+        booth_id: str,
+        *,
+        authorize: Callable[[], Awaitable[None]] | None = None,
+    ) -> None:
         key = self._get_key(room_id, language_code, booth_id)
         self._rooms.setdefault(key, set()).add(ws)
+        if authorize is not None:
+            self._authorizers[ws] = authorize
 
     def remove(self, ws: WebSocket, room_id: int, language_code: str, booth_id: str) -> None:
+        self._authorizers.pop(ws, None)
         key = self._get_key(room_id, language_code, booth_id)
         room = self._rooms.get(key, set())
         room.discard(ws)
@@ -610,7 +622,16 @@ class TTSConnectionManager:
         dead: list[WebSocket] = []
         for ws in list(self._rooms.get(key, set())):
             try:
+                authorize = self._authorizers.get(ws)
+                if authorize is not None:
+                    await authorize()
                 await ws.send_bytes(frame)
+            except WSAuthError:
+                self.remove(ws, room_id, language_code, booth_id)
+                try:
+                    await asyncio.wait_for(ws.close(code=WS_CLOSE_REVOKED), timeout=2.0)
+                except (WebSocketDisconnect, RuntimeError, OSError, TimeoutError):
+                    pass
             except Exception:
                 dead.append(ws)
         if dead:

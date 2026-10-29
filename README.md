@@ -162,6 +162,12 @@ uv run uvicorn fastapi_app:app --reload --port 8000
 
 Once running, access the application at **`http://localhost:8000`**.
 
+A successful password reset signs out earlier account sessions and closes their
+booth connections. The browser completing recovery receives a fresh session.
+Private TTS connections check current account access when connecting and before
+each audio bundle; demotion, deactivation, deletion or session revocation stops
+further delivery. A separate valid listener code still grants listener access.
+
 For event and room setup, see the [events and rooms guide](website/docs/admin/events-and-rooms.mdx).
 For pipeline details and advanced configuration, see [how it works](website/docs/how-it-works.mdx).
 
