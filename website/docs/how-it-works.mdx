@@ -360,6 +360,9 @@ account links are encrypted at rest; a queued email whose sign-in or invitation
 link has been used or has expired is not sent, and the content of finished
 emails is erased after 30 days.
 
+The welcome email is queued for delivery 15 minutes after verification or magic-link sign-in changes an unverified account to verified.
+Already-verified accounts do not gain a welcome email or change an existing welcome delivery time by redeeming an old verification link.
+
 Every email uses one fixed layout, so they all look alike: the logo, the message
 in a white card with one button, and a footer. Admins edit only the message;
 the **Branding** setting on Admin → Emails shows or hides the logo and can use

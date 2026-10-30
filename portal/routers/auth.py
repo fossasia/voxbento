@@ -314,15 +314,16 @@ async def verify_email_route(request: Request, token: str):
             user = await get_user_by_id(session, auth_token.user_id)
             if user is None or not user.is_active:
                 raise ValueError("Invalid verification link.")
-            user = await update_user(session, auth_token.user_id, email_verified=True)
-            await queue_notification(
-                session,
-                "onboarding",
-                user.email,
-                {"display_name": user.display_name},
-                scheduled_at=utc_now() + timedelta(minutes=15),
-                idempotency_key=f"onboarding:{user.id}",
-            )
+            if not user.email_verified:
+                user = await update_user(session, auth_token.user_id, email_verified=True)
+                await queue_notification(
+                    session,
+                    "onboarding",
+                    user.email,
+                    {"display_name": user.display_name},
+                    scheduled_at=utc_now() + timedelta(minutes=15),
+                    idempotency_key=f"onboarding:{user.id}",
+                )
 
             jwt_token = create_user_token(
                 user_id=user.id, email=user.email, display_name=user.display_name, is_admin=user.is_admin
