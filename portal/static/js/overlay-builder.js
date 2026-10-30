@@ -32,8 +32,10 @@ if (card && frame) {
   }
 
   function overlayPath() {
+    // Encode every segment taken from the DOM so it stays a same-origin path.
+    const segments = [eventSlug, ...channel.value.split("/")].map(encodeURIComponent);
     const code = new URLSearchParams({ code: joinCode }).toString();
-    return `/overlay/${eventSlug}/${channel.value}?${code}&${appearanceQuery()}`;
+    return `/overlay/${segments.join("/")}?${code}&${appearanceQuery()}`;
   }
 
   function update({ reload = false } = {}) {

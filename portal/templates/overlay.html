@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="robots" content="noindex" />
     <title>{{ event.display_name }} subtitles</title>
+    <link rel="stylesheet" href="{{ url_for('static', path='css/tokens.css') }}?v={{ asset_version }}" />
     <link rel="stylesheet" href="{{ url_for('static', path='css/fonts.css') }}?v={{ asset_version }}" />
     <link rel="stylesheet" href="{{ url_for('static', path='css/overlay.css') }}?v={{ asset_version }}" />
   </head>
