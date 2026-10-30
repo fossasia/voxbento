@@ -42,6 +42,7 @@ from portal.database import (
     list_tokens_for_booth,
     list_users,
     redeem_invite_token,
+    save_transcript_segment,
 )
 from portal.models import (
     Base,
@@ -1447,3 +1448,556 @@ class TestGetBoothLanguageName:
         with patch("portal.database.get_session", side_effect=mock_get_session):
             res = await get_booth_language_name("pycon2026-1-ja")
             assert res is None
+
+
+class TestSaveTranscriptSegment:
+    """Tests for save_transcript_segment() room ID resolution and fallbacks (#931)."""
+
+    @pytest.fixture(autouse=True)
+    async def setup_test_db(self):
+        from portal.database import configure, dispose, init_db
+
+        configure("sqlite+aiosqlite://")
+        await init_db()
+        yield
+        await dispose()
+
+    @pytest.mark.anyio
+    async def test_omitted_room_id(self):
+        """Standard 3-part booth ID resolves room_id from string when room_id is omitted."""
+        from portal.database import create_booth, create_event, create_room, get_session
+        from portal.models import TranscriptSegment
+
+        async with get_session() as session:
+            event = await create_event(session, slug="pycon-berlin", display_name="PyCon Berlin")
+            room = await create_room(session, event_id=event.id, display_name="Main Hall")
+            booth = await create_booth(
+                session, event_id=event.id, room_id=room.id, language_code="es", language_name="Spanish"
+            )
+            event_slug, room_id, booth_id = event.slug, room.id, booth.id
+
+        seg_id = await save_transcript_segment(f"{event_slug}-{room_id}-es", "Hola a todos")
+        assert seg_id is not None
+
+        async with get_session() as session:
+            seg = await session.get(TranscriptSegment, seg_id)
+            assert seg is not None
+            assert seg.room_id == room_id
+            assert seg.booth_id == booth_id
+            assert seg.language_code == "es"
+            assert seg.text == "Hola a todos"
+
+    @pytest.mark.anyio
+    async def test_explicit_room_id(self):
+        """Explicitly supplied room_id is supported and matches record."""
+        from portal.database import create_booth, create_event, create_room, get_session
+        from portal.models import TranscriptSegment
+
+        async with get_session() as session:
+            event = await create_event(session, slug="fosdem-event", display_name="FOSDEM")
+            room = await create_room(session, event_id=event.id, display_name="Room 1")
+            booth = await create_booth(
+                session, event_id=event.id, room_id=room.id, language_code="fr", language_name="French"
+            )
+            event_slug, room_id, booth_id = event.slug, room.id, booth.id
+
+        seg_id = await save_transcript_segment(f"{event_slug}-{room_id}-fr", "Bonjour", room_id=room_id)
+        assert seg_id is not None
+
+        async with get_session() as session:
+            seg = await session.get(TranscriptSegment, seg_id)
+            assert seg is not None
+            assert seg.room_id == room_id
+            assert seg.booth_id == booth_id
+            assert seg.language_code == "fr"
+
+    @pytest.mark.anyio
+    async def test_floor_three_part_omitted_room_id(self):
+        """Floor channel with 3-part ID ({slug}-{room_id}-floor) resolves room_id with omitted room_id."""
+        from portal.database import create_event, create_room, get_session
+        from portal.models import TranscriptSegment
+
+        async with get_session() as session:
+            event = await create_event(session, slug="summit-2026", display_name="Summit 2026")
+            room = await create_room(session, event_id=event.id, display_name="Plenary")
+            event_slug, room_id = event.slug, room.id
+
+        seg_id = await save_transcript_segment(f"{event_slug}-{room_id}-floor", "Floor audio transcription")
+        assert seg_id is not None
+
+        async with get_session() as session:
+            seg = await session.get(TranscriptSegment, seg_id)
+            assert seg is not None
+            assert seg.room_id == room_id
+            assert seg.booth_id is None
+            assert seg.language_code == "floor"
+            assert seg.text == "Floor audio transcription"
+
+    @pytest.mark.anyio
+    async def test_floor_legacy_two_part_explicit_room_id(self):
+        """Legacy 2-part floor ID ({slug}-floor) falls back to explicitly supplied room_id."""
+        from portal.database import create_event, create_room, get_session
+        from portal.models import TranscriptSegment
+
+        async with get_session() as session:
+            event = await create_event(session, slug="legacy-event", display_name="Legacy Event")
+            room = await create_room(session, event_id=event.id, display_name="Stage")
+            event_slug, room_id = event.slug, room.id
+
+        seg_id = await save_transcript_segment(f"{event_slug}-floor", "Legacy floor audio", room_id=room_id)
+        assert seg_id is not None
+
+        async with get_session() as session:
+            seg = await session.get(TranscriptSegment, seg_id)
+            assert seg is not None
+            assert seg.room_id == room_id
+            assert seg.booth_id is None
+            assert seg.language_code == "floor"
+
+    @pytest.mark.anyio
+    async def test_missing_room_id_returns_none(self):
+        """When neither the booth ID nor the caller provides a room_id, returns None safely."""
+        from portal.database import create_event, get_session
+
+        async with get_session() as session:
+            event = await create_event(session, slug="no-room-event", display_name="No Room Event")
+            event_slug = event.slug
+
+        res = await save_transcript_segment(f"{event_slug}-floor", "Unsaved audio", room_id=None)
+        assert res is None
+
+    @pytest.mark.anyio
+    async def test_malformed_middle_segment(self):
+        """A 3-part ID with non-digit middle segment is safely rejected even with explicit room_id."""
+        from sqlalchemy import func, select
+
+        from portal.database import create_event, create_room, get_session
+        from portal.models import TranscriptSegment
+
+        async with get_session() as session:
+            event = await create_event(session, slug="bad-id-event", display_name="Bad ID Event")
+            room = await create_room(session, event_id=event.id, display_name="Room A")
+            event_slug, room_id = event.slug, room.id
+
+        # Without room_id fallback: returns None safely without raising ValueError
+        res_none = await save_transcript_segment(f"{event_slug}-notanumber-floor", "Audio", room_id=None)
+        assert res_none is None
+
+        # With explicit room_id: malformed floor ID is also safely rejected
+        res_explicit = await save_transcript_segment(f"{event_slug}-notanumber-floor", "Audio", room_id=room_id)
+        assert res_explicit is None
+
+        # Verify no segment was created for the rejected input
+        async with get_session() as session:
+            stmt = select(func.count(TranscriptSegment.id)).where(TranscriptSegment.room_id == room_id)
+            count = await session.scalar(stmt)
+            assert count == 0
+
+    @pytest.mark.anyio
+    async def test_malformed_non_floor_id_returns_none(self):
+        """Malformed non-floor identifier (non-digit room segment) is safely rejected."""
+        from portal.database import create_booth, create_event, create_room, get_session
+
+        async with get_session() as session:
+            event = await create_event(session, slug="pycon-berlin", display_name="PyCon Berlin")
+            room = await create_room(session, event_id=event.id, display_name="Main Hall")
+            await create_booth(session, event_id=event.id, room_id=room.id, language_code="es", language_name="Spanish")
+            event_slug, room_id = event.slug, room.id
+
+        # Without room_id: returns None safely
+        res_none = await save_transcript_segment(f"{event_slug}-notanumber-es", "Hola", room_id=None)
+        assert res_none is None
+
+        # With explicit room_id: malformed non-floor ID is rejected rather than constructing a false event slug
+        res_explicit = await save_transcript_segment(f"{event_slug}-notanumber-es", "Hola", room_id=room_id)
+        assert res_explicit is None
+
+    @pytest.mark.anyio
+    async def test_floor_legacy_event_slug_ending_in_digits_explicit_room_id(self):
+        """Legacy floor ID whose event slug ends in digits resolves correctly with explicit room_id."""
+        from portal.database import create_event, create_room, get_session
+        from portal.models import TranscriptSegment
+
+        async with get_session() as session:
+            event = await create_event(session, slug="summit-2026", display_name="Summit 2026")
+            room = await create_room(session, event_id=event.id, display_name="Plenary")
+            event_slug, room_id = event.slug, room.id
+
+        # summit-2026-floor should be recognized as legacy floor ID for room_id, not canonical room 2026
+        seg_id = await save_transcript_segment(f"{event_slug}-floor", "Floor audio", room_id=room_id)
+        assert seg_id is not None
+
+        async with get_session() as session:
+            seg = await session.get(TranscriptSegment, seg_id)
+            assert seg is not None
+            assert seg.room_id == room_id
+            assert seg.booth_id is None
+            assert seg.language_code == "floor"
+
+    @pytest.mark.anyio
+    async def test_floor_legacy_event_slug_ending_in_digits_omitted_room_id_returns_none(self):
+        """Legacy floor ID whose event slug ends in digits returns None when room_id is omitted."""
+        from portal.database import create_event, create_room, get_session
+
+        async with get_session() as session:
+            event = await create_event(session, slug="summit-2026", display_name="Summit 2026")
+            await create_room(session, event_id=event.id, display_name="Plenary")
+            event_slug = event.slug
+
+        # Omitted room_id: cannot be resolved as legacy floor ID; room 2026 does not exist for "summit"
+        res = await save_transcript_segment(f"{event_slug}-floor", "Floor audio", room_id=None)
+        assert res is None
+
+    @pytest.mark.anyio
+    async def test_floor_canonical_event_slug_ending_in_digits(self):
+        """Canonical floor ID whose event slug ends in digits resolves room_id correctly."""
+        from portal.database import create_event, create_room, get_session
+        from portal.models import TranscriptSegment
+
+        async with get_session() as session:
+            event = await create_event(session, slug="summit-2026", display_name="Summit 2026")
+            room = await create_room(session, event_id=event.id, display_name="Room B")
+            event_slug, room_id = event.slug, room.id
+
+        # Canonical format: summit-2026-{room_id}-floor
+        seg_id = await save_transcript_segment(f"{event_slug}-{room_id}-floor", "Canonical floor text")
+        assert seg_id is not None
+
+        async with get_session() as session:
+            seg = await session.get(TranscriptSegment, seg_id)
+            assert seg is not None
+            assert seg.room_id == room_id
+            assert seg.language_code == "floor"
+
+    @pytest.mark.anyio
+    async def test_unicode_digit_like_room_id_returns_none(self):
+        """Unicode digit-like room characters (e.g. '²') return None safely without ValueError."""
+        from portal.database import create_booth, create_event, create_room, get_session
+
+        async with get_session() as session:
+            event = await create_event(session, slug="pycon-berlin", display_name="PyCon Berlin")
+            room = await create_room(session, event_id=event.id, display_name="Main Hall")
+            await create_booth(session, event_id=event.id, room_id=room.id, language_code="es", language_name="Spanish")
+            event_slug, room_id = event.slug, room.id
+
+        # Non-floor ID with Unicode superscript digit
+        res1 = await save_transcript_segment(f"{event_slug}-²-es", "Hola", room_id=None)
+        assert res1 is None
+
+        res2 = await save_transcript_segment(f"{event_slug}-²-es", "Hola", room_id=room_id)
+        assert res2 is None
+
+        # Floor ID with Unicode superscript digit
+        res3 = await save_transcript_segment(f"{event_slug}-²-floor", "Floor", room_id=None)
+        assert res3 is None
+
+        res4 = await save_transcript_segment(f"{event_slug}-²-floor", "Floor", room_id=room_id)
+        assert res4 is None
+
+    @pytest.mark.anyio
+    async def test_case_normalization_resolves_consistently(self):
+        """Uppercase/mixed-case identifiers are normalized and resolve consistently."""
+        from portal.database import create_booth, create_event, create_room, get_session
+        from portal.models import TranscriptSegment
+
+        async with get_session() as session:
+            event = await create_event(session, slug="pycon-berlin", display_name="PyCon Berlin")
+            room = await create_room(session, event_id=event.id, display_name="Main Hall")
+            booth = await create_booth(
+                session, event_id=event.id, room_id=room.id, language_code="es", language_name="Spanish"
+            )
+            event_slug, room_id, booth_id = event.slug, room.id, booth.id
+
+        # 1. Canonical language booth with uppercase language code
+        seg1 = await save_transcript_segment(f"{event_slug}-{room_id}-ES", "Texto en español")
+        assert seg1 is not None
+
+        async with get_session() as session:
+            record1 = await session.get(TranscriptSegment, seg1)
+            assert record1 is not None
+            assert record1.room_id == room_id
+            assert record1.booth_id == booth_id
+            assert record1.language_code == "es"
+
+        # 2. Canonical floor ID with uppercase FLOOR
+        seg2 = await save_transcript_segment(f"{event_slug}-{room_id}-FLOOR", "Floor uppercase audio")
+        assert seg2 is not None
+
+        async with get_session() as session:
+            record2 = await session.get(TranscriptSegment, seg2)
+            assert record2 is not None
+            assert record2.room_id == room_id
+            assert record2.booth_id is None
+            assert record2.language_code == "floor"
+
+        # 3. Legacy floor ID with mixed-case Floor
+        seg3 = await save_transcript_segment(f"{event_slug}-Floor", "Legacy mixed audio", room_id=room_id)
+        assert seg3 is not None
+
+        async with get_session() as session:
+            record3 = await session.get(TranscriptSegment, seg3)
+            assert record3 is not None
+            assert record3.room_id == room_id
+            assert record3.language_code == "floor"
+
+    @pytest.mark.anyio
+    async def test_three_letter_iso_language_code(self):
+        """Valid 3-letter ISO language code (e.g. 'eng') resolves and saves successfully."""
+        from portal.database import create_event, create_room, get_session
+        from portal.models import TranscriptSegment
+
+        async with get_session() as session:
+            event = await create_event(session, slug="pycon-berlin", display_name="PyCon Berlin")
+            room = await create_room(session, event_id=event.id, display_name="Main Hall")
+            event_slug, room_id = event.slug, room.id
+
+        # 1. With omitted room_id
+        seg_id_omitted = await save_transcript_segment(f"{event_slug}-{room_id}-eng", "English audio", room_id=None)
+        assert seg_id_omitted is not None
+
+        async with get_session() as session:
+            seg = await session.get(TranscriptSegment, seg_id_omitted)
+            assert seg is not None
+            assert seg.room_id == room_id
+            assert seg.booth_id is None
+            assert seg.language_code == "eng"
+            assert seg.text == "English audio"
+
+        # 2. With explicit room_id
+        seg_id_explicit = await save_transcript_segment(
+            f"{event_slug}-{room_id}-eng", "More English audio", room_id=room_id
+        )
+        assert seg_id_explicit is not None
+
+        async with get_session() as session:
+            seg = await session.get(TranscriptSegment, seg_id_explicit)
+            assert seg is not None
+            assert seg.room_id == room_id
+            assert seg.booth_id is None
+            assert seg.language_code == "eng"
+            assert seg.text == "More English audio"
+
+        # 3. Uppercase case normalization
+        seg_id_upper = await save_transcript_segment(
+            f"{event_slug}-{room_id}-ENG", "Uppercase ENG audio", room_id=room_id
+        )
+        assert seg_id_upper is not None
+
+        async with get_session() as session:
+            seg = await session.get(TranscriptSegment, seg_id_upper)
+            assert seg is not None
+            assert seg.room_id == room_id
+            assert seg.language_code == "eng"
+
+    @pytest.mark.anyio
+    async def test_regional_tag_language_code(self):
+        """Valid regional language tag (e.g. 'pt-br') resolves and saves successfully."""
+        from portal.database import create_event, create_room, get_session
+        from portal.models import TranscriptSegment
+
+        async with get_session() as session:
+            event = await create_event(session, slug="summit-2026", display_name="Summit 2026")
+            room = await create_room(session, event_id=event.id, display_name="Auditorium")
+            event_slug, room_id = event.slug, room.id
+
+        # 1. With omitted room_id and slug ending in digits
+        seg_id_omitted = await save_transcript_segment(
+            f"{event_slug}-{room_id}-pt-br", "Texto em português", room_id=None
+        )
+        assert seg_id_omitted is not None
+
+        async with get_session() as session:
+            seg = await session.get(TranscriptSegment, seg_id_omitted)
+            assert seg is not None
+            assert seg.room_id == room_id
+            assert seg.booth_id is None
+            assert seg.language_code == "pt-br"
+            assert seg.text == "Texto em português"
+
+        # 2. With explicit room_id
+        seg_id_explicit = await save_transcript_segment(
+            f"{event_slug}-{room_id}-pt-br", "Mais texto", room_id=room_id
+        )
+        assert seg_id_explicit is not None
+
+        async with get_session() as session:
+            seg = await session.get(TranscriptSegment, seg_id_explicit)
+            assert seg is not None
+            assert seg.room_id == room_id
+            assert seg.booth_id is None
+            assert seg.language_code == "pt-br"
+            assert seg.text == "Mais texto"
+
+        # 3. Uppercase case normalization
+        seg_id_upper = await save_transcript_segment(
+            f"{event_slug}-{room_id}-PT-BR", "Texto em maiúsculas", room_id=room_id
+        )
+        assert seg_id_upper is not None
+
+        async with get_session() as session:
+            seg = await session.get(TranscriptSegment, seg_id_upper)
+            assert seg is not None
+            assert seg.room_id == room_id
+            assert seg.language_code == "pt-br"
+
+        # 4. Regional tag with numeric UN M.49 region code (es-419)
+        seg_id_m49 = await save_transcript_segment(
+            f"{event_slug}-{room_id}-es-419", "Audio en español latinoamericano", room_id=None
+        )
+        assert seg_id_m49 is not None
+
+        async with get_session() as session:
+            seg = await session.get(TranscriptSegment, seg_id_m49)
+            assert seg is not None
+            assert seg.room_id == room_id
+            assert seg.booth_id is None
+            assert seg.language_code == "es-419"
+            assert seg.text == "Audio en español latinoamericano"
+
+    @pytest.mark.anyio
+    async def test_two_letter_language_code_without_booth(self):
+        """Valid 2-letter ISO language code without pre-existing DBBooth row saves successfully."""
+        from portal.database import create_event, create_room, get_session
+        from portal.models import TranscriptSegment
+
+        async with get_session() as session:
+            event = await create_event(session, slug="pycon-berlin", display_name="PyCon Berlin")
+            room = await create_room(session, event_id=event.id, display_name="Main Hall")
+            event_slug, room_id = event.slug, room.id
+
+        seg_id = await save_transcript_segment(f"{event_slug}-{room_id}-de", "Guten Tag", room_id=room_id)
+        assert seg_id is not None
+
+        async with get_session() as session:
+            seg = await session.get(TranscriptSegment, seg_id)
+            assert seg is not None
+            assert seg.room_id == room_id
+            assert seg.booth_id is None
+            assert seg.language_code == "de"
+            assert seg.text == "Guten Tag"
+
+    @pytest.mark.anyio
+    async def test_malformed_language_codes_return_none(self):
+        """Malformed language identifiers and Unicode digit characters are safely rejected."""
+        from portal.database import create_event, create_room, get_session
+
+        async with get_session() as session:
+            event = await create_event(session, slug="pycon-berlin", display_name="PyCon Berlin")
+            room = await create_room(session, event_id=event.id, display_name="Main Hall")
+            event_slug, room_id = event.slug, room.id
+
+        malformed_langs = [
+            "²",  # Unicode superscript digit
+            "es-²",  # Unicode digit inside tag
+            "12",  # Purely numeric tag
+            "pt_br",  # Underscore instead of hyphen
+            "pt--br",  # Consecutive hyphens
+            "es-",  # Trailing hyphen
+            "-es",  # Leading hyphen
+            "e",  # Exactly one character (too short)
+            "toolonglanguagecode",  # Exceeds max length
+            "es!",  # Punctuation
+        ]
+
+        for bad_lang in malformed_langs:
+            # Omitted room_id
+            res_omitted = await save_transcript_segment(f"{event_slug}-{room_id}-{bad_lang}", "Sample", room_id=None)
+            assert res_omitted is None, f"Expected None for malformed language '{bad_lang}' (omitted room_id)"
+
+            # Explicit room_id
+            res_explicit = await save_transcript_segment(f"{event_slug}-{room_id}-{bad_lang}", "Sample", room_id=room_id)
+            assert res_explicit is None, f"Expected None for malformed language '{bad_lang}' (explicit room_id)"
+
+    @pytest.mark.anyio
+    async def test_room_belonging_to_different_event_returns_none(self):
+        """Room belonging to a different event cannot be associated via fallback lookup."""
+        from portal.database import create_event, create_room, get_session
+
+        async with get_session() as session:
+            event_a = await create_event(session, slug="event-alpha", display_name="Event Alpha")
+            event_b = await create_event(session, slug="event-beta", display_name="Event Beta")
+            room_b = await create_room(session, event_id=event_b.id, display_name="Beta Room")
+            event_a_slug, room_b_id = event_a.slug, room_b.id
+
+        # Room B belongs to Event Beta, but the identifier specifies Event Alpha
+        res_eng = await save_transcript_segment(f"{event_a_slug}-{room_b_id}-eng", "Hello", room_id=room_b_id)
+        assert res_eng is None
+
+        res_pt = await save_transcript_segment(f"{event_a_slug}-{room_b_id}-pt-br", "Olá", room_id=None)
+        assert res_pt is None
+
+    @pytest.mark.anyio
+    async def test_numeric_segments_in_event_slug_disambiguation(self):
+        """Right-to-left parsing correctly selects room ID when event slug contains numeric segments."""
+        from portal.database import create_booth, create_event, create_room, get_session
+        from portal.models import DBBooth, Room, TranscriptSegment
+
+        async with get_session() as session:
+            # 1. summit-2026 with room_id=1 and pt-br
+            ev1 = await create_event(session, slug="summit-2026", display_name="Summit 2026")
+            rm1 = await create_room(session, event_id=ev1.id, display_name="Auditorium")
+
+            # 2. event-2026 with room_id=14 and eng
+            ev2 = await create_event(session, slug="event-2026", display_name="Event 2026")
+            rm2 = await create_room(session, event_id=ev2.id, display_name="Hall 14")
+
+            # 3. event-12 with room_id=3 and es (with booth)
+            ev3 = await create_event(session, slug="event-12", display_name="Event 12")
+            rm3 = await create_room(session, event_id=ev3.id, display_name="Hall 3")
+            bth3 = await create_booth(
+                session, event_id=ev3.id, room_id=rm3.id, language_code="es", language_name="Spanish"
+            )
+
+            e1_slug, r1_id = ev1.slug, rm1.id
+            e2_slug, r2_id = ev2.slug, rm2.id
+            e3_slug, r3_id, b3_id = ev3.slug, rm3.id, bth3.id
+
+        # Case 1: summit-2026-1-pt-br
+        seg1_id = await save_transcript_segment(f"{e1_slug}-{r1_id}-pt-br", "Texto em português", room_id=None)
+        assert seg1_id is not None
+        async with get_session() as session:
+            seg1 = await session.get(TranscriptSegment, seg1_id)
+            assert seg1 is not None
+            assert seg1.room_id == r1_id
+            assert seg1.language_code == "pt-br"
+            room1 = await session.get(Room, seg1.room_id)
+            assert room1 is not None
+            assert room1.event_id == ev1.id
+
+        # Case 2: event-2026-14-eng
+        seg2_id = await save_transcript_segment(f"{e2_slug}-{r2_id}-eng", "English audio", room_id=None)
+        assert seg2_id is not None
+        async with get_session() as session:
+            seg2 = await session.get(TranscriptSegment, seg2_id)
+            assert seg2 is not None
+            assert seg2.room_id == r2_id
+            assert seg2.language_code == "eng"
+            room2 = await session.get(Room, seg2.room_id)
+            assert room2 is not None
+            assert room2.event_id == ev2.id
+
+        # Case 3: event-12-3-es (with DBBooth)
+        seg3_id = await save_transcript_segment(f"{e3_slug}-{r3_id}-es", "Audio en español", room_id=r3_id)
+        assert seg3_id is not None
+        async with get_session() as session:
+            seg3 = await session.get(TranscriptSegment, seg3_id)
+            assert seg3 is not None
+            assert seg3.room_id == r3_id
+            assert seg3.booth_id == b3_id
+            assert seg3.language_code == "es"
+            booth3 = await session.get(DBBooth, seg3.booth_id)
+            assert booth3 is not None
+            assert booth3.event_id == ev3.id
+            assert booth3.room_id == r3_id
+
+        # Case 4: summit-2026-1-es-419 (numeric regional tag with numeric event slug)
+        seg4_id = await save_transcript_segment(f"{e1_slug}-{r1_id}-es-419", "Audio latinoamericano", room_id=None)
+        assert seg4_id is not None
+        async with get_session() as session:
+            seg4 = await session.get(TranscriptSegment, seg4_id)
+            assert seg4 is not None
+            assert seg4.room_id == r1_id
+            assert seg4.language_code == "es-419"
+            room4 = await session.get(Room, seg4.room_id)
+            assert room4 is not None
+            assert room4.event_id == ev1.id
