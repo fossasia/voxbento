@@ -1557,10 +1557,94 @@ class TestRoomCRUD:
         assert bad_lang.status_code == 404
         assert no_booth.status_code == 404
         assert floor_off.status_code == 404
+
+        # When floor_transcription_enabled is True but provider is 'none', floor overlay returns 404
+        async with get_session() as s:
+            db_room = await s.get(type(room), room.id)
+            assert db_room is not None
+            db_room.floor_transcription_enabled = True
+            db_room.floor_transcription_provider = "none"
+            await s.flush()
+
+        async with _client() as c:
+            floor_none = await c.get(f"/overlay/{event.slug}/{room.id}/floor?code=ROOM42")
+        assert floor_none.status_code == 404
+
         assert ok.status_code == 200
         assert f'data-booth-id="{event.slug}-{room.id}-{booth.language_code}"'.encode() in ok.content
+        assert b'data-token="' in ok.content
+        assert f"listener_code_{event.slug}" in ok.headers.get("set-cookie", "")
         assert ok.headers["content-security-policy"] == "frame-ancestors 'self'"
         assert ok.headers["cache-control"] == "no-store, private"
+
+    @pytest.mark.anyio
+    async def test_ws_captions_verifies_authorization_established_by_overlay(self, seed_event):
+        import re
+
+        from starlette.testclient import TestClient
+        from starlette.websockets import WebSocketDisconnect
+
+        from fastapi_app import app as fastapi_app
+
+        event, room, booth = seed_event
+
+        from portal.database import get_session
+
+        async with get_session() as s:
+            db_event = await s.get(type(event), event.id)
+            assert db_event is not None
+            db_event.listener_join_code = "ROOM42"
+
+        booth_id = f"{event.slug}-{room.id}-{booth.language_code}"
+        tc = TestClient(app=fastapi_app)
+
+        # 1. Unauthenticated direct connection without authorization is rejected with 4001
+        with pytest.raises(WebSocketDisconnect) as exc_info:
+            with tc.websocket_connect(f"/ws/captions/{booth_id}") as ws:
+                ws.receive_text()
+        assert exc_info.value.code == 4001
+
+        # 2. Join-code-protected overlay establishes authorization and delivers token
+        overlay_path = f"/overlay/{event.slug}/{room.id}/{booth.language_code}?code=ROOM42"
+        async with _client() as c:
+            ok = await c.get(overlay_path)
+        assert ok.status_code == 200
+        match = re.search(r'data-token="([^"]+)"', ok.text)
+        assert match is not None
+        overlay_token = match.group(1)
+        assert len(overlay_token) > 0
+
+        # 3. Connecting to captions WS with the overlay's established token succeeds
+        with tc.websocket_connect(f"/ws/captions/{booth_id}?token={overlay_token}") as ws:
+            ws.close()
+
+        # 4. Connecting with listener_code cookie succeeds
+        with tc.websocket_connect(f"/ws/captions/{booth_id}", cookies={f"listener_code_{event.slug}": "ROOM42"}) as ws:
+            ws.close()
+
+        # 5. Connecting with ?code=ROOM42 query param succeeds
+        with tc.websocket_connect(f"/ws/captions/{booth_id}?code=ROOM42") as ws:
+            ws.close()
+
+        # 6. Connecting with wrong code is rejected with 4001
+        with pytest.raises(WebSocketDisconnect) as exc_info:
+            with tc.websocket_connect(f"/ws/captions/{booth_id}?code=WRONG") as ws:
+                ws.receive_text()
+        assert exc_info.value.code == 4001
+
+    @pytest.mark.anyio
+    async def test_ws_captions_allows_anonymous_when_no_join_code(self, seed_event):
+        from starlette.testclient import TestClient
+
+        from fastapi_app import app as fastapi_app
+
+        event, room, booth = seed_event
+        booth_id = f"{event.slug}-{room.id}-{booth.language_code}"
+        tc = TestClient(app=fastapi_app)
+
+        # Anonymous caller is accepted when event has no join code
+        with tc.websocket_connect(f"/ws/captions/{booth_id}") as ws:
+            ws.close()
 
     @pytest.mark.anyio
     async def test_event_detail_shows_subtitle_overlay_builder(self, admin_cookie, seed_event):
@@ -1580,6 +1664,81 @@ class TestRoomCRUD:
         assert b'id="subtitle-overlay-builder"' in resp.content
         assert f'value="{room.id}/{booth.language_code}"'.encode() in resp.content
         assert b"js/overlay-builder.js" in resp.content
+
+        # Floor option is absent if room provider is 'none' even if enabled
+        async with get_session() as s:
+            db_room = await s.get(type(room), room.id)
+            assert db_room is not None
+            db_room.floor_transcription_enabled = True
+            db_room.floor_transcription_provider = "none"
+            await s.flush()
+
+        async with _client() as c:
+            resp_none = await c.get(f"/admin/events/{event.id}/", cookies=admin_cookie)
+        assert f'value="{room.id}/floor"'.encode() not in resp_none.content
+
+        # Floor option appears once a valid provider is configured
+        async with get_session() as s:
+            db_room = await s.get(type(room), room.id)
+            assert db_room is not None
+            db_room.floor_transcription_provider = "local"
+            await s.flush()
+
+        async with _client() as c:
+            resp_local = await c.get(f"/admin/events/{event.id}/", cookies=admin_cookie)
+        assert f'value="{room.id}/floor"'.encode() in resp_local.content
+
+    @pytest.mark.anyio
+    async def test_subtitle_overlay_and_selector_channels_beyond_100(self, admin_cookie, seed_event):
+        """Booths and rooms beyond the first 100 are selectable and valid for overlay."""
+        from portal.database import create_booth, create_room, get_session
+
+        event, _, _ = seed_event
+
+        async with get_session() as s:
+            db_event = await s.get(type(event), event.id)
+            assert db_event is not None
+            db_event.listener_join_code = "ROOM42"
+
+            # Create 105 rooms; the 105th room has floor transcription and a booth
+            target_room = None
+            target_booth = None
+            for i in range(1, 106):
+                r = await create_room(s, event_id=event.id, display_name=f"Overflow Room {i}")
+                if i == 105:
+                    r.floor_transcription_enabled = True
+                    target_room = r
+                    target_booth = await create_booth(
+                        s,
+                        event_id=event.id,
+                        room_id=r.id,
+                        language_code="es",
+                        language_name="Spanish",
+                    )
+            await s.flush()
+
+        assert target_room is not None
+        assert target_booth is not None
+
+        # 1. Overlay route validates booth and floor channel beyond 100
+        booth_overlay = f"/overlay/{event.slug}/{target_room.id}/{target_booth.language_code}?code=ROOM42"
+        floor_overlay = f"/overlay/{event.slug}/{target_room.id}/floor?code=ROOM42"
+
+        async with _client() as c:
+            resp_booth = await c.get(booth_overlay)
+            resp_floor = await c.get(floor_overlay)
+            resp_admin = await c.get(f"/admin/events/{event.id}/", cookies=admin_cookie)
+
+        assert resp_booth.status_code == 200
+        assert f'data-booth-id="{event.slug}-{target_room.id}-{target_booth.language_code}"'.encode() in resp_booth.content
+
+        assert resp_floor.status_code == 200
+        assert f'data-booth-id="{event.slug}-{target_room.id}-floor"'.encode() in resp_floor.content
+
+        # 2. Selector includes channels beyond the first 100
+        assert resp_admin.status_code == 200
+        assert f'value="{target_room.id}/{target_booth.language_code}"'.encode() in resp_admin.content
+        assert f'value="{target_room.id}/floor"'.encode() in resp_admin.content
 
     @pytest.mark.anyio
     async def test_delete_room(self, admin_cookie, seed_event):

@@ -88,7 +88,7 @@
     <h2>Subtitles overlay</h2>
   </div>
   <p class="muted hint--spaced">Transparent caption layer for OBS or vMix. Add the URL below as a Browser source at 1920&times;1080.</p>
-  {% if event.listener_join_code and (booths or rooms | selectattr('floor_transcription_enabled') | list) %}
+  {% if event.listener_join_code and (booths or rooms | selectattr('floor_transcription_enabled') | rejectattr('floor_transcription_provider', 'equalto', 'none') | list) %}
   <div class="overlay-preview" id="overlay-preview">
     <iframe id="overlay-preview-frame" title="Subtitles overlay preview" tabindex="-1"></iframe>
   </div>
@@ -103,7 +103,7 @@
         {% for bs in booths %}
         <option value="{{ bs.db.room_id }}/{{ bs.db.language_code }}">{{ bs.db.room.display_name }} · {{ bs.db.language_name }}</option>
         {% endfor %}
-        {% for room in rooms if room.floor_transcription_enabled %}
+        {% for room in rooms if room.floor_transcription_enabled and room.floor_transcription_provider and room.floor_transcription_provider != 'none' %}
         <option value="{{ room.id }}/floor">{{ room.display_name }} · Floor (original)</option>
         {% endfor %}
       </select>

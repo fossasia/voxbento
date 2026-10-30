@@ -258,6 +258,7 @@ jobs:
           node --check portal/static/js/booth-reconnect.js
           node --check portal/static/js/whep-listener.js
           node --check portal/static/js/admin.js
+          node --check portal/static/js/subtitle-overlay.js
           node --check .github/scripts/jules-review.mjs
       - name: run node tests
         run: |
@@ -265,6 +266,7 @@ jobs:
           node tests/test_tts_parser.js
           node tests/test_listener_event.js
           node tests/test_whep_listener.js
+          node tests/test_subtitle_overlay.js
           node tests/test_jules_review.mjs
           node tests/test_booth_reconnect.mjs
           node tests/test_booth_socket.mjs

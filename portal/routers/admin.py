@@ -1170,8 +1170,8 @@ async def admin_event_detail(request: Request, event_id: int):
         event = await get_event_by_id(session, event_id)
         if event is None:
             raise HTTPException(status_code=404, detail="Event not found.")
-        rooms = await list_rooms_for_event(session, event_id)
-        db_booths = await list_booths_for_event(session, event_id)
+        rooms = await list_rooms_for_event(session, event_id, limit=None)
+        db_booths = await list_booths_for_event(session, event_id, limit=None)
         summaries = await _room_summaries(session, event, rooms)
     # Keep each room's booths together, in the same order as the Rooms list.
     room_order = {room.id: index for index, room in enumerate(rooms)}

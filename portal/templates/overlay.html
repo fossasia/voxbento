@@ -10,7 +10,7 @@
     <link rel="stylesheet" href="{{ url_for('static', path='css/overlay.css') }}?v={{ asset_version }}" />
   </head>
   <body>
-    <main id="overlay" class="overlay overlay--bottom" data-booth-id="{{ booth_id }}">
+    <main id="overlay" class="overlay overlay--bottom" data-booth-id="{{ booth_id }}" data-token="{{ token or '' }}">
       <div id="overlay-lines" class="overlay-lines" aria-live="polite"></div>
     </main>
     <script type="module" src="{{ url_for('static', path='js/subtitle-overlay.js') }}?v={{ asset_version }}"></script>

@@ -8,6 +8,7 @@ const IDLE_CLEAR_MS = 8000;
 const root = document.getElementById("overlay");
 const linesBox = document.getElementById("overlay-lines");
 const boothId = root.dataset.boothId;
+const token = root.dataset.token || new URLSearchParams(window.location.search).get("token") || "";
 
 const config = { position: "bottom", fontSize: 36, bg: 70, lines: 2 };
 let finals = [];
@@ -75,7 +76,10 @@ function handleCaption(data) {
 
 function connect() {
   const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-  const ws = new WebSocket(`${proto}//${window.location.host}/ws/captions/${encodeURIComponent(boothId)}`);
+  const params = new URLSearchParams();
+  if (token) params.set("token", token);
+  const query = params.toString() ? `?${params.toString()}` : "";
+  const ws = new WebSocket(`${proto}//${window.location.host}/ws/captions/${encodeURIComponent(boothId)}${query}`);
   ws.onopen = () => {
     retryDelayMs = 1000;
   };

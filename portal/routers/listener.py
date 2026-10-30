@@ -11,7 +11,7 @@ import jwt
 from fastapi import APIRouter, HTTPException, Query, Request, status
 from fastapi.templating import Jinja2Templates
 
-from portal.auth import decode_token, get_booth_session, is_listener_token
+from portal.auth import create_listener_token, decode_token, get_booth_session, is_listener_token
 from portal.config import settings
 from portal.database import (
     get_event_by_slug,
@@ -98,8 +98,8 @@ async def listen_event_page(request: Request, event_slug: str, code: str | None 
                 context={"event": ev, "error": "Invalid join code." if code else None},
             )
 
-        rooms = await list_rooms_for_event(session, ev.id)
-        db_booths = await list_booths_for_event(session, ev.id)
+        rooms = await list_rooms_for_event(session, ev.id, limit=None)
+        db_booths = await list_booths_for_event(session, ev.id, limit=None)
 
     booths_data = []
     ensure_tasks = []
@@ -223,14 +223,19 @@ async def subtitle_overlay(
         if room is None or room.event_id != ev.id:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Room not found")
         # Only real caption channels: an existing booth, or the floor when it is transcribed.
-        if language_code.lower() == "floor" and not room.floor_transcription_enabled:
+        if language_code.lower() == "floor" and (
+            not room.floor_transcription_enabled
+            or not room.floor_transcription_provider
+            or room.floor_transcription_provider.lower() == "none"
+        ):
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Floor transcription is off")
         booth_id, _ = await _resolve_embed_channel(session, ev, event_slug, room_id, language_code)
 
-    return templates.TemplateResponse(
+    token = create_listener_token(event_slug=ev.slug)
+    response = templates.TemplateResponse(
         request=request,
         name="overlay.html",
-        context={"event": ev, "booth_id": booth_id},
+        context={"event": ev, "booth_id": booth_id, "token": token},
         headers={
             "Cache-Control": "no-store, private",
             "Referrer-Policy": "no-referrer",
@@ -238,6 +243,9 @@ async def subtitle_overlay(
             "Content-Security-Policy": "frame-ancestors 'self'",
         },
     )
+    if code and code == ev.listener_join_code:
+        response.set_cookie(f"listener_code_{event_slug}", code, httponly=True, max_age=31536000)
+    return response
 
 
 def _verify_embed_token(token: str, event_slug: str) -> None:
@@ -266,7 +274,7 @@ def _verify_embed_token(token: str, event_slug: str) -> None:
 
 async def _resolve_embed_room(session: Any, ev: Any, room_id: int | None) -> tuple[int, int]:
     """Resolve the target room id and its audio delay for an embed request."""
-    rooms = await list_rooms_for_event(session, ev.id)
+    rooms = await list_rooms_for_event(session, ev.id, limit=None)
     if room_id is None:
         if not rooms:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No rooms found for this event.")
@@ -296,7 +304,7 @@ async def _resolve_embed_channel(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Invalid language code.")
 
     if language_code.lower() != "floor":
-        db_booths = await list_booths_for_event(session, ev.id)
+        db_booths = await list_booths_for_event(session, ev.id, limit=None)
         booth = next(
             (b for b in db_booths if b.language_code.lower() == language_code.lower() and b.room_id == room_id),
             None,

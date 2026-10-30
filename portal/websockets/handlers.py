@@ -209,23 +209,24 @@ async def ws_captions(websocket: WebSocket, booth_id: str) -> None:
     """WebSocket endpoint for live captions. Listener tokens are limited to their own event"""
     token = websocket.query_params.get("token", "")
     is_anonymous = not bool(token)
+
+    booth_event: str | None = None
+    try:
+        from portal.booth_identity import parse_booth_id
+
+        booth_event, _, _ = parse_booth_id(booth_id)
+    except ValueError:
+        if "/" in booth_id:
+            booth_event = booth_id.split("/")[0]
+        elif "-" in booth_id:
+            booth_event = booth_id.rsplit("-", 1)[0]
+
     if token:
         reject_code: int | None = None
         try:
             payload = decode_token(token)
             if not (payload.get("is_admin") or payload.get("admin")):
                 token_event = payload.get("event_slug", "")
-                booth_event: str | None = None
-                try:
-                    from portal.booth_identity import parse_booth_id
-
-                    booth_event, _, _ = parse_booth_id(booth_id)
-                except ValueError:
-                    if "/" in booth_id:
-                        booth_event = booth_id.split("/")[0]
-                    elif "-" in booth_id:
-                        booth_event = booth_id.rsplit("-", 1)[0]
-
                 if not token_event or booth_event != token_event:
                     reject_code = 4003
         except Exception:
@@ -238,12 +239,51 @@ async def ws_captions(websocket: WebSocket, booth_id: str) -> None:
             await websocket.close(code=reject_code)
             return
     else:
-        from portal.config import settings
+        if booth_event:
+            from portal.auth import get_booth_sessions, resolve_booth_role
+            from portal.database import get_event_by_slug, get_session
 
-        max_anon = getattr(settings, "max_anonymous_caption_listeners_per_booth", 500)
-        if not listener_manager.try_reserve_anonymous(websocket, booth_id, max_anon):
-            await websocket.close(code=1008)
-            return
+            async with get_session() as db_session:
+                ev = await get_event_by_slug(db_session, booth_event)
+
+            if ev and ev.listener_join_code:
+                cookie_code = websocket.cookies.get(f"listener_code_{booth_event}")
+                query_code = websocket.query_params.get("code")
+                is_authorized = False
+
+                if (cookie_code and cookie_code.strip() == ev.listener_join_code.strip()) or (
+                    query_code and query_code.strip() == ev.listener_join_code.strip()
+                ):
+                    is_authorized = True
+                else:
+                    sessions = get_booth_sessions(websocket)
+                    user_sess = sessions.get("user_token")
+                    if user_sess and (user_sess.get("is_admin") or user_sess.get("admin")):
+                        is_authorized = True
+                    elif user_sess:
+                        user_role = await resolve_booth_role(user_sess, booth_id)
+                        if user_role:
+                            is_authorized = True
+                    if not is_authorized:
+                        invite_sess = sessions.get("session_token")
+                        if invite_sess:
+                            invite_role = await resolve_booth_role(invite_sess, booth_id)
+                            if invite_role:
+                                is_authorized = True
+
+                if not is_authorized:
+                    await websocket.accept()
+                    await websocket.close(code=4001)
+                    return
+                is_anonymous = False
+
+        if is_anonymous:
+            from portal.config import settings
+
+            max_anon = getattr(settings, "max_anonymous_caption_listeners_per_booth", 500)
+            if not listener_manager.try_reserve_anonymous(websocket, booth_id, max_anon):
+                await websocket.close(code=1008)
+                return
 
     accepted = False
     try:
