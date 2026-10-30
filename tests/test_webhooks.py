@@ -327,8 +327,8 @@ async def test_atomic_queue_claim(worker_db):
 
     claimed1, claimed2 = await asyncio.gather(claim_once(), claim_once())
 
-    assert len(claimed1) == 10
-    assert len(claimed2) == 5
+    # Batch size caps the first claim; the winner of the race is not deterministic.
+    assert sorted([len(claimed1), len(claimed2)]) == [5, 10]
     assert set(claimed1).isdisjoint(claimed2)
 
 
