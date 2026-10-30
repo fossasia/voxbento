@@ -15,7 +15,7 @@ body {
   justify-content: center;
   height: 100%;
   padding: 4vh 5vw;
-  font-family: "Inter", system-ui, sans-serif;
+  font-family: var(--vb-font);
 }
 
 .overlay--top {
@@ -43,15 +43,15 @@ body {
 
 .overlay-line {
   padding: 0.15em 0.5em;
-  border-radius: 0.2em;
+  border-radius: var(--vb-radius-sm);
   background: rgba(0, 0, 0, var(--overlay-bg-alpha));
-  color: #fff;
+  color: var(--vb-color-surface);
   font-weight: 600;
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
 }
 
 /* Older lines fade back so the newest line reads first. */
 .overlay-line--older {
-  color: rgba(255, 255, 255, 0.72);
+  color: color-mix(in srgb, var(--vb-color-surface) 72%, transparent);
   font-size: 0.8em;
 }

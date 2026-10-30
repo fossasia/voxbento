@@ -1912,14 +1912,15 @@ code { font-family: var(--font-mono); font-size: 0.85em; background: var(--color
 
 /* Subtitles overlay configurator (event detail) */
 .overlay-preview {
+  --preview-checker: color-mix(in srgb, var(--vb-color-text) 88%, var(--vb-color-surface));
   position: relative;
   aspect-ratio: 16 / 9;
   overflow: hidden;
-  border-radius: 8px;
-  background-color: #1f2128;
+  border-radius: var(--vb-radius-sm);
+  background-color: var(--vb-color-text);
   background-image:
-    linear-gradient(45deg, #2a2d36 25%, transparent 25%, transparent 75%, #2a2d36 75%),
-    linear-gradient(45deg, #2a2d36 25%, transparent 25%, transparent 75%, #2a2d36 75%);
+    linear-gradient(45deg, var(--preview-checker) 25%, transparent 25%, transparent 75%, var(--preview-checker) 75%),
+    linear-gradient(45deg, var(--preview-checker) 25%, transparent 25%, transparent 75%, var(--preview-checker) 75%);
   background-position: 0 0, 10px 10px;
   background-size: 20px 20px;
 }
