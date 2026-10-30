@@ -1,17 +1,22 @@
 {% extends "base.html" %}
 {% block title %}Sign In Successful — Voxbento{% endblock %}
 
-{% block content %}
-<div style="max-width: 480px; margin: 80px auto; text-align: center; background: #fff; padding: 40px 20px; border-radius: 12px; box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.05); border: 1px solid #e2e8f0;">
-  <div style="width: 64px; height: 64px; background: #22c55e; color: white; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 32px; margin: 0 auto 20px;">✓</div>
-  <h2 style="margin-top: 0; color: #0f172a;">Successfully Signed In</h2>
-  <p style="color: #64748b; font-size: 16px; margin-bottom: 24px;">You are now logged into VoxBento.</p>
+{% block head %}
+{{ super() }}
+<link rel="stylesheet" href="{{ url_for('static', path='css/auth.css') }}?v={{ asset_version }}" />
+{% endblock %}
 
-  <div id="status-banner" style="display: flex; align-items: center; justify-content: center; gap: 10px; color: #1e40af; font-weight: 500; padding: 14px 18px; background: #eff6ff; border: 1px solid #bfdbfe; border-radius: 8px; line-height: 1.6; margin-bottom: 20px; text-align: left;">
-    <span style="font-size: 20px;">ℹ️</span>
+{% block content %}
+<div class="magic-success-card">
+  <div class="magic-success-icon">✓</div>
+  <h2 class="magic-success-title">Successfully Signed In</h2>
+  <p class="magic-success-message">You are now logged into VoxBento.</p>
+
+  <div id="status-banner" class="magic-success-status">
+    <span class="magic-success-status-icon">ℹ️</span>
     <div>
-      <div style="font-weight: 600; color: #1e3a8a;">Session synchronized</div>
-      <div style="color: #3b82f6; font-size: 14px;">Please return to your original tab to continue authorizing. If you are not redirected automatically, <a id="manual-redirect-link" href="#" target="voxbento_oauth" style="color: #1d4ed8; text-decoration: underline; font-weight: 600; cursor: pointer;">click here</a>.</div>
+      <div class="magic-success-status-title">Session synchronized</div>
+      <div class="magic-success-status-message">Please return to your original tab to continue authorizing. If you are not redirected automatically, <a id="manual-redirect-link" href="#" target="voxbento_oauth">click here</a>.</div>
     </div>
   </div>
 </div>
