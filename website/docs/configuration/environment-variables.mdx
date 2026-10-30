@@ -128,7 +128,7 @@ Configured for transactional emails (invitations, password resets, hosting acces
 | `SMTP_PASSWORD` | _(none)_ | SMTP authentication password. |
 | `SMTP_FROM_EMAIL` | `noreply@voxbento.com` | Sender address on outgoing notification emails. |
 | `HOSTING_REQUESTS_EMAIL` | `voxbento.dev@gmail.com` | Team inbox alerted when users request event hosting access. |
-| `PUBLIC_BASE_URL` | `https://voxbento.com` | Canonical public URL used to build invite and confirmation links. |
+| `PUBLIC_BASE_URL` | `https://voxbento.com` | Public origin used for invite, magic-link and email links, HTTPS detection and HSTS. Cookies are `Secure` for HTTPS requests, `X-Forwarded-Proto: https`, or an `https://` public origin outside debug mode. Set it to an `http://` origin for plain-HTTP deployments, otherwise browsers drop Secure login cookies. |
 
 ## Jitsi Internal Auth Variables
 

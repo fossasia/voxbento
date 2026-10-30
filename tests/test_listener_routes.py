@@ -110,6 +110,25 @@ class TestListenerRoutes:
         assert "listener_code_testcon" in resp.headers["set-cookie"]
 
     @pytest.mark.anyio
+    async def test_stored_join_code_cookie_is_reissued_secure(self, seed_event):
+        event, _, _ = seed_event
+
+        from portal.database import get_session
+
+        async with get_session() as s:
+            db_event = await s.get(type(event), event.id)
+            db_event.listener_join_code = "ROOM42"
+
+        async with _client() as c:
+            c.cookies.set("listener_code_testcon", "ROOM42")
+            resp = await c.get(f"/listener/{event.slug}")
+
+        assert resp.status_code == 200
+        cookie = resp.headers["set-cookie"]
+        assert cookie.startswith("listener_code_testcon=ROOM42")
+        assert "secure" in cookie.lower()
+
+    @pytest.mark.anyio
     async def test_listener_status_is_announced(self, seed_event):
         """Screen reader users must hear when the stream goes live or drops."""
         event, _, _ = seed_event

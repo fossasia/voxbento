@@ -2305,6 +2305,64 @@ def test_embed_frame_ancestors_multi_origin(monkeypatch):
     assert res.headers.get("content-security-policy") == "frame-ancestors https://a.com https://b.com"
 
 
+@pytest.mark.parametrize("path", ["/", "/login"])
+def test_security_headers_on_pages(monkeypatch, path):
+    from portal.config import settings
+
+    monkeypatch.setattr(settings, "public_base_url", "https://voxbento.com")
+    res = client.get(path, follow_redirects=False)
+    assert res.headers["x-content-type-options"] == "nosniff"
+    assert res.headers["referrer-policy"] == "strict-origin-when-cross-origin"
+    assert res.headers["content-security-policy"] == "frame-ancestors 'self'"
+    assert res.headers["strict-transport-security"] == "max-age=31536000; includeSubDomains"
+
+
+def test_no_hsts_for_plain_http_deployment(monkeypatch):
+    from portal.config import settings
+
+    monkeypatch.setattr(settings, "public_base_url", "http://localhost:8000")
+    res = client.get("/login")
+    assert "strict-transport-security" not in res.headers
+    assert res.headers["content-security-policy"] == "frame-ancestors 'self'"
+
+
+def test_embed_keeps_its_own_frame_policy(monkeypatch):
+    from portal.config import settings
+
+    monkeypatch.setattr(settings, "embed_allowed_origins", "https://eventyay.com")
+    _seed_embed_event("test-event", "en")
+
+    token = _embed_listener_token(event_slug="test-event")
+    res = client.get(f"/embed/test-event/en?token={token}", headers={"accept": "text/html"})
+    assert res.status_code == 200, res.text
+    assert res.headers["content-security-policy"] == "frame-ancestors https://eventyay.com"
+    assert res.headers["referrer-policy"] == "no-referrer"
+    assert res.headers["x-content-type-options"] == "nosniff"
+
+
+def test_embed_error_keeps_embed_frame_policy(monkeypatch):
+    from portal.config import settings
+
+    monkeypatch.setattr(settings, "embed_allowed_origins", "https://eventyay.com")
+    res = client.get("/embed/test-event/en?token=invalid", headers={"accept": "text/html"})
+    assert res.status_code == 403
+    assert res.headers["content-security-policy"] == "frame-ancestors https://eventyay.com"
+    assert res.headers["referrer-policy"] == "no-referrer"
+
+
+def test_unhandled_error_response_has_security_headers():
+    import anyio
+    from starlette.requests import Request
+
+    from fastapi_app import general_exception_handler
+
+    request = Request({"type": "http", "method": "GET", "path": "/boom", "headers": [], "query_string": b""})
+    res = anyio.run(general_exception_handler, request, RuntimeError("boom"))
+    assert res.status_code == 500
+    assert res.headers["x-content-type-options"] == "nosniff"
+    assert res.headers["content-security-policy"] == "frame-ancestors 'self'"
+
+
 def test_embed_headless_mode_config():
     """When headless=true, the config payload should contain headless: true and the class should be added."""
     _seed_embed_event("test-event", "en")

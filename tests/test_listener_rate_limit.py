@@ -64,7 +64,7 @@ def _client(client_ip: str = "10.0.0.1"):
 
     from fastapi_app import app
 
-    return AsyncClient(transport=ASGITransport(app=app, client=(client_ip, 123)), base_url="http://test")
+    return AsyncClient(transport=ASGITransport(app=app, client=(client_ip, 123)), base_url="https://test")
 
 
 # ---------------------------------------------------------------------------
