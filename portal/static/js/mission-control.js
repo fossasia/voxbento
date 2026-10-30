@@ -189,7 +189,7 @@ function connectWs(boothId) {
     try { data = JSON.parse(e.data); } catch { return; }
 
     if (data.type === 'booth:state') {
-      entry.state = { ...data.state, room_name: entry.state.room_name };
+      entry.state = { ...data.state, room_name: data.state.room_name ?? entry.state.room_name };
       renderCard(boothId);
     }
     // Silently ignore booth:joined — we do not join as a participant.
