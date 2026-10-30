@@ -4,11 +4,12 @@
 
 const POSITIONS = ["top", "center", "bottom"];
 const IDLE_CLEAR_MS = 8000;
+const CAPTION_TYPES = ["caption", "translated_caption", "translation"];
 
 const root = document.getElementById("overlay");
 const linesBox = document.getElementById("overlay-lines");
-const boothId = root.dataset.boothId;
-const token = root.dataset.token || new URLSearchParams(window.location.search).get("token") || "";
+const boothId = root ? root.dataset.boothId : "";
+const token = root ? (root.dataset.token || new URLSearchParams(window.location.search).get("token") || "") : "";
 
 const config = { position: "bottom", fontSize: 36, bg: 70, lines: 2 };
 let finals = [];
@@ -32,6 +33,7 @@ export function readConfig(params, base) {
 }
 
 function applyConfig() {
+  if (!root) return;
   POSITIONS.forEach((p) => root.classList.toggle("overlay--" + p, p === config.position));
   root.style.setProperty("--overlay-font-size", config.fontSize + "px");
   root.style.setProperty("--overlay-bg-alpha", String(config.bg / 100));
@@ -39,6 +41,7 @@ function applyConfig() {
 }
 
 function render() {
+  if (!linesBox) return;
   const visible = finals.concat(partial ? [partial] : []).slice(-config.lines);
   linesBox.replaceChildren(
     ...visible.map((text, i) => {
@@ -60,14 +63,18 @@ function touch() {
   }, IDLE_CLEAR_MS);
 }
 
-function handleCaption(data) {
-  if (data.type !== "caption") return;
-  if (data.status === "partial") {
-    partial = data.text || "";
-  } else if (data.status === "final") {
-    if (data.text) finals = finals.concat([data.text]).slice(-4);
+export function handleCaption(data) {
+  if (!data || !CAPTION_TYPES.includes(data.type)) return;
+  const rawText = typeof data.text === "string" ? data.text : (typeof data.translated_text === "string" ? data.translated_text : "");
+  const text = rawText.trim();
+  const status = data.status || (data.type === "caption" ? "partial" : "final");
+
+  if (status === "partial") {
+    partial = text;
+  } else if (status === "final") {
+    if (text) finals = finals.concat([text]).slice(-4);
     partial = "";
-  } else if (data.status === "clear") {
+  } else if (status === "clear") {
     partial = "";
   }
   render();
@@ -75,6 +82,7 @@ function handleCaption(data) {
 }
 
 function connect() {
+  if (!boothId) return;
   const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
   const params = new URLSearchParams();
   if (token) params.set("token", token);
@@ -97,16 +105,20 @@ function connect() {
   };
 }
 
-window.addEventListener("message", (event) => {
-  if (event.origin !== window.location.origin || !event.data) return;
-  if (event.data.type === "overlay:config") {
-    Object.assign(config, readConfig(new URLSearchParams(event.data.query || ""), config));
-    applyConfig();
-  } else if (event.data.type === "overlay:test" && typeof event.data.text === "string") {
-    handleCaption({ type: "caption", status: "final", text: event.data.text });
-  }
-});
+if (typeof window !== "undefined") {
+  window.addEventListener("message", (event) => {
+    if (event.origin !== window.location.origin || !event.data) return;
+    if (event.data.type === "overlay:config") {
+      Object.assign(config, readConfig(new URLSearchParams(event.data.query || ""), config));
+      applyConfig();
+    } else if (event.data.type === "overlay:test" && typeof event.data.text === "string") {
+      handleCaption({ type: "caption", status: "final", text: event.data.text });
+    }
+  });
 
-Object.assign(config, readConfig(new URLSearchParams(window.location.search), config));
-applyConfig();
-connect();
+  if (root) {
+    Object.assign(config, readConfig(new URLSearchParams(window.location.search), config));
+    applyConfig();
+    connect();
+  }
+}

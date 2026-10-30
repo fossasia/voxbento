@@ -29,11 +29,13 @@ const scriptCode = fs.readFileSync(
 
 function runOverlay(dataset = {}, search = '') {
   let createdWsUrl = null;
+  let activeWs = null;
 
   class FakeWebSocket {
     constructor(url) {
       createdWsUrl = url;
       this.url = url;
+      activeWs = this;
     }
   }
 
@@ -48,7 +50,10 @@ function runOverlay(dataset = {}, search = '') {
   };
 
   const linesBox = {
-    replaceChildren() {},
+    children: [],
+    replaceChildren(...children) {
+      this.children = children;
+    },
   };
 
   const documentStub = {
@@ -58,21 +63,41 @@ function runOverlay(dataset = {}, search = '') {
       return null;
     },
     createElement() {
-      return {
-        classList: { add() {} },
+      const el = {
+        classList: {
+          classes: new Set(),
+          add(c) { this.classes.add(c); },
+          contains(c) { return this.classes.has(c); },
+        },
         className: '',
         textContent: '',
       };
+      return el;
     },
   };
 
+  let messageListener = null;
   const windowStub = {
     location: {
       protocol: 'http:',
       host: 'localhost:8000',
       search: search,
+      origin: 'http://localhost:8000',
     },
-    addEventListener() {},
+    addEventListener(evt, fn) {
+      if (evt === 'message') messageListener = fn;
+    },
+  };
+
+  let timerFn = null;
+  let timerDelay = 0;
+  const setTimeoutStub = (fn, ms) => {
+    timerFn = fn;
+    timerDelay = ms;
+    return 1;
+  };
+  const clearTimeoutStub = () => {
+    timerFn = null;
   };
 
   const context = vm.createContext({
@@ -83,8 +108,8 @@ function runOverlay(dataset = {}, search = '') {
     parseInt: parseInt,
     Number: Number,
     Math: Math,
-    setTimeout: () => 1,
-    clearTimeout: () => {},
+    setTimeout: setTimeoutStub,
+    clearTimeout: clearTimeoutStub,
     console: console,
   });
 
@@ -92,7 +117,14 @@ function runOverlay(dataset = {}, search = '') {
   const runnableCode = scriptCode.replace(/^export\s+/gm, '');
   vm.runInContext(runnableCode, context);
 
-  return { createdWsUrl };
+  return {
+    createdWsUrl,
+    activeWs,
+    linesBox,
+    handleCaption: context.handleCaption,
+    triggerTimeout: () => { if (timerFn) timerFn(); },
+    getTimerDelay: () => timerDelay,
+  };
 }
 
 console.log('\n── Subtitle overlay WebSocket token auth ──');
@@ -133,6 +165,114 @@ console.log('\n── Subtitle overlay WebSocket token auth ──');
   );
 }
 
+console.log('\n── Real-time subtitles updates (Issue #1072) ──');
+
+// Test 4: handles partial captions and updates display in real time
+{
+  const { activeWs, linesBox } = runOverlay({ boothId: 'pycon-1-en' }, '');
+  activeWs.onmessage({
+    data: JSON.stringify({ type: 'caption', status: 'partial', text: 'Hello everyone' }),
+  });
+  assert(linesBox.children.length === 1, 'partial caption creates 1 visible line');
+  assert(linesBox.children[0].textContent === 'Hello everyone', 'partial caption text matches');
+  assert(!linesBox.children[0].classList.contains('overlay-line--older'), 'partial caption is newest');
+}
+
+// Test 5: final caption replaces partial and retains committed lines
+{
+  const { activeWs, linesBox } = runOverlay({ boothId: 'pycon-1-en' }, '');
+  activeWs.onmessage({
+    data: JSON.stringify({ type: 'caption', status: 'partial', text: 'Hello' }),
+  });
+  activeWs.onmessage({
+    data: JSON.stringify({ type: 'caption', status: 'final', text: 'Hello everyone.' }),
+  });
+  assert(linesBox.children.length === 1, 'finalized caption replaces partial with 1 line');
+  assert(linesBox.children[0].textContent === 'Hello everyone.', 'final caption text committed');
+}
+
+// Test 6: handles translated_caption messages for translated booths
+{
+  const { activeWs, linesBox } = runOverlay({ boothId: 'pycon-1-es' }, '');
+  activeWs.onmessage({
+    data: JSON.stringify({
+      type: 'translated_caption',
+      status: 'final',
+      text: 'Bienvenidos a todos.',
+    }),
+  });
+  assert(linesBox.children.length === 1, 'translated_caption updates display');
+  assert(linesBox.children[0].textContent === 'Bienvenidos a todos.', 'translated_caption text matches');
+}
+
+// Test 7: multiple incoming captions update visible lines and style older lines
+{
+  const { activeWs, linesBox } = runOverlay({ boothId: 'pycon-1-es' }, '');
+  activeWs.onmessage({
+    data: JSON.stringify({
+      type: 'translated_caption',
+      status: 'final',
+      text: 'Primera frase.',
+    }),
+  });
+  activeWs.onmessage({
+    data: JSON.stringify({
+      type: 'translated_caption',
+      status: 'final',
+      text: 'Segunda frase.',
+    }),
+  });
+
+  assert(linesBox.children.length === 2, '2 lines displayed for consecutive captions');
+  assert(linesBox.children[0].textContent === 'Primera frase.', 'first line is older');
+  assert(linesBox.children[0].classList.contains('overlay-line--older'), 'older line has older class');
+  assert(linesBox.children[1].textContent === 'Segunda frase.', 'second line is newest');
+  assert(!linesBox.children[1].classList.contains('overlay-line--older'), 'newest line has no older class');
+}
+
+// Test 8: line limit (default 2) caps displayed lines to the newest ones
+{
+  const { activeWs, linesBox } = runOverlay({ boothId: 'pycon-1-en' }, '?lines=2');
+  activeWs.onmessage({
+    data: JSON.stringify({ type: 'caption', status: 'final', text: 'Line 1' }),
+  });
+  activeWs.onmessage({
+    data: JSON.stringify({ type: 'caption', status: 'final', text: 'Line 2' }),
+  });
+  activeWs.onmessage({
+    data: JSON.stringify({ type: 'caption', status: 'final', text: 'Line 3' }),
+  });
+
+  assert(linesBox.children.length === 2, 'line limit restricts visible lines to 2');
+  assert(linesBox.children[0].textContent === 'Line 2', 'oldest within limit is Line 2');
+  assert(linesBox.children[1].textContent === 'Line 3', 'newest line is Line 3');
+}
+
+// Test 9: status clear clears active partial caption
+{
+  const { activeWs, linesBox } = runOverlay({ boothId: 'pycon-1-en' }, '');
+  activeWs.onmessage({
+    data: JSON.stringify({ type: 'caption', status: 'partial', text: 'Incomplete thoughts' }),
+  });
+  assert(linesBox.children.length === 1, 'partial line present before clear');
+  activeWs.onmessage({
+    data: JSON.stringify({ type: 'caption', status: 'clear', text: '' }),
+  });
+  assert(linesBox.children.length === 0, 'partial line cleared after clear status');
+}
+
+// Test 10: silence timeout (8s) clears stale captions
+{
+  const { activeWs, linesBox, triggerTimeout, getTimerDelay } = runOverlay({ boothId: 'pycon-1-en' }, '');
+  activeWs.onmessage({
+    data: JSON.stringify({ type: 'caption', status: 'final', text: 'Will disappear soon' }),
+  });
+  assert(linesBox.children.length === 1, 'caption visible initially');
+  assert(getTimerDelay() === 8000, 'idle clear timer set to 8000ms');
+
+  triggerTimeout();
+  assert(linesBox.children.length === 0, 'captions cleared after idle timeout');
+}
+
 console.log(`\n${passed} passed, ${failed} failed\n`);
 if (failed > 0) process.exit(1);
-
