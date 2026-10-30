@@ -40,29 +40,71 @@ class WebhookResponse(BaseModel):
     secret_key: str | None = None
 
 
-def validate_ssrf(url: str) -> None:
+_CLOUD_METADATA_ADDRS = {
+    ipaddress.ip_address("169.254.169.254"),
+    ipaddress.ip_address("fd00:ec2::254"),
+    ipaddress.ip_address("100.100.100.200"),
+}
+
+
+def _is_forbidden_ip(ip_obj: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    if isinstance(ip_obj, ipaddress.IPv6Address) and ip_obj.ipv4_mapped is not None:
+        ip_obj = ip_obj.ipv4_mapped
+    return (
+        not ip_obj.is_global
+        or ip_obj.is_private or ip_obj.is_loopback or ip_obj.is_link_local
+        or ip_obj.is_multicast or ip_obj.is_reserved or ip_obj in _CLOUD_METADATA_ADDRS
+    )
+
+
+def resolve_and_validate_url(url: str) -> list[tuple[str, int]]:
+    """Resolve hostname to all addresses and reject any that point to internal networks.
+
+    Returns a list of (ip_string, port) pairs safe to connect to.
+    Raises ValueError on any violation.
+    """
     import os
 
+    parsed = urllib.parse.urlparse(url)
+
     if os.getenv("ENVIRONMENT") == "development":
-        if "localhost" in url or "127.0.0.1" in url:
-            return
+        if parsed.scheme in ("http", "https") and parsed.hostname in ("localhost", "127.0.0.1", "::1"):
+            port = parsed.port or (443 if parsed.scheme == "https" else 80)
+            return [(parsed.hostname, port)]
+
+    if parsed.scheme != "https":
+        raise ValueError("Webhook URLs must use HTTPS.")
+
+    hostname = parsed.hostname
+    if not hostname:
+        raise ValueError("Invalid hostname.")
+
+    port = parsed.port or 443
 
     try:
-        parsed = urllib.parse.urlparse(url)
-        if parsed.scheme != "https":
-            raise ValueError("Webhook URLs must use HTTPS.")
+        addr_infos = socket.getaddrinfo(hostname, port, proto=socket.IPPROTO_TCP)
+    except socket.gaierror as exc:
+        raise ValueError(f"DNS resolution failed for {hostname}: {exc}") from exc
 
-        hostname = parsed.hostname
-        if not hostname:
-            raise ValueError("Invalid hostname.")
+    if not addr_infos:
+        raise ValueError(f"No addresses found for {hostname}.")
 
-        ip = socket.gethostbyname(hostname)
-        ip_obj = ipaddress.ip_address(ip)
+    safe_addrs: list[tuple[str, int]] = []
+    for family, _type, _proto, _canonname, sockaddr in addr_infos:
+        ip_str = sockaddr[0]
+        ip_obj = ipaddress.ip_address(ip_str)
+        if _is_forbidden_ip(ip_obj):
+            raise ValueError(f"Webhook URL resolves to a forbidden address ({ip_str}).")
+        safe_addrs.append((ip_str, sockaddr[1]))
 
-        if ip_obj.is_private or ip_obj.is_loopback or ip_obj.is_link_local or ip_obj.is_multicast:
-            raise ValueError(f"Webhook URL resolves to a forbidden internal IP address ({ip}).")
-    except Exception as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid webhook URL: {str(e)}")
+    return safe_addrs
+
+
+def validate_ssrf(url: str) -> None:
+    try:
+        resolve_and_validate_url(url)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid webhook URL: {e}") from e
 
 
 @router.post("", response_model=WebhookResponse, status_code=status.HTTP_201_CREATED)
