@@ -53,6 +53,10 @@ if (card && frame) {
     }
   }
 
+  // A slider moved while the iframe navigates can post to the old document;
+  // resend the current appearance once the new one has loaded.
+  frame.addEventListener("load", () => update());
+
   function fitPreview() {
     frame.style.transform = `scale(${preview.clientWidth / 1920})`;
   }

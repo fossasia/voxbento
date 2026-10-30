@@ -208,8 +208,6 @@ async def subtitle_overlay(
     request: Request, event_slug: str, room_id: int, language_code: str, code: str | None = None
 ) -> Any:
     """Transparent caption layer for OBS / vMix browser sources, gated by the listener join code."""
-    from portal.booth_identity import make_booth_id
-
     async with get_session() as session:
         ev = await get_event_by_slug(session, event_slug)
         if not ev:
@@ -224,11 +222,10 @@ async def subtitle_overlay(
         room = await get_room_by_id(session, room_id)
         if room is None or room.event_id != ev.id:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Room not found")
-
-    try:
-        booth_id = make_booth_id(ev.slug, room_id, language_code)
-    except ValueError:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown caption channel")
+        # Only real caption channels: an existing booth, or the floor when it is transcribed.
+        if language_code.lower() == "floor" and not room.floor_transcription_enabled:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Floor transcription is off")
+        booth_id, _ = await _resolve_embed_channel(session, ev, event_slug, room_id, language_code)
 
     return templates.TemplateResponse(
         request=request,

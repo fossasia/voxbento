@@ -1548,11 +1548,15 @@ class TestRoomCRUD:
             ok = await c.get(f"{path}?code=ROOM42&fontSize=48&position=top")
             bad_room = await c.get(f"/overlay/{event.slug}/999999/{booth.language_code}?code=ROOM42")
             bad_lang = await c.get(f"/overlay/{event.slug}/{room.id}/english?code=ROOM42")
+            no_booth = await c.get(f"/overlay/{event.slug}/{room.id}/fr?code=ROOM42")
+            floor_off = await c.get(f"/overlay/{event.slug}/{room.id}/floor?code=ROOM42")
 
         assert missing.status_code == 403
         assert wrong.status_code == 403
         assert bad_room.status_code == 404
         assert bad_lang.status_code == 404
+        assert no_booth.status_code == 404
+        assert floor_off.status_code == 404
         assert ok.status_code == 200
         assert f'data-booth-id="{event.slug}-{room.id}-{booth.language_code}"'.encode() in ok.content
         assert ok.headers["content-security-policy"] == "frame-ancestors 'self'"
