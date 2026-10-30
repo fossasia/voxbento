@@ -244,6 +244,19 @@ For example:
 
 Listeners connected to the caption WebSocket receive transcription segments as they are produced. The caption stream is independent of the audio stream — listeners can receive captions even while audio is playing through WHEP or HLS.
 
+### Subtitles overlay for OBS and vMix
+
+`/overlay/{event_slug}/{room_id}/{language_code}` renders a transparent caption layer for a
+1920×1080 Browser source. It subscribes to the same `/ws/captions/{booth_id}` feed and requires
+the event's listener join code as `?code=`, like the listener page. Appearance is read from the
+query string: `position` (`top`, `center`, `bottom`), `fontSize` (16–96 px), `bg` (background
+opacity 0–100) and `lines` (1–4). Lines clear after eight seconds without captions. The page can
+only be framed by the portal itself (`frame-ancestors 'self'`).
+
+Event owners build the URL in the **Subtitles overlay** card on the event page. Its preview is the
+real overlay in a scaled iframe: appearance changes and **Send test caption** reach it through
+same-origin `postMessage`, so styling works before anyone is broadcasting.
+
 ## Shared header and user menu
 
 Every signed-in page (Admin, My events and its event pages, My booths, Mission

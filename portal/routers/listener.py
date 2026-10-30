@@ -203,6 +203,46 @@ async def listener_room_audio_delay(
         return {"audio_delay_ms": room.audio_delay_ms}
 
 
+@router.get("/overlay/{event_slug}/{room_id}/{language_code}")
+async def subtitle_overlay(
+    request: Request, event_slug: str, room_id: int, language_code: str, code: str | None = None
+) -> Any:
+    """Transparent caption layer for OBS / vMix browser sources, gated by the listener join code."""
+    from portal.booth_identity import make_booth_id
+
+    async with get_session() as session:
+        ev = await get_event_by_slug(session, event_slug)
+        if not ev:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event not found")
+        if not has_listener_access(request, event_slug, ev.listener_join_code, code):
+            if _submitted_code(request, event_slug, code) and _register_failed_attempt(_client_ip(request)):
+                raise HTTPException(
+                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                    detail="Too many join attempts. Please try again later.",
+                )
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Listener access required")
+        room = await get_room_by_id(session, room_id)
+        if room is None or room.event_id != ev.id:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Room not found")
+
+    try:
+        booth_id = make_booth_id(ev.slug, room_id, language_code)
+    except ValueError:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Unknown caption channel")
+
+    return templates.TemplateResponse(
+        request=request,
+        name="overlay.html",
+        context={"event": ev, "booth_id": booth_id},
+        headers={
+            "Cache-Control": "no-store, private",
+            "Referrer-Policy": "no-referrer",
+            # The workspace previews the overlay in an iframe; nothing else should frame it.
+            "Content-Security-Policy": "frame-ancestors 'self'",
+        },
+    )
+
+
 def _verify_embed_token(token: str, event_slug: str) -> None:
     """Validate the embed token and its listener/embed claims for ``event_slug``.
 

@@ -43,6 +43,7 @@ and `docs/registration-protection.md`. Other routes are unaffected.
 | GET | `/interpreter/{event_slug}/{language_code}` | session or user | `interpreter_booth.html` | **Preferred URL**; resolves Jitsi URL, relay WHEP, mediamtx path |
 | GET | `/interpreter/{booth_id}` | session or user | `interpreter_booth.html` | Legacy free-form booth ID; no event scope |
 | GET | `/listener/{event_slug}` | session or user | `listener-event.html` | Lists rooms/booths for event with WHEP URLs |
+| GET | `/overlay/{event_slug}/{room_id}/{language_code}` | join code or user | `overlay.html` | Transparent OBS/vMix subtitle layer on `/ws/captions/{booth_id}` |
 
 ---
 

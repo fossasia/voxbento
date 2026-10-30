@@ -81,6 +81,64 @@
   {% endif %}
 </div>
 
+<!-- Subtitles overlay -->
+<div class="section-card section-card--spaced" id="subtitle-overlay-builder"
+     data-event-slug="{{ event.slug }}" data-join-code="{{ event.listener_join_code or '' }}">
+  <div class="section-header">
+    <h2>Subtitles overlay</h2>
+  </div>
+  <p class="muted hint--spaced">Transparent caption layer for OBS or vMix. Add the URL below as a Browser source at 1920&times;1080.</p>
+  {% if event.listener_join_code and (booths or rooms | selectattr('floor_transcription_enabled') | list) %}
+  <div class="overlay-preview" id="overlay-preview">
+    <iframe id="overlay-preview-frame" title="Subtitles overlay preview" tabindex="-1"></iframe>
+  </div>
+  <div class="overlay-preview-actions">
+    <span class="muted">Live captions appear while broadcasting. Send a test caption to style the overlay any time.</span>
+    <button type="button" class="btn btn-sm btn-outline" id="overlay-test">Send test caption</button>
+  </div>
+  <div class="overlay-controls">
+    <label class="overlay-control">
+      <span>Language</span>
+      <select id="overlay-channel">
+        {% for bs in booths %}
+        <option value="{{ bs.db.room_id }}/{{ bs.db.language_code }}">{{ bs.db.room.display_name }} · {{ bs.db.language_name }}</option>
+        {% endfor %}
+        {% for room in rooms if room.floor_transcription_enabled %}
+        <option value="{{ room.id }}/floor">{{ room.display_name }} · Floor (original)</option>
+        {% endfor %}
+      </select>
+    </label>
+    <fieldset class="overlay-control overlay-position">
+      <legend>Position</legend>
+      <label><input type="radio" name="overlay-position" value="top" /> Top</label>
+      <label><input type="radio" name="overlay-position" value="center" /> Center</label>
+      <label><input type="radio" name="overlay-position" value="bottom" checked /> Bottom</label>
+    </fieldset>
+    <label class="overlay-control">
+      <span>Font size · <output id="overlay-font-size-value">36</output>px</span>
+      <input type="range" id="overlay-font-size" min="16" max="96" step="2" value="36" />
+    </label>
+    <label class="overlay-control">
+      <span>Background · <output id="overlay-bg-value">70</output>%</span>
+      <input type="range" id="overlay-bg" min="0" max="100" step="5" value="70" />
+    </label>
+    <label class="overlay-control">
+      <span>Lines · <output id="overlay-lines-value">2</output></span>
+      <input type="range" id="overlay-lines" min="1" max="4" step="1" value="2" />
+    </label>
+  </div>
+  <div class="copy-field">
+    <input type="text" readonly aria-label="Subtitles overlay URL" id="overlay-url" />
+    <button type="button" class="btn btn-sm btn-copy" data-copy-target="overlay-url">Copy URL</button>
+  </div>
+  {% elif not event.listener_join_code %}
+  <p class="muted">Generate a listener join code first. The overlay URL uses it to read captions.</p>
+  {% else %}
+  <p class="muted">Add an interpreter booth or turn on floor transcription in a room to get a caption channel.</p>
+  {% endif %}
+</div>
+<script type="module" src="{{ url_for('static', path='js/overlay-builder.js') }}?v={{ asset_version }}"></script>
+
 <!-- API & Integrations-->
 <div class="section-card section-card--spaced" id="api-keys-section" data-event-id="{{ event.id }}">
   <div class="section-header">

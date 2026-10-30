@@ -1531,6 +1531,53 @@ class TestRoomCRUD:
         assert resp.json() == {"audio_delay_ms": 2000}
 
     @pytest.mark.anyio
+    async def test_subtitle_overlay_requires_join_code(self, seed_event):
+        event, room, booth = seed_event
+
+        from portal.database import get_session
+
+        async with get_session() as s:
+            db_event = await s.get(type(event), event.id)
+            assert db_event is not None
+            db_event.listener_join_code = "ROOM42"
+
+        path = f"/overlay/{event.slug}/{room.id}/{booth.language_code}"
+        async with _client() as c:
+            missing = await c.get(path)
+            wrong = await c.get(f"{path}?code=NOPE")
+            ok = await c.get(f"{path}?code=ROOM42&fontSize=48&position=top")
+            bad_room = await c.get(f"/overlay/{event.slug}/999999/{booth.language_code}?code=ROOM42")
+            bad_lang = await c.get(f"/overlay/{event.slug}/{room.id}/english?code=ROOM42")
+
+        assert missing.status_code == 403
+        assert wrong.status_code == 403
+        assert bad_room.status_code == 404
+        assert bad_lang.status_code == 404
+        assert ok.status_code == 200
+        assert f'data-booth-id="{event.slug}-{room.id}-{booth.language_code}"'.encode() in ok.content
+        assert ok.headers["content-security-policy"] == "frame-ancestors 'self'"
+        assert ok.headers["cache-control"] == "no-store, private"
+
+    @pytest.mark.anyio
+    async def test_event_detail_shows_subtitle_overlay_builder(self, admin_cookie, seed_event):
+        event, room, booth = seed_event
+
+        from portal.database import get_session
+
+        async with get_session() as s:
+            db_event = await s.get(type(event), event.id)
+            assert db_event is not None
+            db_event.listener_join_code = "ROOM42"
+
+        async with _client() as c:
+            resp = await c.get(f"/admin/events/{event.id}/", cookies=admin_cookie)
+
+        assert resp.status_code == 200
+        assert b'id="subtitle-overlay-builder"' in resp.content
+        assert f'value="{room.id}/{booth.language_code}"'.encode() in resp.content
+        assert b"js/overlay-builder.js" in resp.content
+
+    @pytest.mark.anyio
     async def test_delete_room(self, admin_cookie, seed_event):
         event, room, _ = seed_event
         async with _client() as c:
