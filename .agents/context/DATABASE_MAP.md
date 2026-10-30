@@ -127,6 +127,7 @@ Properties: `is_expired` (compares UTC), `is_used` (used_at is not None).
 | `password_hash` | String(200) | bcrypt via `portal.auth.hash_password` |
 | `is_active` | Boolean | Default True; deactivated users cannot login |
 | `is_admin` | Boolean | Default False; grants full admin panel access |
+| `last_sign_in_at` | DateTime(tz) nullable | UTC; most recent qualifying sign-in, or unset if not recorded since tracking began |
 | `created_at` | DateTime(tz) | UTC |
 
 ---
@@ -248,6 +249,14 @@ Tracks which languages the translation worker should generate for a given room o
 | 029 | `029_add_can_host_to_users.py` | `users.can_host`, `users.hosting_requested_at`, `hosting_invitations` table |
 | 030 | `030_hosting_requests.py` | `hosting_requests` table with partial unique index for open requests |
 | 031 | `031_add_ai_interpretation_settings.py` | `rooms.floor_ai_interpreter_persona`, `rooms.floor_ai_interpretation_style`, `rooms.floor_ai_vocabulary_enabled`, `ai_vocabulary_entries` table |
+| 032 | `032_remove_support_role.py` | Removes the obsolete support role |
+| 033 | `033_add_index_booths_event_id.py` | Index on `booths.event_id` |
+| 034 | `034_email_notifications.py` | Transactional email templates, settings, revisions, and delivery outbox |
+| 035 | `035_per_language_voice.py` | `room_translation_languages.tts_enabled` |
+| 036 | `036_add_sessions_valid_after_to_users.py` | `users.sessions_valid_after` |
+| 037 | `037_add_revoked_at_to_invite_tokens.py` | `invite_tokens.revoked_at` |
+| 038 | `038_add_public_id_to_invite_tokens.py` | `invite_tokens.public_id` |
+| 039 | `039_add_last_sign_in_at_to_users.py` | Nullable `users.last_sign_in_at` |
 
 Run migrations: `uv run alembic upgrade head`
 
