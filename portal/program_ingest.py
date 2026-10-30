@@ -698,7 +698,7 @@ async def reconcile_processing(
     if current.worker_config and current.worker_config != config:
         if not await stop_room_worker(current, booth_id, room.id):
             return
-    await start_transcription_worker(
+    started = await start_transcription_worker(
         event_slug=event.slug,
         language_code="floor",
         booth_id=booth_id,
@@ -708,9 +708,10 @@ async def reconcile_processing(
         config=ProviderConfig(api_key=api_key),
         transcription_language=room.floor_language_code,
         room_id=room.id,
+        restart_on_key_change=True,
     )
     current.worker_config = config
-    if current.worker_started_at is None:
+    if started is True or current.worker_started_at is None:
         current.worker_started_at = now
     last_audio = audio_progress.get(booth_id)
     if now - (last_audio or current.worker_started_at) > settings.program_ingest_stall_secs:

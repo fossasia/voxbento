@@ -336,6 +336,7 @@ async def _recover(room: Room, event: Event, current: AgentHealth, now: float, f
 async def reconcile_room(
     room: Room, event: Event, agent: dict | None, path: MediaPath | None, media_known: bool = True
 ) -> None:
+    """Converge the meeting agent and floor worker on the room's current settings."""
     current = health.setdefault(room.id, AgentHealth())
     booth_id = make_booth_id(event.slug, room.id, "floor")
     now = monotonic()
@@ -402,22 +403,26 @@ async def reconcile_room(
         current.state, current.reason = "degraded", problem
         return
     current.state, current.reason = "receiving", "Meeting audio received; starting transcription."
+    api_key = get_api_key(event, ProviderEnum(room.floor_transcription_provider))
     config = (room.floor_transcription_provider, room.floor_transcription_model, room.floor_language_code)
     if current.worker_config and current.worker_config != config:
         await _stop_worker(current, booth_id)
-    await start_transcription_worker(
+    started = await start_transcription_worker(
         event_slug=event.slug,
         language_code="floor",
         booth_id=booth_id,
         broadcast_callback=broadcast_transcription,
         provider=room.floor_transcription_provider,
         model_size=room.floor_transcription_model,
-        config=ProviderConfig(api_key=get_api_key(event, ProviderEnum(room.floor_transcription_provider))),
+        config=ProviderConfig(api_key=api_key),
         transcription_language=room.floor_language_code,
         room_id=room.id,
+        restart_on_key_change=True,
     )
     current.worker_config = config
-    if current.worker_started_at is None:
+    if started is True:
+        current.healthy_since = None
+    if started is True or current.worker_started_at is None:
         current.worker_started_at = now
     last_audio = audio_progress.get(booth_id)
     if now - (last_audio or current.worker_started_at) > settings.program_ingest_stall_secs:

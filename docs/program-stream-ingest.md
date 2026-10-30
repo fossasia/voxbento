@@ -148,6 +148,9 @@ the first. Reconnects may wait for the **15-second disconnect grace** plus one p
 before their old reservation is released. Configure with
 `PROGRAM_INGEST_DISCONNECT_GRACE_SECS`.
 
+Replacing the event's speech-provider API key restarts affected floor processing
+on the next reconciliation pass. Saving the same key again keeps the worker running.
+
 States: disabled, waiting, receiving (audio decoder starting), processing (PCM
 progress observed), degraded (no supported audio, stalled decoder, missing STT
 configuration, capacity/control failure), disconnected. Decoder/no-progress
