@@ -344,6 +344,9 @@ VoxBento logo served by the site). No row means the defaults.
 
 Migration 036 adds nullable `users.sessions_valid_after`; Admin demotion and
 account deactivation advance it so existing booth sockets can be evicted.
+Password recovery advances it in the password/reset-token transaction and
+invalidates outstanding magic links. `redeem_auth_token` conditionally updates
+only unused, unexpired tokens, preventing two requests from redeeming one token.
 SQLite returns this value without timezone information; comparisons treat those
 values as UTC. Migration 037 adds nullable `invite_tokens.revoked_at`.
 Migration 038 adds a unique, non-null `invite_tokens.public_id`, backfilling

@@ -301,6 +301,12 @@ Update documentation in the same PR when the change affects what it describes:
 Do not add unrelated documentation edits just to satisfy a checklist, and do not
 append feature summaries to the README or agent guide for every PR.
 
+Password reset invalidates earlier account sessions using `users.sessions_valid_after`
+in the password/reset-token transaction. HTTP authorization and booth role resolution
+must enforce that cutoff against JWT issuance time; reconnecting never refreshes it.
+TTS checks current account authorization at connect and before every bundle, including
+revocation of existing subscriptions. Keep independent listener and invite access scoped.
+
 Password sign-in requires `User.email_verified`; everyone, admins included, signs in
 at `/login` (`login` rate-limit bucket, 10 attempts per normalized email per hour).
 `/admin/login` only redirects to `/login?next=/admin/`.

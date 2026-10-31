@@ -11,7 +11,7 @@ import jwt
 from fastapi import APIRouter, HTTPException, Query, Request, status
 from fastapi.templating import Jinja2Templates
 
-from portal.auth import decode_token, get_booth_session, is_listener_token
+from portal.auth import decode_token, get_current_user, is_listener_token
 from portal.config import settings
 from portal.database import (
     get_event_by_slug,
@@ -66,9 +66,10 @@ def _submitted_code(request: Request, event_slug: str, code: str | None) -> str 
     return code or request.cookies.get(f"listener_code_{event_slug}")
 
 
-def has_listener_access(request: Request, event_slug: str, listener_join_code: str | None, code: str | None) -> bool:
-    payload = get_booth_session(request)
-    if payload and payload.get("user"):
+async def has_listener_access(
+    request: Request, event_slug: str, listener_join_code: str | None, code: str | None
+) -> bool:
+    if await get_current_user(request) is not None:
         return True
 
     active_code = _submitted_code(request, event_slug, code)
@@ -86,7 +87,7 @@ async def listen_event_page(request: Request, event_slug: str, code: str | None 
         if not ev:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event not found")
 
-        if not has_listener_access(request, event_slug, ev.listener_join_code, code):
+        if not await has_listener_access(request, event_slug, ev.listener_join_code, code):
             if _submitted_code(request, event_slug, code) and _register_failed_attempt(_client_ip(request)):
                 raise HTTPException(
                     status_code=status.HTTP_429_TOO_MANY_REQUESTS,
@@ -190,7 +191,7 @@ async def listener_room_audio_delay(
         ev = await get_event_by_slug(session, event_slug)
         if not ev:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event not found")
-        if not has_listener_access(request, event_slug, ev.listener_join_code, code):
+        if not await has_listener_access(request, event_slug, ev.listener_join_code, code):
             if _submitted_code(request, event_slug, code) and _register_failed_attempt(_client_ip(request)):
                 raise HTTPException(
                     status_code=status.HTTP_429_TOO_MANY_REQUESTS,
