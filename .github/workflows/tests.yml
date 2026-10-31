@@ -258,6 +258,7 @@ jobs:
           node --check portal/static/js/booth-reconnect.js
           node --check portal/static/js/whep-listener.js
           node --check portal/static/js/admin.js
+          node --check portal/static/js/booth-detail.js
           node --check portal/static/js/overlay-builder.js
           node --check portal/static/js/subtitle-overlay.js
           node --check .github/scripts/jules-review.mjs
@@ -273,6 +274,7 @@ jobs:
           node tests/test_booth_reconnect.mjs
           node tests/test_booth_socket.mjs
           node tests/test_room_ai.mjs
+          node tests/test_lang_picker.mjs
 
       - name: Run unit tests
         run: uv run pytest tests/ -v

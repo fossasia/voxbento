@@ -10,7 +10,9 @@ Covers:
 
 from __future__ import annotations
 
+import json
 import os
+import re
 
 os.environ["BOOTH_ACCESS_TOKEN"] = ""
 
@@ -2071,6 +2073,24 @@ class TestBoothCRUD:
         assert resp.status_code == 200
         assert b"English" in resp.content
         assert b"whep" in resp.content.lower()
+
+    @pytest.mark.anyio
+    async def test_booth_detail_has_no_inline_script(self, admin_cookie, seed_event):
+        """The pickers live in booth-detail.js; the page only ships their data (#1081)."""
+        event, room, booth = seed_event
+        async with _client() as c:
+            resp = await c.get(
+                f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/",
+                cookies=admin_cookie,
+            )
+        assert resp.status_code == 200
+        assert "<script>" not in resp.text
+        assert "js/booth-detail.js" in resp.text
+        config = re.search(r'<script type="application/json" id="booth-detail-config">(.*?)</script>', resp.text, re.S)
+        assert config is not None
+        data = json.loads(config.group(1))
+        assert {"code": "de", "name": "German"} in data["languages"]
+        assert data["selected_codes"] == []
 
     @pytest.mark.anyio
     async def test_booth_detail_shows_whep_url(self, admin_cookie, seed_event):
