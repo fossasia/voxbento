@@ -21,6 +21,8 @@ from portal.database import (
     list_rooms_for_event,
 )
 from portal.globals import _JS_CACHE_BUST, asset_version_context
+from portal.models import Room
+from portal.program_ingest import has_valid_credential
 from portal.utils import _ensure_mediamtx_path
 
 # Allowlists for embed theming params — no free-text values accepted.
@@ -64,6 +66,19 @@ def _client_ip(request: Request) -> str:
 def _submitted_code(request: Request, event_slug: str, code: str | None) -> str | None:
     """The join code this request submits, from the query parameter or the stored cookie."""
     return code or request.cookies.get(f"listener_code_{event_slug}")
+
+
+def _has_floor_audio_source(room: Room) -> bool:
+    """Return whether a room has an available or configured floor audio source."""
+    if not room.floor_source or room.floor_source == "none":
+        return False
+    if room.floor_source == "program_ingest":
+        if not settings.program_ingest_enabled:
+            return False
+        return bool(has_valid_credential(room) or (room.program_session_id and not room.program_disconnected_at))
+    if room.floor_source == "jitsi_bot":
+        return bool(room.meeting_agent_enabled)
+    return False
 
 
 def has_listener_access(request: Request, event_slug: str, listener_join_code: str | None, code: str | None) -> bool:
@@ -140,7 +155,7 @@ async def listen_event_page(request: Request, event_slug: str, code: str | None 
             }
         )
 
-        if r.floor_transcription_enabled:
+        if _has_floor_audio_source(r):
             from portal.booth_identity import make_mediamtx_path
 
             channel_id = make_mediamtx_path(ev.slug, r.id, "floor")
