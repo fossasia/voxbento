@@ -210,6 +210,7 @@ class TestListenerRoutes:
                 language_code="es",
                 language_name="Spanish",
             )
+            await s.commit()
 
         async with _client() as c:
             resp = await c.get(f"/listener/{event.slug}?code=ROOM42")
@@ -238,6 +239,7 @@ class TestListenerRoutes:
             db_room.meeting_agent_enabled = True
             db_room.jitsi_url = "https://meet.jit.si/test-room"
             db_room.floor_transcription_enabled = True
+            await s.commit()
 
         async with _client() as c:
             resp = await c.get(f"/listener/{event.slug}?code=ROOM42")
@@ -265,6 +267,7 @@ class TestListenerRoutes:
             db_room.jitsi_url = None
             db_room.meeting_agent_enabled = False
             db_room.floor_transcription_enabled = False
+            await s.commit()
 
         async with _client() as c:
             resp = await c.get(f"/listener/{event.slug}?code=ROOM42")
@@ -292,6 +295,7 @@ class TestListenerRoutes:
             db_room.meeting_agent_enabled = False
             db_room.jitsi_url = "https://meet.jit.si/test-room"
             db_room.floor_transcription_enabled = False
+            await s.commit()
 
         async with _client() as c:
             resp = await c.get(f"/listener/{event.slug}?code=ROOM42")
@@ -323,6 +327,7 @@ class TestListenerRoutes:
             db_room.program_key_hash = "a" * 64
             db_room.program_key_expires_at = datetime.now(timezone.utc) + timedelta(hours=1)
             db_room.floor_transcription_enabled = False
+            await s.commit()
 
         async with _client() as c:
             resp = await c.get(f"/listener/{event.slug}?code=ROOM42")
@@ -354,6 +359,7 @@ class TestListenerRoutes:
             db_room.program_session_secret_hash = None
             db_room.program_session_id = None
             db_room.floor_transcription_enabled = False
+            await s.commit()
 
         async with _client() as c:
             resp = await c.get(f"/listener/{event.slug}?code=ROOM42")
@@ -388,6 +394,7 @@ class TestListenerRoutes:
             db_room.program_key_hash = "a" * 64
             db_room.program_key_expires_at = datetime.now(timezone.utc) + timedelta(hours=1)
             db_room.floor_transcription_enabled = False
+            await s.commit()
 
         async with _client() as c:
             resp = await c.get(f"/listener/{event.slug}?code=ROOM42")
@@ -427,6 +434,7 @@ class TestListenerRoutes:
             db_room.program_session_secret_expires_at = datetime.now(timezone.utc) - timedelta(minutes=2)
             db_room.program_key_hash = None
             db_room.floor_transcription_enabled = False
+            await s.commit()
 
         async with _client() as c:
             resp = await c.get(f"/listener/{event.slug}?code=ROOM42")
