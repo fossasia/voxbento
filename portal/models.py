@@ -114,7 +114,7 @@ class Event(Base):
 
 class Room(Base):
     __tablename__ = "rooms"
-    __table_args__ = (UniqueConstraint("event_id", "eventyay_room_id", name="uq_room_event_eventyay_id"),)
+    __table_args__ = (Index("uq_room_event_eventyay_id", "event_id", "eventyay_room_id", unique=True),)
 
     id: Mapped[int] = mapped_column(primary_key=True)
     event_id: Mapped[int] = mapped_column(ForeignKey("events.id", ondelete="CASCADE"))
