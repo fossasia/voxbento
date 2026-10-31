@@ -39,6 +39,8 @@ Interpreters monitor the floor session and broadcast high-fidelity translation d
 
 - **🎙️ Browser-First Interpreter Booth:** Zero software installation. Interpreters join, test microphones, go live, and coordinate shift handoffs smoothly via WebRTC (WHIP).
 - **⚡ Sub-Second Listener Playback:** Attendees receive ultra-low latency audio via WebRTC (WHEP) powered by MediaMTX, scaling effortlessly to thousands of listeners.
+
+  Stop and source changes cancel pending WHEP negotiation; stalled requests retry after 15 seconds. Delayed audio uses the same Pause, mute and volume controls as direct audio, including during reconnects.
 - **🤖 Live AI Transcription & Translation:** Multi-provider speech-to-text (Faster-Whisper, OpenAI, Deepgram, NVIDIA Parakeet, ElevenLabs) paired with real-time LLM translations guided by custom personas, styles, and domain vocabulary glossaries.
 - **🗣️ Direct-Push Text-to-Speech (TTS):** Synthesize live translated speech on the fly (Deepgram Aura or self-hosted Supertonic ONNX), streamed directly to attendees over binary WebSocket frames.
 - **📡 Program Stream Ingest & YouTube Relay:** Send conference floor audio from an encoder or browser, with optional RTMPS forwarding to YouTube.
@@ -164,8 +166,6 @@ Once running, access the application at **`http://localhost:8000`**.
 
 For event and room setup, see the [events and rooms guide](website/docs/admin/events-and-rooms.mdx).
 For pipeline details and advanced configuration, see [how it works](website/docs/how-it-works.mdx).
-
-Listener playback cancels pending WHEP negotiation when you stop or change sources and retries requests that stall for 15 seconds. Delayed audio uses the same player controls as direct audio, so Pause, mute and volume still apply, including during reconnects.
 
 ---
 
