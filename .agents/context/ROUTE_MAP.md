@@ -43,6 +43,8 @@ and `docs/registration-protection.md`. Other routes are unaffected.
 | GET | `/interpreter/{event_slug}/{language_code}` | session or user | `interpreter_booth.html` | **Preferred URL**; resolves Jitsi URL, relay WHEP, mediamtx path |
 | GET | `/interpreter/{booth_id}` | session or user | `interpreter_booth.html` | Legacy free-form booth ID; no event scope |
 | GET | `/listener/{event_slug}` | session or user | `listener-event.html` | Lists rooms/booths for event with WHEP URLs |
+| GET | `/overlay/{event_slug}/{room_id}/{language_code}` | join code or active user | `overlay.html` | Transparent OBS/vMix subtitle layer; booths, floor, and translation-only channels |
+| GET | `/overlay/{event_slug}/{room_id}/{language_code}/session` | join code or active user | JSON | Revalidates access/channel and issues a fresh caption token; no-store |
 
 ---
 
@@ -67,7 +69,7 @@ and `docs/registration-protection.md`. Other routes are unaffected.
 | Path | Auth | Protocol |
 |---|---|---|
 | `/ws/booth/{booth_id}` | optional JWT via `?token=` + cookies (`session_token` or `user_token`) | See WebSocket Protocol in `REPOSITORY_CONTEXT.md` |
-| `/ws/captions/{booth_id}` | optional JWT via `?token=` (always validated); cookies (`session_token` or `user_token`) required when `BOOTH_ACCESS_TOKEN` is set, otherwise open | Receives `booth:state` (listener-safe live/lock status, sent on connect and on change), `caption`, and `translated_caption` messages; listener captions feed. Supports `{event_slug}-{room_id}-{language_code}` (`floor-{room_id}` allowed only in unauthenticated dev) |
+| `/ws/captions/{booth_id}` | optional JWT via `?token=` (always validated); listener token, join code (cookie or `?code=`), or user session required when event has `listener_join_code`; events without a join code retain public caption access with an anonymous connection cap | Receives `booth:state` (listener-safe live/lock status, sent on connect and on change), `caption`, and `translated_caption` messages; listener captions feed. Supports `{event_slug}-{room_id}-{language_code}` (`floor-{room_id}` allowed only in unauthenticated dev) |
 | `/ws/tts/{room_id}/{language_code}/{booth_id}` | pre-authorized (JWT query param, session token, or listener join code cookie) | Receives framed binary bundle messages (1-byte version `0x01`, 4-byte big-endian header length `L`, `L`-byte UTF-8 JSON header, optional 24 kHz 16-bit mono PCM payload) |
 
 ---

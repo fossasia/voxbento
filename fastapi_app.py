@@ -5,7 +5,7 @@ import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, Request
+from fastapi import Depends, FastAPI, Request, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.openapi.docs import get_swagger_ui_html
@@ -14,13 +14,14 @@ from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.exceptions import HTTPException as StarletteHTTPException
+from unilimit.integrations.fastapi import RateLimitExceeded, setup
 
 from portal import meeting_source, program_ingest
 from portal.auth import require_owner_or_coordinator
 from portal.config import settings
 from portal.exceptions import RedirectRequired
 from portal.globals import asset_version_context
-from portal.rate_limit import auth_rate_limiter, token_rate_limiter
+from portal.rate_limit import auth_rate_limiter, login_limiter, token_rate_limiter
 from portal.routers.admin import router as admin_router
 from portal.routers.api import router as api_router
 from portal.routers.api_v1 import router as api_v1_router
@@ -136,7 +137,7 @@ class _UvicornTokenRedactor(logging.Filter):
 
         lowered = message.casefold()
         if self._TOKEN_RE.search(message) and any(
-            x in lowered for x in ["/api/", "/embed/", "/ws/", "/oauth/", "/internal/"]
+            x in lowered for x in ["/api/", "/embed/", "/overlay/", "/ws/", "/oauth/", "/internal/"]
         ):
             if isinstance(record.msg, str):
                 record.msg = self._TOKEN_RE.sub(r"\1[REDACTED]", record.msg)
@@ -150,6 +151,7 @@ class _UvicornTokenRedactor(logging.Filter):
 
 app = FastAPI(title="Voxbento", version="1.0.0", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
 app.add_middleware(WorkspaceRoutingMiddleware)
+setup(app, login_limiter)
 
 
 @app.get("/docs", include_in_schema=False)
@@ -252,6 +254,44 @@ async def http_exception_handler(request: Request, exc: StarletteHTTPException):
             status_code=exc.status_code,
         )
     return JSONResponse({"detail": exc.detail}, status_code=exc.status_code, headers=headers)
+
+
+@app.exception_handler(RateLimitExceeded)
+async def unilimit_rate_limit_exceeded_handler(request: Request, exc: RateLimitExceeded):
+    headers = dict(exc.headers) if hasattr(exc, "headers") and exc.headers else {}
+    if request.url.path == "/login":
+        form_data: dict[str, str] = {}
+        try:
+            form = await request.form()
+            email = form.get("email", "")
+            next_url = form.get("next_url", "")
+            form_data = {
+                "email": email.strip().lower() if isinstance(email, str) else "",
+                "next_url": next_url if isinstance(next_url, str) else "",
+            }
+        except Exception as parse_exc:
+            logging.debug("Could not parse login form on rate limit rejection: %s", parse_exc)
+        return templates.TemplateResponse(
+            request=request,
+            name="login.html",
+            context={
+                "error": "Too many attempts. Try again later.",
+                "email": form_data.get("email", ""),
+                "next_url": form_data.get("next_url", ""),
+            },
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            headers=headers,
+        )
+    if "text/html" in request.headers.get("accept", ""):
+        detail_msg = getattr(exc, "detail", "Too Many Requests")
+        return templates.TemplateResponse(
+            request, "429.html", {"request": request, "detail": detail_msg}, status_code=429, headers=headers
+        )
+    return JSONResponse(
+        {"detail": getattr(exc, "detail", "Too Many Requests")},
+        status_code=getattr(exc, "status_code", status.HTTP_429_TOO_MANY_REQUESTS),
+        headers=headers,
+    )
 
 
 @app.exception_handler(Exception)

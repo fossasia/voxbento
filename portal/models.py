@@ -180,6 +180,12 @@ class Room(Base):
         back_populates="room", cascade="all, delete-orphan"
     )
 
+    @property
+    def has_floor_captions(self) -> bool:
+        """Floor transcription is on and has a real provider, so the floor has a caption channel."""
+        provider = (self.floor_transcription_provider or "").strip().lower()
+        return bool(self.floor_transcription_enabled) and provider not in {"", "none"}
+
     def __repr__(self) -> str:
         return f"<Room id={self.id} name={self.display_name!r}>"
 
