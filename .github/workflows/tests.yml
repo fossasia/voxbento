@@ -258,6 +258,8 @@ jobs:
           node --check portal/static/js/booth-reconnect.js
           node --check portal/static/js/whep-listener.js
           node --check portal/static/js/admin.js
+          node --check portal/static/js/overlay-builder.js
+          node --check portal/static/js/subtitle-overlay.js
           node --check .github/scripts/jules-review.mjs
       - name: run node tests
         run: |
@@ -265,6 +267,8 @@ jobs:
           node tests/test_tts_parser.js
           node tests/test_listener_event.js
           node tests/test_whep_listener.js
+          node tests/test_subtitle_overlay.js
+          node --test tests/test_overlay_connection.js
           node tests/test_jules_review.mjs
           node tests/test_booth_reconnect.mjs
           node tests/test_booth_socket.mjs
@@ -272,6 +276,31 @@ jobs:
 
       - name: Run unit tests
         run: uv run pytest tests/ -v
+
+  overlay-browser:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v7
+      - name: Install isolated browser test tooling
+        run: |
+          uv sync --python 3.13 --dev --frozen
+          uv run --with playwright==1.58.0 python -m playwright install --with-deps chromium
+      - name: Verify overlay over real HTTP and WebSockets
+        env:
+          PYTHONPATH: .
+          OVERLAY_ARTIFACT_DIR: overlay-browser-artifacts
+        run: uv run --with playwright==1.58.0 python tests/overlay_browser_smoke.py
+      - name: Upload overlay rehearsal recording and screenshots
+        if: always()
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: overlay-browser-rehearsal
+          path: overlay-browser-artifacts/
+          retention-days: 7
 
   # ── 2. Docker build + full-stack smoke test ──────────────────
   docker-smoke:

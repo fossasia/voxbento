@@ -1,0 +1,18 @@
+<!DOCTYPE html>
+<html lang="{{ language_code if language_code != 'floor' else 'und' }}">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="robots" content="noindex" />
+    <title>{{ event.display_name }} subtitles</title>
+    <link rel="stylesheet" href="{{ url_for('static', path='css/tokens.css') }}?v={{ asset_version }}" />
+    <link rel="stylesheet" href="{{ url_for('static', path='css/fonts.css') }}?v={{ asset_version }}" />
+    <link rel="stylesheet" href="{{ url_for('static', path='css/overlay.css') }}?v={{ asset_version }}" />
+  </head>
+  <body>
+    <main id="overlay" class="overlay overlay--bottom" data-booth-id="{{ booth_id }}" data-token="{{ token or '' }}">
+      <div id="overlay-lines" class="overlay-lines" aria-live="polite"></div>
+    </main>
+    <script type="module" src="{{ url_for('static', path='js/subtitle-overlay.js') }}?v={{ asset_version }}"></script>
+  </body>
+</html>
