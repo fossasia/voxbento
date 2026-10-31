@@ -306,6 +306,7 @@ dependencies = [
     { name = "sqlalchemy", extra = ["asyncio"] },
     { name = "tenacity" },
     { name = "transformers" },
+    { name = "unilimit" },
     { name = "uvicorn", extra = ["standard"] },
     { name = "websockets" },
 ]
@@ -349,6 +350,7 @@ requires-dist = [
     { name = "supertonic", marker = "extra == 'supertonic'", specifier = ">=1.3.0" },
     { name = "tenacity", specifier = ">=9.1.4" },
     { name = "transformers", specifier = ">=4.40.0" },
+    { name = "unilimit", specifier = ">=0.1.0" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.34.0" },
     { name = "websockets", specifier = ">=16.0" },
 ]
@@ -1225,6 +1227,15 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/55/e3/70399cb7dd41c10ac53367ae42139cf4b1ca5f36bb3dc6c9d33acdb43655/typing_inspection-0.4.2.tar.gz", hash = "sha256:ba561c48a67c5958007083d386c3295464928b01faa735ab8547c5692e87f464", size = 75949, upload-time = "2025-10-01T02:14:41.687Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/dc/9b/47798a6c91d8bdb567fe2698fe81e0c6b7cb7ef4d13da4114b41d239f65d/typing_inspection-0.4.2-py3-none-any.whl", hash = "sha256:4ed1cacbdc298c220f1bd249ed5287caa16f34d44ef4e9c3d0cbad5b521545e7", size = 14611, upload-time = "2025-10-01T02:14:40.154Z" },
+]
+
+[[package]]
+name = "unilimit"
+version = "0.1.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/ce/56/38601a2eaea37cef4c3a182612a40f56f3861927d0657bfd007ffb2ae45d/unilimit-0.1.0.tar.gz", hash = "sha256:c780e4a36fc1b91540666c0b45f0dd43044afeacc40831688ca7a816960f3c19", size = 232557, upload-time = "2026-10-30T19:49:54.239Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ad/a5/e502c47606315c77357b205b1c5ef49e3bf11367c1f94a4ef2f1eda2aa00/unilimit-0.1.0-py3-none-any.whl", hash = "sha256:d4ebdf9b83a7e3b011cf7bb9978658be780c574928ea5f7eae978a9d705f36ab", size = 109095, upload-time = "2026-10-30T19:49:52.294Z" },
 ]
 
 [[package]]
