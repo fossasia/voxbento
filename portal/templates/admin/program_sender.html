@@ -18,7 +18,7 @@
     <div>
       <p class='program-ingest-eyebrow'>{{ event.display_name }} · {{ room.display_name }}</p>
       <h3>Program audio sender</h3>
-      <p class='program-ingest-lede'>Leave this tab open on the sound-desk computer. It keeps sending while you use other tabs, reconnects by itself after network drops, and keeps the screen awake.</p>
+      <p class='program-ingest-lede'>Leave this tab open on the sound-desk computer, or on the computer playing the stream in another browser tab. It keeps sending while you use other tabs, reconnects by itself after network drops, and keeps the screen awake.</p>
     </div>
     <span id='sender-state-badge' class='program-state-badge' data-state='idle'>Not sending</span>
   </div>
@@ -32,8 +32,20 @@
   </div>
 
   <div class='program-sender-controls'>
-    <label for='sender-device'>Audio input</label>
-    <select id='sender-device' class='input'></select>
+    <fieldset class='program-sender-source' id='sender-source'>
+      <legend>Audio source</legend>
+      <label><input type='radio' name='sender-source' value='device' checked> Audio input on this computer (sound desk, USB interface)</label>
+      <label><input type='radio' name='sender-source' value='tab'> A browser tab (for example a YouTube stream)</label>
+    </fieldset>
+    <div id='sender-tab-help' class='program-sender-tab-help' hidden>
+      <p>Open the stream in another tab of this browser (Chrome or Edge), then click <strong>Start sending</strong> and pick that tab. Keep <strong>Also share tab audio</strong> ticked. Keep both tabs open; you can use other tabs meanwhile.</p>
+      <label><input type='checkbox' id='sender-tab-rights'> I have the right to interpret and caption this stream.</label>
+    </div>
+
+    <div id='sender-device-row'>
+      <label for='sender-device'>Audio input</label>
+      <select id='sender-device' class='input'></select>
+    </div>
 
     <div class='program-sender-meter' aria-hidden='true'>
       <div id='sender-meter-fill' class='program-sender-meter-fill'></div>

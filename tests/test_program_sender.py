@@ -345,6 +345,8 @@ async def test_standalone_sender_page_renders(environment):
     assert response.headers["cache-control"] == "no-store"
     assert f"/rooms/{room.id}/program-sender" in response.text
     assert "/static/js/program-sender.js" in response.text
+    assert "name='sender-source'" in response.text
+    assert "id='sender-tab-rights'" in response.text
 
 
 @pytest.mark.anyio

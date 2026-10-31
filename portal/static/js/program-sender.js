@@ -1,5 +1,11 @@
+import {SOURCES, RAW_AUDIO, normalizeSource, pickTabAudio, tabCaptureOptions, tabCaptureSupported} from './program-sender-source.js';
+
 const card = document.getElementById('program-sender');
 const deviceSelect = document.getElementById('sender-device');
+const deviceRow = document.getElementById('sender-device-row');
+const sourceRadios = document.querySelectorAll('input[name="sender-source"]');
+const tabHelp = document.getElementById('sender-tab-help');
+const tabRights = document.getElementById('sender-tab-rights');
 const startButton = document.getElementById('sender-start');
 const muteButton = document.getElementById('sender-mute');
 const stopButton = document.getElementById('sender-stop');
@@ -51,17 +57,42 @@ let wakeLock = null;
 let recorder = null;
 // Changed only by an explicit pick, so recovering from an unplugged USB input waits for that input.
 let preferredDevice = savedDevice();
+let source = normalizeSource(savedSource());
 // Bumped by stop(); a connect() that resumes under an older generation is abandoned.
 let generation = 0;
 
-function setState(state, message) {
-  stateBadge.textContent = stateLabels[state] || state;
+function setState(state, message, label) {
+  stateBadge.textContent = label || stateLabels[state] || state;
   stateBadge.dataset.state = state;
   if (message) statusLine.textContent = message;
 }
 
 function supported() {
+  if (source === SOURCES.TAB) return tabCaptureSupported(navigator.mediaDevices) && Boolean(window.RTCPeerConnection);
   return Boolean(navigator.mediaDevices && navigator.mediaDevices.getUserMedia && window.RTCPeerConnection);
+}
+
+function unsupportedMessage() {
+  return source === SOURCES.TAB
+    ? 'This browser cannot share a tab\'s audio. Use Chrome or Edge.'
+    : 'This browser cannot capture audio or publish WebRTC.';
+}
+
+function savedSource() {
+  try {
+    return window.localStorage.getItem(`${card.dataset.storageKey}.source`) || '';
+  } catch (error) {
+    return '';
+  }
+}
+
+function saveSource(value) {
+  try {
+    window.localStorage.setItem(`${card.dataset.storageKey}.source`, value);
+  } catch (error) {
+    // Storage can be blocked (private window); the default source still works.
+    console.warn('Could not remember the audio source', error);
+  }
 }
 
 function savedDevice() {
@@ -111,7 +142,7 @@ function releaseInput() {
 async function openInput() {
   const deviceId = deviceSelect.value;
   // Program audio must bypass voice DSP, which pumps levels and hurts music and STT.
-  const audioConstraints = {echoCancellation: false, noiseSuppression: false, autoGainControl: false};
+  const audioConstraints = {...RAW_AUDIO};
   if (deviceId) audioConstraints.deviceId = {exact: deviceId};
   const next = await navigator.mediaDevices.getUserMedia({audio: audioConstraints});
   releaseInput();
@@ -125,6 +156,38 @@ async function openInput() {
   if (deviceSelect.value) saveDevice(deviceSelect.value);
   const sender = pc?.getSenders().find(item => item.track?.kind === 'audio' || item.track === null);
   if (sender) await sender.replaceTrack(track);
+}
+
+/** @throws {SourceError} when the user shared no tab audio; {DOMException} when the picker is cancelled or blocked */
+async function openTab() {
+  const shared = await navigator.mediaDevices.getDisplayMedia(tabCaptureOptions());
+  const track = pickTabAudio(shared);
+  if (!track) {
+    shared.getTracks().forEach(item => item.stop());
+    throw new SourceError('No tab audio was shared. Pick a browser tab and keep "Also share tab audio" ticked.');
+  }
+  releaseInput();
+  stream = new MediaStream([track]);
+  track.enabled = !muted;
+  track.addEventListener('ended', handleTabEnded);
+  meterStream = new MediaStream([track.clone()]);
+  startMeter();
+  const sender = pc?.getSenders().find(item => item.track?.kind === 'audio' || item.track === null);
+  if (sender) await sender.replaceTrack(track);
+}
+
+function openSource() {
+  return source === SOURCES.TAB ? openTab() : openInput();
+}
+
+// A shared tab cannot be reopened without a user click, so this never re-opens the tab itself.
+async function handleTabEnded() {
+  if (sending) {
+    await stop(true);
+    setState('stopped', 'Tab sharing ended. Click Start sending and pick the tab again.');
+  } else if (testing) {
+    stopTest(true);
+  }
 }
 
 async function handleInputLost() {
@@ -225,6 +288,8 @@ class SenderError extends Error {
     this.status = status;
   }
 }
+
+class SourceError extends Error {}
 
 class StaleConnect extends Error {}
 
@@ -417,13 +482,17 @@ async function keepAwake() {
 
 async function start() {
   if (!supported()) {
-    setState('error', 'This browser cannot capture audio or publish WebRTC.');
+    setState('error', unsupportedMessage());
+    return;
+  }
+  if (source === SOURCES.TAB && !tabRights.checked) {
+    setState('error', 'Confirm you have the right to interpret this stream.');
     return;
   }
   startButton.disabled = true;
-  setState('connecting', 'Requesting the audio input…');
+  setState('connecting', source === SOURCES.TAB ? 'Waiting for you to pick the tab…' : 'Requesting the audio input…');
   try {
-    if (!stream) await openInput();
+    if (!stream) await openSource();
   } catch (error) {
     startButton.disabled = false;
     reportInputError(error);
@@ -492,7 +561,12 @@ function toggleMute() {
 }
 
 function reportInputError(error) {
-  if (error && (error.name === 'NotAllowedError' || error.name === 'SecurityError')) {
+  if (error instanceof SourceError) {
+    setState('error', error.message);
+  } else if (source === SOURCES.TAB && error && (error.name === 'NotAllowedError' || error.name === 'SecurityError')) {
+    // Same badge style as a blocked microphone, but a label that fits tab sharing.
+    setState('permission-denied', 'Tab sharing was cancelled or blocked.', 'Tab sharing blocked');
+  } else if (error && (error.name === 'NotAllowedError' || error.name === 'SecurityError')) {
     setState('permission-denied', 'Microphone access was blocked. Allow it in the browser and try again.');
   } else {
     console.error('Could not open the audio input', error);
@@ -501,8 +575,12 @@ function reportInputError(error) {
 }
 
 async function startTest() {
+  if (!supported()) {
+    setState('error', unsupportedMessage());
+    return;
+  }
   try {
-    await openInput();
+    await openSource();
   } catch (error) {
     reportInputError(error);
     return;
@@ -525,10 +603,14 @@ async function recordCheck() {
     setState('error', 'This browser cannot record a sound check.');
     return;
   }
+  if (!supported()) {
+    setState('error', unsupportedMessage());
+    return;
+  }
   const wasTesting = testing;
   if (!stream) {
     try {
-      await openInput();
+      await openSource();
     } catch (error) {
       reportInputError(error);
       return;
@@ -570,6 +652,29 @@ async function changeDevice() {
   }
 }
 
+function applySource() {
+  const tab = source === SOURCES.TAB;
+  deviceRow.hidden = tab;
+  tabHelp.hidden = !tab;
+  sourceRadios.forEach(radio => { radio.checked = radio.value === source; });
+  if (!supported()) setState('error', unsupportedMessage());
+}
+
+function changeSource(event) {
+  // A recording reads the meter stream, which releaseInput() would cut short.
+  if (sending || testing || recorder) {
+    // Revert to the source that is still in use.
+    sourceRadios.forEach(radio => { radio.checked = radio.value === source; });
+    setState(stateBadge.dataset.state, 'Stop sending or testing before changing the source.');
+    return;
+  }
+  source = normalizeSource(event.target.value);
+  saveSource(source);
+  releaseInput();
+  applySource();
+  if (supported()) setState('idle', 'Run a sound check, then start sending.');
+}
+
 async function checkAvailability() {
   try {
     const response = await fetch(card.dataset.statusUrl, {cache: 'no-store'});
@@ -584,13 +689,15 @@ async function checkAvailability() {
   }
 }
 
-if (!supported()) {
+if (!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia && window.RTCPeerConnection)) {
   setState('error', 'This browser cannot capture audio or publish WebRTC.');
   startButton.disabled = true;
   testButton.disabled = true;
   recordButton.disabled = true;
 } else {
   navigator.mediaDevices.addEventListener?.('devicechange', listDevices);
+  sourceRadios.forEach(radio => radio.addEventListener('change', changeSource));
+  applySource();
   listDevices();
   checkAvailability();
   startButton.addEventListener('click', start);
