@@ -118,6 +118,20 @@ class TestBoothLanguageCodeApi:
         assert resp.json()["whip_path"].endswith("/de")
 
     @pytest.mark.anyio
+    async def test_event_booth_state_rejects_floor(self, seed_data):
+        """GET /events/{event_slug}/booths/floor/state returns 400."""
+        event, room, token = seed_data
+
+        async with _client() as c:
+            resp = await c.get(
+                f"/api/events/{event.slug}/booths/floor/state?room_id={room.id}",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+
+        assert resp.status_code == 400
+        assert "floor" in resp.json()["detail"]
+
+    @pytest.mark.anyio
     async def test_validator_rejects_floor(self):
         """The shared helper is the single place the rule lives."""
         from portal.booth_identity import validate_booth_language_code
