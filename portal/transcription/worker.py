@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import asyncio
 import logging
 import uuid
@@ -96,6 +98,7 @@ class TranscriptionWorkerSession:
                 logger.error(f"[{self.booth_id}][{self.session_id}] Task ended with exception: {e}")
 
     async def _run_loop(self):
+        """Run provider retries and finish process, webhook, and model cleanup on exit."""
         self.loop_entered = True
         retry_count = 0
         try:
@@ -106,7 +109,8 @@ class TranscriptionWorkerSession:
 
                 self.state = State.RUNNING
                 await _wh_worker.enqueue_webhook(
-                    "booth.transcription.started", {"booth_id": self.booth_id, "session_id": self.session_id, "event_slug": self.event_slug}
+                    "booth.transcription.started",
+                    {"booth_id": self.booth_id, "session_id": self.session_id, "event_slug": self.event_slug},
                 )
 
                 # The context manager entirely encapsulates ffmpeg process lifecycle and cleanup.
@@ -171,7 +175,8 @@ class TranscriptionWorkerSession:
         finally:
             self.state = State.STOPPED
             await _wh_worker.enqueue_webhook(
-                "booth.transcription.stopped", {"booth_id": self.booth_id, "session_id": self.session_id, "event_slug": self.event_slug}
+                "booth.transcription.stopped",
+                {"booth_id": self.booth_id, "session_id": self.session_id, "event_slug": self.event_slug},
             )
             if self.provider_name == "local":
                 from portal.transcription.providers.local import decrement_model_ref
@@ -193,7 +198,10 @@ async def start_transcription_worker(
     config: ProviderConfig,
     transcription_language: str | None = None,
     room_id: int | None = None,
-):
+    *,
+    restart_on_key_change: bool = False,
+) -> bool:
+    """Return whether a new worker was started, optionally replacing changed credentials."""
     while True:
         async with active_workers_lock:
             existing_session = active_workers.get(booth_id)
@@ -222,19 +230,23 @@ async def start_transcription_worker(
                 )
                 active_workers[booth_id] = new_session
                 new_session.start()
-                return
+                return True
 
             if existing_session.state in (State.STOPPING, State.STOPPED):
-                if existing_session.state == State.STOPPED:
-                    # It's fully dead. Pop it and let the loop recreate it immediately.
+                if existing_session.state == State.STOPPED and (
+                    existing_session.task is None or existing_session.task.done()
+                ):
+                    # STOPPED precedes async cleanup; remove only after the task finishes.
                     active_workers.pop(booth_id)
                     continue
                 # Session is tearing down in the background. We must strictly serialize.
                 # Drop lock, actively await the old session's death, then loop around and re-check registry.
                 pass
+            elif restart_on_key_change and existing_session.config.get_key() != config.get_key():
+                existing_session.stop()
             else:
                 logger.info(f"Transcription worker for {booth_id} is already running.")
-                return
+                return False
 
         # We dropped the lock and the session is STOPPING. Wait for it to die completely.
         logger.info(
