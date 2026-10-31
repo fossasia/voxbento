@@ -2084,7 +2084,13 @@ class TestBoothCRUD:
                 cookies=admin_cookie,
             )
         assert resp.status_code == 200
-        assert "<script>" not in resp.text
+        # Every script is external or a JSON data block, whatever attributes it carries.
+        inline = [
+            tag
+            for tag in re.findall(r"<script\b[^>]*>", resp.text)
+            if "src=" not in tag and 'type="application/json"' not in tag
+        ]
+        assert inline == []
         assert "js/booth-detail.js" in resp.text
         config = re.search(r'<script type="application/json" id="booth-detail-config">(.*?)</script>', resp.text, re.S)
         assert config is not None

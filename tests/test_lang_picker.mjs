@@ -50,9 +50,8 @@ function createPicker(selectedCodes = []) {
   return els;
 }
 
-function key(name) {
-  const event = { key: name, prevented: false, preventDefault() { this.prevented = true; } };
-  return event;
+function key(name, { isComposing = false } = {}) {
+  return { key: name, isComposing, prevented: false, preventDefault() { this.prevented = true; } };
 }
 
 const hiddenCodes = (els) => els.hiddenEl.children.map((input) => input.value);
@@ -138,6 +137,17 @@ assert.deepEqual(matchLanguages(LANGUAGES, new Set(), 'zzz'), [], 'no match');
   els.searchEl.handlers.keydown(enter);
   assert.equal(enter.prevented, true, 'Enter does not submit the form while picking');
   assert.deepEqual(hiddenCodes(els), ['en']);
+}
+
+// The Enter that confirms an IME composition is left to the input method.
+{
+  const els = createPicker();
+  els.searchEl.handlers.focus();
+  els.searchEl.handlers.keydown(key('ArrowDown'));
+  const enter = key('Enter', { isComposing: true });
+  els.searchEl.handlers.keydown(enter);
+  assert.equal(enter.prevented, false);
+  assert.deepEqual(hiddenCodes(els), [], 'a composing Enter picks nothing');
 }
 
 // Enter with nothing highlighted adds nothing; Escape closes; a closed list leaves Enter alone.

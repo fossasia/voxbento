@@ -93,7 +93,8 @@ export function initLangPicker({ tagsEl, searchEl, dropdownEl, hiddenEl, languag
   // Wait a moment so a click on a suggestion still lands before the list hides.
   searchEl.addEventListener('blur', () => { setTimeout(() => { dropdownEl.hidden = true; }, 150); });
   searchEl.addEventListener('keydown', (e) => {
-    if (dropdownEl.hidden) return;
+    // The Enter that confirms an IME composition must not pick a suggestion.
+    if (dropdownEl.hidden || e.isComposing) return;
     if (e.key === 'ArrowDown') {
       e.preventDefault();
       moveFocus(Math.min(focusedIndex + 1, matches.length - 1));
