@@ -60,9 +60,9 @@ def _has_floor_audio_source(room: Room) -> bool:
             return False
         if room.program_ingest_mode == program_relay.RELAY_MODE and not settings.program_relay_enabled:
             return False
-        return bool(has_valid_credential(room) or room.program_session_id)
+        return bool(has_valid_credential(room) or room.program_session_id or room.floor_transcription_enabled)
     if room.floor_source == "jitsi_bot":
-        return bool(room.meeting_agent_enabled)
+        return bool(room.meeting_agent_enabled or room.jitsi_url or room.floor_transcription_enabled)
     return False
 
 

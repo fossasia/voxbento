@@ -236,8 +236,8 @@ class TestListenerRoutes:
             db_event.listener_join_code = "ROOM42"
             db_room = await s.get(Room, room.id)
             db_room.floor_source = "jitsi_bot"
-            db_room.meeting_agent_enabled = True
-            db_room.jitsi_url = "https://meet.jit.si/test-room"
+            db_room.meeting_agent_enabled = False
+            db_room.jitsi_url = None
             db_room.floor_transcription_enabled = True
             await s.commit()
 
@@ -280,8 +280,8 @@ class TestListenerRoutes:
         assert "Floor Audio (Original)" not in booth_names
 
     @pytest.mark.anyio
-    async def test_listener_omits_floor_audio_when_jitsi_bot_not_enabled(self, seed_event):
-        """Floor audio is omitted when meeting_agent_enabled is False, even with a jitsi_url."""
+    async def test_listener_includes_floor_audio_as_waiting_entry_before_agent_starts(self, seed_event):
+        """Floor audio is available as a waiting entry when jitsi_url is configured, before the agent starts."""
         event, room, _ = seed_event
 
         from portal.database import get_session
@@ -294,6 +294,34 @@ class TestListenerRoutes:
             db_room.floor_source = "jitsi_bot"
             db_room.meeting_agent_enabled = False
             db_room.jitsi_url = "https://meet.jit.si/test-room"
+            db_room.floor_transcription_enabled = False
+            await s.commit()
+
+        async with _client() as c:
+            resp = await c.get(f"/listener/{event.slug}?code=ROOM42")
+
+        assert resp.status_code == 200
+        match = re.search(r'"booths":\s*(\[.*?\])\s*,', resp.text, re.DOTALL)
+        assert match is not None
+        booths = json.loads(match.group(1))
+        booth_names = [b["language_name"] for b in booths]
+        assert "Floor Audio (Original)" in booth_names
+
+    @pytest.mark.anyio
+    async def test_listener_omits_floor_audio_when_jitsi_bot_has_no_url_or_agent(self, seed_event):
+        """Floor audio is omitted when jitsi_url is None and meeting_agent_enabled is False."""
+        event, room, _ = seed_event
+
+        from portal.database import get_session
+        from portal.models import Room
+
+        async with get_session() as s:
+            db_event = await s.get(type(event), event.id)
+            db_event.listener_join_code = "ROOM42"
+            db_room = await s.get(Room, room.id)
+            db_room.floor_source = "jitsi_bot"
+            db_room.meeting_agent_enabled = False
+            db_room.jitsi_url = None
             db_room.floor_transcription_enabled = False
             await s.commit()
 
