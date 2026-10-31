@@ -254,6 +254,6 @@ def test_migration_039_emits_sql_offline():
         assert "ix_transcript_segments_room_language_created" in emitted
         assert "ix_transcript_segments_booth_id" in emitted
         if dialect == "postgresql":
-            assert "LOCK TABLE transcript_segments IN ACCESS EXCLUSIVE MODE" in emitted
+            assert "LOCK TABLE transcript_segments IN SHARE ROW EXCLUSIVE MODE" in emitted
         else:
             assert "LOCK TABLE" not in emitted
