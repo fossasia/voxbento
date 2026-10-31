@@ -173,6 +173,13 @@ def _inline_scripts(html: str) -> list[dict[str, str | None]]:
     return parser.found
 
 
+def _booth_detail_config(html: str) -> dict:
+    """The JSON data block booth-detail.js reads on the booth page."""
+    match = re.search(r'<script type="application/json" id="booth-detail-config">(.*?)</script>', html, re.S)
+    assert match is not None
+    return json.loads(match.group(1))
+
+
 # ---------------------------------------------------------------------------
 # Login / Logout tests
 # ---------------------------------------------------------------------------
@@ -2107,11 +2114,31 @@ class TestBoothCRUD:
         # Every script is external or a JSON data block, whatever attributes it carries.
         assert _inline_scripts(resp.text) == []
         assert "js/booth-detail.js" in resp.text
-        config = re.search(r'<script type="application/json" id="booth-detail-config">(.*?)</script>', resp.text, re.S)
-        assert config is not None
-        data = json.loads(config.group(1))
+        data = _booth_detail_config(resp.text)
         assert {"code": "de", "name": "German"} in data["languages"]
         assert data["selected_codes"] == []
+
+    @pytest.mark.anyio
+    async def test_booth_detail_config_carries_saved_translation_languages(self, admin_cookie, seed_event):
+        """Saved target languages reach the picker through the JSON config, and removed ones drop out (#1081)."""
+        event, room, booth = seed_event
+        url = f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/"
+        async with _client() as c:
+            for languages in (["fr", "es"], ["fr"]):
+                saved = await c.post(
+                    f"{url}translation-settings",
+                    data={
+                        "translation_enabled": "true",
+                        "translation_provider": "openai",
+                        "translation_model": "gpt-4o-mini",
+                        "translation_languages": languages,
+                    },
+                    cookies=admin_cookie,
+                    follow_redirects=False,
+                )
+                assert saved.status_code == 303
+                page = await c.get(url, cookies=admin_cookie)
+                assert sorted(_booth_detail_config(page.text)["selected_codes"]) == sorted(languages)
 
     @pytest.mark.anyio
     async def test_inline_script_detector_flags_every_blocked_form(self):
