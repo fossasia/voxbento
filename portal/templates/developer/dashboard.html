@@ -10,6 +10,7 @@
     <link rel="stylesheet" href="{{ url_for('static', path='css/developer.css') }}?v={{ asset_version }}" />
     <link rel="stylesheet" href="{{ url_for('static', path='css/app-header.css') }}?v={{ asset_version }}" />
     <script type="module" src="{{ url_for('static', path='js/user-menu.js') }}?v={{ asset_version }}"></script>
+    <script type="module" src="{{ url_for('static', path='js/developer.js') }}?v={{ asset_version }}"></script>
   </head>
   <body>
     {% from "_app_header.html" import app_header with context %}
@@ -115,7 +116,7 @@
                   <strong class="dev-client-name">{{ client.name }}</strong>
                 </td>
                 <td class="dev-td">
-                  <div class="copy-wrapper" onclick="copyToClipboard(this, '{{ client.client_id }}')">
+                  <div class="copy-wrapper" data-copy-text="{{ client.client_id }}">
                     <span class="copy-text">{{ client.client_id }}</span>
                     <div class="copy-icon-container">
                       <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon-copy"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
@@ -219,7 +220,7 @@
             </div>
           </div>
           <div class="custom-modal-footer">
-            <button class="btn btn-outline" type="button" onclick="document.getElementById('modal-create-app').classList.remove('active');">Cancel</button>
+            <button class="btn btn-outline" type="button">Cancel</button>
             <button class="btn btn-primary" type="submit">Create App</button>
           </div>
         </form>
@@ -237,7 +238,7 @@
           <p>Your new OAuth Client <strong>{{ new_client.name }}</strong> has been created.</p>
           <div class="dev-secret-group">
             <label class="dev-secret-label">Client ID</label>
-            <div class="secret-box copy-wrapper" onclick="copyToClipboard(this, '{{ new_client.client_id }}')">
+            <div class="secret-box copy-wrapper" data-copy-text="{{ new_client.client_id }}">
               <span class="copy-text">{{ new_client.client_id }}</span>
               <div class="copy-icon-container">
                 <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon-copy"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
@@ -248,7 +249,7 @@
           </div>
           <div class="dev-secret-group">
             <label class="dev-secret-label">Client Secret</label>
-            <div class="secret-box secret-box-danger copy-wrapper" onclick="copyToClipboard(this, '{{ new_secret }}')">
+            <div class="secret-box secret-box-danger copy-wrapper" data-copy-text="{{ new_secret }}">
               <span class="copy-text">{{ new_secret }}</span>
               <div class="copy-icon-container">
                 <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="icon-copy"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path></svg>
@@ -260,47 +261,11 @@
           </div>
         </div>
         <div class="custom-modal-footer">
-          <button class="btn btn-primary" type="button" onclick="document.getElementById('modal-new-secret').classList.remove('active');">I have copied my secret</button>
+          <button class="btn btn-primary" type="button">I have copied my secret</button>
         </div>
       </div>
     </div>
     {% endif %}
-
-    <script>
-      const btnCreate = document.getElementById('btn-create-app');
-      const modalCreate = document.getElementById('modal-create-app');
-      
-      if (btnCreate && modalCreate) {
-        btnCreate.addEventListener('click', () => {
-          modalCreate.classList.add('active');
-        });
-      }
-
-      async function copyToClipboard(element, text) {
-        try {
-          await navigator.clipboard.writeText(text);
-          element.classList.add('copied');
-          
-          const tooltip = element.querySelector('.copy-tooltip');
-
-          if (tooltip) {
-            tooltip.textContent = 'Copied!';
-            tooltip.classList.add('copied-tooltip');
-          }
-          
-          setTimeout(() => {
-            element.classList.remove('copied');
-
-            if (tooltip) {
-              tooltip.textContent = 'Copy to clipboard';
-              tooltip.classList.remove('copied-tooltip');
-            }
-          }, 2000);
-        } catch (err) {
-          console.error('Failed to copy text: ', err);
-        }
-      }
-    </script>
     {% include "_auth_sync.html" %}
   </body>
 </html>
