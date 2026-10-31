@@ -30,7 +30,7 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 0
 
@@ -43,6 +43,12 @@ jobs:
              [ -z "$BASE_SHA" ] || [ "$BASE_SHA" = "0000000000000000000000000000000000000000" ]; then
             echo "changed=true" >> "$GITHUB_OUTPUT"
           else
+            if ! git rev-parse --verify "${BASE_SHA}^{commit}" >/dev/null 2>&1; then
+              echo "Base commit $BASE_SHA is unavailable; running floor-bot checks conservatively."
+              echo "changed=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+
             git diff --name-only "$BASE_SHA" HEAD > /tmp/floor-bot-changed-files
             if grep -Eq '^(floor-bot/|docker-compose\.yml$|\.github/workflows/tests\.yml$|tests/(floor_bot_container_smoke|check_floor_bot_image_size|test_floor_bot_dependencies)\.py$)' /tmp/floor-bot-changed-files; then
               echo "changed=true" >> "$GITHUB_OUTPUT"
@@ -96,7 +102,7 @@ jobs:
       PROGRAM_RELAY_MEDIA_REQUIRED: "1"
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
 
       - name: Install uv
         uses: astral-sh/setup-uv@v7
@@ -136,7 +142,7 @@ jobs:
       RELAY_CONTROL_SECRET: ci-program-relay-control-secret-0123456789abcdef
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
 
       - name: Build program-relay image
         run: docker build --platform linux/amd64 -t voxbento-program-relay-ci ./program-relay
@@ -230,7 +236,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
 
       - name: Install uv
         uses: astral-sh/setup-uv@v7
@@ -249,12 +255,20 @@ jobs:
       - name: Validate JS syntax
         run: |
           node --check portal/static/js/interpreter-booth.js
+          node --check portal/static/js/booth-reconnect.js
           node --check portal/static/js/whep-listener.js
           node --check portal/static/js/admin.js
+          node --check .github/scripts/jules-review.mjs
       - name: run node tests
         run: |
           node tests/test_audio_scheduler.js
           node tests/test_tts_parser.js
+          node tests/test_listener_event.js
+          node tests/test_whep_listener.js
+          node tests/test_jules_review.mjs
+          node tests/test_booth_reconnect.mjs
+          node tests/test_booth_socket.mjs
+          node tests/test_room_ai.mjs
 
       - name: Run unit tests
         run: uv run pytest tests/ -v
@@ -283,7 +297,7 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v4

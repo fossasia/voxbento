@@ -7,6 +7,7 @@
 # DNS requirements:
 #   A  voxbento.com       → 100.56.6.172
 #   A  jitsi.voxbento.com → 100.56.6.172
+#   A  rtmps.voxbento.com → 100.56.6.172 (DNS only; no Cloudflare proxy)
 #
 # Caddy handles TLS automatically via Let's Encrypt.
 #
@@ -73,4 +74,11 @@ jitsi.voxbento.com {
         header_up X-Forwarded-For {remote_host}
         header_up X-Forwarded-Proto {scheme}
     }
+}
+
+# Certificate management only: MediaMTX serves RTMPS directly on TCP 1936.
+# Keep this block in deploys so Caddy renews the certificate mounted by MediaMTX.
+rtmps.voxbento.com {
+    respond /healthz "OK" 200
+    respond 404
 }

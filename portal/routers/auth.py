@@ -13,11 +13,12 @@ from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 import jwt
 import sqlalchemy as sa
-from fastapi import APIRouter, Body, HTTPException, Request, Response, status
+from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response, status
 from fastapi.responses import RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.exc import DBAPIError, IntegrityError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
+from unilimit.integrations.fastapi import RateLimit
 
 from portal.auth import (
     create_participant_token,
@@ -50,7 +51,8 @@ from portal.globals import _JS_CACHE_BUST, asset_version_context
 from portal.hosting_requests import format_event_dates, parse_hosting_request_form
 from portal.models import HOSTING_REQUEST_GRANTED, TOKEN_TYPE_HOSTING_INVITE, AuthToken, User, utc_now
 from portal.notifications import queue_notification
-from portal.rate_limit import check_rate_limit
+from portal.rate_limit import check_rate_limit, login_email_rule, login_ip_rule, login_limiter
+from portal.registration_protection import limit_registration, verify_registration_challenge
 from portal.schemas.auth import TokenRequest, TokenResponse
 from portal.user_menu import resolve_user_menu, user_menu_context
 from portal.utils import safe_redirect, verify_same_origin
@@ -154,6 +156,7 @@ async def join_via_invite(request: Request, token: str) -> RedirectResponse:
         event_slug=tok.booth.event.slug,
         room_id=tok.booth.room_id,
         language_code=tok.booth.language_code,
+        token_id=tok.public_id,
     )
 
     redirect_url = "/interpreter"
@@ -183,16 +186,45 @@ async def check_email_api(request: Request):
     return {"status": "ok", "exists": True, "has_password": True}
 
 
+def render_registration(
+    request: Request,
+    *,
+    errors: list[str] | None = None,
+    email: str = "",
+    display_name: str = "",
+    status_code: int = 200,
+    headers: dict[str, str] | None = None,
+):
+    return templates.TemplateResponse(
+        request=request,
+        name="register.html",
+        context={
+            "js_version": _JS_CACHE_BUST,
+            "errors": errors or [],
+            "email": email,
+            "display_name": display_name,
+            "turnstile_enabled": settings.registration_turnstile_enabled,
+            "turnstile_site_key": settings.turnstile_site_key,
+        },
+        status_code=status_code,
+        headers=headers,
+    )
+
+
 @router.get("/register")
 async def register_page(request: Request):
     current_user = await get_current_user(request)
     if current_user:
         return safe_redirect(url="/account", status_code=status.HTTP_303_SEE_OTHER)
-    return templates.TemplateResponse(request=request, name="register.html", context={"js_version": _JS_CACHE_BUST})
+    return render_registration(request)
 
 
 @router.post("/register")
 async def register_submit(request: Request):
+    try:
+        limit_registration(request)
+    except HTTPException as exc:
+        return render_registration(request, errors=[exc.detail], status_code=exc.status_code, headers=exc.headers)
     form = await request.form()
     email = form.get("email", "").strip().lower()
     display_name = form.get("display_name", "").strip()
@@ -213,6 +245,12 @@ async def register_submit(request: Request):
         errors.append("Passwords do not match.")
 
     if not errors:
+        try:
+            await verify_registration_challenge(form.get("cf-turnstile-response"))
+        except HTTPException as exc:
+            return render_registration(
+                request, errors=[exc.detail], email=email, display_name=display_name, status_code=exc.status_code
+            )
         # Run the expensive password work for every valid submission, even
         # when the address already exists. The result is only persisted for a
         # newly-created account.
@@ -260,10 +298,11 @@ async def register_submit(request: Request):
             await _queue_verification_email(session, email, user.id)
             return _registration_success(request, email)
 
-    return templates.TemplateResponse(
-        request=request,
-        name="register.html",
-        context={"errors": errors, "email": email, "display_name": display_name, "js_version": _JS_CACHE_BUST},
+    return render_registration(
+        request,
+        errors=errors,
+        email=email,
+        display_name=display_name,
         status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
     )
 
@@ -315,20 +354,37 @@ async def user_login_page(request: Request, next: str = "", email: str = "", swi
     )
 
 
-@router.post("/login")
+async def get_login_identity(request: Request) -> str | None:
+    """Resolve login identity (normalized email) from form data for rate limiting."""
+    try:
+        form = await request.form()
+        email = form.get("email", "")
+        if isinstance(email, str):
+            email = email.strip().lower()
+            return email or None
+    except Exception as exc:
+        logger.debug("Could not parse form email for rate limit identity: %s", exc)
+    return None
+
+
+@router.post(
+    "/login",
+    dependencies=[
+        Depends(
+            RateLimit(
+                login_ip_rule,
+                login_email_rule,
+                identity=get_login_identity,
+                limiter=login_limiter,
+            )
+        )
+    ],
+)
 async def user_login_submit(request: Request):
     form = await request.form()
     email = form.get("email", "").strip().lower()
     password = form.get("password", "")
     next_url = form.get("next_url", "")
-
-    if not check_rate_limit("login", email, max_requests=10, window_seconds=3600):
-        return templates.TemplateResponse(
-            request=request,
-            name="login.html",
-            context={"error": "Too many attempts. Try again later.", "email": email, "next_url": next_url},
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-        )
 
     async with get_session() as session:
         user = await get_user_by_email(session, email)

@@ -120,3 +120,28 @@ class TestSupertonicStreaming:
             voice="M1",
             on_audio=on_audio,
         )
+
+
+class _RecordingProvider:
+    def __init__(self):
+        self.languages: list[str] = []
+
+    async def synthesize_stream(self, *, text_chunks, language_code, voice, on_audio):
+        self.languages.append(language_code)
+        await on_audio(b"pcm")
+
+
+@pytest.mark.anyio
+async def test_only_ai_voice_languages_are_spoken(monkeypatch):
+    from portal.tts import worker
+
+    provider = _RecordingProvider()
+
+    async def config(room_id):
+        return {"tts_provider": provider, "voice": "", "voice_languages": {"fr"}}
+
+    monkeypatch.setattr(worker, "_load_config_cached", config)
+    assert await worker.synthesize(1, "Bonjour", "fr") == b"pcm"
+    # German is set to AI text: translated for reading, never spoken.
+    assert await worker.synthesize(1, "Hallo", "de") is None
+    assert provider.languages == ["fr"]

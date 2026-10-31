@@ -66,6 +66,21 @@ MediaMTX terminates the WebRTC connection from the interpreter's browser, decode
 
 Listeners connect to the WHEP endpoint for their chosen language. WHEP (WebRTC HTTP Egress Protocol) is the mirror of WHIP — it negotiates a WebRTC session from the server side and streams audio to the listener's browser with sub-second latency.
 
+The listener page shows **Live (WebRTC)** only when the WHEP client reports both
+a connected peer and active audio playback. Selecting a source or receiving
+translation text alone does not mark WebRTC audio live. Failed WHEP requests
+report a separate retry flag, so the badge can show **Reconnecting...** even
+before ICE starts; successful negotiation or stopping the client clears it.
+
+Caption following is tracked from scroll events. New captions and translations
+scroll to the end only while following is enabled. Moving more than 40 pixels
+from the bottom pauses following until the listener returns near the bottom.
+Changing rooms or sources clears captions, resets following, and restores the
+waiting placeholder.
+
+
+Before starting booth playback, the listener page waits for a live and unlocked status on `/ws/captions/{booth_id}`. This socket sends the current status on connection and updates when listener-visible state changes, even when transcription is disabled, so attendees who arrive early start listening without reloading. Status contains only booth identity, broadcast lock, and ingest status; interpreter participants and private booth chat stay inside the booth. The page reconnects after transient socket disconnects and stops playback when an unlocked booth is locked.
+
     For devices that do not handle WebRTC reliably, MediaMTX also produces HLS segments on a separate port. The listener page loads hls.js and falls back to HLS automatically when WHEP is unavailable. HLS introduces roughly three seconds of additional latency but works on virtually any device.
 
     :::tip
@@ -79,18 +94,27 @@ In the organizer workspace, room management includes server-side search to quick
 ### Guided room setup
 
 Event setup follows **Event → Rooms & languages → Team & listeners**. Each room
-uses one form for its spoken language, listener languages, delivery by interpreters,
-AI or both, captions, and optional AI speech. The same form edits existing rooms.
+uses one three-step form (Room, Languages, Review) for its spoken language, listener
+languages, one delivery per language (Interpreter, AI voice or AI captions) and optional
+captions of the speaker's words, which stay on whenever a language uses AI because the AI
+translates from them. AI services are pre-selected and can be changed on the Review step.
+The same form edits existing rooms (**Edit languages** on the room page).
 Room lists and the room overview summarize those choices, including AI languages
 that do not have an interpreter booth.
+When editing a room, choose **Review changes** to see the changes and any booth
+removal warnings on a separate screen, then **Save changes**. **Back to edit**
+returns to your answers without saving. Pressing Enter before review advances
+to review instead of saving immediately.
 
 `portal/room_setup.py` validates a room plan and applies it in one database
 transaction to the existing room, booth, and translation-language tables. Human
 languages create booths; AI languages enable floor transcription and translation;
-AI voice enables floor TTS. Service choices require event keys, the external
+AI voice languages enable floor TTS for that language only
+(`room_translation_languages.tts_enabled`, migration 035), so AI captions languages are
+translated but never spoken. Service choices require event keys, the external
 transcription switch where applicable, and optional server dependencies. Local
-translation and voice language support are validated before saving. No schema
-migration or change to the audio transport is needed.
+translation and per-language voice support are validated before saving. The audio
+transport is unchanged.
 
 Saving removes deselected idle booths and their dependent invitations and
 assignments, but retains booths reported live and explains this on the room page.
@@ -147,7 +171,7 @@ Jitsi session; they do not validate a deployment host's available disk space.
 5. **Text-to-Text (Translation & AI Interpretation):** If target languages are enabled, the Translation Worker detects the finalized segment and generates translations using LLMs (Anthropic, OpenAI, Groq, Gemini) or local NLLB. Translation prompts dynamically integrate the room's configured **AI interpreter persona** and **interpretation style**, as well as matching domain terms from the room's **AI vocabulary glossary**, ensuring consistent, conference-grade terminology.
 6. **Broadcast:** Translations are saved to the database and immediately broadcast as `translated_caption` events via the target booth's caption feed (`/ws/captions/{booth_id}`).
 
-7. **Text-to-Speech (TTS):** If the room has "Floor Audio TTS (Direct Push)" enabled, the `TTSWorker` instantly receives the finalized translated text and synthesizes speech using the room's configured provider — either **Deepgram Aura** (cloud WebSocket) or **Supertonic** (self-hosted, in-process ONNX).
+7. **Text-to-Speech (TTS):** If a room language uses **AI voice**, the `TTSWorker` instantly receives the finalized translated text and synthesizes speech using the room's configured provider — either **Deepgram Aura** (cloud WebSocket) or **Supertonic** (self-hosted, in-process ONNX).
 8. **TTS Audio Delivery:** The synthesized audio is streamed to listeners in structured binary bundle messages (1-byte version, 4-byte header length, JSON metadata header, and optional 24 kHz 16-bit mono PCM payload) over an authorized subscription WebSocket (`/ws/tts/{room_id}/{language_code}/{booth_id}`). Listeners receive translated speech natively via the Web Audio API with sub-second latency, scheduled smoothly by `audio-scheduler.js` without relying on WHEP.
 
 :::info
@@ -241,9 +265,13 @@ coordinators) next to a microphone and connection check.
 person may run. Each room shows its floor captions' state with Start and Stop
 (through `/api/rooms/{room_id}/floor-transcription/*`), and each booth card shows
 who is in the booth and who is live, a listen-in slider, Go live / Stop broadcast
-and **Open booth**. The owner's room page is split into tabs (Overview, Floor
-source, Captions & translation, Settings); the open tab is remembered per room so
-saving a setting returns to it, and without JavaScript every section shows in order.
+and **Open booth**. The owner's room page is split into tabs (Languages, Room audio,
+AI settings, Settings); the open tab is remembered per room so saving a setting returns
+to it, and without JavaScript every section shows in order. Only the room setup form
+switches captions and AI on or off or changes which languages use them; the AI settings
+tab saves services, models, voice, translator instructions and the glossary
+(`form_section=ai`). Room audio asks how VoxBento hears the room (online meeting,
+streaming software, or a sound-desk computer) and shows only that source's panel.
 
 **My events** at `/workspace/` (`portal/my_events.py`) lists every event the
 person has a role in, combining event, room and booth memberships into one card
@@ -290,6 +318,17 @@ known addresses continue to a password or magic link, and unknown addresses go t
 memberships allow. Operators should maintain at least two active administrator
 accounts; the [admin-login migration guide](https://github.com/fossasia/voxbento/blob/dev/docs/admin-password-removal-migration.md)
 documents the controlled recovery procedure.
+
+Registration has a configurable per-client-IP limit (20 attempts per minute by
+default). Operators can enable Cloudflare Turnstile on `/register`; the server
+validates the token's success, hostname and `register` action before hashing a
+password, creating an unverified account, or queueing verification email.
+Rejected challenges return 403 and verification-service outages return 503.
+The form preserves name/email and offers a fresh challenge. Turnstile defaults
+to disabled so existing deployments work until keys are provisioned. Login,
+invites and real-time media routes are unaffected. See the
+[registration protection guide](https://github.com/fossasia/voxbento/blob/dev/docs/registration-protection.md)
+for enabling it, proxy trust requirements and Cloudflare edge protection.
 
 ## Hosting access requests
 
@@ -397,9 +436,32 @@ authenticated control API and stops relays on revoke, source switch, destination
 removal or restart; it enforces a fail-closed relay cap. The YouTube key is
 Fernet-encrypted at rest and write-only. Ingest, relay and language-processing
 health are reported separately. Relay mode puts VoxBento in the YouTube path, so
-the independent WHIP mode remains the default. See `docs/program-relay.md`.
+the independent WHIP mode remains the default. Operators enable relay mode once with
+`scripts/setup-youtube-relay.sh`, which reuses Caddy's certificate for RTMPS and pins the
+relay override into every deploy through `COMPOSE_FILE`. The RTMPS hostname must
+resolve directly to the server: Cloudflare's standard web proxy does not carry
+RTMPS on TCP 1936. Production uses `rtmps.voxbento.com`; Caddy manages its certificate,
+while MediaMTX terminates the encoder connection. The cloud firewall must allow
+inbound TCP 1936 as well. See `docs/program-relay.md`.
 
 ## Production deployment
+
+Defaults keep debug disabled (`DEBUG=false`), so startup checks reject known-weak
+signing secrets, a missing `MEDIAMTX_AUTH_HOOK_SECRET`, and a missing or weak
+`BOOTH_ACCESS_TOKEN`. The Quick Start snippets generate separate strong values for
+`SECRET_KEY`, `API_KEY_ENCRYPTION_KEY`, `MEDIAMTX_AUTH_HOOK_SECRET`, and
+`BOOTH_ACCESS_TOKEN` for **NEW local setups only**; do not overwrite an existing
+`.env` or rotate existing keys with them. Compose shares the hook secret between
+the portal and MediaMTX. Developers may explicitly opt into `DEBUG=true` in their
+own `.env` for local-only debugging; never enable it for deployments.
+
+Production deployments must set `BOOTH_ACCESS_TOKEN` and
+`MEDIAMTX_AUTH_HOOK_SECRET` in the deployment secret store to separate strong
+values, for example generated with `openssl rand -hex 32`. The portal refuses to
+start when `BOOTH_ACCESS_TOKEN` is missing or weak, or when
+`MEDIAMTX_AUTH_HOOK_SECRET` is missing. The hook secret's strength is not measured
+by startup validation, so keep it strong and private. The same production check
+also requires `API_KEY_ENCRYPTION_KEY` for encrypted provider keys and queued email.
 
 Production deployment builds and validates a separate candidate checkout before
 updating the live checkout. The portal reads code and dependencies from its Docker

@@ -82,22 +82,37 @@ On the event rooms page (`/admin/events/{event_id}/rooms/`), administrators can 
 
 ## Editing a Room
 
-On the room detail page (`/workspace/events/{event_id}/rooms/{room_id}/` or `/admin/...`), you can configure several operational settings:
+The room page (`/workspace/events/{event_id}/rooms/{room_id}/` or `/admin/...`) has four tabs:
 
-### Meeting Source and Floor Audio Ingest
-- **Jitsi Meeting URL**: Custom meeting link for the room's floor audio session.
-- **Relay Booth ID**: Optional pointer to a booth whose WHEP stream acts as the source relay in this room.
-- **Floor Source**: Choose between the managed **Meeting agent** (`jitsi_bot`) or **Program stream ingest** (authenticated media ingest from an external encoder). When Program stream ingest is enabled, configure its **Delivery mode**: either *Independent outputs* (direct authenticated WHIP) or *VoxBento relays to YouTube* (RTMPS relay, where OBS sends an RTMPS stream and VoxBento forwards it to an allow-listed YouTube RTMPS destination).
+### Languages
+The languages listeners can choose and how they get each one: **Interpreter** (a person
+interprets live), **AI voice** (AI translates and speaks it, with text) or **AI captions**
+(AI translates it as text only), plus whether captions of the speaker's words are on.
+Click **Edit languages** to change any of this; it is the only place that switches
+captions or AI on or off.
 
-### Playback Audio Delay
-- **Audio delay (ms)**: Optional listener-side WHEP playback buffer (e.g. `1000` to `5000` ms) to align translated audio with delayed conference video players or external livestreams. A value of `0` uses direct sub-second playback.
+### Room audio
+Captions and AI languages are made from the room's sound. Choose how VoxBento hears it:
+- **From the online meeting**: VoxBento joins the room's Jitsi meeting as a silent listener.
+- **From streaming software**: OBS, vMix or a hardware encoder sends the program feed.
+  Choose how the stream reaches YouTube: *OBS streams to YouTube itself* (YouTube keeps your
+  encoder's normal output; VoxBento receives a separate authenticated WHIP stream) or
+  *VoxBento forwards to YouTube* (OBS sends one RTMPS stream and VoxBento forwards it to an
+  allow-listed YouTube RTMPS destination).
+- **From a computer at the sound desk**: a browser tab sends the sound-desk input.
 
-### AI Interpretation & Glossary
-- **AI Interpreter Persona & Style**: Domain persona and style instructions applied to floor translations.
-- **AI Vocabulary Glossary**: Upload and export CSV glossaries with domain-specific terms to ensure translation accuracy.
+### AI settings
+Shown when the room uses captions or AI. Choose the service (and, optionally, the model)
+for captions, translation and the AI voice; only services with an API key on the event are
+offered. **Instructions for the AI translator** describe the event and the translation style,
+and the **Glossary** (CSV upload and download) keeps names and terms consistent. One
+**Save AI settings** button saves the tab.
 
-### Save
-Click **Save** on the room detail page to apply your changes.
+### Settings
+- **Room name**.
+- **Meeting link**: the meeting interpreters follow, also used when VoxBento hears the room from the online meeting.
+- **Listener delay (milliseconds)**: holds back what listeners hear (for example `1000` to `5000`) to line up with a livestream video that runs late. `0` plays with no added delay.
+- **Relay interpreting**: a booth that interpreters who don't understand the speaker can listen to instead.
 
 ## Deleting Events and Rooms
 
@@ -106,7 +121,7 @@ Deleting an event or room is **permanent and irreversible** — all nested recor
 :::
 
 - **Delete an event** — open the event detail page and click **Delete Event**. All rooms, booths, memberships, and tokens under the event are removed.
-- **Delete a room** — open the room detail page and click **Delete Room**. All booths inside the room, along with their members and tokens, are removed.
+- **Delete a room** — open the room page's **Settings** tab and click **Delete room**. All booths inside the room, along with their members and tokens, are removed.
 
 Deletions cannot be undone, so make sure you no longer need any of the child records before proceeding.
 

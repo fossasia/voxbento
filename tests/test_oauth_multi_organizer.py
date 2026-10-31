@@ -588,3 +588,80 @@ async def test_token_exchange_with_the_client_secret_makes_the_organizer_owner(s
         ok = await c.post("/oauth/token", data={**token_data, "client_secret": "test_secret"})
     assert ok.status_code == 200
     assert await _role(organizer.id, event.id) == "event_owner"
+
+
+# ── The client can bind the code to the event it started the flow for (#925) ──
+
+
+async def _code_for(c, client, user, event_id):
+    import base64
+    import hashlib
+    import urllib.parse
+
+    from portal.auth import create_user_token
+
+    verifier = "event-binding-verifier-event-binding-0123"
+    challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip("=")
+    cookies = {"user_token": create_user_token(user_id=user.id, email=user.email)}
+    allow = await c.post("/oauth/authorize", data=_allow_form(client, event_id, challenge), cookies=cookies)
+    code = urllib.parse.parse_qs(urllib.parse.urlparse(allow.headers["location"]).query)["code"][0]
+    return {
+        "grant_type": "authorization_code",
+        "code": code,
+        "redirect_uri": "http://localhost/callback",
+        "client_id": client.client_id,
+        "client_secret": "test_secret",
+        "code_verifier": verifier,
+    }
+
+
+@pytest.mark.anyio
+async def test_token_exchange_rejects_a_code_for_another_event(setup_oauth_clients):
+    """Eventyay started the flow for the attacker's event; the browser swapped in the victim's."""
+    attacker = setup_oauth_clients["unrelated_user"]
+    own_event = setup_oauth_clients["event"]
+    victim_event = setup_oauth_clients["ownerless_event"]
+    client = setup_oauth_clients["confidential_client"]
+    async with _client() as c:
+        token_data = await _code_for(c, client, attacker, victim_event.id)
+        res = await c.post("/oauth/token", data={**token_data, "event": own_event.slug})
+    assert res.status_code == 400
+    assert res.json()["error"] == "invalid_grant"
+    assert await _role(attacker.id, victim_event.id) is None
+
+
+@pytest.mark.anyio
+async def test_token_exchange_with_the_matching_event_returns_it(setup_oauth_clients):
+    organizer = setup_oauth_clients["unrelated_user"]
+    event = setup_oauth_clients["ownerless_event"]
+    client = setup_oauth_clients["confidential_client"]
+    async with _client() as c:
+        token_data = await _code_for(c, client, organizer, event.id)
+        res = await c.post("/oauth/token", data={**token_data, "event": event.slug})
+        assert res.status_code == 200
+        assert res.json()["event"] == event.slug
+        refreshed = await c.post(
+            "/oauth/token",
+            data={
+                "grant_type": "refresh_token",
+                "refresh_token": res.json()["refresh_token"],
+                "client_id": client.client_id,
+                "client_secret": "test_secret",
+            },
+        )
+    assert refreshed.status_code == 200
+    assert refreshed.json()["event"] == event.slug
+    assert await _role(organizer.id, event.id) == "event_owner"
+
+
+@pytest.mark.anyio
+async def test_token_exchange_without_event_still_returns_the_code_event(setup_oauth_clients):
+    """Clients that do not send ``event`` yet keep working and can check the returned slug."""
+    organizer = setup_oauth_clients["unrelated_user"]
+    event = setup_oauth_clients["ownerless_event"]
+    client = setup_oauth_clients["confidential_client"]
+    async with _client() as c:
+        token_data = await _code_for(c, client, organizer, event.id)
+        res = await c.post("/oauth/token", data=token_data)
+    assert res.status_code == 200
+    assert res.json()["event"] == event.slug

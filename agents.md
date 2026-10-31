@@ -93,7 +93,7 @@ VoxBento is a production-grade **browser-first interpretation booth console** fo
 | `portal/static/js/admin.js` | Admin panel JS helpers |
 | `mediamtx.yml` | MediaMTX config — WHIP/WHEP paths, RTSP, Control API, `overridePublisher` |
 | `docker-compose.yml` | portal + mediamtx + jitsi-web/prosody/jicofo/jvb |
-| `alembic/versions/` | 31 migrations (001–031); run `uv run alembic upgrade head` |
+| `alembic/versions/` | 38 migrations (001–038); run `uv run alembic upgrade head` |
 
 ---
 
@@ -191,7 +191,7 @@ Booth WHIP publishing is authenticated (#783): MediaMTX forwards the `Authorizat
 server-derived path) and re-checks that the holder is still the active interpreter and that Mission Control has
 broadcast unlocked. Anonymous publishes get 401. A `booth:join` naming another socket's `participant_id` gets a fresh ID.
 
-Caption feed: `/ws/captions/{booth_id}` — receives `caption`, `translated_caption` + `booth:state` messages (protected by `resolve_ws_auth` when `BOOTH_ACCESS_TOKEN` is configured).
+Caption feed: `/ws/captions/{booth_id}` receives `caption`, `translated_caption` + `booth:state` messages. Auth goes through `resolve_ws_auth()`: a `?token=` JWT is always validated and scope-checked (listener tokens to the booth's event, participant tokens to the booth). Without a token the feed is open unless `BOOTH_ACCESS_TOKEN` is set; then it rejects a foreign `Origin` and requires a `session_token` or `user_token` cookie with the same scope checks. Rejections close with 4001 (missing/invalid credentials) or 4003 (scope or origin mismatch). Its `booth:state` carries only `booth_id`, `event_slug`, `room_id`, `language_code`, `broadcast_unlocked` and `ingest_status` (never participants or booth chat), is sent once on connect if the booth exists, and again whenever one of those fields changes.
 Direct-push TTS feed: `/ws/tts/{room_id}/{language_code}/{booth_id}` — pre-authorized binary bundle stream (version byte, length-prefixed JSON header, optional 24 kHz PCM audio). Translation text is delivered concurrently over the captions feed and inside TTS bundle headers.
 
 ---
@@ -219,6 +219,15 @@ Max concurrent workers: 10 (`MAX_TOTAL_WORKERS`).
 | MediaMTX ICE/UDP | 8189 | UDP |
 | Jitsi Web | 8443 / 8080 | HTTPS / HTTP |
 | JVB | 10000 | UDP |
+
+---
+
+## Pull Request Target Branch
+
+- Create feature and fix branches from `dev`, and target all pull requests to `dev`.
+- Always specify the base explicitly when creating a PR: `gh pr create --base dev`.
+- Verify the PR's base branch is `dev` before reporting it as ready. Do not rely on
+  GitHub's default branch or target `main` unless the user explicitly requests it.
 
 ---
 
@@ -262,24 +271,46 @@ Program relay (#749): `portal/program_relay.py` owns the YouTube destination
 service (`program-relay/relay.py`, the media plane; `docker-compose.relay.yml`);
 migration 028 adds `program_ingest_mode`, which binds the program key to WHIP or RTMPS.
 Never log, return or forward FFmpeg text containing the destination. Read
-`docs/program-relay.md` before changing relay mode.
+`docs/program-relay.md` before changing relay mode. Relay deployments select the override
+with `COMPOSE_FILE` in `.env` (`scripts/setup-youtube-relay.sh`); the deploy workflow must
+never remove a running `program-relay`.
 
 ---
 
 ## Documentation Requirements
 
-Every PR that adds, removes, or changes a feature **must** update these files in the same commit:
+Keep documentation scoped to the change. Routine feature PRs, bug fixes, and
+refactors **must not update `README.md` by default**. The README is a stable
+project overview and quick start, not a feature changelog or a home for detailed
+UI walkthroughs, provider options, implementation notes, or rollout instructions.
 
-- `README.md` — operational usage and setup
-- `website/docs/how-it-works.mdx` — system design
-- `agents.md` (this file) — guardrails, if they changed
-- Relevant context file in `.agents/context/` — if the change affects routes, DB schema, or transcription
+Update `README.md` only when explicitly requested, to correct an existing factual
+error or broken link, or when a change makes its installation or quick-start
+instructions inaccurate. Keep those edits minimal; document feature details in
+the relevant `website/docs/` page or focused `docs/` guide instead.
 
-Do not defer documentation to a follow-up PR.
+Update documentation in the same PR when the change affects what it describes:
+
+- Relevant `website/docs/` pages or `docs/` guides — changed usage, configuration,
+  or operational procedures.
+- `website/docs/how-it-works.mdx` — changed system design only.
+- `agents.md` — changed agent guardrails or invariants only.
+- Relevant `.agents/context/` files — changed routes, DB schema, transcription,
+  or module ownership.
+
+Do not add unrelated documentation edits just to satisfy a checklist, and do not
+append feature summaries to the README or agent guide for every PR.
 
 Password sign-in requires `User.email_verified`; everyone, admins included, signs in
 at `/login` (`login` rate-limit bucket, 10 attempts per normalized email per hour).
 `/admin/login` only redirects to `/login?next=/admin/`.
+
+Registration protection lives in `portal/registration_protection.py`. Throttle
+by the ASGI-resolved client IP, never raw forwarding headers. When
+`REGISTRATION_TURNSTILE_ENABLED` is true, validate Cloudflare success, hostname
+and `register` action before signup side effects; service failures must reject
+the signup. Turnstile defaults off for compatible rollout. See
+`docs/registration-protection.md` for configuration and proxy trust.
 
 Production deployments validate a separate candidate checkout before advancing
 the live checkout. Portal source and dependencies must come from the built image,

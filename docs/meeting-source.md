@@ -13,7 +13,7 @@ and Webex need provider-specific agents and are not implied by this feature.
 ## Owner workflow
 
 1. Open **Workspace → Events → (event) → Rooms → (room)**.
-2. In **Meeting source**, keep **Jitsi Meet (self-hosted)**, confirm the meeting
+2. In **Room audio**, choose **From the online meeting**, keep **Jitsi Meet (self-hosted)**, confirm the meeting
    URL and click **Connect meeting**.
 3. Watch the status: **Starting → Joined → Receiving audio → Processing**.
 4. To move a connected agent to another meeting, edit the URL and click

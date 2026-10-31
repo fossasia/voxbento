@@ -637,6 +637,61 @@ class TestUserLogin:
         assert response.status_code == 200
         assert response.json() == {"authenticated": False}
 
+    @pytest.mark.anyio
+    async def test_login_rate_limit_enforced_by_unilimit(self, setup_db):
+        """Ten failed attempts per email are allowed; the 11th triggers HTTP 429."""
+        email = "rate-limited@example.com"
+        async with _client() as c:
+            for _ in range(10):
+                resp = await c.post(
+                    "/login",
+                    data={"email": email, "password": "wrong-password"},
+                )
+                assert resp.status_code == 403
+
+            # 11th attempt must be rejected by unilimit rate limiter
+            limited_resp = await c.post(
+                "/login",
+                data={"email": email, "password": "wrong-password"},
+            )
+            assert limited_resp.status_code == 429
+            assert b"Too many attempts. Try again later." in limited_resp.content
+            assert "retry-after" in limited_resp.headers
+            assert "x-ratelimit-limit" in limited_resp.headers
+
+            # A different email address must not be affected
+            other_resp = await c.post(
+                "/login",
+                data={"email": "fresh-email@example.com", "password": "wrong-password"},
+            )
+            assert other_resp.status_code == 403
+
+    @pytest.mark.anyio
+    async def test_login_rate_limit_per_ip_defends_against_email_rotation(self, setup_db, monkeypatch):
+        """Sixty requests from the same IP within a minute trigger per-IP rate limiting."""
+        import portal.routers.auth as auth_router
+
+        # Avoid expensive bcrypt computations across 60 requests so the test is instantaneous
+        monkeypatch.setattr(auth_router, "verify_password", lambda _p, _h: False)
+
+        async with _client() as c:
+            for i in range(60):
+                resp = await c.post(
+                    "/login",
+                    data={"email": f"rotating-{i}@example.com", "password": "wrong-password"},
+                )
+                assert resp.status_code == 403
+
+            # 61st request from same IP exceeds the 60/min limit even with a new email
+            limited_resp = await c.post(
+                "/login",
+                data={"email": "rotating-61@example.com", "password": "wrong-password"},
+            )
+            assert limited_resp.status_code == 429
+            assert b"Too many attempts. Try again later." in limited_resp.content
+
+
+
 
 class TestEmailVerification:
     @pytest.mark.anyio

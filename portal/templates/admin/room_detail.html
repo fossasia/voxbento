@@ -15,7 +15,7 @@
 <div class="page-header room-header">
   <div>
     <h1>{{ room.display_name }}</h1>
-    <p class="meta-text">{{ event.display_name }} · {{ booths|length }} booth{{ '' if booths|length == 1 else 's' }}{% if room.created_at %} · created {{ room.created_at.strftime('%b %d, %Y') }}{% endif %}</p>
+    <p class="meta-text">{{ event.display_name }}{% if room.created_at %} · created {{ room.created_at.strftime('%b %d, %Y') }}{% endif %}</p>
   </div>
   <div class="room-header-actions">
     <a href="/mission-control/{{ event.slug }}/" class="btn btn-outline">Open Mission Control</a>
@@ -25,35 +25,36 @@
 
 <div id="room-detail"
      data-room-id="{{ room.id }}"
-     data-initial-translation-model="{{ room.floor_translation_model or '' }}"
-     data-translation-languages='{{ translation_languages_dataset | tojson }}'
-     data-selected-translation-languages='{{ enabled_translation_language_codes | tojson }}'>
+     data-initial-translation-model="{{ room.floor_translation_model or '' }}">
 
+{% set setup_url = management_prefix ~ '/events/' ~ event.id ~ '/rooms/' ~ room.id ~ '/setup' %}
+{% set edit_url = management_prefix ~ '/events/' ~ event.id ~ '/rooms/' ~ room.id ~ '/edit' %}
+{% set uses_ai = room.floor_translation_enabled %}
+{% set uses_voice = room.floor_translation_enabled and room.floor_tts_enabled %}
 {% if is_event_owner %}
 <div class="room-tabs" role="tablist" aria-label="Room sections" data-room-tabs hidden>
-  <button type="button" class="room-tab" role="tab" id="room-tab-overview" aria-controls="room-panel-overview" data-room-tab="overview">Overview</button>
-  <button type="button" class="room-tab" role="tab" id="room-tab-source" aria-controls="room-panel-source" data-room-tab="source">Floor source</button>
-  <button type="button" class="room-tab" role="tab" id="room-tab-captions" aria-controls="room-panel-captions" data-room-tab="captions">Captions &amp; translation</button>
+  <button type="button" class="room-tab" role="tab" id="room-tab-overview" aria-controls="room-panel-overview" data-room-tab="overview">Languages</button>
+  <button type="button" class="room-tab" role="tab" id="room-tab-audio" aria-controls="room-panel-audio" data-room-tab="audio">Room audio</button>
+  <button type="button" class="room-tab" role="tab" id="room-tab-ai" aria-controls="room-panel-ai" data-room-tab="ai">AI settings</button>
   <button type="button" class="room-tab" role="tab" id="room-tab-settings" aria-controls="room-panel-settings" data-room-tab="settings">Settings</button>
 </div>
 {% endif %}
 
-<section class="room-panel" id="room-panel-overview"{% if is_event_owner %} role="tabpanel" aria-labelledby="room-tab-overview"{% endif %} data-room-panel="overview">
-{% set setup_url = management_prefix ~ '/events/' ~ event.id ~ '/rooms/' ~ room.id ~ '/setup' %}
+<section class="room-panel rs" id="room-panel-overview"{% if is_event_owner %} role="tabpanel" aria-labelledby="room-tab-overview"{% endif %} data-room-panel="overview">
 {% if just_created %}
 <div class="room-next" role="status">
   <h2>{{ room.display_name }} is set up. Here's what's next</h2>
   <ol class="room-next-list">
     {% if booths %}
     <li>
-      <span><strong>Invite interpreters.</strong> Each booth below needs someone to speak into it.</span>
+      <span><strong>Invite interpreters.</strong> Each Interpreter language below needs someone to interpret it.</span>
       <a href="{{ management_prefix }}/events/{{ event.id }}/team/" class="btn btn-sm">Open Team</a>
     </li>
     {% endif %}
     {% if summary.captions %}
     <li>
-      <span><strong>Connect the room's audio.</strong> Captions{{ ' and AI' if room.floor_translation_enabled else '' }} start once VoxBento hears the room.</span>
-      <a href="#source" class="btn btn-sm" data-room-tab-link="source">Floor source</a>
+      <span><strong>Tell VoxBento how to hear the room.</strong> Captions{{ ' and AI' if uses_ai else '' }} start once it can hear the speakers.</span>
+      <a href="#audio" class="btn btn-sm" data-room-tab-link="audio">Room audio</a>
     </li>
     {% endif %}
     <li>
@@ -63,434 +64,372 @@
   </ol>
 </div>
 {% elif just_updated %}
-<div class="alert alert-success" role="status">Room setup saved.</div>
+<div class="alert alert-success" role="status">Languages saved.</div>
 {% endif %}
 {% if kept_live_languages %}
-<div class="alert alert-warning" role="status">{{ kept_live_languages | join(', ') }} {{ 'booth is' if kept_live_languages|length == 1 else 'booths are' }} live right now, so {{ 'it was' if kept_live_languages|length == 1 else 'they were' }} kept. Change the setup again after the session to remove {{ 'it' if kept_live_languages|length == 1 else 'them' }}.</div>
+<div class="alert alert-warning" role="status">{{ kept_live_languages | join(', ') }} {{ 'booth is' if kept_live_languages|length == 1 else 'booths are' }} live right now, so {{ 'it was' if kept_live_languages|length == 1 else 'they were' }} kept. Change the languages again after the session to remove {{ 'it' if kept_live_languages|length == 1 else 'them' }}.</div>
 {% endif %}
 
-<div class="section-card section-card--spaced-lg">
-  <div class="section-header">
-    <h2>Languages</h2>
+<div class="room-card">
+  <div class="room-card-head">
+    <div>
+      <h2>Languages</h2>
+      <p class="room-card-sub">Speakers use <strong>{{ summary.spoken_language or 'a language not set yet' }}</strong>. These are the other languages listeners can choose.</p>
+    </div>
     {% if is_event_owner %}
-    <a href="{{ setup_url }}" class="btn btn-sm btn-primary">Change languages &amp; captions</a>
+    <a href="{{ setup_url }}" class="btn btn-primary">Edit languages</a>
     {% endif %}
   </div>
 
-  <ul class="room-facts">
-    <li>Speakers use <strong>{{ summary.spoken_language or 'not set' }}</strong></li>
-    <li>Interpretation <strong>{{ summary.mode_label }}</strong></li>
-    <li>Live captions <strong>{{ 'On' if summary.captions else 'Off' }}</strong></li>
-    {% if room.floor_translation_enabled %}<li>AI voice <strong>{{ 'On' if summary.ai_voice else 'Off' }}</strong></li>{% endif %}
-  </ul>
-
   {% if summary.languages %}
-  <table class="data-table schedule-table">
-    <thead>
-      <tr>
-        <th scope="col">Language</th>
-        <th scope="col">Delivered by</th>
-        <th scope="col">Status</th>
-        <th scope="col"><span class="visually-hidden">Links</span></th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for line in summary.languages %}
-      {% set bs = booths_by_code.get(line.code) %}
-      <tr class="{{ 'row-live' if bs and bs.is_live else '' }}">
-        <td><strong>{{ line.name }}</strong> <code>{{ line.code }}</code></td>
-        <td><span class="delivery-tag delivery-tag--{{ line.delivery }}">{{ line.label }}</span></td>
-        <td>
-          {% if bs and bs.is_live %}
-          <span class="status-live">● Interpreter live</span>
-          {% elif bs %}
-          <span class="status-offline">○ Interpreter not live</span>
-          {% else %}
-          <span class="status-offline">AI, runs with the room audio</span>
-          {% endif %}
-        </td>
-        <td>
-          {% if bs %}
-          <div class="room-booth-links">
-            <a href="/interpreter/{{ event.slug }}/{{ bs.db.room_id }}/{{ bs.db.language_code }}" target="_blank" rel="noopener" class="link-external">Open booth ↗</a>
-            <a href="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/booths/{{ bs.db.id }}/">Booth settings</a>
-          </div>
-          {% endif %}
-        </td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
+  <ul class="room-lang-list">
+    {% for line in summary.languages %}
+    {% set bs = booths_by_code.get(line.code) %}
+    <li class="room-lang{{ ' is-live' if bs and bs.is_live else '' }}">
+      <div class="room-lang-main">
+        <strong>{{ line.name }}</strong>
+        <span class="delivery-tag delivery-tag--{{ line.delivery }}">{{ line.label }}</span>
+      </div>
+      <div class="room-lang-status">
+        {% if bs and bs.is_live %}
+        <span class="status-live">● Interpreter is live</span>
+        {% elif bs %}
+        <span class="status-offline">○ No interpreter live</span>
+        {% else %}
+        <span class="status-offline">Runs by itself when VoxBento hears the room</span>
+        {% endif %}
+      </div>
+      <div class="room-booth-links">
+        {% if bs %}
+        <a href="/interpreter/{{ event.slug }}/{{ bs.db.room_id }}/{{ bs.db.language_code }}" target="_blank" rel="noopener">Open booth ↗</a>
+        <a href="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/booths/{{ bs.db.id }}/">Booth settings</a>
+        {% endif %}
+      </div>
+    </li>
+    {% endfor %}
+  </ul>
   {% else %}
-  <p class="muted">No listener languages yet.{% if is_event_owner %} <a href="{{ setup_url }}">Choose languages</a> and whether interpreters, AI or both provide them.{% endif %}</p>
+  <p class="muted">No listener languages yet.{% if is_event_owner %} <a href="{{ setup_url }}">Choose languages</a> and how listeners get each one.{% endif %}</p>
   {% endif %}
+
+  <div class="room-caption-line">
+    <span class="room-caption-label">Captions in {{ summary.spoken_language or 'the room language' }}</span>
+    <strong>{{ 'On' if summary.captions else 'Off' }}</strong>
+    {% if summary.captions and uses_ai %}<span class="muted">· needed for the AI languages</span>{% endif %}
+  </div>
 </div>
 
 {% if is_event_owner %}
-  <div class="token-form-card token-form-card--spaced">
-    <div class="card-head">
-      <div>
-        <h3>Stored Transcripts</h3>
-        <p class="form-help form-help--tight">View and download past transcripts and translations generated for this room.</p>
-      </div>
-      <a href="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/transcripts/" class="btn btn-primary">View Transcripts</a>
-    </div>
+<div class="room-card room-card--row">
+  <div>
+    <h2>Transcripts</h2>
+    <p class="room-card-sub">Read and download what was said in this room, and its translations.</p>
   </div>
+  <a href="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/transcripts/" class="btn btn-outline">View transcripts</a>
+</div>
 
-{% endif %}
-<!-- Assigned Members -->
 {# The event's Team page manages everyone with a role (#757). #}
-{% if is_event_owner %}
-<div class="tm-pointer">
-  <p><strong>Room coordinators</strong> for this room are added and removed on the event's Team page.</p>
+<div class="room-card room-card--row">
+  <div>
+    <h2>People</h2>
+    <p class="room-card-sub">Interpreters and room coordinators are added on the event's Team page.</p>
+  </div>
   <a href="{{ management_prefix }}/events/{{ event.id }}/team/" class="btn btn-outline">Open Team</a>
 </div>
 {% endif %}
-
 </section>
 
 {% if is_event_owner %}
-<section class="room-panel" id="room-panel-source" role="tabpanel" aria-labelledby="room-tab-source" data-room-panel="source">
-  <p class="room-panel-intro">Where this room's floor audio comes from: the meeting VoxBento joins, a program feed from your encoder, or audio sent from a browser. Captions, translation and speech are made from it.</p>
-  {% include 'admin/_meeting_source.html' %}
-  {% include 'admin/_program_ingest.html' %}
-  {% include 'admin/_program_sender.html' %}
-
+<section class="room-panel rs" id="room-panel-audio" role="tabpanel" aria-labelledby="room-tab-audio" data-room-panel="audio">
+  <div class="room-card" data-audio-chooser data-initial-choice="{{ audio_choice }}">
+    <h2>How will VoxBento hear this room?</h2>
+    <p class="room-card-sub">Captions and AI languages are made from the room's sound, so VoxBento needs to hear it.{% if not summary.captions %} This room doesn't use captions or AI right now, so you can skip this.{% endif %} Interpreters don't need this: they follow the room through the meeting link in Settings.</p>
+    <div class="audio-choices" role="radiogroup" aria-label="How VoxBento hears this room">
+      <label class="audio-choice">
+        <input type="radio" name="audio_choice" value="meeting" {% if audio_choice == 'meeting' %}checked{% endif %}>
+        <span><strong>From the online meeting</strong><small>VoxBento joins the room's Jitsi meeting as a silent listener.</small></span>
+      </label>
+      <label class="audio-choice">
+        <input type="radio" name="audio_choice" value="encoder" {% if audio_choice == 'encoder' %}checked{% endif %}>
+        <span><strong>From streaming software</strong><small>OBS, vMix or a hardware encoder sends the room's program feed.</small></span>
+      </label>
+      <label class="audio-choice">
+        <input type="radio" name="audio_choice" value="desk" {% if audio_choice == 'desk' %}checked{% endif %}>
+        <span><strong>From a computer at the sound desk</strong><small>A browser tab on a computer plugged into the sound desk sends the audio.</small></span>
+      </label>
+    </div>
+  </div>
+  <div data-audio-panel="meeting">{% include 'admin/_meeting_source.html' %}</div>
+  <div data-audio-panel="encoder">{% include 'admin/_program_ingest.html' %}</div>
+  <div data-audio-panel="desk">{% include 'admin/_program_sender.html' %}</div>
 </section>
 
-<section class="room-panel" id="room-panel-captions" role="tabpanel" aria-labelledby="room-tab-captions" data-room-panel="captions">
-  <p class="room-panel-intro">Live captions of the floor audio, AI translation into other languages, the vocabulary used for both, and translated speech for listeners. To switch captions or AI on or off, or change which languages use AI, use <a href="{{ setup_url }}">Change languages &amp; captions</a>; fine-tune providers, models and prompts here.</p>
-<form method="post" action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/edit" class="token-form">
-  <input type="hidden" name="form_section" value="transcription">
-  <div class="token-form-card token-form-card--spaced">
-    <div class="card-head card-head--spaced">
-      <h3>Floor Audio Transcription</h3>
-    </div>
-    
-    <div class="form-row">
-      <div class="form-group form-group--grow">
-        <label class="checkbox-label">
-          <input type="checkbox" name="floor_transcription_enabled" id="floor_transcription_enabled" {% if room.floor_transcription_enabled %}checked{% endif %}>
-          Enable AI Transcription for Floor Audio
-        </label>
-      </div>
-    </div>
-    
-    <div class="form-row">
-      <div class="form-group form-group--grow">
-        <label for="floor_language_code">Floor Language Code</label>
-        <input type="text" id="floor_language_code" name="floor_language_code" value="{{ room.floor_language_code or '' }}" placeholder="e.g. en, fr, de" class="input">
-      </div>
-      <div class="form-group form-group--grow">
-        <label for="floor_transcription_provider">Provider</label>
-        <select id="floor_transcription_provider" name="floor_transcription_provider" class="input">
-          <option value="none" {% if room.floor_transcription_provider == 'none' %}selected{% endif %}>-- None --</option>
-          <option value="local" {% if room.floor_transcription_provider == 'local' %}selected{% endif %}>Local (Faster-Whisper)</option>
-          <option value="openai" {% if room.floor_transcription_provider == 'openai' %}selected{% endif %}>OpenAI</option>
-          <option value="deepgram" {% if room.floor_transcription_provider == 'deepgram' %}selected{% endif %}>Deepgram</option>
-          <option value="nvidia" {% if room.floor_transcription_provider == 'nvidia' %}selected{% endif %}>NVIDIA Parakeet</option>
-          <option value="elevenlabs" {% if room.floor_transcription_provider == 'elevenlabs' %}selected{% endif %}>ElevenLabs</option>
-        </select>
-      </div>
-      <div class="form-group form-group--grow">
-        <label for="floor_transcription_model">Model</label>
-        <select id="floor_transcription_model" name="floor_transcription_model" class="input">
-          <option value="none" data-provider="none" {% if room.floor_transcription_model == 'none' %}selected{% endif %}>-- None --</option>
-          <option value="tiny" data-provider="local" {% if room.floor_transcription_model == 'tiny' %}selected{% endif %}>Local: tiny (Fastest)</option>
-          <option value="base" data-provider="local" {% if room.floor_transcription_model == 'base' %}selected{% endif %}>Local: base</option>
-          <option value="gpt-realtime-whisper" data-provider="openai" {% if room.floor_transcription_model == 'gpt-realtime-whisper' %}selected{% endif %}>OpenAI: gpt-realtime-whisper</option>
-          <option value="gpt-4o-transcribe" data-provider="openai" {% if room.floor_transcription_model == 'gpt-4o-transcribe' %}selected{% endif %}>OpenAI: gpt-4o-transcribe</option>
-          <option value="gpt-4o-mini-transcribe" data-provider="openai" {% if room.floor_transcription_model == 'gpt-4o-mini-transcribe' %}selected{% endif %}>OpenAI: gpt-4o-mini-transcribe</option>
-          <option value="whisper-1" data-provider="openai" {% if room.floor_transcription_model == 'whisper-1' %}selected{% endif %}>OpenAI: whisper-1</option>
-          <option value="nova-2" data-provider="deepgram" {% if room.floor_transcription_model == 'nova-2' %}selected{% endif %}>Deepgram: nova-2</option>
-          <option value="parakeet-rnnt" data-provider="nvidia" {% if room.floor_transcription_model == 'parakeet-rnnt' %}selected{% endif %}>NVIDIA: parakeet-rnnt</option>
-          <option value="parakeet-ctc" data-provider="nvidia" {% if room.floor_transcription_model == 'parakeet-ctc' %}selected{% endif %}>NVIDIA: parakeet-ctc</option>
-          <option value="scribe_v2_realtime" data-provider="elevenlabs" {% if room.floor_transcription_model == 'scribe_v2_realtime' or room.floor_transcription_model == 'scribe_v2' %}selected{% endif %}>ElevenLabs: scribe_v2_realtime (Streaming)</option>
-        </select>
-      </div>
-      <div class="form-group form-group-btn form-group--action">
-        <button type="submit" class="btn btn-primary">Save Settings</button>
-      </div>
-    </div>
-    <p class="form-help form-help--spaced">If enabled, listeners can select "Floor Audio" to see captions of the original floor audio. Captions start automatically once the meeting source or program ingest delivers audio.</p>
+<section class="room-panel rs" id="room-panel-ai" role="tabpanel" aria-labelledby="room-tab-ai" data-room-panel="ai">
+{% if not summary.captions %}
+  <div class="room-card room-empty">
+    <h2>This room doesn't use captions or AI</h2>
+    <p class="room-card-sub">Turn on captions, or choose AI voice or AI captions for a language, and their settings appear here.</p>
+    <a href="{{ setup_url }}" class="btn btn-primary">Edit languages</a>
   </div>
-</form>
+{% else %}
+  <p class="room-panel-intro">Fine-tune how the AI works in this room. To change which languages use AI, or to turn captions on or off, use <a href="{{ setup_url }}">Edit languages</a>.</p>
+  {% if catalog.locked %}
+  <p class="rs-note">More services ({{ catalog.locked | join(', ') }}) appear here once you add their API key on <a href="{{ management_prefix }}/events/{{ event.id }}/api-settings/">API keys</a>.</p>
+  {% endif %}
+  <form method="post" action="{{ edit_url }}" id="room_ai_form" class="room-ai-form">
+    <input type="hidden" name="form_section" value="ai">
 
-<form id="floor_translation_form" method="post" action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/edit" class="token-form">
-  <input type="hidden" name="form_section" value="translation">
-  <div class="token-form-card token-form-card--spaced">
-    <div class="card-head card-head--spaced">
-      <h3>Floor Audio Translation</h3>
+    <div class="room-card">
+      <h2>Captions</h2>
+      <p class="room-card-sub">The service that turns the speakers' words into text, in {{ summary.spoken_language or 'the room language' }}.</p>
+      <div class="field-row">
+        <div class="field">
+          <label for="floor_transcription_provider">Service</label>
+          <select id="floor_transcription_provider" name="floor_transcription_provider">
+            {% if room.floor_transcription_provider and not catalog.find("speech", room.floor_transcription_provider) %}
+            <option value="" selected disabled>{{ room.floor_transcription_provider | capitalize }} — not available now, choose another</option>
+            {% endif %}
+            {% for engine in catalog.speech %}
+            <option value="{{ engine.provider }}" {% if room.floor_transcription_provider == engine.provider %}selected{% endif %}>{{ engine.label }} — {{ engine.note }}</option>
+            {% endfor %}
+          </select>
+        </div>
+      </div>
+      <details class="room-more">
+        <summary>Choose a specific model <span class="rs-label-note">optional</span></summary>
+        <div class="field room-model">
+          <label for="floor_transcription_model">Model</label>
+          <select id="floor_transcription_model" name="floor_transcription_model">
+            {% for provider, models in speech_models.items() %}
+            {% for value, label in models %}
+            <option value="{{ value }}" data-provider="{{ provider }}" {% if room.floor_transcription_model == value %}selected{% endif %}>{{ label }}</option>
+            {% endfor %}
+            {% endfor %}
+          </select>
+        </div>
+      </details>
+    </div>
+
+    {% if uses_ai %}
+    <div class="room-card">
+      <h2>Translation</h2>
+      <p class="room-card-sub">The service that translates the captions for {{ ai_language_names | join(', ') }}.</p>
+      <div class="field-row">
+        <div class="field">
+          <label for="floor_translation_provider">Service</label>
+          <select id="floor_translation_provider" name="floor_translation_provider">
+            {% if room.floor_translation_provider and not catalog.find("translation", room.floor_translation_provider) %}
+            <option value="" selected disabled>{{ room.floor_translation_provider | capitalize }} — not available now, choose another</option>
+            {% endif %}
+            {% for engine in catalog.translation %}
+            <option value="{{ engine.provider }}" {% if room.floor_translation_provider == engine.provider %}selected{% endif %}>{{ engine.label }} — {{ engine.note }}</option>
+            {% endfor %}
+          </select>
+        </div>
+      </div>
+      <details class="room-more">
+        <summary>Choose a specific model <span class="rs-label-note">optional</span></summary>
+        <div class="field room-model">
+          <label for="floor_translation_model">Model</label>
+          <select id="floor_translation_model" name="floor_translation_model">
+            <option value="">Recommended for this service</option>
+          </select>
+        </div>
+      </details>
       <div id="nllb_download_progress_container" class="download-progress" hidden>
         <span id="nllb_download_speed" class="download-speed">-- MB/s</span>
-        <div class="progress-track">
-          <div id="nllb_download_bar" class="progress-fill"></div>
-        </div>
+        <div class="progress-track"><div id="nllb_download_bar" class="progress-fill"></div></div>
         <span id="nllb_download_percent" class="download-percent">0%</span>
       </div>
-    </div>
-    
-    <div class="form-row">
-      <div class="form-group form-group--grow">
-        <label class="checkbox-label">
-          <input type="checkbox" name="floor_translation_enabled" id="floor_translation_enabled" {% if room.floor_translation_enabled %}checked{% endif %}>
-          Enable Real-Time LLM Translation for Floor Audio
-        </label>
-        <p class="form-help form-help--spaced">This requires Floor Audio Transcription to be enabled, as translations are generated from the canonical transcript.</p>
-      </div>
-    </div>
-    
-    <div class="form-row">
-      <div class="form-group form-group--grow">
-        <label for="floor_translation_provider">Translation Provider</label>
-        <select id="floor_translation_provider" name="floor_translation_provider" class="input">
-          <option value="none" {% if room.floor_translation_provider == 'none' or not room.floor_translation_provider %}selected{% endif %}>-- None --</option>
-          <option value="">Select a Provider...</option>
-          <option value="openai" {% if room.floor_translation_provider == 'openai' %}selected{% endif %}>OpenAI</option>
-          <option value="openrouter" {% if room.floor_translation_provider == 'openrouter' %}selected{% endif %}>OpenRouter</option>
-          <option value="gemini" {% if room.floor_translation_provider == 'gemini' %}selected{% endif %}>Google Gemini</option>
-          <option value="anthropic" {% if room.floor_translation_provider == 'anthropic' %}selected{% endif %}>Anthropic</option>
-          <option value="groq" {% if room.floor_translation_provider == 'groq' %}selected{% endif %}>Groq</option>
-          <option value="local" {% if room.floor_translation_provider == 'local' %}selected{% endif %}>Local LLM</option>
-        </select>
-      </div>
-      <div class="form-group form-group--grow">
-        <label for="floor_translation_model">Translation Model</label>
-        <select id="floor_translation_model" name="floor_translation_model" class="input">
-          <option value="none" data-provider="none" {% if room.floor_translation_model == 'none' or not room.floor_translation_model %}selected{% endif %}>-- None --</option>
-          <option value="">Select a Provider first...</option>
-        </select>
-      </div>
-    </div>
 
-    <div class="ai-interpretation-grid">
-      <div class="form-group">
-        <label for="floor_ai_interpreter_persona">AI interpreter persona</label>
-        <textarea id="floor_ai_interpreter_persona" name="floor_ai_interpreter_persona" class="input ai-interpretation-textarea" rows="4" placeholder="Example: A professional simultaneous interpreter for open source technical conferences.">{{ room.floor_ai_interpreter_persona or '' }}</textarea>
-        <p class="form-help">Describe the interpreter's domain expertise and role.</p>
-      </div>
-      <div class="form-group">
-        <label for="floor_ai_interpretation_style">AI interpretation style</label>
-        <textarea id="floor_ai_interpretation_style" name="floor_ai_interpretation_style" class="input ai-interpretation-textarea" rows="4" placeholder="Example: Use clear formal conference language. Preserve API names and issue numbers.">{{ room.floor_ai_interpretation_style or '' }}</textarea>
-        <p class="form-help">Set tone, formality, terminology, and language-specific conventions.</p>
-      </div>
-    </div>
-
-    <p class="form-help ai-interpretation-note">
-      Persona, style, and vocabulary are sent as prompt instructions to cloud translation providers
-      (OpenAI-compatible, Gemini, Anthropic). The local NLLB provider takes no prompt, so these
-      settings have no effect while it is selected.
-    </p>
-
-    <div class="form-row">
-      <div class="form-group">
-        <label class="checkbox-label ai-vocabulary-toggle">
-          <input type="checkbox" name="floor_ai_vocabulary_enabled" id="floor_ai_vocabulary_enabled" {% if room.floor_ai_vocabulary_enabled %}checked{% endif %}>
-          Use the room vocabulary glossary in AI prompts
-        </label>
-        <p class="form-help">Only matching terms and high-priority entries are sent to the provider, up to 80 entries per segment.</p>
-      </div>
-    </div>
-
-    <div class="form-row">
-      <div class="form-group form-group--grow">
-        <label>Target Languages</label>
-        <div class="lang-picker" id="lp_floor_translation" aria-label="Target languages picker">
-          <div class="lang-picker-tags" id="lp_floor_translation_tags"></div>
-          <div class="lang-picker-search-wrap">
-            <input type="text" class="lang-picker-input" id="lp_floor_translation_search"
-                   placeholder="Search and add a language…" autocomplete="off">
-            <ul class="lang-picker-dropdown" id="lp_floor_translation_dropdown" hidden></ul>
-          </div>
+      <details class="room-more" data-translation-instructions {% if room.floor_ai_interpreter_persona or room.floor_ai_interpretation_style %}open{% endif %}>
+        <summary>Instructions for the AI translator <span class="rs-label-note">optional</span></summary>
+        <p class="hint" data-local-translation-note>The built-in translator (NLLB) doesn't read instructions or the glossary. Choose another service to use them.</p>
+        <div class="field">
+          <label for="floor_ai_interpreter_persona">What is this event about?</label>
+          <textarea id="floor_ai_interpreter_persona" name="floor_ai_interpreter_persona" rows="3" placeholder="Example: An open source developer conference. Talks are technical.">{{ room.floor_ai_interpreter_persona or '' }}</textarea>
+          <span class="hint">Helps the AI understand the subject and pick the right words.</span>
         </div>
-        <div id="lp_floor_translation_hidden"></div>
-        <p class="form-help form-help--spaced">The translation worker will generate a translation for every selected language simultaneously.</p>
+        <div class="field">
+          <label for="floor_ai_interpretation_style">How should it translate?</label>
+          <textarea id="floor_ai_interpretation_style" name="floor_ai_interpretation_style" rows="3" placeholder="Example: Use clear, formal language. Keep product names and code in English.">{{ room.floor_ai_interpretation_style or '' }}</textarea>
+          <span class="hint">Tone, formality and words to keep as they are.</span>
+        </div>
+        <label class="rs-toggle">
+          <span class="rs-toggle-text"><span class="rs-toggle-title">Use the glossary</span>
+            <span class="hint">Translate the terms below the way your glossary says.</span>
+          </span>
+          <input type="checkbox" class="rs-switch" role="switch" name="floor_ai_vocabulary_enabled" id="floor_ai_vocabulary_enabled" {% if room.floor_ai_vocabulary_enabled %}checked{% endif %}>
+        </label>
+      </details>
+    </div>
+    {% endif %}
+
+    {% if uses_voice %}
+    <div class="room-card">
+      <h2>Voice</h2>
+      <p class="room-card-sub">The voice that reads the translation aloud for {{ voice_language_names | join(', ') }}.</p>
+      <div class="field-row">
+        <div class="field">
+          <label for="floor_tts_provider">Service</label>
+          <select id="floor_tts_provider" name="floor_tts_provider">
+            {% if room.floor_tts_provider and not catalog.find("voice", room.floor_tts_provider) %}
+            <option value="" selected disabled>{{ room.floor_tts_provider | capitalize }} — not available now, choose another</option>
+            {% endif %}
+            {% for engine in catalog.voice %}
+            <option value="{{ engine.provider }}" {% if room.floor_tts_provider == engine.provider %}selected{% endif %}>{{ engine.label }} — {{ engine.note }}</option>
+            {% endfor %}
+          </select>
+          <span class="hint" id="tts_provider_help_deepgram">Deepgram picks a voice for each language.</span>
+        </div>
+        <div class="field" id="tts_voice_group">
+          <label for="floor_tts_voice">Voice</label>
+          <select id="floor_tts_voice" name="floor_tts_voice">
+            {% set current_voice = room.floor_tts_voice or 'M1' %}
+            {% for value, label in voice_presets %}
+            <option value="{{ value }}" {% if current_voice == value %}selected{% endif %}>{{ label }}</option>
+            {% endfor %}
+          </select>
+        </div>
       </div>
-      <div class="form-group form-group-btn form-group--action">
-        <button type="submit" class="btn btn-primary">Save Settings</button>
-      </div>
-    </div>
-  </div>
-</form>
-
-<section class="token-form-card ai-vocabulary-card" aria-labelledby="ai-vocabulary-heading">
-  <div class="ai-vocabulary-header">
-    <div>
-      <h3 id="ai-vocabulary-heading">AI interpretation vocabulary</h3>
-      <p class="form-help">Upload event terminology for consistent translated captions and translated TTS.</p>
-    </div>
-    <a class="btn btn-outline btn-sm" href="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/ai-vocabulary/export">Export CSV</a>
-  </div>
-
-  {% if vocabulary_imported is not none %}
-    <div class="alert alert-success ai-vocabulary-alert">
-      Imported {{ vocabulary_imported }} row{% if vocabulary_imported != '1' %}s{% endif %}.
-      {% if vocabulary_languages %} Languages: {{ vocabulary_languages }}.{% endif %}
-    </div>
-  {% endif %}
-  {% if vocabulary_warnings %}
-    <div class="alert alert-warning ai-vocabulary-alert"><strong>Import warnings:</strong> {{ vocabulary_warnings }}</div>
-  {% endif %}
-
-  <form method="post" action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/ai-vocabulary/upload" enctype="multipart/form-data" class="ai-vocabulary-upload">
-    <div class="form-group ai-vocabulary-file">
-      <label for="vocabulary_file">Vocabulary CSV</label>
-      <input type="file" id="vocabulary_file" name="vocabulary_file" accept=".csv,text/csv" required>
-      <p class="form-help">Required columns: source_term, target_language, target_term. Maximum size: 2 MB.</p>
-    </div>
-    <div class="form-group ai-vocabulary-mode">
-      <label for="import_mode">Import mode</label>
-      <select id="import_mode" name="import_mode" class="input">
-        <option value="append">Append new entries</option>
-        <option value="replace">Replace room vocabulary</option>
-      </select>
-    </div>
-    <button type="submit" class="btn btn-primary">Upload vocabulary</button>
-  </form>
-
-  {% if vocabulary_entries %}
-    <div class="ai-vocabulary-table-wrap">
-      <table class="data-table ai-vocabulary-table">
-        <thead>
-          <tr><th>Source term</th><th>Language</th><th>Target term</th><th>Match</th><th>Priority</th><th></th></tr>
-        </thead>
-        <tbody>
-          {% for entry in vocabulary_entries %}
-            <tr>
-              <td><strong>{{ entry.source_term }}</strong>{% if entry.description %}<small>{{ entry.description }}</small>{% endif %}</td>
-              <td><span class="badge">{{ entry.target_language }}</span></td>
-              <td>{{ entry.target_term }}</td>
-              <td>{{ entry.match_type }}{% if entry.case_sensitive %}, case-sensitive{% endif %}</td>
-              <td>{{ entry.priority }}</td>
-              <td>
-                <form method="post" action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/ai-vocabulary/delete">
-                  <input type="hidden" name="entry_id" value="{{ entry.id }}">
-                  <button type="submit" class="btn btn-sm btn-outline">Delete</button>
-                </form>
-              </td>
-            </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-    </div>
-    <form method="post" action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/ai-vocabulary/delete" class="ai-vocabulary-clear">
-      <input type="hidden" name="entry_id" value="all">
-      <button type="submit" class="btn btn-sm btn-outline">Delete all room vocabulary</button>
-    </form>
-  {% else %}
-    <p class="ai-vocabulary-empty">No room vocabulary has been uploaded yet.</p>
-  {% endif %}
-</section>
-
-<form method="post" action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/edit" class="token-form" id="floor_tts_form">
-  <input type="hidden" name="form_section" value="tts">
-  <div class="token-form-card token-form-card--spaced">
-    <div class="card-head card-head--spaced">
-      <h3>Floor Audio TTS (Direct Push)</h3>
       <div id="supertonic_download_progress_container" class="download-progress" hidden>
         <span id="supertonic_download_speed" class="download-speed">-- MB/s</span>
-        <div class="progress-track">
-          <div id="supertonic_download_bar" class="progress-fill"></div>
-        </div>
+        <div class="progress-track"><div id="supertonic_download_bar" class="progress-fill"></div></div>
         <span id="supertonic_download_percent" class="download-percent">0%</span>
       </div>
     </div>
-    
-    <div class="form-row">
-      <div class="form-group form-group--grow">
-        <label class="checkbox-label">
-          <input type="checkbox" name="floor_tts_enabled" id="floor_tts_enabled" {% if room.floor_tts_enabled %}checked{% endif %}>
-          Enable TTS for translated floor audio
-        </label>
-        <p class="form-help form-help--spaced">This requires Floor Audio Translation to be enabled. Translated text is synthesized to speech and pushed directly to listeners via WebSockets.</p>
+    {% endif %}
+
+    <div class="room-save-bar">
+      <button type="submit" class="btn btn-primary">Save AI settings</button>
+    </div>
+  </form>
+
+  {% if uses_ai %}
+  <section class="room-card ai-vocabulary-card" aria-labelledby="ai-vocabulary-heading">
+    <div class="room-card-head">
+      <div>
+        <h2 id="ai-vocabulary-heading">Glossary</h2>
+        <p class="room-card-sub">Names and terms the AI should always translate the same way, such as product names.</p>
       </div>
+      <a class="btn btn-outline btn-sm" href="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/ai-vocabulary/export">Download as CSV</a>
     </div>
 
-    <div class="form-row">
-      <div class="form-group form-group--grow">
-        <label for="floor_tts_provider">TTS Provider</label>
-        <select id="floor_tts_provider" name="floor_tts_provider" class="input">
-          <option value="deepgram" {% if (room.floor_tts_provider or 'deepgram') == 'deepgram' %}selected{% endif %}>Deepgram Aura (Cloud)</option>
-          <option value="supertonic" {% if room.floor_tts_provider == 'supertonic' %}selected{% endif %}>Supertonic (Self-Hosted)</option>
-        </select>
-        <p class="form-help form-help--spaced" id="tts_provider_help_deepgram"><strong>Supported Deepgram languages:</strong> English (en), Spanish (es), Dutch (nl), French (fr), German (de), Italian (it), Japanese (ja). Other languages fall back to an English voice.</p>
-        <p class="form-help form-help--spaced" id="tts_provider_help_supertonic" hidden>Supertonic runs locally with no API key. 31 languages supported; unknown languages use a language-agnostic fallback. The model (~400MB) downloads on first use.</p>
+    {% if vocabulary_imported is not none %}
+      <div class="alert alert-success ai-vocabulary-alert">
+        Added {{ vocabulary_imported }} term{% if vocabulary_imported != '1' %}s{% endif %}.
+        {% if vocabulary_languages %} Languages: {{ vocabulary_languages }}.{% endif %}
       </div>
-      <div class="form-group form-group--grow" id="tts_voice_group">
-        <label for="floor_tts_voice">Supertonic Voice</label>
-        <select id="floor_tts_voice" name="floor_tts_voice" class="input">
-          {% set current_voice = room.floor_tts_voice or 'M1' %}
-          {% for v in ['M1', 'M2', 'M3', 'M4', 'M5', 'F1', 'F2', 'F3', 'F4', 'F5'] %}
-          <option value="{{ v }}" {% if current_voice == v %}selected{% endif %}>{{ v }}</option>
-          {% endfor %}
-        </select>
-        <p class="form-help form-help--spaced">M1–M5 (male) and F1–F5 (female) preset voices.</p>
+    {% endif %}
+    {% if vocabulary_warnings %}
+      <div class="alert alert-warning ai-vocabulary-alert"><strong>Some rows were skipped:</strong> {{ vocabulary_warnings }}</div>
+    {% endif %}
+
+    <form method="post" action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/ai-vocabulary/upload" enctype="multipart/form-data" class="room-upload">
+      <div class="field-row">
+        <div class="field">
+          <label for="vocabulary_file">Glossary file (CSV)</label>
+          <input type="file" id="vocabulary_file" name="vocabulary_file" accept=".csv,text/csv" required>
+          <span class="hint">A spreadsheet saved as CSV with the columns source_term, target_language and target_term. Up to 2 MB.</span>
+        </div>
+        <div class="field">
+          <label for="import_mode">When uploading</label>
+          <select id="import_mode" name="import_mode">
+            <option value="append">Add to the current glossary</option>
+            <option value="replace">Replace the current glossary</option>
+          </select>
+        </div>
       </div>
-      <div class="form-group form-group-btn form-group--action">
-        <button type="submit" class="btn btn-primary">Save Settings</button>
+      <div class="room-save-bar"><button type="submit" class="btn btn-primary">Upload</button></div>
+    </form>
+
+    {% if vocabulary_entries %}
+      <div class="ai-vocabulary-table-wrap">
+        <table class="data-table ai-vocabulary-table">
+          <thead>
+            <tr><th>Term</th><th>Language</th><th>Translate as</th><th>Match</th><th>Priority</th><th></th></tr>
+          </thead>
+          <tbody>
+            {% for entry in vocabulary_entries %}
+              <tr>
+                <td><strong>{{ entry.source_term }}</strong>{% if entry.description %}<small>{{ entry.description }}</small>{% endif %}</td>
+                <td><span class="badge">{{ entry.target_language }}</span></td>
+                <td>{{ entry.target_term }}</td>
+                <td>{{ entry.match_type }}{% if entry.case_sensitive %}, case-sensitive{% endif %}</td>
+                <td>{{ entry.priority }}</td>
+                <td>
+                  <form method="post" action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/ai-vocabulary/delete">
+                    <input type="hidden" name="entry_id" value="{{ entry.id }}">
+                    <button type="submit" class="btn btn-sm btn-outline">Delete</button>
+                  </form>
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
       </div>
-    </div>
-  </div>
-</form>
+      <form method="post" action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/ai-vocabulary/delete" class="ai-vocabulary-clear">
+        <input type="hidden" name="entry_id" value="all">
+        <button type="submit" class="btn btn-sm btn-outline">Delete the whole glossary</button>
+      </form>
+    {% else %}
+      <p class="ai-vocabulary-empty">No glossary yet.</p>
+    {% endif %}
+  </section>
+  {% endif %}
+{% endif %}
 </section>
 
-<section class="room-panel" id="room-panel-settings" role="tabpanel" aria-labelledby="room-tab-settings" data-room-panel="settings">
-  <form method="post" action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/edit" class="token-form">
-  <input type="hidden" name="form_section" value="general">
-  <div class="token-form-card token-form-card--spaced-sm">
-    <h3>Room Settings</h3>
-    <div class="form-row">
-      <div class="form-group form-group--grow">
-        <label for="display_name">Room Name</label>
-        <input type="text" id="display_name" name="display_name" class="input" value="{{ room.display_name }}" required>
+<section class="room-panel rs" id="room-panel-settings" role="tabpanel" aria-labelledby="room-tab-settings" data-room-panel="settings">
+  <form method="post" action="{{ edit_url }}">
+    <input type="hidden" name="form_section" value="general">
+    <div class="room-card">
+      <h2>Room details</h2>
+      <div class="field">
+        <label for="display_name">Room name</label>
+        <input type="text" id="display_name" name="display_name" value="{{ room.display_name }}" maxlength="200" required>
+        <span class="hint">Interpreters and listeners see this name.</span>
       </div>
-      <div class="form-group form-group--wide">
-        <label for="jitsi_url">Jitsi Room URL (Floor Audio Source)</label>
-        <input type="url" id="jitsi_url" name="jitsi_url" class="input" value="{{ room.jitsi_url or fallback_jitsi_url }}" placeholder="e.g. https://jitsi.voxbento.com/Room-Event-TrackA">
+      <div class="field">
+        <label for="jitsi_url">Meeting link</label>
+        <input type="url" id="jitsi_url" name="jitsi_url" value="{{ room.jitsi_url or fallback_jitsi_url }}" placeholder="e.g. https://meet.example.org/TrackA">
+        <span class="hint">Interpreters see and hear the room through this meeting. VoxBento uses the same link when it hears the room from the online meeting.</span>
       </div>
-      <div class="form-group form-group--grow">
-        <label for="audio_delay_ms">Audio Synchronization Delay (ms)</label>
-        <input type="number" id="audio_delay_ms" name="audio_delay_ms" class="input" value="{{ room.audio_delay_ms }}" min="0" max="10000" step="1">
+      <div class="field">
+        <label for="audio_delay_ms">Listener delay (milliseconds)</label>
+        <input type="number" id="audio_delay_ms" name="audio_delay_ms" value="{{ room.audio_delay_ms }}" min="0" max="10000" step="1">
+        <span class="hint">Holds back what listeners hear so it lines up with a livestream video that runs late. Leave at 0 if there is no video. 1000 = 1 second.</span>
       </div>
-      <div class="form-group form-group-btn form-group--action">
-        <button type="submit" class="btn btn-primary">Save Settings</button>
-      </div>
+      <div class="room-save-bar"><button type="submit" class="btn btn-primary">Save</button></div>
     </div>
-    <p class="form-help form-help--spaced">Interpreters in all booths for this room will automatically join this Jitsi URL for floor monitoring.</p>
-    <p class="form-help form-help--tight">Applies a listener-side delay to all audio sources in this room. Use this when livestream video, captions, or external media are delayed and need audio synchronization.</p>
-  </div>
-</form>
+  </form>
 
-<form method="post" action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/edit" class="token-form">
-  <input type="hidden" name="form_section" value="relay">
-  <div class="token-form-card token-form-card--spaced">
-    <h3>Relay Settings</h3>
-    <div class="form-row">
-      <div class="form-group form-group--grow">
-        <label for="relay_booth_id">Relay Booth</label>
-        <select id="relay_booth_id" name="relay_booth_id" class="input">
-          <option value="none">-- None --</option>
+  <form method="post" action="{{ edit_url }}">
+    <input type="hidden" name="form_section" value="relay">
+    <div class="room-card">
+      <h2>Relay interpreting</h2>
+      <p class="room-card-sub">Interpreters who don't understand the speaker can listen to another booth's interpretation instead. Choose the booth they listen to.</p>
+      <div class="field">
+        <label for="relay_booth_id">Relay booth</label>
+        <select id="relay_booth_id" name="relay_booth_id">
+          <option value="none">No relay</option>
           {% for bs in booths %}
-            <option value="{{ bs.db.id }}" {% if room.relay_booth_id == bs.db.id %}selected{% endif %}>{{ bs.db.language_name }} ({{ bs.db.language_code }})</option>
+            <option value="{{ bs.db.id }}" {% if room.relay_booth_id == bs.db.id %}selected{% endif %}>{{ bs.db.language_name }}</option>
           {% endfor %}
         </select>
       </div>
-      <div class="form-group form-group-btn">
-        <button type="submit" class="btn btn-primary">Save Settings</button>
-      </div>
+      <div class="room-save-bar"><button type="submit" class="btn btn-primary">Save</button></div>
     </div>
-    <p class="form-help form-help--spaced">Designate a booth to act as the relay source for interpreters in other booths.</p>
-  </div>
-</form>
-
-<div class="danger-zone">
-  <h3>Danger Zone</h3>
-  <form method="post" action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/delete" class="inline-delete"
-        data-confirm="Delete room '{{ room.display_name }}'? All booths in this room will be removed.">
-    <button type="submit" class="btn btn-danger">Delete Room</button>
-    <span class="danger-text">This removes all booths and their invite tokens.</span>
   </form>
-</div>
+
+  <div class="danger-zone">
+    <h3>Delete this room</h3>
+    <form method="post" action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/delete" class="inline-delete"
+          data-confirm="Delete room '{{ room.display_name }}'? All booths in this room will be removed.">
+      <button type="submit" class="btn btn-danger">Delete room</button>
+      <span class="danger-text">This removes its booths and their invite links. It can't be undone.</span>
+    </form>
+  </div>
 </section>
 {% endif %}
 
@@ -498,11 +437,11 @@
 
 <div id="nllb_download_modal" class="model-modal-overlay" hidden>
   <div class="model-modal">
-    <h3>Local Offline Model Selected</h3>
-    <p>You selected a local offline model. It will take time to load the model. Do you want to continue?</p>
+    <h3>Download the built-in translator?</h3>
+    <p>The built-in translator runs on this server. The first time, it has to download a large file, which can take several minutes. Translation starts once it's ready.</p>
     <div class="model-modal-actions">
       <button type="button" class="btn btn-secondary" id="nllb_cancel_btn">Cancel</button>
-      <button type="button" class="btn btn-primary" id="nllb_proceed_btn">Proceed</button>
+      <button type="button" class="btn btn-primary" id="nllb_proceed_btn">Download and save</button>
     </div>
   </div>
 </div>
@@ -512,8 +451,8 @@
     <div class="model-modal-icon">
       ✓
     </div>
-    <h3>Model Ready</h3>
-    <p>The local translation model is fully loaded and ready to use. Your real-time translations will now process entirely on this device.</p>
+    <h3>Translator ready</h3>
+    <p>The built-in translator is downloaded and ready.</p>
     <div class="model-modal-actions">
       <button type="button" class="btn btn-primary btn-modal-dismiss" id="nllb_success_got_it_btn">Got it</button>
     </div>
@@ -522,11 +461,11 @@
 
 <div id="supertonic_download_modal" class="model-modal-overlay" hidden>
   <div class="model-modal">
-    <h3>Supertonic TTS Selected</h3>
-    <p>You selected the local Supertonic TTS provider. It will take some time to download the ~400MB model on its first use. Do you want to continue?</p>
+    <h3>Download the built-in voice?</h3>
+    <p>The built-in voice (Supertonic) runs on this server. The first time, it has to download (about 400 MB), which can take a few minutes.</p>
     <div class="model-modal-actions">
       <button type="button" class="btn btn-secondary" id="supertonic_cancel_btn">Cancel</button>
-      <button type="button" class="btn btn-primary" id="supertonic_proceed_btn">Proceed</button>
+      <button type="button" class="btn btn-primary" id="supertonic_proceed_btn">Download and save</button>
     </div>
   </div>
 </div>
@@ -536,8 +475,8 @@
     <div class="model-modal-icon">
       ✓
     </div>
-    <h3>Supertonic Ready</h3>
-    <p>The Supertonic TTS model is fully loaded and ready to use. Your text-to-speech audio will now process entirely on this device.</p>
+    <h3>Voice ready</h3>
+    <p>The built-in voice is downloaded and ready.</p>
     <div class="model-modal-actions">
       <button type="button" class="btn btn-primary btn-modal-dismiss" id="supertonic_success_got_it_btn">Got it</button>
     </div>
