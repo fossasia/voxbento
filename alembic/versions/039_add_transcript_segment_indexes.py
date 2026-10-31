@@ -42,6 +42,10 @@ def upgrade() -> None:
     ``alembic upgrade --sql`` to emit the statements instead of failing on a mock
     connection.
     """
+    bind = op.get_bind()
+    if bind and bind.dialect.name == "postgresql":
+        op.execute("LOCK TABLE transcript_segments IN ACCESS EXCLUSIVE MODE")
+
     op.create_index(
         ROOM_LANGUAGE_CREATED,
         "transcript_segments",
@@ -53,5 +57,9 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     """Drop the transcript segment indexes."""
+    bind = op.get_bind()
+    if bind and bind.dialect.name == "postgresql":
+        op.execute("LOCK TABLE transcript_segments IN ACCESS EXCLUSIVE MODE")
+
     op.drop_index(BOOTH_ID, table_name="transcript_segments", if_exists=True)
     op.drop_index(ROOM_LANGUAGE_CREATED, table_name="transcript_segments", if_exists=True)
