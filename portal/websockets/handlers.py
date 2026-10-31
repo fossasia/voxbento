@@ -209,23 +209,24 @@ async def ws_captions(websocket: WebSocket, booth_id: str) -> None:
     """WebSocket endpoint for live captions. Listener tokens are limited to their own event"""
     token = websocket.query_params.get("token", "")
     is_anonymous = not bool(token)
+
+    booth_event: str | None = None
+    try:
+        from portal.booth_identity import parse_booth_id
+
+        booth_event, _, _ = parse_booth_id(booth_id)
+    except ValueError:
+        if "/" in booth_id:
+            booth_event = booth_id.split("/")[0]
+        elif "-" in booth_id:
+            booth_event = booth_id.rsplit("-", 1)[0]
+
     if token:
         reject_code: int | None = None
         try:
             payload = decode_token(token)
             if not (payload.get("is_admin") or payload.get("admin")):
                 token_event = payload.get("event_slug", "")
-                booth_event: str | None = None
-                try:
-                    from portal.booth_identity import parse_booth_id
-
-                    booth_event, _, _ = parse_booth_id(booth_id)
-                except ValueError:
-                    if "/" in booth_id:
-                        booth_event = booth_id.split("/")[0]
-                    elif "-" in booth_id:
-                        booth_event = booth_id.rsplit("-", 1)[0]
-
                 if not token_event or booth_event != token_event:
                     reject_code = 4003
         except Exception:
@@ -238,12 +239,58 @@ async def ws_captions(websocket: WebSocket, booth_id: str) -> None:
             await websocket.close(code=reject_code)
             return
     else:
-        from portal.config import settings
+        if booth_event:
+            from portal.auth import _current_user, get_booth_sessions, resolve_booth_role
+            from portal.database import get_event_by_slug, get_session
 
-        max_anon = getattr(settings, "max_anonymous_caption_listeners_per_booth", 500)
-        if not listener_manager.try_reserve_anonymous(websocket, booth_id, max_anon):
-            await websocket.close(code=1008)
-            return
+            async with get_session() as db_session:
+                ev = await get_event_by_slug(db_session, booth_event)
+
+            if ev and ev.listener_join_code:
+                from portal.join_code_limit import register_failed_attempt, reset_attempts
+
+                client_ip = websocket.client.host if websocket.client else "unknown"
+                join_code = ev.listener_join_code.strip()
+                submitted = [
+                    c.strip()
+                    for c in (
+                        websocket.cookies.get(f"listener_code_{booth_event}"),
+                        websocket.query_params.get("code"),
+                    )
+                    if c and c.strip()
+                ]
+                is_authorized = join_code in submitted
+                if is_authorized:
+                    reset_attempts(client_ip)
+                else:
+                    sessions = get_booth_sessions(websocket)
+                    user_sess = sessions.get("user_token")
+                    invite_sess = sessions.get("session_token")
+                    # Same rule as the listener page: any signed-in account gets in, but
+                    # the account is checked in the database rather than trusting claims.
+                    if user_sess and user_sess.get("user") and await _current_user(user_sess):
+                        is_authorized = True
+                    elif invite_sess and await resolve_booth_role(invite_sess, booth_id):
+                        is_authorized = True
+
+                if not is_authorized:
+                    # Accept before closing so the client sees the close code, not an HTTP 403.
+                    await websocket.accept()
+                    if submitted and register_failed_attempt(client_ip):
+                        await websocket.close(code=1008)
+                    else:
+                        await websocket.close(code=4001)
+                    return
+                is_anonymous = False
+
+        if is_anonymous:
+            from portal.config import settings
+
+            max_anon = getattr(settings, "max_anonymous_caption_listeners_per_booth", 500)
+            if not listener_manager.try_reserve_anonymous(websocket, booth_id, max_anon):
+                await websocket.accept()
+                await websocket.close(code=1008)
+                return
 
     accepted = False
     try:

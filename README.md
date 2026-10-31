@@ -42,6 +42,7 @@ Interpreters monitor the floor session and broadcast high-fidelity translation d
 - **🤖 Live AI Transcription & Translation:** Multi-provider speech-to-text (Faster-Whisper, OpenAI, Deepgram, NVIDIA Parakeet, ElevenLabs) paired with real-time LLM translations guided by custom personas, styles, and domain vocabulary glossaries.
 - **🗣️ Direct-Push Text-to-Speech (TTS):** Synthesize live translated speech on the fly (Deepgram Aura or self-hosted Supertonic ONNX), streamed directly to attendees over binary WebSocket frames.
 - **📡 Program Stream Ingest & YouTube Relay:** Send conference floor audio from an encoder or browser, with optional RTMPS forwarding to YouTube.
+- **🖥️ Subtitles Overlay for OBS / vMix:** Event owners style a transparent 1920×1080 caption layer on the event page (language, position, font size, background, lines, test caption) and copy its URL into a Browser source.
 - **🎛️ Mission Control & Coordination:** Real-time booth status monitoring, live audio meters, in-booth team chat, and coordinator controls via FastAPI WebSockets.
 - **💻 VoxBento Local:** Sovereign, 100% offline desktop application for private AI meeting intelligence and minutes on macOS, Windows, and Linux.
 

@@ -103,6 +103,9 @@
         {% if bs %}
         <a href="/interpreter/{{ event.slug }}/{{ bs.db.room_id }}/{{ bs.db.language_code }}" target="_blank" rel="noopener">Open booth ↗</a>
         <a href="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/booths/{{ bs.db.id }}/">Booth settings</a>
+        {% if overlay_urls[bs.db.language_code] %}
+        <a href="{{ overlay_urls[bs.db.language_code] }}" target="_blank" rel="noopener">Captions overlay ↗</a>
+        {% endif %}
         {% endif %}
       </div>
     </li>
@@ -116,6 +119,7 @@
     <span class="room-caption-label">Captions in {{ summary.spoken_language or 'the room language' }}</span>
     <strong>{{ 'On' if summary.captions else 'Off' }}</strong>
     {% if summary.captions and uses_ai %}<span class="muted">· needed for the AI languages</span>{% endif %}
+    {% if floor_overlay_url %}<a href="{{ floor_overlay_url }}" target="_blank" rel="noopener">Captions overlay ↗</a>{% endif %}
   </div>
 </div>
 
