@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import asyncio
 import io
 import logging
@@ -67,6 +69,9 @@ class BoothTranscriptionState:
 
 
 class TranscriptionProvider:
+    # PCM rate ffmpeg outputs for this provider
+    sample_rate = 16000
+
     async def process_chunk(
         self,
         chunk: bytes,
@@ -90,7 +95,7 @@ class TranscriptionProvider:
         from portal.transcription.aggregator import CaptionAggregator
 
         aggregator = CaptionAggregator(broadcast_callback, room_id=room_id)
-        chunk_size_bytes = 16000 * 2 * 3  # 3 seconds
+        chunk_size_bytes = self.sample_rate * 2 * 3  # 3 seconds
         queue = asyncio.Queue(maxsize=2)
         booth_state = BoothTranscriptionState(booth_id=booth_id)
 

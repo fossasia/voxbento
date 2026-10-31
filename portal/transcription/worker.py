@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import asyncio
 import logging
 import uuid
@@ -69,7 +71,7 @@ class TranscriptionWorkerSession:
         channel_path = make_mediamtx_path(self.event_slug, self.room_id, self.language_code)
         self.rtsp_url = f"{settings.mediamtx_rtsp_base}/{channel_path}"
         self.provider = PROVIDERS.get(self.provider_name, PROVIDERS["local"])
-        self.sample_rate = "24000" if self.provider_name == "openai" else "16000"
+        self.sample_rate = str(self.provider.sample_rate)
 
     def start(self):
         if self.task:
