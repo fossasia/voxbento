@@ -134,6 +134,7 @@ from portal.notifications import (
     save_email_branding,
     template_content,
 )
+from portal.overlay_channels import overlay_channels
 from portal.program_ingest import room_lock
 from portal.rate_limit import check_rate_limit
 from portal.roles import EVENT_OWNER, assignment_error, role_label
@@ -549,7 +550,7 @@ async def mission_control_grid(request: Request, event_slug: str, user=Depends(r
             {
                 "id": room.id,
                 "name": room.display_name,
-                "floor_captions": bool(room.floor_transcription_enabled) and room.floor_transcription_provider != "none",
+                "floor_captions": room.has_floor_captions,
                 "floor_source": room.floor_source or "jitsi_bot",
             }
             for room in await list_rooms_for_event(session, event.id)
@@ -1170,8 +1171,8 @@ async def admin_event_detail(request: Request, event_id: int):
         event = await get_event_by_id(session, event_id)
         if event is None:
             raise HTTPException(status_code=404, detail="Event not found.")
-        rooms = await list_rooms_for_event(session, event_id)
-        db_booths = await list_booths_for_event(session, event_id)
+        rooms = await list_rooms_for_event(session, event_id, limit=None)
+        db_booths = await list_booths_for_event(session, event_id, limit=None)
         summaries = await _room_summaries(session, event, rooms)
     # Keep each room's booths together, in the same order as the Rooms list.
     room_order = {room.id: index for index, room in enumerate(rooms)}
@@ -1188,6 +1189,7 @@ async def admin_event_detail(request: Request, event_id: int):
         context={
             "event": event,
             "rooms": rooms,
+            "overlay_channels": overlay_channels(rooms, db_booths),
             "summaries": summaries,
             "booths": booth_statuses,
             "live_count": sum((1 for bs in booth_statuses if bs["is_live"])),
@@ -1455,6 +1457,11 @@ async def admin_room_detail(request: Request, event_id: int, room_id: int):
             "booths": booth_statuses,
             "summary": summarize(room, snapshot),
             "booths_by_code": {bs["db"].language_code: bs for bs in booth_statuses},
+            "overlay_urls": {
+                ch.code: _overlay_url(event, room.id, ch.code) for ch in overlay_channels([room], db_booths)
+            },
+            "room_overlay_channels": overlay_channels([room], db_booths),
+            "floor_overlay_url": _overlay_url(event, room.id, "floor") if room.has_floor_captions else None,
             "just_created": request.query_params.get("created") == "1",
             "just_updated": request.query_params.get("updated") == "1",
             "kept_live_languages": kept_live,
@@ -1556,7 +1563,7 @@ async def admin_edit_room(request: Request, event_id: int, room_id: int):
     relay_booth_id = int(relay_booth_id_str) if relay_booth_id_str and relay_booth_id_str.lower() != "none" else None
     audio_delay_ms = parse_audio_delay_ms(form.get("audio_delay_ms", "0"))
     floor_transcription_enabled = form.get("floor_transcription_enabled") == "on"
-    floor_transcription_provider = form.get("floor_transcription_provider", "local").strip()
+    floor_transcription_provider = form.get("floor_transcription_provider", "local").strip().lower() or "none"
     floor_transcription_model = form.get("floor_transcription_model", "tiny").strip()
     floor_language_code = form.get("floor_language_code", "").strip() or None
     floor_translation_enabled = form.get("floor_translation_enabled") == "on"
@@ -1984,6 +1991,14 @@ async def admin_create_booth(request: Request, event_id: int, room_id: int):
     )
 
 
+def _overlay_url(event: Event, room_id: int, language_code: str) -> str | None:
+    """Absolute OBS / vMix subtitle overlay URL for a caption channel; None until the event has a join code."""
+    if not event.listener_join_code:
+        return None
+    query = urllib.parse.urlencode({"code": event.listener_join_code})
+    return f"{settings.public_base_url.rstrip('/')}/overlay/{event.slug}/{room_id}/{language_code}?{query}"
+
+
 @router.get("/admin/events/{event_id}/rooms/{room_id}/booths/{booth_id}/", dependencies=[Depends(require_owner_or_coordinator)])
 async def admin_booth_detail(request: Request, event_id: int, room_id: int, booth_id: int):
     admin_flags = await get_access_flags(request, event_id=event_id, room_id=room_id)
@@ -2023,6 +2038,7 @@ async def admin_booth_detail(request: Request, event_id: int, room_id: int, boot
             "booth_id": bid,
             "mediamtx_path": mediamtx_path,
             "whep_url": whep_url,
+            "overlay_url": _overlay_url(event, db_booth.room_id, db_booth.language_code),
             "is_live": is_live,
             "participants": participants,
             "active_interpreter": active_interpreter,

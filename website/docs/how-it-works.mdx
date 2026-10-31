@@ -244,6 +244,28 @@ For example:
 
 Listeners connected to the caption WebSocket receive transcription segments as they are produced. The caption stream is independent of the audio stream — listeners can receive captions even while audio is playing through WHEP or HLS.
 
+### Subtitles overlay for OBS and vMix
+
+The transparent `/overlay/{event_slug}/{room_id}/{language_code}` page subscribes to
+`/ws/captions/{booth_id}`. Its channel catalog includes interpreter booths, enabled
+floor captions, and enabled translation targets without requiring a target booth.
+It shares the existing room/language broadcast keys and does not start workers.
+
+A valid event join code or active account authorizes the page. The same checks
+protect `/overlay/{event_slug}/{room_id}/{language_code}/session`, which supplies a
+fresh listener token on reconnect. Code guesses share a bounded budget per IPv4
+address or IPv6 /64 across HTTP and WebSockets, checked before comparing further
+guesses. Inactive or
+deleted accounts cannot mint tokens using stale login cookies. Pages and refresh
+responses are not cached; the page can only be framed by the portal itself.
+
+The event configurator previews the real overlay using same-origin messages from
+its parent frame. Test captions stay inside the preview. Each saved source renders
+only caption text, with no controls, status labels, or audio on the broadcast.
+
+See [Caption overlays](subtitle-overlays.mdx) for vMix/OBS setup, channel coverage,
+authorization lifetime, styling, and rehearsal instructions.
+
 ## Shared header and user menu
 
 Every signed-in page (Admin, My events and its event pages, My booths, Mission

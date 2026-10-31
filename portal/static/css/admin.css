@@ -1911,3 +1911,75 @@ code { font-family: var(--font-mono); font-size: 0.85em; background: var(--color
 .wizard-actions > .btn-lg:last-child { margin-left: auto; }
 
 .rs-change-list { margin: 12px 0 24px; padding-left: 24px; }
+
+/* Subtitles overlay configurator (event detail) */
+.overlay-preview {
+  --preview-checker: color-mix(in srgb, var(--vb-color-text) 88%, var(--vb-color-surface));
+  position: relative;
+  aspect-ratio: 16 / 9;
+  overflow: hidden;
+  border-radius: var(--vb-radius-sm);
+  background-color: var(--vb-color-text);
+  background-image:
+    linear-gradient(45deg, var(--preview-checker) 25%, transparent 25%, transparent 75%, var(--preview-checker) 75%),
+    linear-gradient(45deg, var(--preview-checker) 25%, transparent 25%, transparent 75%, var(--preview-checker) 75%);
+  background-position: 0 0, 10px 10px;
+  background-size: 20px 20px;
+}
+
+.overlay-preview iframe {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 1920px;
+  height: 1080px;
+  border: 0;
+  transform-origin: 0 0;
+  pointer-events: none;
+}
+
+.overlay-preview-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin: 0.75rem 0 1rem;
+}
+
+.overlay-controls {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.overlay-control {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  font-weight: 600;
+}
+
+.overlay-position {
+  flex-direction: row;
+  flex-wrap: wrap;
+}
+
+.overlay-position legend {
+  width: 100%;
+  margin-bottom: 0.35rem;
+  padding: 0;
+}
+
+.overlay-position label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  margin-right: 0.75rem;
+  font-weight: 400;
+}
