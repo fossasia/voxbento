@@ -2074,6 +2074,34 @@ class TestBoothCRUD:
         assert b"testcon/1/en/whep" in resp.content
 
     @pytest.mark.anyio
+    async def test_booth_and_room_pages_link_the_subtitle_overlay(self, admin_cookie, seed_event):
+        event, room, booth = seed_event
+        booth_page = f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/"
+        room_page = f"/admin/events/{event.id}/rooms/{room.id}/"
+        overlay = f"/overlay/{event.slug}/{room.id}/{booth.language_code}?code=ROOM42".encode()
+
+        async with _client() as c:
+            no_code = await c.get(booth_page, cookies=admin_cookie)
+        assert b"Subtitles Overlay (OBS / vMix)" in no_code.content
+        assert b"Generate a listener join code" in no_code.content
+        assert b"/overlay/" not in no_code.content
+
+        from portal.database import get_session
+
+        async with get_session() as s:
+            db_event = await s.get(type(event), event.id)
+            assert db_event is not None
+            db_event.listener_join_code = "ROOM42"
+
+        async with _client() as c:
+            booth_resp = await c.get(booth_page, cookies=admin_cookie)
+            room_resp = await c.get(room_page, cookies=admin_cookie)
+        assert overlay in booth_resp.content
+        assert b'data-copy-target="overlay-url"' in booth_resp.content
+        assert overlay in room_resp.content
+        assert b"Captions overlay" in room_resp.content
+
+    @pytest.mark.anyio
     async def test_booth_detail_shows_mediamtx_path(self, admin_cookie, seed_event):
         event, room, booth = seed_event
         async with _client() as c:

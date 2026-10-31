@@ -65,6 +65,15 @@
           /listener/{{ event.slug }} ↗
         </a>
       </dd>
+      <dt>Subtitles Overlay (OBS / vMix)</dt>
+      {% if overlay_url %}
+      <dd class="copyable-field">
+        <code id="overlay-url">{{ overlay_url }}</code>
+        <button type="button" class="btn btn-sm btn-copy" data-copy-target="overlay-url">Copy</button>
+      </dd>
+      {% else %}
+      <dd class="muted">Generate a listener join code on the event page to get this link.</dd>
+      {% endif %}
     </dl>
   </div>
 

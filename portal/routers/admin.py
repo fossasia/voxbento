@@ -1455,6 +1455,10 @@ async def admin_room_detail(request: Request, event_id: int, room_id: int):
             "booths": booth_statuses,
             "summary": summarize(room, snapshot),
             "booths_by_code": {bs["db"].language_code: bs for bs in booth_statuses},
+            "overlay_urls": {
+                bs["db"].language_code: _overlay_url(event, room.id, bs["db"].language_code) for bs in booth_statuses
+            },
+            "floor_overlay_url": _overlay_url(event, room.id, "floor") if room.has_floor_captions else None,
             "just_created": request.query_params.get("created") == "1",
             "just_updated": request.query_params.get("updated") == "1",
             "kept_live_languages": kept_live,
@@ -1984,6 +1988,14 @@ async def admin_create_booth(request: Request, event_id: int, room_id: int):
     )
 
 
+def _overlay_url(event: Event, room_id: int, language_code: str) -> str | None:
+    """Absolute OBS / vMix subtitle overlay URL for a caption channel; None until the event has a join code."""
+    if not event.listener_join_code:
+        return None
+    query = urllib.parse.urlencode({"code": event.listener_join_code})
+    return f"{settings.public_base_url}/overlay/{event.slug}/{room_id}/{language_code}?{query}"
+
+
 @router.get("/admin/events/{event_id}/rooms/{room_id}/booths/{booth_id}/", dependencies=[Depends(require_owner_or_coordinator)])
 async def admin_booth_detail(request: Request, event_id: int, room_id: int, booth_id: int):
     admin_flags = await get_access_flags(request, event_id=event_id, room_id=room_id)
@@ -2023,6 +2035,7 @@ async def admin_booth_detail(request: Request, event_id: int, room_id: int, boot
             "booth_id": bid,
             "mediamtx_path": mediamtx_path,
             "whep_url": whep_url,
+            "overlay_url": _overlay_url(event, db_booth.room_id, db_booth.language_code),
             "is_live": is_live,
             "participants": participants,
             "active_interpreter": active_interpreter,
