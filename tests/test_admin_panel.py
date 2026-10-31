@@ -2599,6 +2599,50 @@ async def test_admin_pages_have_a_toast_live_region(admin_cookie, seed_event):
 @pytest.mark.parametrize(
     "path",
     [
+        "/admin/events/",
+        "/admin/events/{event}/rooms/",
+        "/admin/events/{event}/rooms/{room}/booths/",
+    ],
+)
+async def test_admin_list_action_buttons_have_tooltips(path, admin_cookie, seed_event):
+    import re
+
+    event, room, _ = seed_event
+    async with _client() as c:
+        resp = await c.get(path.format(event=event.id, room=room.id), cookies=admin_cookie)
+
+    assert resp.status_code == 200
+    buttons = re.findall(r'<button type="submit" class="btn btn-sm btn-danger"[^>]*>', resp.text)
+    assert buttons, "expected row action buttons on the page"
+    for button in buttons:
+        title = re.search(r'title="([^"]*)"', button)
+        aria_label = re.search(r'aria-label="([^"]*)"', button)
+        assert title and title.group(1), button
+        assert aria_label and aria_label.group(1) == title.group(1), button
+
+
+@pytest.mark.anyio
+async def test_booth_list_row_delete_button_snapshot(admin_cookie, seed_event):
+    import re
+
+    event, room, _ = seed_event
+    async with _client() as c:
+        resp = await c.get(f"/admin/events/{event.id}/rooms/{room.id}/booths/", cookies=admin_cookie)
+
+    assert resp.status_code == 200
+    row = re.search(r"<tr[ >](?:(?!</tr>).)*?English.*?</tr>", resp.text, re.DOTALL)
+    assert row, "expected a table row for the seeded booth"
+    assert re.search(
+        r"""<button type="submit" class="btn btn-sm btn-danger" title="Delete the 'English' booth"\s+"""
+        r"""aria-label="Delete the 'English' booth">Delete</button>""",
+        row.group(0),
+    ), row.group(0)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "path",
+    [
         "/admin/events/{event}/",
         "/admin/events/{event}/team/",
         "/admin/events/{event}/api-settings/",
