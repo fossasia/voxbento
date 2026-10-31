@@ -13,11 +13,12 @@ from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 import jwt
 import sqlalchemy as sa
-from fastapi import APIRouter, Body, HTTPException, Request, Response, status
+from fastapi import APIRouter, Body, Depends, HTTPException, Request, Response, status
 from fastapi.responses import RedirectResponse
 from fastapi.templating import Jinja2Templates
 from sqlalchemy.exc import DBAPIError, IntegrityError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
+from unilimit.integrations.fastapi import RateLimit
 
 from portal.auth import (
     create_participant_token,
@@ -53,7 +54,7 @@ from portal.globals import _JS_CACHE_BUST, asset_version_context
 from portal.hosting_requests import format_event_dates, parse_hosting_request_form
 from portal.models import HOSTING_REQUEST_GRANTED, TOKEN_TYPE_HOSTING_INVITE, AuthToken, User, utc_now
 from portal.notifications import queue_notification
-from portal.rate_limit import check_rate_limit
+from portal.rate_limit import check_rate_limit, login_email_rule, login_ip_rule, login_limiter
 from portal.registration_protection import limit_registration, verify_registration_challenge
 from portal.schemas.auth import TokenRequest, TokenResponse
 from portal.user_menu import resolve_user_menu, user_menu_context
@@ -357,20 +358,37 @@ async def user_login_page(request: Request, next: str = "", email: str = "", swi
     )
 
 
-@router.post("/login")
+async def get_login_identity(request: Request) -> str | None:
+    """Resolve login identity (normalized email) from form data for rate limiting."""
+    try:
+        form = await request.form()
+        email = form.get("email", "")
+        if isinstance(email, str):
+            email = email.strip().lower()
+            return email or None
+    except Exception as exc:
+        logger.debug("Could not parse form email for rate limit identity: %s", exc)
+    return None
+
+
+@router.post(
+    "/login",
+    dependencies=[
+        Depends(
+            RateLimit(
+                login_ip_rule,
+                login_email_rule,
+                identity=get_login_identity,
+                limiter=login_limiter,
+            )
+        )
+    ],
+)
 async def user_login_submit(request: Request):
     form = await request.form()
     email = form.get("email", "").strip().lower()
     password = form.get("password", "")
     next_url = form.get("next_url", "")
-
-    if not check_rate_limit("login", email, max_requests=10, window_seconds=3600):
-        return templates.TemplateResponse(
-            request=request,
-            name="login.html",
-            context={"error": "Too many attempts. Try again later.", "email": email, "next_url": next_url},
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-        )
 
     # Bind this session to the credential snapshot, before any database await.
     authenticated_at = utc_now()

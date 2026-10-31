@@ -680,8 +680,15 @@ async def test_overlapping_tts_broadcast_cannot_send_after_authorizer_removed():
             closing.set()
             await release.wait()
 
+    calls = 0
+
     async def revoked():
-        raise WSAuthError("Revoked")
+        nonlocal calls
+        calls += 1
+        call = calls
+        await asyncio.sleep(0)
+        if call == 1:
+            raise WSAuthError("Revoked")
 
     manager = TTSConnectionManager()
     socket = Socket()
@@ -693,6 +700,7 @@ async def test_overlapping_tts_broadcast_cannot_send_after_authorizer_removed():
     try:
         await asyncio.wait_for(closing.wait(), timeout=1)
         await asyncio.sleep(0)
+        assert calls == 2
         assert frames == []
     finally:
         release.set()
