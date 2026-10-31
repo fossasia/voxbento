@@ -69,13 +69,24 @@
       </div>
     </div>
 
-    <div class="form-group api-key-field api-key-field--last">
+    <div class="form-group api-key-field">
       <label for="elevenlabs_api_key" class="api-key-label">ElevenLabs API Key</label>
       <input type="password" id="elevenlabs_api_key" name="elevenlabs_api_key" placeholder="{{ 'Configured' if event.encrypted_elevenlabs_api_key else '' }}" value="" class="input api-key-input">
       <div class="api-key-meta">
         <p class="form-help api-key-help">Required for ElevenLabs Scribe v2</p>
         <label class="api-key-clear">
           <input type="checkbox" name="clear_elevenlabs_api_key" value="1"> Clear Key
+        </label>
+      </div>
+    </div>
+
+    <div class="form-group api-key-field api-key-field--last">
+      <label for="atlascloud_api_key" class="api-key-label">Atlas Cloud API Key</label>
+      <input type="password" id="atlascloud_api_key" name="atlascloud_api_key" placeholder="{{ 'Configured' if event.encrypted_atlascloud_api_key else '' }}" value="" class="input api-key-input">
+      <div class="api-key-meta">
+        <p class="form-help api-key-help">Required for Atlas Cloud Seed ASR 2.0</p>
+        <label class="api-key-clear">
+          <input type="checkbox" name="clear_atlascloud_api_key" value="1"> Clear Key
         </label>
       </div>
     </div>

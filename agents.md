@@ -202,7 +202,7 @@ Direct-push TTS feed: `/ws/tts/{room_id}/{language_code}/{booth_id}` — pre-aut
 MediaMTX RTSP (8554) → ffmpeg PCM → TranscriptionProvider → CaptionAggregator → WebSocket broadcast
 ```
 
-Providers: `local` (faster-whisper, CPU), `openai` (whisper-1/realtime), `deepgram` (nova-2), `nvidia` (Parakeet), `elevenlabs` (scribe_v2).
+Providers: `local` (faster-whisper, CPU), `openai` (whisper-1/realtime), `deepgram` (nova-2), `atlascloud` (Seed ASR 2.0 async predictions), `nvidia` (Parakeet), `elevenlabs` (scribe_v2).
 Worker lifecycle: `start_transcription_worker` / `stop_transcription_worker` in `portal/transcription/worker.py`.
 Max concurrent workers: 10 (`MAX_TOTAL_WORKERS`).
 
