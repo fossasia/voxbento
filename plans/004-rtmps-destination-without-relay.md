@@ -164,10 +164,12 @@ MODES = (WHIP_MODE, RTMPS_MODE, RELAY_MODE)
    Browser-sender session secrets must **never** authorize RTMPS (only `key_digest_valid`).
 2. `reserved_source`: `"rtmpsConn" if room.program_ingest_mode in program_relay.RTMPS_MODES else "webRTCSession"`.
 3. `presented_secret`: replace `settings.program_relay_enabled` with `settings.rtmps_ingest_enabled`.
-4. `open_sender_session`: replace the `== program_relay.RELAY_MODE` check with
-   `in program_relay.RTMPS_MODES` and message
+4. `open_sender_session`: preserve the existing relay-specific 409 message for
+   `room.program_ingest_mode == program_relay.RELAY_MODE` ("YouTube relay mode owns the floor; switch the room to independent outputs (WHIP) first."),
+   and add a separate check for `room.program_ingest_mode == program_relay.RTMPS_MODE` with message
    `"An RTMPS encoder owns the floor; switch the room to WHIP or the browser sender first."`.
-   Reason: otherwise the sender would rebind the room to WHIP while an RTMPS key is still valid.
+   Reason: avoid replacing the relay-specific message with a generic check, while preventing the browser
+   sender from rebinding the floor to WHIP while an RTMPS key is still active.
 5. Health AAC hint (line ~680): use `in program_relay.RTMPS_MODES`.
 6. Do **not** change `relay_request`, `reconcile_once`'s `relay_rooms`, or `program_relay.sync`.
 
@@ -232,6 +234,10 @@ Cases:
    Block `enable` when `rtmps` selected and unavailable (mirror the `relayBlocked` logic).
 4. Wherever the code tests `mode === 'rtmps_relay'` to show **server/key** UI, use
    `['rtmps', 'rtmps_relay'].includes(mode)`; keep relay-health/YouTube-live logic relay-only.
+   In `renderSteps(data)`, update the non-relay branch so connection and monitoring completion
+   checks `data.enabled && data.mode === selectedMode()` instead of hard-coding `data.mode === 'whip'`,
+   allowing non-relay RTMPS mode to mark steps complete while keeping relay-health checks restricted
+   to `rtmps_relay`.
 
 **Verify**: `node --check portal/static/js/program-ingest.js` → exit 0;
 `grep -c "data-mode-panel='rtmps rtmps_relay'" portal/templates/admin/_program_ingest.html` → ≥ 3.
@@ -247,11 +253,14 @@ Cases:
 2. `docker-compose.relay.yml`: add `PROGRAM_RTMPS_ENABLED: "true"` under portal env. Nothing else.
 3. `scripts/setup-youtube-relay.sh`: add `--ingest-only` option (update the usage
    comment lines 2–9). When set: use `docker-compose.rtmps.yml` instead of
-   `docker-compose.relay.yml`, skip writing/generating `PROGRAM_RELAY_CONTROL_SECRET`
+   `docker-compose.relay.yml`, skip writing/generating `PROGRAM_RELAY_CONTROL_SECRET`,
    and skip the relay health check; everything else (host, cert discovery,
-   `PROGRAM_RTMPS_PUBLIC_BASE`, compose validation) is shared. If `COMPOSE_FILE` already
-   contains the relay file, keep it (relay implies RTMPS) and print that ingest-only is
-   already covered.
+   `PROGRAM_RTMPS_PUBLIC_BASE`, compose validation) is shared. Branch the final Docker Compose
+   startup command on ingest-only mode: start only `mediamtx` and `portal`
+   (`docker compose up -d mediamtx portal`), while retaining the existing `program-relay`
+   build and startup (`docker compose up -d --build program-relay` followed by `mediamtx portal`)
+   for normal relay mode. If `COMPOSE_FILE` already contains the relay file, keep it (relay
+   implies RTMPS) and print that ingest-only is already covered.
 
 **Verify**: `bash -n scripts/setup-youtube-relay.sh` → exit 0; the Compose command
 from the table → exit 0.
