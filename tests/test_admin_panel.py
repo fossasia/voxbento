@@ -17,6 +17,7 @@ import re
 os.environ["BOOTH_ACCESS_TOKEN"] = ""
 
 from datetime import datetime, timedelta, timezone
+from html.parser import HTMLParser
 
 import pytest
 
@@ -151,6 +152,25 @@ def _client():
     from fastapi_app import app
 
     return AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
+
+
+class _InlineScripts(HTMLParser):
+    """Collect the attributes of every script a strict CSP would block: no `src` and not a JSON data block."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.found: list[dict[str, str | None]] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attributes = dict(attrs)
+        if tag == "script" and "src" not in attributes and attributes.get("type") != "application/json":
+            self.found.append(attributes)
+
+
+def _inline_scripts(html: str) -> list[dict[str, str | None]]:
+    parser = _InlineScripts()
+    parser.feed(html)
+    return parser.found
 
 
 # ---------------------------------------------------------------------------
@@ -2085,18 +2105,25 @@ class TestBoothCRUD:
             )
         assert resp.status_code == 200
         # Every script is external or a JSON data block, whatever attributes it carries.
-        inline = [
-            tag
-            for tag in re.findall(r"<script\b[^>]*>", resp.text, re.IGNORECASE)
-            if "src=" not in tag.lower() and 'type="application/json"' not in tag.lower()
-        ]
-        assert inline == []
+        assert _inline_scripts(resp.text) == []
         assert "js/booth-detail.js" in resp.text
         config = re.search(r'<script type="application/json" id="booth-detail-config">(.*?)</script>', resp.text, re.S)
         assert config is not None
         data = json.loads(config.group(1))
         assert {"code": "de", "name": "German"} in data["languages"]
         assert data["selected_codes"] == []
+
+    @pytest.mark.anyio
+    async def test_inline_script_detector_flags_every_blocked_form(self):
+        for blocked in (
+            "<script>run()</script>",
+            '<SCRIPT type="text/javascript">run()</SCRIPT>',
+            '<script type="module">run()</script>',
+            '<script data-src="x">run()</script>',
+        ):
+            assert _inline_scripts(blocked), blocked
+        assert _inline_scripts('<script src="/static/js/a.js"></script>') == []
+        assert _inline_scripts('<script type="application/json" id="x">{}</script>') == []
 
     @pytest.mark.anyio
     async def test_booth_detail_shows_whep_url(self, admin_cookie, seed_event):
