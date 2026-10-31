@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import struct
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
@@ -17,6 +17,7 @@ from portal.config import settings
 from portal.database import configure, create_user, dispose, get_session, init_db
 from portal.models import Event, Room, RoomTranslationLanguage, TranscriptSegment
 from portal.transcription.aggregator import CaptionAggregator
+from portal.transcription.worker import active_workers
 from portal.websockets.manager import tts_manager
 
 
@@ -542,3 +543,96 @@ async def test_program_final_pipeline_preserves_timing_and_multiple_languages(en
     finally:
         for lang in ["fr", "es"]:
             tts_manager._rooms.pop(tts_manager._get_key(room.id, lang, booth), None)
+
+
+@pytest.mark.anyio
+async def test_deleted_event_room_worker_is_stopped(environment, monkeypatch):
+    client, event, rooms, media, _, start, stop = environment
+    room = rooms[0]
+    token = await enable(client, event, room)
+    auth = credentials(room, token)
+    assert (await client.post("/internal/media-auth", json=auth)).status_code == 204
+    media[auth["path"]] = {
+        "name": auth["path"],
+        "ready": True,
+        "source": {"type": "webRTCSession", "id": auth["id"]},
+        "tracks": ["Opus"],
+        "bytesReceived": 10,
+    }
+    await ingest.reconcile_once()
+    assert start.await_count == 1
+    monkeypatch.setitem(active_workers, f"program-test-{room.id}-floor", object())  # the running worker
+
+    async with get_session() as session:
+        db_event = await session.get(Event, event.id)
+        db_event.deleted_at = datetime.now(timezone.utc)
+
+    start.reset_mock()
+    stop.reset_mock()
+    await ingest.reconcile_once()
+    start.assert_not_awaited()
+    stop.assert_awaited_once_with(f"program-test-{room.id}-floor")
+    assert room.id not in ingest.health
+
+
+@pytest.mark.anyio
+async def test_deleted_event_worker_is_stopped_while_media_listing_fails(environment, monkeypatch):
+    client, event, rooms, media, _, start, stop = environment
+    room = rooms[0]
+    token = await enable(client, event, room)
+    auth = credentials(room, token)
+    assert (await client.post("/internal/media-auth", json=auth)).status_code == 204
+    media[auth["path"]] = {
+        "name": auth["path"],
+        "ready": True,
+        "source": {"type": "webRTCSession", "id": auth["id"]},
+        "tracks": ["Opus"],
+        "bytesReceived": 10,
+    }
+    await ingest.reconcile_once()
+    assert start.await_count == 1
+    monkeypatch.setitem(active_workers, f"program-test-{room.id}-floor", object())  # the running worker
+
+    async with get_session() as session:
+        other = Event(slug="other-event", display_name="Other Event")
+        session.add(other)
+        await session.flush()
+        session.add(Room(event_id=other.id, display_name="Other Room", floor_source="program_ingest"))
+        db_event = await session.get(Event, event.id)
+        db_event.deleted_at = datetime.now(timezone.utc)
+
+    # Another room is still active, so the media paths are requested, and that request fails.
+    monkeypatch.setattr(ingest, "media_paths", AsyncMock(side_effect=httpx.ConnectError("media down")))
+    stop.reset_mock()
+    await ingest.reconcile_once()
+    stop.assert_awaited_once_with(f"program-test-{room.id}-floor")
+
+
+@pytest.mark.anyio
+async def test_deleted_event_worker_is_stopped_after_its_health_record_is_dropped(environment, monkeypatch):
+    client, event, rooms, media, _, start, stop = environment
+    room = rooms[0]
+    booth_id = f"program-test-{room.id}-floor"
+    token = await enable(client, event, room)
+    auth = credentials(room, token)
+    assert (await client.post("/internal/media-auth", json=auth)).status_code == 204
+    media[auth["path"]] = {
+        "name": auth["path"],
+        "ready": True,
+        "source": {"type": "webRTCSession", "id": auth["id"]},
+        "tracks": ["Opus"],
+        "bytesReceived": 10,
+    }
+    await ingest.reconcile_once()
+    assert start.await_count == 1
+    monkeypatch.setitem(active_workers, booth_id, object())  # the running worker
+    # close_sender_session drops the room's health record without stopping its worker.
+    ingest.health.pop(room.id, None)
+
+    async with get_session() as session:
+        db_event = await session.get(Event, event.id)
+        db_event.deleted_at = datetime.now(timezone.utc)
+
+    stop.reset_mock()
+    await ingest.reconcile_once()
+    stop.assert_awaited_once_with(booth_id)

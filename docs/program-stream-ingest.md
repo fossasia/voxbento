@@ -148,6 +148,9 @@ the first. Reconnects may wait for the **15-second disconnect grace** plus one p
 before their old reservation is released. Configure with
 `PROGRAM_INGEST_DISCONNECT_GRACE_SECS`.
 
+Rooms of a deleted event are skipped by the reconciler, which then stops the room's floor
+worker and its relay.
+
 States: disabled, waiting, receiving (audio decoder starting), processing (PCM
 progress observed), degraded (no supported audio, stalled decoder, missing STT
 configuration, capacity/control failure), disconnected. Decoder/no-progress
