@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib.util
+import io
 import os
 import sqlite3
 import tempfile
@@ -153,3 +154,106 @@ def test_migration_018_downgrade_backfills_passwordless_accounts():
         assert hashes["grace@example.org"] == migration.UNUSABLE_PASSWORD_HASH
     finally:
         os.unlink(db_path)
+
+
+def _create_pre_039_transcript_segments(db_path: str) -> None:
+    """Recreate transcript_segments exactly as migration 010 left it: no secondary index."""
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.execute(
+            """
+            CREATE TABLE transcript_segments (
+                id INTEGER NOT NULL,
+                room_id INTEGER NOT NULL,
+                booth_id INTEGER,
+                language_code VARCHAR(10) NOT NULL,
+                text TEXT NOT NULL,
+                created_at DATETIME NOT NULL,
+                PRIMARY KEY (id),
+                FOREIGN KEY(room_id) REFERENCES rooms (id) ON DELETE CASCADE,
+                FOREIGN KEY(booth_id) REFERENCES booths (id) ON DELETE CASCADE
+            )
+            """
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _indexes(db_path: str, table: str) -> dict[str, list[str]]:
+    conn = sqlite3.connect(db_path)
+    try:
+        names = [row[1] for row in conn.execute(f"PRAGMA index_list({table})")]
+        return {name: [row[2] for row in conn.execute(f"PRAGMA index_info({name})")] for name in names}
+    finally:
+        conn.close()
+
+
+def test_migration_039_indexes_transcript_segments():
+    """Migration 039 must index the transcript export predicate and the booth cascade (#1033).
+
+    ``transcript_segments`` arrives from 010 with no secondary index at all, so the
+    export in ``api_v1.py`` filtered and sorted over the table, and the ``ON DELETE
+    CASCADE`` from ``booths`` scanned the child table once per deleted parent.
+
+    The composite carries ``(created_at, id)`` because that is the export's ORDER BY;
+    leaving ``id`` out still forces PostgreSQL to sort rows that tie on ``created_at``.
+    ``booth_id`` gets its own index because it is not a leading column of that composite.
+    """
+    migration = _load_migration("039_add_transcript_segment_indexes.py")
+
+    fd, db_path = tempfile.mkstemp(suffix=".db")
+    os.close(fd)
+    try:
+        _create_pre_039_transcript_segments(db_path)
+        assert _indexes(db_path, "transcript_segments") == {}, "010 leaves the table unindexed"
+
+        _run(db_path, migration.upgrade)
+
+        indexes = _indexes(db_path, "transcript_segments")
+        assert indexes.get("ix_transcript_segments_room_language_created") == [
+            "room_id",
+            "language_code",
+            "created_at",
+            "id",
+        ]
+        assert indexes.get("ix_transcript_segments_booth_id") == ["booth_id"]
+
+        # A second runner must not abort on indexes that already exist.
+        _run(db_path, migration.upgrade)
+        assert len(_indexes(db_path, "transcript_segments")) == 2
+
+        _run(db_path, migration.downgrade)
+        assert _indexes(db_path, "transcript_segments") == {}
+
+        # Downgrading twice must not fail either.
+        _run(db_path, migration.downgrade)
+        assert _indexes(db_path, "transcript_segments") == {}
+    finally:
+        os.unlink(db_path)
+
+
+def test_migration_039_emits_sql_offline():
+    """Migration 039 must generate SQL in ``--sql`` mode.
+
+    Offline generation runs against a mock connection that cannot be reflected, so
+    the revision must never inspect the live schema. An inspector call here fails
+    with ``NoInspectionAvailable`` instead of emitting the index statements.
+    """
+    migration = _load_migration("039_add_transcript_segment_indexes.py")
+
+    for dialect in ("postgresql", "sqlite"):
+        buffer = io.StringIO()
+        context = MigrationContext.configure(
+            dialect_name=dialect,
+            opts={"as_sql": True, "output_buffer": buffer},
+        )
+        with Operations.context(context):
+            migration.upgrade()
+        emitted = buffer.getvalue()
+        assert "ix_transcript_segments_room_language_created" in emitted
+        assert "ix_transcript_segments_booth_id" in emitted
+        if dialect == "postgresql":
+            assert "LOCK TABLE transcript_segments IN SHARE ROW EXCLUSIVE MODE" in emitted
+        else:
+            assert "LOCK TABLE" not in emitted
