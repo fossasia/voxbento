@@ -185,7 +185,7 @@
       <div class="field-row">
         <div class="field">
           <label for="floor_transcription_provider">Service</label>
-          <select id="floor_transcription_provider" name="floor_transcription_provider">
+          <select id="floor_transcription_provider" name="floor_transcription_provider" data-provider-filter="floor_transcription_model">
             {% if room.floor_transcription_provider and not catalog.find("speech", room.floor_transcription_provider) %}
             <option value="" selected disabled>{{ room.floor_transcription_provider | capitalize }} — not available now, choose another</option>
             {% endif %}
@@ -199,7 +199,7 @@
         <summary>Choose a specific model <span class="rs-label-note">optional</span></summary>
         <div class="field room-model">
           <label for="floor_transcription_model">Model</label>
-          <select id="floor_transcription_model" name="floor_transcription_model">
+          <select id="floor_transcription_model" name="floor_transcription_model" data-model-filter="floor_transcription_provider">
             {% for provider, models in speech_models.items() %}
             {% for value, label in models %}
             <option value="{{ value }}" data-provider="{{ provider }}" {% if room.floor_transcription_model == value %}selected{% endif %}>{{ label }}</option>

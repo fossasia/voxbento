@@ -103,7 +103,134 @@ document.addEventListener('DOMContentLoaded', () => {
   initLocalModelDownloader();
   initAsyncSave();
   initRevealPanels();
+  initProviderModelFiltering();
 });
+
+// ---------------------------------------------------------------------------
+// Provider-to-Model Dropdown Filtering (#905)
+// ---------------------------------------------------------------------------
+
+const initializedFilterPairs = new WeakMap();
+
+/**
+ * Checks whether an <option> is compatible with the selected provider value.
+ * Supports exact match on data-provider, comma-separated lists, and '*' / 'all'.
+ * If selectedProvider is empty, matches options without data-provider or '*' / 'all'.
+ */
+function isOptionCompatible(opt, selectedProvider) {
+  const providerAttr = opt.getAttribute('data-provider');
+  if (!selectedProvider) {
+    return !providerAttr || providerAttr === '*' || providerAttr === 'all';
+  }
+  if (!providerAttr) {
+    return false;
+  }
+  if (providerAttr === '*' || providerAttr === 'all') {
+    return true;
+  }
+  return (
+    providerAttr === selectedProvider ||
+    providerAttr
+      .split(',')
+      .map((p) => p.trim())
+      .includes(selectedProvider)
+  );
+}
+
+/**
+ * Initializes provider-to-model filtering between a pair of <select> elements.
+ * @param {HTMLSelectElement} providerSelect
+ * @param {HTMLSelectElement} modelSelect
+ */
+function initProviderModelPair(providerSelect, modelSelect) {
+  if (!providerSelect || !modelSelect) return;
+
+  if (!providerSelect._filterBoundModels) {
+    providerSelect._filterBoundModels = new WeakSet();
+  }
+  if (providerSelect._filterBoundModels.has(modelSelect)) return;
+  providerSelect._filterBoundModels.add(modelSelect);
+
+  let targetSet = initializedFilterPairs.get(providerSelect);
+  if (!targetSet) {
+    targetSet = new WeakSet();
+    initializedFilterPairs.set(providerSelect, targetSet);
+  }
+  if (targetSet.has(modelSelect)) return;
+  targetSet.add(modelSelect);
+
+  const allOptions = Array.from(modelSelect.options);
+
+  function filterModels() {
+    const selectedProvider = providerSelect.value;
+    let firstVisible = null;
+    let currentSelectedStillVisible = false;
+
+    allOptions.forEach((opt) => {
+      if (isOptionCompatible(opt, selectedProvider)) {
+        opt.style.display = '';
+        opt.disabled = false;
+        opt.hidden = false;
+        if (!firstVisible) firstVisible = opt;
+        if (opt.selected) currentSelectedStillVisible = true;
+      } else {
+        opt.style.display = 'none';
+        opt.disabled = true;
+        opt.hidden = true;
+      }
+    });
+
+    if (!currentSelectedStillVisible) {
+      if (firstVisible) {
+        firstVisible.selected = true;
+      } else {
+        modelSelect.value = '';
+        modelSelect.selectedIndex = -1;
+      }
+    }
+  }
+
+  providerSelect.addEventListener('change', filterModels);
+  filterModels();
+}
+
+/**
+ * Scans for dropdown pairs configured with data-provider-filter or data-model-filter
+ * and initializes filtering for each pair.
+ */
+function initProviderModelFiltering() {
+  document.querySelectorAll('select[data-provider-filter]').forEach((providerSelect) => {
+    const targetId = providerSelect.dataset.providerFilter;
+    if (!targetId) return;
+    const modelSelect = document.getElementById(targetId);
+    if (!modelSelect) return;
+    initProviderModelPair(providerSelect, modelSelect);
+  });
+
+  document.querySelectorAll('select[data-model-filter]').forEach((modelSelect) => {
+    const providerId = modelSelect.dataset.modelFilter;
+    if (!providerId) return;
+    const providerSelect = document.getElementById(providerId);
+    if (!providerSelect) return;
+    initProviderModelPair(providerSelect, modelSelect);
+  });
+}
+
+if (typeof window !== 'undefined') {
+  window.initProviderModelPair = initProviderModelPair;
+  window.initProviderModelFiltering = initProviderModelFiltering;
+}
+
+if (typeof globalThis !== 'undefined') {
+  globalThis.initProviderModelPair = initProviderModelPair;
+  globalThis.initProviderModelFiltering = initProviderModelFiltering;
+}
+
+if (typeof document !== 'undefined' && document.readyState !== 'loading') {
+  initProviderModelFiltering();
+}
+
+
 
 // Buttons with data-reveal-target show a hidden panel (e.g. the reason form for
 // declining a hosting request); data-reveal-close hides it again.

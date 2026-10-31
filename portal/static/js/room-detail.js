@@ -86,29 +86,40 @@ function initAudioChooser() {
 // ── AI settings ─────────────────────────────────────────────────────────
 
 function initAiSettings() {
+  if (typeof window !== 'undefined' && typeof window.initProviderModelFiltering === 'function') {
+    window.initProviderModelFiltering();
+  }
+
   const speechProvider = document.getElementById('floor_transcription_provider');
   const speechModel = document.getElementById('floor_transcription_model');
   if (speechProvider && speechModel) {
     const options = [...speechModel.options];
-    const filterModels = () => {
-      const visible = options.filter((opt) => opt.dataset.provider === speechProvider.value);
+    const syncSpeechModels = () => {
+      const getProvider = (opt) => {
+        if (opt.dataset && opt.dataset.provider) return opt.dataset.provider;
+        if (typeof opt.getAttribute === 'function') return opt.getAttribute('data-provider');
+        return '';
+      };
+      const visible = options.filter((opt) => getProvider(opt) === speechProvider.value);
       options.forEach((opt) => {
-        opt.hidden = !visible.includes(opt);
-        opt.disabled = !visible.includes(opt);
+        const isMatch = visible.includes(opt);
+        opt.hidden = !isMatch;
+        opt.disabled = !isMatch;
+        if (opt.style) opt.style.display = isMatch ? '' : 'none';
       });
       if (!visible.some((opt) => opt.selected) && visible.length) visible[0].selected = true;
-      const modelDetails = speechModel.closest('details');
+      const modelDetails = typeof speechModel.closest === 'function' ? speechModel.closest('details') : null;
       if (modelDetails) modelDetails.hidden = visible.length < 2;
     };
-    speechProvider.addEventListener('change', filterModels);
-    filterModels();
+    speechProvider.addEventListener('change', syncSpeechModels);
+    syncSpeechModels();
   }
 
   const transProvider = document.getElementById('floor_translation_provider');
   const transModel = document.getElementById('floor_translation_model');
   if (transProvider && transModel) {
     const savedProvider = transProvider.value;
-    const savedModel = root.dataset.initialTranslationModel || '';
+    const savedModel = root?.dataset?.initialTranslationModel || '';
     const localNote = document.querySelector('[data-local-translation-note]');
     let catalog = null;
 
