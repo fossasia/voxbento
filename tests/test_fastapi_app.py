@@ -2069,6 +2069,7 @@ def test_strong_secret_passes_production():
 
 
 def test_missing_media_auth_hook_secret_raises_in_production():
+    """Verify that production rejects missing MEDIAMTX_AUTH_HOOK_SECRET."""
     from portal.config import Settings
 
     s = Settings(
@@ -2079,6 +2080,79 @@ def test_missing_media_auth_hook_secret_raises_in_production():
     )
     with pytest.raises(RuntimeError, match="MEDIAMTX_AUTH_HOOK_SECRET"):
         s.validate_production_secrets()
+
+
+def test_common_password_secret_raises_in_production():
+    """Verify that common passwords in the weak defaults list are rejected in production."""
+    from portal.config import Settings
+
+    s = Settings(debug=False, secret_key="admin", jwt_secret="")
+    with pytest.raises(RuntimeError, match="known-weak default value"):
+        s.validate_production_secrets()
+
+
+def test_none_secret_raises_in_production():
+    """Verify that a None effective secret raises RuntimeError instead of TypeError."""
+    from portal.config import Settings
+
+    class NoneSecretSettings(Settings):
+        @property
+        def effective_jwt_secret(self) -> str:
+            return None  # type: ignore[return-value]
+
+    s = NoneSecretSettings(debug=False)
+    with pytest.raises(RuntimeError, match="known-weak default value"):
+        s.validate_production_secrets()
+
+
+def test_short_secret_raises_in_production():
+    """Verify that production rejects secrets shorter than 32 characters."""
+    from portal.config import Settings
+
+    s = Settings(
+        debug=False,
+        secret_key="short-key-not-in-weak-defaults",
+        jwt_secret="",
+        mediamtx_auth_hook_secret="media-hook-secret",
+    )
+    with pytest.raises(RuntimeError, match="too short"):
+        s.validate_production_secrets()
+
+
+def test_low_diversity_secret_raises_in_production():
+    """Verify that secrets with low character diversity (e.g. repeated characters) are rejected."""
+    from portal.config import Settings
+
+    s = Settings(
+        debug=False,
+        secret_key="a" * 32,
+        jwt_secret="",
+        mediamtx_auth_hook_secret="media-hook-secret",
+    )
+    with pytest.raises(RuntimeError, match="character diversity"):
+        s.validate_production_secrets()
+
+
+def test_short_secret_allowed_in_debug_mode():
+    """Verify that short secrets remain permitted when debug mode is enabled."""
+    from portal.config import Settings
+
+    s = Settings(debug=True, secret_key="tooshort", jwt_secret="")
+    s.validate_production_secrets()  # must not raise
+
+
+def test_exactly_32_char_secret_passes_production():
+    """Verify that a compliant 32-character secret passes validation in production."""
+    from portal.config import Settings
+
+    s = Settings(
+        debug=False,
+        secret_key="0123456789abcdef0123456789abcdef",
+        jwt_secret="",
+        mediamtx_auth_hook_secret="media-hook-secret",
+        booth_access_token="0123456789abcdef0123456789abcdef",
+    )
+    s.validate_production_secrets()  # must not raise
 
 
 # ── Unified error pages (PR #263) ──────────────────────────────────────
