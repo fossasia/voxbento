@@ -165,6 +165,8 @@ Once running, access the application at **`http://localhost:8000`**.
 For event and room setup, see the [events and rooms guide](website/docs/admin/events-and-rooms.mdx).
 For pipeline details and advanced configuration, see [how it works](website/docs/how-it-works.mdx).
 
+Listener playback cancels pending WHEP negotiation when you stop or change sources and retries requests that stall for 15 seconds. Delayed audio uses the same player controls as direct audio, so Pause, mute and volume still apply, including during reconnects.
+
 ---
 
 ## 🧪 Testing & Code Quality
