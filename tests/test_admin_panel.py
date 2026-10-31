@@ -2087,8 +2087,8 @@ class TestBoothCRUD:
         # Every script is external or a JSON data block, whatever attributes it carries.
         inline = [
             tag
-            for tag in re.findall(r"<script\b[^>]*>", resp.text)
-            if "src=" not in tag and 'type="application/json"' not in tag
+            for tag in re.findall(r"<script\b[^>]*>", resp.text, re.IGNORECASE)
+            if "src=" not in tag.lower() and 'type="application/json"' not in tag.lower()
         ]
         assert inline == []
         assert "js/booth-detail.js" in resp.text
