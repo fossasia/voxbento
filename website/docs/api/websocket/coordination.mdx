@@ -37,7 +37,7 @@ that invitation compatibility exception.
 
 ## Outbound Messages (Client to Server)
 
-All messages sent from the client to the server must be JSON objects containing a `type` and a `payload`.
+All messages sent from the client to the server are JSON objects with a `type` field. Every other field sits next to `type` at the top level; there is no `payload` wrapper.
 
 ### 1. Join a Booth
 The first message sent after connection MUST be `booth:join`. The server will not broadcast your presence or send you state updates until this is received.
@@ -45,9 +45,7 @@ The first message sent after connection MUST be `booth:join`. The server will no
 ```json
 {
   "type": "booth:join",
-  "payload": {
-    "name": "Arnav Angarkar"
-  }
+  "display_name": "Arnav Angarkar"
 }
 ```
 
@@ -56,10 +54,8 @@ Participants should continually update the server on their WebRTC status.
 ```json
 {
   "type": "booth:update-state",
-  "payload": {
-    "mic_active": true,
-    "ingest_connected": true
-  }
+  "mic_active": true,
+  "ingest_connected": true
 }
 ```
 
@@ -68,9 +64,7 @@ Sending an internal chat message to the booth.
 ```json
 {
   "type": "booth:chat",
-  "payload": {
-    "body": "Ready in 30 seconds."
-  }
+  "body": "Ready in 30 seconds."
 }
 ```
 
@@ -96,9 +90,7 @@ This message designates a new active interpreter in the booth.
 ```json
 {
   "type": "booth:set-active",
-  "payload": {
-    "target_id": "participant-uuid-here"
-  }
+  "target_id": "participant-uuid-here"
 }
 ```
 **Authorization Policy:** Handled by `BoothRegistry.set_active_interpreter`:
@@ -116,15 +108,21 @@ Every time a participant joins, leaves, updates their mic status, or the active 
 ```json
 {
   "type": "booth:state",
-  "booth_id": "pycon2026-14-en",
-  "active_interpreter_id": "participant-uuid-here",
-  "participants": {
-    "participant-uuid-here": {
-      "name": "Arnav Angarkar",
-      "role": "interpreter",
-      "mic_active": false,
-      "ingest_connected": false
-    }
+  "state": {
+    "booth_id": "pycon2026-14-en",
+    "active_interpreter_id": "participant-uuid-here",
+    "ingest_status": "disconnected",
+    "participants": [
+      {
+        "participant_id": "participant-uuid-here",
+        "display_name": "Arnav Angarkar",
+        "role": "interpreter",
+        "mic_active": false,
+        "ingest_connected": false,
+        "can_go_live": true,
+        "can_set_active": false
+      }
+    ]
   }
 }
 ```
@@ -136,11 +134,13 @@ Received when another participant sends a message.
 ```json
 {
   "type": "booth:chat",
-  "id": "message-uuid",
-  "sender_id": "participant-uuid",
-  "sender_name": "Arnav Angarkar",
-  "body": "Ready in 30 seconds.",
-  "timestamp": "2026-06-16T10:00:00Z"
+  "message": {
+    "message_id": "message-uuid",
+    "sender_id": "participant-uuid",
+    "sender_name": "Arnav Angarkar",
+    "body": "Ready in 30 seconds.",
+    "sent_at": "2026-06-16T10:00:00+00:00"
+  }
 }
 ```
 
