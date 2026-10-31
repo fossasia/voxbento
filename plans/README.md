@@ -34,9 +34,10 @@ coordinates with #751. Plans were written against `dev` at `250aefde`.
 | [007](007-from-youtube-guided-flow.md) | Guided "From a YouTube stream" room-audio choice | P2 | M | 003, 004, 005, 006; #751 | TODO |
 
 Dependency notes: 003, 004 and 005 are independent of each other once their spike
-step passes and can run in parallel. 006 needs 005's OAuth client and room columns.
-007 only composes existing pieces. Plan numbering starts at 002; numbers are stable
-because plans reference each other.
+step passes; 003 and 005 can start immediately, while 004 must also wait for maintainer
+approval of the invariant-3 wording update before implementation. 006 needs 005's OAuth
+client and room columns. 007 only composes existing pieces. Plan numbering starts at 002;
+numbers are stable because plans reference each other.
 
 ### Considered and rejected
 

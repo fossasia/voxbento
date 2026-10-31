@@ -51,9 +51,11 @@ those plans read.
 
 ## Scope
 
-**In scope** (the only file you create): `plans/002-results.md`.
+**In scope**:
+- `plans/002-results.md` (the results file you create).
+- `plans/README.md` (updating the Plan 002 status row to DONE once finished).
 
-**Out of scope**: every source, template, test, config or doc file. Do not commit
+**Out of scope**: every application source, template, test, or config file. Do not commit
 any Google credentials, stream keys, VoxBento keys or caption ingestion URLs to the
 results file. Write `<redacted>` instead.
 
@@ -94,9 +96,10 @@ Server setup) and a room in relay mode with **no YouTube key saved**:
    OBS with the "Multiple RTMP outputs" plugin, and vMix (if available).
 3. Stream 2 minutes of speech. Record per platform: accepted `rtmps://`? accepted the
    `?` in the key? MediaMTX shows the path ready (`/v3/paths/list`)? Captions appeared?
-4. If a platform rejects or rewrites `floor?key=…`, test two alternative key shapes by
-   reading MediaMTX docs for RTMP credentials (`rtmps://user:pass@host/…` or a
-   `?user=…&pass=…` query) and record which one the platform accepts. **Do not change code.**
+4. If a platform rejects or rewrites `floor?key=…`, record the exact error. Note alternative
+   credential formats (e.g. `rtmps://user:pass@host/…` or a `?user=…&pass=…` query) as
+   future VoxBento code changes rather than current test options, since VoxBento's
+   current auth hook strictly enforces the `floor?key=<secret>` format. **Do not change code.**
 
 **Verify**: results table *Platform | rtmps ok | key format ok | path ready | captions ok | notes*.
 
@@ -107,17 +110,19 @@ Server setup) and a room in relay mode with **no YouTube key saved**:
 2. Use the OAuth 2.0 Playground (developers.google.com/oauthplayground) with your own
    client and scope `https://www.googleapis.com/auth/youtube.force-ssl`.
 3. Create an **unlisted** live event in YouTube Studio. Call:
-   - `GET https://www.googleapis.com/youtube/v3/liveBroadcasts?part=snippet,contentDetails,status&broadcastStatus=upcoming&broadcastType=all&maxResults=50`
+   - `GET https://www.googleapis.com/youtube/v3/liveBroadcasts?part=snippet,contentDetails,status&broadcastStatus=upcoming&broadcastType=all&mine=true&maxResults=50`
    - `GET https://www.googleapis.com/youtube/v3/liveStreams?part=cdn,status,contentDetails&id=<contentDetails.boundStreamId>`
 4. Record (redacted): that `cdn.ingestionInfo.streamName` is present and equals the
    Studio stream key; the `ingestionAddress` host (`a.rtmp.youtube.com`?);
    `contentDetails.closedCaptionsIngestionUrl` host and path shape (redact query);
    `isDefaultStream`; the quota cost shown in the Cloud console per call type.
 5. Repeat call 3 with scope `youtube.readonly` only. Record whether `streamName` is still returned.
-6. Try `liveBroadcasts.update?part=contentDetails` setting
-   `closedCaptionsType=closedCaptionsHttpPost` (send the full current `contentDetails`
-   back with only that field changed). Record success, and whether it also works while
-   the broadcast is `live`.
+6. Try `liveBroadcasts.update?part=id,snippet,contentDetails` including the broadcast
+   `id`, `snippet.scheduledStartTime`, and both monitor-stream fields required by the API
+   (`contentDetails.monitorStream.enableMonitorStream` and
+   `contentDetails.monitorStream.broadcastStreamDelayMs`), while changing only
+   `closedCaptionsType=closedCaptionsHttpPost` within the current `contentDetails`.
+   Record whether the update succeeds, and whether it works while the broadcast is `live`.
 
 **Verify**: results section *YouTube API* answers 4–6 explicitly with yes/no.
 
@@ -147,14 +152,14 @@ No automated tests. Run the sanity command from the table to confirm the tree is
 ## Done criteria
 
 - [ ] `plans/002-results.md` exists with the four sections above, each with a yes/no verdict.
-- [ ] `grep -nE "key=[A-Za-z0-9_-]{20,}|ya29\.|1//0" plans/002-results.md` returns no matches (no secrets).
-- [ ] `git status --short` shows no modified tracked files.
-- [ ] `plans/README.md` status row for 002 updated.
+- [ ] No secrets committed: run `grep -nE "key=[A-Za-z0-9_-]{20,}|ya29\.|1//0|AIza" plans/002-results.md` (no matches) and verify all sensitive tokens, stream keys, and caption URLs are replaced with `<redacted>`.
+- [ ] Only `plans/002-results.md` (untracked) and `plans/README.md` (modified status row) appear in `git status --short`.
+- [ ] `plans/README.md` status row for 002 updated to DONE.
 
 ## STOP conditions
 
 - Chrome no longer returns a tab audio track from `getDisplayMedia` → STOP; plan 003 must be redesigned.
-- No tested platform accepts any RTMPS key shape MediaMTX can authenticate → STOP; plan 004 must be redesigned.
+- No tested platform accepts the supported `floor?key=<secret>` RTMPS key format → STOP; plan 004 must be redesigned or extended with alternative auth formats.
 - `streamName` is not returned with `youtube.force-ssl` → STOP; plan 005's automatic-key step is invalid.
 - Caption POST never renders in the player → STOP; plan 006 is blocked.
 
