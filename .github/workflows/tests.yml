@@ -249,6 +249,9 @@ jobs:
       - name: Sync dependencies (including dev)
         run: uv sync --all-groups
 
+      - name: Install WebKit browser binary and OS dependencies (#995)
+        run: uv run playwright install --with-deps webkit
+
       - name: Lint (ruff)
         run: uv run ruff check .
 
