@@ -517,7 +517,7 @@ class TestUserLogin:
         node_bin = shutil.which("node")
         if node_bin:
             test_file = Path(__file__).resolve().parent / "test_password_toggle.js"
-            res = subprocess.run([node_bin, str(test_file)], capture_output=True, text=True, check=True)
+            res = subprocess.run([node_bin, str(test_file)], capture_output=True, text=True)
             match = re.search(r"Password Toggle tests completed: (\d+) passed, (\d+) failed", res.stdout)
             assert match is not None, f"Node test summary not found in output:\n{res.stdout}"
             passed_count = int(match.group(1))

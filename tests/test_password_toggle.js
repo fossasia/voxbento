@@ -4,6 +4,7 @@
  * Run with: node tests/test_password_toggle.js
  */
 const fs = require('fs');
+const path = require('path');
 const { setupPasswordToggle } = require('../portal/static/js/login.js');
 
 let passed = 0;
@@ -76,7 +77,7 @@ function createMockElement(tagName, attrs = {}) {
 console.log('Running Password Toggle tests...');
 
 // Test 1: Check rendered template button attributes
-const templateHtml = fs.readFileSync('portal/templates/login.html', 'utf-8');
+const templateHtml = fs.readFileSync(path.join(__dirname, '../portal/templates/login.html'), 'utf-8');
 const toggleBtnTagMatch = templateHtml.match(/<button\b[^>]*id=["']toggle-password["'][^>]*>/i);
 assert(toggleBtnTagMatch !== null, 'Toggle button is defined in login.html');
 assert(/\btype=["']button["']/i.test(toggleBtnTagMatch[0]), 'Rendered toggle button in login.html has type="button" to prevent form submission');

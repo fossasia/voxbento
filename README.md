@@ -137,7 +137,7 @@ uv run alembic upgrade head
 uv run uvicorn fastapi_app:app --reload --port 8000
 ```
 
-Once running, access the application at **`http://localhost:8000`**. Sign in at `/login` with an email magic link or password (featuring an accessible show/hide password toggle). To access the admin panel, sign in with an account having admin privileges at `/login?next=/admin/&switch=true`.
+Once running, access the application at **`http://localhost:8000`**.
 
 ### Set up an event's rooms
 
