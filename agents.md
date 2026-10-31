@@ -229,6 +229,22 @@ Max concurrent workers: 10 (`MAX_TOTAL_WORKERS`).
 - Verify the PR's base branch is `dev` before reporting it as ready. Do not rely on
   GitHub's default branch or target `main` unless the user explicitly requests it.
 
+## AI-Assisted Pull Requests
+
+When a PR is created or substantially authored by an AI coding assistant, include an
+**AI Attribution** section in the PR description:
+
+```
+## AI Attribution
+
+This PR was created with the assistance of **<Model Name>** (e.g. Claude Sonnet 4.6).
+```
+
+- Always name the specific model (e.g. "Claude Sonnet 4.6", "Gemini 2.5 Pro").
+- "AI-assisted" means the AI wrote or significantly shaped the code, commit messages,
+  or PR description — not just that it answered a question.
+- Human reviewers should validate AI-generated diffs with the same rigour as any other PR.
+
 ---
 
 ## Validation Before Submitting Changes
