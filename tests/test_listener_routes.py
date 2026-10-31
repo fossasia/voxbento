@@ -76,6 +76,30 @@ class TestListenerRoutes:
         assert b"Enter the join code" in resp.content
         assert b"cdn.tailwindcss.com" not in resp.content
         assert b"css/listener-join.css" in resp.content
+        assert b'name="room"' not in resp.content
+        assert b'name="lang"' not in resp.content
+
+    @pytest.mark.anyio
+    async def test_join_form_keeps_room_and_language_from_link(self, seed_event):
+        event, room, _ = seed_event
+
+        async with _client() as c:
+            resp = await c.get(f"/listener/{event.slug}", params={"room": str(room.id), "lang": "en"})
+
+        assert resp.status_code == 200
+        assert f'<input type="hidden" name="room" value="{room.id}">'.encode() in resp.content
+        assert b'<input type="hidden" name="lang" value="en">' in resp.content
+
+    @pytest.mark.anyio
+    async def test_join_form_escapes_room_and_language_from_link(self, seed_event):
+        event, _, _ = seed_event
+
+        async with _client() as c:
+            resp = await c.get(f"/listener/{event.slug}", params={"room": '"><script>', "lang": "en"})
+
+        assert resp.status_code == 200
+        assert b'"><script>' not in resp.content
+        assert b"&#34;&gt;&lt;script&gt;" in resp.content
 
     @pytest.mark.anyio
     async def test_invalid_join_code_shows_error(self, seed_event):
