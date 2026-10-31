@@ -165,6 +165,8 @@ class BoothRegistry:
             except ValueError:
                 event_slug = ""
                 language_code = ""
+            else:
+                language_code = validate_booth_language_code(language_code)
             booth = Booth(
                 booth_id=booth_id,
                 event_slug=event_slug,

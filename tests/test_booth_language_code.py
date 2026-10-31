@@ -155,6 +155,18 @@ class TestBoothLanguageCodeRegistry:
         created = await registry.create_booth(event_slug="some-event", language_code="de", language="German", room_id=1)
         assert created["language_code"] == "de"
 
+    @pytest.mark.anyio
+    async def test_registry_get_or_create_rejects_floor(self):
+        """Lazy creation on snapshot or join must also reject floor."""
+        from portal.booth_state import BoothRegistry
+
+        registry = BoothRegistry()
+
+        with pytest.raises(ValueError):
+            await registry.snapshot("some-event-1-floor", "Floor", "some/path")
+
+        assert registry._booths == {}
+
 
 class TestBoothLanguageCodeAdmin:
     @pytest.mark.anyio
@@ -178,3 +190,32 @@ class TestBoothLanguageCodeAdmin:
                 select(DBBooth).where(DBBooth.room_id == room.id, DBBooth.language_code == "floor")
             )
             assert row is None
+
+    @pytest.mark.anyio
+    async def test_admin_create_booth_redirects_with_invalid_language_error(self, seed_data):
+        """Admin form submission of floor redirects with invalid_language_code error."""
+        from portal.auth import create_user_token
+        from portal.database import get_session, get_user_by_email
+
+        event, room, _token = seed_data
+        async with get_session() as session:
+            user = await get_user_by_email(session, "floor@example.com")
+            user_id = user.id
+
+        cookies = {"user_token": create_user_token(user_id=user_id, email="floor@example.com", is_admin=False)}
+
+        async with _client() as c:
+            resp = await c.post(
+                f"/workspace/events/{event.id}/rooms/{room.id}/booths/",
+                data={"language_code": "floor", "language_name": "Floor"},
+                cookies=cookies,
+                follow_redirects=False,
+            )
+            assert resp.status_code == 303
+            assert "error=invalid_language_code" in resp.headers["location"]
+
+            page = await c.get(resp.headers["location"], cookies=cookies)
+            assert page.status_code == 200
+            assert b"The reserved code" in page.content
+            assert b"floor" in page.content
+

@@ -1984,6 +1984,8 @@ async def admin_create_booth(request: Request, event_id: int, room_id: int):
         )
         if not created:
             redirect_path += "?error=duplicate_language"
+    except ValueError:
+        redirect_path += "?error=invalid_language_code"
     except Exception as e:
         logger.warning(f"Error creating booth: {e}")
     return safe_redirect(
