@@ -11,6 +11,7 @@ import jwt
 from fastapi import APIRouter, HTTPException, Query, Request, status
 from fastapi.templating import Jinja2Templates
 
+from portal import program_relay
 from portal.auth import decode_token, get_booth_session, is_listener_token
 from portal.config import settings
 from portal.database import (
@@ -75,7 +76,9 @@ def _has_floor_audio_source(room: Room) -> bool:
     if room.floor_source == "program_ingest":
         if not settings.program_ingest_enabled:
             return False
-        return bool(has_valid_credential(room) or (room.program_session_id and not room.program_disconnected_at))
+        if room.program_ingest_mode == program_relay.RELAY_MODE and not settings.program_relay_enabled:
+            return False
+        return bool(has_valid_credential(room) or room.program_session_id)
     if room.floor_source == "jitsi_bot":
         return bool(room.meeting_agent_enabled)
     return False

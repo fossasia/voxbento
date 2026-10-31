@@ -364,3 +364,76 @@ class TestListenerRoutes:
         booths = json.loads(match.group(1))
         booth_names = [b["language_name"] for b in booths]
         assert "Floor Audio (Original)" not in booth_names
+
+    @pytest.mark.anyio
+    async def test_listener_omits_floor_audio_for_relay_mode_when_relay_disabled(self, seed_event, monkeypatch):
+        """Relay mode with valid credential omits floor audio when program_relay_enabled is False."""
+        event, room, _ = seed_event
+        from datetime import datetime, timedelta, timezone
+
+        from portal import program_relay
+        from portal.config import settings
+        from portal.database import get_session
+        from portal.models import Room
+
+        monkeypatch.setattr(settings, "program_ingest_enabled", True)
+        monkeypatch.setattr(settings, "program_relay_enabled", False)
+
+        async with get_session() as s:
+            db_event = await s.get(type(event), event.id)
+            db_event.listener_join_code = "ROOM42"
+            db_room = await s.get(Room, room.id)
+            db_room.floor_source = "program_ingest"
+            db_room.program_ingest_mode = program_relay.RELAY_MODE
+            db_room.program_key_hash = "a" * 64
+            db_room.program_key_expires_at = datetime.now(timezone.utc) + timedelta(hours=1)
+            db_room.floor_transcription_enabled = False
+
+        async with _client() as c:
+            resp = await c.get(f"/listener/{event.slug}?code=ROOM42")
+
+        assert resp.status_code == 200
+        match = re.search(r'"booths":\s*(\[.*?\])\s*,', resp.text, re.DOTALL)
+        assert match is not None
+        booths = json.loads(match.group(1))
+        booth_names = [b["language_name"] for b in booths]
+        assert "Floor Audio (Original)" not in booth_names
+
+    @pytest.mark.anyio
+    async def test_listener_includes_floor_audio_for_reconnected_session_with_expired_credential(
+        self, seed_event, monkeypatch
+    ):
+        """Active reconnected session with expired credential keeps Floor Audio (Original) visible."""
+        event, room, _ = seed_event
+        from datetime import datetime, timedelta, timezone
+
+        from portal.config import settings
+        from portal.database import get_session
+        from portal.models import Room
+
+        monkeypatch.setattr(settings, "program_ingest_enabled", True)
+
+        async with get_session() as s:
+            db_event = await s.get(type(event), event.id)
+            db_event.listener_join_code = "ROOM42"
+            db_room = await s.get(Room, room.id)
+            db_room.floor_source = "program_ingest"
+            # Session is actively connected
+            db_room.program_session_id = "session-active-456"
+            # Earlier disconnect timestamp exists from previous session
+            db_room.program_disconnected_at = datetime.now(timezone.utc) - timedelta(minutes=5)
+            # Short-lived credential has expired
+            db_room.program_session_secret_hash = "b" * 64
+            db_room.program_session_secret_expires_at = datetime.now(timezone.utc) - timedelta(minutes=2)
+            db_room.program_key_hash = None
+            db_room.floor_transcription_enabled = False
+
+        async with _client() as c:
+            resp = await c.get(f"/listener/{event.slug}?code=ROOM42")
+
+        assert resp.status_code == 200
+        match = re.search(r'"booths":\s*(\[.*?\])\s*,', resp.text, re.DOTALL)
+        assert match is not None
+        booths = json.loads(match.group(1))
+        booth_names = [b["language_name"] for b in booths]
+        assert "Floor Audio (Original)" in booth_names
