@@ -549,7 +549,7 @@ async def mission_control_grid(request: Request, event_slug: str, user=Depends(r
             {
                 "id": room.id,
                 "name": room.display_name,
-                "floor_captions": bool(room.floor_transcription_enabled) and room.floor_transcription_provider != "none",
+                "floor_captions": room.has_floor_captions,
                 "floor_source": room.floor_source or "jitsi_bot",
             }
             for room in await list_rooms_for_event(session, event.id)
@@ -1556,7 +1556,7 @@ async def admin_edit_room(request: Request, event_id: int, room_id: int):
     relay_booth_id = int(relay_booth_id_str) if relay_booth_id_str and relay_booth_id_str.lower() != "none" else None
     audio_delay_ms = parse_audio_delay_ms(form.get("audio_delay_ms", "0"))
     floor_transcription_enabled = form.get("floor_transcription_enabled") == "on"
-    floor_transcription_provider = form.get("floor_transcription_provider", "local").strip()
+    floor_transcription_provider = form.get("floor_transcription_provider", "local").strip().lower() or "none"
     floor_transcription_model = form.get("floor_transcription_model", "tiny").strip()
     floor_language_code = form.get("floor_language_code", "").strip() or None
     floor_translation_enabled = form.get("floor_translation_enabled") == "on"

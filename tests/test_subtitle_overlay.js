@@ -274,5 +274,26 @@ console.log('\n── Real-time subtitles updates (Issue #1072) ──');
   assert(linesBox.children.length === 0, 'captions cleared after idle timeout');
 }
 
+// Test 11: the same segment as caption + translated_caption shows once
+{
+  const { activeWs, linesBox } = runOverlay({ boothId: 'pycon-1-en' }, '?lines=4');
+  activeWs.onmessage({
+    data: JSON.stringify({ type: 'caption', status: 'final', text: 'First line', segment_id: 'a' }),
+  });
+  activeWs.onmessage({
+    data: JSON.stringify({ type: 'caption', status: 'final', text: 'Second line', segment_id: 'b' }),
+  });
+  activeWs.onmessage({
+    data: JSON.stringify({ type: 'translated_caption', text: 'Second line', segment_id: 'b' }),
+  });
+  assert(linesBox.children.length === 2, 'duplicate segment_id does not add a line');
+  assert(linesBox.children[0].textContent === 'First line', 'earlier caption is not evicted by the duplicate');
+
+  // Test captions carry no segment_id and are always appended.
+  activeWs.onmessage({ data: JSON.stringify({ type: 'caption', status: 'final', text: 'Test' }) });
+  activeWs.onmessage({ data: JSON.stringify({ type: 'caption', status: 'final', text: 'Test' }) });
+  assert(linesBox.children.length === 4, 'captions without segment_id are not deduplicated');
+}
+
 console.log(`\n${passed} passed, ${failed} failed\n`);
 if (failed > 0) process.exit(1);

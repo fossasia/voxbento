@@ -253,6 +253,15 @@ query string: `position` (`top`, `center`, `bottom`), `fontSize` (16–96 px), `
 opacity 0–100) and `lines` (1–4). Lines clear after eight seconds without captions. The page can
 only be framed by the portal itself (`frame-ancestors 'self'`). When authorized, the overlay passes an established listener token to the caption socket, ensuring `/ws/captions/{booth_id}` verifies authorization before delivering captions for join-code-protected events.
 
+For a join-code-protected event the caption socket admits the same callers as the listener page:
+a valid join code (cookie or `?code=`), any signed-in account that is still active in the database
+(token claims alone are not trusted), or a booth invite with a role for that booth. Wrong codes
+count toward the same per-IP limit as the listener page (10 per minute, `portal/join_code_limit.py`);
+past it the socket closes with `1008`. Rejections are sent after `accept()` so browsers see the close code.
+The floor appears as an overlay channel only when `Room.has_floor_captions` is true: floor
+transcription on and a provider other than `none`. Final captions with the same `segment_id`
+(a caption plus its `translated_caption`) replace each other instead of showing twice.
+
 Event owners build the URL in the **Subtitles overlay** card on the event page. Its preview is the
 real overlay in a scaled iframe: appearance changes and **Send test caption** reach it through
 same-origin `postMessage`, so styling works before anyone is broadcasting.

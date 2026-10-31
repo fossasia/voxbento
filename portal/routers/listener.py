@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-import time
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +20,9 @@ from portal.database import (
     list_rooms_for_event,
 )
 from portal.globals import _JS_CACHE_BUST, asset_version_context
+from portal.join_code_limit import _join_code_attempts  # noqa: F401  (tests reset it via this module)
+from portal.join_code_limit import register_failed_attempt as _register_failed_attempt
+from portal.join_code_limit import reset_attempts as _reset_attempts
 from portal.utils import _ensure_mediamtx_path
 
 # Allowlists for embed theming params — no free-text values accepted.
@@ -33,28 +35,6 @@ _BASE_DIR = Path(__file__).resolve().parent.parent
 templates = Jinja2Templates(directory=str(_BASE_DIR / "templates"), context_processors=[asset_version_context])
 
 router = APIRouter()
-
-_JOIN_CODE_RATE_LIMIT = 10
-_JOIN_CODE_RATE_WINDOW_SECONDS = 60
-_join_code_attempts: dict[str, tuple[int, float]] = {}
-
-
-def _register_failed_attempt(client_ip: str) -> bool:
-    """Record a failed join-code attempt for `client_ip`.
-
-    Returns True if the client has exceeded the allowed attempts within the window.
-    """
-    now = time.monotonic()
-    count, window_start = _join_code_attempts.get(client_ip, (0, now))
-    if now - window_start > _JOIN_CODE_RATE_WINDOW_SECONDS:
-        count, window_start = 0, now
-    count += 1
-    _join_code_attempts[client_ip] = (count, window_start)
-    return count > _JOIN_CODE_RATE_LIMIT
-
-
-def _reset_attempts(client_ip: str) -> None:
-    _join_code_attempts.pop(client_ip, None)
 
 
 def _client_ip(request: Request) -> str:
@@ -223,11 +203,7 @@ async def subtitle_overlay(
         if room is None or room.event_id != ev.id:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Room not found")
         # Only real caption channels: an existing booth, or the floor when it is transcribed.
-        if language_code.lower() == "floor" and (
-            not room.floor_transcription_enabled
-            or not room.floor_transcription_provider
-            or room.floor_transcription_provider.lower() == "none"
-        ):
+        if language_code.lower() == "floor" and not room.has_floor_captions:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Floor transcription is off")
         booth_id, _ = await _resolve_embed_channel(session, ev, event_slug, room_id, language_code)
 

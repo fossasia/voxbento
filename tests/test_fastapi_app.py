@@ -2444,8 +2444,9 @@ def test_ws_captions_enforces_anonymous_admission_limit(monkeypatch):
         with client.websocket_connect("/ws/captions/test-limit-1-en"):
             # Second anonymous connection exceeds limit of 1 and is rejected with 1008
             with pytest.raises(WebSocketDisconnect) as exc_info:
-                with client.websocket_connect("/ws/captions/test-limit-1-en"):
-                    pass
+                # Accepted then closed, so the browser sees 1008 rather than an HTTP 403.
+                with client.websocket_connect("/ws/captions/test-limit-1-en") as ws:
+                    ws.receive_text()
             assert exc_info.value.code == 1008
 
 
@@ -2463,8 +2464,8 @@ def test_ws_captions_zero_anonymous_limit_does_not_populate_anon_rooms(monkeypat
     assert booth_id not in listener_manager._anon_rooms
 
     with pytest.raises(WebSocketDisconnect) as exc_info:
-        with client.websocket_connect(f"/ws/captions/{booth_id}"):
-            pass
+        with client.websocket_connect(f"/ws/captions/{booth_id}") as ws:
+            ws.receive_text()
     assert exc_info.value.code == 1008
 
     # Must NOT have created an empty set entry in _anon_rooms!

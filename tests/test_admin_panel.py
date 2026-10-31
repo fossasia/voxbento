@@ -1647,6 +1647,93 @@ class TestRoomCRUD:
             ws.close()
 
     @pytest.mark.anyio
+    async def test_ws_captions_rate_limits_failed_join_codes(self, seed_event):
+        from starlette.testclient import TestClient
+        from starlette.websockets import WebSocketDisconnect
+
+        from fastapi_app import app as fastapi_app
+        from portal.database import get_session
+        from portal.join_code_limit import JOIN_CODE_RATE_LIMIT, _join_code_attempts
+
+        event, room, booth = seed_event
+        async with get_session() as s:
+            db_event = await s.get(type(event), event.id)
+            assert db_event is not None
+            db_event.listener_join_code = "ROOM42"
+
+        booth_id = f"{event.slug}-{room.id}-{booth.language_code}"
+        tc = TestClient(app=fastapi_app)
+        _join_code_attempts.clear()
+        try:
+            codes = []
+            for _ in range(JOIN_CODE_RATE_LIMIT + 1):
+                with pytest.raises(WebSocketDisconnect) as exc_info:
+                    with tc.websocket_connect(f"/ws/captions/{booth_id}?code=WRONG") as ws:
+                        ws.receive_text()
+                codes.append(exc_info.value.code)
+            assert codes[:-1] == [4001] * JOIN_CODE_RATE_LIMIT
+            assert codes[-1] == 1008
+
+            # The right code still gets in and clears the counter.
+            with tc.websocket_connect(f"/ws/captions/{booth_id}?code=ROOM42") as ws:
+                ws.close()
+            assert not _join_code_attempts
+        finally:
+            _join_code_attempts.clear()
+
+    @pytest.mark.anyio
+    async def test_ws_captions_admits_signed_in_users_checked_in_database(self, seed_event):
+        from starlette.testclient import TestClient
+        from starlette.websockets import WebSocketDisconnect
+
+        from fastapi_app import app as fastapi_app
+        from portal.database import create_user, get_session
+
+        event, room, booth = seed_event
+        async with get_session() as s:
+            db_event = await s.get(type(event), event.id)
+            assert db_event is not None
+            db_event.listener_join_code = "ROOM42"
+            member = await create_user(s, email="member@example.com", display_name="Member", password_hash="x")
+            gone = await create_user(
+                s, email="former-admin@example.com", display_name="Former", password_hash="x", is_admin=True
+            )
+            gone.is_active = False
+
+        booth_id = f"{event.slug}-{room.id}-{booth.language_code}"
+        tc = TestClient(app=fastapi_app)
+
+        # A signed-in account with no booth role gets captions, as on the listener page.
+        member_token = create_user_token(user_id=member.id, email=member.email)
+        with tc.websocket_connect(f"/ws/captions/{booth_id}", cookies={"user_token": member_token}) as ws:
+            ws.close()
+
+        # A deactivated account is refused even though its token still claims admin.
+        gone_token = create_user_token(user_id=gone.id, email=gone.email, is_admin=True)
+        with pytest.raises(WebSocketDisconnect) as exc_info:
+            with tc.websocket_connect(f"/ws/captions/{booth_id}", cookies={"user_token": gone_token}) as ws:
+                ws.receive_text()
+        assert exc_info.value.code == 4001
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize(
+        ("enabled", "provider", "expected"),
+        [
+            (True, "local", True),
+            (True, "Local", True),
+            (True, "none", False),
+            (True, "NONE", False),
+            (True, "", False),
+            (False, "local", False),
+        ],
+    )
+    async def test_room_has_floor_captions(self, enabled, provider, expected):
+        from portal.models import Room
+
+        room = Room(floor_transcription_enabled=enabled, floor_transcription_provider=provider)
+        assert room.has_floor_captions is expected
+
+    @pytest.mark.anyio
     async def test_event_detail_shows_subtitle_overlay_builder(self, admin_cookie, seed_event):
         event, room, booth = seed_event
 

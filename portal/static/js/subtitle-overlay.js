@@ -42,7 +42,7 @@ function applyConfig() {
 
 function render() {
   if (!linesBox) return;
-  const visible = finals.concat(partial ? [partial] : []).slice(-config.lines);
+  const visible = finals.map((f) => f.text).concat(partial ? [partial] : []).slice(-config.lines);
   linesBox.replaceChildren(
     ...visible.map((text, i) => {
       const line = document.createElement("div");
@@ -72,7 +72,17 @@ export function handleCaption(data) {
   if (status === "partial") {
     partial = text;
   } else if (status === "final") {
-    if (text) finals = finals.concat([text]).slice(-4);
+    if (text) {
+      // A booth whose language is also a translation target gets the same segment
+      // twice (caption + translated_caption); replace it instead of showing it twice.
+      const id = data.segment_id || null;
+      const existing = id ? finals.findIndex((f) => f.id === id) : -1;
+      if (existing >= 0) {
+        finals = finals.map((f, i) => (i === existing ? { id, text } : f));
+      } else {
+        finals = finals.concat([{ id, text }]).slice(-4);
+      }
+    }
     partial = "";
   } else if (status === "clear") {
     partial = "";
