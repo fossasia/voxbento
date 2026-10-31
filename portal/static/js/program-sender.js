@@ -55,6 +55,8 @@ let silentSince = null;
 let recentPeak = 0;
 let wakeLock = null;
 let recorder = null;
+// True while the browser waits for the user to allow the input or pick the tab.
+let capturing = false;
 // Changed only by an explicit pick, so recovering from an unplugged USB input waits for that input.
 let preferredDevice = savedDevice();
 let source = normalizeSource(savedSource());
@@ -182,6 +184,16 @@ async function openTab() {
 
 function openSource() {
   return source === SOURCES.TAB ? openTab() : openInput();
+}
+
+// Marks the capture as pending so the source cannot change under a prompt that is still open.
+async function captureSource() {
+  capturing = true;
+  try {
+    await openSource();
+  } finally {
+    capturing = false;
+  }
 }
 
 // A shared tab cannot be reopened without a user click, so this never re-opens the tab itself.
@@ -496,7 +508,7 @@ async function start() {
   startButton.disabled = true;
   setState('connecting', source === SOURCES.TAB ? 'Waiting for you to pick the tab…' : 'Requesting the audio input…');
   try {
-    if (!stream) await openSource();
+    if (!stream) await captureSource();
   } catch (error) {
     startButton.disabled = false;
     reportInputError(error);
@@ -584,7 +596,7 @@ async function startTest() {
     return;
   }
   try {
-    await openSource();
+    await captureSource();
   } catch (error) {
     reportInputError(error);
     return;
@@ -614,7 +626,7 @@ async function recordCheck() {
   const wasTesting = testing;
   if (!stream) {
     try {
-      await openSource();
+      await captureSource();
     } catch (error) {
       reportInputError(error);
       return;
@@ -665,8 +677,9 @@ function applySource() {
 }
 
 function changeSource(event) {
-  // A recording reads the meter stream, which releaseInput() would cut short.
-  if (sending || testing || recorder) {
+  // A recording reads the meter stream, which releaseInput() would cut short, and a pending
+  // prompt would otherwise return audio from the source that was selected when it opened.
+  if (sending || testing || recorder || capturing) {
     // Revert to the source that is still in use.
     sourceRadios.forEach(radio => { radio.checked = radio.value === source; });
     setState(stateBadge.dataset.state, 'Stop sending or testing before changing the source.');

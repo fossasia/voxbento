@@ -261,6 +261,7 @@ jobs:
           node --check portal/static/js/booth-detail.js
           node --check portal/static/js/overlay-builder.js
           node --check portal/static/js/subtitle-overlay.js
+          node --check portal/static/js/program-sender.js
           node --check portal/static/js/program-sender-source.js
           node --check .github/scripts/jules-review.mjs
       - name: run node tests
