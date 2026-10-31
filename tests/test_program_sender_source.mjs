@@ -4,6 +4,7 @@
  * Run with: node tests/test_program_sender_source.mjs
  */
 import {
+  isTabSurface,
   normalizeSource,
   pickTabAudio,
   RAW_AUDIO,
@@ -54,6 +55,16 @@ assert(Object.isFrozen(RAW_AUDIO), 'the shared raw-audio constraints cannot be m
 assert(tabCaptureSupported(undefined) === false, 'no mediaDevices means no tab capture')
 assert(tabCaptureSupported({}) === false, 'mediaDevices without getDisplayMedia means no tab capture')
 assert(tabCaptureSupported({ getDisplayMedia() {} }) === true, 'getDisplayMedia means tab capture works')
+
+// Surface check (the picker options are only hints)
+function surfaceStream(displaySurface) {
+  return fakeStream([{ getSettings: () => ({ displaySurface }) }], [])
+}
+assert(isTabSurface(surfaceStream('browser')) === true, 'a browser tab is accepted')
+assert(isTabSurface(surfaceStream('window')) === false, 'a shared window is rejected')
+assert(isTabSurface(surfaceStream('monitor')) === false, 'a shared screen is rejected')
+assert(isTabSurface(surfaceStream(undefined)) === true, 'a browser that does not report the surface is accepted')
+assert(isTabSurface(fakeStream([], [])) === true, 'a stream without video settings is accepted')
 
 // Picking the audio track
 const video = fakeTrack()

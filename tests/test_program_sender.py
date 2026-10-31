@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from datetime import timedelta
 from unittest import mock
 from unittest.mock import AsyncMock
@@ -345,8 +346,9 @@ async def test_standalone_sender_page_renders(environment):
     assert response.headers["cache-control"] == "no-store"
     assert f"/rooms/{room.id}/program-sender" in response.text
     assert "/static/js/program-sender.js" in response.text
-    assert "name='sender-source'" in response.text
-    assert "id='sender-tab-rights'" in response.text
+    assert re.search(r"<input[^>]*\stype='radio'[^>]*\sname='sender-source'[^>]*\svalue='device'", response.text)
+    assert re.search(r"<input[^>]*\stype='radio'[^>]*\sname='sender-source'[^>]*\svalue='tab'", response.text)
+    assert re.search(r"<input[^>]*\stype='checkbox'[^>]*\sid='sender-tab-rights'", response.text)
 
 
 @pytest.mark.anyio

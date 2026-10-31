@@ -26,6 +26,15 @@ export function tabCaptureSupported(mediaDevices) {
   return Boolean(mediaDevices && typeof mediaDevices.getDisplayMedia === 'function');
 }
 
+/**
+ * False when the user shared a window or a whole screen, which can carry audio from other apps.
+ * The picker options are only hints, so the chosen surface is checked after the fact.
+ */
+export function isTabSurface(stream) {
+  const surface = stream.getVideoTracks()[0]?.getSettings?.().displaySurface;
+  return !surface || surface === 'browser';
+}
+
 /** The single audio track to publish, or null when the user did not share tab audio. */
 export function pickTabAudio(stream) {
   stream.getVideoTracks().forEach(track => track.stop());

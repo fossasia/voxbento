@@ -1,4 +1,4 @@
-import {SOURCES, RAW_AUDIO, normalizeSource, pickTabAudio, tabCaptureOptions, tabCaptureSupported} from './program-sender-source.js';
+import {SOURCES, RAW_AUDIO, isTabSurface, normalizeSource, pickTabAudio, tabCaptureOptions, tabCaptureSupported} from './program-sender-source.js';
 
 const card = document.getElementById('program-sender');
 const deviceSelect = document.getElementById('sender-device');
@@ -161,6 +161,10 @@ async function openInput() {
 /** @throws {SourceError} when the user shared no tab audio; {DOMException} when the picker is cancelled or blocked */
 async function openTab() {
   const shared = await navigator.mediaDevices.getDisplayMedia(tabCaptureOptions());
+  if (!isTabSurface(shared)) {
+    shared.getTracks().forEach(item => item.stop());
+    throw new SourceError('Pick a browser tab, not a window or a screen.');
+  }
   const track = pickTabAudio(shared);
   if (!track) {
     shared.getTracks().forEach(item => item.stop());
