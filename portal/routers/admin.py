@@ -1266,11 +1266,14 @@ async def admin_event_api_settings_post(
     clear_groq_api_key: bool | None = Form(False),
     meeting_analysis_enabled: bool | None = Form(False),
     meeting_analysis_provider: str | None = Form(None),
-    meeting_analysis_model: str | None = Form(None),
 ):
+    form = await request.form()
+    meeting_analysis_model = form.get("meeting_analysis_model")
+    if meeting_analysis_model is not None:
+        meeting_analysis_model = str(meeting_analysis_model).strip()
     if meeting_analysis_provider is not None and meeting_analysis_provider not in ANALYSIS_PROVIDER_LABELS:
         raise HTTPException(status_code=400, detail="Unknown meeting report service.")
-    if meeting_analysis_model is not None and len(meeting_analysis_model.strip()) > ANALYSIS_MAX_MODEL_LENGTH:
+    if meeting_analysis_model is not None and len(meeting_analysis_model) > ANALYSIS_MAX_MODEL_LENGTH:
         raise HTTPException(status_code=400, detail="The meeting report model name is too long.")
     async with get_session() as session:
         event = await get_event_by_id(session, event_id)
@@ -1281,7 +1284,7 @@ async def admin_event_api_settings_post(
         if meeting_analysis_provider is not None:
             event.meeting_analysis_provider = meeting_analysis_provider
         if meeting_analysis_model is not None:
-            event.meeting_analysis_model = meeting_analysis_model.strip()
+            event.meeting_analysis_model = meeting_analysis_model
         try:
             _apply_api_key_updates(
                 event,

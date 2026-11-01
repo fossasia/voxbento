@@ -74,6 +74,6 @@
   {% endif %}
 </div>
 
-<div id="room-analysis" data-event-id="{{ event.id }}" data-room-id="{{ room.id }}" hidden></div>
+<div id="room-analysis" data-status-url="/api{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/analysis/" hidden></div>
 <script type="module" src="{{ url_for('static', path='js/room-analysis.js') }}?v={{ asset_version }}"></script>
 {% endblock %}

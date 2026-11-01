@@ -21,7 +21,7 @@
   </div>
 </div>
 
-<div class="room-panel rs" id="room-analysis" data-event-id="{{ event.id }}" data-room-id="{{ room.id }}">
+<div class="room-panel rs" id="room-analysis" data-status-url="/api{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/analysis/">
   {% if error == 'busy' %}
   <div class="alert alert-warning" role="status">A report is still being written for this room. Wait for it to finish, then try again.</div>
   {% elif error == 'channel' %}

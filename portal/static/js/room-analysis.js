@@ -8,7 +8,7 @@ function pendingIds() {
 }
 
 async function finished(id) {
-  const url = `/api/admin/events/${root.dataset.eventId}/rooms/${root.dataset.roomId}/analysis/${id}`;
+  const url = `${root.dataset.statusUrl}${id}`;
   try {
     const res = await fetch(url, { headers: { Accept: 'application/json' } });
     if (!res.ok) return false;

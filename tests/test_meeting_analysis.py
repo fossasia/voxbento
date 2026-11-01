@@ -697,3 +697,38 @@ async def test_report_page_for_a_report_still_being_written(world):
     assert 'data-report-status="pending"' in page.text
     assert "data-report-tabs" not in page.text
     assert other.status_code == 404
+
+
+@pytest.mark.anyio
+async def test_clearing_the_model_brings_back_the_recommended_one(world):
+    url = f"/admin/events/{world['event']}/api-settings"
+    async with _client() as c:
+        for model in ("custom-model", ""):
+            await c.post(
+                url,
+                data={"meeting_analysis_provider": "openai", "meeting_analysis_model": model},
+                cookies=world["admin"],
+            )
+            async with get_session() as s:
+                assert (await s.get(Event, world["event"])).meeting_analysis_model == model
+    assert model_for("openai", "") == "gpt-4o-mini"
+
+
+@pytest.mark.anyio
+async def test_room_coordinators_can_find_the_reports_from_the_room_page(world):
+    async with _client() as c:
+        page = await c.get(f"/admin/events/{world['event']}/rooms/{world['room']}/", cookies=world["coordinator"])
+    assert page.status_code == 200
+    assert f"/rooms/{world['room']}/analysis/" in page.text
+
+
+@pytest.mark.anyio
+async def test_polling_uses_the_api_path_of_the_current_namespace(world):
+    report_id = await _report(world)
+    async with _client() as c:
+        page = await c.get(f"/admin/events/{world['event']}/rooms/{world['room']}/analysis/", cookies=world["admin"])
+        state = await c.get(
+            f"/api/admin/events/{world['event']}/rooms/{world['room']}/analysis/{report_id}", cookies=world["admin"]
+        )
+    assert f'data-status-url="/api/admin/events/{world["event"]}/rooms/{world["room"]}/analysis/"' in page.text
+    assert state.json()["status"] == "pending"
