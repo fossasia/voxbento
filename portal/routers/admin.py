@@ -1515,10 +1515,16 @@ async def admin_room_sender(request: Request, event_id: int, room_id: int):
         room = await get_room_by_id(session, room_id)
         if room is None or room.event_id != event_id:
             raise HTTPException(status_code=404, detail="Room not found.")
+        db_booths = await list_booths_for_room(session, room_id)
+        channels = overlay_channels([room], db_booths)
     return templates.TemplateResponse(
         request=request,
         name="admin/program_sender.html",
-        context={"event": event, "room": room},
+        context={
+            "event": event,
+            "room": room,
+            "overlay_links": [(channel, _overlay_url(event, room.id, channel.code)) for channel in channels],
+        },
         headers={"Cache-Control": "no-store"},
     )
 

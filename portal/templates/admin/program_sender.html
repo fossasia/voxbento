@@ -18,7 +18,7 @@
     <div>
       <p class='program-ingest-eyebrow'>{{ event.display_name }} · {{ room.display_name }}</p>
       <h3>Program audio sender</h3>
-      <p class='program-ingest-lede'>Leave this tab open on the sound-desk computer. It keeps sending while you use other tabs, reconnects by itself after network drops, and keeps the screen awake.</p>
+      <p class='program-ingest-lede'>Leave this tab open on the sound-desk computer, or on the computer playing the stream in another browser tab. It keeps sending while you use other tabs, reconnects by itself after network drops, and keeps the screen awake.</p>
     </div>
     <span id='sender-state-badge' class='program-state-badge' data-state='idle'>Not sending</span>
   </div>
@@ -32,8 +32,32 @@
   </div>
 
   <div class='program-sender-controls'>
-    <label for='sender-device'>Audio input</label>
-    <select id='sender-device' class='input'></select>
+    <fieldset class='program-mode-picker program-sender-source' id='sender-source'>
+      <legend>Where does the program audio come from?</legend>
+      <label class='program-mode-option'>
+        <input type='radio' name='sender-source' value='device' checked>
+        <span><strong>Audio input</strong><small>Sound desk, USB interface or microphone on this computer.</small></span>
+      </label>
+      <label class='program-mode-option'>
+        <input type='radio' name='sender-source' value='tab'>
+        <span><strong>Browser tab</strong><small>A stream playing in another tab, for example YouTube. Chrome or Edge.</small></span>
+      </label>
+    </fieldset>
+
+    <div id='sender-tab-help' class='program-sender-tab-help' hidden>
+      <ol>
+        <li>Open the stream in another tab of this browser and press play.</li>
+        <li>Click <strong>Start sending</strong> and pick that tab in the browser's share dialog.</li>
+        <li>Keep <strong>Also share tab audio</strong> switched on, then click <strong>Share</strong>.</li>
+      </ol>
+      <p>Keep both tabs open; you can use other tabs meanwhile. Closing the stream tab or clicking <strong>Stop sharing</strong> stops sending.</p>
+      <label class='program-sender-rights'><input type='checkbox' id='sender-tab-rights'> <span>I have the right to interpret and caption this stream.</span></label>
+    </div>
+
+    <div id='sender-device-row' class='program-sender-device'>
+      <label for='sender-device'>Audio input</label>
+      <select id='sender-device' class='input'></select>
+    </div>
 
     <div class='program-sender-meter' aria-hidden='true'>
       <div id='sender-meter-fill' class='program-sender-meter-fill'></div>
@@ -45,19 +69,42 @@
       <button type='button' class='btn btn-outline' id='sender-mute' hidden aria-pressed='false'>Mute</button>
       <button type='button' class='btn btn-outline' id='sender-stop' hidden>Stop sending</button>
     </div>
-    <p id='sender-status' role='status' aria-live='polite'>Pick an input, run a sound check, then start sending.</p>
+    <p id='sender-status' role='status' aria-live='polite'>Pick a source, run a sound check, then start sending.</p>
   </div>
 
   <div class='program-sender-check'>
     <div>
       <h4>Sound check</h4>
-      <p>Nothing here reaches listeners. Speak or play program audio and watch the meter, or record a few seconds and listen back on headphones.</p>
+      <p>Nothing here reaches listeners. Play program audio and watch the meter, or record a few seconds and listen back on headphones.</p>
     </div>
     <div class='program-sender-actions'>
       <button type='button' class='btn btn-outline' id='sender-test'>Test input</button>
       <button type='button' class='btn btn-outline' id='sender-record'>Record 5 s and play back</button>
     </div>
     <audio id='sender-playback' class='program-sender-playback' controls hidden></audio>
+  </div>
+
+  <div class='program-sender-check program-sender-overlay'>
+    <div>
+      <h4>Captions on the stream</h4>
+      <p>Add an overlay URL to OBS or vMix as a 1920×1080 browser source. It shows the captions made from the audio this page sends.</p>
+    </div>
+    {% if overlay_links and event.listener_join_code %}
+    {% for channel, url in overlay_links %}
+    <div>
+      <label for='sender-overlay-{{ channel.code }}'>{{ channel.name }} · {{ channel.source }}</label>
+      <div class='program-copy-field'>
+        <input id='sender-overlay-{{ channel.code }}' class='input' type='text' readonly value='{{ url }}'>
+        <button type='button' class='btn btn-outline btn-copy' data-copy-target='sender-overlay-{{ channel.code }}'>Copy URL</button>
+        <a class='btn btn-outline' href='{{ url }}' target='_blank' rel='noopener'>Open ↗</a>
+      </div>
+    </div>
+    {% endfor %}
+    {% elif overlay_links %}
+    <p class='program-sender-note'>Overlay URLs need a listener join code. <a href='{{ management_prefix }}/events/{{ event.id }}/'>Set one on the event page</a>.</p>
+    {% else %}
+    <p class='program-sender-note'>Turn on captions for this room to get an overlay URL. <a href='{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/'>Open room settings</a>.</p>
+    {% endif %}
   </div>
 </section>
 <script type='module' src='/static/js/program-sender.js'></script>
