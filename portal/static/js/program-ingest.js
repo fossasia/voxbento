@@ -6,6 +6,7 @@ const stateBadge = document.getElementById('program-state-badge');
 const warning = document.getElementById('program-warning');
 const relayRisk = document.getElementById('program-relay-risk');
 const relayRadio = document.getElementById('program-mode-relay');
+const rtmpsRadio = document.getElementById('program-mode-rtmps');
 const destinationForm = document.getElementById('program-relay-destination');
 const destinationStatus = document.getElementById('program-destination-status');
 const relayKey = document.getElementById('program-relay-key');
@@ -42,12 +43,21 @@ const healthLabels = {
   processing: 'Processing',
 };
 
-const modeLabels = {whip: 'OBS streaming to YouTube itself', rtmps_relay: 'VoxBento forwarding to YouTube'};
+const modeLabels = {
+  whip: 'OBS streaming to YouTube itself',
+  rtmps: 'Streaming tool sends VoxBento an extra stream',
+  rtmps_relay: 'VoxBento forwarding to YouTube',
+};
 
-// Per-mode wording; the relay calls its credential a "stream key", as OBS and YouTube do.
+// Both RTMPS modes take the OBS-style server and stream key.
+const RTMPS_MODES = ['rtmps', 'rtmps_relay'];
+
+// Per-mode wording; RTMPS modes call the credential a "stream key", as OBS and YouTube do.
+const streamKeyWords = {rotate: 'New stream key', revoke: 'Revoke stream key', expires: 'Stream key expires'};
 const credentialWords = {
   whip: {rotate: 'Rotate token', revoke: 'Revoke token', expires: 'Token expires'},
-  rtmps_relay: {rotate: 'New stream key', revoke: 'Revoke stream key', expires: 'Stream key expires'},
+  rtmps: streamKeyWords,
+  rtmps_relay: streamKeyWords,
 };
 
 const confirmations = {
@@ -74,13 +84,15 @@ function selectedMode() {
 
 function applyMode(mode) {
   card.querySelectorAll('[data-mode-panel]').forEach(panel => {
-    panel.hidden = panel.dataset.modePanel !== mode;
+    panel.hidden = !panel.dataset.modePanel.split(' ').includes(mode);
   });
   const relay = mode === 'rtmps_relay';
+  const streamKey = RTMPS_MODES.includes(mode);
   relayRisk.hidden = !relay;
   document.getElementById('program-connect-step').textContent = relay ? '2' : '1';
   document.getElementById('program-monitor-step').textContent = relay ? '3' : '2';
   document.getElementById('program-monitor-title').textContent = relay ? 'Go live and check' : 'Monitor the feed';
+  document.getElementById('program-connect-title').textContent = mode === 'rtmps' ? 'Connect your streaming tool' : 'Connect OBS';
   const words = credentialWords[mode];
   card.querySelector('[data-ingest-action="rotate"]').textContent = words.rotate;
   card.querySelector('[data-ingest-action="revoke"]').textContent = words.revoke;
@@ -91,10 +103,10 @@ function applyMode(mode) {
     enable.textContent = `Switch to ${modeLabels[mode]}`;
     help.textContent = 'Creates a new credential and stops VoxBento hearing the room any other way.';
   } else if (latest?.enabled && latest.credential_present) {
-    enable.textContent = relay ? 'Create a new stream key' : 'Create a new token';
+    enable.textContent = streamKey ? 'Create a new stream key' : 'Create a new token';
     help.textContent = 'Only needed if you lost it. The encoder disconnects until you paste the new one.';
   } else {
-    enable.textContent = relay ? 'Create stream key' : 'Enable ingest and create token';
+    enable.textContent = streamKey ? 'Create stream key' : 'Enable ingest and create token';
     help.textContent = 'Room-specific and shown only once. Valid for 30 days.';
   }
 }
@@ -108,9 +120,9 @@ function renderSteps(data) {
     setStep('connect', relayMode && ingestUp ? 'done' : saved ? 'current' : 'todo');
     setStep('monitor', relayMode && data.health.relay.state === 'live' ? 'done' : relayMode && ingestUp ? 'current' : 'todo');
   } else {
-    const whipMode = data.enabled && data.mode === 'whip';
-    setStep('connect', whipMode && ingestUp ? 'done' : 'current');
-    setStep('monitor', whipMode && data.health.processing.state === 'processing' ? 'done' : whipMode && ingestUp ? 'current' : 'todo');
+    const modeActive = data.enabled && data.mode === selectedMode();
+    setStep('connect', modeActive && ingestUp ? 'done' : 'current');
+    setStep('monitor', modeActive && data.health.processing.state === 'processing' ? 'done' : modeActive && ingestUp ? 'current' : 'todo');
   }
 }
 
@@ -122,7 +134,9 @@ function renderHealth(stage, value) {
 }
 
 function renderStatus(data) {
-  const stateLabel = stateLabels[data.state] || data.state;
+  const stateLabel = data.state === 'waiting' && data.mode === 'rtmps'
+    ? 'Waiting for your streaming tool'
+    : stateLabels[data.state] || data.state;
   // In relay mode YouTube delivery is what the organizer watches; captions have their own row.
   const youtubeLive = data.enabled && data.mode === 'rtmps_relay' && data.health.relay.state === 'live';
   stateBadge.textContent = youtubeLive ? 'Live on YouTube' : stateLabel;
@@ -146,12 +160,13 @@ function renderStatus(data) {
   document.getElementById('program-relay-clear').disabled = !destination.configured || !data.relay_available;
 
   const relaySelected = selectedMode() === 'rtmps_relay';
+  const rtmpsSelected = RTMPS_MODES.includes(selectedMode());
   const warnings = [...data.warnings];
   if (!data.available) warnings.push('Ask the server operator to enable authenticated program ingest.');
   if (relaySelected && data.relay_available && data.relay_service_down) {
     warnings.push('The YouTube relay service on the server is not responding. Ask the server operator to check the program-relay container.');
   }
-  if (relaySelected && data.relay_available && !data.rtmps_server) {
+  if (rtmpsSelected && data.rtmps_available && !data.rtmps_server) {
     warnings.push('The server has no public RTMPS address yet. Ask the server operator to set PROGRAM_RTMPS_PUBLIC_BASE.');
   }
   warning.hidden = warnings.length === 0;
@@ -211,6 +226,8 @@ async function refresh() {
     }
     relayRadio.disabled = !data.relay_available;
     document.getElementById('program-relay-unavailable').hidden = data.relay_available;
+    rtmpsRadio.disabled = !data.rtmps_available;
+    document.getElementById('program-rtmps-unavailable').hidden = data.rtmps_available;
     applyMode(selectedMode());
     document.getElementById('program-endpoint').value = data.endpoint;
     document.getElementById('program-rtmps-server').value = data.rtmps_server;
@@ -218,7 +235,8 @@ async function refresh() {
     card.querySelectorAll('[data-ingest-action]').forEach(button => {
       const action = button.dataset.ingestAction;
       const relayBlocked = action === 'enable' && selectedMode() === 'rtmps_relay' && !data.relay_available;
-      button.disabled = (['enable', 'rotate'].includes(action) && !data.available) || relayBlocked ||
+      const rtmpsBlocked = action === 'enable' && selectedMode() === 'rtmps' && !data.rtmps_available;
+      button.disabled = (['enable', 'rotate'].includes(action) && !data.available) || relayBlocked || rtmpsBlocked ||
         (['rotate', 'revoke', 'disable'].includes(action) && !data.enabled);
     });
     destinationForm.querySelectorAll('input, button[type="submit"]').forEach(item => {
@@ -232,12 +250,12 @@ async function refresh() {
 }
 
 function showSecret(data) {
-  const relay = Boolean(data.stream_key);
-  secret.value = relay ? data.stream_key : data.secret;
-  secret.dataset.kind = relay ? 'stream_key' : 'token';
-  document.getElementById('program-secret-label').textContent = relay ? 'Stream key' : 'Bearer token';
-  document.getElementById('program-secret-help').textContent = relay
-    ? 'Paste this into OBS as the Stream Key. Copy it now: it is shown only once and expires in 30 days.'
+  const streamKey = Boolean(data.stream_key);
+  secret.value = streamKey ? data.stream_key : data.secret;
+  secret.dataset.kind = streamKey ? 'stream_key' : 'token';
+  document.getElementById('program-secret-label').textContent = streamKey ? 'Stream key' : 'Bearer token';
+  document.getElementById('program-secret-help').textContent = streamKey
+    ? 'Paste this as the Stream Key in OBS or your streaming tool. Copy it now: it is shown only once and expires in 30 days.'
     : 'Paste this into OBS as the Bearer Token. It expires in 30 days.';
   document.getElementById('program-secret-panel').hidden = false;
   updateFullUrl();

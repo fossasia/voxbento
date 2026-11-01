@@ -1,4 +1,4 @@
-"""Real RTMPS ingest -> MediaMTX -> program-relay -> RTMPS sink tests (#749).
+"""Real RTMPS ingest -> MediaMTX -> program-relay -> RTMPS sink tests (#749), plus relay-free RTMPS ingest.
 
 MEDIAMTX_TEST_BINARY=/path/to/mediamtx uv run pytest tests/test_program_relay_media.py -v
 Requires MediaMTX 1.18.2 and FFmpeg (libx264, AAC, TLS) on PATH. CI runs this module in the
@@ -566,3 +566,29 @@ async def test_native_relay_detects_destination_that_stops_consuming(native):
         assert (await native.relay_health(room))["relay"]["state"] == "live"
     finally:
         await proxy.close()
+
+
+async def test_native_rtmps_extra_destination_without_relay(native, monkeypatch):
+    """Plan 004: RTMPS ingest with no relay service, VoxBento as an extra destination (#1087)."""
+    monkeypatch.setattr(settings, "program_relay_enabled", False)
+    monkeypatch.setattr(settings, "program_rtmps_enabled", True)
+    room = native.rooms[0]
+    response = await native.client.post(
+        native.admin_url(room, "program-ingest"), json={"action": "enable", "mode": "rtmps"}
+    )
+    assert response.status_code == 200, response.text
+    secret, stream_key = response.json()["secret"], response.json()["stream_key"]
+    assert await native.rejected(f"{native.server_url(room)}/floor?key=not-{secret}", native.floor(room))
+    encoder = await native.publish_like_obs(room, stream_key)
+    ready = await wait_path(native.floor(room))
+    assert ready is not None, (native.tmp_path / "media.log").read_text()
+    assert "MPEG-4 Audio" in ready.tracks
+    health = await native.relay_health(room)
+    assert health["ingest"]["state"] == "connected" and health["relay"]["state"] == "disabled"
+    assert native.manager.snapshot() == {}
+    floor = f"rtsp://127.0.0.1:{native.ports['rtsp']}/{native.floor(room)}"
+    async with FfmpegProcess(floor, "16000", "rtmps-native") as decoder:
+        pcm = await asyncio.wait_for(decoder.stdout.readexactly(32000), 20)
+        assert len(pcm) == 32000 and any(pcm)
+    assert encoder.returncode is None
+    assert secret not in (native.tmp_path / "media.log").read_text()
