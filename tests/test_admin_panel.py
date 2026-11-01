@@ -2347,10 +2347,16 @@ class TestBoothCRUD:
 
     @pytest.mark.anyio
     async def test_booth_detail_shows_next_steps_until_the_booth_is_configured(self, admin_cookie, seed_event):
+        from portal.database import create_invite_token, get_session
+
         event, room, booth = seed_event
         url = f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/"
         async with _client() as c:
             fresh = (await c.get(url, cookies=admin_cookie)).text
+            # Inviting an interpreter does not configure captions or translations, so the list stays.
+            async with get_session() as s:
+                await create_invite_token(s, booth_id=booth.id, role="interpreter")
+            invited = (await c.get(url, cookies=admin_cookie)).text
             await c.post(
                 f"{url}transcription-settings",
                 data={
@@ -2364,7 +2370,27 @@ class TestBoothCRUD:
         assert "Here's what's next" in fresh
         assert 'data-booth-tab-link="captions"' in fresh
         assert 'data-booth-tab-link="translations"' in fresh
+        assert "Here's what's next" in invited
         assert "Here's what's next" not in configured
+
+    @pytest.mark.anyio
+    async def test_a_new_booth_offers_a_real_translation_service(self, admin_cookie, seed_event):
+        """A new booth has no translation service saved; the form must not post the text "None" (#1081)."""
+        event, room, booth = seed_event
+        url = f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/"
+        async with _client() as c:
+            html = (await c.get(url, cookies=admin_cookie)).text
+            # Saving the tab with the first service it offers must work.
+            saved = await c.post(
+                f"{url}translation-settings",
+                data={"translation_provider": "local", "translation_model": "nllb-200-distilled-600M"},
+                cookies=admin_cookie,
+                follow_redirects=False,
+            )
+        assert 'value="None"' not in html
+        assert "None — add its API key" not in html
+        assert 'data-provider="None"' not in html
+        assert saved.status_code == 303
 
     @pytest.mark.anyio
     async def test_booth_detail_shows_whep_url(self, admin_cookie, seed_event):

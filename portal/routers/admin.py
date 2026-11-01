@@ -2099,6 +2099,8 @@ async def admin_booth_detail(request: Request, event_id: int, room_id: int, boot
         (speech_models, db_booth.transcription_provider, saved_speech_model),
         (translation_models, db_booth.translation_provider, db_booth.translation_model),
     ):
+        if not saved_provider:  # a new booth has no translation service saved yet
+            continue
         offered = models.setdefault(saved_provider, [])
         if saved_model and saved_model not in {value for value, _ in offered}:
             offered.append((saved_model, f"{saved_model} (current)"))
@@ -2114,9 +2116,7 @@ async def admin_booth_detail(request: Request, event_id: int, room_id: int, boot
             "saved_speech_model": saved_speech_model,
             "translation_models": translation_models,
             "saved_notice": _booth_saved_notice(request),
-            "show_next_steps": not (
-                db_booth.transcription_enabled or db_booth.translation_enabled or memberships or tokens
-            ),
+            "show_next_steps": not (db_booth.transcription_enabled or db_booth.translation_enabled),
             "booth_id": bid,
             "mediamtx_path": mediamtx_path,
             "whep_url": whep_url,
