@@ -21,6 +21,7 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
+from starlette.datastructures import FormData
 
 from portal import meeting_source
 from portal import roles as roles_module
@@ -133,13 +134,12 @@ from portal.notifications import (
     save_email_branding,
     template_content,
 )
+from portal.overlay_channels import overlay_channels
 from portal.program_ingest import room_lock
 from portal.rate_limit import check_rate_limit
 from portal.roles import EVENT_OWNER, assignment_error, role_label
-from portal.room_setup import ALL_LANGUAGES as ROOM_ALL_LANGUAGES
-from portal.room_setup import COMMON_LANGUAGES as ROOM_COMMON_LANGUAGES
-from portal.room_setup import DELIVERY_LABELS as ROOM_DELIVERY_LABELS
 from portal.room_setup import (
+    AI_VOICE,
     EngineCatalog,
     RoomPlan,
     RoomSummary,
@@ -149,8 +149,16 @@ from portal.room_setup import (
     engine_catalog,
     load_snapshot,
     parse_plan,
+    room_audio_choice,
     summarize,
 )
+from portal.room_setup import ALL_LANGUAGES as ROOM_ALL_LANGUAGES
+from portal.room_setup import COMMON_LANGUAGES as ROOM_COMMON_LANGUAGES
+from portal.room_setup import DELIVERY_EXPLANATIONS as ROOM_DELIVERY_EXPLANATIONS
+from portal.room_setup import DELIVERY_HINTS as ROOM_DELIVERY_HINTS
+from portal.room_setup import DELIVERY_LABELS as ROOM_DELIVERY_LABELS
+from portal.room_setup import SPEECH_MODELS as ROOM_SPEECH_MODELS
+from portal.room_setup import VOICE_PRESETS as ROOM_VOICE_PRESETS
 from portal.room_setup import language_name as room_language_name
 from portal.team import ROLE_CHOICES as TEAM_ROLE_CHOICES
 from portal.team import TeamError, load_team
@@ -542,7 +550,7 @@ async def mission_control_grid(request: Request, event_slug: str, user=Depends(r
             {
                 "id": room.id,
                 "name": room.display_name,
-                "floor_captions": bool(room.floor_transcription_enabled) and room.floor_transcription_provider != "none",
+                "floor_captions": room.has_floor_captions,
                 "floor_source": room.floor_source or "jitsi_bot",
             }
             for room in await list_rooms_for_event(session, event.id)
@@ -954,6 +962,8 @@ def _room_setup_response(
             "common_codes": [code for code, _ in ROOM_COMMON_LANGUAGES],
             "language_name": room_language_name,
             "delivery_labels": ROOM_DELIVERY_LABELS,
+            "delivery_hints": ROOM_DELIVERY_HINTS,
+            "delivery_explanations": ROOM_DELIVERY_EXPLANATIONS,
             "booth_codes": list(booth_codes),
             "live_codes": sorted(live_codes),
             "from_setup": from_setup,
@@ -1161,8 +1171,8 @@ async def admin_event_detail(request: Request, event_id: int):
         event = await get_event_by_id(session, event_id)
         if event is None:
             raise HTTPException(status_code=404, detail="Event not found.")
-        rooms = await list_rooms_for_event(session, event_id)
-        db_booths = await list_booths_for_event(session, event_id)
+        rooms = await list_rooms_for_event(session, event_id, limit=None)
+        db_booths = await list_booths_for_event(session, event_id, limit=None)
         summaries = await _room_summaries(session, event, rooms)
     # Keep each room's booths together, in the same order as the Rooms list.
     room_order = {room.id: index for index, room in enumerate(rooms)}
@@ -1184,6 +1194,28 @@ async def admin_event_detail(request: Request, event_id: int):
             "live_count": sum((1 for bs in booth_statuses if bs["is_live"])),
             **admin_flags,
         },
+    )
+
+
+@router.get("/admin/events/{event_id}/caption-overlays/", dependencies=[Depends(require_event_owner)])
+async def admin_event_caption_overlays(request: Request, event_id: int):
+    admin_flags = await get_access_flags(request, event_id=event_id)
+    async with get_session() as session:
+        event = await get_event_by_id(session, event_id)
+        if event is None:
+            raise HTTPException(status_code=404, detail="Event not found.")
+        rooms = await list_rooms_for_event(session, event_id, limit=None)
+        db_booths = await list_booths_for_event(session, event_id, limit=None)
+    return templates.TemplateResponse(
+        request=request,
+        name="admin/caption_overlays.html",
+        context={
+            "event": event,
+            "rooms": rooms,
+            "overlay_channels": overlay_channels(rooms, db_booths),
+            **admin_flags,
+        },
+        headers={"Cache-Control": "no-store"},
     )
 
 
@@ -1414,7 +1446,8 @@ async def admin_room_detail(request: Request, event_id: int, room_id: int):
         if room is None or room.event_id != event_id:
             raise HTTPException(status_code=404, detail="Room not found.")
         db_booths = await list_booths_for_room(session, room_id)
-        snapshot = await load_snapshot(session, room, engine_catalog(event))
+        catalog = engine_catalog(event)
+        snapshot = await load_snapshot(session, room, catalog)
         vocabulary_entries = list(
             await session.scalars(
                 select(AIVocabularyEntry)
@@ -1431,11 +1464,6 @@ async def admin_room_detail(request: Request, event_id: int, room_id: int):
     clean_name = re.sub("[^a-zA-Z0-9]+", "", room.display_name)
     room_id_str = f"Voxbento-{event.slug}-{clean_name}"
     fallback_jitsi_url = _make_jitsi_url(settings.effective_jitsi_base_url, room_id_str)
-    translation_languages_dataset = [
-        {"code": lang.alpha_2, "name": lang.name} for lang in pycountry.languages if hasattr(lang, "alpha_2")
-    ]
-    translation_languages_dataset.sort(key=lambda x: x["name"])
-    enabled_translation_language_codes = [lang.language_code for lang in room.translation_languages if lang.enabled]
     async with get_session() as session:
         memberships = await list_memberships_for_room(session, room_id)
     kept_live = [
@@ -1450,12 +1478,23 @@ async def admin_room_detail(request: Request, event_id: int, room_id: int):
             "booths": booth_statuses,
             "summary": summarize(room, snapshot),
             "booths_by_code": {bs["db"].language_code: bs for bs in booth_statuses},
+            "overlay_urls": {
+                ch.code: _overlay_url(event, room.id, ch.code) for ch in overlay_channels([room], db_booths)
+            },
+            "room_overlay_channels": overlay_channels([room], db_booths),
+            "floor_overlay_url": _overlay_url(event, room.id, "floor") if room.has_floor_captions else None,
             "just_created": request.query_params.get("created") == "1",
             "just_updated": request.query_params.get("updated") == "1",
             "kept_live_languages": kept_live,
             "fallback_jitsi_url": fallback_jitsi_url,
-            "translation_languages_dataset": translation_languages_dataset,
-            "enabled_translation_language_codes": enabled_translation_language_codes,
+            "catalog": catalog,
+            "audio_choice": room_audio_choice(room),
+            "speech_models": ROOM_SPEECH_MODELS,
+            "voice_presets": ROOM_VOICE_PRESETS,
+            "ai_language_names": [room_language_name(code) for code in snapshot.plan.ai_languages],
+            "voice_language_names": [
+                room_language_name(code) for code, delivery in snapshot.plan.languages if delivery == AI_VOICE
+            ],
             "vocabulary_entries": vocabulary_entries,
             "vocabulary_imported": request.query_params.get("vocab_imported"),
             "vocabulary_warnings": request.query_params.get("vocab_warnings"),
@@ -1476,10 +1515,16 @@ async def admin_room_sender(request: Request, event_id: int, room_id: int):
         room = await get_room_by_id(session, room_id)
         if room is None or room.event_id != event_id:
             raise HTTPException(status_code=404, detail="Room not found.")
+        db_booths = await list_booths_for_room(session, room_id)
+        channels = overlay_channels([room], db_booths)
     return templates.TemplateResponse(
         request=request,
         name="admin/program_sender.html",
-        context={"event": event, "room": room},
+        context={
+            "event": event,
+            "room": room,
+            "overlay_links": [(channel, _overlay_url(event, room.id, channel.code)) for channel in channels],
+        },
         headers={"Cache-Control": "no-store"},
     )
 
@@ -1502,6 +1547,38 @@ async def admin_room_transcripts(request: Request, event_id: int, room_id: int):
     )
 
 
+def _apply_ai_settings(room: Room, form: FormData, catalog: EngineCatalog) -> None:
+    """Save the room page's AI settings: services, models, voice and translator instructions.
+
+    What a room offers (captions on or off, which languages use AI) belongs to the room setup
+    form, so this never switches anything on or off. A service the event can't use, or one
+    left out of the form, keeps the room's current choice.
+    """
+    speech = catalog.find("speech", str(form.get("floor_transcription_provider", "")))
+    if speech:
+        model = str(form.get("floor_transcription_model", ""))
+        allowed = {value for value, _ in ROOM_SPEECH_MODELS.get(speech.provider, ())}
+        room.floor_transcription_provider = speech.provider
+        room.floor_transcription_model = model if model in allowed else speech.model
+
+    translation = catalog.find("translation", str(form.get("floor_translation_provider", "")))
+    if translation:
+        model = str(form.get("floor_translation_model", "")).strip()[:100]
+        room.floor_translation_provider = translation.provider
+        room.floor_translation_model = model or translation.model
+    if "floor_ai_interpreter_persona" in form:
+        room.floor_ai_interpreter_persona = str(form.get("floor_ai_interpreter_persona", "")).strip() or None
+        room.floor_ai_interpretation_style = str(form.get("floor_ai_interpretation_style", "")).strip() or None
+        room.floor_ai_vocabulary_enabled = form.get("floor_ai_vocabulary_enabled") == "on"
+
+    voice = catalog.find("voice", str(form.get("floor_tts_provider", "")))
+    if voice:
+        room.floor_tts_provider = voice.provider
+        preset = str(form.get("floor_tts_voice", "")).strip().upper()
+        if preset in {value for value, _ in ROOM_VOICE_PRESETS}:
+            room.floor_tts_voice = preset
+
+
 @router.post("/admin/events/{event_id}/rooms/{room_id}/edit", dependencies=[Depends(require_event_owner)])
 async def admin_edit_room(request: Request, event_id: int, room_id: int):
     """Update settings and configuration for an event room."""
@@ -1513,7 +1590,7 @@ async def admin_edit_room(request: Request, event_id: int, room_id: int):
     relay_booth_id = int(relay_booth_id_str) if relay_booth_id_str and relay_booth_id_str.lower() != "none" else None
     audio_delay_ms = parse_audio_delay_ms(form.get("audio_delay_ms", "0"))
     floor_transcription_enabled = form.get("floor_transcription_enabled") == "on"
-    floor_transcription_provider = form.get("floor_transcription_provider", "local").strip()
+    floor_transcription_provider = form.get("floor_transcription_provider", "local").strip().lower() or "none"
     floor_transcription_model = form.get("floor_transcription_model", "tiny").strip()
     floor_language_code = form.get("floor_language_code", "").strip() or None
     floor_translation_enabled = form.get("floor_translation_enabled") == "on"
@@ -1585,6 +1662,12 @@ async def admin_edit_room(request: Request, event_id: int, room_id: int):
             room.floor_tts_enabled = floor_tts_enabled
             room.floor_tts_provider = floor_tts_provider
             room.floor_tts_voice = floor_tts_voice
+
+        if form_section == "ai":
+            event = await get_event_by_id(session, event_id)
+            if event is None:
+                raise HTTPException(status_code=404, detail="Event not found.")
+            _apply_ai_settings(room, form, engine_catalog(event))
         await session.flush()
     return safe_redirect(
         url=management_url(request, f"events/{event_id}/rooms/{room_id}/"),
@@ -1935,6 +2018,14 @@ async def admin_create_booth(request: Request, event_id: int, room_id: int):
     )
 
 
+def _overlay_url(event: Event, room_id: int, language_code: str) -> str | None:
+    """Absolute OBS / vMix subtitle overlay URL for a caption channel; None until the event has a join code."""
+    if not event.listener_join_code:
+        return None
+    query = urllib.parse.urlencode({"code": event.listener_join_code})
+    return f"{settings.public_base_url.rstrip('/')}/overlay/{event.slug}/{room_id}/{language_code}?{query}"
+
+
 @router.get("/admin/events/{event_id}/rooms/{room_id}/booths/{booth_id}/", dependencies=[Depends(require_owner_or_coordinator)])
 async def admin_booth_detail(request: Request, event_id: int, room_id: int, booth_id: int):
     admin_flags = await get_access_flags(request, event_id=event_id, room_id=room_id)
@@ -1974,6 +2065,7 @@ async def admin_booth_detail(request: Request, event_id: int, room_id: int, boot
             "booth_id": bid,
             "mediamtx_path": mediamtx_path,
             "whep_url": whep_url,
+            "overlay_url": _overlay_url(event, db_booth.room_id, db_booth.language_code),
             "is_live": is_live,
             "participants": participants,
             "active_interpreter": active_interpreter,
