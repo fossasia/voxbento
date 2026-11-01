@@ -54,7 +54,11 @@ assert(Object.isFrozen(RAW_AUDIO), 'the shared raw-audio constraints cannot be m
 // Support detection
 assert(tabCaptureSupported(undefined) === false, 'no mediaDevices means no tab capture')
 assert(tabCaptureSupported({}) === false, 'mediaDevices without getDisplayMedia means no tab capture')
-assert(tabCaptureSupported({ getDisplayMedia() {} }) === true, 'getDisplayMedia means tab capture works')
+assert(tabCaptureSupported({ getDisplayMedia() {} }) === false, 'getDisplayMedia without tab-audio constraints (Firefox, Safari) means no tab capture')
+assert(
+  tabCaptureSupported({ getDisplayMedia() {}, getSupportedConstraints: () => ({ suppressLocalAudioPlayback: true }) }) === true,
+  'Chromium getDisplayMedia means tab capture works',
+)
 
 // Surface check (the picker options are only hints)
 function surfaceStream(displaySurface) {

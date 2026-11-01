@@ -6,6 +6,7 @@ const deviceRow = document.getElementById('sender-device-row');
 const sourceRadios = document.querySelectorAll('input[name="sender-source"]');
 const tabHelp = document.getElementById('sender-tab-help');
 const tabRights = document.getElementById('sender-tab-rights');
+const tabRightsLabel = tabRights.closest('label');
 const startButton = document.getElementById('sender-start');
 const muteButton = document.getElementById('sender-mute');
 const stopButton = document.getElementById('sender-stop');
@@ -62,11 +63,23 @@ let preferredDevice = savedDevice();
 let source = normalizeSource(savedSource());
 // Bumped by stop(); a connect() that resumes under an older generation is abandoned.
 let generation = 0;
+// Bumped by releaseInput(); recovery for an input that was since released or replaced is abandoned.
+let inputGeneration = 0;
 
 function setState(state, message, label) {
   stateBadge.textContent = label || stateLabels[state] || state;
   stateBadge.dataset.state = state;
   if (message) statusLine.textContent = message;
+  lockSource();
+}
+
+function busy() {
+  return sending || testing || Boolean(recorder) || capturing;
+}
+
+function lockSource() {
+  const locked = busy();
+  sourceRadios.forEach(radio => { radio.disabled = locked; });
 }
 
 function supported() {
@@ -133,6 +146,7 @@ async function listDevices() {
 }
 
 function releaseInput() {
+  inputGeneration += 1;
   stopMeter();
   if (stream) stream.getTracks().forEach(track => track.stop());
   if (meterStream) meterStream.getTracks().forEach(track => track.stop());
@@ -151,7 +165,8 @@ async function openInput() {
   stream = next;
   const track = stream.getAudioTracks()[0];
   track.enabled = !muted;
-  track.addEventListener('ended', handleInputLost);
+  const inputGen = inputGeneration;
+  track.addEventListener('ended', () => handleInputLost(inputGen));
   meterStream = new MediaStream([track.clone()]);
   startMeter();
   await listDevices();
@@ -175,7 +190,8 @@ async function openTab() {
   releaseInput();
   stream = new MediaStream([track]);
   track.enabled = !muted;
-  track.addEventListener('ended', handleTabEnded);
+  const inputGen = inputGeneration;
+  track.addEventListener('ended', () => handleTabEnded(inputGen));
   meterStream = new MediaStream([track.clone()]);
   startMeter();
   const sender = pc?.getSenders().find(item => item.track?.kind === 'audio' || item.track === null);
@@ -189,15 +205,27 @@ function openSource() {
 // Marks the capture as pending so the source cannot change under a prompt that is still open.
 async function captureSource() {
   capturing = true;
+  lockSource();
   try {
     await openSource();
   } finally {
     capturing = false;
+    lockSource();
   }
 }
 
+// Start, Test and Record each open their own capture; a second one would replace the track the first is using.
+function refuseWhileCapturing() {
+  if (!capturing) return false;
+  statusLine.textContent = source === SOURCES.TAB
+    ? 'Finish picking the tab in the share dialog first.'
+    : 'Allow or block the audio input in the browser prompt first.';
+  return true;
+}
+
 // A shared tab cannot be reopened without a user click, so this never re-opens the tab itself.
-async function handleTabEnded() {
+async function handleTabEnded(inputGen) {
+  if (inputGen !== inputGeneration) return;
   if (sending) {
     await stop(true);
     setState('stopped', 'Tab sharing ended. Click Start sending and pick the tab again.');
@@ -206,13 +234,14 @@ async function handleTabEnded() {
   }
 }
 
-async function handleInputLost() {
-  if (!sending && !testing) return;
+async function handleInputLost(inputGen) {
+  if (inputGen !== inputGeneration || (!sending && !testing)) return;
   setState('reconnecting', 'The audio input disappeared. Waiting for it to come back…');
   await listDevices();
+  if (inputGen !== inputGeneration) return;
   // Wait for the chosen input rather than silently sending whichever input is left.
   if (preferredDevice && deviceSelect.value !== preferredDevice) {
-    window.setTimeout(handleInputLost, 2000);
+    window.setTimeout(() => handleInputLost(inputGen), 2000);
     return;
   }
   try {
@@ -220,7 +249,7 @@ async function handleInputLost() {
     setState(sending ? (muted ? 'muted' : 'live') : 'testing', 'Audio input restored.');
   } catch (error) {
     console.warn('Audio input still unavailable; retrying', error);
-    window.setTimeout(handleInputLost, 2000);
+    window.setTimeout(() => handleInputLost(inputGen), 2000);
   }
 }
 
@@ -250,17 +279,24 @@ function startMeter() {
 }
 
 function describeLevel(rms) {
+  const tab = source === SOURCES.TAB;
   let level = 'good';
   let text = 'Good level.';
   if (recentPeak > 0.98) {
     level = 'clipping';
-    text = 'Too loud — the input is clipping. Turn the sound-desk send down.';
+    text = tab
+      ? 'Too loud — the tab audio is clipping. Lower the player volume in the shared tab.'
+      : 'Too loud — the input is clipping. Turn the sound-desk send down.';
   } else if (rms < 0.01 && recentPeak < 0.05) {
     level = 'silent';
-    text = 'No signal. Check the cable and the selected input.';
+    text = tab
+      ? 'No signal. Check that the stream is playing and not muted in the shared tab.'
+      : 'No signal. Check the cable and the selected input.';
   } else if (recentPeak < 0.2) {
     level = 'quiet';
-    text = 'Quiet. Turn the sound-desk send up if speech is hard to hear.';
+    text = tab
+      ? 'Quiet. Raise the player volume in the shared tab if speech is hard to hear.'
+      : 'Quiet. Turn the sound-desk send up if speech is hard to hear.';
   }
   if (muted) text = `Muted — listeners hear silence. Input: ${text.charAt(0).toLowerCase()}${text.slice(1)}`;
   levelLine.dataset.level = level;
@@ -277,7 +313,9 @@ function detectSilence(rms) {
   } else {
     silentSince = silentSince || now;
     if (now - silentSince > 4000 && state === 'live') {
-      setState('no-audio', 'No audio from the selected input. Check the sound-desk feed and levels.');
+      setState('no-audio', source === SOURCES.TAB
+        ? 'No audio from the shared tab. Check that the stream is playing and not muted.'
+        : 'No audio from the selected input. Check the sound-desk feed and levels.');
     }
   }
 }
@@ -497,12 +535,15 @@ async function keepAwake() {
 }
 
 async function start() {
+  if (refuseWhileCapturing()) return;
   if (!supported()) {
     setState('error', unsupportedMessage());
     return;
   }
   if (source === SOURCES.TAB && !tabRights.checked) {
-    setState('error', 'Confirm you have the right to interpret this stream.');
+    tabRightsLabel.dataset.invalid = '';
+    tabRights.focus();
+    setState('error', 'Confirm you have the right to interpret and caption this stream.');
     return;
   }
   startButton.disabled = true;
@@ -591,6 +632,7 @@ function reportInputError(error) {
 }
 
 async function startTest() {
+  if (refuseWhileCapturing()) return;
   if (!supported()) {
     setState('error', unsupportedMessage());
     return;
@@ -606,10 +648,16 @@ async function startTest() {
   setState('testing', 'Sound check running. Nothing is sent to listeners.');
 }
 
+function idleMessage() {
+  return source === SOURCES.TAB
+    ? 'Tick the rights box, then start sending and pick the stream tab.'
+    : 'Pick an input, run a sound check, then start sending.';
+}
+
 function stopTest(resetState) {
   if (!testing) return;
   testing = false;
-  testButton.textContent = 'Test input';
+  testButton.textContent = source === SOURCES.TAB ? 'Test tab audio' : 'Test input';
   if (!sending) releaseInput();
   if (resetState) setState('idle', 'Sound check finished. Start sending when you are ready.');
 }
@@ -619,6 +667,7 @@ async function recordCheck() {
     setState('error', 'This browser cannot record a sound check.');
     return;
   }
+  if (refuseWhileCapturing()) return;
   if (!supported()) {
     setState('error', unsupportedMessage());
     return;
@@ -672,14 +721,16 @@ function applySource() {
   const tab = source === SOURCES.TAB;
   deviceRow.hidden = tab;
   tabHelp.hidden = !tab;
+  testButton.textContent = tab ? 'Test tab audio' : 'Test input';
   sourceRadios.forEach(radio => { radio.checked = radio.value === source; });
-  if (!supported()) setState('error', unsupportedMessage());
+  if (supported()) setState('idle', idleMessage());
+  else setState('error', unsupportedMessage());
 }
 
 function changeSource(event) {
   // A recording reads the meter stream, which releaseInput() would cut short, and a pending
   // prompt would otherwise return audio from the source that was selected when it opened.
-  if (sending || testing || recorder || capturing) {
+  if (busy()) {
     // Revert to the source that is still in use.
     sourceRadios.forEach(radio => { radio.checked = radio.value === source; });
     setState(stateBadge.dataset.state, 'Stop sending or testing before changing the source.');
@@ -689,7 +740,6 @@ function changeSource(event) {
   saveSource(source);
   releaseInput();
   applySource();
-  if (supported()) setState('idle', 'Run a sound check, then start sending.');
 }
 
 async function checkAvailability() {
@@ -714,6 +764,7 @@ if (!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia && window.RT
 } else {
   navigator.mediaDevices.addEventListener?.('devicechange', listDevices);
   sourceRadios.forEach(radio => radio.addEventListener('change', changeSource));
+  tabRights.addEventListener('change', () => { delete tabRightsLabel.dataset.invalid; });
   applySource();
   listDevices();
   checkAvailability();

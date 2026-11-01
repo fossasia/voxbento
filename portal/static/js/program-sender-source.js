@@ -22,8 +22,10 @@ export function normalizeSource(value) {
   return value === SOURCES.TAB ? SOURCES.TAB : SOURCES.DEVICE;
 }
 
+// Firefox and Safari have getDisplayMedia but never share tab audio; only Chromium knows this constraint.
 export function tabCaptureSupported(mediaDevices) {
-  return Boolean(mediaDevices && typeof mediaDevices.getDisplayMedia === 'function');
+  if (!mediaDevices || typeof mediaDevices.getDisplayMedia !== 'function') return false;
+  return Boolean(mediaDevices.getSupportedConstraints?.().suppressLocalAudioPlayback);
 }
 
 /**

@@ -134,7 +134,7 @@ YouTube sync delay.
 The sender can also publish the audio of a browser tab instead of a local input, so a
 stream playing in a normal tab (for example a YouTube live stream) reaches the floor
 without sharing it into a Jitsi meeting and without the floor bot. This works in
-Chrome and Edge only. Pick **A browser tab** under *Audio source*, tick the box
+Chrome and Edge only. Pick **Browser tab** as the source, tick the box
 confirming you have the right to interpret and caption the stream, open the stream
 yourself in another tab of the same browser, click **Start sending**, pick that tab
 in the browser's share dialog and keep **Also share tab audio** ticked. Keep both
@@ -146,6 +146,11 @@ and gain control like any other program feed, and the tab stays audible locally.
 chosen source is remembered per room in `localStorage`, and it cannot be changed
 while sending, testing or recording a sound check. VoxBento never embeds or downloads YouTube:
 it only captures what you explicitly share through the browser's picker.
+
+The sender page also lists the room's caption overlay URLs (floor and any
+translations) with copy buttons, so the operator can add the captions of the
+shared stream to OBS or vMix without leaving the page. They appear once the room
+has floor transcription and the event has a listener join code.
 
 ## Processing, recovery, and capacity
 

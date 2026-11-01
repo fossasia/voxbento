@@ -1354,6 +1354,16 @@ code { font-family: var(--font-mono); font-size: 0.85em; background: var(--color
 .program-sender-check p { margin: 0; color: var(--color-text-secondary); font-size: 0.85rem; }
 .program-sender-playback { width: 100%; }
 .program-sender-playback[hidden] { display: none; }
+.program-sender-controls .program-mode-picker { margin: 0 0 18px; }
+.program-sender-device { margin-bottom: 2px; }
+.program-sender-tab-help { margin: 0 0 4px; padding: 14px 16px; border: 1px solid var(--color-primary-border); border-radius: 10px; background: var(--color-primary-subtle); color: var(--color-text); font-size: 0.84rem; }
+.program-sender-tab-help ol { display: grid; gap: 4px; margin: 0 0 8px; padding-left: 20px; line-height: 1.45; }
+.program-sender-tab-help p { margin: 0 0 12px; color: var(--color-text-secondary); font-size: 0.8rem; }
+.program-ingest-card .program-sender-rights { display: flex; align-items: flex-start; gap: 8px; margin: 0; padding-top: 12px; border-top: 1px solid var(--color-primary-border); color: var(--color-text); font-size: 0.84rem; font-weight: 650; cursor: pointer; }
+.program-sender-rights input { margin-top: 3px; accent-color: var(--color-primary); }
+.program-sender-rights[data-invalid] { color: var(--color-danger); }
+.program-sender-overlay .program-copy-field .btn { height: 40px; }
+.program-sender-check p.program-sender-note { padding: 10px 12px; border: 1px dashed var(--color-border-strong); border-radius: 8px; font-size: 0.8rem; }
 
 /* ── Hosting access (#768) ───────────────────────────────────────────────── */
 
