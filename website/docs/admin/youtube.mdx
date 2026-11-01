@@ -1,0 +1,69 @@
+---
+title: Streaming from YouTube
+sidebar_position: 6
+---
+
+# Streaming from YouTube
+
+When your event streams on YouTube, VoxBento can add live captions,
+translations and translated speech to the stream's audio. The **From a
+YouTube stream** option in **Room audio** guides you through three routes
+to get audio into VoxBento.
+
+## Which route should I use?
+
+| Setup | How it works | Best for |
+|---|---|---|
+| **OBS / vMix / hardware encoder** | Your encoder sends one stream to VoxBento, which forwards it to YouTube unchanged. | Single-PC setups where one upload matters. |
+| **StreamYard / Restream / Zoom** | Your streaming platform sends to YouTube *and* to VoxBento as a second RTMP destination. | Multi-destination platforms that already manage your outputs. |
+| **Browser tab audio** | You open the YouTube stream in a browser tab and share that tab's audio to VoxBento. | Streams you don't control, YouTube Studio webcam streams, or quick tests. |
+
+## Why VoxBento cannot take a YouTube URL directly
+
+YouTube's Developer Policy (section III.E.1) prohibits automated
+extraction of audio or video streams from YouTube pages. Bot detection
+and audio separation would make it unreliable even if it were allowed.
+All three routes above give VoxBento the audio legitimately, from the
+source side of the stream.
+
+## Setting up the encoder route
+
+1. In **Room audio**, choose **From a YouTube stream**.
+2. Under **How does video reach YouTube?**, pick
+   **OBS, vMix or a hardware encoder**.
+3. Click **Set up forwarding**. You will see a confirmation that says:
+   *"While this is on, a VoxBento outage also interrupts your YouTube
+   stream."* Accept to continue.
+4. VoxBento fills in the YouTube stream key from the linked broadcast
+   (if you signed in with YouTube in Step 1) or you paste it yourself.
+5. In OBS, open **Settings → Stream**, choose **Custom…** and paste the
+   server URL and stream key shown on the page.
+6. Start streaming in OBS and check the health rows in **Step 3**.
+
+## Setting up the multi-destination route
+
+1. Choose **StreamYard, Restream, Zoom live streaming**.
+2. Click **Enable ingest** to get a server URL and stream key.
+3. In your streaming platform, add a **Custom RTMP** destination and
+   paste the credentials.
+4. Start streaming and check the health rows.
+
+## Setting up browser tab audio
+
+1. Choose **YouTube Studio webcam or a stream I don't control**.
+2. Click **Open sender (tab audio)** — the sender page opens in a new
+   tab with the tab-audio source preselected.
+3. Open your YouTube stream in another browser tab.
+4. In the sender, click **Start sending** and pick the tab that has
+   your YouTube stream playing.
+5. Keep the sender tab open for the whole session.
+
+## Troubleshooting
+
+- **Audio → VoxBento shows "Down"**: Check that your encoder or
+  streaming platform is actually sending, and that the server URL and
+  stream key are correct.
+- **VoxBento → YouTube shows "Down"**: The relay may not be configured
+  on this server. Ask the operator to deploy the relay service.
+- **No captions appearing**: Make sure captions are enabled on the
+  room's Languages tab.
