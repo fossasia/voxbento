@@ -580,3 +580,39 @@ async def test_a_second_request_that_slips_past_the_busy_check_is_refused(world,
         )
     assert resp.headers["location"].endswith("?error=busy")
     assert started == []
+
+
+@pytest.mark.anyio
+async def test_status_polling_retires_a_report_left_running(world):
+    stale = await _report(world, status="running", created_at=utc_now() - timedelta(hours=1))
+    async with _client() as c:
+        resp = await c.get(
+            f"/api/admin/events/{world['event']}/rooms/{world['room']}/analysis/{stale}", cookies=world["admin"]
+        )
+    assert resp.json() == {"id": stale, "status": "failed", "error": worker.INTERRUPTED}
+
+
+@pytest.mark.anyio
+async def test_a_late_worker_does_not_overwrite_a_retired_report(world, monkeypatch):
+    report_id = await _report(world)
+
+    class RetiredMidway(FakeProvider):
+        async def complete(self, **kwargs):
+            async with get_session() as s:
+                report = await s.get(MeetingReport, report_id)
+                report.status = "failed"
+                report.error = worker.INTERRUPTED
+            return await super().complete(**kwargs)
+
+    monkeypatch.setattr(worker, "get_provider", lambda name: RetiredMidway())
+    await worker.run_analysis(report_id)
+    report = await _load(report_id)
+    assert (report.status, report.error, report.summary) == ("failed", worker.INTERRUPTED, "")
+
+
+@pytest.mark.anyio
+async def test_a_failure_does_not_overwrite_a_finished_report(world):
+    report_id = await _report(world, status="done", summary="kept", generated_at=utc_now())
+    await worker._fail(report_id, "late failure")
+    report = await _load(report_id)
+    assert (report.status, report.error, report.summary) == ("done", None, "kept")

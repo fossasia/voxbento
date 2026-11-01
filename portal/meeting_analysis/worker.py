@@ -44,10 +44,11 @@ class _Job:
 
 async def _fail(report_id: int, message: str) -> None:
     async with get_session() as session:
-        report = await session.get(MeetingReport, report_id)
-        if report is not None:
-            report.status = STATUS_FAILED
-            report.error = message[:500]
+        await session.execute(
+            update(MeetingReport)
+            .where(MeetingReport.id == report_id, MeetingReport.status.in_(IN_PROGRESS))
+            .values(status=STATUS_FAILED, error=message[:500])
+        )
 
 
 async def _prepare(report_id: int) -> _Job | None:
@@ -118,17 +119,20 @@ async def _run(report_id: int) -> None:
     )
     result = parse_analysis(completion.text)
     async with get_session() as session:
-        report = await session.get(MeetingReport, report_id)
-        if report is None:
-            return
-        report.summary = result.summary
-        report.action_items_json = json.dumps(result.action_items, ensure_ascii=False)
-        report.key_topics_json = json.dumps(result.key_topics, ensure_ascii=False)
-        report.digest_json = result.digest_json()
-        report.tokens_used = completion.tokens_used
-        report.status = STATUS_DONE
-        report.error = None
-        report.generated_at = utc_now()
+        await session.execute(
+            update(MeetingReport)
+            .where(MeetingReport.id == report_id, MeetingReport.status == STATUS_RUNNING)
+            .values(
+                summary=result.summary,
+                action_items_json=json.dumps(result.action_items, ensure_ascii=False),
+                key_topics_json=json.dumps(result.key_topics, ensure_ascii=False),
+                digest_json=result.digest_json(),
+                tokens_used=completion.tokens_used,
+                status=STATUS_DONE,
+                error=None,
+                generated_at=utc_now(),
+            )
+        )
 
 
 def start_analysis(report_id: int) -> None:

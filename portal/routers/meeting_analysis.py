@@ -193,6 +193,8 @@ async def room_analysis_markdown(event_id: int, room_id: int, report_id: int):
 )
 async def room_analysis_status(event_id: int, room_id: int, report_id: int):
     async with get_session() as session:
+        await room_in_event(session, event_id, room_id)
+        await mark_interrupted_reports(session, room_id)
         report = await _room_report(session, event_id, room_id, report_id)
         body = {"id": report.id, "status": report.status, "error": report.error}
     return JSONResponse(body, headers={"Cache-Control": "no-store"})

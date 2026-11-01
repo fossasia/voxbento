@@ -1,6 +1,6 @@
 const root = document.getElementById('room-analysis');
-const POLL_MS = 4000;
-const MAX_POLLS = 150;
+const POLL_MS = 5000;
+const MAX_POLLS = 420;
 
 function pendingIds() {
   return [...document.querySelectorAll('[data-report-status="pending"], [data-report-status="running"]')]
