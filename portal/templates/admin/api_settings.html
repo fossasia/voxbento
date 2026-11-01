@@ -159,7 +159,7 @@
 
     <div class="form-group api-key-field">
       <label for="meeting_analysis_provider" class="api-key-label">AI service</label>
-      <select id="meeting_analysis_provider" name="meeting_analysis_provider" class="input">
+      <select id="meeting_analysis_provider" name="meeting_analysis_provider" class="input api-key-input">
         {% for value, label in analysis_providers.items() %}
         <option value="{{ value }}" {% if event.meeting_analysis_provider == value %}selected{% endif %}>{{ label }}</option>
         {% endfor %}
@@ -169,7 +169,7 @@
 
     <div class="form-group api-key-field api-key-field--last">
       <label for="meeting_analysis_model" class="api-key-label">Model <span class="muted">(optional)</span></label>
-      <input type="text" id="meeting_analysis_model" name="meeting_analysis_model" maxlength="100" value="{{ event.meeting_analysis_model }}" placeholder="Recommended model" class="input">
+      <input type="text" id="meeting_analysis_model" name="meeting_analysis_model" maxlength="100" value="{{ event.meeting_analysis_model }}" placeholder="Recommended model" class="input api-key-input">
       <p class="form-help api-key-help">Leave empty for the recommended model: {% for value, model in analysis_defaults.items() %}{{ analysis_providers[value] }} {{ model }}{{ ', ' if not loop.last else '.' }}{% endfor %}</p>
     </div>
 
