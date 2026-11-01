@@ -140,6 +140,7 @@ from portal.rate_limit import check_rate_limit
 from portal.roles import EVENT_OWNER, assignment_error, role_label
 from portal.room_setup import (
     AI_VOICE,
+    BOOTH_SPEECH_MODELS,
     EngineCatalog,
     RoomPlan,
     RoomSummary,
@@ -1191,12 +1192,33 @@ async def admin_event_detail(request: Request, event_id: int):
         context={
             "event": event,
             "rooms": rooms,
-            "overlay_channels": overlay_channels(rooms, db_booths),
             "summaries": summaries,
             "booths": booth_statuses,
             "live_count": sum((1 for bs in booth_statuses if bs["is_live"])),
             **admin_flags,
         },
+    )
+
+
+@router.get("/admin/events/{event_id}/caption-overlays/", dependencies=[Depends(require_event_owner)])
+async def admin_event_caption_overlays(request: Request, event_id: int):
+    admin_flags = await get_access_flags(request, event_id=event_id)
+    async with get_session() as session:
+        event = await get_event_by_id(session, event_id)
+        if event is None:
+            raise HTTPException(status_code=404, detail="Event not found.")
+        rooms = await list_rooms_for_event(session, event_id, limit=None)
+        db_booths = await list_booths_for_event(session, event_id, limit=None)
+    return templates.TemplateResponse(
+        request=request,
+        name="admin/caption_overlays.html",
+        context={
+            "event": event,
+            "rooms": rooms,
+            "overlay_channels": overlay_channels(rooms, db_booths),
+            **admin_flags,
+        },
+        headers={"Cache-Control": "no-store"},
     )
 
 
@@ -1496,10 +1518,16 @@ async def admin_room_sender(request: Request, event_id: int, room_id: int):
         room = await get_room_by_id(session, room_id)
         if room is None or room.event_id != event_id:
             raise HTTPException(status_code=404, detail="Room not found.")
+        db_booths = await list_booths_for_room(session, room_id)
+        channels = overlay_channels([room], db_booths)
     return templates.TemplateResponse(
         request=request,
         name="admin/program_sender.html",
-        context={"event": event, "room": room},
+        context={
+            "event": event,
+            "room": room,
+            "overlay_links": [(channel, _overlay_url(event, room.id, channel.code)) for channel in channels],
+        },
         headers={"Cache-Control": "no-store"},
     )
 
@@ -2055,7 +2083,7 @@ async def admin_booth_detail(request: Request, event_id: int, room_id: int, boot
             "catalog": catalog,
             "locked_speech": locked_services(catalog, "speech"),
             "locked_translation": locked_services(catalog, "translation"),
-            "speech_models": ROOM_SPEECH_MODELS,
+            "speech_models": BOOTH_SPEECH_MODELS,
             "translation_models": translation_models(
                 catalog, db_booth.translation_provider, db_booth.translation_model
             ),

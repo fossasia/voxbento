@@ -84,6 +84,8 @@ async def main() -> None:
             errors = []
             builder.on("pageerror", lambda error: errors.append(str(error)))
             await builder.goto(f"{origin}/workspace/events/{event.id}/")
+            await expect(builder.locator("#overlay-preview-frame")).to_have_count(0)
+            await builder.locator(f'a[href="/workspace/events/{event.id}/caption-overlays/"]').click()
             await builder.locator("#overlay-channel").select_option(f"{room.id}/ar")
             await expect(builder.locator("#overlay-status")).to_contain_text("Connected")
             await builder.locator("#overlay-test").click()
@@ -95,6 +97,11 @@ async def main() -> None:
             await expect(preview.locator("#overlay")).to_have_css("--overlay-font-size", "56px")
             url = await builder.locator("#overlay-url").input_value()
             assert "/ar?" in url and "fontSize=56" in url and "position=top" in url
+            for width, height in [(375, 812), (812, 375), (1920, 1080)]:
+                await builder.set_viewport_size({"width": width, "height": height})
+                await expect(builder.locator("#overlay-channel")).to_be_visible()
+                await expect(builder.locator("#overlay-url")).to_be_visible()
+                assert await builder.evaluate("document.documentElement.scrollWidth <= window.innerWidth")
             # A separate, cookie-free browser context models an OBS/vMix source.
             source_context = await browser.new_context(**options)
             source = await source_context.new_page()

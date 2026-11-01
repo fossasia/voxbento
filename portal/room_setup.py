@@ -172,6 +172,17 @@ SPEECH_MODELS: dict[str, tuple[tuple[str, str], ...]] = {
     "local": (("tiny", "Tiny, fastest"), ("base", "Base, more accurate but slower")),
 }
 
+BOOTH_SPEECH_MODELS: dict[str, tuple[tuple[str, str], ...]] = {
+    **SPEECH_MODELS,
+    "local": (
+        *SPEECH_MODELS["local"],
+        ("small", "Small"),
+        ("medium", "Medium"),
+        ("large-v2", "Large v2"),
+        ("large-v3", "Large v3, most accurate but slowest"),
+    ),
+}
+
 
 _BRANDS = {
     "deepgram": "Deepgram",
