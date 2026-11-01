@@ -115,6 +115,8 @@ These variables control external encoder ingest and YouTube RTMPS forwarding.
 | `SUPERTONIC_TOTAL_STEPS` | `4` | Diffusion steps for self-hosted Supertonic ONNX TTS. `4` provides real-time CPU synthesis; `8` offers reference quality. |
 | `SUPERTONIC_INTRA_OP_THREADS` | `0` | Intra-op threads for ONNX Runtime (`0` defaults to all available CPU cores). |
 | `NVIDIA_FUNCTION_ID` | _(empty)_ | Optional function ID for NVIDIA Cloud Riva integrations. |
+| `MEETING_ANALYSIS_OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama (or OpenAI-compatible) server used for meeting reports when an event chooses the Local service. |
+| `MEETING_ANALYSIS_OLLAMA_NUM_CTX` | `32768` | Context window, in tokens, requested from Ollama for meeting reports. |
 
 ## Email and Notification Variables
 

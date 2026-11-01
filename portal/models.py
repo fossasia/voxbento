@@ -88,6 +88,9 @@ class Event(Base):
     )
     encrypted_groq_api_key: Mapped[str | None] = mapped_column("groq_api_key", Text, nullable=True, default=None)
     listener_join_code: Mapped[str | None] = mapped_column(String(64), nullable=True, default=None)
+    meeting_analysis_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    meeting_analysis_provider: Mapped[str] = mapped_column(String(50), default="local", server_default="local")
+    meeting_analysis_model: Mapped[str] = mapped_column(String(100), default="", server_default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
 
@@ -974,3 +977,38 @@ class EmailDelivery(Base):
     last_error: Mapped[str | None] = mapped_column(String(1000), nullable=True)
     idempotency_key: Mapped[str | None] = mapped_column(String(255), unique=True, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+
+class MeetingReport(Base):
+    __tablename__ = "meeting_reports"
+    __table_args__ = (
+        Index("ix_meeting_reports_room_created", "room_id", "created_at"),
+        Index(
+            "uq_meeting_reports_room_in_progress",
+            "room_id",
+            unique=True,
+            sqlite_where=sa.text("status IN ('pending', 'running')"),
+            postgresql_where=sa.text("status IN ('pending', 'running')"),
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    event_id: Mapped[int] = mapped_column(ForeignKey("events.id", ondelete="CASCADE"))
+    room_id: Mapped[int] = mapped_column(ForeignKey("rooms.id", ondelete="CASCADE"))
+    channel_id: Mapped[str] = mapped_column(String(100))
+    channel_label: Mapped[str] = mapped_column(String(200))
+    language_code: Mapped[str] = mapped_column(String(20))
+    provider: Mapped[str] = mapped_column(String(50))
+    model: Mapped[str] = mapped_column(String(100))
+    status: Mapped[str] = mapped_column(String(20), default="pending")
+    error: Mapped[str | None] = mapped_column(String(500), nullable=True, default=None)
+    title: Mapped[str] = mapped_column(String(200), default="")
+    summary: Mapped[str] = mapped_column(Text, default="")
+    sections_json: Mapped[str] = mapped_column(Text, default="[]")
+    last_segment_id: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
+    segment_count: Mapped[int] = mapped_column(Integer, default=0)
+    truncated: Mapped[bool] = mapped_column(Boolean, default=False)
+    tokens_used: Mapped[int | None] = mapped_column(Integer, nullable=True, default=None)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+    generated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)

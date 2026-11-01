@@ -137,6 +137,14 @@
 </details>
 {% endif %}
 
+<div class="room-card room-card--row">
+  <div>
+    <h2>Meeting reports</h2>
+    <p class="room-card-sub">Meeting notes written by AI from this room's transcripts, grouped by the topics that came up.</p>
+  </div>
+  <a href="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/analysis/" class="btn btn-outline">View reports</a>
+</div>
+
 {% if is_event_owner %}
 <div class="room-card room-card--row">
   <div>
