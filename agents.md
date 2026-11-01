@@ -84,6 +84,7 @@ VoxBento is a production-grade **browser-first interpretation booth console** fo
 | `portal/meeting_source.py` | Managed Jitsi floor agent lifecycle reconciler |
 | `portal/program_ingest.py` | Floor authorization and reconciliation for Program Stream Ingest |
 | `portal/program_relay.py` | YouTube RTMPS destination management and relay health convergence |
+| `portal/youtube_account.py` | Google OAuth and YouTube Live API metadata (no media): Sign in with YouTube, broadcast linking, YouTube status |
 | `portal/outage_log.py` | `OutageLog` — reconcile loops log a repeating failure once per outage, not per tick |
 | `portal/user_admin.py` | Administrative access rules, user flags (`can_host`, `is_admin`, `is_active`, `email_verified`) |
 | `portal/templates/` | Jinja2 HTML — `base.html`, `interpreter_booth.html`, `listener-event.html`, `admin/` |
@@ -93,7 +94,7 @@ VoxBento is a production-grade **browser-first interpretation booth console** fo
 | `portal/static/js/admin.js` | Admin panel JS helpers |
 | `mediamtx.yml` | MediaMTX config — WHIP/WHEP paths, RTSP, Control API, `overridePublisher` |
 | `docker-compose.yml` | portal + mediamtx + jitsi-web/prosody/jicofo/jvb |
-| `alembic/versions/` | 38 migrations (001–038); run `uv run alembic upgrade head` |
+| `alembic/versions/` | 39 migrations (001–039); run `uv run alembic upgrade head` |
 
 ---
 
