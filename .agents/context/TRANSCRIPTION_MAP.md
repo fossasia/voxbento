@@ -212,3 +212,17 @@ per-segment receive-time/offset metadata through async translation tasks into te
 and TTS frames. Listener `program-delivery.js` schedules presentation only. No true
 encoder timecode is claimed. See `docs/program-stream-ingest.md` for capacity,
 30-day key expiry, disconnect grace and test rehearsal requirements.
+
+## Broadcast caption overlays
+
+`portal/overlay_channels.py` builds the room/language catalog from all booths and
+enabled floor/booth translation targets (including targets with no DBBooth). It
+uses the same room/language keys as `translations/worker.py`; multiple producers
+for one key share a feed. The overlay is a consumer, never a worker starter.
+`subtitle-overlay.js` reconnects via the authenticated `/overlay/.../session`
+route and keeps preview status off the video. See `website/docs/subtitle-overlays.mdx`.
+
+Validation: `tests/test_overlay_access.py`, `tests/test_subtitle_overlay.js`,
+`tests/test_overlay_connection.js`, and `tests/overlay_browser_smoke.py`. The latter
+runs real Chromium against ephemeral HTTP/WS and an in-memory database, without
+media services; it does not certify the native OBS/vMix compositor.
