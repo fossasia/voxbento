@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import struct
@@ -15,7 +16,7 @@ from fastapi import WebSocket, WebSocketDisconnect
 
 import portal.webhooks.worker as _wh_worker
 from portal.auth import can_perform_role
-from portal.booth_identity import booth_id_to_mediamtx_path
+from portal.booth_identity import booth_id_to_mediamtx_path, parse_booth_id
 from portal.booth_publish import TICKET_TTL_SECS, issue_ticket
 from portal.globals import booths
 from portal.roles import ALL_ROLES, INTERPRETER, can_set_active
@@ -683,12 +684,26 @@ async def _handle_join(ws: WebSocket, session: Session, data: dict) -> None:
         except PermissionError as exc:
             await ws.send_text(json.dumps({"type": "booth:error", "message": str(exc)}))
             return
+    # The booth ID names the room. A malformed one would create a booth with no
+    # identity or MediaMTX path, so it is rejected whether or not room_id is sent.
+    try:
+        _, booth_room_id, _ = parse_booth_id(session.booth_id)
+    except ValueError:
+        await ws.send_text(json.dumps({"type": "booth:error", "message": "Invalid booth_id format."}))
+        return
     room_id = data.get("room_id")
     if room_id is not None:
-        try:
-            room_id = int(room_id)
-        except (TypeError, ValueError):
+        # Only an integer or a string of digits: int() would turn True or 1.5 into 1.
+        if isinstance(room_id, str) and room_id.isascii() and room_id.isdecimal():
+            with contextlib.suppress(ValueError):  # more digits than int() accepts
+                room_id = int(room_id)
+        if isinstance(room_id, bool) or not isinstance(room_id, int):
             await ws.send_text(json.dumps({"type": "booth:error", "message": "room_id must be an integer."}))
+            return
+        # A different room would give the booth another room's stream path if this
+        # join is the one that creates it (#975).
+        if room_id != booth_room_id:
+            await ws.send_text(json.dumps({"type": "booth:error", "message": "room_id does not match this booth."}))
             return
     try:
         participant, state = await booths.join_participant(
