@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 import uuid
 from dataclasses import dataclass, field
+from weakref import WeakValueDictionary
 
 from sqlalchemy import select, update
+from sqlalchemy.exc import SQLAlchemyError
 
 from portal.database import get_session
 from portal.models import Room
@@ -13,6 +16,16 @@ from portal.tasks import track_task
 from portal.transcription.timing import SegmentTiming, segment_timing, timing_metadata
 
 logger = logging.getLogger(__name__)
+_floor_locks: WeakValueDictionary[int, asyncio.Lock] = WeakValueDictionary()
+
+
+def floor_caption_lock(room_id: int) -> asyncio.Lock:
+    """Serialize floor allocation and publication without retaining idle room locks."""
+    lock = _floor_locks.get(room_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _floor_locks[room_id] = lock
+    return lock
 
 
 @dataclass
@@ -38,6 +51,7 @@ class CaptionAggregator:
         return self.states[booth_id]
 
     async def handle_partial(self, booth_id: str, text: str):
+        """Broadcast live partial text, finalizing utterances that exceed the size/time limits."""
         if not text.strip():
             return
 
@@ -56,19 +70,33 @@ class CaptionAggregator:
             return
 
         await self.broadcast_callback(
-            booth_id, {"type": "caption", "status": "partial", "text": state.current_utterance,
-                       "segment_id": state.segment_id, **await self.partial_timing(booth_id)}
+            booth_id,
+            {
+                "type": "caption",
+                "status": "partial",
+                "text": state.current_utterance,
+                "segment_id": state.segment_id,
+                **await self.partial_timing(booth_id),
+            },
         )
 
     async def partial_timing(self, booth_id: str) -> dict:
+        """Return program presentation metadata when available, without blocking live text on DB errors."""
         if self.room_id is None or not booth_id.endswith("-floor"):
             return {}
-        async with get_session() as session:
-            room = await session.get(Room, self.room_id)
-            if room and room.floor_source == "program_ingest":
-                now = int(time.time() * 1000)
-                return {"source_received_at_ms": now, "server_sent_at_ms": now,
-                        "sync_offset_ms": room.program_sync_offset_ms, "timestamp_basis": "stt_receive_wall_clock"}
+        try:
+            async with get_session() as session:
+                room = await session.get(Room, self.room_id)
+                if room and room.floor_source == "program_ingest":
+                    now = int(time.time() * 1000)
+                    return {
+                        "source_received_at_ms": now,
+                        "server_sent_at_ms": now,
+                        "sync_offset_ms": room.program_sync_offset_ms,
+                        "timestamp_basis": "stt_receive_wall_clock",
+                    }
+        except SQLAlchemyError:
+            logger.debug("[%s] Partial-caption timing unavailable during database failure.", booth_id, exc_info=True)
         return {}
 
     async def handle_chunk(self, booth_id: str, text: str):
@@ -118,8 +146,14 @@ class CaptionAggregator:
 
         if state.current_utterance:
             await self.broadcast_callback(
-                booth_id, {"type": "caption", "status": "partial", "text": state.current_utterance,
-                           "segment_id": state.segment_id, **await self.partial_timing(booth_id)}
+                booth_id,
+                {
+                    "type": "caption",
+                    "status": "partial",
+                    "text": state.current_utterance,
+                    "segment_id": state.segment_id,
+                    **await self.partial_timing(booth_id),
+                },
             )
         elif has_finalized:
             # Only send clear if we just finalized something and have nothing left,
@@ -135,6 +169,15 @@ class CaptionAggregator:
             )
 
     async def handle_final(self, booth_id: str, text: str):
+        """Publish final floor captions in allocation order across concurrent aggregators."""
+        if self.room_id is not None and booth_id.endswith("-floor"):
+            async with floor_caption_lock(self.room_id):
+                await self._finalize(booth_id, text, floor=True)
+        else:
+            await self._finalize(booth_id, text, floor=False)
+
+    async def _finalize(self, booth_id: str, text: str, *, floor: bool):
+        """Finalize one utterance, dropping deleted floors and degrading DB outages to text."""
         state = self._get_state(booth_id)
         final_text = text.strip() or state.current_utterance
 
@@ -145,14 +188,20 @@ class CaptionAggregator:
         seq = self._seq_counter
         segment_id = state.segment_id
         timing = None
-        if self.room_id is not None and booth_id.endswith("-floor"):
-            async with get_session() as session:
-                room = await session.scalar(select(Room).where(Room.id == self.room_id))
-                if room and room.floor_source == "program_ingest":
-                    seq = await session.scalar(update(Room).where(Room.id == room.id).values(
-                        floor_caption_seq=Room.floor_caption_seq + 1,
-                    ).returning(Room.floor_caption_seq))
-                    timing = SegmentTiming(int((state.utterance_start_time or time.time()) * 1000), room.program_sync_offset_ms)
+        if floor:
+            try:
+                allocation = await self._allocate_floor_sequence(state)
+            except SQLAlchemyError:
+                logger.warning(
+                    "[%s] Floor sequence allocation failed; delivering original captions without translation or audio.",
+                    booth_id,
+                    exc_info=True,
+                )
+                allocation = (None, None)
+            if allocation is None:
+                self.states[booth_id] = CaptionState(booth_id=booth_id)
+                return
+            seq, timing = allocation
         context_token = segment_timing.set(timing)
 
         try:
@@ -164,19 +213,45 @@ class CaptionAggregator:
         state.current_word_count = 0
         state.segment_id = str(uuid.uuid4())
 
-    async def publish_final(self, booth_id: str, final_text: str, segment_id: str, seq: int):
+    async def _allocate_floor_sequence(self, state: CaptionState) -> tuple[int, SegmentTiming | None] | None:
+        """Commit a room sequence, returning no allocation if the floor room was deleted."""
+        async with get_session() as session:
+            room = await session.scalar(select(Room).where(Room.id == self.room_id))
+            if room is None:
+                return None
+            seq = await session.scalar(
+                update(Room)
+                .where(Room.id == room.id)
+                .values(floor_caption_seq=Room.floor_caption_seq + 1)
+                .returning(Room.floor_caption_seq)
+            )
+            if seq is None:
+                return None
+            timing = None
+            if room.floor_source == "program_ingest":
+                timing = SegmentTiming(
+                    int((state.utterance_start_time or time.time()) * 1000), room.program_sync_offset_ms
+                )
+        return seq, timing
 
-        await self.broadcast_callback(
-            booth_id, {"type": "caption", "status": "final", "text": final_text, "segment_id": segment_id, "seq": seq,
-                       **timing_metadata()}
-        )
+    async def publish_final(self, booth_id: str, final_text: str, segment_id: str, seq: int | None):
+        """Broadcast UUID-identified text; only sequenced captions enter persistence/translation."""
+        payload = {
+            "type": "caption",
+            "status": "final",
+            "text": final_text,
+            "segment_id": segment_id,
+            **timing_metadata(),
+        }
+        if seq is not None:
+            payload["seq"] = seq
+        await self.broadcast_callback(booth_id, payload)
 
-        if self.room_id is not None:
-            import asyncio
-
+        if self.room_id is not None and seq is not None:
             from portal.database import save_transcript_segment
 
             async def _save_and_translate():
+                """Persist a sequenced caption and pass its identity to asynchronous translation."""
                 try:
                     db_segment_id = await save_transcript_segment(booth_id, final_text, self.room_id)
                     if db_segment_id is not None:

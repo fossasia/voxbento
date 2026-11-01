@@ -159,6 +159,21 @@ Cancels the asyncio Task and awaits it; removes from state dicts.
 | `handle_chunk(booth_id, text)` | Whisper text chunk | Appends to buffer; splits on sentence boundary (`[.?!]+`); broadcasts `final` for each sentence, `partial` for remainder |
 | `handle_clear(booth_id)` | silence/endpoint | Broadcasts `{type:"caption", status:"clear"}` |
 
+Final captions on a room's canonical floor feed allocate `seq` atomically from
+`Room.floor_caption_seq` for both Jitsi and program ingest. The counter survives
+worker replacement, provider retries, portal restarts and floor-source changes;
+each room advances independently. Only program ingest attaches presentation-delay
+metadata. Translation text and TTS frames carry the same sequence and segment UUID
+as their source caption, so listeners can discard late audio without mistaking new
+sentences for consumed segments.
+
+Sequence allocation and the original-caption broadcast share a per-room lock
+across aggregators; unrelated rooms do not wait for one another. If the DB fails,
+original captions still arrive with their UUID and no sequence, and skip storage,
+translation and TTS until allocation recovers. This avoids inventing a fallback
+counter that could conflict with the durable stream. Missing/deleted rooms drop
+pending finals rather than publishing an invalid sequence.
+
 ---
 
 ## Local Model Cache (`providers/local.py`)
