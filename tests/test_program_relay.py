@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
@@ -612,3 +612,31 @@ async def test_workspace_namespace_reaches_relay_destination(relay_env):
         json={"server_url": YOUTUBE_SERVER, "stream_key": YOUTUBE_KEY},
     )
     assert response.status_code == 200
+
+
+@pytest.mark.anyio
+async def test_deleted_event_relay_is_stopped_while_media_listing_fails(relay_env, monkeypatch):
+    env = relay_env
+    client, event, room = env["client"], env["event"], env["rooms"][0]
+    secret = await enable_relay(client, event, room)
+    await save_destination(client, event, room)
+    await connect(env, room, secret)
+    await ingest.reconcile_once()
+    assert str(room.id) in env["relays"]
+
+    async with get_session() as session:
+        other = Event(slug="other-event", display_name="Other Event")
+        session.add(other)
+        await session.flush()
+        active = Room(event_id=other.id, display_name="Other Room", floor_source="program_ingest")
+        session.add(active)
+        await session.flush()
+        # A relay that belongs to the room that stays active.
+        env["relays"][str(active.id)] = {"source": "other-event/1/floor", "fingerprint": "x", "state": "live"}
+        (await session.get(Event, event.id)).deleted_at = datetime.now(timezone.utc)
+
+    # Another room is still active, so the media paths are requested, and that request fails.
+    monkeypatch.setattr(ingest, "media_paths", AsyncMock(side_effect=httpx.ConnectError("media down")))
+    await ingest.reconcile_once()
+    assert str(room.id) not in env["relays"]
+    assert str(active.id) in env["relays"]

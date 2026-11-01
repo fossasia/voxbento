@@ -272,6 +272,7 @@ async def authorize_publish(data: MediaAuth) -> None:
                     .where(
                         Room.id == parsed_room_id,
                         Event.slug == slug,
+                        Event.deleted_at.is_(None),
                     )
                 )
             ).first()
@@ -749,6 +750,63 @@ async def stop_deleted_event_workers() -> None:
         await stop_room_worker(health.get(room_id) or IngestHealth(), booth_ids[room_id], room_id)
 
 
+async def release_deleted_event_sessions() -> None:
+    """Disconnect the encoder and free the reservation of rooms whose event was deleted.
+
+    The reconciler no longer sees these rooms, so ``reconcile_room`` never releases them. A kept
+    reservation would count against ``program_ingest_max_rooms``. A failed kick keeps the
+    reservation, so the next pass retries it.
+    """
+    async with get_session() as session:
+        rows = (
+            await session.execute(
+                select(Room.id, Event.slug)
+                .join(Event)
+                .where(
+                    Room.floor_source == "program_ingest",
+                    Room.program_session_id.is_not(None),
+                    Event.deleted_at.is_not(None),
+                )
+            )
+        ).all()
+    for room_id, slug in rows:
+        try:
+            async with room_lock(room_id), get_session() as session:
+                room = await session.get(Room, room_id)
+                if room and room.program_session_id:
+                    await kick(make_mediamtx_path(slug, room_id, "floor"), reserved_source(room))
+                    room.program_session_id = None
+                    room.program_disconnected_at = utc_now()
+        except (httpx.HTTPError, ValueError, HTTPException, SQLAlchemyError):
+            logger.warning("program_ingest deleted_event_release_failed room_id=%s", room_id)
+
+
+async def stop_deleted_event_relays() -> None:
+    """Stop the relays of rooms whose event was deleted, without needing the MediaMTX path list.
+
+    ``program_relay.sync`` does this on a normal pass, but it only runs once the path list is
+    read. Relays of other rooms are left alone.
+    """
+    try:
+        room_ids = {int(relay_id) for relay_id in await program_relay.list_relays() if relay_id.isdigit()}
+        if not room_ids:
+            return
+        async with get_session() as session:
+            deleted_room_ids = (
+                await session.scalars(
+                    select(Room.id).join(Event).where(Room.id.in_(room_ids), Event.deleted_at.is_not(None))
+                )
+            ).all()
+    except Exception:  # noqa: BLE001 - upstream bodies may contain secrets; the next pass retries
+        logger.warning("program_ingest deleted_event_relay_list_failed")
+        return
+    for room_id in deleted_room_ids:
+        try:
+            await program_relay.stop_relay(room_id)
+        except Exception:  # noqa: BLE001
+            logger.warning("program_ingest deleted_event_relay_stop_failed room_id=%s", room_id)
+
+
 async def reconcile_once() -> None:
     async with get_session() as session:
         rows = (
@@ -761,6 +819,7 @@ async def reconcile_once() -> None:
     ids = [room_id for room_id, _ in rows]
     relay_rooms = {room_id for room_id, mode in rows if mode == program_relay.RELAY_MODE}
     await stop_deleted_event_workers()
+    await release_deleted_event_sessions()
     try:
         snapshots = await media_paths() if ids else {}
     except (httpx.HTTPError, ValueError):
@@ -772,6 +831,8 @@ async def reconcile_once() -> None:
             )
             current.ingest_state, current.ingest_reason = current.state, current.reason
         path_list_outage.failed()
+        if settings.program_relay_enabled:
+            await stop_deleted_event_relays()
         return
     if ids:
         path_list_outage.recovered()
