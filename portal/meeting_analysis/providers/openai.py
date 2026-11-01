@@ -4,6 +4,8 @@ from portal.meeting_analysis.providers.base import AnalysisProvider, Completion
 from portal.meeting_analysis.schema import AnalysisError
 from portal.translations.constants import OPENAI_COMPATIBLE_ENDPOINTS
 
+JSON_MODE_PROVIDERS = frozenset({"openai", "groq"})
+
 
 class OpenAICompatibleProvider(AnalysisProvider):
     def __init__(self, name: str) -> None:
@@ -12,13 +14,14 @@ class OpenAICompatibleProvider(AnalysisProvider):
     async def complete(self, *, system: str, user: str, model: str, api_key: str | None) -> Completion:
         if not api_key:
             raise AnalysisError(f"Add a {self.label} API key on the API keys page first.")
+        body: dict = {
+            "model": model,
+            "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
+        }
+        if self.name in JSON_MODE_PROVIDERS:
+            body["response_format"] = {"type": "json_object"}
         data = await self.post(
-            OPENAI_COMPATIBLE_ENDPOINTS[self.name],
-            headers={"Authorization": f"Bearer {api_key}"},
-            body={
-                "model": model,
-                "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
-            },
+            OPENAI_COMPATIBLE_ENDPOINTS[self.name], headers={"Authorization": f"Bearer {api_key}"}, body=body
         )
         try:
             text = data["choices"][0]["message"]["content"]

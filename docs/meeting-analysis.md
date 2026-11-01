@@ -57,11 +57,34 @@ Open a finished report to see it on its own page with two tabs:
 Each finished report can also be downloaded as Markdown.
 
 - Only one report per room is written at a time.
-- Very long sessions are cut to the first 60,000 characters of transcript; the
-  report says when this happened.
+- Long sessions are written in parts: when the transcript is longer than about
+  8,000 characters, each part gets its own notes and a final request merges
+  them into one report. This keeps every request small enough for models with a
+  small context window and for free-tier rate limits.
+- Transcripts are capped at the first 60,000 characters; the report says when
+  this happened.
+- When a service answers "too many requests" (HTTP 429), the report waits for
+  the time the service asks for (at most 60 seconds) and tries again, up to
+  three times.
+- OpenAI and Groq are asked for JSON mode. An answer that still can't be read is
+  requested once more before the report fails.
+- Errors explain what to do: a rejected key, a transcript too long for the
+  model, a model the service doesn't offer, or a rate limit.
 - A report still marked as being written 30 minutes after it was requested
   (for example because the server restarted) is marked failed. Generate it
   again.
+
+## Tested models
+
+Groq, with a free-tier key, on a 17-line review meeting, a 6-line Hindi booth
+transcript and a 900-line (capped) session:
+
+| Model | Short sessions | Long session |
+| --- | --- | --- |
+| `openai/gpt-oss-120b` (default) | ✓ | ✓ |
+| `openai/gpt-oss-20b` | ✓ | ✓ |
+| `qwen/qwen3.8-27b` | ✓ | ✓ |
+| `allam-2-7b` | ✓, fewer sections | ✗ answers can't be read; use another model |
 
 ## Who can see what
 

@@ -300,7 +300,7 @@ async def test_provider_errors_never_include_the_key(monkeypatch):
     with pytest.raises(AnalysisError) as exc:
         await get_provider("openai").complete(system="s", user="u", model="m", api_key="sk-secret")
     assert "sk-secret" not in str(exc.value)
-    assert "HTTP 401" in str(exc.value)
+    assert "rejected the API key" in str(exc.value)
     with pytest.raises(AnalysisError, match="API key"):
         await get_provider("gemini").complete(system="s", user="u", model="m", api_key=None)
 
@@ -732,3 +732,125 @@ async def test_polling_uses_the_api_path_of_the_current_namespace(world):
         )
     assert f'data-status-url="/api/admin/events/{world["event"]}/rooms/{world["room"]}/analysis/"' in page.text
     assert state.json()["status"] == "pending"
+
+
+def test_long_transcripts_are_split_on_whole_lines():
+    from portal.meeting_analysis.prompts import split_transcript
+
+    transcript = "\n".join(f"[00:{i:02d}] line number {i}" for i in range(30))
+    parts = split_transcript(transcript, limit=80)
+    assert len(parts) > 1
+    assert all(len(part) <= 80 for part in parts)
+    assert "\n".join(parts) == transcript
+
+
+@pytest.mark.anyio
+async def test_a_long_session_is_written_in_parts_then_merged(world, monkeypatch):
+    from portal.meeting_analysis import prompts
+
+    monkeypatch.setattr(worker, "split_transcript", lambda transcript: prompts.split_transcript(transcript, limit=40))
+    merged = {"title": "Whole session", "overview": "Merged notes.", "sections": [{"heading": "All", "points": ["p"]}]}
+    calls: list[dict] = []
+
+    class PartsProvider:
+        async def complete(self, **kwargs):
+            calls.append(kwargs)
+            final = "<notes>" in kwargs["user"]
+            return Completion(json.dumps(merged if final else REPORT), 10)
+
+    monkeypatch.setattr(worker, "get_provider", lambda name: PartsProvider())
+    report_id = await _report(world)
+    await worker.run_analysis(report_id)
+    report = await _load(report_id)
+    assert len(calls) == 3
+    assert "This is part 1 of 2 of the session." in calls[0]["user"]
+    assert "This is part 2 of 2 of the session." in calls[1]["user"]
+    assert "Merge them into one" in calls[2]["system"]
+    assert "Part 1: Summit opening" in calls[2]["user"] and "Part 2: Summit opening" in calls[2]["user"]
+    assert (report.status, report.title, report.summary, report.tokens_used) == (
+        "done",
+        "Whole session",
+        "Merged notes.",
+        30,
+    )
+
+
+@pytest.mark.anyio
+async def test_rate_limited_requests_wait_and_retry(monkeypatch):
+    from portal.meeting_analysis.providers import base
+
+    waits: list[float] = []
+
+    async def fake_sleep(seconds):
+        waits.append(seconds)
+
+    monkeypatch.setattr(base.asyncio, "sleep", fake_sleep)
+    body = {"choices": [{"message": {"content": "{}"}}]}
+    _http(monkeypatch, httpx.Response(429, headers={"retry-after": "2"}), httpx.Response(200, json=body))
+    assert await get_provider("groq").complete(system="s", user="u", model="m", api_key="k") == Completion("{}", None)
+    assert waits == [2.0]
+
+    _http(monkeypatch, *[httpx.Response(429, headers={"retry-after": "999"}) for _ in range(4)])
+    with pytest.raises(AnalysisError, match="limiting requests"):
+        await get_provider("groq").complete(system="s", user="u", model="m", api_key="k")
+    assert waits[1:] == [60.0, 60.0, 60.0]
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("response", "message"),
+    [
+        (httpx.Response(400, json={"error": {"message": "Please reduce the length of the messages"}}), "too long"),
+        (httpx.Response(413, text="Request too large"), "too long"),
+        (httpx.Response(404, json={"error": {"code": "model_not_found"}}), "doesn't offer this model"),
+        (httpx.Response(500, text="oops"), "refused the request .HTTP 500."),
+    ],
+)
+async def test_refusals_explain_what_to_do(monkeypatch, response, message):
+    _http(monkeypatch, response)
+    with pytest.raises(AnalysisError, match=message):
+        await get_provider("groq").complete(system="s", user="u", model="m", api_key="k")
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(("name", "json_mode"), [("openai", True), ("groq", True), ("openrouter", False)])
+async def test_json_mode_is_asked_for_where_the_service_supports_it(monkeypatch, name, json_mode):
+    fake = _http(monkeypatch, httpx.Response(200, json={"choices": [{"message": {"content": "{}"}}]}))
+    await get_provider(name).complete(system="Reply with JSON", user="u", model="m", api_key="k")
+    assert ("response_format" in fake.requests[0][2]) is json_mode
+
+
+@pytest.mark.anyio
+async def test_an_unreadable_answer_is_asked_for_once_more(world, monkeypatch):
+    answers = iter(["not json", json.dumps(REPORT), "still not json", "nope"])
+
+    class Flaky:
+        async def complete(self, **kwargs):
+            return Completion(next(answers), 5)
+
+    monkeypatch.setattr(worker, "get_provider", lambda name: Flaky())
+    recovered = await _report(world)
+    await worker.run_analysis(recovered)
+    report = await _load(recovered)
+    assert (report.status, report.title, report.tokens_used) == ("done", "Summit opening", 10)
+
+    gave_up = await _report(world)
+    await worker.run_analysis(gave_up)
+    report = await _load(gave_up)
+    assert report.status == "failed"
+    assert report.error == "The AI service didn't return a report."
+
+
+@pytest.mark.anyio
+async def test_groq_json_validation_failures_are_retried(world, monkeypatch):
+    good = {"choices": [{"message": {"content": json.dumps(REPORT)}}], "usage": {"total_tokens": 4}}
+    _http(
+        monkeypatch,
+        httpx.Response(400, json={"error": {"code": "json_validate_failed", "message": "Failed to generate JSON"}}),
+        httpx.Response(200, json=good),
+    )
+    await _enable(world, encrypted_groq_api_key=encrypt_val("gsk-test"))
+    report_id = await _report(world, provider="groq", model="openai/gpt-oss-20b")
+    await worker.run_analysis(report_id)
+    report = await _load(report_id)
+    assert (report.status, report.title, report.tokens_used) == ("done", "Summit opening", 4)

@@ -12,6 +12,10 @@ class AnalysisError(Exception):
     pass
 
 
+class UnreadableAnswer(AnalysisError):
+    pass
+
+
 @dataclass(frozen=True)
 class Section:
     heading: str
@@ -55,16 +59,16 @@ def parse_analysis(raw: str) -> AnalysisResult:
     text = _FENCE.sub("", raw.strip())
     start, end = text.find("{"), text.rfind("}")
     if start == -1 or end <= start:
-        raise AnalysisError("The AI service didn't return a report.")
+        raise UnreadableAnswer("The AI service didn't return a report.")
     try:
         data = json.loads(text[start : end + 1])
     except json.JSONDecodeError as exc:
-        raise AnalysisError("The AI service returned a report that couldn't be read.") from exc
+        raise UnreadableAnswer("The AI service returned a report that couldn't be read.") from exc
     if not isinstance(data, dict):
-        raise AnalysisError("The AI service returned a report that couldn't be read.")
+        raise UnreadableAnswer("The AI service returned a report that couldn't be read.")
     overview = _text(data.get("overview"), 2000)
     if not overview:
-        raise AnalysisError("The AI service returned an empty summary.")
+        raise UnreadableAnswer("The AI service returned an empty summary.")
     return AnalysisResult(
         title=_text(data.get("title"), 200),
         overview=overview,

@@ -17,9 +17,15 @@ from portal.meeting_analysis.constants import (
     STATUS_RUNNING,
     AnalysisProviderEnum,
 )
-from portal.meeting_analysis.prompts import build_analysis_messages, build_transcript, transcript_lines
+from portal.meeting_analysis.prompts import (
+    build_analysis_messages,
+    build_merge_messages,
+    build_transcript,
+    split_transcript,
+    transcript_lines,
+)
 from portal.meeting_analysis.providers import get_provider
-from portal.meeting_analysis.schema import AnalysisError, parse_analysis
+from portal.meeting_analysis.schema import AnalysisError, AnalysisResult, UnreadableAnswer, parse_analysis
 from portal.models import Event, MeetingReport, Room, TranscriptSegment, utc_now
 from portal.room_setup import language_name
 from portal.tasks import track_task
@@ -27,6 +33,7 @@ from portal.translations.keys import get_translation_api_key
 
 logger = logging.getLogger(__name__)
 
+PARSE_ATTEMPTS = 2
 FAILED_UNEXPECTEDLY = "Something went wrong while writing the report. Try again."
 INTERRUPTED = "The server restarted before the report was ready. Generate it again."
 UNREADABLE_KEY = "The saved API key for this AI service can't be read. Save it again on the API keys page."
@@ -37,8 +44,9 @@ class _Job:
     provider: str
     model: str
     api_key: str | None
-    system: str
-    user: str
+    context: dict
+    parts: list[tuple[str, str]]
+    truncated: bool
 
 
 async def _fail(report_id: int, message: str) -> None:
@@ -84,19 +92,25 @@ async def _prepare(report_id: int) -> _Job | None:
                 report.error = "The event has no API key for the chosen AI service. Add it on the API keys page."
                 return None
         transcript, truncated = build_transcript(lines)
-        system, user = build_analysis_messages(
-            event_name=event.display_name,
-            room_name=room.display_name,
-            channel_label=report.channel_label,
-            language_name=language_name(report.language_code) if report.language_code != "floor" else "",
-            transcript=transcript,
-            truncated=truncated,
-        )
+        context = {
+            "event_name": event.display_name,
+            "room_name": room.display_name,
+            "channel_label": report.channel_label,
+            "language_name": language_name(report.language_code) if report.language_code != "floor" else "",
+        }
+        chunks = split_transcript(transcript)
+        if len(chunks) == 1:
+            parts = [build_analysis_messages(**context, transcript=transcript, truncated=truncated)]
+        else:
+            parts = [
+                build_analysis_messages(**context, transcript=chunk, part=(number, len(chunks)))
+                for number, chunk in enumerate(chunks, start=1)
+            ]
         report.status = STATUS_RUNNING
         report.segment_count = len(lines)
         report.last_segment_id = segments[-1].id
         report.truncated = truncated
-        return _Job(report.provider, report.model, api_key, system, user)
+        return _Job(report.provider, report.model, api_key, context, parts, truncated)
 
 
 async def run_analysis(report_id: int) -> None:
@@ -114,10 +128,24 @@ async def _run(report_id: int) -> None:
     job = await _prepare(report_id)
     if job is None:
         return
-    completion = await get_provider(job.provider).complete(
-        system=job.system, user=job.user, model=job.model, api_key=job.api_key
-    )
-    result = parse_analysis(completion.text)
+    provider = get_provider(job.provider)
+    used: list[int] = []
+
+    async def ask(system: str, user: str) -> AnalysisResult:
+        for attempt in range(PARSE_ATTEMPTS):
+            try:
+                completion = await provider.complete(system=system, user=user, model=job.model, api_key=job.api_key)
+                used.append(completion.tokens_used or 0)
+                return parse_analysis(completion.text)
+            except UnreadableAnswer:
+                if attempt == PARSE_ATTEMPTS - 1:
+                    raise
+        raise AnalysisError("The AI service didn't return a report.")
+
+    results = [await ask(system, user) for system, user in job.parts]
+    result = results[0]
+    if len(results) > 1:
+        result = await ask(*build_merge_messages(**job.context, parts=results, truncated=job.truncated))
     async with get_session() as session:
         await session.execute(
             update(MeetingReport)
@@ -126,7 +154,7 @@ async def _run(report_id: int) -> None:
                 title=result.title,
                 summary=result.overview,
                 sections_json=result.sections_json(),
-                tokens_used=completion.tokens_used,
+                tokens_used=sum(used) or None,
                 status=STATUS_DONE,
                 error=None,
                 generated_at=utc_now(),
