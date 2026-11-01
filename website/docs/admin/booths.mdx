@@ -34,11 +34,20 @@ Fill in the booth creation form:
 Click **Add Booth**. Voxbento creates the booth record and generates the WHIP/WHEP URLs automatically.
 
 ### 4. Open the booth detail page
-Click the newly created booth to open its detail page, where you can copy stream URLs, manage members, generate invite tokens, and configure transcription.
+Click the newly created booth to open its detail page, where you can copy stream URLs and set up captions and translations. Interpreters and invite links are managed on the event's **Team** page.
 
 ## Booth Detail Page
 
-The booth detail page is your primary control panel for a single language channel. It shows the following information:
+The booth detail page is your primary control panel for a single language channel. Event owners see it as four tabs, each with one job and one save button:
+
+| Tab | What it's for |
+| --- | --- |
+| **Overview** | Live status, booth information, links, the participant roster and a link to the Team page. A fresh booth also lists what to do next. |
+| **Captions** | Turn live captions on or off and choose the service (and optionally the model). Built-in Whisper is always offered; cloud services appear once the event has an API key for them. If an interpreter is live, saving restarts captions with the new settings and the page says so. |
+| **Translations** | Turn translated captions on or off, choose the languages to translate into, and choose the service. |
+| **Settings** | Change the booth's language name and code, or delete the booth. |
+
+Room coordinators see the Overview only. The Overview shows the following information:
 
 | Field | Description |
 | --- | --- |
@@ -48,8 +57,6 @@ The booth detail page is your primary control panel for a single language channe
 | **Live Status** | Whether an interpreter is currently broadcasting on this booth. |
 | **Active Interpreter** | The display name of the interpreter currently marked as active. |
 | **Participant Roster** | All users currently connected to the booth WebSocket, with their roles. |
-| **Assigned Members** | Registered users who have been given a role on this specific booth. |
-| **Invite Tokens** | Tokens you have generated for this booth, with options to copy or revoke them. |
 
 ## WHIP and WHEP URLs
 

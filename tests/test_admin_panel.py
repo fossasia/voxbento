@@ -3094,3 +3094,286 @@ async def test_developer_accounts_page_has_no_inline_styles(seed_accounts):
     else:
         assert b"No developer applications" in resp.content
     assert not re.search(rb"\sstyle\s*=", resp.content, re.IGNORECASE)
+
+
+def _booth_panel(html: str, name: str) -> str:
+    match = re.search(rf'id="booth-panel-{name}".*?</section>', html, re.S)
+    assert match is not None, name
+    return match.group(0)
+
+
+class TestBoothDetailTabs:
+    @pytest.mark.anyio
+    async def test_owner_sees_one_tab_per_job_with_one_save_each(self, admin_cookie, seed_event):
+        event, room, booth = seed_event
+        async with _client() as c:
+            resp = await c.get(f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/", cookies=admin_cookie)
+        assert resp.status_code == 200
+        for name in ("overview", "captions", "translations", "settings"):
+            assert f'data-booth-tab="{name}"' in resp.text
+        assert _booth_panel(resp.text, "captions").count('type="submit"') == 1
+        assert _booth_panel(resp.text, "translations").count('type="submit"') == 1
+        assert "/transcription-settings" in _booth_panel(resp.text, "captions")
+        assert "/translation-settings" in _booth_panel(resp.text, "translations")
+        settings_panel = _booth_panel(resp.text, "settings")
+        assert "/edit" in settings_panel and "/delete" in settings_panel
+        assert "Transcription Provider" not in resp.text
+        assert "Model Variant" not in resp.text
+
+    @pytest.mark.anyio
+    async def test_coordinator_sees_the_overview_without_owner_tabs(self, room_scope_events):
+        scope = room_scope_events
+        async with _client() as c:
+            resp = await c.get(
+                f"/admin/events/{scope['event_a']}/rooms/{scope['room_a']}/booths/{scope['booth_a']}/",
+                cookies=scope["coordinator_cookie"],
+            )
+        assert resp.status_code == 200
+        assert 'id="booth-panel-overview"' in resp.text
+        assert "data-booth-tabs" not in resp.text
+        assert "transcription-settings" not in resp.text
+        assert "js/booth-detail.js" not in resp.text
+
+    @pytest.mark.anyio
+    async def test_caption_services_come_from_the_engine_catalog(self, admin_cookie, seed_event):
+        from portal.crypto import encrypt_val
+        from portal.database import get_session
+
+        event, room, booth = seed_event
+        url = f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/"
+        async with _client() as c:
+            before = _booth_panel((await c.get(url, cookies=admin_cookie)).text, "captions")
+        assert "Whisper (built in)" in before
+        assert "Deepgram Nova" not in before
+        assert "Deepgram" in before and "API keys" in before
+
+        async with get_session() as s:
+            db_event = await s.get(type(event), event.id)
+            db_event.encrypted_deepgram_api_key = encrypt_val("dg-test")
+            db_event.transcription_api_enabled = True
+
+        async with _client() as c:
+            page = (await c.get(url, cookies=admin_cookie)).text
+        after = _booth_panel(page, "captions")
+        assert '<option value="deepgram"' in after
+        assert "Deepgram Nova" in after
+        locked = re.search(r"More services \(([^)]*)\)", after)
+        assert locked is not None and "Deepgram" not in locked.group(1)
+        assert "Anthropic" not in after
+
+    @pytest.mark.anyio
+    async def test_saving_captions_while_live_restarts_them_and_says_so(self, admin_cookie, seed_event, monkeypatch):
+        from types import SimpleNamespace
+
+        from portal.routers import admin
+
+        event, room, booth = seed_event
+        calls = []
+
+        async def record(name, *args, **kwargs):
+            calls.append(name)
+
+        live = SimpleNamespace(active_interpreter_id="p1", participants={}, ingest_status="connected")
+        monkeypatch.setattr(admin.booths, "get_booth_sync", lambda booth_id: live)
+        monkeypatch.setattr(admin, "start_transcription_worker", lambda *a, **k: record("start"))
+        monkeypatch.setattr(admin, "stop_transcription_worker", lambda *a, **k: record("stop"))
+        monkeypatch.setattr(admin, "broadcast_transcription", lambda *a, **k: record("clear"))
+        url = f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/"
+        async with _client() as c:
+            started = await c.post(
+                f"{url}transcription-settings",
+                data={
+                    "transcription_enabled": "true",
+                    "transcription_provider": "local",
+                    "transcription_model": "base",
+                },
+                cookies=admin_cookie,
+                follow_redirects=False,
+            )
+            restarted_page = await c.get(started.headers["location"], cookies=admin_cookie)
+            stopped = await c.post(
+                f"{url}transcription-settings",
+                data={"transcription_provider": "local", "transcription_model": "base"},
+                cookies=admin_cookie,
+                follow_redirects=False,
+            )
+            stopped_page = await c.get(stopped.headers["location"], cookies=admin_cookie)
+        assert started.headers["location"].endswith("?saved=captions&captions=restarted")
+        assert "restarted with the new settings" in _booth_panel(restarted_page.text, "captions")
+        assert "An interpreter is live in this booth" in restarted_page.text
+        assert stopped.headers["location"].endswith("?saved=captions&captions=stopped")
+        assert "Captions turned off" in _booth_panel(stopped_page.text, "captions")
+        assert calls == ["stop", "clear", "start", "stop", "clear"]
+
+    @pytest.mark.anyio
+    async def test_each_save_returns_to_its_tab_with_a_notice(self, admin_cookie, seed_event):
+        event, room, booth = seed_event
+        url = f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/"
+        saves = (
+            (
+                "transcription-settings",
+                {"transcription_provider": "local", "transcription_model": "tiny"},
+                "captions",
+                "Caption settings saved.",
+            ),
+            (
+                "translation-settings",
+                {"translation_provider": "local", "translation_model": "nllb-200-distilled-600M"},
+                "translations",
+                "Translation settings saved.",
+            ),
+            ("edit", {"language_name": "English (US)"}, "settings", "Booth language saved."),
+        )
+        async with _client() as c:
+            for action, data, tab, notice in saves:
+                resp = await c.post(f"{url}{action}", data=data, cookies=admin_cookie, follow_redirects=False)
+                assert resp.status_code == 303
+                assert resp.headers["location"].endswith(f"?saved={tab}")
+                page = await c.get(resp.headers["location"], cookies=admin_cookie)
+                assert notice in _booth_panel(page.text, tab)
+                assert "restarted" not in page.text
+
+    @pytest.mark.anyio
+    async def test_next_steps_show_until_captions_or_translations_are_on(self, admin_cookie, seed_event):
+        event, room, booth = seed_event
+        url = f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/"
+        async with _client() as c:
+            fresh = await c.get(url, cookies=admin_cookie)
+            await c.post(
+                f"{url}transcription-settings",
+                data={
+                    "transcription_enabled": "true",
+                    "transcription_provider": "local",
+                    "transcription_model": "tiny",
+                },
+                cookies=admin_cookie,
+            )
+            configured = await c.get(url, cookies=admin_cookie)
+        assert "What's next for this booth" in fresh.text
+        assert 'data-booth-tab-link="captions"' in fresh.text
+        assert "What's next for this booth" not in configured.text
+
+    @pytest.mark.anyio
+    async def test_every_offered_caption_model_can_be_saved(self, admin_cookie, seed_event):
+        from portal.crypto import encrypt_val
+        from portal.database import get_session
+        from portal.room_setup import BOOTH_SPEECH_MODELS
+
+        event, room, booth = seed_event
+        async with get_session() as s:
+            db_event = await s.get(type(event), event.id)
+            db_event.encrypted_openai_api_key = encrypt_val("sk-test")
+            db_event.transcription_api_enabled = True
+        url = f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/transcription-settings"
+        async with _client() as c:
+            for model, _label in BOOTH_SPEECH_MODELS["openai"]:
+                resp = await c.post(
+                    url,
+                    data={"transcription_provider": "openai", "transcription_model": model},
+                    cookies=admin_cookie,
+                    follow_redirects=False,
+                )
+                assert resp.status_code == 303, model
+
+    @pytest.mark.anyio
+    async def test_saving_captions_that_were_already_off_says_saved_not_stopped(
+        self, admin_cookie, seed_event, monkeypatch
+    ):
+        from types import SimpleNamespace
+
+        from portal.routers import admin
+
+        event, room, booth = seed_event
+
+        async def ignore(*args, **kwargs):
+            return None
+
+        live = SimpleNamespace(active_interpreter_id="p1", participants={}, ingest_status="connected")
+        monkeypatch.setattr(admin.booths, "get_booth_sync", lambda booth_id: live)
+        monkeypatch.setattr(admin, "stop_transcription_worker", ignore)
+        monkeypatch.setattr(admin, "broadcast_transcription", ignore)
+        async with _client() as c:
+            resp = await c.post(
+                f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/transcription-settings",
+                data={"transcription_provider": "local", "transcription_model": "tiny"},
+                cookies=admin_cookie,
+                follow_redirects=False,
+            )
+        assert resp.headers["location"].endswith("?saved=captions")
+
+    @pytest.mark.anyio
+    async def test_booth_offers_and_saves_the_larger_built_in_whisper_models(self, admin_cookie, seed_event):
+        event, room, booth = seed_event
+        url = f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/"
+        async with _client() as c:
+            page = await c.get(url, cookies=admin_cookie)
+            saved = await c.post(
+                f"{url}transcription-settings",
+                data={"transcription_provider": "local", "transcription_model": "large-v3"},
+                cookies=admin_cookie,
+                follow_redirects=False,
+            )
+        captions = _booth_panel(page.text, "captions")
+        for model in ("tiny", "base", "small", "medium", "large-v2", "large-v3"):
+            assert f'value="{model}" data-provider="local"' in captions
+        assert saved.status_code == 303
+
+
+    @pytest.mark.anyio
+    async def test_booth_does_not_offer_models_that_cannot_work(self, admin_cookie, seed_event):
+        from portal.crypto import encrypt_val
+        from portal.database import get_session
+
+        event, room, booth = seed_event
+        async with get_session() as s:
+            db_event = await s.get(type(event), event.id)
+            db_event.encrypted_openai_api_key = encrypt_val("sk-test")
+            db_event.encrypted_translation_openai_api_key = encrypt_val("sk-test")
+            db_event.transcription_api_enabled = True
+        url = f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/"
+        async with _client() as c:
+            page = await c.get(url, cookies=admin_cookie)
+            refused = await c.post(
+                f"{url}transcription-settings",
+                data={"transcription_provider": "openai", "transcription_model": "gpt-realtime-whisper"},
+                cookies=admin_cookie,
+            )
+        assert 'value="gpt-4o-transcribe" data-provider="openai"' in _booth_panel(page.text, "captions")
+        assert "gpt-realtime-whisper" not in _booth_panel(page.text, "captions")
+        assert 'value="gpt-4o-mini" data-trans-provider="openai"' in _booth_panel(page.text, "translations")
+        assert "gpt-4o-mini-realtime-preview" not in _booth_panel(page.text, "translations")
+        assert refused.status_code == 400
+
+    @pytest.mark.anyio
+    async def test_booth_with_a_retired_translation_model_is_asked_to_choose_another(self, admin_cookie, seed_event):
+        from portal.crypto import encrypt_val
+        from portal.database import get_session
+        from portal.models import DBBooth
+
+        event, room, booth = seed_event
+        async with get_session() as s:
+            db_event = await s.get(type(event), event.id)
+            db_event.encrypted_translation_openai_api_key = encrypt_val("sk-test")
+            db_booth = await s.get(DBBooth, booth.id)
+            db_booth.translation_provider = "openai"
+            db_booth.translation_model = "gpt-4o-mini-realtime-preview"
+        url = f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/"
+        async with _client() as c:
+            page = await c.get(url, cookies=admin_cookie)
+            refused = await c.post(
+                f"{url}translation-settings",
+                data={"translation_provider": "openai", "translation_model": "gpt-4-turbo"},
+                cookies=admin_cookie,
+            )
+            refused_snapshot = await c.post(
+                f"{url}translation-settings",
+                data={"translation_provider": "openai", "translation_model": "gpt-4-turbo-2024-04-09"},
+                cookies=admin_cookie,
+            )
+        translations = _booth_panel(page.text, "translations")
+        assert "<code>gpt-4o-mini-realtime-preview</code> is no longer available" in translations
+        assert 'value="gpt-4o-mini-realtime-preview"' not in translations
+        assert 'value="gpt-4-turbo"' not in translations
+        assert 'value="gpt-4o-mini" data-trans-provider="openai"' in translations
+        assert refused.status_code == 400
+        assert refused_snapshot.status_code == 400

@@ -173,6 +173,25 @@ def test_missing_optional_dependencies_are_not_offered(monkeypatch):
     assert any("supertonic extra" in reason for reason in catalog.unavailable)
 
 
+def test_locked_services_are_listed_for_captions_and_translation_separately():
+    key = encrypt_val("sk-test")
+    event = _event(encrypted_translation_openai_api_key=key)
+    catalog = engine_catalog(event)
+    assert room_setup.locked_services(catalog, "speech") == ["Deepgram", "ElevenLabs", "OpenAI", "NVIDIA"]
+    assert room_setup.locked_services(catalog, "translation") == ["Anthropic", "Google Gemini", "Groq", "OpenRouter"]
+
+
+def test_translation_models_put_the_recommended_model_first_and_keep_a_saved_one():
+    key = encrypt_val("sk-test")
+    catalog = engine_catalog(_event(encrypted_translation_openai_api_key=key))
+    models = room_setup.translation_models(catalog, "openai", "gpt-legacy")
+    assert list(models) == ["openai", "local"]
+    assert models["openai"][0] == "gpt-4o-mini"
+    assert models["openai"][-1] == "gpt-legacy"
+    assert models["openai"].count("gpt-4o-mini") == 1
+    assert models["local"] == ["nllb-200-distilled-600M"]
+
+
 def test_nvidia_requires_its_function_id(monkeypatch):
     monkeypatch.setattr(settings, "nvidia_function_id", "")
     event = _event(encrypted_nvidia_api_key=encrypt_val("k"))
@@ -925,3 +944,19 @@ def test_room_audio_tab_opens_on_the_source_in_use(fields, choice):
     for key, value in fields.items():
         setattr(room, key, value)
     assert room_setup.room_audio_choice(room) == choice
+
+
+def test_locked_services_skip_providers_without_a_brand_name(monkeypatch):
+    catalog = engine_catalog(_event())
+    monkeypatch.setattr(
+        room_setup,
+        "_SPEECH_ENGINES",
+        (*room_setup._SPEECH_ENGINES, ("mystery", "m", "Mystery", "encrypted_openai_api_key")),
+    )
+    assert room_setup.locked_services(catalog, "speech") == ["Deepgram", "ElevenLabs", "OpenAI", "NVIDIA"]
+
+
+def test_translation_models_never_bring_back_a_retired_model():
+    catalog = engine_catalog(_event(encrypted_translation_openai_api_key=encrypt_val("sk-test")))
+    for retired in ("gpt-4-turbo", "gpt-4-turbo-2024-04-09", "gpt-4o-mini-realtime-preview"):
+        assert retired not in room_setup.translation_models(catalog, "openai", retired)["openai"]

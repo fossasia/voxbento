@@ -23,7 +23,7 @@ from portal.config import settings
 from portal.database import create_booth, delete_booth, list_booths_for_room
 from portal.models import DBBooth, Event, Room, RoomTranslationLanguage
 from portal.roles import INTERPRETER
-from portal.translations.constants import NLLB_LANGUAGE_MAP
+from portal.translations.constants import NLLB_LANGUAGE_MAP, RETIRED_TRANSLATION_MODELS, TRANSLATION_MODELS
 from portal.tts.constants import DEEPGRAM_VOICE_MAPPING, SUPERTONIC_SUPPORTED_LANGS
 from portal.utils import _make_jitsi_url
 
@@ -172,6 +172,18 @@ SPEECH_MODELS: dict[str, tuple[tuple[str, str], ...]] = {
     "local": (("tiny", "Tiny, fastest"), ("base", "Base, more accurate but slower")),
 }
 
+BOOTH_SPEECH_MODELS: dict[str, tuple[tuple[str, str], ...]] = {
+    **SPEECH_MODELS,
+    "openai": tuple(model for model in SPEECH_MODELS["openai"] if model[0] != "gpt-realtime-whisper"),
+    "local": (
+        *SPEECH_MODELS["local"],
+        ("small", "Small"),
+        ("medium", "Medium"),
+        ("large-v2", "Large v2"),
+        ("large-v3", "Large v3, most accurate but slowest"),
+    ),
+}
+
 
 _BRANDS = {
     "deepgram": "Deepgram",
@@ -223,6 +235,28 @@ def engine_catalog(event: Event) -> EngineCatalog:
     return EngineCatalog(
         tuple(speech), tuple(translation), tuple(voice), tuple(dict.fromkeys(locked)), tuple(unavailable)
     )
+
+
+def locked_services(catalog: EngineCatalog, kind: str) -> list[str]:
+    engines = _SPEECH_ENGINES if kind == "speech" else _TRANSLATION_ENGINES
+    available = {engine.provider for engine in getattr(catalog, kind)}
+    return [
+        brand
+        for provider, *_ in engines
+        if provider not in available and (brand := _BRANDS.get(provider)) and brand in catalog.locked
+    ]
+
+
+def translation_models(
+    catalog: EngineCatalog, provider: str | None = None, model: str | None = None
+) -> dict[str, list[str]]:
+    choices: dict[str, list[str]] = {}
+    for engine in catalog.translation:
+        models = [engine.model, *(m for m in TRANSLATION_MODELS.get(engine.provider, ()) if m != engine.model)]
+        if engine.provider == provider and model and model not in models and model not in RETIRED_TRANSLATION_MODELS:
+            models.append(model)
+        choices[engine.provider] = models
+    return choices
 
 
 # ── The plan ─────────────────────────────────────────────────────────────
