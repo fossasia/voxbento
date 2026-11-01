@@ -655,6 +655,12 @@ async def _handle_join(ws: WebSocket, session: Session, data: dict) -> None:
     """
     display_name = data.get("display_name", "Interpreter")
     role = data.get("role", INTERPRETER)
+    # Check these before they are used: a non-string role breaks the role lookup, and a falsy
+    # non-string language (null, 0, false) would be replaced by the booth's language below.
+    for name in ("role", "language"):
+        if name in data and not isinstance(data[name], str):
+            await ws.send_text(json.dumps({"type": "booth:error", "message": f"{name} must be a string."}))
+            return
     language = data.get("language") or session.language
     if not language:
         await ws.send_text(
@@ -684,12 +690,10 @@ async def _handle_join(ws: WebSocket, session: Session, data: dict) -> None:
             await ws.send_text(json.dumps({"type": "booth:error", "message": str(exc)}))
             return
     room_id = data.get("room_id")
-    if room_id is not None:
-        try:
-            room_id = int(room_id)
-        except (TypeError, ValueError):
-            await ws.send_text(json.dumps({"type": "booth:error", "message": "room_id must be an integer."}))
-            return
+    # int() would turn 1.5, true or "1" into 1 (and fail on Infinity), so require a JSON integer.
+    if room_id is not None and (isinstance(room_id, bool) or not isinstance(room_id, int)):
+        await ws.send_text(json.dumps({"type": "booth:error", "message": "room_id must be an integer."}))
+        return
     try:
         participant, state = await booths.join_participant(
             booth_id=session.booth_id,

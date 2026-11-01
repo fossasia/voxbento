@@ -10,6 +10,7 @@ from sqlalchemy.orm import joinedload
 
 from portal.auth import get_booth_sessions, is_invite_token_revoked, resolve_booth_role
 from portal.booth_identity import make_booth_id, make_mediamtx_path
+from portal.booth_state import DISPLAY_NAME_MAX_LENGTH
 from portal.config import settings
 from portal.database import (
     get_booth_by_id,
@@ -234,7 +235,8 @@ async def interpreter_booth_by_identity(
     default_jitsi_url = _make_jitsi_url(settings.effective_jitsi_base_url, settings.default_jitsi_room)
     final_jitsi_url = room_jitsi_url or default_jitsi_url
     user_sess = sessions.get("user_token", {})
-    display_name = user_sess.get("display_name", "") or user_sess.get("email", "")
+    # booth:join rejects longer names, and the email fallback can be up to 320 characters.
+    display_name = (user_sess.get("display_name") or user_sess.get("email") or "")[:DISPLAY_NAME_MAX_LENGTH]
     return templates.TemplateResponse(
         request=request,
         name="interpreter_booth.html",
