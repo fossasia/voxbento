@@ -21,6 +21,7 @@
   <div data-youtube-state='connected' hidden>
     <div class='youtube-connect-channel'>
       <p>Connected to <strong id='youtube-channel'></strong></p>
+      <a class='btn btn-primary' id='youtube-signin-again' href='{{ management_prefix }}/events/{{ event.id }}/youtube/connect?room_id={{ room.id }}' hidden>Sign in with YouTube again</a>
       <button type='button' class='btn btn-outline program-revoke-button' id='youtube-disconnect'>Disconnect</button>
     </div>
     <form id='youtube-broadcast-form' class='program-relay-destination'>

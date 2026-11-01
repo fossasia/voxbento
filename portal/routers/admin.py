@@ -1489,8 +1489,9 @@ async def admin_room_detail(request: Request, event_id: int, room_id: int):
             "fallback_jitsi_url": fallback_jitsi_url,
             "catalog": catalog,
             "audio_choice": room_audio_choice(room),
-            # Sign in with YouTube (#1087) appears only once the operator configures a Google client.
-            "youtube_connect_enabled": settings.youtube_connect_enabled,
+            # Sign in with YouTube (#1087): only once the operator configures a Google client, and only
+            # for those its routes admit (event owners and Admins).
+            "youtube_connect_enabled": settings.youtube_connect_enabled and admin_flags["is_event_owner"],
             "speech_models": ROOM_SPEECH_MODELS,
             "voice_presets": ROOM_VOICE_PRESETS,
             "ai_language_names": [room_language_name(code) for code in snapshot.plan.ai_languages],

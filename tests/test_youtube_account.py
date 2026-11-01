@@ -21,12 +21,12 @@ from fastapi_app import app
 from portal import program_ingest as ingest
 from portal import program_relay as relay
 from portal import youtube_account as yt
-from portal.auth import create_user_token
+from portal.auth import create_user_token, decode_token
 from portal.config import Settings, settings
 from portal.crypto import decrypt_val
 from portal.database import configure, create_user, dispose, get_session, init_db, set_event_membership
 from portal.models import Event, Room, YouTubeConnection
-from portal.roles import EVENT_OWNER
+from portal.roles import EVENT_OWNER, ROOM_COORDINATOR
 
 CLIENT_ID = "test-client.apps.googleusercontent.com"
 CLIENT_SECRET = "test-client-secret"
@@ -820,3 +820,17 @@ async def test_room_page_renders_the_youtube_controls(yt_env, monkeypatch):
     page = (await yt_env["client"].get(f"/workspace/events/{event.id}/rooms/{room.id}/")).text
     assert "youtube-connect" not in page
     assert "Sign in with YouTube" not in page
+
+
+@pytest.mark.anyio
+async def test_room_coordinator_page_has_no_youtube_card(yt_env):
+    """The YouTube routes admit event owners only, so a coordinator never gets controls that 403."""
+    event, room, client = yt_env["event"], yt_env["rooms"][0], yt_env["client"]
+    coordinator_id = int(decode_token(yt_env["stranger_token"])["sub"])
+    async with get_session() as session:
+        await set_event_membership(session, user_id=coordinator_id, event_id=event.id, role=ROOM_COORDINATOR)
+    client.cookies.set("user_token", yt_env["stranger_token"])
+    response = await client.get(f"/admin/events/{event.id}/rooms/{room.id}/")
+    assert response.status_code == 200, response.text
+    assert "youtube-connect" not in response.text
+    assert "Sign in with YouTube" not in response.text

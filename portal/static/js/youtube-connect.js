@@ -10,9 +10,11 @@ const select = document.getElementById('youtube-broadcast-select');
 const link = document.getElementById('youtube-broadcast-link');
 const statusLine = document.getElementById('youtube-status-line');
 const unlink = document.getElementById('youtube-unlink');
+const signInAgain = document.getElementById('youtube-signin-again');
 let connected = false;
 let linkedId = null;
 let pending = false;
+let relayKeyFilled = false;
 
 const lifeCycleLabels = {
   created: 'Created',
@@ -53,9 +55,16 @@ async function readJson(response) {
   }
   if (!response.ok) {
     const detail = typeof data?.detail === 'string' ? data.detail : `Request failed (HTTP ${response.status})`;
-    throw new Error(detail);
+    const error = new Error(detail);
+    // Set when Google needs a new sign-in; the room's broadcast links are kept meanwhile.
+    error.lastError = data?.last_error;
+    throw error;
   }
   return data;
+}
+
+function offerSignInAgain(error) {
+  if (error.lastError) signInAgain.hidden = false;
 }
 
 function request(url, options = {}) {
@@ -84,6 +93,7 @@ async function loadBroadcasts() {
     console.error('YouTube broadcasts unavailable', error);
     select.replaceChildren(new Option('Broadcasts unavailable', ''));
     say(error.message, 'error');
+    offerSignInAgain(error);
   }
 }
 
@@ -105,11 +115,35 @@ function renderRoomStatus(youtube) {
   if (select.querySelector(`option[value="${CSS.escape(linkedId)}"]`)) select.value = linkedId;
 }
 
+// The server fills in the stream key only for a room already in relay mode. When relay mode is
+// switched on after the broadcast was linked, link it once more so the key is filled in then.
+async function fillRelayKey(data) {
+  const youtube = data.youtube;
+  if (relayKeyFilled || pending || !youtube || youtube.error || !data.enabled) return;
+  if (data.mode !== 'rtmps_relay' || data.destination?.configured) return;
+  relayKeyFilled = true;
+  try {
+    const result = await readJson(await request(box.dataset.broadcastUrl, {
+      method: 'PUT',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({broadcast: youtube.broadcast_id}),
+    }));
+    if (result.destination_configured) {
+      say(`Relay mode is on: VoxBento filled in the stream key for "${result.title}".`, 'success');
+    }
+  } catch (error) {
+    console.error('YouTube stream key could not be filled in', error);
+    say(error.message, 'error');
+    offerSignInAgain(error);
+  }
+}
+
 async function loadRoomStatus() {
   if (!connected || document.hidden) return;
   try {
     const data = await readJson(await request(box.dataset.roomStatusUrl));
     renderRoomStatus(data.youtube);
+    await fillRelayKey(data);
   } catch (error) {
     console.error('YouTube status unavailable', error);
   }
@@ -124,6 +158,8 @@ async function loadConnection() {
     showState(connected ? 'connected' : 'disconnected');
     if (!connected) return;
     channel.textContent = data.channel_title || data.channel_id;
+    // Signing in again replaces the token and keeps every room's broadcast; Disconnect would clear them.
+    signInAgain.hidden = !data.last_error;
     if (data.last_error) say(data.last_error, 'error');
     await loadRoomStatus();
     await loadBroadcasts();
@@ -143,15 +179,22 @@ async function change(run) {
   } catch (error) {
     console.error('YouTube update failed', error);
     say(error.message, 'error');
+    offerSignInAgain(error);
   } finally {
     buttons.forEach(button => { button.disabled = false; });
     pending = false;
   }
 }
 
-// A new choice replaces the last result.
-link.addEventListener('input', () => say(''));
-select.addEventListener('change', () => say(''));
+// The input changed last wins: a stale pasted link must never override a later list choice.
+link.addEventListener('input', () => {
+  if (link.value.trim()) select.value = '';
+  say('');
+});
+select.addEventListener('change', () => {
+  link.value = '';
+  say('');
+});
 
 form.addEventListener('submit', event => {
   event.preventDefault();
