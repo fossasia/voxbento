@@ -1,7 +1,9 @@
 # Caddyfile — voxbento.com production
 #
 # Deploy:
-#   sudo cp Caddyfile /etc/caddy/Caddyfile
+#   sudo caddy validate --config Caddyfile --adapter caddyfile
+#   sudo install -m 644 Caddyfile /etc/caddy/Caddyfile.next
+#   sudo mv -f /etc/caddy/Caddyfile.next /etc/caddy/Caddyfile
 #   sudo systemctl reload caddy
 #
 # DNS requirements:
@@ -28,6 +30,10 @@
 
 # ── Interpretation Portal ─────────────────────────────────────────────────────
 voxbento.com {
+    # Host-owned routes (e.g. Sentinel) survive deploys without editing this file.
+    # An empty glob is valid. Use an absolute path so preflight imports the same files.
+    import /etc/caddy/voxbento-routes/*.caddy
+
     # Authentication callbacks are exclusively Docker-internal.
     handle /internal/* {
         respond 404

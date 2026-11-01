@@ -53,6 +53,9 @@ case "$name:$*" in
     test "$(cat release.txt)" = new || exit 91
     test -f .env || exit 92 ;;
   sudo:*validate*) stage=caddy ;;
+  sudo:install*) stage=install ;;
+  sudo:mv*) stage=rename ;;
+  sudo:*reload*) stage=reload ;;
   docker:*"volume inspect"*) exit 1 ;;
   curl:*)
     if [ "$FAIL_STAGE" = health ]; then printf 503; else printf 200; fi
@@ -129,6 +132,28 @@ def test_successful_deploy_uses_candidate_then_preserves_project_identity(
     health = next(i for i, call in enumerate(calls) if call.startswith("curl|"))
     prune = next(i for i, call in enumerate(calls) if "image prune" in call)
     assert health < prune
+    install = next(i for i, call in enumerate(calls) if call.startswith("sudo|install -m 644 "))
+    rename = next(i for i, call in enumerate(calls) if call.startswith("sudo|mv -f "))
+    reload = next(i for i, call in enumerate(calls) if call.startswith("sudo|systemctl reload caddy|"))
+    up = next(i for i, call in enumerate(calls) if " up " in call)
+    assert install < rename < reload < up
+    assert "sudo|cp " not in "\n".join(calls)
+    assert not list(temporary.glob("voxbento-deploy.*"))
+
+
+@pytest.mark.parametrize("stage", ["install", "rename", "reload"])
+def test_failed_caddy_install_stops_container_replacement(
+    deployment: tuple[Path, Path, str, dict[str, str]],
+    stage: str,
+) -> None:
+    _, temporary, _, env = deployment
+    result = run_deployment(env, stage)
+    assert result.returncode == 42, result.stdout + result.stderr
+    calls = (temporary / "calls").read_text()
+    assert " up " not in calls
+    assert "image prune" not in calls
+    if stage in {"install", "rename"}:
+        assert "systemctl reload" not in calls
     assert not list(temporary.glob("voxbento-deploy.*"))
 
 
