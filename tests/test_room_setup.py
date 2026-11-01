@@ -173,6 +173,25 @@ def test_missing_optional_dependencies_are_not_offered(monkeypatch):
     assert any("supertonic extra" in reason for reason in catalog.unavailable)
 
 
+def test_locked_services_are_listed_for_captions_and_translation_separately():
+    key = encrypt_val("sk-test")
+    event = _event(encrypted_translation_openai_api_key=key)
+    catalog = engine_catalog(event)
+    assert room_setup.locked_services(catalog, "speech") == ["Deepgram", "ElevenLabs", "OpenAI", "NVIDIA"]
+    assert room_setup.locked_services(catalog, "translation") == ["Anthropic", "Google Gemini", "Groq", "OpenRouter"]
+
+
+def test_translation_models_put_the_recommended_model_first_and_keep_a_saved_one():
+    key = encrypt_val("sk-test")
+    catalog = engine_catalog(_event(encrypted_translation_openai_api_key=key))
+    models = room_setup.translation_models(catalog, "openai", "gpt-legacy")
+    assert list(models) == ["openai", "local"]
+    assert models["openai"][0] == "gpt-4o-mini"
+    assert models["openai"][-1] == "gpt-legacy"
+    assert models["openai"].count("gpt-4o-mini") == 1
+    assert models["local"] == ["nllb-200-distilled-600M"]
+
+
 def test_nvidia_requires_its_function_id(monkeypatch):
     monkeypatch.setattr(settings, "nvidia_function_id", "")
     event = _event(encrypted_nvidia_api_key=encrypt_val("k"))
