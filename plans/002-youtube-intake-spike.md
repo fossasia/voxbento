@@ -110,7 +110,7 @@ Server setup) and a room in relay mode with **no YouTube key saved**:
 2. Use the OAuth 2.0 Playground (developers.google.com/oauthplayground) with your own
    client and scope `https://www.googleapis.com/auth/youtube.force-ssl`.
 3. Create an **unlisted** live event in YouTube Studio. Call:
-   - `GET https://www.googleapis.com/youtube/v3/liveBroadcasts?part=snippet,contentDetails,status&broadcastStatus=upcoming&broadcastType=all&mine=true&maxResults=50`
+   - `GET https://www.googleapis.com/youtube/v3/liveBroadcasts?part=snippet,contentDetails,status&broadcastStatus=upcoming&broadcastType=all&maxResults=50`
    - `GET https://www.googleapis.com/youtube/v3/liveStreams?part=cdn,status,contentDetails&id=<contentDetails.boundStreamId>`
 4. Record (redacted): that `cdn.ingestionInfo.streamName` is present and equals the
    Studio stream key; the `ingestionAddress` host (`a.rtmp.youtube.com`?);
