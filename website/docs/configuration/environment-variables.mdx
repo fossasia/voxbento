@@ -90,6 +90,7 @@ These variables control external encoder ingest and YouTube RTMPS forwarding.
 | `PROGRAM_INGEST_DISCONNECT_GRACE_SECS` | `15.0` | Grace period in seconds before marking a disconnected encoder stream as terminated. |
 | `PROGRAM_INGEST_STALL_SECS` | `30.0` | Duration without packets before declaring a stream stalled. |
 | `PROGRAM_SENDER_SESSION_TTL_SECS` | `150` | Browser sender publish window for WHIP session negotiation. |
+| `PROGRAM_RTMPS_ENABLED` | `false` | Accepts room-authenticated RTMPS ingest without relaying, so a streaming tool can add VoxBento as an extra destination (`docker-compose.rtmps.yml`). Relay deployments imply it. Needs `PROGRAM_INGEST_ENABLED`. |
 | `PROGRAM_RELAY_ENABLED` | `false` | Enables operator-controlled RTMPS relaying to YouTube destinations via the `program-relay` service (`docker-compose.relay.yml`). |
 | `PROGRAM_RTMPS_PUBLIC_BASE` | _(none)_ | Public base RTMPS URL (e.g. `rtmps://voxbento.com:1936`) for incoming RTMP/RTMPS encoder streams. |
 | `PROGRAM_RTMPS_CERT_DIR` | _(none)_ | Directory holding the RTMPS certificate and key, e.g. Caddy's certificate directory for the hostname. MediaMTX reloads renewed files. |
