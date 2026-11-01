@@ -131,7 +131,7 @@
       </div>
     </div>
 
-    <div class="form-group api-key-field api-key-field--last">
+    <div class="form-group api-key-field">
       <label for="groq_api_key" class="api-key-label">Groq API Key</label>
       <input type="password" id="groq_api_key" name="groq_api_key" placeholder="{{ 'Configured' if event.encrypted_groq_api_key else 'gsk_...' }}" value="" class="input api-key-input">
       <div class="api-key-meta">
@@ -140,6 +140,37 @@
           <input type="checkbox" name="clear_groq_api_key" value="1"> Clear Key
         </label>
       </div>
+    </div>
+
+    <div class="section-header api-settings-divider">
+      <h2>Meeting Reports</h2>
+    </div>
+    <p class="muted api-settings-intro">
+      After a session, an AI service can read a room's stored transcript and write a report: a summary, action items, key topics and a timeline. Reports are only made when an event owner asks for one on the room's Meeting reports page.
+    </p>
+
+    <div class="form-group checkbox-group api-settings-toggle">
+      <label class="api-settings-toggle-label">
+        <input type="checkbox" name="meeting_analysis_enabled" {% if event.meeting_analysis_enabled %}checked{% endif %}>
+        Enable meeting reports for this event
+      </label>
+      <p class="form-help api-settings-toggle-help">The transcript is sent to the service chosen below. Local (Ollama) keeps it on your own server.</p>
+    </div>
+
+    <div class="form-group api-key-field">
+      <label for="meeting_analysis_provider" class="api-key-label">AI service</label>
+      <select id="meeting_analysis_provider" name="meeting_analysis_provider" class="input">
+        {% for value, label in analysis_providers.items() %}
+        <option value="{{ value }}" {% if event.meeting_analysis_provider == value %}selected{% endif %}>{{ label }}</option>
+        {% endfor %}
+      </select>
+      <p class="form-help api-key-help">Cloud services use the translation API key saved above for that service. Local (Ollama) needs no key.</p>
+    </div>
+
+    <div class="form-group api-key-field api-key-field--last">
+      <label for="meeting_analysis_model" class="api-key-label">Model <span class="muted">(optional)</span></label>
+      <input type="text" id="meeting_analysis_model" name="meeting_analysis_model" maxlength="100" value="{{ event.meeting_analysis_model }}" placeholder="Recommended model" class="input">
+      <p class="form-help api-key-help">Leave empty for the recommended model: {% for value, model in analysis_defaults.items() %}{{ analysis_providers[value] }} {{ model }}{{ ', ' if not loop.last else '.' }}{% endfor %}</p>
     </div>
 
     <div class="form-actions api-settings-actions">

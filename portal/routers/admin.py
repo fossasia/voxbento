@@ -97,6 +97,9 @@ from portal.database import (
 )
 from portal.globals import _JS_CACHE_BUST, asset_version_context, booths
 from portal.hosting_requests import DECLINE_REASON_MAX, format_event_dates, multi_line
+from portal.meeting_analysis.constants import DEFAULT_MODELS as ANALYSIS_DEFAULT_MODELS
+from portal.meeting_analysis.constants import MAX_MODEL_LENGTH as ANALYSIS_MAX_MODEL_LENGTH
+from portal.meeting_analysis.constants import PROVIDER_LABELS as ANALYSIS_PROVIDER_LABELS
 from portal.models import (
     HOSTING_REQUEST_DECLINED,
     HOSTING_REQUEST_GRANTED,
@@ -1206,7 +1209,14 @@ async def admin_event_api_settings_get(request: Request, event_id: int):
             raise HTTPException(status_code=404, detail="Event not found.")
     admin_flags = await get_access_flags(request, event_id=event_id)
     return templates.TemplateResponse(
-        request=request, name="admin/api_settings.html", context={"event": event, **admin_flags}
+        request=request,
+        name="admin/api_settings.html",
+        context={
+            "event": event,
+            "analysis_providers": ANALYSIS_PROVIDER_LABELS,
+            "analysis_defaults": ANALYSIS_DEFAULT_MODELS,
+            **admin_flags,
+        },
     )
 
 
@@ -1233,12 +1243,24 @@ async def admin_event_api_settings_post(
     clear_gemini_api_key: bool | None = Form(False),
     clear_anthropic_api_key: bool | None = Form(False),
     clear_groq_api_key: bool | None = Form(False),
+    meeting_analysis_enabled: bool | None = Form(False),
+    meeting_analysis_provider: str | None = Form(None),
+    meeting_analysis_model: str | None = Form(None),
 ):
+    if meeting_analysis_provider is not None and meeting_analysis_provider not in ANALYSIS_PROVIDER_LABELS:
+        raise HTTPException(status_code=400, detail="Unknown meeting report service.")
+    if meeting_analysis_model is not None and len(meeting_analysis_model.strip()) > ANALYSIS_MAX_MODEL_LENGTH:
+        raise HTTPException(status_code=400, detail="The meeting report model name is too long.")
     async with get_session() as session:
         event = await get_event_by_id(session, event_id)
         if event is None:
             raise HTTPException(status_code=404, detail="Event not found.")
         event.transcription_api_enabled = bool(transcription_api_enabled)
+        event.meeting_analysis_enabled = bool(meeting_analysis_enabled)
+        if meeting_analysis_provider is not None:
+            event.meeting_analysis_provider = meeting_analysis_provider
+        if meeting_analysis_model is not None:
+            event.meeting_analysis_model = meeting_analysis_model.strip()
         try:
             _apply_api_key_updates(
                 event,

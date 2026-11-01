@@ -1983,3 +1983,12 @@ code { font-family: var(--font-mono); font-size: 0.85em; background: var(--color
   margin-right: 0.75rem;
   font-weight: 400;
 }
+
+.analysis-report h3 { font-size: 0.95rem; font-weight: 700; margin: 18px 0 8px; }
+.analysis-summary { margin: 0; line-height: 1.6; }
+.analysis-list { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 6px; }
+.analysis-topics { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 6px; }
+.analysis-timeline { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 10px; }
+.analysis-time { display: inline-block; min-width: 92px; margin-right: 8px; font-variant-numeric: tabular-nums; font-weight: 600; color: var(--color-text-secondary); }
+.analysis-progress { margin: 8px 0 0; color: var(--color-text-secondary); }
+.analysis-form .btn:disabled { opacity: 0.55; cursor: not-allowed; }
