@@ -2214,6 +2214,8 @@ class TestBoothCRUD:
         assert "Deepgram Nova" not in html
         # Services without a key are named once, in a hint for each kind.
         assert html.count("appear here once you add their API key") == 2
+        # Cloud captions also need the event's switch, so the captions hint says so.
+        assert html.count("Enable External Transcription APIs") == 1
 
         await _update_row(Event, event.id, encrypted_deepgram_api_key=encrypt_val("k"), transcription_api_enabled=True)
         async with _client() as c:

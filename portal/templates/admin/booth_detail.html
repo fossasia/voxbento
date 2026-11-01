@@ -190,7 +190,7 @@
 <section class="room-panel" id="booth-panel-captions" role="tabpanel" aria-labelledby="booth-tab-captions" data-booth-panel="captions">
   <p class="room-panel-intro">Live captions of what the {{ booth.language_name }} interpreter says. They reach listeners and the subtitles overlay.</p>
   {% if catalog.locked_speech %}
-  <p class="rs-note">More services ({{ catalog.locked_speech | join(', ') }}) appear here once you add their API key on <a href="{{ management_prefix }}/events/{{ event.id }}/api-settings/">API keys</a>.</p>
+  <p class="rs-note">More services ({{ catalog.locked_speech | join(', ') }}) appear here once you add their API key on <a href="{{ management_prefix }}/events/{{ event.id }}/api-settings/">API keys</a> and tick “Enable External Transcription APIs” there.</p>
   {% endif %}
   <form method="post" action="{{ booth_url }}/transcription-settings">
     <div class="room-card">
