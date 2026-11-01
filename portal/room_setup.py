@@ -570,6 +570,7 @@ def summarize(room: Room, snapshot: RoomSnapshot) -> RoomSummary:
 
 # ── Room audio ───────────────────────────────────────────────────────────
 
+AUDIO_YOUTUBE = "youtube"
 AUDIO_MEETING = "meeting"
 AUDIO_ENCODER = "encoder"
 AUDIO_DESK = "desk"
@@ -577,6 +578,8 @@ AUDIO_DESK = "desk"
 
 def room_audio_choice(room: Room) -> str:
     """Which way VoxBento hears the room today, so the Room audio tab opens on it ('' if none yet)."""
+    if getattr(room, "youtube_broadcast_id", None) and room.floor_source in ("program_ingest", None, ""):
+        return AUDIO_YOUTUBE
     if room.floor_source == "program_ingest":
         if room.program_key_hash:
             return AUDIO_ENCODER
