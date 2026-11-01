@@ -14,7 +14,7 @@ class TranslationProviderEnum(str, Enum):
     GROQ = "groq"
 
 
-RETIRED_TRANSLATION_MODELS = frozenset({"gpt-4-turbo", "gpt-4o-mini-realtime-preview"})
+RETIRED_TRANSLATION_MODELS = frozenset({"gpt-4-turbo", "gpt-4-turbo-2024-04-09", "gpt-4o-mini-realtime-preview"})
 
 TRANSLATION_MODELS: Dict[str, List[str]] = {
     TranslationProviderEnum.OPENAI.value: ["gpt-4o", "gpt-4o-mini"],

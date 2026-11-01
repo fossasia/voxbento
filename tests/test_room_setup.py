@@ -958,5 +958,5 @@ def test_locked_services_skip_providers_without_a_brand_name(monkeypatch):
 
 def test_translation_models_never_bring_back_a_retired_model():
     catalog = engine_catalog(_event(encrypted_translation_openai_api_key=encrypt_val("sk-test")))
-    for retired in ("gpt-4-turbo", "gpt-4o-mini-realtime-preview"):
+    for retired in ("gpt-4-turbo", "gpt-4-turbo-2024-04-09", "gpt-4o-mini-realtime-preview"):
         assert retired not in room_setup.translation_models(catalog, "openai", retired)["openai"]

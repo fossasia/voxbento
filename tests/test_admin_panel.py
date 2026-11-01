@@ -3365,9 +3365,15 @@ class TestBoothDetailTabs:
                 data={"translation_provider": "openai", "translation_model": "gpt-4-turbo"},
                 cookies=admin_cookie,
             )
+            refused_snapshot = await c.post(
+                f"{url}translation-settings",
+                data={"translation_provider": "openai", "translation_model": "gpt-4-turbo-2024-04-09"},
+                cookies=admin_cookie,
+            )
         translations = _booth_panel(page.text, "translations")
         assert "<code>gpt-4o-mini-realtime-preview</code> is no longer available" in translations
         assert 'value="gpt-4o-mini-realtime-preview"' not in translations
         assert 'value="gpt-4-turbo"' not in translations
         assert 'value="gpt-4o-mini" data-trans-provider="openai"' in translations
         assert refused.status_code == 400
+        assert refused_snapshot.status_code == 400
