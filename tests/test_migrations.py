@@ -253,7 +253,31 @@ def test_migration_039_emits_sql_offline():
         emitted = buffer.getvalue()
         assert "ix_transcript_segments_room_language_created" in emitted
         assert "ix_transcript_segments_booth_id" in emitted
+        assert "LOCK TABLE" not in emitted
         if dialect == "postgresql":
-            assert "LOCK TABLE transcript_segments IN SHARE ROW EXCLUSIVE MODE" in emitted
+            assert "pg_advisory_lock" in emitted
+            assert "pg_advisory_unlock" in emitted
+            assert "CONCURRENTLY" in emitted
         else:
-            assert "LOCK TABLE" not in emitted
+            assert "pg_advisory" not in emitted
+            assert "CONCURRENTLY" not in emitted
+
+        # Also verify downgrade offline SQL generation
+        buffer_down = io.StringIO()
+        context_down = MigrationContext.configure(
+            dialect_name=dialect,
+            opts={"as_sql": True, "output_buffer": buffer_down},
+        )
+        with Operations.context(context_down):
+            migration.downgrade()
+        emitted_down = buffer_down.getvalue()
+        assert "ix_transcript_segments_room_language_created" in emitted_down
+        assert "ix_transcript_segments_booth_id" in emitted_down
+        assert "LOCK TABLE" not in emitted_down
+        if dialect == "postgresql":
+            assert "pg_advisory_lock" in emitted_down
+            assert "pg_advisory_unlock" in emitted_down
+            assert "CONCURRENTLY" in emitted_down
+        else:
+            assert "pg_advisory" not in emitted_down
+            assert "CONCURRENTLY" not in emitted_down

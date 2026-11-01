@@ -17,9 +17,11 @@ revision: str = "039"
 down_revision: Union[str, Sequence[str], None] = "038"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
+disable_transaction: bool = True
 
 ROOM_LANGUAGE_CREATED = "ix_transcript_segments_room_language_created"
 BOOTH_ID = "ix_transcript_segments_booth_id"
+MIGRATION_ADVISORY_LOCK_ID = 20261026039
 
 
 def upgrade() -> None:
@@ -41,25 +43,55 @@ def upgrade() -> None:
     means this revision never reflects the live schema, which is what allows
     ``alembic upgrade --sql`` to emit the statements instead of failing on a mock
     connection.
+
+    Concurrent migrations are serialized using a PostgreSQL session advisory lock
+    rather than a table lock, preventing startup races without blocking concurrent
+    application reads/writes on ``transcript_segments``. ``postgresql_concurrently``
+    ensures index building does not block writes on large tables.
     """
     context = op.get_context()
     if context.dialect.name == "postgresql":
-        op.execute("LOCK TABLE transcript_segments IN SHARE ROW EXCLUSIVE MODE")
+        op.execute(f"SELECT pg_advisory_lock({MIGRATION_ADVISORY_LOCK_ID})")
 
-    op.create_index(
-        ROOM_LANGUAGE_CREATED,
-        "transcript_segments",
-        ["room_id", "language_code", "created_at", "id"],
-        if_not_exists=True,
-    )
-    op.create_index(BOOTH_ID, "transcript_segments", ["booth_id"], if_not_exists=True)
+    try:
+        op.create_index(
+            ROOM_LANGUAGE_CREATED,
+            "transcript_segments",
+            ["room_id", "language_code", "created_at", "id"],
+            if_not_exists=True,
+            postgresql_concurrently=True,
+        )
+        op.create_index(
+            BOOTH_ID,
+            "transcript_segments",
+            ["booth_id"],
+            if_not_exists=True,
+            postgresql_concurrently=True,
+        )
+    finally:
+        if context.dialect.name == "postgresql":
+            op.execute(f"SELECT pg_advisory_unlock({MIGRATION_ADVISORY_LOCK_ID})")
 
 
 def downgrade() -> None:
     """Drop the transcript segment indexes."""
     context = op.get_context()
     if context.dialect.name == "postgresql":
-        op.execute("LOCK TABLE transcript_segments IN SHARE ROW EXCLUSIVE MODE")
+        op.execute(f"SELECT pg_advisory_lock({MIGRATION_ADVISORY_LOCK_ID})")
 
-    op.drop_index(BOOTH_ID, table_name="transcript_segments", if_exists=True)
-    op.drop_index(ROOM_LANGUAGE_CREATED, table_name="transcript_segments", if_exists=True)
+    try:
+        op.drop_index(
+            BOOTH_ID,
+            table_name="transcript_segments",
+            if_exists=True,
+            postgresql_concurrently=True,
+        )
+        op.drop_index(
+            ROOM_LANGUAGE_CREATED,
+            table_name="transcript_segments",
+            if_exists=True,
+            postgresql_concurrently=True,
+        )
+    finally:
+        if context.dialect.name == "postgresql":
+            op.execute(f"SELECT pg_advisory_unlock({MIGRATION_ADVISORY_LOCK_ID})")
