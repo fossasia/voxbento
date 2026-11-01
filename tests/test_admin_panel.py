@@ -3343,3 +3343,31 @@ class TestBoothDetailTabs:
         assert 'value="gpt-4o-mini" data-trans-provider="openai"' in _booth_panel(page.text, "translations")
         assert "gpt-4o-mini-realtime-preview" not in _booth_panel(page.text, "translations")
         assert refused.status_code == 400
+
+    @pytest.mark.anyio
+    async def test_booth_with_a_retired_translation_model_is_asked_to_choose_another(self, admin_cookie, seed_event):
+        from portal.crypto import encrypt_val
+        from portal.database import get_session
+        from portal.models import DBBooth
+
+        event, room, booth = seed_event
+        async with get_session() as s:
+            db_event = await s.get(type(event), event.id)
+            db_event.encrypted_translation_openai_api_key = encrypt_val("sk-test")
+            db_booth = await s.get(DBBooth, booth.id)
+            db_booth.translation_provider = "openai"
+            db_booth.translation_model = "gpt-4o-mini-realtime-preview"
+        url = f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/"
+        async with _client() as c:
+            page = await c.get(url, cookies=admin_cookie)
+            refused = await c.post(
+                f"{url}translation-settings",
+                data={"translation_provider": "openai", "translation_model": "gpt-4-turbo"},
+                cookies=admin_cookie,
+            )
+        translations = _booth_panel(page.text, "translations")
+        assert "<code>gpt-4o-mini-realtime-preview</code> is no longer available" in translations
+        assert 'value="gpt-4o-mini-realtime-preview"' not in translations
+        assert 'value="gpt-4-turbo"' not in translations
+        assert 'value="gpt-4o-mini" data-trans-provider="openai"' in translations
+        assert refused.status_code == 400

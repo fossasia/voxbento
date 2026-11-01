@@ -172,7 +172,7 @@ from portal.team import remove_assignment as remove_team_assignment
 from portal.team import revoke_invite_link as revoke_team_invite_link
 from portal.transcription import ALLOWED_MODELS, ProviderConfig, ProviderEnum, get_api_key
 from portal.transcription.worker import start_transcription_worker, stop_transcription_worker
-from portal.translations.constants import TRANSLATION_MODELS, TranslationProviderEnum
+from portal.translations.constants import RETIRED_TRANSLATION_MODELS, TRANSLATION_MODELS, TranslationProviderEnum
 from portal.translations.vocabulary import (
     VocabularyOverlapIndex,
     VocabularyScopeError,
@@ -2093,6 +2093,9 @@ async def admin_booth_detail(request: Request, event_id: int, room_id: int, boot
             "speech_model_choice": (
                 "scribe_v2_realtime" if db_booth.transcription_model == "scribe_v2" else db_booth.transcription_model
             ),
+            "retired_translation_model": (
+                db_booth.translation_model if db_booth.translation_model in RETIRED_TRANSLATION_MODELS else ""
+            ),
             "translation_choice": (
                 db_booth.translation_provider if catalog.find("translation", db_booth.translation_provider) else ""
             ),
@@ -2341,6 +2344,8 @@ async def admin_booth_translation_settings(
             TranslationProviderEnum(translation_provider)
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid translation provider")
+        if translation_model in RETIRED_TRANSLATION_MODELS:
+            raise HTTPException(status_code=400, detail=f"The model '{translation_model}' is no longer available.")
         db_booth.translation_enabled = translation_enabled
         db_booth.translation_provider = translation_provider
         db_booth.translation_model = translation_model

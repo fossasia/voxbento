@@ -255,6 +255,9 @@
   {% if locked_translation %}
   <p class="rs-note">More services ({{ locked_translation | join(', ') }}) appear here once you add their API key on <a href="{{ management_prefix }}/events/{{ event.id }}/api-settings/">API keys</a>.</p>
   {% endif %}
+  {% if retired_translation_model %}
+  <div class="alert alert-warning" role="status">The saved model <code>{{ retired_translation_model }}</code> is no longer available, so translations won't work. Choose another model below and save.</div>
+  {% endif %}
   <form method="post" action="{{ booth_url }}/translation-settings">
     <div class="room-card">
       <h2>Translated captions</h2>
