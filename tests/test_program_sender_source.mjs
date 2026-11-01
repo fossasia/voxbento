@@ -87,18 +87,13 @@ const senderCode = readFileSync(new URL('../portal/static/js/program-sender.js',
 const openInputCode = senderCode.slice(senderCode.indexOf('async function openInput()'), senderCode.indexOf('/** @throws {SourceError}'))
 const recoveryCode = senderCode.slice(senderCode.indexOf('async function handleInputLost('), senderCode.indexOf('function startMeter()'))
 
-for (const released of [false, true]) {
-  let resolveCapture
-  const capture = new Promise(resolve => { resolveCapture = resolve })
-  let markRequested
-  const requested = new Promise(resolve => { markRequested = resolve })
-  const track = { ...fakeTrack(), clone() { return fakeTrack() }, addEventListener() {} }
-  const acquired = { getTracks: () => [track], getAudioTracks: () => [track] }
+function inputContext(getUserMedia) {
   const context = {
     inputGeneration: 1,
+    inputRequestGeneration: 0,
     deviceSelect: { value: '' },
     RAW_AUDIO,
-    navigator: { mediaDevices: { getUserMedia() { markRequested(); return capture } } },
+    navigator: { mediaDevices: { getUserMedia } },
     stream: null,
     meterStream: null,
     muted: false,
@@ -115,14 +110,85 @@ for (const released of [false, true]) {
     releaseInput() { context.inputGeneration += 1; context.stream = null },
   }
   runInNewContext(`${openInputCode}\n${recoveryCode}`, context)
+  return context
+}
+
+function deferred() {
+  let resolve
+  const promise = new Promise(complete => { resolve = complete })
+  return { promise, resolve }
+}
+
+function acquiredInput() {
+  const track = { ...fakeTrack(), clone() { return fakeTrack() }, addEventListener() {} }
+  return { getTracks: () => [track], getAudioTracks: () => [track], track }
+}
+
+for (const released of [false, true]) {
+  const capture = deferred()
+  const requested = deferred()
+  const acquired = acquiredInput()
+  const track = acquired.track
+  const context = inputContext(() => { requested.resolve(); return capture.promise })
   const recovery = context.handleInputLost(1)
-  await requested
+  await requested.promise
   if (released) context.releaseInput()
-  resolveCapture(acquired)
+  capture.resolve(acquired)
   await recovery
   assert(track.stopped === released, released ? 'released pending capture stops its newly acquired tracks' : 'current recovery keeps the acquired track running')
   assert(context.stream === (released ? null : acquired), released ? 'released pending capture is not adopted' : 'current recovery adopts the acquired input')
   assert(context.states.includes('Audio input restored.') === !released, released ? 'discarded recovery does not report restoration' : 'current recovery reports restoration')
+}
+
+for (const olderFirst of [true, false]) {
+  const captures = [deferred(), deferred()]
+  const inputs = [acquiredInput(), acquiredInput()]
+  let requestIndex = 0
+  const context = inputContext(() => captures[requestIndex++].promise)
+  context.deviceSelect.value = 'older-device'
+  const older = context.openInput()
+  context.deviceSelect.value = 'newer-device'
+  const newer = context.openInput()
+  const first = olderFirst ? 0 : 1
+  captures[first].resolve(inputs[first])
+  await (olderFirst ? older : newer)
+  captures[1 - first].resolve(inputs[1 - first])
+  await (olderFirst ? newer : older)
+  assert(inputs[0].track.stopped, `older device request is discarded (older completes ${olderFirst ? 'first' : 'last'})`)
+  assert(context.stream === inputs[1], `latest device selection wins (older completes ${olderFirst ? 'first' : 'last'})`)
+}
+
+for (const pauseAt of ['enumeration', 'replacement']) {
+  const requested = deferred()
+  const resume = deferred()
+  const acquired = acquiredInput()
+  const context = inputContext(async () => acquired)
+  let enumerationCalls = 0
+  context.listDevices = async () => {
+    enumerationCalls += 1
+    if (pauseAt === 'enumeration' && enumerationCalls === 2) {
+      requested.resolve()
+      await resume.promise
+    }
+  }
+  const replacements = []
+  context.pc = { getSenders: () => [{ track: { kind: 'audio' }, async replaceTrack(track) {
+    replacements.push(track)
+    if (pauseAt === 'replacement') {
+      requested.resolve()
+      await resume.promise
+    }
+  } }] }
+  const recovery = context.handleInputLost(1)
+  await requested.promise
+  context.releaseInput()
+  const newer = acquiredInput()
+  context.stream = newer
+  resume.resolve()
+  await recovery
+  if (pauseAt === 'enumeration') assert(replacements.length === 0, 'stale recovery cannot replace the sender after device enumeration')
+  assert(!context.states.includes('Audio input restored.'), `stale recovery cannot report restoration after ${pauseAt}`)
+  assert(context.stream === newer, `stale recovery leaves the newer input intact after ${pauseAt}`)
 }
 
 console.log(`\n${passed} passed, ${failed} failed`)

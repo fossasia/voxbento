@@ -65,6 +65,7 @@ let source = normalizeSource(savedSource());
 let generation = 0;
 // Bumped by releaseInput(); recovery for an input that was since released or replaced is abandoned.
 let inputGeneration = 0;
+let inputRequestGeneration = 0;
 
 function setState(state, message, label) {
   stateBadge.textContent = label || stateLabels[state] || state;
@@ -157,12 +158,13 @@ function releaseInput() {
 /** @throws {DOMException} when the input cannot be opened or permission is denied */
 async function openInput() {
   const requestedGeneration = inputGeneration;
+  const requestGeneration = ++inputRequestGeneration;
   const deviceId = deviceSelect.value;
   // Program audio must bypass voice DSP, which pumps levels and hurts music and STT.
   const audioConstraints = {...RAW_AUDIO};
   if (deviceId) audioConstraints.deviceId = {exact: deviceId};
   const next = await navigator.mediaDevices.getUserMedia({audio: audioConstraints});
-  if (requestedGeneration !== inputGeneration) {
+  if (requestedGeneration !== inputGeneration || requestGeneration !== inputRequestGeneration) {
     next.getTracks().forEach(track => track.stop());
     return false;
   }
@@ -175,10 +177,12 @@ async function openInput() {
   meterStream = new MediaStream([track.clone()]);
   startMeter();
   await listDevices();
+  if (inputGen !== inputGeneration || requestGeneration !== inputRequestGeneration) return false;
   if (deviceSelect.value) saveDevice(deviceSelect.value);
   const sender = pc?.getSenders().find(item => item.track?.kind === 'audio' || item.track === null);
   if (sender) await sender.replaceTrack(track);
-  return true;
+  if (inputGen !== inputGeneration || requestGeneration !== inputRequestGeneration) return false;
+  return inputGen;
 }
 
 /** @throws {SourceError} when the user shared no tab audio; {DOMException} when the picker is cancelled or blocked */
@@ -251,7 +255,8 @@ async function handleInputLost(inputGen) {
     return;
   }
   try {
-    if (!await openInput()) return;
+    const restoredGeneration = await openInput();
+    if (restoredGeneration === false || restoredGeneration !== inputGeneration) return;
     setState(sending ? (muted ? 'muted' : 'live') : 'testing', 'Audio input restored.');
   } catch (error) {
     console.warn('Audio input still unavailable; retrying', error);
