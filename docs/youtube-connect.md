@@ -35,13 +35,22 @@ Policies, and VoxBento does not try.
    signed-in VoxBento user is the one who started the flow, and that user still owns
    the event (or is an Admin). It exchanges the code with the verifier, reads the
    channel, stores the **encrypted** refresh token and returns to the room page.
+   Signing in again with the same channel keeps every room's broadcast. Signing in
+   with a *different* channel clears every room's broadcast and, for every room that
+   was linked to one, its saved stream key, including a key pasted by hand. After
+   switching channels, choose each room's broadcast again (or paste its key again).
 3. **Use this broadcast** (`PUT …/rooms/{room_id}/youtube/broadcast`) accepts a
    broadcast from the list or a pasted link. VoxBento checks the broadcast is on the
    connected channel and has a stream bound in YouTube Studio, then saves it on the
    room. In relay mode it also stores the bound stream's ingest address and key as
-   the relay destination (encrypted, write-only, exactly like a pasted key).
+   the relay destination (encrypted, write-only, exactly like a pasted key). If relay
+   mode is switched on after the broadcast was linked and the room has no saved stream
+   key yet, the room page links it once more on its next status check, so the key is
+   filled in then. A stream key that is already saved (pasted by hand or from an
+   earlier broadcast) is kept: click **Use this broadcast** again to replace it with the
+   chosen broadcast's key.
 4. The room status (`GET …/program-ingest`) adds a `youtube` block with the
-   broadcast's life-cycle status, stream status and health, cached for 30 s per room.
+   broadcast's life-cycle status, stream status and health, cached for 60 s per room.
 
 Accepted links: `https://www.youtube.com/watch?v=<id>`, `https://youtube.com/live/<id>`,
 `https://youtu.be/<id>`, `https://studio.youtube.com/video/<id>/livestreaming`
@@ -72,7 +81,7 @@ Sign in with YouTube is off until both variables below are set.
 |---|---|---|
 | `YOUTUBE_OAUTH_CLIENT_ID` | _(none)_ | Google OAuth web client id. |
 | `YOUTUBE_OAUTH_CLIENT_SECRET` | _(none)_ | Its client secret. Production refuses to start if only one of the two is set. |
-| `YOUTUBE_STATUS_CACHE_SECS` | `30.0` | How long a room's YouTube status is reused before asking YouTube again. |
+| `YOUTUBE_STATUS_CACHE_SECS` | `60.0` | How long a room's YouTube status is reused before asking YouTube again. |
 
 `PUBLIC_BASE_URL` must be the public origin people use: it builds the redirect URI and
 is the allowed `Origin` for the state-changing routes. `API_KEY_ENCRYPTION_KEY` must be
@@ -108,32 +117,48 @@ and return 404 while the feature is off (except the status route). PUT and DELET
 ## Data stored
 
 - `youtube_connections` (one row per event): channel id and title, the
-  Fernet-encrypted refresh token, granted scope, who connected it, the last
-  sign-in-again error and timestamps.
+  Fernet-encrypted refresh token, granted scope, who connected it and when
+  (`connected_at`), the last sign-in-again error and timestamps.
 - `rooms.youtube_broadcast_id`, `rooms.youtube_stream_id`: the room's broadcast and
   the stream bound to it.
 
 Access tokens live only in the portal's memory (one portal replica), are refreshed
-when they have under a minute left, and are dropped on reconnect or disconnect.
+when they have under a minute left, and are dropped on reconnect or disconnect. A
+cached token is tied to the stored refresh token, so it is never reused after a
+reconnect. Linking, reconnecting and disconnecting are serialized per event.
 Tokens, stream keys, caption URLs, authorization codes and Google response bodies are
 never logged or returned; log lines carry ids and an action only. The access log
 redacts `code=` on `/youtube/oauth/callback` because the path contains `/oauth/`.
 
 ## Quota
 
-Listing broadcasts costs two `liveBroadcasts.list` calls; linking costs one
-`liveBroadcasts.list` and one `liveStreams.list`. The room status adds the same two
-calls at most once per `YOUTUBE_STATUS_CACHE_SECS` per room, and only while the room
-page is open. List calls are cheap reads (see Google's quota calculator) against the
-project's daily quota, 10,000 units by default.
+Listing broadcasts costs two `liveBroadcasts.list` calls (more only for a channel with
+over 50 active or upcoming broadcasts; at most four pages per status); linking costs one
+`liveBroadcasts.list` and one `liveStreams.list`. While a room page is open, its status
+refreshes at most once per `YOUTUBE_STATUS_CACHE_SECS` (60 s by default) per room, with one
+`liveBroadcasts.list` call, plus one `liveStreams.list` call only when the broadcast is ready
+or (about to go) live. After Google reports the project's quota or rate limit, the room shows
+that message and VoxBento stops asking for five minutes. List calls are cheap reads (see
+Google's quota calculator) against the project's daily quota, 10,000 units by default.
 
 ## Revoking access
 
-**Disconnect** on the room page revokes VoxBento's access at Google and forgets the
+**Disconnect** on the room page asks Google to revoke VoxBento's access and forgets the
 channel for the event. When another event is connected to the same channel the token
-is not revoked, because Google revokes the whole grant. Organisers can also remove
-access at any time at [myaccount.google.com/permissions](https://myaccount.google.com/permissions);
-VoxBento then shows "Sign in with YouTube again" on the next YouTube request.
+is not revoked, because Google revokes the whole grant. Revocation is best effort: if
+Google cannot be reached or refuses, VoxBento still forgets the channel, so check
+[myaccount.google.com/permissions](https://myaccount.google.com/permissions) when access
+must be gone.
+
+Disconnect keeps each room's saved stream key, so a relay that is running keeps sending
+to YouTube. To stop it, click **Remove** next to the stream key in the room's relay
+settings, or switch the room to another audio source.
+
+Organisers can also remove access at any time at
+[myaccount.google.com/permissions](https://myaccount.google.com/permissions); VoxBento then
+shows **Sign in with YouTube again** on the next YouTube request (also when the stored token
+can no longer be decrypted, e.g. after an `API_KEY_ENCRYPTION_KEY` change). Signing in again
+keeps the rooms' broadcasts; Disconnect clears them.
 
 If the organiser resets the stream key in YouTube Studio the relay fails; choosing the
 broadcast again (**Use this broadcast**) fetches the new key.

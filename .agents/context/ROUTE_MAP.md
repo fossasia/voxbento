@@ -222,7 +222,9 @@ returns `available: false`). PUT/DELETE are origin-checked.
 - `GET /youtube/oauth/callback` (not a workspace route; `/oauth/` keeps `code=` out of the
   access log): 400 bad/expired cookie or state mismatch, 403 different signed-in user or no
   ownership; otherwise stores the encrypted refresh token and 303s to the room page with
-  `?youtube=connected|cancelled|error|no-channel#audio`.
+  `?youtube=connected|cancelled|error|no-channel#audio`. A different channel than before
+  clears every room's broadcast and the relay destination filled in from it. Link,
+  reconnect and disconnect are serialized per event.
 - `GET /workspace/events/{event_id}/youtube/broadcasts`: active + upcoming broadcasts, live
   first; 409 `{detail, last_error}` when access was revoked.
 - `PUT/DELETE /workspace/events/{event_id}/rooms/{room_id}/youtube/broadcast`: PUT
@@ -232,7 +234,8 @@ returns `available: false`). PUT/DELETE are origin-checked.
   DELETE unlinks and keeps the relay destination.
 - `GET .../program-ingest` adds `youtube` (`broadcast_id`, `title`, `life_cycle_status`,
   `stream_status`, `health`, `latency_preference`, `checked_at`, or `{error}`) when the room
-  has a linked broadcast on a connected channel; cached 30 s per room.
+  has a linked broadcast on a connected channel; cached 60 s per room, five minutes after a
+  quota or rate-limit error.
 
 ## Meeting source routes (#747)
 

@@ -263,6 +263,7 @@ jobs:
           node --check portal/static/js/subtitle-overlay.js
           node --check portal/static/js/program-sender.js
           node --check portal/static/js/program-sender-source.js
+          node --check portal/static/js/youtube-connect.js
           node --check .github/scripts/jules-review.mjs
       - name: run node tests
         run: |
@@ -278,6 +279,7 @@ jobs:
           node tests/test_room_ai.mjs
           node tests/test_lang_picker.mjs
           node tests/test_program_sender_source.mjs
+          node tests/test_youtube_connect.mjs
 
       - name: Run unit tests
         run: uv run pytest tests/ -v
