@@ -179,6 +179,8 @@ smoke tests in addition to unit tests before production sign-off.
 1. `portal/program_relay.py` — destination encryption/decryption, relay reconciliation, health checking
 2. `portal/routers/program_ingest.py` — relay mode endpoints (`PUT/DELETE .../program-relay`)
 3. `program-relay/relay.py` — standalone media relay service pulling RTSP and pushing RTMPS
-4. `docker-compose.relay.yml` — deployment definition for `program-relay` service
+4. `docker-compose.relay.yml` — deployment definition for `program-relay` service; selected by
+   `COMPOSE_FILE` in `.env` (written by `scripts/setup-youtube-relay.sh`), and `.github/workflows/deploy.yml`
+   refuses a deploy that would remove a running `program-relay`
 5. `portal/config.py` — relay configuration settings (`program_relay_*`)
 6. `docs/program-relay.md` — operational documentation and architecture notes

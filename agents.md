@@ -66,6 +66,7 @@ VoxBento is a production-grade **browser-first interpretation booth console** fo
 |---|---|
 | `fastapi_app.py` | Application lifespan, router aggregation, global exception handlers |
 | `portal/routers/` | All HTTP routes (pages, admin, REST API), Jinja2 template rendering |
+| `portal/room_setup.py` | Room plan parsing, available AI services, booth/translation-language reconciliation, and room summaries |
 | `portal/workspace_routing.py` | `/workspace` handler mapping, legacy organizer redirects, management URL/template namespace helpers |
 | `portal/websockets/` | WebSocket connection manager, message handlers (`_handle_join`, etc.) |
 | `portal/booth_state.py` | In-memory `BoothRegistry`, `Booth`, `Participant`, handoff policy, chat history |
@@ -83,14 +84,16 @@ VoxBento is a production-grade **browser-first interpretation booth console** fo
 | `portal/meeting_source.py` | Managed Jitsi floor agent lifecycle reconciler |
 | `portal/program_ingest.py` | Floor authorization and reconciliation for Program Stream Ingest |
 | `portal/program_relay.py` | YouTube RTMPS destination management and relay health convergence |
+| `portal/outage_log.py` | `OutageLog` — reconcile loops log a repeating failure once per outage, not per tick |
 | `portal/user_admin.py` | Administrative access rules, user flags (`can_host`, `is_admin`, `is_active`, `email_verified`) |
 | `portal/templates/` | Jinja2 HTML — `base.html`, `interpreter_booth.html`, `listener-event.html`, `admin/` |
+| `portal/static/css/tokens.css` | Shared design tokens (`--vb-*` colours, radii, shadows, fonts), linked first on every page; new CSS uses these instead of new hex values |
 | `portal/static/js/interpreter-booth.js` | Booth UI — WebRTC/WHIP, WebSocket, Jitsi iframe, mic controls, level meter |
 | `portal/static/js/whep-listener.js` | WHEP playback client — RTCPeerConnection, auto-reconnect with exponential back-off |
 | `portal/static/js/admin.js` | Admin panel JS helpers |
 | `mediamtx.yml` | MediaMTX config — WHIP/WHEP paths, RTSP, Control API, `overridePublisher` |
 | `docker-compose.yml` | portal + mediamtx + jitsi-web/prosody/jicofo/jvb |
-| `alembic/versions/` | 31 migrations (001–031); run `uv run alembic upgrade head` |
+| `alembic/versions/` | 38 migrations (001–038); run `uv run alembic upgrade head` |
 
 ---
 
@@ -188,7 +191,8 @@ Booth WHIP publishing is authenticated (#783): MediaMTX forwards the `Authorizat
 server-derived path) and re-checks that the holder is still the active interpreter and that Mission Control has
 broadcast unlocked. Anonymous publishes get 401. A `booth:join` naming another socket's `participant_id` gets a fresh ID.
 
-Caption feed: `/ws/captions/{booth_id}` — receives `caption`, `translated_caption` + `booth:state` messages (protected by `resolve_ws_auth` when `BOOTH_ACCESS_TOKEN` is configured).
+Caption feed: `/ws/captions/{booth_id}` receives `caption`, `translated_caption` and public `booth:state`. `ws_captions` validates query JWTs: listener tokens are event-scoped, participant tokens are booth-scoped, and user tokens require a currently active account. Without a query token, events with a listener join code require that code, an active user session, or a scoped invite. Code attempts share a bounded pre-verification budget across listener/overlay HTTP and caption WS paths (`portal/join_code_limit.py`); excess guesses close with 1008. Events without a join code retain public caption access with the anonymous connection cap. Rejections are accepted then closed with 4001 (missing/invalid credentials) or 4003 (scope mismatch), so browsers can distinguish them from transport failures. `booth:state` carries only `booth_id`, `event_slug`, `room_id`, `language_code`, `broadcast_unlocked` and `ingest_status`, never participants or booth chat. Overlay reconnects obtain a fresh listener token through `/overlay/.../session`, which rechecks the account/code and channel.
+
 Direct-push TTS feed: `/ws/tts/{room_id}/{language_code}/{booth_id}` — pre-authorized binary bundle stream (version byte, length-prefixed JSON header, optional 24 kHz PCM audio). Translation text is delivered concurrently over the captions feed and inside TTS bundle headers.
 
 ---
@@ -216,6 +220,31 @@ Max concurrent workers: 10 (`MAX_TOTAL_WORKERS`).
 | MediaMTX ICE/UDP | 8189 | UDP |
 | Jitsi Web | 8443 / 8080 | HTTPS / HTTP |
 | JVB | 10000 | UDP |
+
+---
+
+## Pull Request Target Branch
+
+- Create feature and fix branches from `dev`, and target all pull requests to `dev`.
+- Always specify the base explicitly when creating a PR: `gh pr create --base dev`.
+- Verify the PR's base branch is `dev` before reporting it as ready. Do not rely on
+  GitHub's default branch or target `main` unless the user explicitly requests it.
+
+## AI-Assisted Pull Requests
+
+When a PR is created or substantially authored by an AI coding assistant, include an
+**AI Attribution** section in the PR description:
+
+```
+## AI Attribution
+
+This PR was created with the assistance of **<Model Name>** (e.g. Claude Sonnet 4.6).
+```
+
+- Always name the specific model (e.g. "Claude Sonnet 4.6", "Gemini 2.5 Pro").
+- "AI-assisted" means the AI wrote or significantly shaped the code, commit messages,
+  or PR description — not just that it answered a question.
+- Human reviewers should validate AI-generated diffs with the same rigour as any other PR.
 
 ---
 
@@ -259,24 +288,46 @@ Program relay (#749): `portal/program_relay.py` owns the YouTube destination
 service (`program-relay/relay.py`, the media plane; `docker-compose.relay.yml`);
 migration 028 adds `program_ingest_mode`, which binds the program key to WHIP or RTMPS.
 Never log, return or forward FFmpeg text containing the destination. Read
-`docs/program-relay.md` before changing relay mode.
+`docs/program-relay.md` before changing relay mode. Relay deployments select the override
+with `COMPOSE_FILE` in `.env` (`scripts/setup-youtube-relay.sh`); the deploy workflow must
+never remove a running `program-relay`.
 
 ---
 
 ## Documentation Requirements
 
-Every PR that adds, removes, or changes a feature **must** update these files in the same commit:
+Keep documentation scoped to the change. Routine feature PRs, bug fixes, and
+refactors **must not update `README.md` by default**. The README is a stable
+project overview and quick start, not a feature changelog or a home for detailed
+UI walkthroughs, provider options, implementation notes, or rollout instructions.
 
-- `README.md` — operational usage and setup
-- `website/docs/how-it-works.mdx` — system design
-- `agents.md` (this file) — guardrails, if they changed
-- Relevant context file in `.agents/context/` — if the change affects routes, DB schema, or transcription
+Update `README.md` only when explicitly requested, to correct an existing factual
+error or broken link, or when a change makes its installation or quick-start
+instructions inaccurate. Keep those edits minimal; document feature details in
+the relevant `website/docs/` page or focused `docs/` guide instead.
 
-Do not defer documentation to a follow-up PR.
+Update documentation in the same PR when the change affects what it describes:
+
+- Relevant `website/docs/` pages or `docs/` guides — changed usage, configuration,
+  or operational procedures.
+- `website/docs/how-it-works.mdx` — changed system design only.
+- `agents.md` — changed agent guardrails or invariants only.
+- Relevant `.agents/context/` files — changed routes, DB schema, transcription,
+  or module ownership.
+
+Do not add unrelated documentation edits just to satisfy a checklist, and do not
+append feature summaries to the README or agent guide for every PR.
 
 Password sign-in requires `User.email_verified`; everyone, admins included, signs in
 at `/login` (`login` rate-limit bucket, 10 attempts per normalized email per hour).
 `/admin/login` only redirects to `/login?next=/admin/`.
+
+Registration protection lives in `portal/registration_protection.py`. Throttle
+by the ASGI-resolved client IP, never raw forwarding headers. When
+`REGISTRATION_TURNSTILE_ENABLED` is true, validate Cloudflare success, hostname
+and `register` action before signup side effects; service failures must reject
+the signup. Turnstile defaults off for compatible rollout. See
+`docs/registration-protection.md` for configuration and proxy trust.
 
 Production deployments validate a separate candidate checkout before advancing
 the live checkout. Portal source and dependencies must come from the built image,

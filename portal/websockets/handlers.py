@@ -2,12 +2,29 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import timezone
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from jwt import InvalidTokenError
 
-from portal.auth import WSAuthError, is_listener_token, resolve_booth_role, resolve_ws_auth
+from portal.auth import (
+    WSAuthError,
+    _current_user,
+    booth_session_key,
+    decode_token,
+    is_invite_token_revoked,
+    is_listener_token,
+    resolve_booth_role,
+    resolve_ws_auth,
+)
+from portal.database import get_booth_language_name, get_session, get_user_by_id
 from portal.globals import booths
 from portal.websockets.manager import (
+    REASON_ACCOUNT_DEACTIVATED,
+    REASON_AUTH_REVOKED,
+    REASON_INVITE_REVOKED,
+    REASON_SESSION_EXPIRED,
+    WS_CLOSE_REVOKED,
     Session,
     _handle_accept_handoff,
     _handle_cancel_handoff,
@@ -19,9 +36,11 @@ from portal.websockets.manager import (
     _handle_set_active,
     _handle_set_broadcast_unlocked,
     _handle_update_state,
+    broadcast_booth_state,
     listener_manager,
     manager,
     tts_manager,
+    utc_now,
 )
 
 _log = logging.getLogger(__name__)
@@ -32,6 +51,7 @@ router = APIRouter()
 
 @router.websocket("/ws/booth/{booth_id}")
 async def ws_booth(websocket: WebSocket, booth_id: str) -> None:
+    """Handle WebSocket connections for booth coordination."""
     try:
         payload = await resolve_ws_auth(websocket, booth_id)
     except WSAuthError:
@@ -41,12 +61,55 @@ async def ws_booth(websocket: WebSocket, booth_id: str) -> None:
         await websocket.close(code=4003)
         return
 
+    user_id: int | None = None
+    if payload:
+        sub = payload.get("sub")
+        if sub is not None and not isinstance(sub, bool):
+            try:
+                user_id = int(sub)
+            except (ValueError, TypeError):
+                pass
+
+    token_id: str | None = None
+    if payload:
+        tid = payload.get("token_id")
+        if tid is not None and not isinstance(tid, bool):
+            token_id = str(tid)
+
+    revocation_epoch = (0, 0)
+    user = None
+    if user_id is not None:
+        # Snapshot before the authorization read: a read that precedes the
+        # Admin's commit can then never be paired with a post-commit snapshot.
+        # Keyed by (user_wide, booth_specific) scope so revoking another booth
+        # does not close this connection.
+        revocation_epoch = manager.revocation_epoch(user_id, booth_id)
+        async with get_session() as db_session:
+            user = await get_user_by_id(db_session, user_id)
+        if user is None or not user.is_active:
+            await websocket.close(code=WS_CLOSE_REVOKED, reason=REASON_ACCOUNT_DEACTIVATED)
+            return
+
+    token_epoch = (0, 0)
+    if token_id is not None:
+        token_epoch = manager.token_revocation_epoch(token_id, booth_id)
+        if await is_invite_token_revoked(token_id):
+            await websocket.close(code=WS_CLOSE_REVOKED, reason=REASON_INVITE_REVOKED)
+            return
+
     ws_granted_role = await resolve_booth_role(payload, booth_id)
     await websocket.accept()
 
-    from portal.database import get_booth_language_name
-
     language_name = await get_booth_language_name(booth_id)
+
+    connect_time = utc_now()
+    if user_id is not None and user is not None and user.sessions_valid_after is not None:
+        valid_after = user.sessions_valid_after
+        if valid_after.tzinfo is None:
+            valid_after = valid_after.replace(tzinfo=timezone.utc)
+        if connect_time <= valid_after:
+            await websocket.close(code=WS_CLOSE_REVOKED, reason=REASON_SESSION_EXPIRED)
+            return
 
     session = Session(
         booth_id=booth_id,
@@ -54,12 +117,44 @@ async def ws_booth(websocket: WebSocket, booth_id: str) -> None:
         language=language_name,
         channel_id=f"{booth_id}-audio",
         granted_role=ws_granted_role,
+        user_id=user_id,
+        invite_token_id=token_id,
+        session_key=booth_session_key(payload),
+        issued_at=connect_time,
     )
+    if user_id is not None and manager.revocation_epoch(user_id, booth_id) != revocation_epoch:
+        # Authorization changed after the check above; the revocation sweep ran
+        # before this socket was registered, so it must not register now.
+        try:
+            await websocket.close(code=WS_CLOSE_REVOKED, reason=REASON_AUTH_REVOKED)
+        except (WebSocketDisconnect, RuntimeError, OSError):
+            # The socket was already closing; not registering it is what matters.
+            _log.debug("Revoked booth socket was already closing", exc_info=True)
+        return
+
+    if token_id is not None and manager.token_revocation_epoch(token_id, booth_id) != token_epoch:
+        try:
+            await websocket.close(code=WS_CLOSE_REVOKED, reason=REASON_INVITE_REVOKED)
+        except (WebSocketDisconnect, RuntimeError, OSError):
+            _log.debug("Revoked invite booth socket was already closing", exc_info=True)
+        return
+
     manager.add(websocket, session)
 
     try:
         while True:
             raw = await websocket.receive_text()
+            if session.revoked:
+                reason = REASON_INVITE_REVOKED if session.invite_token_id is not None else REASON_AUTH_REVOKED
+                try:
+                    await websocket.send_text(
+                        json.dumps({"type": "booth:error", "message": "Session authorization has been revoked."})
+                    )
+                    await websocket.close(code=WS_CLOSE_REVOKED, reason=reason)
+                except (WebSocketDisconnect, RuntimeError, OSError):
+                    # close_user_sessions() may already have closed this socket.
+                    _log.debug("Revoked booth socket was already closing", exc_info=True)
+                break
             try:
                 data = json.loads(raw)
             except json.JSONDecodeError:
@@ -108,19 +203,102 @@ async def ws_booth(websocket: WebSocket, booth_id: str) -> None:
                 session.language,
                 session.channel_id,
             )
-            await manager.broadcast(session.booth_id, {"type": "booth:state", "state": state})
+            await broadcast_booth_state(session.booth_id, state)
 
 
 @router.websocket("/ws/captions/{booth_id}")
 async def ws_captions(websocket: WebSocket, booth_id: str) -> None:
     """WebSocket endpoint for live captions. Listener tokens are limited to their own event"""
+    token = websocket.query_params.get("token", "")
+    is_anonymous = not bool(token)
+
+    booth_event: str | None = None
     try:
-        await resolve_ws_auth(websocket, booth_id)
-    except WSAuthError:
-        return
-    await websocket.accept()
-    listener_manager.add(websocket, booth_id)
+        from portal.booth_identity import parse_booth_id
+
+        booth_event, _, _ = parse_booth_id(booth_id)
+    except ValueError:
+        if "/" in booth_id:
+            booth_event = booth_id.split("/")[0]
+        elif "-" in booth_id:
+            booth_event = booth_id.rsplit("-", 1)[0]
+
+    if token:
+        reject_code: int | None = None
+        try:
+            payload = decode_token(token)
+            if payload.get("user"):
+                if not await _current_user(payload):
+                    reject_code = 4001
+            elif is_listener_token(payload):
+                if not payload.get("event_slug") or booth_event != payload["event_slug"]:
+                    reject_code = 4003
+            elif not payload.get("event_slug") or not await resolve_booth_role(payload, booth_id):
+                reject_code = 4003
+        except InvalidTokenError:
+            reject_code = 4001
+        if reject_code is not None:
+            # Accept before closing: a close before accept() becomes an HTTP 403 and
+            # browsers only report 1006, so clients could not tell a bad or expired
+            # token (stop) from a dropped connection (reconnect).
+            await websocket.accept()
+            await websocket.close(code=reject_code)
+            return
+    else:
+        if booth_event:
+            from portal.auth import get_booth_sessions
+            from portal.database import get_event_by_slug, get_session
+
+            async with get_session() as db_session:
+                ev = await get_event_by_slug(db_session, booth_event)
+
+            if ev and ev.listener_join_code:
+                from portal.join_code_limit import JoinCodeThrottled, verify_join_code
+
+                sessions = get_booth_sessions(websocket)
+                user_sess = sessions.get("user_token")
+                invite_sess = sessions.get("session_token")
+                is_authorized = bool(user_sess and user_sess.get("user") and await _current_user(user_sess))
+                if not is_authorized and invite_sess:
+                    is_authorized = bool(await resolve_booth_role(invite_sess, booth_id))
+                reject_code = 4001
+                if not is_authorized:
+                    submitted = websocket.query_params.get("code") or websocket.cookies.get(f"listener_code_{booth_event}")
+                    try:
+                        is_authorized = verify_join_code(
+                            websocket.client.host if websocket.client else "unknown", submitted, ev.listener_join_code,
+                        )
+                    except JoinCodeThrottled:
+                        reject_code = 1008
+                if not is_authorized:
+                    await websocket.accept()
+                    await websocket.close(code=reject_code)
+                    return
+                is_anonymous = False
+
+        if is_anonymous:
+            from portal.config import settings
+
+            max_anon = getattr(settings, "max_anonymous_caption_listeners_per_booth", 500)
+            if not listener_manager.try_reserve_anonymous(websocket, booth_id, max_anon):
+                await websocket.accept()
+                await websocket.close(code=1008)
+                return
+
+    accepted = False
     try:
+        await websocket.accept()
+        accepted = True
+    finally:
+        if not accepted and is_anonymous:
+            listener_manager.cancel_reservation(websocket, booth_id)
+
+    listener_manager.add(websocket, booth_id, is_anonymous=is_anonymous)
+
+    try:
+        # Tell a newly connected listener whether the booth is already live, so
+        # it doesn't have to wait for the next state change to start playback.
+        await listener_manager.send_booth_state(websocket, booth_id)
         while True:
             await websocket.receive_text()
     except WebSocketDisconnect:
@@ -179,6 +357,8 @@ async def _authorize_tts(websocket: WebSocket, room_id: int, language_code: str,
         token_lang = payload.get("language_code", "")
         token_room = payload.get("room_id")
         if token_event and token_lang:
+            if payload.get("token_id") is not None and await is_invite_token_revoked(str(payload["token_id"])):
+                raise WSAuthError("Invitation revoked.")
             if (
                 token_event != event_slug
                 or (token_room is not None and str(token_room) != str(actual_room))
@@ -223,6 +403,8 @@ async def _authorize_tts(websocket: WebSocket, room_id: int, language_code: str,
         token_lang = payload.get("language_code", "")
         token_room = payload.get("room_id")
         if token_event and token_lang:
+            if payload.get("token_id") is not None and await is_invite_token_revoked(str(payload["token_id"])):
+                raise WSAuthError("Invitation revoked.")
             if (
                 token_event != event_slug
                 or (token_room is not None and str(token_room) != str(actual_room))

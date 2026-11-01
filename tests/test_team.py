@@ -42,7 +42,7 @@ async def setup_db():
 
 @pytest.fixture(autouse=True)
 def no_email():
-    with patch("portal.routers.admin.send_role_invite_email", new_callable=AsyncMock) as sent:
+    with patch("portal.routers.admin.queue_notification", new_callable=AsyncMock) as sent:
         yield sent
 
 
@@ -344,7 +344,7 @@ async def test_legacy_member_removal_checks_the_event_and_keeps_the_last_owner(e
             f"/workspace/events/{event['event']}/members/{owner_row_id}/delete",
             headers=ORIGIN, cookies=event["owner_cookies"], follow_redirects=False,
         )
-    assert cross.status_code == 400
+    assert cross.status_code == 404
     assert last.status_code == 400
     assert "at least one Event owner" in last.text
     async with get_session() as s:
@@ -365,6 +365,72 @@ async def test_lobby_offers_mission_control_to_a_coordinator_invited_by_link(eve
     async with client() as http:
         res = await http.get("/interpreter", cookies={"session_token": token})
     assert res.status_code == 200
+    assert 'href="/mission-control/summit/"' in res.text
+
+
+@pytest.mark.anyio
+async def test_lobby_shows_booths_for_event_level_interpreter(event):
+    async with get_session() as s:
+        user = await make_user(s, "eventinterp@example.org")
+        french_booth = await create_booth(
+            s, event_id=event["event"], room_id=event["room"], language_code="fr", language_name="French"
+        )
+        await set_event_membership(s, user_id=user.id, event_id=event["event"], role=INTERPRETER)
+    cookies = {"user_token": create_user_token(user_id=user.id, email=user.email)}
+
+    async with client() as http:
+        res = await http.get("/interpreter", cookies=cookies)
+    assert res.status_code == 200
+    assert "Deutsch" in res.text
+    assert "French" in res.text
+    assert f'href="/interpreter/summit/{event["room"]}/de"' in res.text
+    assert f'href="/interpreter/summit/{event["room"]}/{french_booth.language_code}"' in res.text
+    assert "You have no assigned booths" not in res.text
+
+
+@pytest.mark.anyio
+async def test_lobby_shows_booths_for_room_level_assignments(event):
+    async with client() as http:
+        # Room coordinator sees booth in their assigned room with Mission Control link
+        coord_res = await http.get("/interpreter", cookies=event["coord_cookies"])
+        assert coord_res.status_code == 200
+        assert "Deutsch" in coord_res.text
+        assert 'href="/mission-control/summit/"' in coord_res.text
+
+
+@pytest.mark.anyio
+async def test_lobby_preserves_booth_level_assignment_and_scopes_strictly(event):
+    async with get_session() as s:
+        foreign_booth = await create_booth(
+            s, event_id=event["other"], room_id=event["other_room"], language_code="es", language_name="Spanish"
+        )
+
+    async with client() as http:
+        # Booth-level interpreter only sees Deutsch, not foreign booth
+        res = await http.get("/interpreter", cookies=event["interp_cookies"])
+    assert res.status_code == 200
+    assert "Deutsch" in res.text
+    assert "Spanish" not in res.text
+    assert f'href="/interpreter/other/{foreign_booth.room_id}/es"' not in res.text
+
+
+@pytest.mark.anyio
+async def test_lobby_deduplicates_overlapping_memberships_and_applies_highest_role(event):
+    async with get_session() as s:
+        user = await make_user(s, "multi@example.org")
+        # Event-level: interpreter
+        await set_event_membership(s, user_id=user.id, event_id=event["event"], role=INTERPRETER)
+        # Booth-level: room_coordinator on Deutsch booth
+        await set_booth_membership(s, user_id=user.id, booth_id=event["booth"], role=ROOM_COORDINATOR)
+    cookies = {"user_token": create_user_token(user_id=user.id, email=user.email)}
+
+    async with client() as http:
+        res = await http.get("/interpreter", cookies=cookies)
+    assert res.status_code == 200
+    assert "Deutsch" in res.text
+    # Exactly one row rendered for the booth
+    assert res.text.count('class="lobby-booth"') == 1
+    # Highest role (room_coordinator) wins over event-level interpreter
     assert 'href="/mission-control/summit/"' in res.text
 
 
@@ -410,15 +476,15 @@ async def test_owner_cannot_assign_or_invite_in_another_events_rooms_and_booths(
 
 
 @pytest.mark.anyio
-async def test_setup_wizard_does_not_add_booths_to_another_events_room(event):
+async def test_room_setup_does_not_add_booths_to_another_events_room(event):
     from portal.database import list_booths_for_room
 
     async with client() as http:
         res = await http.post(
-            f"/workspace/events/{event['event']}/setup/booths",
-            data={"room_id": str(event["other_room"]), "language_code": "es"},
+            f"/workspace/events/{event['event']}/rooms/{event['other_room']}/setup",
+            data={"display_name": "Taken", "spoken_language": "en", "mode": "interpreters", "languages": ["es"]},
             headers=ORIGIN, cookies=event["owner_cookies"], follow_redirects=False,
         )
-    assert res.status_code == 303
+    assert res.status_code == 404
     async with get_session() as s:
         assert await list_booths_for_room(s, event["other_room"]) == []

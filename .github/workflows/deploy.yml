@@ -26,7 +26,7 @@ jobs:
 
     steps:
       - name: Checkout (for reference — actual code pull happens on server)
-        uses: actions/checkout@v7
+        uses: actions/checkout@v7.0.1
 
       # ── SSH into the production server and pull latest code ──────────────
       - name: Deploy via SSH
@@ -72,12 +72,25 @@ jobs:
               sudo caddy validate --config Caddyfile --adapter caddyfile
             fi
 
+            # YouTube relay mode lives in docker-compose.relay.yml, selected by COMPOSE_FILE
+            # in .env. Never let a deploy without it remove a running relay (--remove-orphans).
+            relay_running=$(docker ps -q --filter label=com.docker.compose.project=voxbento \
+              --filter label=com.docker.compose.service=program-relay)
+            if [ -n "$relay_running" ] && ! compose config --services | grep -qx program-relay; then
+              echo "ERROR: program-relay is running but this deploy would remove it."
+              echo "Add COMPOSE_FILE=docker-compose.yml:docker-compose.relay.yml to .env"
+              echo "(or run scripts/setup-youtube-relay.sh), then re-run the deploy."
+              exit 1
+            fi
+
             # Only advance the live checkout after all preflight checks pass.
             cd "$deployment_dir"
             git checkout main
             git merge --ff-only "$candidate_commit"
             if [ -f Caddyfile ]; then
-              sudo cp Caddyfile /etc/caddy/Caddyfile
+              # Rename on the same filesystem: Caddy must never read a partial copy.
+              sudo install -m 644 Caddyfile /etc/caddy/Caddyfile.next
+              sudo mv -f /etc/caddy/Caddyfile.next /etc/caddy/Caddyfile
               sudo systemctl reload caddy
               echo "Caddy config updated and reloaded"
             fi

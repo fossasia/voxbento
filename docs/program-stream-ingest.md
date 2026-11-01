@@ -78,15 +78,18 @@ token. Revocation is committed before media cleanup: if MediaMTX cannot confirm
 the disconnect, the API returns `202` with `cleanup_pending: true`, the old token
 remains invalid, and reconciliation retries cleanup. Revoke keeps program
 ownership (it does not silently restart the bot).
-“Switch to Jitsi bot” explicitly returns ownership; connect the meeting from the
-room's **Meeting source** card. Connecting the meeting while program ingest owns
+“Switch to the online meeting” explicitly returns ownership; connect the meeting from the
+room's **Room audio → From the online meeting** panel. Connecting the meeting while program ingest owns
 the floor asks for confirmation, then performs the same switch.
 All source changes affect VoxBento only, not the independent YouTube output.
 
 ## Browser program-audio sender
 
 For venue sound desks without a WHIP encoder, the event owner can publish the floor
-directly from the room page's **Program audio sender** panel. It selects a local
+directly from a dedicated sender page, opened in its own tab from the room page's
+**Room audio → From a computer at the sound desk** panel (`GET /workspace/events/{id}/rooms/{id}/sender/`,
+event owners only). Because the stream lives in that tab, owners can navigate the
+rest of the console without stopping the floor. It selects a local
 audio input (use a USB sound-desk feed), shows a live level meter, and publishes
 Opus over authenticated WHIP to the same canonical `{event_slug}/{room_id}/floor`
 path. Media never traverses FastAPI; the browser negotiates WebRTC with MediaMTX.
@@ -110,9 +113,44 @@ that session (and only when a browser session was actually open, so a rejected s
 or stray Stop can never disconnect an encoder), leaving any encoder credential and the
 `program_ingest` floor selection intact. Rotating/revoking/switching the source from
 the ingest panel also invalidates any in-flight sender session. The sender UI state
-machine covers connecting, live, reconnecting, no-audio, permission-denied, and
+machine covers sound check, connecting, live, muted, reconnecting, no-audio, permission-denied, and
 stopped; on a transient WebRTC failure it drops the stale WHIP resource, releases the
-old session, and reconnects with a fresh one.
+old session, and reconnects with a fresh one. Reconnects never give up while the
+owner wants to send: back-off doubles to a 30 s cap and retries immediately when the
+browser comes back online. Only a refusal stops the sender: any 4xx except 429,
+such as 409 (another source owns the floor) or 401/403/404 (lost access). A peer
+that recovers by itself cancels any queued rebuild. Mute keeps the session and the floor but
+sends silence (`track.enabled = false`); the meter keeps reading the input so the
+operator can see the desk feed before unmuting. The page also holds a screen wake
+lock, warns before the tab is closed while live, remembers the chosen input per room
+in `localStorage`, re-opens a USB input that is unplugged and reconnected, and swaps
+inputs in place with `replaceTrack`. A **sound check** (meter with a good / quiet /
+clipping hint, plus a 5-second record-and-play-back) runs locally and is never
+sent to listeners. Starting without `sync_offset_ms` keeps the room's saved
+YouTube sync delay.
+
+### Capturing a browser tab
+
+The sender can also publish the audio of a browser tab instead of a local input, so a
+stream playing in a normal tab (for example a YouTube live stream) reaches the floor
+without sharing it into a Jitsi meeting and without the floor bot. This works in
+Chrome and Edge only. Pick **Browser tab** as the source, tick the box
+confirming you have the right to interpret and caption the stream, open the stream
+yourself in another tab of the same browser, click **Start sending**, pick that tab
+in the browser's share dialog and keep **Also share tab audio** ticked. Keep both
+tabs open and do not let the computer sleep. Clicking the browser's **Stop sharing**
+(or closing the shared tab) stops the sender; start again and pick the tab again,
+because a tab cannot be re-shared without a click. Network drops reconnect without
+asking for the tab again. Tab audio bypasses echo cancellation, noise suppression
+and gain control like any other program feed, and the tab stays audible locally. The
+chosen source is remembered per room in `localStorage`, and it cannot be changed
+while sending, testing or recording a sound check. VoxBento never embeds or downloads YouTube:
+it only captures what you explicitly share through the browser's picker.
+
+The sender page also lists the room's caption overlay URLs (floor and any
+translations) with copy buttons, so the operator can add the captions of the
+shared stream to OBS or vMix without leaving the page. They appear once the room
+has floor transcription and the event has a listener join code.
 
 ## Processing, recovery, and capacity
 
@@ -144,6 +182,10 @@ credentials, or upstream errors. Authentication failures are bounded to 10/IP/mi
 with a bounded process-local cache. Do not enable HTTP request-body/debug logging
 on the media-auth route. The access-log filter redacts the hook key. Monitor
 degraded/disconnected rooms and worker capacity.
+While MediaMTX or the database stays unavailable, the 2 s reconciler logs
+`program_ingest path_list_unavailable` / `program_ingest database_unavailable` once,
+then an `ongoing` reminder every 5 minutes and a `recovered` line when it clears
+(`portal/outage_log.py`, #964), instead of one line per retry.
 
 ## Synchronization
 
@@ -185,7 +227,7 @@ and differs by viewer/network; this is manual calibration, not frame-accurate sy
   This last external/encoder rehearsal is required before production sign-off;
   an automated local test cannot establish it.
 
-Rollback: disable/revoke room ingest and click **Connect meeting** in the room's Meeting source,
+Rollback: disable/revoke room ingest and click **Connect meeting** in the room's Room audio → From the online meeting panel,
 then set the feature flag false. Keep the floor authentication boundary and
 private ports; do not restore anonymous public floor publishing. Migration 025
 supports downgrade, but back up first: downgrade removes program configuration

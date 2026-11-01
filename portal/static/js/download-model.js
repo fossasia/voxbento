@@ -1,160 +1,122 @@
+// Built-in models (the NLLB translator and the Supertonic voice) download on first use.
+// When the room's AI settings choose one that isn't on the server yet, saving asks first,
+// then saves, starts the download and shows its progress.
+
+const DOWNLOADS = {
+  nllb: {
+    wanted: () => document.getElementById('floor_translation_provider')?.value === 'local',
+    model: () => document.getElementById('floor_translation_model')?.value || 'nllb-200-distilled-600M',
+    progressUrl: (prefix, model) => `${prefix}/models/download_progress?model=${encodeURIComponent(model)}`,
+    trigger: (prefix, model) => fetch(`${prefix}/models/trigger_download`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model }),
+    }),
+  },
+  supertonic: {
+    wanted: () => document.getElementById('floor_tts_provider')?.value === 'supertonic',
+    model: () => '',
+    progressUrl: (prefix) => `${prefix}/models/supertonic/download_progress`,
+    trigger: (prefix) => fetch(`${prefix}/models/supertonic/trigger_download`, { method: 'POST' }),
+  },
+};
+
+const byId = (id) => document.getElementById(id);
+
+async function isDownloaded(prefix, name) {
+  const download = DOWNLOADS[name];
+  try {
+    const res = await fetch(download.progressUrl(prefix, download.model()));
+    return res.ok && (await res.json()).status === 'completed';
+  } catch (err) {
+    console.debug('Download status unavailable', err);
+    return false;
+  }
+}
+
+function watch(prefix, name) {
+  const download = DOWNLOADS[name];
+  const model = download.model();
+  byId(`${name}_download_progress_container`).hidden = false;
+  return new Promise((resolve) => {
+    const interval = setInterval(async () => {
+      const res = await fetch(download.progressUrl(prefix, model));
+      if (!res.ok) return;
+      const data = await res.json();
+      if (data.status === 'downloading' || data.n > 0) {
+        const pct = data.total > 0 ? Math.round((data.n / data.total) * 100) : 0;
+        byId(`${name}_download_bar`).style.width = `${pct}%`;
+        byId(`${name}_download_percent`).textContent = `${pct}%`;
+        byId(`${name}_download_speed`).textContent = `${data.rate ? (data.rate / (1024 * 1024)).toFixed(1) : '0.0'} MB/s`;
+      }
+      if (data.status === 'completed' || data.status === 'error') {
+        clearInterval(interval);
+        byId(`${name}_download_progress_container`).hidden = true;
+        if (data.status === 'completed') byId(`${name}_success_modal`).hidden = false;
+        else alert('The download failed. Try saving again, or choose another service.');
+        resolve();
+      }
+    }, 1000);
+  });
+}
+
 export function initLocalModelDownloader() {
-  const transForm = document.getElementById('floor_translation_form');
-  const ttsForm = document.getElementById('floor_tts_form');
-  const managementPrefix = document.body.dataset.managementPrefix || '/admin';
+  const form = byId('room_ai_form');
+  if (!form) return;
+  const prefix = document.body.dataset.managementPrefix || '/admin';
+  let pending = [];
 
-  // --- NLLB Downloader (Translation Form) ---
-  if (transForm) {
-    transForm.addEventListener('submit', async function(e) {
-      const transProvider = document.getElementById('floor_translation_provider').value;
-      const transModel = document.getElementById('floor_translation_model').value || 'nllb-200-distilled-600M';
-      
-      if (transProvider === 'local') {
-        e.preventDefault();
-        let needsNllb = false;
-        try {
-          const res = await fetch(`${managementPrefix}/models/download_progress?model=${encodeURIComponent(transModel)}`);
-          if (res.ok) {
-            const data = await res.json();
-            if (data.status !== 'completed') needsNllb = true;
-          } else { needsNllb = true; }
-        } catch(err) { needsNllb = true; }
+  // Ask about each missing model in turn; once all are answered, save and download.
+  function askNext() {
+    const name = pending[0];
+    if (name) {
+      byId(`${name}_download_modal`).hidden = false;
+      return;
+    }
+    form.submit();
+  }
 
-        if (needsNllb) {
-          document.getElementById('nllb_download_modal').hidden = false;
-        } else {
-          transForm.submit();
-        }
+  async function saveAndDownload(names) {
+    try {
+      const response = await fetch(form.getAttribute('action'), { method: 'POST', body: new FormData(form), redirect: 'follow' });
+      if (!response.ok) throw new Error(`Could not save AI settings (${response.status})`);
+      for (const name of names) {
+        const downloadResponse = await DOWNLOADS[name].trigger(prefix, DOWNLOADS[name].model());
+        if (!downloadResponse.ok) throw new Error(`Could not start ${name} download (${downloadResponse.status})`);
+        await watch(prefix, name);
       }
-    });
-
-    const proceedBtn = document.getElementById('nllb_proceed_btn');
-    if (proceedBtn) {
-      proceedBtn.addEventListener('click', async function() {
-        document.getElementById('nllb_download_modal').hidden = true;
-        
-        const formData = new FormData(transForm);
-        const actionUrl = transForm.getAttribute('action');
-        
-        try {
-          await fetch(actionUrl, { method: 'POST', body: formData, redirect: 'follow' });
-          
-          const transModel = document.getElementById('floor_translation_model').value || 'nllb-200-distilled-600M';
-          await fetch(`${managementPrefix}/models/trigger_download`, {
-            method: 'POST', headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({model: transModel})
-          });
-          
-          document.getElementById('nllb_download_progress_container').hidden = false;
-          
-          const interval = setInterval(async () => {
-            const res = await fetch(`${managementPrefix}/models/download_progress?model=${encodeURIComponent(transModel)}`);
-            if (res.ok) {
-              const data = await res.json();
-              if (data.status === 'downloading' || data.n > 0) {
-                const pct = data.total > 0 ? Math.round((data.n / data.total) * 100) : 0;
-                const speedMB = data.rate ? (data.rate / (1024 * 1024)).toFixed(1) : '0.0';
-                document.getElementById('nllb_download_bar').style.width = pct + '%';
-                document.getElementById('nllb_download_percent').textContent = pct + '%';
-                document.getElementById('nllb_download_speed').textContent = speedMB + ' MB/s';
-              }
-              if (data.status === 'completed') {
-                clearInterval(interval);
-                document.getElementById('nllb_download_progress_container').hidden = true;
-                document.getElementById('nllb_success_modal').hidden = false;
-              } else if (data.status === 'error') {
-                clearInterval(interval);
-                alert("Failed to download local model.");
-                window.location.reload();
-              }
-            }
-          }, 1000);
-        } catch (err) {
-          console.error("Failed to save or trigger download", err);
-          window.location.reload();
-        }
-      });
+    } catch (err) {
+      console.error('Could not save or start the download', err);
+      alert('Could not save the settings or start the download. Please try again.');
     }
   }
 
-  // --- Supertonic Downloader (TTS Form) ---
-  if (ttsForm) {
-    ttsForm.addEventListener('submit', async function(e) {
-      const ttsProvider = document.getElementById('floor_tts_provider').value;
-      
-      if (ttsProvider === 'supertonic') {
-        e.preventDefault();
-        let needsSupertonic = false;
-        try {
-          const res = await fetch(`${managementPrefix}/models/supertonic/download_progress`);
-          if (res.ok) {
-            const data = await res.json();
-            if (data.status !== 'completed') needsSupertonic = true;
-          } else { needsSupertonic = true; }
-        } catch(err) { needsSupertonic = true; }
-
-        if (needsSupertonic) {
-          document.getElementById('supertonic_download_modal').hidden = false;
-        } else {
-          ttsForm.submit();
-        }
-      }
-    });
-
-    const supProceedBtn = document.getElementById('supertonic_proceed_btn');
-    if (supProceedBtn) {
-      supProceedBtn.addEventListener('click', async function() {
-        document.getElementById('supertonic_download_modal').hidden = true;
-        
-        const formData = new FormData(ttsForm);
-        const actionUrl = ttsForm.getAttribute('action');
-        
-        try {
-          await fetch(actionUrl, { method: 'POST', body: formData, redirect: 'follow' });
-          await fetch(`${managementPrefix}/models/supertonic/trigger_download`, { method: 'POST' });
-          
-          document.getElementById('supertonic_download_progress_container').hidden = false;
-          
-          const interval = setInterval(async () => {
-            const res = await fetch(`${managementPrefix}/models/supertonic/download_progress`);
-            if (res.ok) {
-              const data = await res.json();
-              if (data.status === 'downloading' || data.n > 0) {
-                const pct = data.total > 0 ? Math.round((data.n / data.total) * 100) : 0;
-                const speedMB = data.rate ? (data.rate / (1024 * 1024)).toFixed(1) : '0.0';
-                document.getElementById('supertonic_download_bar').style.width = pct + '%';
-                document.getElementById('supertonic_download_percent').textContent = pct + '%';
-                document.getElementById('supertonic_download_speed').textContent = speedMB + ' MB/s';
-              }
-              if (data.status === 'completed') {
-                clearInterval(interval);
-                document.getElementById('supertonic_download_progress_container').hidden = true;
-                document.getElementById('supertonic_success_modal').hidden = false;
-              } else if (data.status === 'error') {
-                clearInterval(interval);
-                alert("Failed to download Supertonic model.");
-                window.location.reload();
-              }
-            }
-          }, 1000);
-        } catch (err) {
-          console.error("Failed to save or trigger supertonic download", err);
-          window.location.reload();
-        }
-      });
+  const accepted = [];
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    accepted.length = 0;
+    pending = [];
+    for (const name of Object.keys(DOWNLOADS)) {
+      if (DOWNLOADS[name].wanted() && !(await isDownloaded(prefix, name))) pending.push(name);
     }
-  }
+    if (pending.length) askNext();
+    else form.submit();
+  });
 
-  // --- Modal Cancel & Success Button Listeners ---
-  const cancelBtn = document.getElementById('nllb_cancel_btn');
-  if (cancelBtn) cancelBtn.addEventListener('click', () => { document.getElementById('nllb_download_modal').hidden = true; });
-
-  const supCancelBtn = document.getElementById('supertonic_cancel_btn');
-  if (supCancelBtn) supCancelBtn.addEventListener('click', () => { document.getElementById('supertonic_download_modal').hidden = true; });
-
-  const gotItBtn = document.getElementById('nllb_success_got_it_btn');
-  if (gotItBtn) gotItBtn.addEventListener('click', () => { document.getElementById('nllb_success_modal').hidden = true; });
-
-  const supGotItBtn = document.getElementById('supertonic_success_got_it_btn');
-  if (supGotItBtn) supGotItBtn.addEventListener('click', () => { document.getElementById('supertonic_success_modal').hidden = true; });
+  Object.keys(DOWNLOADS).forEach((name) => {
+    byId(`${name}_proceed_btn`)?.addEventListener('click', () => {
+      byId(`${name}_download_modal`).hidden = true;
+      accepted.push(pending.shift());
+      if (pending.length) askNext();
+      else saveAndDownload(accepted);
+    });
+    byId(`${name}_cancel_btn`)?.addEventListener('click', () => {
+      byId(`${name}_download_modal`).hidden = true;
+      pending = [];
+    });
+    byId(`${name}_success_got_it_btn`)?.addEventListener('click', () => {
+      byId(`${name}_success_modal`).hidden = true;
+      if (!pending.length) window.location.reload();
+    });
+  });
 }
