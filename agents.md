@@ -191,7 +191,8 @@ Booth WHIP publishing is authenticated (#783): MediaMTX forwards the `Authorizat
 server-derived path) and re-checks that the holder is still the active interpreter and that Mission Control has
 broadcast unlocked. Anonymous publishes get 401. A `booth:join` naming another socket's `participant_id` gets a fresh ID.
 
-Caption feed: `/ws/captions/{booth_id}` receives `caption`, `translated_caption` + `booth:state` messages. Auth goes through `resolve_ws_auth()`: a `?token=` JWT is always validated and scope-checked (listener tokens to the booth's event, participant tokens to the booth). Without a token the feed is open unless `BOOTH_ACCESS_TOKEN` is set; then it rejects a foreign `Origin` and requires a `session_token` or `user_token` cookie with the same scope checks. Rejections close with 4001 (missing/invalid credentials) or 4003 (scope or origin mismatch). Its `booth:state` carries only `booth_id`, `event_slug`, `room_id`, `language_code`, `broadcast_unlocked` and `ingest_status` (never participants or booth chat), is sent once on connect if the booth exists, and again whenever one of those fields changes.
+Caption feed: `/ws/captions/{booth_id}` receives `caption`, `translated_caption` and public `booth:state`. `ws_captions` validates query JWTs: listener tokens are event-scoped, participant tokens are booth-scoped, and user tokens require a currently active account. Without a query token, events with a listener join code require that code, an active user session, or a scoped invite. Code attempts share a bounded pre-verification budget across listener/overlay HTTP and caption WS paths (`portal/join_code_limit.py`); excess guesses close with 1008. Events without a join code retain public caption access with the anonymous connection cap. Rejections are accepted then closed with 4001 (missing/invalid credentials) or 4003 (scope mismatch), so browsers can distinguish them from transport failures. `booth:state` carries only `booth_id`, `event_slug`, `room_id`, `language_code`, `broadcast_unlocked` and `ingest_status`, never participants or booth chat. Overlay reconnects obtain a fresh listener token through `/overlay/.../session`, which rechecks the account/code and channel.
+
 Direct-push TTS feed: `/ws/tts/{room_id}/{language_code}/{booth_id}` — pre-authorized binary bundle stream (version byte, length-prefixed JSON header, optional 24 kHz PCM audio). Translation text is delivered concurrently over the captions feed and inside TTS bundle headers.
 
 ---
@@ -228,6 +229,22 @@ Max concurrent workers: 10 (`MAX_TOTAL_WORKERS`).
 - Always specify the base explicitly when creating a PR: `gh pr create --base dev`.
 - Verify the PR's base branch is `dev` before reporting it as ready. Do not rely on
   GitHub's default branch or target `main` unless the user explicitly requests it.
+
+## AI-Assisted Pull Requests
+
+When a PR is created or substantially authored by an AI coding assistant, include an
+**AI Attribution** section in the PR description:
+
+```
+## AI Attribution
+
+This PR was created with the assistance of **<Model Name>** (e.g. Claude Sonnet 4.6).
+```
+
+- Always name the specific model (e.g. "Claude Sonnet 4.6", "Gemini 2.5 Pro").
+- "AI-assisted" means the AI wrote or significantly shaped the code, commit messages,
+  or PR description — not just that it answered a question.
+- Human reviewers should validate AI-generated diffs with the same rigour as any other PR.
 
 ---
 
