@@ -89,7 +89,7 @@ Build your custom listener by POSTing a WebRTC SDP offer to the WHEP URL. The re
 ---
 
 :::warning Single-Use Publish Ticket Required
-MediaMTX WHIP publishing is authenticated (#783). Simply fetching the WHIP URL is not sufficient to publish. The active interpreter's client must request a single-use publish ticket over the coordination WebSocket (`booth:request-publish-ticket`), which the server returns in `booth:publish-ticket`. The ticket expires after 30 seconds and must be sent as `Authorization: Bearer <ticket>` on the HTTP POST request to the WHIP URL. Anonymous publishes or publishes without a valid ticket return `401 Unauthorized`.
+MediaMTX WHIP publishing is authenticated. Simply fetching the WHIP URL is not sufficient to publish. The active interpreter's client must request a single-use publish ticket over the coordination WebSocket (`booth:request-publish-ticket`), which the server returns in `booth:publish-ticket`. The ticket expires after 30 seconds and must be sent as `Authorization: Bearer <ticket>` on the HTTP POST request to the WHIP URL. Anonymous publishes or publishes without a valid ticket return `401 Unauthorized`.
 :::
 
 ## Interpreter Status — Preflight Check

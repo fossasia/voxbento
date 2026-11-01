@@ -137,8 +137,8 @@ curl https://voxbento.com/api/events/pycon2026/booths \
           "mic_active": true,
           "ingest_connected": true,
           "connected": true,
-          "joined_at": "2026-11-01T07:00:00Z",
-          "updated_at": "2026-11-01T07:00:00Z",
+          "joined_at": "2026-06-16T10:00:00Z",
+          "updated_at": "2026-06-16T10:05:00Z",
           "role_label": "Interpreter",
           "can_go_live": true,
           "can_set_active": false
@@ -149,6 +149,27 @@ curl https://voxbento.com/api/events/pycon2026/booths \
       "whep_url": "https://voxbento.com/pycon2026/14/en/whep",
       "type": "human",
       "label": "English (Human)"
+    },
+    {
+      "booth_id": "pycon2026-14-es",
+      "event_slug": "pycon2026",
+      "language_code": "es",
+      "instance": "primary",
+      "mediamtx_path": "pycon2026/14/es",
+      "room_id": 14,
+      "language": "Spanish",
+      "channel_id": "pycon2026/14/es",
+      "active_interpreter_id": null,
+      "handoff_state": "idle",
+      "handoff_initiator_id": null,
+      "broadcast_unlocked": false,
+      "ingest_status": "disconnected",
+      "participants": [],
+      "chat_messages": [],
+      "whip_url": "https://voxbento.com/pycon2026/14/es/whip",
+      "whep_url": "https://voxbento.com/pycon2026/14/es/whep",
+      "type": "human",
+      "label": "Spanish (Human)"
     }
   ]
 }
@@ -209,7 +230,7 @@ curl https://voxbento.com/api/events/pycon2026/booths \
 ## Prerequisites and Behaviour Notes
 
 :::info
-The event must exist — created via the admin panel — before you can create or list booths for it via the API. Attempting to create a booth for a non-existent event slug returns a `400 Bad Request`.
+When creating a booth via `POST /api/events/{event_slug}/booths`, an invalid `event_slug` format returns `400 Bad Request`, and a soft-deleted event returns `404 Not Found`. For `GET /api/events/{event_slug}/booths`, querying an event with no active booths returns an empty `booths` list.
 :::
 
 :::info

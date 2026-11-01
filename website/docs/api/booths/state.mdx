@@ -68,8 +68,8 @@ curl "https://voxbento.com/api/events/pycon2026/booths/en/state?room_id=14" \
       "mic_active": true,
       "ingest_connected": true,
       "connected": true,
-      "joined_at": "2026-11-01T07:00:00Z",
-      "updated_at": "2026-11-01T07:05:00Z",
+      "joined_at": "2026-06-16T10:00:00Z",
+      "updated_at": "2026-06-16T10:05:00Z",
       "role_label": "Interpreter",
       "can_go_live": true,
       "can_set_active": false
@@ -81,7 +81,7 @@ curl "https://voxbento.com/api/events/pycon2026/booths/en/state?room_id=14" \
       "sender_id": "part-abc123",
       "sender_name": "Alice Smith",
       "body": "Sound check complete, standing by.",
-      "sent_at": "2026-11-01T07:02:00Z"
+      "sent_at": "2026-06-16T10:02:00Z"
     }
   ]
 }
@@ -124,7 +124,7 @@ curl "https://voxbento.com/api/events/pycon2026/booths/en/state?room_id=14" \
 
 **`display_name`** *(string)* — Participant display name.
 
-**`role`** *(string)* — Granted role for this participant (e.g. `"interpreter"`, `"coordinator"`, `"event_admin"`, `"super_admin"`, or `"listener"`).
+**`role`** *(string)* — Role granted to this participant (such as `"interpreter"`, `"room_coordinator"`, `"event_owner"`, or `"admin"`).
 
 **`language`** *(string)* — Language code assigned to this participant.
 
@@ -148,7 +148,7 @@ curl "https://voxbento.com/api/events/pycon2026/booths/en/state?room_id=14" \
 
 </details>
 
-**`chat_messages`** *(array)* — Recent chat history (last 100 messages) in chronological order.
+**`chat_messages`** *(array)* — Most recent 100 chat messages from the booth session.
 
 <details>
 <summary>Chat message object fields</summary>
