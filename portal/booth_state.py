@@ -10,9 +10,9 @@ from portal.booth_identity import (
     make_booth_id,
     make_mediamtx_path,
     parse_booth_id,
+    validate_booth_language_code,
     validate_event_slug,
     validate_instance,
-    validate_language_code,
 )
 from portal.roles import Role, can_go_live, can_set_active, role_label
 from portal.tasks import track_task
@@ -165,6 +165,8 @@ class BoothRegistry:
             except ValueError:
                 event_slug = ""
                 language_code = ""
+            else:
+                language_code = validate_booth_language_code(language_code)
             booth = Booth(
                 booth_id=booth_id,
                 event_slug=event_slug,
@@ -199,7 +201,7 @@ class BoothRegistry:
         invalid, or if a booth with the same ID already exists.
         """
         slug = validate_event_slug(event_slug)
-        code = validate_language_code(language_code)
+        code = validate_booth_language_code(language_code)
         inst = validate_instance(instance)
         booth_id = make_booth_id(slug, room_id, code)
         mtx_path = make_mediamtx_path(slug, room_id, code)

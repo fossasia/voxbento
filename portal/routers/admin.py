@@ -39,7 +39,12 @@ from portal.auth import (
     resolve_principal,
     resolve_request_principal,
 )
-from portal.booth_identity import make_booth_id, make_mediamtx_path, validate_event_slug, validate_language_code
+from portal.booth_identity import (
+    make_booth_id,
+    make_mediamtx_path,
+    validate_booth_language_code,
+    validate_event_slug,
+)
 from portal.config import settings
 from portal.crypto import encrypt_val
 from portal.database import (
@@ -440,6 +445,9 @@ async def _create_booth_unless_duplicate(
     *, event_id: int, room_id: int, language_code: str, language_name: str
 ) -> bool:
     """Create a booth for a room unless a booth with that language already exists."""
+    # Validated before the session opens, so a rejected code provisions nothing.
+    # Both callers already handle ValueError from this helper.
+    language_code = validate_booth_language_code(language_code)
     try:
         async with get_session() as session:
             room = await get_room_by_id(session, room_id)
@@ -1983,6 +1991,8 @@ async def admin_create_booth(request: Request, event_id: int, room_id: int):
         )
         if not created:
             redirect_path += "?error=duplicate_language"
+    except ValueError:
+        redirect_path += "?error=invalid_language_code"
     except Exception as e:
         logger.warning(f"Error creating booth: {e}")
     return safe_redirect(
@@ -2325,7 +2335,7 @@ async def admin_edit_booth(request: Request, event_id: int, room_id: int, booth_
             booth.language_name = language_name
         if language_code_raw:
             try:
-                booth.language_code = validate_language_code(language_code_raw)
+                booth.language_code = validate_booth_language_code(language_code_raw)
             except ValueError as e:
                 raise HTTPException(status_code=400, detail=str(e))
         await session.flush()

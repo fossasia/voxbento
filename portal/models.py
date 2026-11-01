@@ -29,7 +29,7 @@ import sqlalchemy as sa
 from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship, validates
 
-from portal.booth_identity import make_mediamtx_path, validate_event_slug, validate_language_code
+from portal.booth_identity import make_mediamtx_path, validate_booth_language_code, validate_event_slug
 from portal.roles import assignment_error
 
 TOKEN_LENGTH = 64  # hex characters → 32 bytes of entropy
@@ -245,7 +245,9 @@ class DBBooth(Base):
 
     @validates("language_code")
     def _validate_language_code(self, _key: str, value: str) -> str:
-        return validate_language_code(value)
+        # Every write to a booth goes through here, including the legacy API and
+        # the admin helpers, so the reserved floor marker is rejected once.
+        return validate_booth_language_code(value)
 
     @validates("transcription_provider")
     def _validate_transcription_provider(self, _key: str, value: str) -> str:

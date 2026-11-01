@@ -851,6 +851,13 @@ async def create_booth(
     )
     target_room_id = _extract_room_id(room, room_id)
 
+    from portal.booth_identity import validate_booth_language_code
+
+    try:
+        language_code = validate_booth_language_code(language_code)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     result = await db.execute(select(DBBooth).where(DBBooth.room_id == target_room_id, DBBooth.language_code == language_code))
     if result.scalars().first():
         raise HTTPException(status_code=409, detail="Booth already exists")
