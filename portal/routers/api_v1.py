@@ -212,6 +212,13 @@ def _extract_room_id(room: Room | Any, room_id: int | str) -> int:
     return getattr(room, "id", room_id)
 
 
+def _validate_lang(language_code: str) -> str:
+    try:
+        return validate_language_code(language_code)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+
 @router.get("/events/{event_slug}", response_model=EventResponse)
 async def get_event(
     event_slug: str,
@@ -820,6 +827,7 @@ async def get_booth(
 
     room = await _verify_token_rbac(db, token, event, room_id, lock_event=True)
     target_room_id = _extract_room_id(room, room_id)
+    language_code = _validate_lang(language_code)
 
     result = await db.execute(select(DBBooth).where(DBBooth.room_id == target_room_id, DBBooth.language_code == language_code, DBBooth.event_id == event.id))
     booth = result.scalars().first()
@@ -850,6 +858,7 @@ async def create_booth(
         db, token, event, room_id, manage=True, lock_event=True, write_lock=True
     )
     target_room_id = _extract_room_id(room, room_id)
+    language_code = _validate_lang(language_code)
 
     result = await db.execute(select(DBBooth).where(DBBooth.room_id == target_room_id, DBBooth.language_code == language_code))
     if result.scalars().first():
@@ -881,6 +890,7 @@ async def delete_booth_endpoint(
         db, token, event, room_id, manage=True, lock_event=True, write_lock=True
     )
     target_room_id = _extract_room_id(room, room_id)
+    language_code = _validate_lang(language_code)
 
     result = await db.execute(select(DBBooth).where(DBBooth.room_id == target_room_id, DBBooth.language_code == language_code, DBBooth.event_id == event.id))
     booth = result.scalars().first()
@@ -908,6 +918,7 @@ async def start_transcription(
 
     room = await _verify_token_rbac(db, token, event, room_id, lock_event=True, write_lock=True)
     target_room_id = _extract_room_id(room, room_id)
+    language_code = _validate_lang(language_code)
 
     booth_id = make_booth_id(event_slug, target_room_id, language_code)
 
@@ -935,6 +946,7 @@ async def stop_transcription(
 
     room = await _verify_token_rbac(db, token, event, room_id, lock_event=True, write_lock=True)
     target_room_id = _extract_room_id(room, room_id)
+    language_code = _validate_lang(language_code)
 
     booth_id = make_booth_id(event_slug, target_room_id, language_code)
     await stop_transcription_worker(booth_id)
@@ -1005,6 +1017,7 @@ async def export_transcript(
 
     room = await _verify_token_rbac(db, token, event, room_id, lock_event=True)
     target_room_id = _extract_room_id(room, room_id)
+    language_code = _validate_lang(language_code)
 
     # Validate that the booth exists within this event/room
     result = await db.execute(
