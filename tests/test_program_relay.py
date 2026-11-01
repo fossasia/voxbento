@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock
 from uuid import uuid4
 
@@ -19,6 +19,7 @@ from portal.config import settings
 from portal.crypto import decrypt_val
 from portal.database import configure, create_user, dispose, get_session, init_db
 from portal.models import Event, Room
+from portal.transcription.worker import active_workers
 
 RELAY_SECRET = "r" * 64
 YOUTUBE_SERVER = "rtmps://a.rtmps.youtube.com/live2"
@@ -612,3 +613,41 @@ async def test_workspace_namespace_reaches_relay_destination(relay_env):
         json={"server_url": YOUTUBE_SERVER, "stream_key": YOUTUBE_KEY},
     )
     assert response.status_code == 200
+
+
+@pytest.mark.anyio
+async def test_deleted_event_relay_is_stopped_while_media_listing_fails(relay_env, monkeypatch):
+    env = relay_env
+    client, event, room = env["client"], env["event"], env["rooms"][0]
+    secret = await enable_relay(client, event, room)
+    await save_destination(client, event, room)
+    auth = await connect(env, room, secret)
+    await ingest.reconcile_once()
+    assert str(room.id) in env["relays"]
+    monkeypatch.setitem(active_workers, f"relay-test-{room.id}-floor", object())  # the running worker
+
+    async with get_session() as session:
+        other = Event(slug="other-event", display_name="Other Event")
+        session.add(other)
+        await session.flush()
+        active = Room(event_id=other.id, display_name="Other Room", floor_source="program_ingest")
+        session.add(active)
+        await session.flush()
+        # A relay that belongs to the room that stays active.
+        env["relays"][str(active.id)] = {"source": "other-event/1/floor", "fingerprint": "x", "state": "live"}
+        (await session.get(Event, event.id)).deleted_at = datetime.now(timezone.utc)
+
+    # Another room is still active, so the media paths are requested, and that request fails.
+    monkeypatch.setattr(ingest, "media_paths", AsyncMock(side_effect=httpx.ConnectError("media down")))
+    env["calls"].clear()
+    env["stop"].reset_mock()
+    await ingest.reconcile_once()
+    # Worker, relay, publisher and reservation of the deleted room are all released; the active room is untouched.
+    env["stop"].assert_awaited_once_with(f"relay-test-{room.id}-floor")
+    assert str(room.id) not in env["relays"]
+    assert str(active.id) in env["relays"]
+    assert ("POST", f"/v3/rtmpsconns/kick/{auth['id']}") in env["calls"]
+    async with get_session() as session:
+        assert (await session.get(Room, room.id)).program_session_id is None
+    # The encoder reconnecting is refused.
+    assert (await client.post("/internal/media-auth", json=rtmps_publish(room, secret))).status_code == 401
