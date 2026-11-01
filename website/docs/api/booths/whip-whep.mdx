@@ -10,16 +10,15 @@ Use these endpoints to programmatically retrieve the WHIP (publishing) and WHEP 
 
 The WHIP URL is the endpoint your interpreter client POSTs a WebRTC SDP offer to in order to begin publishing audio.
 
-### Endpoints
+### Endpoint
 
-| Variant | Method \+ Path |
-| --- | --- |
-| Event-scoped _(preferred)_ | `GET /api/events/{event_slug}/booths/{language_code}/whip-url` |
-| Legacy | `GET /api/booth/{booth_id}/whip-url` |
+```text
+GET /api/events/{event_slug}/booths/{language_code}/whip-url
+```
 
 ### Authentication
 
-Both WHIP URL endpoints require a Bearer token. See the [Authentication guide](../authentication.mdx) for details on obtaining a token.
+This endpoint requires a Bearer token in the `Authorization` header. See the [Authentication guide](../authentication.mdx) for details on obtaining a token.
 
 :::warning
 This endpoint enforces the active-interpreter rule. Only the participant currently designated as the active interpreter receives a successful response. All other callers receive `403 Forbidden`.
@@ -33,8 +32,9 @@ This endpoint enforces the active-interpreter rule. Only the participant current
 
 ### Query Parameters
 
+**`participant_id`** *(string, required)* — The caller's participant ID. This is validated server-side against the booth's current active interpreter record.
 
-  The caller's participant ID. This is validated server-side against the booth's current active interpreter record.
+**`room_id`** *(integer, optional)* — Numeric room ID. Required if the event has multiple rooms.
 
 
 ### Example Request

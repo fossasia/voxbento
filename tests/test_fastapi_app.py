@@ -2386,7 +2386,7 @@ def test_embed_postmessage_target_origin_empty(monkeypatch):
 def test_embed_captions_opt_in_websocket_auth():
     """The embed listener token must satisfy resolve_ws_auth for /ws/captions/{booth_id}.
 
-    booth_id is always '{event_slug}-{language_code}', which starts with
+    booth_id is '{event_slug}-{room_id}-{language_code}', which starts with
     '{event_slug}-', satisfying the startswith check in resolve_ws_auth.
     This test verifies the token claim shape without making a live WS connection.
     """

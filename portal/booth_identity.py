@@ -1,13 +1,13 @@
-"""Booth identity scheme: {event_slug}-{language_code} IDs and MediaMTX path mapping.
+"""Booth identity scheme: {event_slug}-{room_id}-{language_code} IDs and MediaMTX path mapping.
 
 A booth is identified by three coordinates:
 - event_slug: alphanumeric + hyphens (e.g. "pycon2026")
+- room_id: integer Eventyay Room ID (e.g. 14)
 - language_code: ISO 639-1 two-letter code (e.g. "en")
-- instance: "primary" or "backup" — only one publishes at a time
 
-The booth ID is ``{event_slug}-{language_code}`` (e.g. ``pycon2026-en``).
-The MediaMTX stream path is ``{event_slug}/{language_code}`` (one active
-stream per language per event).
+The booth ID is ``{event_slug}-{room_id}-{language_code}`` (e.g. ``pycon2026-14-en``).
+The MediaMTX stream path is ``{event_slug}/{room_id}/{language_code}`` (one active
+stream per language per room per event).
 """
 
 from __future__ import annotations

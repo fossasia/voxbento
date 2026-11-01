@@ -29,8 +29,6 @@ The tables below list every REST and WebSocket endpoint exposed by the Voxbento 
 | Endpoint | Method | Auth | Description |
 | --- | --- | --- | --- |
 | `/api/auth/token` | `POST` | Open | Issue a legacy bearer JWT |
-| `/api/booth/{booth_id}/state` | `GET` | Bearer | Get booth state (legacy, no event scope) |
-| `/api/booth/{booth_id}/whip-url` | `GET` | Bearer | Get WHIP URL for the active interpreter |
 | `/api/events/{event_slug}/booths` | `POST` | Bearer | Create an in-memory booth for an event |
 | `/api/events/{event_slug}/booths` | `GET` | Bearer | List all booths for an event |
 | `/api/events/{event_slug}/booths/{language_code}/state` | `GET` | Bearer | Get event-scoped booth state |

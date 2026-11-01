@@ -190,7 +190,7 @@ class BoothRegistry:
         This is the preferred entry point for new code.  The booth ID,
         MediaMTX path, and default ``channel_id`` are derived automatically
         from the coordinates.  When no explicit ``channel_id`` is given it
-        defaults to the MediaMTX path (``{event_slug}/{language_code}``).
+        defaults to the MediaMTX path (``{event_slug}/{room_id}/{language_code}``).
 
         ``room_id`` is the Eventyay Room and is part of the booth ID, so it
         is required.

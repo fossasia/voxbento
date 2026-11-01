@@ -24,12 +24,18 @@ A Bearer token is required. See the [Authentication guide](../authentication.mdx
 
 ### Request Body
 
+**`language_code`** *(string, required)* — ISO 639-1 two-letter language code in lowercase, e.g. `en`. Combined with the event slug and room ID to derive the `booth_id` and channel path.
 
-  ISO 639-1 two-letter language code in lowercase, e.g. `en`. Combined with the event slug to derive the `booth_id` and channel path.
+**`room_id`** *(integer, optional)* — Numeric room ID. Room selection behaves as follows:
+- If the event has no rooms, a default room is automatically created with display name specified by `room_name` (or `"Main Room"`).
+- If the event has exactly one room and `room_id` is omitted, that existing room is automatically selected.
+- If the event has multiple rooms, `room_id` is required; omitting it returns HTTP `400 Bad Request`.
 
+**`language`** *(string, optional)* — Human-readable language name displayed in the UI, e.g. `"English"`. Defaults to the uppercased `language_code` if omitted.
 
+**`room_name`** *(string, optional)* — Display name for the room if a new room is automatically created. Defaults to `"Main Room"`.
 
-  Human-readable language name displayed in the UI, e.g. `"English"`. Defaults to the uppercased `language_code` if omitted.
+**`instance`** *(string, optional)* — Booth instance: `"primary"` (default) or `"backup"`.
 
 
 ### Example Request
@@ -38,7 +44,7 @@ A Bearer token is required. See the [Authentication guide](../authentication.mdx
 curl -X POST https://voxbento.com/api/events/pycon2026/booths \
   -H 'Authorization: Bearer eyJ...' \
   -H 'Content-Type: application/json' \
-  -d '{"language_code": "en", "language_name": "English"}'
+  -d '{"language_code": "en", "room_id": 14, "language": "English"}'
 ```
 
 ### Example Response
@@ -47,18 +53,25 @@ A successful creation returns HTTP `201 Created` with the booth state object, in
 
 ```json
 {
-  "booth_id": "pycon2026-en",
+  "booth_id": "pycon2026-14-en",
   "event_slug": "pycon2026",
   "language_code": "en",
-  "language_name": "English",
-  "mediamtx_path": "pycon2026/en",
-  "whip_url": "https://voxbento.com/pycon2026/en/whip",
-  "whep_url": "https://voxbento.com/pycon2026/en/whep",
+  "instance": "primary",
+  "mediamtx_path": "pycon2026/14/en",
+  "room_id": 14,
+  "language": "English",
+  "channel_id": "pycon2026/14/en",
   "active_interpreter_id": null,
-  "active_interpreter_name": null,
-  "mic_active": false,
-  "ingest_connected": false,
-  "participants": []
+  "handoff_state": "idle",
+  "handoff_initiator_id": null,
+  "broadcast_unlocked": false,
+  "ingest_status": "disconnected",
+  "participants": [],
+  "chat_messages": [],
+  "whip_url": "https://voxbento.com/pycon2026/14/en/whip",
+  "whep_url": "https://voxbento.com/pycon2026/14/en/whep",
+  "interpreter_invite_url": "https://voxbento.com/join/tok_123456",
+  "caption_url": "wss://voxbento.com/ws/captions/pycon2026-14-en"
 }
 ```
 
@@ -66,7 +79,7 @@ A successful creation returns HTTP `201 Created` with the booth state object, in
 
 | Status | Condition |
 | --- | --- |
-| `400 Bad Request` | Invalid `language_code` format, or a booth for this language already exists for the event. |
+| `400 Bad Request` | Invalid `language_code` format, booth already exists, or event has multiple rooms and `room_id` was omitted. |
 | `403 Forbidden` | Bearer token is missing or invalid. |
 
 ---
@@ -101,34 +114,41 @@ curl https://voxbento.com/api/events/pycon2026/booths \
   "event_slug": "pycon2026",
   "booths": [
     {
-      "booth_id": "pycon2026-en",
+      "booth_id": "pycon2026-14-en",
       "event_slug": "pycon2026",
       "language_code": "en",
-      "language_name": "English",
-      "mediamtx_path": "pycon2026/en",
-      "whip_url": "https://voxbento.com/pycon2026/en/whip",
-      "whep_url": "https://voxbento.com/pycon2026/en/whep",
-      "active_interpreter_id": "user-abc123",
-      "active_interpreter_name": "Alice",
-      "mic_active": true,
-      "ingest_connected": true,
+      "instance": "primary",
+      "mediamtx_path": "pycon2026/14/en",
+      "room_id": 14,
+      "language": "English",
+      "channel_id": "pycon2026/14/en",
+      "active_interpreter_id": "part-abc123",
+      "handoff_state": "idle",
+      "handoff_initiator_id": null,
+      "broadcast_unlocked": false,
+      "ingest_status": "connected",
       "participants": [
-        {"id": "user-abc123", "name": "Alice", "role": "interpreter"}
-      ]
-    },
-    {
-      "booth_id": "pycon2026-es",
-      "event_slug": "pycon2026",
-      "language_code": "es",
-      "language_name": "Spanish",
-      "mediamtx_path": "pycon2026/es",
-      "whip_url": "https://voxbento.com/pycon2026/es/whip",
-      "whep_url": "https://voxbento.com/pycon2026/es/whep",
-      "active_interpreter_id": null,
-      "active_interpreter_name": null,
-      "mic_active": false,
-      "ingest_connected": false,
-      "participants": []
+        {
+          "participant_id": "part-abc123",
+          "display_name": "Alice",
+          "role": "interpreter",
+          "language": "en",
+          "channel_id": "pycon2026/14/en",
+          "mic_active": true,
+          "ingest_connected": true,
+          "connected": true,
+          "joined_at": "2026-11-01T07:00:00Z",
+          "updated_at": "2026-11-01T07:00:00Z",
+          "role_label": "Interpreter",
+          "can_go_live": true,
+          "can_set_active": false
+        }
+      ],
+      "chat_messages": [],
+      "whip_url": "https://voxbento.com/pycon2026/14/en/whip",
+      "whep_url": "https://voxbento.com/pycon2026/14/en/whep",
+      "type": "human",
+      "label": "English (Human)"
     }
   ]
 }
@@ -143,22 +163,43 @@ curl https://voxbento.com/api/events/pycon2026/booths \
   <details>
 <summary>Booth object fields</summary>
 
+**`booth_id`** *(string)* — Canonical booth identifier in the format `{event_slug}-{room_id}-{language_code}`.
 
-      Canonical booth identifier in the format `{event_slug}-{language_code}`.
+**`event_slug`** *(string)* — The URL slug of the event.
 
-    **`mediamtx_path`** *(string)* — The channel path in the format `{event_slug}/{language_code}`.
+**`language_code`** *(string)* — ISO 639-1 two-letter language code.
 
-    **`whip_url`** *(string)* — The WHIP ingest URL for the active interpreter to publish audio.
+**`instance`** *(string)* — Booth instance: `"primary"` or `"backup"`.
 
-    **`whep_url`** *(string)* — The WHEP playback URL for listeners to receive audio.
+**`mediamtx_path`** *(string)* — The channel path in the format `{event_slug}/{room_id}/{language_code}`.
 
-    **`active_interpreter_id`** *(string | null)* — Participant ID of the currently active interpreter, or `null`.
+**`room_id`** *(integer)* — Numeric room ID.
 
-    **`mic_active`** *(boolean)* — Whether the active interpreter's microphone is currently transmitting.
+**`language`** *(string)* — Human-readable language name, e.g. `"English"`.
 
-    **`ingest_connected`** *(boolean)* — Whether the WHIP ingest connection is established.
+**`channel_id`** *(string)* — Channel path identifier matching `mediamtx_path`.
 
-    **`participants`** *(array)* — All participants currently connected to the booth WebSocket.
+**`active_interpreter_id`** *(string | null)* — Participant ID of the currently active interpreter, or `null`.
+
+**`handoff_state`** *(string)* — Current handoff state: `"idle"`, `"offered"`, or `"requested"`.
+
+**`handoff_initiator_id`** *(string | null)* — Participant ID of the handoff initiator, or `null`.
+
+**`broadcast_unlocked`** *(boolean)* — Whether broadcast lockout is bypassed.
+
+**`ingest_status`** *(string)* — Current stream status: `"connected"` or `"disconnected"`.
+
+**`participants`** *(array)* — All participants currently connected to the booth WebSocket.
+
+**`chat_messages`** *(array)* — Recent chat history snapshot (capped at the last 100 messages).
+
+**`whip_url`** *(string)* — The WHIP ingest URL for the active interpreter to publish audio.
+
+**`whep_url`** *(string)* — The WHEP playback URL for listeners to receive audio.
+
+**`type`** *(string)* — Channel type: `"human"` for interpreter booths or `"ai"` for automated translation streams.
+
+**`label`** *(string)* — Human-readable display label, e.g. `"English (Human)"` or `"Spanish (AI)"`.
 
 </details>
 
@@ -172,5 +213,5 @@ The event must exist — created via the admin panel — before you can create o
 :::
 
 :::info
-Booths created via this API endpoint are held in live memory only and do not survive a server restart. Booths created through the admin panel are persisted to the database. Both types appear in the list returned by `GET /api/events/{event_slug}/booths`.
+Booths created via this API endpoint are registered in memory and persisted to the database. Both human interpreter booths and automated translation streams appear in the list returned by `GET /api/events/{event_slug}/booths`.
 :::
