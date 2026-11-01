@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import logging
+import re
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request, status
+from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -39,15 +42,15 @@ router = APIRouter(prefix="/api/v1")
 # attribute on the Event model.  Adding a new provider only requires one
 # new entry here.
 _API_KEY_FIELDS: list[tuple[str, str]] = [
-    ("openai_api_key",             "encrypted_openai_api_key"),
-    ("deepgram_api_key",           "encrypted_deepgram_api_key"),
-    ("nvidia_api_key",             "encrypted_nvidia_api_key"),
-    ("elevenlabs_api_key",         "encrypted_elevenlabs_api_key"),
+    ("openai_api_key", "encrypted_openai_api_key"),
+    ("deepgram_api_key", "encrypted_deepgram_api_key"),
+    ("nvidia_api_key", "encrypted_nvidia_api_key"),
+    ("elevenlabs_api_key", "encrypted_elevenlabs_api_key"),
     ("translation_openai_api_key", "encrypted_translation_openai_api_key"),
-    ("openrouter_api_key",         "encrypted_openrouter_api_key"),
-    ("gemini_api_key",             "encrypted_gemini_api_key"),
-    ("anthropic_api_key",          "encrypted_anthropic_api_key"),
-    ("groq_api_key",               "encrypted_groq_api_key"),
+    ("openrouter_api_key", "encrypted_openrouter_api_key"),
+    ("gemini_api_key", "encrypted_gemini_api_key"),
+    ("anthropic_api_key", "encrypted_anthropic_api_key"),
+    ("groq_api_key", "encrypted_groq_api_key"),
 ]
 
 
@@ -766,13 +769,12 @@ async def patch_room_settings(
     db: AsyncSession = Depends(get_db_session),
     token: OAuthToken = Depends(require_oauth_scope("rooms:write")),
 ):
+    """Update room settings for an event."""
     event = await _get_event_for_request(db, event_slug, write_lock=True)
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
 
-    await _verify_token_rbac(
-        db, token, event, room_id, manage=True, lock_event=True, write_lock=True
-    )
+    await _verify_token_rbac(db, token, event, room_id, manage=True, lock_event=True, write_lock=True)
     return {"status": "success"}
 
 
@@ -783,6 +785,7 @@ async def list_booths(
     db: AsyncSession = Depends(get_db_session),
     token: OAuthToken = Depends(require_oauth_scope("booths:read")),
 ):
+    """List all booths associated with a room in an event."""
     result = await db.execute(select(Event).where(Event.slug == event_slug, Event.deleted_at.is_(None)))
     event = result.scalars().first()
     if not event:
@@ -813,6 +816,7 @@ async def get_booth(
     db: AsyncSession = Depends(get_db_session),
     token: OAuthToken = Depends(require_oauth_scope("booths:read")),
 ):
+    """Retrieve details and WHIP endpoint for a specific booth in a room."""
     result = await db.execute(select(Event).where(Event.slug == event_slug))
     event = result.scalars().first()
     if not event:
@@ -821,7 +825,11 @@ async def get_booth(
     room = await _verify_token_rbac(db, token, event, room_id, lock_event=True)
     target_room_id = _extract_room_id(room, room_id)
 
-    result = await db.execute(select(DBBooth).where(DBBooth.room_id == target_room_id, DBBooth.language_code == language_code, DBBooth.event_id == event.id))
+    result = await db.execute(
+        select(DBBooth).where(
+            DBBooth.room_id == target_room_id, DBBooth.language_code == language_code, DBBooth.event_id == event.id
+        )
+    )
     booth = result.scalars().first()
     if not booth:
         raise HTTPException(status_code=404, detail="Booth not found")
@@ -842,16 +850,17 @@ async def create_booth(
     db: AsyncSession = Depends(get_db_session),
     token: OAuthToken = Depends(require_oauth_scope("booths:write")),
 ):
+    """Create a new language booth for a room within an event."""
     event = await _get_event_for_request(db, event_slug, write_lock=True)
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
 
-    room = await _verify_token_rbac(
-        db, token, event, room_id, manage=True, lock_event=True, write_lock=True
-    )
+    room = await _verify_token_rbac(db, token, event, room_id, manage=True, lock_event=True, write_lock=True)
     target_room_id = _extract_room_id(room, room_id)
 
-    result = await db.execute(select(DBBooth).where(DBBooth.room_id == target_room_id, DBBooth.language_code == language_code))
+    result = await db.execute(
+        select(DBBooth).where(DBBooth.room_id == target_room_id, DBBooth.language_code == language_code)
+    )
     if result.scalars().first():
         raise HTTPException(status_code=409, detail="Booth already exists")
 
@@ -873,16 +882,19 @@ async def delete_booth_endpoint(
     db: AsyncSession = Depends(get_db_session),
     token: OAuthToken = Depends(require_oauth_scope("booths:write")),
 ):
+    """Delete a language booth from a room and revoke active connections."""
     event = await _get_event_for_request(db, event_slug, write_lock=True)
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
 
-    room = await _verify_token_rbac(
-        db, token, event, room_id, manage=True, lock_event=True, write_lock=True
-    )
+    room = await _verify_token_rbac(db, token, event, room_id, manage=True, lock_event=True, write_lock=True)
     target_room_id = _extract_room_id(room, room_id)
 
-    result = await db.execute(select(DBBooth).where(DBBooth.room_id == target_room_id, DBBooth.language_code == language_code, DBBooth.event_id == event.id))
+    result = await db.execute(
+        select(DBBooth).where(
+            DBBooth.room_id == target_room_id, DBBooth.language_code == language_code, DBBooth.event_id == event.id
+        )
+    )
     booth = result.scalars().first()
     if not booth:
         raise HTTPException(status_code=404, detail="Booth not found")
@@ -902,6 +914,7 @@ async def start_transcription(
     db: AsyncSession = Depends(get_db_session),
     token: OAuthToken = Depends(require_oauth_scope("sessions:manage")),
 ):
+    """Start transcription worker for a specific booth in a room."""
     event = await _get_event_for_request(db, event_slug, write_lock=True)
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
@@ -929,6 +942,7 @@ async def stop_transcription(
     db: AsyncSession = Depends(get_db_session),
     token: OAuthToken = Depends(require_oauth_scope("sessions:manage")),
 ):
+    """Stop active transcription worker for a specific booth in a room."""
     event = await _get_event_for_request(db, event_slug, write_lock=True)
     if not event:
         raise HTTPException(status_code=404, detail="Event not found")
@@ -948,6 +962,7 @@ async def get_transcription_status(
     db: AsyncSession = Depends(get_db_session),
     token: OAuthToken = Depends(require_oauth_scope("sessions:read")),
 ):
+    """Retrieve current transcription and activity status for all booths in a room."""
     result = await db.execute(select(Event).where(Event.slug == event_slug))
     event = result.scalars().first()
     if not event:
@@ -980,7 +995,163 @@ def _format_timestamp(dt: datetime) -> str:
     return dt.isoformat()
 
 
-@router.get("/events/{event_slug}/rooms/{room_id}/booths/{language_code}/transcripts/export")
+class TranscriptExportItem(BaseModel):
+    """Schema for an individual transcript segment or translation item."""
+
+    id: int = Field(description="Segment or translation unique identifier")
+    text: str = Field(description="Transcribed or translated text content")
+    created_at: str = Field(description="ISO-8601 timestamp when speech occurred")
+
+
+class TranscriptExportResponse(BaseModel):
+    """Schema for exported transcript response envelope."""
+
+    event_slug: str = Field(description="Slug of the event")
+    room_id: int | str = Field(description="Room identifier")
+    language_code: str = Field(description="Language code of source transcript")
+    target_lang: str | None = Field(default=None, description="Target translation language code if requested")
+    segments: list[TranscriptExportItem] = Field(description="Chronological transcript segments")
+
+
+def _to_utc(dt: datetime | None) -> datetime | None:
+    """Normalize a datetime to timezone-aware UTC.
+
+    If naive, assume UTC. If aware with a non-UTC offset, convert to UTC.
+    """
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _format_playback_time(seconds: float, sep: str = ".") -> str:
+    """Format elapsed seconds as HH:MM:SS.mmm (or HH:MM:SS,mmm)."""
+    total_ms = int(round(seconds * 1000))
+    hours = total_ms // 3_600_000
+    minutes = (total_ms % 3_600_000) // 60_000
+    secs = (total_ms % 60_000) // 1000
+    ms = total_ms % 1000
+    return f"{hours:02d}:{minutes:02d}:{secs:02d}{sep}{ms:03d}"
+
+
+def _sanitize_vtt_text(text: str) -> str:
+    """Sanitize cue text for WebVTT format by collapsing blank lines and escaping syntax markers."""
+    if not text:
+        return ""
+    cleaned = re.sub(r"(\r?\n\s*){2,}", "\n", text.strip())
+    # Escape ampersands and angle brackets for WebVTT
+    cleaned = cleaned.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    # Neutralize any remaining arrow markers
+    cleaned = cleaned.replace("-->", "--&gt;")
+    return cleaned
+
+
+def _sanitize_srt_text(text: str) -> str:
+    """Sanitize cue text for SubRip (SRT) format by collapsing blank lines."""
+    if not text:
+        return ""
+    return re.sub(r"(\r?\n\s*){2,}", "\n", text.strip())
+
+
+def _to_vtt(items: list[Any], origin: datetime | None = None) -> str:
+    """Serialize transcript items to WebVTT format using playback elapsed offsets."""
+    if not items:
+        return "WEBVTT\n\n"
+    if origin is None:
+        origin = items[0].created_at
+    origin_utc = _to_utc(origin)
+    lines = ["WEBVTT", ""]
+    for i, item in enumerate(items, 1):
+        item_dt = _to_utc(item.created_at)
+        start_sec = max(0.0, (item_dt - origin_utc).total_seconds())
+        if i < len(items):
+            next_dt = _to_utc(items[i].created_at)
+            next_start_sec = max(start_sec, (next_dt - origin_utc).total_seconds())
+            end_sec = min(start_sec + 5.0, next_start_sec) if next_start_sec > start_sec else start_sec + 5.0
+        else:
+            end_sec = start_sec + 5.0
+        start = _format_playback_time(start_sec, sep=".")
+        end = _format_playback_time(end_sec, sep=".")
+        cue_text = _sanitize_vtt_text(item.text)
+        lines.extend([str(i), f"{start} --> {end}", cue_text, ""])
+    return "\n".join(lines)
+
+
+def _to_srt(items: list[Any], origin: datetime | None = None) -> str:
+    """Serialize transcript items to SubRip (SRT) format using playback elapsed offsets."""
+    if not items:
+        return ""
+    if origin is None:
+        origin = items[0].created_at
+    origin_utc = _to_utc(origin)
+    lines: list[str] = []
+    for i, item in enumerate(items, 1):
+        item_dt = _to_utc(item.created_at)
+        start_sec = max(0.0, (item_dt - origin_utc).total_seconds())
+        if i < len(items):
+            next_dt = _to_utc(items[i].created_at)
+            next_start_sec = max(start_sec, (next_dt - origin_utc).total_seconds())
+            end_sec = min(start_sec + 5.0, next_start_sec) if next_start_sec > start_sec else start_sec + 5.0
+        else:
+            end_sec = start_sec + 5.0
+        start = _format_playback_time(start_sec, sep=",")
+        end = _format_playback_time(end_sec, sep=",")
+        cue_text = _sanitize_srt_text(item.text)
+        lines.extend([str(i), f"{start} --> {end}", cue_text, ""])
+    return "\n".join(lines)
+
+
+def _parse_accept_header(accept: str | None) -> list[str]:
+    """Parse media ranges from an Accept header ordered by descending quality value (q).
+
+    Media ranges with q=0 (or invalid non-positive quality values) are treated
+    as unacceptable and excluded.
+    """
+    if not accept or not isinstance(accept, str):
+        return []
+
+    parsed: list[tuple[float, int, str]] = []
+    for idx, part in enumerate(accept.split(",")):
+        part = part.strip()
+        if not part:
+            continue
+        segments = [s.strip() for s in part.split(";")]
+        media_type = segments[0].lower()
+        if not media_type:
+            continue
+        q_val = 1.0
+        for param in segments[1:]:
+            param_key, sep, param_val = param.partition("=")
+            if sep and param_key.strip().lower() == "q":
+                try:
+                    q_val = float(param_val.strip())
+                except ValueError:
+                    q_val = 1.0
+        if q_val > 0.0:
+            parsed.append((q_val, -idx, media_type))
+
+    parsed.sort(reverse=True)
+    return [media_type for _, _, media_type in parsed]
+
+
+@router.get(
+    "/events/{event_slug}/rooms/{room_id}/booths/{language_code}/transcripts/export",
+    response_model=TranscriptExportResponse,
+    responses={
+        200: {
+            "description": "Exported transcript records in JSON, WebVTT, or SubRip format.",
+            "content": {
+                "application/json": {},
+                "text/vtt": {"schema": {"type": "string"}},
+                "text/plain": {"schema": {"type": "string"}},
+                "text/srt": {"schema": {"type": "string"}},
+                "application/x-subrip": {"schema": {"type": "string"}},
+            },
+        }
+    },
+    summary="Export transcripts",
+)
 async def export_transcript(
     event_slug: str,
     room_id: int | str,
@@ -992,10 +1163,26 @@ async def export_transcript(
             description="Return translations in this language instead of source segments",
         ),
     ] = None,
+    format: str | None = Query(
+        None, pattern="^(json|vtt|srt)$", description="Export format: json (default), vtt, or srt"
+    ),
+    after: datetime | None = Query(None, description="Filter segments created after this UTC datetime"),
+    before: datetime | None = Query(None, description="Filter segments created before this UTC datetime"),
+    start_time: datetime | None = Query(None, description="Alias for after"),
+    end_time: datetime | None = Query(None, description="Alias for before"),
+    limit: int = Query(1000, ge=1, le=5000, description="Maximum number of segments to export"),
+    accept: str | None = Header(
+        None, description="Content negotiation header (e.g. text/vtt, text/srt, application/x-subrip)"
+    ),
     db: AsyncSession = Depends(get_db_session),
     token: OAuthToken = Depends(require_oauth_scope("transcripts:read")),
 ):
-    """Export source transcript segments or translations for a room booth in chronological order."""
+    """Export source transcript segments or translations for a room booth in chronological order.
+
+    Supports JSON (default), WebVTT (text/vtt), and SubRip (text/plain, text/srt, application/x-subrip).
+    Results can be filtered by time range (after/start_time, before/end_time)
+    and bounded by limit.
+    """
     target_lang = target_lang if isinstance(target_lang, str) else None
 
     result = await db.execute(select(Event).where(Event.slug == event_slug, Event.deleted_at.is_(None)))
@@ -1018,6 +1205,14 @@ async def export_transcript(
     if not booth:
         raise HTTPException(status_code=404, detail="Booth not found")
 
+    raw_after = after if isinstance(after, datetime) else (start_time if isinstance(start_time, datetime) else None)
+    raw_before = before if isinstance(before, datetime) else (end_time if isinstance(end_time, datetime) else None)
+    after_dt = _to_utc(raw_after)
+    before_dt = _to_utc(raw_before)
+
+    limit_val = limit if isinstance(limit, int) else 1000
+    safe_limit = min(max(1, limit_val), 5000)
+
     if target_lang:
         stmt = (
             select(TranscriptSegment, TranscriptTranslation)
@@ -1028,11 +1223,15 @@ async def export_transcript(
                 TranscriptTranslation.language_code == target_lang,
             )
             .order_by(TranscriptSegment.created_at, TranscriptSegment.id)
+            .limit(safe_limit)
         )
+        if after_dt:
+            stmt = stmt.where(TranscriptSegment.created_at > after_dt)
+        if before_dt:
+            stmt = stmt.where(TranscriptSegment.created_at < before_dt)
+
         result = await db.execute(stmt)
-        segments = [
-            {"id": seg.id, "text": tr.text, "created_at": _format_timestamp(seg.created_at)} for seg, tr in result.all()
-        ]
+        items = [SimpleNamespace(id=seg.id, text=tr.text, created_at=seg.created_at) for seg, tr in result.all()]
     else:
         stmt = (
             select(TranscriptSegment)
@@ -1041,17 +1240,58 @@ async def export_transcript(
                 TranscriptSegment.language_code == language_code,
             )
             .order_by(TranscriptSegment.created_at, TranscriptSegment.id)
+            .limit(safe_limit)
         )
+        if after_dt:
+            stmt = stmt.where(TranscriptSegment.created_at > after_dt)
+        if before_dt:
+            stmt = stmt.where(TranscriptSegment.created_at < before_dt)
+
         result = await db.execute(stmt)
-        rows = result.scalars().all()
-        segments = [{"id": r.id, "text": r.text, "created_at": _format_timestamp(r.created_at)} for r in rows]
+        items = result.scalars().all()
+
+    format_str = format if isinstance(format, str) else None
+    accepted_types = _parse_accept_header(accept)
+
+    srt_media_type = "text/plain"
+    for media_type in accepted_types:
+        if media_type in ("application/x-subrip", "text/srt", "text/plain"):
+            srt_media_type = media_type
+            break
+
+    if format_str:
+        resolved_format = format_str.lower()
+    else:
+        resolved_format = "json"
+        for media_type in accepted_types:
+            if media_type == "text/vtt":
+                resolved_format = "vtt"
+                break
+            if media_type in ("application/x-subrip", "text/srt"):
+                resolved_format = "srt"
+                break
+            if media_type == "application/json":
+                resolved_format = "json"
+                break
+
+    if resolved_format == "vtt":
+        return PlainTextResponse(_to_vtt(items), media_type="text/vtt")
+    if resolved_format == "srt":
+        return PlainTextResponse(_to_srt(items), media_type=srt_media_type)
 
     return {
         "event_slug": event_slug,
         "room_id": target_room_id,
         "language_code": language_code,
         "target_lang": target_lang,
-        "segments": segments,
+        "segments": [
+            {
+                "id": item.id,
+                "text": item.text,
+                "created_at": _format_timestamp(item.created_at),
+            }
+            for item in items
+        ],
     }
 
 
