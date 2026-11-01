@@ -349,8 +349,9 @@ Adds `events.meeting_analysis_enabled` (default false),
 and the `meeting_reports` table: `event_id`/`room_id` (CASCADE), `channel_id`
 (`floor` or a booth language code, matching `transcript_segments.language_code`),
 `channel_label`, `language_code`, `provider`, `model`, `status`
-(`pending` → `running` → `done` | `failed`), `error`, `summary`,
-`action_items_json`, `key_topics_json`, `digest_json`, `segment_count`,
+(`pending` → `running` → `done` | `failed`), `error`, `title`, `summary`
+(the overview), `sections_json` (`[{heading, points}]`), `last_segment_id` (the
+last transcript segment the report read), `segment_count`,
 `truncated`, `tokens_used`, `created_at`, `generated_at`. Index
 `(room_id, created_at)` and partial unique index `uq_meeting_reports_room_in_progress`
 (one `pending`/`running` report per room). CRUD: `create_meeting_report`, `list_meeting_reports`,

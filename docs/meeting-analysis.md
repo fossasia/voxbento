@@ -1,9 +1,12 @@
 # Meeting reports
 
 After a session, VoxBento can ask an AI service to read a room's stored
-transcript and write a report: a short summary, action items, key topics and a
-timeline. This is phase 1 of #1080: reports are written only when an event
-owner asks for one. Nothing runs automatically when a session ends.
+transcript and write meeting notes: a title, a one or two sentence overview,
+and sections whose headings the AI chooses to fit that meeting (for example the
+products, decisions or questions discussed), each with short points. Decisions
+and follow-ups get their own section only when there were some. This is phase 1
+of #1080: reports are written only when an event owner asks for one. Nothing
+runs automatically when a session ends.
 
 ## Turning it on
 
@@ -42,8 +45,16 @@ Open the room and choose **View reports** (or go to
 `/workspace/events/{event_id}/rooms/{room_id}/analysis/`). The page lists the
 channels that have a stored transcript: the floor audio and each booth. Choose
 one and select **Generate report**. The report is written in the background and
-the page refreshes when it is ready. Each finished report can be downloaded as
-Markdown.
+the page refreshes when it is ready.
+
+Open a finished report to see it on its own page with two tabs:
+
+- **Summary**: the overview and the sections, with an estimated reading time.
+- **Transcript**: the transcript lines the report was written from, with their
+  time from the start of the session. Lines stored after the report was written
+  are not shown.
+
+Each finished report can also be downloaded as Markdown.
 
 - Only one report per room is written at a time.
 - Very long sessions are cut to the first 60,000 characters of transcript; the

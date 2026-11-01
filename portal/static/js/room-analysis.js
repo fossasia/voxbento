@@ -32,3 +32,40 @@ async function poll(count) {
 }
 
 if (root) setTimeout(() => poll(0), POLL_MS);
+
+function initReportTabs() {
+  const tabList = document.querySelector('[data-report-tabs]');
+  if (!tabList) return;
+  const tabs = [...tabList.querySelectorAll('[data-report-tab]')];
+  const panels = [...document.querySelectorAll('[data-report-panel]')];
+
+  function show(name, { focus = false } = {}) {
+    const target = tabs.find((t) => t.dataset.reportTab === name) || tabs[0];
+    tabs.forEach((tab) => {
+      const selected = tab === target;
+      tab.setAttribute('aria-selected', String(selected));
+      tab.tabIndex = selected ? 0 : -1;
+      tab.classList.toggle('is-active', selected);
+    });
+    panels.forEach((panel) => { panel.hidden = panel.dataset.reportPanel !== target.dataset.reportTab; });
+    if (focus) target.focus();
+    if (window.location.hash !== `#${target.dataset.reportTab}`) {
+      history.replaceState(null, '', `${window.location.pathname}${window.location.search}#${target.dataset.reportTab}`);
+    }
+  }
+
+  tabs.forEach((tab, index) => {
+    tab.addEventListener('click', () => show(tab.dataset.reportTab));
+    tab.addEventListener('keydown', (e) => {
+      const step = { ArrowRight: 1, ArrowLeft: -1 }[e.key];
+      if (!step) return;
+      e.preventDefault();
+      show(tabs[(index + step + tabs.length) % tabs.length].dataset.reportTab, { focus: true });
+    });
+  });
+
+  tabList.hidden = false;
+  show(window.location.hash.slice(1) || 'summary');
+}
+
+initReportTabs();

@@ -5,7 +5,7 @@ import re
 from dataclasses import asdict, dataclass
 from typing import Any
 
-from portal.meeting_analysis.constants import MAX_DIGEST_CHUNKS, MAX_LIST_ITEMS
+from portal.meeting_analysis.constants import MAX_POINTS, MAX_SECTIONS
 
 
 class AnalysisError(Exception):
@@ -13,21 +13,19 @@ class AnalysisError(Exception):
 
 
 @dataclass(frozen=True)
-class DigestChunk:
-    start: str
-    end: str
-    text: str
+class Section:
+    heading: str
+    points: list[str]
 
 
 @dataclass(frozen=True)
 class AnalysisResult:
-    summary: str
-    action_items: list[str]
-    key_topics: list[str]
-    digest: list[DigestChunk]
+    title: str
+    overview: str
+    sections: list[Section]
 
-    def digest_json(self) -> str:
-        return json.dumps([asdict(chunk) for chunk in self.digest], ensure_ascii=False)
+    def sections_json(self) -> str:
+        return json.dumps([asdict(section) for section in self.sections], ensure_ascii=False)
 
 
 _FENCE = re.compile(r"^```[a-zA-Z]*\s*|\s*```$")
@@ -37,24 +35,20 @@ def _text(value: Any, limit: int) -> str:
     return " ".join(value.split())[:limit] if isinstance(value, str) else ""
 
 
-def _strings(value: Any) -> list[str]:
+def _sections(value: Any) -> list[Section]:
     if not isinstance(value, list):
         return []
-    items = (_text(item, 500) for item in value)
-    return [item for item in items if item][:MAX_LIST_ITEMS]
-
-
-def _digest(value: Any) -> list[DigestChunk]:
-    if not isinstance(value, list):
-        return []
-    chunks = []
+    sections = []
     for item in value:
         if not isinstance(item, dict):
             continue
-        text = _text(item.get("text"), 2000)
-        if text:
-            chunks.append(DigestChunk(_text(item.get("start"), 16), _text(item.get("end"), 16), text))
-    return chunks[:MAX_DIGEST_CHUNKS]
+        heading = _text(item.get("heading"), 160)
+        raw_points = item.get("points")
+        points = [_text(point, 600) for point in raw_points] if isinstance(raw_points, list) else []
+        points = [point for point in points if point][:MAX_POINTS]
+        if heading and points:
+            sections.append(Section(heading, points))
+    return sections[:MAX_SECTIONS]
 
 
 def parse_analysis(raw: str) -> AnalysisResult:
@@ -68,20 +62,19 @@ def parse_analysis(raw: str) -> AnalysisResult:
         raise AnalysisError("The AI service returned a report that couldn't be read.") from exc
     if not isinstance(data, dict):
         raise AnalysisError("The AI service returned a report that couldn't be read.")
-    summary = _text(data.get("summary"), 4000)
-    if not summary:
+    overview = _text(data.get("overview"), 2000)
+    if not overview:
         raise AnalysisError("The AI service returned an empty summary.")
     return AnalysisResult(
-        summary=summary,
-        action_items=_strings(data.get("action_items")),
-        key_topics=_strings(data.get("key_topics")),
-        digest=_digest(data.get("digest")),
+        title=_text(data.get("title"), 200),
+        overview=overview,
+        sections=_sections(data.get("sections")),
     )
 
 
-def load_list(value: str | None) -> list[Any]:
+def load_sections(value: str | None) -> list[Section]:
     try:
         data = json.loads(value or "[]")
     except json.JSONDecodeError:
         return []
-    return data if isinstance(data, list) else []
+    return _sections(data)

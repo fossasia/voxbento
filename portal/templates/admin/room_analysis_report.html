@@ -1,0 +1,79 @@
+{% extends "admin/base.html" %}
+{% block title %}{{ view.title }} — {{ room.display_name }}{% endblock %}
+
+{% block breadcrumb %}
+{% set analysis_url = management_prefix ~ '/events/' ~ event.id ~ '/rooms/' ~ room.id ~ '/analysis/' %}
+<nav class="breadcrumb">
+  <a href="{{ management_prefix }}/">{{ 'My events' if is_workspace else 'Overview' }}</a> <span>/</span>
+  <a href="{{ management_prefix }}/events/">Events</a> <span>/</span>
+  <a href="{{ management_prefix }}/events/{{ event.id }}/">{{ event.display_name }}</a> <span>/</span>
+  <a href="{{ management_prefix }}/events/{{ event.id }}/rooms/">Rooms</a> <span>/</span>
+  <a href="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/">{{ room.display_name }}</a> <span>/</span>
+  <a href="{{ analysis_url }}">Meeting reports</a> <span>/</span>
+  <span class="breadcrumb-current" aria-current="page">{{ view.title }}</span>
+</nav>
+{% endblock %}
+
+{% block content %}
+{% set report = view.report %}
+{% set analysis_url = management_prefix ~ '/events/' ~ event.id ~ '/rooms/' ~ room.id ~ '/analysis/' %}
+<div class="page-header analysis-header">
+  <div>
+    <h1>{{ view.title }}</h1>
+    <p class="analysis-meta">
+      <span class="chip">{{ (report.generated_at or report.created_at).strftime('%b %d') }}</span>
+      <span class="chip">{{ report.channel_label }}</span>
+      <span class="muted">{{ view.provider_label }} ({{ report.model }})</span>
+    </p>
+  </div>
+  {% if report.status == 'done' %}
+  <a href="{{ analysis_url }}{{ report.id }}.md" class="btn btn-outline" download>Download .md</a>
+  {% endif %}
+</div>
+
+<div class="room-panel rs" id="analysis-report">
+  {% if report.status in ('pending', 'running') %}
+  <div class="room-card" data-report-id="{{ report.id }}" data-report-status="{{ report.status }}">
+    <p class="analysis-progress" role="status">Writing the report. This can take a minute.</p>
+  </div>
+  {% elif report.status == 'failed' %}
+  <p class="alert alert-error">{{ report.error or "The report couldn't be written." }}</p>
+  {% else %}
+  <div class="room-tabs" role="tablist" aria-label="Report sections" data-report-tabs hidden>
+    <button type="button" class="room-tab" role="tab" id="report-tab-summary" aria-controls="report-panel-summary" data-report-tab="summary">Summary</button>
+    <button type="button" class="room-tab" role="tab" id="report-tab-transcript" aria-controls="report-panel-transcript" data-report-tab="transcript">Transcript</button>
+  </div>
+
+  <section id="report-panel-summary" role="tabpanel" aria-labelledby="report-tab-summary" data-report-panel="summary">
+    <div class="room-card">
+      <p class="analysis-reading">{{ view.read_minutes }} min read{% if report.truncated %} · covers the first part of a long session{% endif %}</p>
+      <p class="analysis-overview">{{ report.summary }}</p>
+      {% for section in view.sections %}
+      <h2 class="analysis-heading">{{ section.heading }}</h2>
+      <ul class="analysis-list">
+        {% for point in section.points %}<li>{{ point }}</li>{% endfor %}
+      </ul>
+      {% endfor %}
+    </div>
+  </section>
+
+  <section id="report-panel-transcript" role="tabpanel" aria-labelledby="report-tab-transcript" data-report-panel="transcript">
+    <div class="room-card">
+      <p class="analysis-reading">{{ transcript | length }} {{ 'line' if transcript | length == 1 else 'lines' }}</p>
+      {% if transcript %}
+      <ol class="analysis-transcript">
+        {% for time, text in transcript %}
+        <li><span class="analysis-time">{{ time }}</span><span>{{ text }}</span></li>
+        {% endfor %}
+      </ol>
+      {% else %}
+      <p class="muted">The transcript for this report is no longer stored.</p>
+      {% endif %}
+    </div>
+  </section>
+  {% endif %}
+</div>
+
+<div id="room-analysis" data-event-id="{{ event.id }}" data-room-id="{{ room.id }}" hidden></div>
+<script type="module" src="{{ url_for('static', path='js/room-analysis.js') }}?v={{ asset_version }}"></script>
+{% endblock %}

@@ -33,7 +33,7 @@
   {% if not event.meeting_analysis_enabled %}
   <div class="room-card room-empty">
     <h2>Meeting reports are off for this event</h2>
-    <p class="room-card-sub">When they're on, an AI service reads a room's stored transcript and writes a summary, action items, key topics and a timeline.</p>
+    <p class="room-card-sub">When they're on, an AI service reads a room's stored transcript and writes meeting notes, grouped by the topics that came up.</p>
     {% if is_event_owner %}
     <a href="{{ management_prefix }}/events/{{ event.id }}/api-settings/" class="btn btn-primary">Turn on in API keys</a>
     {% endif %}
@@ -65,53 +65,19 @@
   <article class="room-card analysis-report" data-report-id="{{ report.id }}" data-report-status="{{ report.status }}">
     <div class="room-card-head">
       <div>
-        <h2>{{ report.channel_label }}</h2>
-        <p class="room-card-sub">{{ report.created_at.strftime('%b %d, %Y, %H:%M UTC') }} · {{ view.provider_label }} ({{ report.model }}){% if report.segment_count %} · {{ report.segment_count }} {{ 'line' if report.segment_count == 1 else 'lines' }}{% endif %}</p>
+        <h2>{% if report.status == 'done' %}<a href="{{ analysis_url }}{{ report.id }}/">{{ view.title }}</a>{% else %}{{ report.channel_label }}{% endif %}</h2>
+        <p class="room-card-sub">{{ report.channel_label }} · {{ report.created_at.strftime('%b %d, %Y, %H:%M UTC') }} · {{ view.provider_label }} ({{ report.model }}){% if report.segment_count %} · {{ report.segment_count }} {{ 'line' if report.segment_count == 1 else 'lines' }}{% endif %}</p>
       </div>
       {% if report.status == 'done' %}
-      <a href="{{ analysis_url }}{{ report.id }}.md" class="btn btn-outline btn-sm" download>Download .md</a>
+      <a href="{{ analysis_url }}{{ report.id }}/" class="btn btn-outline btn-sm">Open report</a>
       {% endif %}
     </div>
-
     {% if report.status in ('pending', 'running') %}
     <p class="analysis-progress" role="status">Writing the report. This can take a minute.</p>
     {% elif report.status == 'failed' %}
     <p class="alert alert-error">{{ report.error or "The report couldn't be written." }}</p>
     {% else %}
-    {% if report.truncated %}
-    <p class="rs-note">The session was long, so this report covers only its first part.</p>
-    {% endif %}
-    <h3>Summary</h3>
     <p class="analysis-summary">{{ report.summary }}</p>
-    <h3>Action items</h3>
-    {% if view.action_items %}
-    <ul class="analysis-list">
-      {% for item in view.action_items %}<li>{{ item }}</li>{% endfor %}
-    </ul>
-    {% else %}
-    <p class="muted">None.</p>
-    {% endif %}
-    <h3>Key topics</h3>
-    {% if view.key_topics %}
-    <ul class="analysis-topics">
-      {% for topic in view.key_topics %}<li class="chip">{{ topic }}</li>{% endfor %}
-    </ul>
-    {% else %}
-    <p class="muted">None.</p>
-    {% endif %}
-    {% if view.digest %}
-    <details class="room-more">
-      <summary>Timeline</summary>
-      <ol class="analysis-timeline">
-        {% for chunk in view.digest %}
-        <li>
-          {% if chunk.start or chunk.end %}<span class="analysis-time">{{ chunk.start }}{% if chunk.end %}–{{ chunk.end }}{% endif %}</span>{% endif %}
-          <span>{{ chunk.text }}</span>
-        </li>
-        {% endfor %}
-      </ol>
-    </details>
-    {% endif %}
     {% endif %}
   </article>
   {% endfor %}

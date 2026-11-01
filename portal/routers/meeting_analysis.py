@@ -18,7 +18,8 @@ from portal.database import (
 )
 from portal.meeting_analysis.constants import IN_PROGRESS, PROVIDER_LABELS, STATUS_DONE, STATUS_PENDING, model_for
 from portal.meeting_analysis.export import report_markdown
-from portal.meeting_analysis.schema import load_list
+from portal.meeting_analysis.prompts import format_offset, transcript_lines
+from portal.meeting_analysis.schema import load_sections
 from portal.meeting_analysis.worker import mark_interrupted_reports, start_analysis
 from portal.models import MeetingReport, TranscriptSegment
 from portal.routers.admin import room_in_event, templates
@@ -70,13 +71,18 @@ async def _channels(session, room) -> list[Channel]:
     return channels
 
 
+WORDS_PER_MINUTE = 200
+
+
 def _report_view(report: MeetingReport) -> dict:
+    sections = load_sections(report.sections_json)
+    words = len(report.summary.split()) + sum(len(point.split()) for s in sections for point in s.points)
     return {
         "report": report,
+        "title": report.title or report.channel_label,
         "provider_label": PROVIDER_LABELS.get(report.provider, report.provider),
-        "action_items": [item for item in load_list(report.action_items_json) if isinstance(item, str)],
-        "key_topics": [item for item in load_list(report.key_topics_json) if isinstance(item, str)],
-        "digest": [chunk for chunk in load_list(report.digest_json) if isinstance(chunk, dict) and chunk.get("text")],
+        "sections": sections,
+        "read_minutes": max(1, round(words / WORDS_PER_MINUTE)),
     }
 
 
@@ -163,6 +169,41 @@ async def _create_report(event_id: int, room_id: int, channel: str) -> int:
             status=STATUS_PENDING,
         )
         return report.id
+
+
+@router.get(
+    "/admin/events/{event_id}/rooms/{room_id}/analysis/{report_id}/",
+    dependencies=[Depends(require_owner_or_coordinator)],
+)
+async def room_analysis_report(request: Request, event_id: int, room_id: int, report_id: int):
+    async with get_session() as session:
+        event = await get_event_by_id(session, event_id)
+        if event is None:
+            raise HTTPException(status_code=404, detail="Event not found.")
+        room = await room_in_event(session, event_id, room_id)
+        await mark_interrupted_reports(session, room_id)
+        report = await _room_report(session, event_id, room_id, report_id)
+        segments = []
+        if report.status == STATUS_DONE and report.last_segment_id is not None:
+            segments = (
+                await session.scalars(
+                    select(TranscriptSegment)
+                    .where(
+                        TranscriptSegment.room_id == room_id,
+                        TranscriptSegment.language_code == report.channel_id,
+                        TranscriptSegment.id <= report.last_segment_id,
+                    )
+                    .order_by(TranscriptSegment.created_at, TranscriptSegment.id)
+                )
+            ).all()
+    admin_flags = await get_access_flags(request, event_id=event_id, room_id=room_id)
+    transcript = [(format_offset(line.offset_seconds), line.text) for line in transcript_lines(segments)]
+    return templates.TemplateResponse(
+        request=request,
+        name="admin/room_analysis_report.html",
+        context={"event": event, "room": room, "view": _report_view(report), "transcript": transcript, **admin_flags},
+        headers={"Cache-Control": "no-store"},
+    )
 
 
 @router.get(

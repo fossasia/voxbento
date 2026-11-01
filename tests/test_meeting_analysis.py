@@ -6,6 +6,7 @@ from datetime import timedelta
 import httpx
 import pytest
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 import portal.globals as pg
@@ -25,7 +26,7 @@ from portal.database import (
     set_room_membership,
 )
 from portal.meeting_analysis import worker
-from portal.meeting_analysis.constants import MAX_LIST_ITEMS, model_for
+from portal.meeting_analysis.constants import MAX_POINTS, MAX_SECTIONS, model_for
 from portal.meeting_analysis.export import report_markdown
 from portal.meeting_analysis.prompts import (
     build_analysis_messages,
@@ -42,11 +43,23 @@ from portal.routers import meeting_analysis as analysis_router
 ORIGIN = {"origin": "http://test"}
 
 REPORT = {
-    "summary": "The team agreed to ship captions for the keynote.",
-    "action_items": ["Asha books the venue", 42, ""],
-    "key_topics": ["Captions", "Keynote"],
-    "digest": [{"start": "00:00", "end": "01:10", "text": "Opening and agenda."}, {"text": ""}, "junk"],
+    "title": "Summit opening",
+    "overview": "The team agreed to ship captions for the keynote.",
+    "sections": [
+        {"heading": "Keynote captions", "points": ["Captions ship for the keynote", 42, ""]},
+        {"heading": "Agreed follow-ups", "points": ["Asha books the venue"]},
+        {"heading": "", "points": ["no heading"]},
+        {"heading": "No points", "points": []},
+        "junk",
+    ],
 }
+
+SECTIONS_JSON = json.dumps(
+    [
+        {"heading": "Keynote captions", "points": ["Captions ship for the keynote"]},
+        {"heading": "Agreed follow-ups", "points": ["Book the venue"]},
+    ]
+)
 
 
 @pytest.fixture
@@ -146,21 +159,33 @@ def _http(monkeypatch, *responses: httpx.Response) -> FakeHttp:
 
 def test_report_json_is_read_from_a_fenced_answer_and_cleaned():
     result = parse_analysis("Here you go:\n```json\n" + json.dumps(REPORT) + "\n```")
-    assert result.summary == REPORT["summary"]
-    assert result.action_items == ["Asha books the venue"]
-    assert result.key_topics == ["Captions", "Keynote"]
-    assert [chunk.text for chunk in result.digest] == ["Opening and agenda."]
+    assert result.title == "Summit opening"
+    assert result.overview == REPORT["overview"]
+    assert [(section.heading, section.points) for section in result.sections] == [
+        ("Keynote captions", ["Captions ship for the keynote"]),
+        ("Agreed follow-ups", ["Asha books the venue"]),
+    ]
 
 
-@pytest.mark.parametrize("raw", ["", "no json here", "[1, 2]", '{"summary": "   "}', "{not json}"])
+@pytest.mark.parametrize("raw", ["", "no json here", "[1, 2]", '{"overview": "   "}', "{not json}"])
 def test_unreadable_reports_raise_a_plain_error(raw):
     with pytest.raises(AnalysisError):
         parse_analysis(raw)
 
 
-def test_lists_are_capped():
-    result = parse_analysis(json.dumps({"summary": "s", "action_items": [f"task {i}" for i in range(50)]}))
-    assert len(result.action_items) == MAX_LIST_ITEMS
+def test_sections_and_points_are_capped():
+    sections = [{"heading": f"Theme {i}", "points": [f"point {j}" for j in range(20)]} for i in range(20)]
+    result = parse_analysis(json.dumps({"overview": "o", "sections": sections}))
+    assert len(result.sections) == MAX_SECTIONS
+    assert all(len(section.points) == MAX_POINTS for section in result.sections)
+
+
+def test_prompt_asks_for_headings_that_fit_the_meeting():
+    system, _ = build_analysis_messages(
+        event_name="e", room_name="r", channel_label="c", language_name="English", transcript="[00:00] hi"
+    )
+    assert '"sections"' in system and '"overview"' in system
+    assert "Don't use a fixed template" in system
 
 
 def test_empty_model_uses_the_recommended_one():
@@ -291,9 +316,16 @@ async def test_report_is_written_from_the_room_transcript(world, monkeypatch):
     await worker.run_analysis(report_id)
     report = await _load(report_id)
     assert report.status == "done"
-    assert report.summary == REPORT["summary"]
-    assert json.loads(report.action_items_json) == ["Asha books the venue"]
+    assert report.title == "Summit opening"
+    assert report.summary == REPORT["overview"]
+    assert [section["heading"] for section in json.loads(report.sections_json)] == [
+        "Keynote captions",
+        "Agreed follow-ups",
+    ]
     assert report.segment_count == 2
+    async with get_session() as s:
+        last_id = max((await s.scalars(select(TranscriptSegment.id))).all())
+    assert report.last_segment_id == last_id
     assert report.tokens_used == 321
     assert report.generated_at is not None
     sent = fake.calls[0]
@@ -491,16 +523,16 @@ async def test_coordinator_reads_reports_but_cannot_generate(world):
     done = await _report(
         world,
         status="done",
+        title="Summit opening",
         summary="Shipped <b>captions</b>.",
-        action_items_json='["Book the venue"]',
-        key_topics_json='["Captions"]',
-        digest_json='[{"start": "00:00", "end": "01:15", "text": "Opening."}]',
+        sections_json=SECTIONS_JSON,
         generated_at=utc_now(),
         segment_count=2,
     )
     base = f"/admin/events/{world['event']}/rooms/{world['room']}/analysis/"
     async with _client() as c:
         page = await c.get(base, cookies=world["coordinator"])
+        detail = await c.get(f"{base}{done}/", cookies=world["coordinator"])
         refused = await c.post(base, data={"channel": "floor"}, headers=ORIGIN, cookies=world["coordinator"])
         download = await c.get(f"{base}{done}.md", cookies=world["coordinator"])
         state = await c.get(
@@ -508,12 +540,16 @@ async def test_coordinator_reads_reports_but_cannot_generate(world):
         )
     assert page.status_code == 200
     assert "Shipped &lt;b&gt;captions&lt;/b&gt;." in page.text
-    assert "Book the venue" in page.text and "Opening." in page.text
+    assert f'href="/admin/events/{world["event"]}/rooms/{world["room"]}/analysis/{done}/"' in page.text
+    assert "Summit opening" in page.text
     assert "Generate report" not in page.text
+    assert detail.status_code == 200
+    assert "Book the venue" in detail.text
     assert refused.status_code == 403
     assert download.status_code == 200
     assert download.headers["content-disposition"] == f'attachment; filename="meeting-report-{world["room"]}-{done}.md"'
-    assert "## Action items\n\n- Book the venue" in download.text
+    assert download.text.startswith("# Summit opening\n")
+    assert "## Agreed follow-ups\n\n- Book the venue" in download.text
     assert state.json() == {"id": done, "status": "done", "error": None}
 
 
@@ -543,8 +579,7 @@ async def test_markdown_export_lists_every_section(world):
         world,
         status="done",
         summary="All good.",
-        key_topics_json='["Budget"]',
-        digest_json='[{"start": "00:00", "end": "", "text": "Intro."}]',
+        sections_json=SECTIONS_JSON,
         generated_at=utc_now(),
         truncated=True,
     )
@@ -553,9 +588,8 @@ async def test_markdown_export_lists_every_section(world):
         text = report_markdown(report, await s.get(Event, world["event"]), await s.get(Room, world["room"]))
     assert text.startswith("# Meeting report: Main Hall\n")
     assert "(only the first part fit)" in text
-    assert "## Action items\n\nNone." in text
-    assert "## Key topics\n\n- Budget" in text
-    assert "**00:00**\nIntro." in text
+    assert "All good.\n\n## Keynote captions\n\n- Captions ship for the keynote" in text
+    assert "## Agreed follow-ups\n\n- Book the venue" in text
 
 
 @pytest.mark.anyio
@@ -616,3 +650,50 @@ async def test_a_failure_does_not_overwrite_a_finished_report(world):
     await worker._fail(report_id, "late failure")
     report = await _load(report_id)
     assert (report.status, report.error, report.summary) == ("done", None, "kept")
+
+
+@pytest.mark.anyio
+async def test_report_page_has_summary_and_transcript_tabs(world):
+    async with get_session() as s:
+        last_id = max((await s.scalars(select(TranscriptSegment.id))).all())
+        s.add(TranscriptSegment(room_id=world["room"], language_code="floor", text="Said after the report."))
+        s.add(TranscriptSegment(room_id=world["room"], language_code="es", text="Hola a todos."))
+    report_id = await _report(
+        world,
+        status="done",
+        title="Summit <opening>",
+        summary="Shipped captions.",
+        sections_json=SECTIONS_JSON,
+        generated_at=utc_now(),
+        segment_count=2,
+        last_segment_id=last_id,
+    )
+    async with _client() as c:
+        page = await c.get(
+            f"/admin/events/{world['event']}/rooms/{world['room']}/analysis/{report_id}/", cookies=world["admin"]
+        )
+    assert page.status_code == 200
+    assert 'data-report-tab="summary"' in page.text and 'data-report-tab="transcript"' in page.text
+    assert "<h1>Summit &lt;opening&gt;</h1>" in page.text
+    assert "Keynote captions" in page.text and "Book the venue" in page.text
+    assert "1 min read" in page.text
+    assert "01:15" in page.text and "We will ship captions for the keynote." in page.text
+    assert "Said after the report." not in page.text
+    assert "Hola a todos." not in page.text
+    assert f"{report_id}.md" in page.text
+
+
+@pytest.mark.anyio
+async def test_report_page_for_a_report_still_being_written(world):
+    report_id = await _report(world)
+    async with _client() as c:
+        page = await c.get(
+            f"/admin/events/{world['event']}/rooms/{world['room']}/analysis/{report_id}/", cookies=world["admin"]
+        )
+        other = await c.get(
+            f"/admin/events/{world['event']}/rooms/{world['room']}/analysis/999/", cookies=world["admin"]
+        )
+    assert "Writing the report" in page.text
+    assert 'data-report-status="pending"' in page.text
+    assert "data-report-tabs" not in page.text
+    assert other.status_code == 404

@@ -211,10 +211,13 @@ with `?error=invalid_role&role=…` and the page explains why.
   origin-checked. Form `channel` (`floor` or a booth language code with stored
   segments). Redirects with `?error=disabled|busy|channel`; one report per room
   is written at a time, in a tracked background task.
+- `GET /workspace/events/{event_id}/rooms/{room_id}/analysis/{report_id}/`:
+  owners and coordinators; one report with Summary and Transcript tabs. The
+  transcript shows the channel's segments up to the report's `last_segment_id`.
 - `GET /workspace/events/{event_id}/rooms/{room_id}/analysis/{report_id}.md`:
   owners and coordinators; Markdown download of a finished report.
 - `GET /api/workspace/events/{event_id}/rooms/{room_id}/analysis/{report_id}`:
-  `{id, status, error}` for the page's polling. All four map to shared
+  `{id, status, error}` for the page's polling. All five map to shared
   `/admin/...` handlers in `portal/routers/meeting_analysis.py`.
 
 ## Meeting source routes (#747)

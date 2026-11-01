@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 from dataclasses import dataclass
 
@@ -95,6 +94,7 @@ async def _prepare(report_id: int) -> _Job | None:
         )
         report.status = STATUS_RUNNING
         report.segment_count = len(lines)
+        report.last_segment_id = segments[-1].id
         report.truncated = truncated
         return _Job(report.provider, report.model, api_key, system, user)
 
@@ -123,10 +123,9 @@ async def _run(report_id: int) -> None:
             update(MeetingReport)
             .where(MeetingReport.id == report_id, MeetingReport.status == STATUS_RUNNING)
             .values(
-                summary=result.summary,
-                action_items_json=json.dumps(result.action_items, ensure_ascii=False),
-                key_topics_json=json.dumps(result.key_topics, ensure_ascii=False),
-                digest_json=result.digest_json(),
+                title=result.title,
+                summary=result.overview,
+                sections_json=result.sections_json(),
                 tokens_used=completion.tokens_used,
                 status=STATUS_DONE,
                 error=None,
