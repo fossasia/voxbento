@@ -180,6 +180,16 @@ def _booth_detail_config(html: str) -> dict:
     return json.loads(match.group(1))
 
 
+async def _update_row(model, row_id: int, **fields) -> None:
+    from portal.database import get_session
+
+    async with get_session() as s:
+        row = await s.get(model, row_id)
+        assert row is not None
+        for name, value in fields.items():
+            setattr(row, name, value)
+
+
 # ---------------------------------------------------------------------------
 # Login / Logout tests
 # ---------------------------------------------------------------------------
@@ -2157,6 +2167,232 @@ class TestBoothCRUD:
             assert _inline_scripts(blocked), blocked
         assert _inline_scripts('<script src="/static/js/a.js"></script>') == []
         assert _inline_scripts('<script type="application/json" id="x">{}</script>') == []
+
+    @pytest.mark.anyio
+    async def test_booth_detail_owner_gets_one_tab_per_job(self, admin_cookie, seed_event):
+        event, room, booth = seed_event
+        url = f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/"
+        async with _client() as c:
+            html = (await c.get(url, cookies=admin_cookie)).text
+        for tab in ("overview", "captions", "translations", "settings"):
+            assert f'data-booth-tab="{tab}"' in html
+            assert f'data-booth-panel="{tab}"' in html
+        # Each tab saves on its own, so the three old stacked "Save Settings" buttons are gone.
+        assert "Save Settings" not in html
+        for action, label in (
+            ("transcription-settings", "Save caption settings"),
+            ("translation-settings", "Save translation settings"),
+            ("edit", "Save booth details"),
+        ):
+            assert html.count(f'action="{url}{action}"') == 1
+            assert label in html
+        # The overlay link row from #1084 stays on the Overview tab.
+        assert "Subtitles Overlay (OBS / vMix)" in html
+
+    @pytest.mark.anyio
+    async def test_booth_detail_coordinator_sees_the_overview_only(self, room_scope_events):
+        scope = room_scope_events
+        url = f"/admin/events/{scope['event_a']}/rooms/{scope['room_a']}/booths/{scope['booth_a']}/"
+        async with _client() as c:
+            resp = await c.get(url, cookies=scope["coordinator_cookie"])
+        assert resp.status_code == 200
+        assert "Participant Roster" in resp.text
+        for owner_only in ("data-booth-tabs", "booth-detail.js", "Delete Booth", "transcription-settings"):
+            assert owner_only not in resp.text
+
+    @pytest.mark.anyio
+    async def test_booth_detail_engines_come_from_the_room_catalog(self, admin_cookie, seed_event):
+        from portal.crypto import encrypt_val
+        from portal.models import Event
+
+        event, room, booth = seed_event
+        url = f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/"
+        async with _client() as c:
+            html = (await c.get(url, cookies=admin_cookie)).text
+        assert "Whisper (built in) — free, downloads the first time" in html
+        assert "NLLB (built in)" in html
+        assert "Deepgram Nova" not in html
+        # Services without a key are named once, in a hint for each kind.
+        assert html.count("appear here once you add their API key") == 2
+        # Cloud captions also need the event's switch, so the captions hint says so.
+        assert html.count("Enable External Transcription APIs") == 1
+
+        await _update_row(Event, event.id, encrypted_deepgram_api_key=encrypt_val("k"), transcription_api_enabled=True)
+        async with _client() as c:
+            html = (await c.get(url, cookies=admin_cookie)).text
+        assert "Deepgram Nova — uses your API key" in html
+
+    @pytest.mark.anyio
+    async def test_booth_detail_keeps_a_saved_model_that_is_no_longer_offered(self, admin_cookie, seed_event):
+        from portal.models import DBBooth
+
+        event, room, booth = seed_event
+        await _update_row(
+            DBBooth,
+            booth.id,
+            transcription_provider="elevenlabs",
+            transcription_model="scribe_v2",
+            translation_provider="anthropic",
+            translation_model="claude-3-haiku-20240307",
+        )
+        async with _client() as c:
+            html = (
+                await c.get(f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/", cookies=admin_cookie)
+            ).text
+        # The old ElevenLabs name maps onto the current streaming model, selected once.
+        assert 'value="scribe_v2_realtime" data-provider="elevenlabs" selected' in html
+        assert 'value="scribe_v2"' not in html
+        # A saved model that is not offered stays selectable, so saving never swaps it silently.
+        assert (
+            'value="claude-3-haiku-20240307" data-provider="anthropic" selected>claude-3-haiku-20240307 (current)'
+            in html
+        )
+        # Its service has no key now: still selected, told how to keep it.
+        assert '<option value="anthropic" selected>Anthropic — add its API key to keep using it</option>' in html
+
+    @pytest.mark.anyio
+    async def test_saving_a_tab_returns_to_it_with_a_notice(self, admin_cookie, seed_event):
+        event, room, booth = seed_event
+        url = f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/"
+        async with _client() as c:
+            translation = await c.post(
+                f"{url}translation-settings",
+                data={"translation_provider": "local", "translation_model": "nllb-200-distilled-600M"},
+                cookies=admin_cookie,
+                follow_redirects=False,
+            )
+            details = await c.post(
+                f"{url}edit",
+                data={"language_name": "English", "language_code": "en"},
+                cookies=admin_cookie,
+                follow_redirects=False,
+            )
+            pages = {
+                saved: (await c.get(f"{url}?saved={saved}", cookies=admin_cookie)).text
+                for saved in ("translations", "settings")
+            }
+        assert translation.headers["location"] == f"{url}?saved=translations#translations"
+        assert details.headers["location"] == f"{url}?saved=settings#settings"
+        assert "Translation settings saved." in pages["translations"]
+        assert "Booth details saved." in pages["settings"]
+
+    @pytest.mark.anyio
+    async def test_booth_detail_ignores_unknown_notice_keys(self, admin_cookie, seed_event):
+        event, room, booth = seed_event
+        url = f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/"
+        async with _client() as c:
+            html = (await c.get(f"{url}?saved=<b>hi</b>&worker=restarted", cookies=admin_cookie)).text
+        assert "alert-success" not in html
+        assert "<b>hi</b>" not in html
+
+    @pytest.mark.anyio
+    async def test_saving_captions_says_what_happened_to_the_worker(self, admin_cookie, seed_event, monkeypatch):
+        from types import SimpleNamespace
+
+        from portal.routers import admin
+
+        event, room, booth = seed_event
+        url = f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/"
+        calls: list[str] = []
+
+        async def stop(*_args, **_kwargs):
+            calls.append("stop")
+
+        async def start(*_args, **_kwargs):
+            calls.append("start")
+
+        async def broadcast(*_args, **_kwargs):
+            pass
+
+        monkeypatch.setattr(admin, "stop_transcription_worker", stop)
+        monkeypatch.setattr(admin, "start_transcription_worker", start)
+        monkeypatch.setattr(admin, "broadcast_transcription", broadcast)
+
+        async def save(c, enabled: bool):
+            data = {"transcription_provider": "local", "transcription_model": "tiny"}
+            if enabled:
+                data["transcription_enabled"] = "true"
+            resp = await c.post(f"{url}transcription-settings", data=data, cookies=admin_cookie, follow_redirects=False)
+            assert resp.status_code == 303
+            location = resp.headers["location"]
+            page = await c.get(location.split("#")[0], cookies=admin_cookie)
+            return location, page.text
+
+        async with _client() as c:
+            # Nobody is live: nothing to restart, the settings wait for the next session.
+            location, page = await save(c, enabled=True)
+            assert location == f"{url}?saved=captions#captions"
+            assert "Caption settings saved. These settings are used the next time an interpreter goes live." in page
+            assert calls == []
+
+            monkeypatch.setattr(
+                admin.booths,
+                "get_booth_sync",
+                lambda _bid: SimpleNamespace(active_interpreter_id="p1", ingest_status="connected", participants={}),
+            )
+            location, page = await save(c, enabled=True)
+            assert location == f"{url}?saved=captions&worker=kept#captions"
+            assert "The caption worker was restarted" not in page
+            assert "Nothing changed, so the caption worker kept running." in page
+            assert calls == []
+
+            await _update_row(type(booth), booth.id, transcription_model="base")
+            location, page = await save(c, enabled=True)
+            assert location == f"{url}?saved=captions&worker=restarted#captions"
+            assert "Caption settings saved. The caption worker was restarted with the new settings." in page
+            assert calls == ["stop", "start"]
+
+            location, page = await save(c, enabled=False)
+            assert location == f"{url}?saved=captions&worker=stopped#captions"
+            assert "The caption worker was stopped." in page
+            assert calls == ["stop", "start", "stop"]
+
+    @pytest.mark.anyio
+    async def test_booth_detail_shows_next_steps_until_the_booth_is_configured(self, admin_cookie, seed_event):
+        from portal.database import create_invite_token, get_session
+
+        event, room, booth = seed_event
+        url = f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/"
+        async with _client() as c:
+            fresh = (await c.get(url, cookies=admin_cookie)).text
+            # Inviting an interpreter does not configure captions or translations, so the list stays.
+            async with get_session() as s:
+                await create_invite_token(s, booth_id=booth.id, role="interpreter")
+            invited = (await c.get(url, cookies=admin_cookie)).text
+            await c.post(
+                f"{url}transcription-settings",
+                data={
+                    "transcription_enabled": "true",
+                    "transcription_provider": "local",
+                    "transcription_model": "tiny",
+                },
+                cookies=admin_cookie,
+            )
+            configured = (await c.get(url, cookies=admin_cookie)).text
+        assert "Here's what's next" in fresh
+        assert 'data-booth-tab-link="captions"' in fresh
+        assert 'data-booth-tab-link="translations"' in fresh
+        assert "Here's what's next" in invited
+        assert "Here's what's next" not in configured
+
+    @pytest.mark.anyio
+    async def test_a_new_booth_offers_a_real_translation_service(self, admin_cookie, seed_event):
+        """A new booth has no translation service saved; the form must not post the text "None" (#1081)."""
+        event, room, booth = seed_event
+        url = f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/"
+        async with _client() as c:
+            html = (await c.get(url, cookies=admin_cookie)).text
+            # Saving the tab with the first service it offers must work.
+            saved = await c.post(
+                f"{url}translation-settings",
+                data={"translation_provider": "local", "translation_model": "nllb-200-distilled-600M"},
+                cookies=admin_cookie,
+                follow_redirects=False,
+            )
+        assert 'value="None"' not in html
+        assert "None — add its API key" not in html
+        assert 'data-provider="None"' not in html
+        assert saved.status_code == 303
 
     @pytest.mark.anyio
     async def test_booth_detail_shows_whep_url(self, admin_cookie, seed_event):
