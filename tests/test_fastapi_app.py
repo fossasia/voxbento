@@ -1645,14 +1645,14 @@ def test_list_event_booths_empty():
 
 
 def test_interpreter_booth_by_identity_requires_auth():
-    """Unauthenticated /interpreter/{slug}/{lang} redirects to login."""
+    """Unauthenticated /interpreter/{event_slug}/{room_id}/{language_code} redirects to login."""
     res = client.get("/interpreter/myevent/1/en", follow_redirects=False)
     assert res.status_code == 303
     assert "/login" in res.headers["location"]
 
 
 def test_interpreter_booth_by_identity_page():
-    """GET /interpreter/{event_slug}/{language_code} renders the booth page."""
+    """GET /interpreter/{event_slug}/{room_id}/{language_code} renders the booth page."""
     res = client.get("/interpreter/myevent/1/en", cookies=_interpreter_cookie("myevent", "en"))
     assert res.status_code == 200, res.text
     assert b"myevent-1-en" in res.content

@@ -118,9 +118,12 @@ async def test_invite_token_join(client, test_db):
     
     resp = await client.get(f'/join/{token.token}', follow_redirects=False)
     assert resp.status_code == 303
-    assert '/interpreter/test/en' in resp.headers['location']
+    # A redeemed invite token sets session_token and lands on the interpreter lobby
+    assert resp.headers['location'] == '/interpreter'
     assert 'session_token' in resp.cookies
 ```
+
+For booth page rendering tests requiring the three-part URL (`/interpreter/{event_slug}/{room_id}/{language_code}`), see `test_interpreter_booth_by_identity_page` in `tests/test_fastapi_app.py`.
 
 ### WebSocket Tests
 ```python

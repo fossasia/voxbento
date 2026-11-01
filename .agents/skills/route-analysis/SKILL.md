@@ -100,8 +100,9 @@ Never call `RedirectResponse(url=user_input)` directly.
 
 | Endpoint | Key behavior |
 |---|---|
-| `GET /join/{token}` | Validates + redeems invite token; sets `session_token` cookie; redirects to booth or listener |
-| `GET /interpreter/{event_slug}/{language_code}` | Resolves Jitsi URL from DB, relay WHEP, creates MediaMTX path; passes `granted_role` to template |
+| `GET /join/{token}` | Validates + redeems invite token; sets `session_token` cookie; redirects to the interpreter lobby (`/interpreter`) |
+| `GET /interpreter/{event_slug}/{room_id}/{language_code}` | Resolves Jitsi URL from DB, relay WHEP, creates MediaMTX path; passes `granted_role` to template |
+| `GET /interpreter` | Interpreter lobby ("My booths"); lists assigned booths with their three-part booth URLs |
 | `GET /api/events/{slug}/booths/{lang}/whip-url` | Validates event ownership + active-interpreter status before returning WHIP URL |
 | `WS /ws/booth/{booth_id}` | Full WebSocket lifecycle; role never from client; scope validated; disconnect cleans up participant |
 | `WS /ws/captions/{booth_id}` | Open subscription; receives `caption` + `booth:state`; used by listener page |

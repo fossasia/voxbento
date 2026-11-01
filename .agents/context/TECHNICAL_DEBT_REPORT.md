@@ -71,11 +71,9 @@
 
 ---
 
-### TD-10: Legacy booth URL `/interpreter/{booth_id}` still active
-**File:** `portal/routers/interpreter.py` — `GET /interpreter/{booth_id}`
-**Problem:** Free-form booth IDs bypass the structured identity scheme. No event scope, no relay booth, no per-room Jitsi URL.
-**Impact:** Low — kept for backward compatibility; new features do not support it.
-**Fix:** Deprecate and remove once all clients migrate to `/interpreter/{event_slug}/{language_code}`.
+### TD-10: [RESOLVED] Legacy booth URL `/interpreter/{booth_id}`
+**File:** `portal/routers/interpreter.py`
+**Status:** Resolved. The legacy route no longer exists. Interpreter booths are now addressed through `/interpreter/{event_slug}/{room_id}/{language_code}`, and `/interpreter` serves as the interpreter lobby ("My booths"). The structured identity is enforced by `make_booth_id(event_slug, room_id, language_code)`.
 
 ---
 

@@ -140,7 +140,7 @@ async def get_token(body: Annotated[TokenRequest | None, Body()] = None) -> Toke
 
 @router.get("/join/{token}")
 async def join_via_invite(request: Request, token: str) -> RedirectResponse:
-    """Validate an invite token, issue a JWT cookie, and redirect to the booth."""
+    """Validate an invite token, issue a JWT cookie, and redirect to the interpreter lobby."""
     async with get_session() as session:
         try:
             tok = await redeem_invite_token(session, token)

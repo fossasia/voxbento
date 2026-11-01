@@ -62,7 +62,7 @@ Open the room you just created and navigate to **Booths**. Click **Add Booth** a
       **Example:** `English`, `Français`, `Español`
     
 
-    Click **Add Booth**. Voxbento creates the booth and assigns it the MediaMTX stream path `{event_slug}/{language_code}` — for example, `pycon2026/en`.
+    Click **Add Booth**. Voxbento creates the booth and assigns it the MediaMTX stream path `{event_slug}/{room_id}/{language_code}` — for example, `pycon2026/14/en`.
   ### Generate an invite token for an interpreter
 
 Open the **Booth Detail** page for the booth you created. Scroll to the **Invite Tokens** section and fill in:
@@ -99,24 +99,24 @@ When the interpreter clicks the invite link, Voxbento:
 
     1. Validates the token (checks it has not expired and has not been used before).
     2. Marks the token as redeemed.
-    3. Issues a signed session cookie encoding the interpreter's role, event, and language.
-    4. Redirects the interpreter to their booth page.
+    3. Issues a signed session cookie encoding the interpreter's role, event, room, and language.
+    4. Redirects the interpreter to the interpreter lobby (**My booths** at `/interpreter`), where their assigned booth is listed alongside an audio check.
 
-    The interpreter booth page URL follows this pattern:
+    Clicking **Enter booth** from the lobby opens the interpreter console, which follows this URL pattern:
 
     ```text
-    /interpreter/{event_slug}/{language_code}
+    /interpreter/{event_slug}/{room_id}/{language_code}
     ```
 
     For example:
 
     ```text
-    /interpreter/pycon2026/en
+    /interpreter/pycon2026/14/en
     ```
 
     :::info
-The interpreter page URL is shown on the Booth Detail page. Share it directly with interpreters who have registered accounts — they can bookmark it and return without needing a new invite token each time.
-:::
+    The canonical interpreter booth link is also displayed under **Links** on the **Booth Detail** page in the admin panel. Coordinators can copy and share this link directly with authorized interpreters without generating a new invite token.
+    :::
 
     Inside the booth, the interpreter sees an embedded Jitsi iframe showing the floor session (the speaker or presenter), a microphone control, and a **Go Live** button.
   ### Interpreter clicks Go Live

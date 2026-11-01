@@ -24,7 +24,7 @@
 | POST | `/api/auth/remove-password` | user | — | JSON `{password}`; verifies it, then clears `password_hash` so the user signs in with email links only |
 | GET | `/account/hosting-request` | user | `account_hosting_request.html` | Hosting access request form (#768); redirects to `/account` for hosts, Admins and people with an open request |
 | POST | `/account/hosting-request` | user + same-origin | `account_hosting_request.html` | Validates, saves `HostingRequest`, emails `HOSTING_REQUESTS_EMAIL` → `/account?success=hosting_request_sent`; 400 re-renders the form with errors |
-| GET | `/join/{token}` | open | — | Validates invite token, sets `session_token` → booth or listener |
+| GET | `/join/{token}` | open | — | Validates invite token, sets `session_token` → interpreter lobby (`/interpreter`) |
 
 ---
 
@@ -40,8 +40,8 @@ and `docs/registration-protection.md`. Other routes are unaffected.
 
 | Method | Path | Auth | Template | Notes |
 |---|---|---|---|---|
-| GET | `/interpreter/{event_slug}/{language_code}` | session or user | `interpreter_booth.html` | **Preferred URL**; resolves Jitsi URL, relay WHEP, mediamtx path |
-| GET | `/interpreter/{booth_id}` | session or user | `interpreter_booth.html` | Legacy free-form booth ID; no event scope |
+| GET | `/interpreter/{event_slug}/{room_id}/{language_code}` | session or user | `interpreter_booth.html` | **Preferred URL**; resolves Jitsi URL, relay WHEP, mediamtx path |
+| GET | `/interpreter` | session or user | `interpreter_landing.html` | Interpreter lobby ("My booths"); pre-flight audio check and links to each assigned booth |
 | GET | `/listener/{event_slug}` | session or user | `listener-event.html` | Lists rooms/booths for event with WHEP URLs |
 | GET | `/overlay/{event_slug}/{room_id}/{language_code}` | join code or active user | `overlay.html` | Transparent OBS/vMix subtitle layer; booths, floor, and translation-only channels |
 | GET | `/overlay/{event_slug}/{room_id}/{language_code}/session` | join code or active user | JSON | Revalidates access/channel and issues a fresh caption token; no-store |
