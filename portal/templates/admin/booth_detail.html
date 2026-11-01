@@ -262,7 +262,7 @@
         <div class="field">
           <label for="translation_provider">Service</label>
           <select id="translation_provider" name="translation_provider">
-            {% if not catalog.find("translation", booth.translation_provider) %}
+            {% if booth.translation_provider and not catalog.find("translation", booth.translation_provider) %}
             <option value="{{ booth.translation_provider }}" selected>{{ booth.translation_provider | capitalize }} — add its API key to keep using it</option>
             {% endif %}
             {% for engine in catalog.translation %}
