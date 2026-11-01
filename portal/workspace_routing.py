@@ -30,6 +30,8 @@ _WORKSPACE_ROUTE_PATTERNS = (
     re.compile(r"/workspace/events/by-slug/[^/]+/rooms/by-eventyay/[^/]+/?"),
     re.compile(r"/workspace/events/\d+/rooms/\d+/ai-vocabulary/(?:upload|export|delete)/?"),
     re.compile(r"/workspace/events/\d+/rooms/\d+/(?:program-ingest|program-relay|program-sender|meeting-source)"),
+    re.compile(r"/workspace/events/\d+/youtube(?:/(?:connect|broadcasts))?/?"),
+    re.compile(r"/workspace/events/\d+/rooms/\d+/youtube/broadcast"),
     re.compile(r"/workspace/events/\d+/rooms/\d+/members(?:/\d+/(?:invite|delete))?/?"),
     re.compile(r"/workspace/events/\d+/rooms/\d+/booths/?"),
     re.compile(

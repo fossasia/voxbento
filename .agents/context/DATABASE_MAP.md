@@ -248,6 +248,7 @@ Tracks which languages the translation worker should generate for a given room o
 | 029 | `029_add_can_host_to_users.py` | `users.can_host`, `users.hosting_requested_at`, `hosting_invitations` table |
 | 030 | `030_hosting_requests.py` | `hosting_requests` table with partial unique index for open requests |
 | 031 | `031_add_ai_interpretation_settings.py` | `rooms.floor_ai_interpreter_persona`, `rooms.floor_ai_interpretation_style`, `rooms.floor_ai_vocabulary_enabled`, `ai_vocabulary_entries` table |
+| 039 | `039_youtube_connections.py` | `youtube_connections` table, `rooms.youtube_broadcast_id`, `rooms.youtube_stream_id` |
 
 Run migrations: `uv run alembic upgrade head`
 
@@ -311,6 +312,17 @@ key to its transport), nullable `program_relay_server` (normalized allow-listed 
 URL), `program_relay_key_enc` (Fernet ciphertext of the YouTube stream key; write-only,
 never serialize or log) and `program_relay_updated_at`. Helpers live in
 `portal/program_relay.py` (`store_destination`, `clear_destination`, `destination`).
+
+## Migration 039 — Sign in with YouTube (#1087)
+
+Table `youtube_connections` (model `YouTubeConnection`), one row per event (unique
+`event_id`, cascade on event delete): `channel_id` (String(64)), `channel_title`
+(String(200)), `refresh_token_enc` (Text, Fernet ciphertext of the Google refresh token;
+write-only, never serialize or log), `scope` (String(500)), nullable
+`connected_by_user_id` (→ `users.id`, SET NULL), nullable `last_error` (String(300), the
+"sign in again" message), `created_at`, `updated_at`. Room fields: nullable
+`youtube_broadcast_id` (String(32)) and `youtube_stream_id` (String(64)). Helpers live in
+`portal/youtube_account.py` (`get_connection`, `link_broadcast`, `unlink_event_rooms`).
 
 ## Migration 035 — per-language AI voice (#1005)
 

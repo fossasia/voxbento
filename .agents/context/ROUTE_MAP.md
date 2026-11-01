@@ -202,6 +202,37 @@ with `?error=invalid_role&role=…` and the page explains why.
   `GET /relays`, `PUT /relays/{room_id}` `{source, destination, fingerprint}`,
   `DELETE /relays/{room_id}`, unauthenticated `GET /healthz`.
 
+## Sign in with YouTube routes (#1087)
+
+`portal/routers/youtube.py`; see `docs/youtube-connect.md`. Event-owner
+(`require_event_owner`), `Cache-Control: no-store`, 404 while
+`YOUTUBE_OAUTH_CLIENT_ID`/`_SECRET` are unset (except the status route, which
+returns `available: false`). PUT/DELETE are origin-checked.
+
+- `GET /workspace/events/{event_id}/youtube`: `{available, connected, channel_title,
+  channel_id, connected_at, last_error}`. `DELETE` revokes the refresh token at Google
+  (unless another event uses the same channel), deletes the connection and clears every
+  room's broadcast.
+- `GET /workspace/events/{event_id}/youtube/connect?room_id=N`: sets the signed
+  `vb_yt_oauth` cookie (nonce, PKCE verifier, event, room, user; HttpOnly, SameSite=Lax,
+  path `/youtube/oauth`, 10 min) and 303s to Google.
+- `GET /youtube/oauth/callback` (not a workspace route; `/oauth/` keeps `code=` out of the
+  access log): 400 bad/expired cookie or state mismatch, 403 different signed-in user or no
+  ownership; otherwise stores the encrypted refresh token and 303s to the room page with
+  `?youtube=connected|cancelled|error|no-channel#audio`. A different channel than before
+  clears every room's broadcast and the relay destination filled in from it. Link,
+  reconnect and disconnect are serialized per event.
+- `GET /workspace/events/{event_id}/youtube/broadcasts`: active + upcoming broadcasts, live
+  first; 409 `{detail, last_error}` when access was revoked.
+- `PUT/DELETE /workspace/events/{event_id}/rooms/{room_id}/youtube/broadcast`: PUT
+  `{broadcast}` (link or id) links the room and, in relay mode, stores the bound stream's
+  ingest address and key as the relay destination; 422 bad link / not on the channel / no
+  bound stream, 409 sign in again, 502 YouTube unavailable. The key is never returned.
+  DELETE unlinks and keeps the relay destination.
+- `GET .../program-ingest` adds `youtube` (`broadcast_id`, `title`, `life_cycle_status`,
+  `stream_status`, `health`, `latency_preference`, `checked_at`, or `{error}`) when the room
+  has a linked broadcast on a connected channel; cached 30 s per room.
+
 ## Meeting source routes (#747)
 
 - `GET/POST /workspace/events/{event_id}/rooms/{room_id}/meeting-source`:
