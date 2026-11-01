@@ -1110,5 +1110,5 @@ async def update_event_api_keys(
         if value is not None:
             setattr(event, event_attr, encrypt_val(value) if value else None)
 
-    await db.commit()
+    await db.flush()
     return {"status": "ok"}

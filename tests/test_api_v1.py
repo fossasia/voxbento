@@ -147,6 +147,73 @@ async def test_update_event_api_keys_only_changes_fields_sent_in_payload(event_a
 
 
 @pytest.mark.anyio
+async def test_update_event_api_keys_persists_after_request_completes(event_api_access):
+    """Verify API keys updated via flush persist across database sessions (#1040)."""
+    access_token, event_id = event_api_access
+    headers = {"Authorization": f"Bearer {access_token}"}
+
+    async with _client() as client:
+        response = await client.patch(
+            "/api/v1/events/api-key-test/api_keys",
+            json={"anthropic_api_key": "persisted-anthropic-key"},
+            headers=headers,
+        )
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
+
+    async with get_session() as session:
+        event = await session.get(Event, event_id)
+        assert event is not None
+        assert event.encrypted_anthropic_api_key is not None
+        assert decrypt_val(event.encrypted_anthropic_api_key) == "persisted-anthropic-key"
+
+
+@pytest.mark.anyio
+async def test_update_event_api_keys_rolls_back_on_lifecycle_error_after_flush(event_api_access, monkeypatch):
+    """Verify that an error occurring after flush in the transaction lifecycle rolls back changes (#1040)."""
+    access_token, event_id = event_api_access
+    headers = {"Authorization": f"Bearer {access_token}"}
+
+    from fastapi_app import app
+    from portal.database import get_db_session
+
+    initial_key = "initial-anthropic-key"
+    async with get_session() as session:
+        event = await session.get(Event, event_id)
+        assert event is not None
+        event.encrypted_anthropic_api_key = encrypt_val(initial_key)
+        await session.flush()
+        initial_ciphertext = event.encrypted_anthropic_api_key
+
+    async def _failing_db_session():
+        async with get_session() as session:
+            orig_flush = session.flush
+
+            async def _flush_and_fail(*args, **kwargs):
+                await orig_flush(*args, **kwargs)
+                raise RuntimeError("Simulated transaction failure post-flush")
+
+            monkeypatch.setattr(session, "flush", _flush_and_fail)
+            yield session
+
+    monkeypatch.setitem(app.dependency_overrides, get_db_session, _failing_db_session)
+
+    async with _client() as client:
+        with pytest.raises(RuntimeError, match="Simulated transaction failure post-flush"):
+            await client.patch(
+                "/api/v1/events/api-key-test/api_keys",
+                json={"anthropic_api_key": "uncommitted-anthropic-key"},
+                headers=headers,
+            )
+
+    async with get_session() as session:
+        event = await session.get(Event, event_id)
+        assert event is not None
+        assert event.encrypted_anthropic_api_key == initial_ciphertext
+        assert decrypt_val(event.encrypted_anthropic_api_key) == initial_key
+
+
+@pytest.mark.anyio
 async def test_app_creating_an_event_for_another_organizer_adds_only_the_organizer():
     """#757: the organizer becomes Event owner; the app's developer gets no automatic access.
 
