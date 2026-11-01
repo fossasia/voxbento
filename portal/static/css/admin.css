@@ -1,47 +1,49 @@
 /* ── Eventyay Admin Panel Styles ─────────────────────────────────────────── */
 
 :root {
+  /* Values come from the shared tokens in tokens.css (#243), linked before this file. */
+
   /* Brand */
-  --color-primary: #2563eb;
-  --color-primary-hover: #1d4ed8;
-  --color-primary-active: #1e40af;
-  --color-primary-subtle: #eef4ff;
-  --color-primary-border: #cddffb;
+  --color-primary: var(--vb-color-primary);
+  --color-primary-hover: var(--vb-color-primary-hover);
+  --color-primary-active: var(--vb-color-primary-active);
+  --color-primary-subtle: var(--vb-color-primary-subtle);
+  --color-primary-border: var(--vb-color-primary-border);
 
   /* Surfaces */
-  --color-bg: #eef1f7;
-  --color-surface: #ffffff;
-  --color-surface-2: #f7f9fc;
-  --color-border: #e2e7f0;
-  --color-border-strong: #d0d7e6;
+  --color-bg: var(--vb-color-bg);
+  --color-surface: var(--vb-color-surface);
+  --color-surface-2: var(--vb-color-surface-2);
+  --color-border: var(--vb-color-border);
+  --color-border-strong: var(--vb-color-border-strong);
 
   /* Text */
-  --color-text: #101828;
-  --color-text-secondary: #5b6577;
-  --color-muted: #8892a4;
+  --color-text: var(--vb-color-text);
+  --color-text-secondary: var(--vb-color-text-secondary);
+  --color-muted: var(--vb-color-muted);
 
   /* Status */
-  --color-danger: #dc2626;
-  --color-danger-hover: #b91c1c;
-  --color-success: #16a34a;
-  --color-warning: #f59e0b;
-  --color-live: #16a34a;
-  --color-offline: #9ca3af;
+  --color-danger: var(--vb-color-danger);
+  --color-danger-hover: var(--vb-color-danger-hover);
+  --color-success: var(--vb-color-success);
+  --color-warning: var(--vb-color-warning);
+  --color-live: var(--vb-color-live);
+  --color-offline: var(--vb-color-offline);
 
   /* Radius */
-  --radius-lg: 16px;
-  --radius: 12px;
-  --radius-md: 12px;
-  --radius-sm: 8px;
+  --radius-lg: var(--vb-radius-lg);
+  --radius: var(--vb-radius-md);
+  --radius-md: var(--vb-radius-md);
+  --radius-sm: var(--vb-radius-sm);
 
   /* Shadows */
-  --shadow-sm: 0 1px 2px rgba(16,24,40,0.04), 0 1px 3px rgba(16,24,40,0.06);
-  --shadow-md: 0 4px 12px rgba(16,24,40,0.08);
-  --shadow-lg: 0 12px 32px rgba(16,24,40,0.12);
+  --shadow-sm: var(--vb-shadow-sm);
+  --shadow-md: var(--vb-shadow-md);
+  --shadow-lg: var(--vb-shadow-lg);
 
   /* Typography */
-  --font: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-  --font-mono: 'SF Mono', 'Fira Code', ui-monospace, monospace;
+  --font: var(--vb-font);
+  --font-mono: var(--vb-font-mono);
 
   /* Compatibility aliases (used by some templates) */
   --bg-card: var(--color-surface);
@@ -1909,3 +1911,75 @@ code { font-family: var(--font-mono); font-size: 0.85em; background: var(--color
 .wizard-actions > .btn-lg:last-child { margin-left: auto; }
 
 .rs-change-list { margin: 12px 0 24px; padding-left: 24px; }
+
+/* Subtitles overlay configurator (event detail) */
+.overlay-preview {
+  --preview-checker: color-mix(in srgb, var(--vb-color-text) 88%, var(--vb-color-surface));
+  position: relative;
+  aspect-ratio: 16 / 9;
+  overflow: hidden;
+  border-radius: var(--vb-radius-sm);
+  background-color: var(--vb-color-text);
+  background-image:
+    linear-gradient(45deg, var(--preview-checker) 25%, transparent 25%, transparent 75%, var(--preview-checker) 75%),
+    linear-gradient(45deg, var(--preview-checker) 25%, transparent 25%, transparent 75%, var(--preview-checker) 75%);
+  background-position: 0 0, 10px 10px;
+  background-size: 20px 20px;
+}
+
+.overlay-preview iframe {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 1920px;
+  height: 1080px;
+  border: 0;
+  transform-origin: 0 0;
+  pointer-events: none;
+}
+
+.overlay-preview-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin: 0.75rem 0 1rem;
+}
+
+.overlay-controls {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.overlay-control {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  font-weight: 600;
+}
+
+.overlay-position {
+  flex-direction: row;
+  flex-wrap: wrap;
+}
+
+.overlay-position legend {
+  width: 100%;
+  margin-bottom: 0.35rem;
+  padding: 0;
+}
+
+.overlay-position label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  margin-right: 0.75rem;
+  font-weight: 400;
+}
