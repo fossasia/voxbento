@@ -1,7 +1,9 @@
 # Caddyfile — voxbento.com production
 #
 # Deploy:
-#   sudo cp Caddyfile /etc/caddy/Caddyfile
+#   sudo caddy validate --config Caddyfile --adapter caddyfile
+#   sudo install -m 644 Caddyfile /etc/caddy/Caddyfile.next
+#   sudo mv -f /etc/caddy/Caddyfile.next /etc/caddy/Caddyfile
 #   sudo systemctl reload caddy
 #
 # DNS requirements:
@@ -28,6 +30,10 @@
 
 # ── Interpretation Portal ─────────────────────────────────────────────────────
 voxbento.com {
+    # Host-owned routes (e.g. Sentinel) survive deploys without editing this file.
+    # An empty glob is valid. Use an absolute path so preflight imports the same files.
+    import /etc/caddy/voxbento-routes/*.caddy
+
     # Authentication callbacks are exclusively Docker-internal.
     handle /internal/* {
         respond 404
@@ -56,7 +62,11 @@ voxbento.com {
     }
 
     # ── FastAPI portal (catch-all) ────────────────────────────────────────────
-    reverse_proxy localhost:8000
+    # X-Forwarded-For is kept only from Cloudflare's edge (https://www.cloudflare.com/ips/)
+    # and replaced for every other peer. Keep in sync with FORWARDED_ALLOW_IPS in docker-compose.yml.
+    reverse_proxy localhost:8000 {
+        trusted_proxies 173.245.48.0/20 103.21.244.0/22 103.22.200.0/22 103.31.4.0/22 141.101.64.0/18 108.162.192.0/18 190.93.240.0/20 188.114.96.0/20 197.234.240.0/22 198.41.128.0/17 162.158.0.0/15 104.16.0.0/13 104.24.0.0/14 172.64.0.0/13 131.0.72.0/22 2400:cb00::/32 2606:4700::/32 2803:f800::/32 2405:b500::/32 2405:8100::/32 2a06:98c0::/29 2c0f:f248::/32
+    }
 }
 
 # ── Jitsi Meet monitoring feed ────────────────────────────────────────────────

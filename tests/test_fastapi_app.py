@@ -136,6 +136,27 @@ def test_token_redactor_handles_legacy_api_query_credentials():
     assert "[REDACTED]" in output
 
 
+def test_token_redactor_hides_overlay_join_code():
+    import logging
+
+    from fastapi_app import _UvicornTokenRedactor
+
+    # OBS / vMix overlays carry the join code on every page load and session refresh.
+    record = logging.LogRecord(
+        name="uvicorn.access",
+        level=logging.INFO,
+        pathname="",
+        lineno=0,
+        msg='%s - "%s %s HTTP/%s" %d',
+        args=("127.0.0.1:1234", "GET", "/overlay/demo/1/en/session?code=ROOM42", "1.1", 200),
+        exc_info=None,
+    )
+    _UvicornTokenRedactor().filter(record)
+    output = record.getMessage()
+    assert "ROOM42" not in output
+    assert "code=[REDACTED]" in output
+
+
 def test_token_redactor_hides_internal_hook_secret():
     import logging
 
@@ -2444,8 +2465,9 @@ def test_ws_captions_enforces_anonymous_admission_limit(monkeypatch):
         with client.websocket_connect("/ws/captions/test-limit-1-en"):
             # Second anonymous connection exceeds limit of 1 and is rejected with 1008
             with pytest.raises(WebSocketDisconnect) as exc_info:
-                with client.websocket_connect("/ws/captions/test-limit-1-en"):
-                    pass
+                # Accepted then closed, so the browser sees 1008 rather than an HTTP 403.
+                with client.websocket_connect("/ws/captions/test-limit-1-en") as ws:
+                    ws.receive_text()
             assert exc_info.value.code == 1008
 
 
@@ -2463,8 +2485,8 @@ def test_ws_captions_zero_anonymous_limit_does_not_populate_anon_rooms(monkeypat
     assert booth_id not in listener_manager._anon_rooms
 
     with pytest.raises(WebSocketDisconnect) as exc_info:
-        with client.websocket_connect(f"/ws/captions/{booth_id}"):
-            pass
+        with client.websocket_connect(f"/ws/captions/{booth_id}") as ws:
+            ws.receive_text()
     assert exc_info.value.code == 1008
 
     # Must NOT have created an empty set entry in _anon_rooms!

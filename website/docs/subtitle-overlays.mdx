@@ -1,0 +1,107 @@
+---
+title: "Live caption overlays for vMix and OBS"
+sidebarTitle: "Caption overlays"
+description: "Add a transparent live caption source for each room and language to your broadcast."
+---
+
+Each overlay URL displays **one room and language**, with a transparent background
+and no audio. Add separate browser inputs for the languages you want to broadcast.
+The overlay reads existing live captions; it does not start transcription or
+translate text on its own.
+
+## Prepare the caption source
+
+1. Open your event in **My events** and generate a **Listener access** join code
+   if the event does not have one yet.
+2. Configure your room's captions and AI languages, or enable transcription on
+   an interpreter booth. Connect the room audio or put the interpreter on air.
+3. Open **Caption overlays** from the event's quick actions, then select the room
+   and language under **Source & appearance**. The dedicated page keeps the preview,
+   styling controls, and OBS/vMix setup instructions together, off the event overview.
+   The list includes every interpreter booth, enabled floor captions, enabled
+   floor translation targets, and enabled booth translation targets—even targets
+   without their own interpreter booth. Disabled translation targets are omitted.
+4. Set position, font size, background opacity, and the maximum number of visible
+   lines. **Send test caption** affects only the preview, never a live input.
+5. Check the connection status and source description, then **Copy URL**.
+
+All language codes supported by VoxBento are accepted, including languages written
+right-to-left. Rendering uses the browser's installed fallback fonts; install fonts
+for the scripts you broadcast on the streaming computer if glyphs are missing.
+Long captions wrap within the video and are limited to the chosen line count.
+Older segments are dimmed. Text clears after eight seconds without caption activity.
+
+The room page also has **All caption overlay URLs**, including translation-only
+languages. Each booth's **Links** card contains its source-language overlay URL.
+These links use default styling; use the **Caption overlays** page to customize them.
+If several producers send captions to the same room/language, they share that
+channel in the existing pipeline. Avoid enabling competing sources for one feed.
+
+## vMix
+
+1. Select **Add Input → Web Browser**.
+2. Paste the copied URL. Set **Width: 1920** and **Height: 1080**, then select **OK**.
+3. Use an **Overlay** button (1–4) on that input to composite it over your video.
+   The transparent page needs no chroma key. Do not take the browser input as your
+   full-screen program video unless that is what you intend.
+4. Speak into the selected audio source and verify captions on the program output.
+5. For another language, add another browser input with that language's URL.
+   Select the appropriate input/overlay for the language output you are producing.
+
+See the official [vMix Web Browser documentation](https://www.vmix.com/help28/WebBrowser.html).
+
+## OBS Studio
+
+1. In **Sources**, select **+ → Browser** and name the source for its room/language.
+2. Paste the copied URL and set **Width: 1920**, **Height: 1080**.
+3. Place the browser source above the video source in the Sources list.
+4. Leave **Shutdown source when not visible** disabled to keep captions connected
+   across scene changes. If you enable it, the page reconnects when it loads again.
+5. Speak into the selected source and verify the output. Add separate browser
+   sources/scenes for other languages.
+
+See the official [OBS Browser Source documentation](https://obsproject.com/kb/browser-source).
+
+## Updating styling and access
+
+Configurator changes update the preview and the URL field. Paste the new URL into
+an existing vMix/OBS input to update that input's styling; the configurator does
+not remotely alter saved inputs.
+
+Treat overlay URLs as credentials. Their `code` grants listener access to the
+whole event, not only that language. Anyone with a valid code can view captions;
+a streaming machine does not need a signed-in browser session. Regenerating the
+event join code invalidates saved URLs for future authorization. Replace the URLs
+in every input, then refresh them. Already-connected caption sockets are not
+forcibly disconnected by code rotation; an issued listener token remains usable
+until expiry. Do not use code rotation as an immediate disconnect control.
+
+The overlay refreshes authorization on reconnect, so an expired short-lived
+listener token does not silently break an all-day event after a connection drop.
+Network and server failures retry with backoff. Removed channels and revoked
+credentials stop retrying; update the URL and refresh the input. The workspace
+preview reports connection/recovery status; status messages never appear on air.
+
+## Troubleshooting and rehearsal
+
+- **Connected, but blank:** verify live source audio, transcription/translation
+  settings, provider credentials, and worker capacity. Caption overlays are
+  consumers; provider language support and transcription capacity still apply.
+- **Missing language:** enable that translation target or create its interpreter
+  booth. Enable floor transcription to expose the original floor channel.
+- **Access unavailable:** copy a current join-code URL and refresh the input.
+  Disabled or deleted accounts cannot obtain access using stale login cookies.
+- **Too many attempts:** wait for the shared one-minute join-code attempt window
+  to expire. After ten failed guesses per IPv4 address or IPv6 /64 network, further
+  guesses are blocked across HTTP and WebSocket access. Active account
+  authentication remains available.
+- **Missing characters:** install the relevant script fonts on the broadcast
+  machine. Test a real sentence in each output language before the event.
+- **Captions differ from the audio:** confirm the room/language and source. Allow
+  for transcription/translation latency and your production video path's delay;
+  this feature does not promise encoder-timecode synchronization.
+
+Before production, rehearse actual captions in your installed vMix or OBS version,
+including hiding/showing the source, a network interruption, and a reconnect after
+listener-token expiry. Check transparency, RTL/CJK/Indic scripts as applicable,
+and each selected language. A preview test sentence only validates appearance.
