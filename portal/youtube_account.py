@@ -11,6 +11,7 @@ logged; log lines carry ids and an action name only.
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import logging
@@ -34,7 +35,7 @@ from portal.models import Room, YouTubeConnection
 logger = logging.getLogger(__name__)
 
 AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
-TOKEN_URL = "https://oauth2.googleapis.com/token"
+TOKEN_URL = "https://oauth2.googleapis.com/token"  # nosec B105 - an OAuth endpoint URL, not a secret
 REVOKE_URL = "https://oauth2.googleapis.com/revoke"
 API_BASE = "https://www.googleapis.com/youtube/v3"
 SCOPE = "https://www.googleapis.com/auth/youtube.force-ssl"
@@ -43,6 +44,8 @@ TIMEOUT = 10.0
 # A cached access token is refreshed once it has less than this many seconds left.
 TOKEN_MARGIN_SECS = 60.0
 BROADCAST_PARTS = "snippet,contentDetails,status"
+# liveBroadcasts.list returns at most 50 per page; a few pages covers any real channel at bounded quota.
+MAX_BROADCAST_PAGES = 4
 WATCH_HOSTS = {"youtube.com", "www.youtube.com", "m.youtube.com"}
 REAUTH_MESSAGE = "YouTube access was revoked or expired. Sign in with YouTube again."
 _REASON = re.compile(r"[A-Za-z0-9_.-]{1,64}")
@@ -201,8 +204,9 @@ async def _send(method: str, url: str, **kwargs) -> httpx.Response:
         raise YouTubeAPIError(502, "unreachable") from None
 
 
-# event_id -> (access token, monotonic expiry)
-_tokens: dict[int, tuple[str, float]] = {}
+# event_id -> (access token, monotonic expiry, grant tag). The tag ties a cached token to the stored
+# refresh token, so a refresh still in flight for a replaced connection can never serve the new one.
+_tokens: dict[int, tuple[str, float, str]] = {}
 # room_id -> (monotonic time checked, status dict)
 _status: dict[int, tuple[float, dict]] = {}
 
@@ -216,6 +220,20 @@ def forget_event(event_id: int, room_ids: list[int] | set[int] = ()) -> None:
 
 def forget_room(room_id: int) -> None:
     _status.pop(room_id, None)
+
+
+# Connection changes are serialized: per event (linking, reconnecting and disconnecting), and across
+# events for the shared-channel revocation check, so concurrent requests cannot interleave.
+_event_locks: dict[int, asyncio.Lock] = {}
+connections_lock = asyncio.Lock()
+
+
+def event_lock(event_id: int) -> asyncio.Lock:
+    return _event_locks.setdefault(event_id, asyncio.Lock())
+
+
+def _grant_tag(connection: YouTubeConnection) -> str:
+    return hashlib.sha256((connection.refresh_token_enc or "").encode()).hexdigest()[:16]
 
 
 async def get_connection(session: AsyncSession, event_id: int) -> YouTubeConnection | None:
@@ -249,31 +267,55 @@ async def unlink_event_rooms(session: AsyncSession, event_id: int) -> list[int]:
     return await room_ids_for_event(session, event_id)
 
 
+async def clear_channel_links(session: AsyncSession, event_id: int) -> list[int]:
+    """Forget every room's broadcast after the event switched to another channel.
+
+    A linked room's relay destination was filled in from the old channel's stream, so it is
+    cleared too; the owner picks a broadcast on the new channel. Returns the event's room ids.
+    """
+    linked = await session.scalars(select(Room).where(Room.event_id == event_id, Room.youtube_stream_id.is_not(None)))
+    for room in linked:
+        if room.program_relay_server or room.program_relay_key_enc:
+            program_relay.clear_destination(room)
+    return await unlink_event_rooms(session, event_id)
+
+
+def _needs_sign_in(connection: YouTubeConnection) -> YouTubeAuthError:
+    _tokens.pop(connection.event_id, None)
+    connection.last_error = REAUTH_MESSAGE
+    return YouTubeAuthError(REAUTH_MESSAGE)
+
+
 async def access_token(connection: YouTubeConnection) -> str:
     """Return a valid access token for the connection, refreshing it when it is about to expire.
 
     On ``invalid_grant`` sets ``connection.last_error`` and raises ``YouTubeAuthError``; the
     caller commits the session so the room page can show it.
     """
+    grant = _grant_tag(connection)
     cached = _tokens.get(connection.event_id)
     now = time.monotonic()
-    if cached and cached[1] - now > TOKEN_MARGIN_SECS:
+    if cached and cached[2] == grant and cached[1] - now > TOKEN_MARGIN_SECS:
         return cached[0]
+    try:
+        refresh_token = decrypt_val(connection.refresh_token_enc)
+    except ValueError:
+        # A rotated API_KEY_ENCRYPTION_KEY or a damaged row: a fresh sign-in overwrites it.
+        logger.warning("youtube event_id=%s action=refresh_unreadable", connection.event_id)
+        raise _needs_sign_in(connection) from None
     response = await _send(
         "POST",
         TOKEN_URL,
         data={
             "grant_type": "refresh_token",
-            "refresh_token": decrypt_val(connection.refresh_token_enc),
+            "refresh_token": refresh_token,
             "client_id": settings.youtube_oauth_client_id,
             "client_secret": settings.youtube_oauth_client_secret,
         },
     )
     if response.status_code == 400 and _oauth_error(response) == "invalid_grant":
-        _tokens.pop(connection.event_id, None)
-        connection.last_error = REAUTH_MESSAGE
         logger.info("youtube event_id=%s action=refresh_revoked", connection.event_id)
-        raise YouTubeAuthError(REAUTH_MESSAGE)
+        raise _needs_sign_in(connection)
     if response.status_code != 200:
         raise YouTubeAPIError(response.status_code, _oauth_error(response))
     try:
@@ -282,7 +324,7 @@ async def access_token(connection: YouTubeConnection) -> str:
         expires_in = float(body.get("expires_in", 3600))
     except (ValueError, KeyError, TypeError):
         raise YouTubeAPIError(502, "malformed") from None
-    _tokens[connection.event_id] = (token, now + expires_in)
+    _tokens[connection.event_id] = (token, now + expires_in, grant)
     if connection.last_error:
         connection.last_error = None
     return token
@@ -378,19 +420,23 @@ async def list_broadcasts(connection: YouTubeConnection) -> list[Broadcast]:
     # ``broadcastStatus`` and ``mine`` are incompatible filters; ``broadcastStatus`` implies the
     # authorised channel.
     for broadcast_status in ("active", "upcoming"):
-        body = await _connection_get(
-            connection,
-            "liveBroadcasts",
-            {
+        page_token = None
+        for _ in range(MAX_BROADCAST_PAGES):
+            params = {
                 "part": BROADCAST_PARTS,
                 "broadcastStatus": broadcast_status,
                 "broadcastType": "all",
                 "maxResults": 50,
-            },
-        )
-        for item in body.get("items") or []:
-            broadcast = _broadcast(item)
-            found.setdefault(broadcast.id, broadcast)
+            }
+            if page_token:
+                params["pageToken"] = page_token
+            body = await _connection_get(connection, "liveBroadcasts", params)
+            for item in body.get("items") or []:
+                broadcast = _broadcast(item)
+                found.setdefault(broadcast.id, broadcast)
+            page_token = body.get("nextPageToken")
+            if not page_token:
+                break
     return sorted(found.values(), key=lambda b: (b.life_cycle_status != "live", b.scheduled_start or ""))
 
 
