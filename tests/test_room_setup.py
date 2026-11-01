@@ -38,6 +38,7 @@ from portal.room_setup import (
     parse_plan,
 )
 from portal.routers import admin
+from portal.transcription.constants import ALLOWED_MODELS, ProviderEnum
 
 ORIGIN = {"origin": "http://test"}
 
@@ -178,6 +179,29 @@ def test_nvidia_requires_its_function_id(monkeypatch):
     event = _event(encrypted_nvidia_api_key=encrypt_val("k"))
     event.transcription_api_enabled = True
     assert "nvidia" not in {engine.provider for engine in engine_catalog(event).speech}
+
+
+def test_locked_services_are_listed_for_each_kind():
+    event = _event(encrypted_deepgram_api_key=encrypt_val("k"))
+    event.transcription_api_enabled = True
+    catalog = engine_catalog(event)
+    assert "Deepgram" not in catalog.locked_speech
+    assert "ElevenLabs" in catalog.locked_speech
+    assert "Anthropic" in catalog.locked_translation
+    assert "Anthropic" not in catalog.locked_speech
+    assert "ElevenLabs" not in catalog.locked_translation
+    assert set(catalog.locked_speech + catalog.locked_translation) <= set(catalog.locked)
+
+
+def test_booth_speech_models_are_all_accepted_by_a_booth():
+    models = room_setup.booth_speech_models()
+    for provider, options in models.items():
+        accepted = ALLOWED_MODELS[ProviderEnum(provider)]
+        assert options, provider
+        assert all(value in accepted for value, _ in options), provider
+    # The larger built-in sizes come after the room's two; the room's own list is left alone.
+    assert [value for value, _ in models["local"]] == ["tiny", "base", "small", "medium", "large-v2", "large-v3"]
+    assert [value for value, _ in room_setup.SPEECH_MODELS["local"]] == ["tiny", "base"]
 
 
 # ── Reading the form ───────────────────────────────────────────────────────

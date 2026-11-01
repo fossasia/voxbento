@@ -259,6 +259,7 @@ jobs:
           node --check portal/static/js/whep-listener.js
           node --check portal/static/js/admin.js
           node --check portal/static/js/booth-detail.js
+          node --check portal/static/js/tabs.js
           node --check portal/static/js/overlay-builder.js
           node --check portal/static/js/subtitle-overlay.js
           node --check portal/static/js/program-sender.js
@@ -277,6 +278,7 @@ jobs:
           node tests/test_booth_socket.mjs
           node tests/test_room_ai.mjs
           node tests/test_lang_picker.mjs
+          node tests/test_tabs.mjs
           node tests/test_program_sender_source.mjs
 
       - name: Run unit tests

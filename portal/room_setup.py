@@ -23,6 +23,7 @@ from portal.config import settings
 from portal.database import create_booth, delete_booth, list_booths_for_room
 from portal.models import DBBooth, Event, Room, RoomTranslationLanguage
 from portal.roles import INTERPRETER
+from portal.transcription.constants import ALLOWED_MODELS, ProviderEnum
 from portal.translations.constants import NLLB_LANGUAGE_MAP
 from portal.tts.constants import DEEPGRAM_VOICE_MAPPING, SUPERTONIC_SUPPORTED_LANGS
 from portal.utils import _make_jitsi_url
@@ -124,6 +125,9 @@ class EngineCatalog:
     voice: tuple[Engine, ...]
     locked: tuple[str, ...]
     unavailable: tuple[str, ...] = ()
+    # The part of `locked` that is a speech or a translation service, for the pages that show only one kind.
+    locked_speech: tuple[str, ...] = ()
+    locked_translation: tuple[str, ...] = ()
 
     @property
     def voice_support(self) -> dict[str, list[str]]:
@@ -172,6 +176,24 @@ SPEECH_MODELS: dict[str, tuple[tuple[str, str], ...]] = {
     "local": (("tiny", "Tiny, fastest"), ("base", "Base, more accurate but slower")),
 }
 
+# The larger built-in Whisper sizes a booth can use on top of the room's two.
+_LARGER_LOCAL_MODELS = (
+    ("small", "Small, more accurate again"),
+    ("medium", "Medium, needs a strong server"),
+    ("large-v2", "Large v2, very accurate but slow"),
+    ("large-v3", "Large v3, the most accurate and the slowest"),
+)
+
+
+def booth_speech_models() -> dict[str, tuple[tuple[str, str], ...]]:
+    """The caption models a booth can save: the room's list limited to what a booth accepts, plus the larger built-in sizes."""
+    models = {
+        provider: tuple((value, label) for value, label in options if value in ALLOWED_MODELS[ProviderEnum(provider)])
+        for provider, options in SPEECH_MODELS.items()
+    }
+    models["local"] += _LARGER_LOCAL_MODELS
+    return models
+
 
 _BRANDS = {
     "deepgram": "Deepgram",
@@ -191,6 +213,8 @@ def engine_catalog(event: Event) -> EngineCatalog:
     translation: list[Engine] = []
     voice: list[Engine] = []
     locked: list[str] = []
+    locked_speech: list[str] = []
+    locked_translation: list[str] = []
     unavailable: list[str] = []
 
     for provider, model, label, key_attr in _SPEECH_ENGINES:
@@ -202,6 +226,7 @@ def engine_catalog(event: Event) -> EngineCatalog:
             speech.append(Engine(provider, model, label, _KEY_ADDED))
         else:
             locked.append(_BRANDS[provider])
+            locked_speech.append(_BRANDS[provider])
     speech.append(Engine("local", "tiny", "Whisper (built in)", _SELF_HOSTED))
 
     for provider, model, label, key_attr in _TRANSLATION_ENGINES:
@@ -209,6 +234,7 @@ def engine_catalog(event: Event) -> EngineCatalog:
             translation.append(Engine(provider, model, label, _KEY_ADDED))
         else:
             locked.append(_BRANDS[provider])
+            locked_translation.append(_BRANDS[provider])
     translation.append(Engine("local", "nllb-200-distilled-600M", "NLLB (built in)", _SELF_HOSTED))
 
     if event.encrypted_deepgram_api_key:
@@ -221,7 +247,13 @@ def engine_catalog(event: Event) -> EngineCatalog:
         unavailable.append("Supertonic needs the server's supertonic extra")
 
     return EngineCatalog(
-        tuple(speech), tuple(translation), tuple(voice), tuple(dict.fromkeys(locked)), tuple(unavailable)
+        tuple(speech),
+        tuple(translation),
+        tuple(voice),
+        tuple(dict.fromkeys(locked)),
+        tuple(unavailable),
+        tuple(locked_speech),
+        tuple(locked_translation),
     )
 
 
