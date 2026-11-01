@@ -18,8 +18,8 @@ Meeting reports are off for every event until an event owner turns them on:
 | --- | --- | --- |
 | Local (Ollama) | `gemma3:4b` | none |
 | OpenAI | `gpt-4o-mini` | the event's OpenAI translation key |
-| Anthropic Claude | `claude-3-5-haiku-20241022` | the event's Anthropic key |
-| Google Gemini | `gemini-2.5-flash` | the event's Gemini key |
+| Anthropic Claude | `claude-haiku-4-5-20251001` | the event's Anthropic key |
+| Google Gemini | `gemini-3.8-flash` | the event's Gemini key |
 | Groq | `openai/gpt-oss-120b` | the event's Groq key |
 | OpenRouter | `meta-llama/llama-3.3-70b-instruct` | the event's OpenRouter key |
 
@@ -29,6 +29,12 @@ event; no new secret is stored. Local (Ollama) sends the transcript only to
 server doesn't answer `/api/chat` (HTTP 404), VoxBento tries its
 OpenAI-compatible `/v1/chat/completions` instead, so LM Studio, vLLM or
 llama.cpp servers also work.
+
+Ollama requests ask for a context window of `MEETING_ANALYSIS_OLLAMA_NUM_CTX`
+tokens (default 32768), enough for the longest transcript VoxBento sends plus
+the report. The OpenAI-compatible fallback can't set this per request, so give
+that server a context of at least the same size (for Ollama itself,
+`OLLAMA_CONTEXT_LENGTH`), or the model will see only part of the transcript.
 
 ## Writing a report
 

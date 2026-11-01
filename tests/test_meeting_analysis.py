@@ -165,6 +165,8 @@ def test_lists_are_capped():
 
 def test_empty_model_uses_the_recommended_one():
     assert model_for("openai", "") == "gpt-4o-mini"
+    assert model_for("anthropic", "") == "claude-haiku-4-5-20251001"
+    assert model_for("gemini", "") == "gemini-3.8-flash"
     assert model_for("openai", "  gpt-4o ") == "gpt-4o"
 
 
@@ -264,6 +266,7 @@ async def test_local_uses_ollama_and_falls_back_to_openai_compatible(monkeypatch
         "http://ollama:11434/v1/chat/completions",
     ]
     assert fake.requests[0][2]["format"] == "json"
+    assert fake.requests[0][2]["options"] == {"num_ctx": settings.meeting_analysis_ollama_num_ctx}
 
 
 @pytest.mark.anyio

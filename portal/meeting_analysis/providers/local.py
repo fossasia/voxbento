@@ -14,7 +14,13 @@ class LocalProvider(AnalysisProvider):
         res = await self.send(
             f"{base}/api/chat",
             headers={},
-            body={"model": model, "stream": False, "format": "json", "messages": messages},
+            body={
+                "model": model,
+                "stream": False,
+                "format": "json",
+                "messages": messages,
+                "options": {"num_ctx": settings.meeting_analysis_ollama_num_ctx},
+            },
         )
         if res.status_code == 404:
             data = await self.post(

@@ -142,6 +142,7 @@ class Settings(BaseSettings):
     supertonic_intra_op_threads: int = 0
 
     meeting_analysis_ollama_base_url: str = "http://localhost:11434"
+    meeting_analysis_ollama_num_ctx: int = 32768
 
     # Email Settings
     smtp_host: str = ""

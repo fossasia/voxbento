@@ -16,8 +16,8 @@ class AnalysisProviderEnum(str, Enum):
 DEFAULT_MODELS: dict[str, str] = {
     AnalysisProviderEnum.LOCAL.value: "gemma3:4b",
     AnalysisProviderEnum.OPENAI.value: "gpt-4o-mini",
-    AnalysisProviderEnum.ANTHROPIC.value: "claude-3-5-haiku-20241022",
-    AnalysisProviderEnum.GEMINI.value: "gemini-2.5-flash",
+    AnalysisProviderEnum.ANTHROPIC.value: "claude-haiku-4-5-20251001",
+    AnalysisProviderEnum.GEMINI.value: "gemini-3.8-flash",
     AnalysisProviderEnum.GROQ.value: "openai/gpt-oss-120b",
     AnalysisProviderEnum.OPENROUTER.value: "meta-llama/llama-3.3-70b-instruct",
 }
