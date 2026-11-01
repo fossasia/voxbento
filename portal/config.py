@@ -50,7 +50,7 @@ class Settings(BaseSettings):
     # "Sign in with YouTube" (Google OAuth web client). Off unless both are set.
     youtube_oauth_client_id: str = ""
     youtube_oauth_client_secret: str = Field(default="", repr=False)
-    youtube_status_cache_secs: float = 30.0
+    youtube_status_cache_secs: float = 60.0  # Two list calls per refresh per open linked room.
 
     @property
     def youtube_connect_enabled(self) -> bool:

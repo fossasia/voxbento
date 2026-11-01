@@ -55,6 +55,13 @@ def _room_page(event_id: int, room_id: int, outcome: str, owner: bool) -> str:
     return f"{prefix}/events/{event_id}/rooms/{room_id}/?youtube={outcome}#audio"
 
 
+def _sign_in_again() -> JSONResponse:
+    # A fixed message: exception text is never echoed back to the browser.
+    return JSONResponse(
+        {"detail": yt.REAUTH_MESSAGE, "last_error": yt.REAUTH_MESSAGE}, status_code=409, headers=NO_STORE
+    )
+
+
 def _finish(target: str) -> Response:
     response = safe_redirect(target)
     response.delete_cookie(
@@ -154,11 +161,22 @@ async def youtube_oauth_callback(request: Request, state: str = "", code: str = 
     if error or not code:
         # The owner cancelled on Google's consent screen (error=access_denied) or Google sent nothing.
         return _finish(_room_page(event_id, room_id, "cancelled", owner))
+    # Serialized with linking and disconnecting: a concurrent sign-in updates the row the first one
+    # created, and no grant is obtained while another event's disconnect decides to revoke it.
+    async with yt.event_lock(event_id), yt.connections_lock:
+        return await _store_connection(event_id, room_id, owner, sub, code, verifier)
+
+
+async def _store_connection(event_id: int, room_id: int, owner: bool, sub: str, code: str, verifier: str) -> Response:
+    tokens = None
     try:
         tokens = await yt.exchange_code(code, verifier)
         channel = await yt.my_channel(tokens["access_token"])
     except (yt.YouTubeAuthError, yt.YouTubeAPIError) as exc:
         logger.warning("youtube event_id=%s action=connect_failed reason=%s", event_id, type(exc).__name__)
+        if tokens:
+            # The grant exists at Google but will not be stored; give it back.
+            await yt.revoke(tokens["refresh_token"])
         return _finish(_room_page(event_id, room_id, "error", owner))
     if channel is None:
         await yt.revoke(tokens["refresh_token"])
@@ -171,22 +189,27 @@ async def youtube_oauth_callback(request: Request, state: str = "", code: str = 
             if await get_event_by_id(session, event_id) is None:
                 raise HTTPException(404, "Event not found")
             connection = await yt.get_connection(session, event_id)
-            if connection is None:
-                connection = YouTubeConnection(event_id=event_id)
-                session.add(connection)
-            elif connection.channel_id != channel_id and not await yt.channel_shared(session, connection):
+            channel_changed = connection is not None and connection.channel_id != channel_id
+            if channel_changed and not await yt.channel_shared(session, connection):
                 # Same channel: Google keeps one grant, so revoking the old token would revoke the new one.
                 try:
                     old_token = decrypt_val(connection.refresh_token_enc)
                 except ValueError:
                     old_token = None
+            if channel_changed:
+                # Rooms were linked to the old channel's broadcasts and stream keys.
+                room_ids = await yt.clear_channel_links(session, event_id)
+            else:
+                room_ids = await yt.room_ids_for_event(session, event_id)
+            if connection is None:
+                connection = YouTubeConnection(event_id=event_id)
+                session.add(connection)
             connection.channel_id = channel_id
             connection.channel_title = channel_title
             connection.refresh_token_enc = encrypt_val(tokens["refresh_token"])
             connection.scope = tokens["scope"][:500]
             connection.connected_by_user_id = int(sub)
             connection.last_error = None
-            room_ids = await yt.room_ids_for_event(session, event_id)
     except RuntimeError:
         # No API_KEY_ENCRYPTION_KEY: the token cannot be stored, so give it back.
         await yt.revoke(tokens["refresh_token"])
@@ -201,21 +224,20 @@ async def youtube_oauth_callback(request: Request, state: str = "", code: str = 
 @router.get(f"{EVENT_PATH}/broadcasts", dependencies=[Depends(require_event_owner)])
 async def youtube_broadcasts(event_id: int) -> JSONResponse:
     _require_enabled()
-    auth_error = None
+    needs_sign_in = False
     async with get_session() as session:
         connection = await yt.get_connection(session, event_id)
         if connection is None:
             raise HTTPException(409, "Sign in with YouTube first.")
         try:
             broadcasts = await yt.list_broadcasts(connection)
-        except yt.YouTubeAuthError as exc:
-            # Commit last_error so the room page shows why the list is empty.
-            auth_error = str(exc)
-            connection.last_error = auth_error
+        except yt.YouTubeAuthError:
+            # access_token recorded last_error on the connection; committing shows it on the room page.
+            needs_sign_in = True
         except yt.YouTubeAPIError as exc:
             raise HTTPException(502, yt.describe(exc)) from None
-    if auth_error:
-        return JSONResponse({"detail": auth_error, "last_error": auth_error}, status_code=409, headers=NO_STORE)
+    if needs_sign_in:
+        return _sign_in_again()
     return JSONResponse({"broadcasts": [b.summary() for b in broadcasts]}, headers=NO_STORE)
 
 
@@ -224,8 +246,10 @@ async def youtube_broadcast_set(request: Request, event_id: int, room_id: int, c
     """Link the room to a broadcast; in relay mode this also fills in the relay destination."""
     _check_origin(request)
     _require_enabled()
-    auth_error = None
-    async with room_lock(room_id):
+    needs_sign_in = False
+    # The event lock keeps a disconnect or reconnect from landing between the YouTube lookups and
+    # the commit, so a room can never keep a broadcast from a connection that is gone.
+    async with room_lock(room_id), yt.event_lock(event_id):
         async with get_session() as session:
             room = await get_room_by_id(session, room_id)
             if not room or room.event_id != event_id:
@@ -239,10 +263,9 @@ async def youtube_broadcast_set(request: Request, event_id: int, room_id: int, c
                 raise HTTPException(422, str(exc)) from None
             except RuntimeError:
                 raise HTTPException(409, "The server encryption key is not configured; ask the operator.") from None
-            except yt.YouTubeAuthError as exc:
-                # Nothing on the room changed; commit last_error only.
-                auth_error = str(exc)
-                connection.last_error = auth_error
+            except yt.YouTubeAuthError:
+                # Nothing on the room changed; access_token recorded last_error for the commit.
+                needs_sign_in = True
             except yt.YouTubeAPIError as exc:
                 raise HTTPException(502, yt.describe(exc)) from None
             else:
@@ -254,8 +277,8 @@ async def youtube_broadcast_set(request: Request, event_id: int, room_id: int, c
                     # Write-only like the manual form: whether a destination exists, never the key.
                     "destination_configured": bool(room.program_relay_server and room.program_relay_key_enc),
                 }
-    if auth_error:
-        return JSONResponse({"detail": auth_error, "last_error": auth_error}, status_code=409, headers=NO_STORE)
+    if needs_sign_in:
+        return _sign_in_again()
     return JSONResponse(body, headers=NO_STORE)
 
 
@@ -283,17 +306,21 @@ async def youtube_disconnect(request: Request, event_id: int) -> JSONResponse:
     _require_enabled()
     token = None
     room_ids: list[int] = []
-    async with get_session() as session:
-        connection = await yt.get_connection(session, event_id)
-        if connection is not None:
-            if not await yt.channel_shared(session, connection):
-                try:
-                    token = decrypt_val(connection.refresh_token_enc)
-                except ValueError:
-                    token = None
-            room_ids = await yt.unlink_event_rooms(session, event_id)
-            await session.delete(connection)
-    yt.forget_event(event_id, room_ids)
-    await yt.revoke(token)
+    # connections_lock: two events sharing a channel that disconnect together must not each
+    # see the other and skip revoking the grant.
+    async with yt.event_lock(event_id), yt.connections_lock:
+        async with get_session() as session:
+            connection = await yt.get_connection(session, event_id)
+            if connection is not None:
+                if not await yt.channel_shared(session, connection):
+                    try:
+                        token = decrypt_val(connection.refresh_token_enc)
+                    except ValueError:
+                        token = None
+                room_ids = await yt.unlink_event_rooms(session, event_id)
+                await session.delete(connection)
+        yt.forget_event(event_id, room_ids)
+        # Revoked before the lock is released, so no other event can obtain the grant in between.
+        await yt.revoke(token)
     logger.info("youtube event_id=%s action=disconnected", event_id)
     return JSONResponse({"connected": False}, headers=NO_STORE)

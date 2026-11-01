@@ -50,6 +50,9 @@ def upgrade() -> None:
             sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
             sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
         )
+    # One connection per event, also for a table that exists without the index.
+    indexes = {index["name"] for index in sa.inspect(conn).get_indexes("youtube_connections")}
+    if "ix_youtube_connections_event_id" not in indexes:
         op.create_index("ix_youtube_connections_event_id", "youtube_connections", ["event_id"], unique=True)
 
     cols = [col["name"] for col in inspector.get_columns("rooms")]

@@ -5,14 +5,17 @@ Google is replaced by an ``httpx.MockTransport``; nothing here reaches the netwo
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import logging
+import time
 from urllib.parse import parse_qs, urlsplit
 
 import httpx
 import pytest
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 
 import fastapi_app
 from fastapi_app import app
@@ -25,6 +28,7 @@ from portal.crypto import decrypt_val
 from portal.database import configure, create_user, dispose, get_session, init_db, set_event_membership
 from portal.models import Event, Room, YouTubeConnection
 from portal.roles import EVENT_OWNER
+from portal.workspace_routing import workspace_to_admin_path
 
 CLIENT_ID = "test-client.apps.googleusercontent.com"
 CLIENT_SECRET = "test-client-secret"
@@ -64,6 +68,9 @@ async def yt_env(monkeypatch):
     monkeypatch.setattr(settings, "debug", True)
     yt._tokens.clear()
     yt._status.clear()
+    yt._event_locks.clear()
+    # Each test runs its own event loop; a lock that once had waiters stays bound to its loop.
+    monkeypatch.setattr(yt, "connections_lock", asyncio.Lock())
     ingest.room_locks.clear()
     relay.relay_health.clear()
     google = {
@@ -72,6 +79,9 @@ async def yt_env(monkeypatch):
         "omit_refresh": False,
         "refresh_error": None,
         "channel_id": "UCchannel0001",
+        "challenges": set(),
+        # broadcastStatus -> further result pages, served after the first via nextPageToken.
+        "extra_pages": {},
         "broadcasts": {
             # The "active" call also returns the upcoming one, to prove de-duplication.
             "active": [
@@ -104,7 +114,7 @@ async def yt_env(monkeypatch):
                 assert form["code"] == [AUTH_CODE]
                 assert form["redirect_uri"] == ["http://test/youtube/oauth/callback"]
                 challenge = base64.urlsafe_b64encode(hashlib.sha256(form["code_verifier"][0].encode()).digest())
-                assert challenge.rstrip(b"=").decode() == google["challenge"]
+                assert challenge.rstrip(b"=").decode() in google["challenges"]
                 body = {"access_token": ACCESS_TOKEN, "expires_in": 3599, "scope": yt.SCOPE, "token_type": "Bearer"}
                 if not google["omit_refresh"]:
                     body["refresh_token"] = REFRESH_TOKEN
@@ -114,11 +124,15 @@ async def yt_env(monkeypatch):
                 return httpx.Response(400, json={"error": google["refresh_error"], "error_description": "Bad Request"})
             return httpx.Response(200, json={"access_token": ACCESS_TOKEN, "expires_in": 3599, "scope": yt.SCOPE})
         assert request.url.host == "www.googleapis.com"
+        if google.pop("reject_api_once", False):
+            return httpx.Response(401, json={"error": {"errors": [{"reason": "authError"}]}})
         assert request.headers["authorization"] == f"Bearer {ACCESS_TOKEN}"
         params = request.url.params
         resource = request.url.path.rsplit("/", 1)[1]
         if resource == "channels":
             assert params["mine"] == "true"
+            if google.get("channel_error"):
+                return httpx.Response(500, json={"error": {"errors": [{"reason": "backendError"}]}})
             return httpx.Response(
                 200, json={"items": [{"id": google["channel_id"], "snippet": {"title": "Test Channel"}}]}
             )
@@ -131,7 +145,13 @@ async def yt_env(monkeypatch):
                 return httpx.Response(200, json={"items": [item] if item else []})
             # Google rejects mine=true together with broadcastStatus (incompatibleParameters).
             assert "mine" not in params
-            return httpx.Response(200, json={"items": google["broadcasts"][params["broadcastStatus"]]})
+            status = params["broadcastStatus"]
+            pages = [google["broadcasts"][status], *google["extra_pages"].get(status, [])]
+            page = int(params.get("pageToken", "page0")[4:])
+            body = {"items": pages[page]}
+            if page + 1 < len(pages):
+                body["nextPageToken"] = f"page{page + 1}"
+            return httpx.Response(200, json=body)
         if resource == "liveStreams":
             assert params["id"] == STREAM_ID
             stream = {
@@ -199,7 +219,7 @@ async def start_connect(env, room=None):
     response = await client.get(event_url(env, "/connect"), params={"room_id": room.id})
     assert response.status_code == 303, response.text
     query = parse_qs(urlsplit(response.headers["location"]).query)
-    env["google"]["challenge"] = query["code_challenge"][0]
+    env["google"]["challenges"].add(query["code_challenge"][0])
     client.cookies.set("vb_yt_oauth", response.cookies["vb_yt_oauth"])
     return query["state"][0]
 
@@ -620,9 +640,22 @@ def test_callback_code_is_redacted_from_access_logs():
 @pytest.mark.anyio
 async def test_youtube_connection_model_is_one_per_event(yt_env):
     await connect(yt_env)
+    await connect(yt_env)
     async with get_session() as session:
         rows = (await session.execute(select(YouTubeConnection))).scalars().all()
     assert len(rows) == 1
+    # The database itself refuses a second connection for the event.
+    with pytest.raises(IntegrityError):
+        async with get_session() as session:
+            session.add(
+                YouTubeConnection(
+                    event_id=yt_env["event"].id,
+                    channel_id="UCother",
+                    channel_title="Other",
+                    refresh_token_enc="x",
+                    scope=yt.SCOPE,
+                )
+            )
 
 
 @pytest.mark.anyio
@@ -644,3 +677,199 @@ async def test_youtube_refusals_reach_the_page_in_plain_words(yt_env):
     response = await client.get(event_url(yt_env, "/broadcasts"))
     assert response.json()["detail"] == "YouTube refused the request (403, somethingNew). Try again."
     assert STREAM_KEY not in response.text
+
+
+async def set_refresh_token_enc(env, value):
+    async with get_session() as session:
+        connection = await yt.get_connection(session, env["event"].id)
+        connection.refresh_token_enc = value
+
+
+@pytest.mark.anyio
+async def test_unreadable_refresh_token_needs_a_new_sign_in(yt_env):
+    client, room = yt_env["client"], yt_env["rooms"][1]
+    await connect(yt_env)
+    assert (await client.put(broadcast_url(yt_env, room), json={"broadcast": LIVE_ID})).status_code == 200
+    # As after an API_KEY_ENCRYPTION_KEY change: the stored token no longer decrypts.
+    await set_refresh_token_enc(yt_env, "not-a-fernet-token")
+    yt._tokens.clear()
+    yt._status.clear()
+    response = await client.get(event_url(yt_env, "/broadcasts"))
+    assert response.status_code == 409
+    assert response.json() == {"detail": yt.REAUTH_MESSAGE, "last_error": yt.REAUTH_MESSAGE}
+    assert (await stored_connection(yt_env)).last_error == yt.REAUTH_MESSAGE
+    response = await client.put(broadcast_url(yt_env, room), json={"broadcast": LIVE_ID})
+    assert response.status_code == 409
+    status_url = f"/workspace/events/{yt_env['event'].id}/rooms/{room.id}/program-ingest"
+    assert (await client.get(status_url)).json()["youtube"] == {"error": yt.REAUTH_MESSAGE}
+    # Signing in again replaces the token and keeps the room's broadcast (same channel).
+    await connect(yt_env)
+    assert (await client.get(event_url(yt_env, "/broadcasts"))).status_code == 200
+    assert (await stored_room(room.id)).youtube_broadcast_id == LIVE_ID
+
+
+@pytest.mark.anyio
+async def test_broadcast_list_follows_every_page(yt_env):
+    yt_env["google"]["extra_pages"]["upcoming"] = [[_broadcast("Upcoming003", "created", "2026-11-07T09:00:00Z")]]
+    await connect(yt_env)
+    response = await yt_env["client"].get(event_url(yt_env, "/broadcasts"))
+    assert [b["id"] for b in response.json()["broadcasts"]][-1] == "Upcoming003"
+    tokens = [call[3].get("pageToken") for call in yt_env["google"]["calls"] if call[2].endswith("liveBroadcasts")]
+    assert tokens == [None, None, "page1"]
+
+
+@pytest.mark.anyio
+async def test_reconnecting_another_channel_clears_room_links(yt_env):
+    client, google = yt_env["client"], yt_env["google"]
+    relay_room, whip_room = yt_env["rooms"]
+    await connect(yt_env)
+    await link_relay_room(yt_env)
+    assert (await client.put(broadcast_url(yt_env, whip_room), json={"broadcast": LIVE_ID})).status_code == 200
+    # The same channel again keeps every link and the filled-in stream key.
+    await connect(yt_env)
+    assert (await stored_room(relay_room.id)).youtube_broadcast_id == LIVE_ID
+    assert relay.destination(await stored_room(relay_room.id)) is not None
+    google["channel_id"] = "UCchannel0002"
+    await connect(yt_env)
+    for room_id in (relay_room.id, whip_room.id):
+        saved = await stored_room(room_id)
+        assert saved.youtube_broadcast_id is None and saved.youtube_stream_id is None
+    # The old channel's stream key is gone too, so the relay cannot keep feeding the old channel.
+    assert relay.destination(await stored_room(relay_room.id)) is None
+
+
+@pytest.mark.anyio
+async def test_cached_token_is_bound_to_the_stored_grant(yt_env):
+    client, google = yt_env["client"], yt_env["google"]
+    await connect(yt_env)
+    assert (await client.get(event_url(yt_env, "/broadcasts"))).status_code == 200
+    refreshes = sum(1 for call in google["calls"] if call[2] == "/token")
+    # A refresh for a replaced connection finishing late must not be served to the new one.
+    yt._tokens[yt_env["event"].id] = ("stale-access-token", time.monotonic() + 3600, "replaced-grant")
+    assert (await client.get(event_url(yt_env, "/broadcasts"))).status_code == 200
+    assert sum(1 for call in google["calls"] if call[2] == "/token") == refreshes + 1
+
+
+def owner_client(env, state_cookie):
+    return httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app, client=("127.0.0.1", 1234)),
+        base_url="http://test",
+        cookies={"user_token": env["tokens"]["yt-owner@example.com"], "vb_yt_oauth": state_cookie},
+    )
+
+
+@pytest.mark.anyio
+async def test_concurrent_first_sign_ins_share_one_connection(yt_env):
+    flows = []
+    for _ in range(2):
+        response = await yt_env["client"].get(event_url(yt_env, "/connect"), params={"room_id": yt_env["rooms"][0].id})
+        query = parse_qs(urlsplit(response.headers["location"]).query)
+        yt_env["google"]["challenges"].add(query["code_challenge"][0])
+        flows.append((query["state"][0], response.cookies["vb_yt_oauth"]))
+    clients = [owner_client(yt_env, cookie) for _, cookie in flows]
+    try:
+        responses = await asyncio.gather(
+            *(
+                c.get("/youtube/oauth/callback", params={"state": state, "code": AUTH_CODE})
+                for c, (state, _) in zip(clients, flows, strict=True)
+            )
+        )
+    finally:
+        for c in clients:
+            await c.aclose()
+    assert [r.status_code for r in responses] == [303, 303]
+    assert all("youtube=connected" in r.headers["location"] for r in responses)
+    async with get_session() as session:
+        assert len((await session.execute(select(YouTubeConnection))).scalars().all()) == 1
+
+
+@pytest.mark.anyio
+async def test_link_and_disconnect_do_not_interleave(yt_env):
+    client, room = yt_env["client"], yt_env["rooms"][0]
+    await connect(yt_env)
+    link, disconnect = await asyncio.gather(
+        client.put(broadcast_url(yt_env, room), json={"broadcast": LIVE_ID}), client.delete(event_url(yt_env))
+    )
+    assert disconnect.status_code == 200
+    assert link.status_code in {200, 409}
+    assert await stored_connection(yt_env) is None
+    saved = await stored_room(room.id)
+    assert saved.youtube_broadcast_id is None and saved.youtube_stream_id is None
+
+
+@pytest.mark.anyio
+async def test_concurrent_disconnects_of_a_shared_channel_revoke_once(yt_env):
+    client, google = yt_env["client"], yt_env["google"]
+    async with get_session() as session:
+        second = Event(slug="yt-second", display_name="Second")
+        session.add(second)
+        await session.flush()
+        await set_event_membership(session, user_id=yt_env["owner"].id, event_id=second.id, role=EVENT_OWNER)
+        second_room = Room(event_id=second.id, display_name="Second room")
+        session.add(second_room)
+    await connect(yt_env)
+    response = await client.get(f"/workspace/events/{second.id}/youtube/connect", params={"room_id": second_room.id})
+    query = parse_qs(urlsplit(response.headers["location"]).query)
+    google["challenges"].add(query["code_challenge"][0])
+    client.cookies.set("vb_yt_oauth", response.cookies["vb_yt_oauth"])
+    callback = await client.get("/youtube/oauth/callback", params={"state": query["state"][0], "code": AUTH_CODE})
+    assert callback.status_code == 303
+    client.cookies.delete("vb_yt_oauth")
+    first, other = await asyncio.gather(
+        client.delete(event_url(yt_env)), client.delete(f"/workspace/events/{second.id}/youtube")
+    )
+    assert first.status_code == other.status_code == 200
+    # Both events shared one Google grant: the last disconnect revokes it, exactly once.
+    assert google["revoked"] == [REFRESH_TOKEN]
+
+
+@pytest.mark.anyio
+async def test_failed_channel_lookup_revokes_the_new_grant(yt_env):
+    yt_env["google"]["channel_error"] = True
+    state = await start_connect(yt_env)
+    response = await yt_env["client"].get("/youtube/oauth/callback", params={"state": state, "code": AUTH_CODE})
+    assert response.status_code == 303
+    assert "youtube=error" in response.headers["location"]
+    assert await stored_connection(yt_env) is None
+    # Google granted access but VoxBento stored nothing, so the grant is given back.
+    assert yt_env["google"]["revoked"] == [REFRESH_TOKEN]
+
+
+@pytest.mark.anyio
+async def test_rejected_access_token_is_refreshed_once(yt_env):
+    client, google = yt_env["client"], yt_env["google"]
+    await connect(yt_env)
+    assert (await client.get(event_url(yt_env, "/broadcasts"))).status_code == 200
+    refreshes = sum(1 for call in google["calls"] if call[2] == "/token")
+    google["reject_api_once"] = True
+    response = await client.get(event_url(yt_env, "/broadcasts"))
+    assert response.status_code == 200
+    assert sum(1 for call in google["calls"] if call[2] == "/token") == refreshes + 1
+    assert (await stored_connection(yt_env)).last_error is None
+
+
+@pytest.mark.anyio
+async def test_room_status_saves_quota(yt_env):
+    client, google, room = yt_env["client"], yt_env["google"], yt_env["rooms"][1]
+    status_url = f"/workspace/events/{yt_env['event'].id}/rooms/{room.id}/program-ingest"
+    await connect(yt_env)
+    # A broadcast that is not about to go live needs no stream lookup.
+    assert (await client.put(broadcast_url(yt_env, room), json={"broadcast": LATER_ID})).status_code == 200
+    calls = len(google["calls"])
+    youtube = (await client.get(status_url)).json()["youtube"]
+    assert youtube["life_cycle_status"] == "created" and youtube["stream_status"] is None
+    assert [call[2].rsplit("/", 1)[1] for call in google["calls"][calls:]] == ["liveBroadcasts"]
+    # Out of quota: the error is shown and YouTube is not asked again on every poll.
+    yt._status.clear()
+    google["broadcast_error"] = "quotaExceeded"
+    assert (await client.get(status_url)).json()["youtube"] == {"error": yt.API_ERROR_MESSAGES["quotaExceeded"]}
+    calls = len(google["calls"])
+    for _ in range(3):
+        assert (await client.get(status_url)).json()["youtube"] == {"error": yt.API_ERROR_MESSAGES["quotaExceeded"]}
+    assert len(google["calls"]) == calls
+
+
+def test_workspace_broadcast_route_accepts_a_trailing_slash():
+    assert workspace_to_admin_path("/workspace/events/1/rooms/2/youtube/broadcast/") == (
+        "/admin/events/1/rooms/2/youtube/broadcast/"
+    )
