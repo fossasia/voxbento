@@ -31,7 +31,7 @@ of `dev`.
 - @hazelmayank, 2026-11-01, `dev` at `c17147c`: drift check
   `git diff --stat 250aefde..HEAD -- mediamtx.yml docker-compose.yml docker-compose.relay.yml portal/program_ingest.py portal/static/js/program-sender.js`
   printed nothing. `uv run pytest tests/test_program_sender.py tests/test_program_relay.py -q` -> 38 passed.
-- @SanketKokate712, `dev` at `4e14999` (from #1091), same drift check, no drift. Facts re-read against the code, true at that commit:
+- @SanketKokate712, 2026-11-01, `dev` at `4e14999` (from #1091), same drift check, no drift. `uv run pytest tests/test_program_sender.py tests/test_program_relay.py -q` -> 38 passed. Facts re-read against the code, true at that commit:
   - `portal/static/js/program-sender.js:116` captured with `getUserMedia({audio: …})`; no `getDisplayMedia`.
   - `mediamtx.yml:81` is `rtmp: no`; `docker-compose.relay.yml` sets `MTX_RTMP: "yes"`,
     `MTX_RTMPENCRYPTION: "strict"`, `MTX_RTMPSADDRESS: ":1936"`.
@@ -84,12 +84,24 @@ What the server does with a rewritten key, from reading `portal/program_ingest.p
 - If a platform URL-encodes the `?` (`floor%3Fkey=…`), the last path component is no
   longer `floor`, so the request falls through to the interpreter-booth check and gets
   **401**. Each 401 counts toward the 10 failures/IP/minute throttle, after which the
-  hook answers **429** for the rest of that minute.
+  hook answers **429** for the rest of that minute. A platform that retries quickly can
+  lock itself out for a minute even after the key is fixed, because the throttle is
+  checked before the credential.
 - A platform that appends its own query parameters (anything besides `key`) is rejected
   with 401, because the query must be exactly one `key` parameter.
-- Alternative formats such as `rtmps://user:pass@host/…` or `?user=…&pass=…` are **not**
-  accepted today (`presented_secret` returns empty when a user or password is present).
-  Any platform that needs them is a future code change for plan 004.
+- Alternative formats are not accepted today. `presented_secret` returns empty when a
+  token or password is present, so `rtmps://user:pass@host/…` fails if MediaMTX forwards
+  the password to the hook, and `?user=…&pass=…` fails because the query must be exactly
+  one `key` parameter. Any platform that needs them is a future code change for plan 004.
+  (Code reading only, not observed on a platform.)
+
+Suggestions from @SanketKokate712 for whoever runs the remaining steps (not measurements,
+not run by him):
+
+- Step 2: wait 60 s between failed attempts, because of the throttle above.
+- Step 3: when calling `liveBroadcasts.update`, include `snippet.title` and copy the whole
+  current `contentDetails`, since omitted fields may reset to defaults.
+- After the run: rotate the VoxBento key, the Studio stream key and the OAuth client.
 
 **Verdict: PENDING** (nothing observed on a platform yet).
 
