@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from portal.auth import coordinates_room, load_membership_scope, require_oauth_scope
 from portal.booth_identity import make_booth_id, make_mediamtx_path, validate_language_code
@@ -27,6 +28,7 @@ from portal.models import (
 )
 from portal.rate_limit import auth_rate_limiter
 from portal.roles import EVENT_OWNER
+from portal.routers.api import broadcast_transcription, resolve_transcription_config
 from portal.transcription.constants import ProviderEnum
 from portal.transcription.worker import active_workers, start_transcription_worker, stop_transcription_worker
 from portal.websockets.revocation import revoke_booths_for_deleted_entity
@@ -911,14 +913,40 @@ async def start_transcription(
 
     booth_id = make_booth_id(event_slug, target_room_id, language_code)
 
-    # Actually start transcription using the registry
-    if booth_id not in booths:
+    if booths.get_booth_sync(booth_id) is None:
         raise HTTPException(status_code=400, detail="Booth not active in memory")
 
-    # We call the real worker
-    await start_transcription_worker(booth_id, event.id)
+    stmt = (
+        select(DBBooth)
+        .options(selectinload(DBBooth.event))
+        .where(
+            DBBooth.event_id == event.id,
+            DBBooth.room_id == target_room_id,
+            DBBooth.language_code == language_code,
+        )
+    )
+    result = await db.execute(stmt)
+    db_booth = result.scalars().first()
+    if not db_booth or not db_booth.transcription_enabled:
+        return {"status": "disabled", "message": "Transcription is not enabled for this booth."}
 
-    return {"status": "started", "booth_id": booth_id}
+    provider, model_size, config = resolve_transcription_config(db_booth, event=event)
+
+    try:
+        await start_transcription_worker(
+            event_slug,
+            language_code,
+            booth_id,
+            broadcast_transcription,
+            provider,
+            model_size,
+            config,
+            room_id=target_room_id,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=429, detail=str(e))
+
+    return {"status": "started", "booth_id": booth_id, "provider": provider, "model": model_size}
 
 
 @router.post("/events/{event_slug}/rooms/{room_id}/booths/{language_code}/transcription/stop")
