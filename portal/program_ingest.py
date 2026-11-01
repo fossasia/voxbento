@@ -248,7 +248,7 @@ async def authorize_publish(data: MediaAuth) -> None:
     if final_component != "floor":
         # Interpreter booths publish from the browser only, with a single-use
         # ticket issued to the active interpreter over the booth WebSocket.
-        if data.protocol != "webrtc" or not await authorize_booth_publish(data.path, data.token):
+        if data.protocol != "webrtc" or not await authorize_booth_publish(data.path, data.token, data.id):
             deny(data.ip)
         return
     match = FLOOR_PATH.fullmatch(data.path)

@@ -10,16 +10,24 @@ live ``BoothRegistry``. Single portal process, like ``BoothRegistry``.
 from __future__ import annotations
 
 import hashlib
+import logging
 import secrets
 import time
 from collections import OrderedDict
 from dataclasses import dataclass
+from uuid import UUID
 
-from portal.globals import booths
+import httpx
+
+from portal.config import settings
+from portal.globals import booths, get_http_client
 from portal.roles import Permission, has_permission
+
+logger = logging.getLogger(__name__)
 
 TICKET_TTL_SECS = 30.0
 MAX_TICKETS = 4096
+MEDIA_CONTROL_TIMEOUT = 2.0
 
 
 @dataclass(frozen=True)
@@ -87,12 +95,66 @@ def still_entitled(ticket: PublishTicket) -> bool:
     )
 
 
-async def authorize_booth_publish(path: str, secret: str) -> bool:
-    """MediaMTX hook check for a non-floor (interpreter booth) path."""
+async def authorize_booth_publish(path: str, secret: str, session_id: str = "") -> bool:
+    """MediaMTX hook check for a non-floor (interpreter booth) path.
+
+    ``session_id`` is MediaMTX's id for the WebRTC session being authorized. On
+    success it is remembered against the publisher so the stream can be kicked
+    if that participant drops without leaving cleanly.
+    """
     ticket = redeem_ticket(secret, path)
-    return ticket is not None and still_entitled(ticket)
+    if ticket is None or not still_entitled(ticket):
+        return False
+    if session_id:
+        _publishers[ticket.booth_id] = (ticket.participant_id, session_id)
+    return True
+
+
+# booth_id -> (participant_id, MediaMTX WebRTC session id) of the live WHIP publisher.
+# Single portal process, like ``_tickets`` and ``BoothRegistry``.
+_publishers: dict[str, tuple[str, str]] = {}
+
+
+async def evict_publisher(booth_id: str, participant_id: str | None = None) -> bool:
+    """Kick the booth's recorded WHIP publisher so its path is free straight away.
+
+    Without this, a publisher that vanished (tab closed, Wi-Fi drop, sleep) keeps
+    the MediaMTX path occupied until MediaMTX times it out, and the interpreter's
+    next publish is refused as a duplicate.
+
+    With ``participant_id``, only that participant's own stream is kicked. A
+    socket that is detected as dead after its owner already reconnected and
+    republished must not take down the new stream.
+
+    Best effort: returns True only when MediaMTX confirmed the kick. A failed
+    kick keeps the record so the next call retries it.
+    """
+    record = _publishers.get(booth_id)
+    if record is None:
+        return False
+    owner, session_id = record
+    if participant_id is not None and owner != participant_id:
+        return False
+    try:
+        session = str(UUID(session_id))
+        response = await get_http_client().post(
+            f"{settings.mediamtx_api_base}/v3/webrtcsessions/kick/{session}", timeout=MEDIA_CONTROL_TIMEOUT
+        )
+    except (httpx.HTTPError, ValueError):
+        logger.warning("Could not kick stale WHIP publisher for booth %s", booth_id, exc_info=True)
+        return False
+    if response.status_code == 404:
+        # Already gone, which is what we wanted.
+        _publishers.pop(booth_id, None)
+        return False
+    if response.is_error:
+        logger.warning("MediaMTX refused to kick WHIP publisher for booth %s: %s", booth_id, response.status_code)
+        return False
+    _publishers.pop(booth_id, None)
+    return True
 
 
 def clear_tickets() -> None:
-    """Forget every outstanding ticket (tests)."""
+    """Forget every outstanding ticket and recorded publisher (tests)."""
     _tickets.clear()
+    _publishers.clear()

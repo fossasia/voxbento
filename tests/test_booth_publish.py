@@ -13,7 +13,13 @@ from portal import booth_publish
 from portal import program_ingest as ingest
 from portal.config import settings
 from portal.globals import booths
-from portal.websockets.manager import Session, _handle_join, _handle_request_publish_ticket
+from portal.websockets.manager import (
+    Session,
+    _handle_join,
+    _handle_leave,
+    _handle_request_publish_ticket,
+    cleanup_participant,
+)
 
 EVENT = "ticket-test"
 ROOM = 7
@@ -237,3 +243,128 @@ async def test_reconnected_socket_rejoins_with_its_previous_id(booth):
     # The backup took over while the socket was down; rejoining does not take the booth back.
     assert joined["state"]["active_interpreter_id"] == backup
     assert "ticket" not in await request_ticket(active)
+
+
+class FakeMediaMTX:
+    """Stands in for the MediaMTX control API; records every kick."""
+
+    def __init__(self, status: int = 200, error: Exception | None = None):
+        self.status = status
+        self.error = error
+        self.posts: list[str] = []
+
+    async def post(self, url, timeout=None):
+        self.posts.append(url)
+        if self.error is not None:
+            raise self.error
+        return httpx.Response(self.status, request=httpx.Request("POST", url))
+
+    def kicked(self, session_id: str) -> bool:
+        return any(url.endswith(f"/v3/webrtcsessions/kick/{session_id}") for url in self.posts)
+
+
+@pytest.fixture
+def mediamtx(monkeypatch):
+    fake = FakeMediaMTX()
+    monkeypatch.setattr(booth_publish, "get_http_client", lambda: fake)
+    return fake
+
+
+async def start_publishing(client, participant_id: str) -> str:
+    """Run the full ticket + media-auth flow and return MediaMTX's session id."""
+    reply = await request_ticket(participant_id)
+    session_id = str(uuid4())
+    assert await publish(client, token=reply["ticket"], id=session_id) == 204
+    return session_id
+
+
+@pytest.mark.anyio
+async def test_dropped_interpreter_stream_is_kicked(booth, mediamtx):
+    """A socket that drops without booth:leave frees the interpreter's WHIP stream."""
+    client, (active, backup) = booth
+    session_id = await start_publishing(client, active)
+
+    await cleanup_participant(session_for(active))
+
+    assert mediamtx.kicked(session_id)
+    state = booths.get_booth_sync(BOOTH_ID)
+    assert active not in state.participants
+    # The slot passes to the backup instead of showing the dropped interpreter as live.
+    assert state.active_interpreter_id == backup
+
+
+@pytest.mark.anyio
+async def test_clean_leave_also_kicks_stream(booth, mediamtx):
+    """booth:leave ends the stream too, not only an abrupt disconnect."""
+    client, (active, _) = booth
+    session_id = await start_publishing(client, active)
+
+    await _handle_leave(session_for(active))
+
+    assert mediamtx.kicked(session_id)
+
+
+@pytest.mark.anyio
+async def test_leaving_without_publishing_does_not_touch_mediamtx(booth, mediamtx):
+    """Someone who never published, like the backup, causes no media calls."""
+    client, (active, backup) = booth
+    session_id = await start_publishing(client, active)
+
+    await cleanup_participant(session_for(backup))
+
+    assert mediamtx.posts == []
+    assert not mediamtx.kicked(session_id)
+
+
+@pytest.mark.anyio
+async def test_late_disconnect_does_not_kick_the_new_stream(booth, mediamtx):
+    """The old socket noticed dead only after its owner reconnected and republished."""
+    client, (active, backup) = booth
+    await start_publishing(client, active)
+    # The interpreter came back as a new participant and now owns the publisher slot.
+    new_session = str(uuid4())
+    booth_publish._publishers[BOOTH_ID] = (backup, new_session)
+
+    await cleanup_participant(session_for(active))
+
+    assert mediamtx.posts == []
+    assert booth_publish._publishers[BOOTH_ID] == (backup, new_session)
+
+
+@pytest.mark.anyio
+async def test_requesting_a_ticket_clears_a_stale_stream(booth, mediamtx):
+    """Reconnecting before the old socket is noticed must not hit a duplicate-publisher error."""
+    client, (active, _) = booth
+    stale_session = await start_publishing(client, active)
+
+    reply = await request_ticket(active)
+
+    assert "ticket" in reply
+    assert mediamtx.kicked(stale_session)
+    assert BOOTH_ID not in booth_publish._publishers
+
+
+@pytest.mark.anyio
+async def test_unreachable_mediamtx_does_not_break_leaving(booth, mediamtx):
+    """If MediaMTX is down the booth still goes idle; the kick is retried later."""
+    client, (active, _) = booth
+    session_id = await start_publishing(client, active)
+    mediamtx.error = httpx.ConnectError("mediamtx is down")
+
+    await cleanup_participant(session_for(active))
+
+    assert active not in booths.get_booth_sync(BOOTH_ID).participants
+    # Record kept, so the next ticket request retries the kick.
+    assert booth_publish._publishers[BOOTH_ID][1] == session_id
+
+
+@pytest.mark.anyio
+async def test_already_gone_session_is_forgotten(booth, mediamtx):
+    """MediaMTX answering 404 means it timed the stream out first; drop the record."""
+    client, (active, _) = booth
+    await start_publishing(client, active)
+    mediamtx.status = 404
+
+    await cleanup_participant(session_for(active))
+
+    assert BOOTH_ID not in booth_publish._publishers
