@@ -1,5 +1,12 @@
+import {SOURCES, RAW_AUDIO, isTabSurface, normalizeSource, pickTabAudio, tabCaptureOptions, tabCaptureSupported} from './program-sender-source.js';
+
 const card = document.getElementById('program-sender');
 const deviceSelect = document.getElementById('sender-device');
+const deviceRow = document.getElementById('sender-device-row');
+const sourceRadios = document.querySelectorAll('input[name="sender-source"]');
+const tabHelp = document.getElementById('sender-tab-help');
+const tabRights = document.getElementById('sender-tab-rights');
+const tabRightsLabel = tabRights.closest('label');
 const startButton = document.getElementById('sender-start');
 const muteButton = document.getElementById('sender-mute');
 const stopButton = document.getElementById('sender-stop');
@@ -49,19 +56,59 @@ let silentSince = null;
 let recentPeak = 0;
 let wakeLock = null;
 let recorder = null;
+// True while the browser waits for the user to allow the input or pick the tab.
+let capturing = false;
 // Changed only by an explicit pick, so recovering from an unplugged USB input waits for that input.
 let preferredDevice = savedDevice();
+let source = normalizeSource(savedSource());
 // Bumped by stop(); a connect() that resumes under an older generation is abandoned.
 let generation = 0;
+// Bumped by releaseInput(); recovery for an input that was since released or replaced is abandoned.
+let inputGeneration = 0;
+let inputRequestGeneration = 0;
 
-function setState(state, message) {
-  stateBadge.textContent = stateLabels[state] || state;
+function setState(state, message, label) {
+  stateBadge.textContent = label || stateLabels[state] || state;
   stateBadge.dataset.state = state;
   if (message) statusLine.textContent = message;
+  lockSource();
+}
+
+function busy() {
+  return sending || testing || Boolean(recorder) || capturing;
+}
+
+function lockSource() {
+  const locked = busy();
+  sourceRadios.forEach(radio => { radio.disabled = locked; });
 }
 
 function supported() {
+  if (source === SOURCES.TAB) return tabCaptureSupported(navigator.mediaDevices) && Boolean(window.RTCPeerConnection);
   return Boolean(navigator.mediaDevices && navigator.mediaDevices.getUserMedia && window.RTCPeerConnection);
+}
+
+function unsupportedMessage() {
+  return source === SOURCES.TAB
+    ? 'This browser cannot share a tab\'s audio. Use Chrome or Edge.'
+    : 'This browser cannot capture audio or publish WebRTC.';
+}
+
+function savedSource() {
+  try {
+    return window.localStorage.getItem(`${card.dataset.storageKey}.source`) || '';
+  } catch (error) {
+    return '';
+  }
+}
+
+function saveSource(value) {
+  try {
+    window.localStorage.setItem(`${card.dataset.storageKey}.source`, value);
+  } catch (error) {
+    // Storage can be blocked (private window); the default source still works.
+    console.warn('Could not remember the audio source', error);
+  }
 }
 
 function savedDevice() {
@@ -100,6 +147,7 @@ async function listDevices() {
 }
 
 function releaseInput() {
+  inputGeneration += 1;
   stopMeter();
   if (stream) stream.getTracks().forEach(track => track.stop());
   if (meterStream) meterStream.getTracks().forEach(track => track.stop());
@@ -109,39 +157,110 @@ function releaseInput() {
 
 /** @throws {DOMException} when the input cannot be opened or permission is denied */
 async function openInput() {
+  const requestedGeneration = inputGeneration;
+  const requestGeneration = ++inputRequestGeneration;
   const deviceId = deviceSelect.value;
   // Program audio must bypass voice DSP, which pumps levels and hurts music and STT.
-  const audioConstraints = {echoCancellation: false, noiseSuppression: false, autoGainControl: false};
+  const audioConstraints = {...RAW_AUDIO};
   if (deviceId) audioConstraints.deviceId = {exact: deviceId};
   const next = await navigator.mediaDevices.getUserMedia({audio: audioConstraints});
+  if (requestedGeneration !== inputGeneration || requestGeneration !== inputRequestGeneration) {
+    next.getTracks().forEach(track => track.stop());
+    return false;
+  }
   releaseInput();
   stream = next;
   const track = stream.getAudioTracks()[0];
   track.enabled = !muted;
-  track.addEventListener('ended', handleInputLost);
+  const inputGen = inputGeneration;
+  track.addEventListener('ended', () => handleInputLost(inputGen));
   meterStream = new MediaStream([track.clone()]);
   startMeter();
   await listDevices();
+  if (inputGen !== inputGeneration || requestGeneration !== inputRequestGeneration) return false;
   if (deviceSelect.value) saveDevice(deviceSelect.value);
+  const sender = pc?.getSenders().find(item => item.track?.kind === 'audio' || item.track === null);
+  if (sender) await sender.replaceTrack(track);
+  if (inputGen !== inputGeneration || requestGeneration !== inputRequestGeneration) return false;
+  return inputGen;
+}
+
+/** @throws {SourceError} when the user shared no tab audio; {DOMException} when the picker is cancelled or blocked */
+async function openTab() {
+  const shared = await navigator.mediaDevices.getDisplayMedia(tabCaptureOptions());
+  if (!isTabSurface(shared)) {
+    shared.getTracks().forEach(item => item.stop());
+    throw new SourceError('Pick a browser tab, not a window or a screen.');
+  }
+  const track = pickTabAudio(shared);
+  if (!track) {
+    shared.getTracks().forEach(item => item.stop());
+    throw new SourceError('No tab audio was shared. Pick a browser tab and keep "Also share tab audio" ticked.');
+  }
+  releaseInput();
+  stream = new MediaStream([track]);
+  track.enabled = !muted;
+  const inputGen = inputGeneration;
+  track.addEventListener('ended', () => handleTabEnded(inputGen));
+  meterStream = new MediaStream([track.clone()]);
+  startMeter();
   const sender = pc?.getSenders().find(item => item.track?.kind === 'audio' || item.track === null);
   if (sender) await sender.replaceTrack(track);
 }
 
-async function handleInputLost() {
-  if (!sending && !testing) return;
+function openSource() {
+  return source === SOURCES.TAB ? openTab() : openInput();
+}
+
+// Marks the capture as pending so the source cannot change under a prompt that is still open.
+async function captureSource() {
+  capturing = true;
+  lockSource();
+  try {
+    await openSource();
+  } finally {
+    capturing = false;
+    lockSource();
+  }
+}
+
+// Start, Test and Record each open their own capture; a second one would replace the track the first is using.
+function refuseWhileCapturing() {
+  if (!capturing) return false;
+  statusLine.textContent = source === SOURCES.TAB
+    ? 'Finish picking the tab in the share dialog first.'
+    : 'Allow or block the audio input in the browser prompt first.';
+  return true;
+}
+
+// A shared tab cannot be reopened without a user click, so this never re-opens the tab itself.
+async function handleTabEnded(inputGen) {
+  if (inputGen !== inputGeneration) return;
+  if (sending) {
+    await stop(true);
+    setState('stopped', 'Tab sharing ended. Click Start sending and pick the tab again.');
+  } else if (testing) {
+    stopTest(true);
+  }
+}
+
+async function handleInputLost(inputGen) {
+  if (inputGen !== inputGeneration || (!sending && !testing)) return;
   setState('reconnecting', 'The audio input disappeared. Waiting for it to come back…');
   await listDevices();
+  if (inputGen !== inputGeneration) return;
   // Wait for the chosen input rather than silently sending whichever input is left.
   if (preferredDevice && deviceSelect.value !== preferredDevice) {
-    window.setTimeout(handleInputLost, 2000);
+    window.setTimeout(() => handleInputLost(inputGen), 2000);
     return;
   }
   try {
-    await openInput();
+    const restoredGeneration = await openInput();
+    if (restoredGeneration === false || restoredGeneration !== inputGeneration) return;
     setState(sending ? (muted ? 'muted' : 'live') : 'testing', 'Audio input restored.');
   } catch (error) {
     console.warn('Audio input still unavailable; retrying', error);
-    window.setTimeout(handleInputLost, 2000);
+    window.setTimeout(() => handleInputLost(inputGen), 2000);
   }
 }
 
@@ -171,17 +290,24 @@ function startMeter() {
 }
 
 function describeLevel(rms) {
+  const tab = source === SOURCES.TAB;
   let level = 'good';
   let text = 'Good level.';
   if (recentPeak > 0.98) {
     level = 'clipping';
-    text = 'Too loud — the input is clipping. Turn the sound-desk send down.';
+    text = tab
+      ? 'Too loud — the tab audio is clipping. Lower the player volume in the shared tab.'
+      : 'Too loud — the input is clipping. Turn the sound-desk send down.';
   } else if (rms < 0.01 && recentPeak < 0.05) {
     level = 'silent';
-    text = 'No signal. Check the cable and the selected input.';
+    text = tab
+      ? 'No signal. Check that the stream is playing and not muted in the shared tab.'
+      : 'No signal. Check the cable and the selected input.';
   } else if (recentPeak < 0.2) {
     level = 'quiet';
-    text = 'Quiet. Turn the sound-desk send up if speech is hard to hear.';
+    text = tab
+      ? 'Quiet. Raise the player volume in the shared tab if speech is hard to hear.'
+      : 'Quiet. Turn the sound-desk send up if speech is hard to hear.';
   }
   if (muted) text = `Muted — listeners hear silence. Input: ${text.charAt(0).toLowerCase()}${text.slice(1)}`;
   levelLine.dataset.level = level;
@@ -198,7 +324,9 @@ function detectSilence(rms) {
   } else {
     silentSince = silentSince || now;
     if (now - silentSince > 4000 && state === 'live') {
-      setState('no-audio', 'No audio from the selected input. Check the sound-desk feed and levels.');
+      setState('no-audio', source === SOURCES.TAB
+        ? 'No audio from the shared tab. Check that the stream is playing and not muted.'
+        : 'No audio from the selected input. Check the sound-desk feed and levels.');
     }
   }
 }
@@ -225,6 +353,8 @@ class SenderError extends Error {
     this.status = status;
   }
 }
+
+class SourceError extends Error {}
 
 class StaleConnect extends Error {}
 
@@ -416,14 +546,21 @@ async function keepAwake() {
 }
 
 async function start() {
+  if (refuseWhileCapturing()) return;
   if (!supported()) {
-    setState('error', 'This browser cannot capture audio or publish WebRTC.');
+    setState('error', unsupportedMessage());
+    return;
+  }
+  if (source === SOURCES.TAB && !tabRights.checked) {
+    tabRightsLabel.dataset.invalid = '';
+    tabRights.focus();
+    setState('error', 'Confirm you have the right to interpret and caption this stream.');
     return;
   }
   startButton.disabled = true;
-  setState('connecting', 'Requesting the audio input…');
+  setState('connecting', source === SOURCES.TAB ? 'Waiting for you to pick the tab…' : 'Requesting the audio input…');
   try {
-    if (!stream) await openInput();
+    if (!stream) await captureSource();
   } catch (error) {
     startButton.disabled = false;
     reportInputError(error);
@@ -492,7 +629,12 @@ function toggleMute() {
 }
 
 function reportInputError(error) {
-  if (error && (error.name === 'NotAllowedError' || error.name === 'SecurityError')) {
+  if (error instanceof SourceError) {
+    setState('error', error.message);
+  } else if (source === SOURCES.TAB && error && (error.name === 'NotAllowedError' || error.name === 'SecurityError')) {
+    // Same badge style as a blocked microphone, but a label that fits tab sharing.
+    setState('permission-denied', 'Tab sharing was cancelled or blocked.', 'Tab sharing blocked');
+  } else if (error && (error.name === 'NotAllowedError' || error.name === 'SecurityError')) {
     setState('permission-denied', 'Microphone access was blocked. Allow it in the browser and try again.');
   } else {
     console.error('Could not open the audio input', error);
@@ -501,8 +643,13 @@ function reportInputError(error) {
 }
 
 async function startTest() {
+  if (refuseWhileCapturing()) return;
+  if (!supported()) {
+    setState('error', unsupportedMessage());
+    return;
+  }
   try {
-    await openInput();
+    await captureSource();
   } catch (error) {
     reportInputError(error);
     return;
@@ -512,10 +659,16 @@ async function startTest() {
   setState('testing', 'Sound check running. Nothing is sent to listeners.');
 }
 
+function idleMessage() {
+  return source === SOURCES.TAB
+    ? 'Tick the rights box, then start sending and pick the stream tab.'
+    : 'Pick an input, run a sound check, then start sending.';
+}
+
 function stopTest(resetState) {
   if (!testing) return;
   testing = false;
-  testButton.textContent = 'Test input';
+  testButton.textContent = source === SOURCES.TAB ? 'Test tab audio' : 'Test input';
   if (!sending) releaseInput();
   if (resetState) setState('idle', 'Sound check finished. Start sending when you are ready.');
 }
@@ -525,10 +678,15 @@ async function recordCheck() {
     setState('error', 'This browser cannot record a sound check.');
     return;
   }
+  if (refuseWhileCapturing()) return;
+  if (!supported()) {
+    setState('error', unsupportedMessage());
+    return;
+  }
   const wasTesting = testing;
   if (!stream) {
     try {
-      await openInput();
+      await captureSource();
     } catch (error) {
       reportInputError(error);
       return;
@@ -570,6 +728,31 @@ async function changeDevice() {
   }
 }
 
+function applySource() {
+  const tab = source === SOURCES.TAB;
+  deviceRow.hidden = tab;
+  tabHelp.hidden = !tab;
+  testButton.textContent = tab ? 'Test tab audio' : 'Test input';
+  sourceRadios.forEach(radio => { radio.checked = radio.value === source; });
+  if (supported()) setState('idle', idleMessage());
+  else setState('error', unsupportedMessage());
+}
+
+function changeSource(event) {
+  // A recording reads the meter stream, which releaseInput() would cut short, and a pending
+  // prompt would otherwise return audio from the source that was selected when it opened.
+  if (busy()) {
+    // Revert to the source that is still in use.
+    sourceRadios.forEach(radio => { radio.checked = radio.value === source; });
+    setState(stateBadge.dataset.state, 'Stop sending or testing before changing the source.');
+    return;
+  }
+  source = normalizeSource(event.target.value);
+  saveSource(source);
+  releaseInput();
+  applySource();
+}
+
 async function checkAvailability() {
   try {
     const response = await fetch(card.dataset.statusUrl, {cache: 'no-store'});
@@ -584,13 +767,16 @@ async function checkAvailability() {
   }
 }
 
-if (!supported()) {
+if (!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia && window.RTCPeerConnection)) {
   setState('error', 'This browser cannot capture audio or publish WebRTC.');
   startButton.disabled = true;
   testButton.disabled = true;
   recordButton.disabled = true;
 } else {
   navigator.mediaDevices.addEventListener?.('devicechange', listDevices);
+  sourceRadios.forEach(radio => radio.addEventListener('change', changeSource));
+  tabRights.addEventListener('change', () => { delete tabRightsLabel.dataset.invalid; });
+  applySource();
   listDevices();
   checkAvailability();
   startButton.addEventListener('click', start);

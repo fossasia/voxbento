@@ -262,6 +262,8 @@ jobs:
           node --check portal/static/js/room-analysis.js
           node --check portal/static/js/overlay-builder.js
           node --check portal/static/js/subtitle-overlay.js
+          node --check portal/static/js/program-sender.js
+          node --check portal/static/js/program-sender-source.js
           node --check .github/scripts/jules-review.mjs
       - name: run node tests
         run: |
@@ -276,6 +278,7 @@ jobs:
           node tests/test_booth_socket.mjs
           node tests/test_room_ai.mjs
           node tests/test_lang_picker.mjs
+          node tests/test_program_sender_source.mjs
 
       - name: Run unit tests
         run: uv run pytest tests/ -v

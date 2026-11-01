@@ -100,6 +100,7 @@ with `?error=invalid_role&role=…` and the page explains why.
 | GET | `/admin/events/` | `admin/event_list.html` | Search by event slug or display name with `?search=`; blank queries show all events; `%` and `_` are literal; pagination URL-encodes the term and clamps out-of-range pages |
 | POST | `/admin/events/` | — | Creates event (slug + display_name) |
 | GET | `/admin/events/{event_id}/` | `admin/event_detail.html` | Event + rooms + booths |
+| GET | `/admin/events/{event_id}/caption-overlays/` | `admin/caption_overlays.html` | Owner-only caption preview, appearance and OBS/vMix URLs; canonical `/workspace` mapping; no-store; linked from event quick actions |
 | GET | `/admin/events/{event_id}/api-settings/` | `admin/api_settings.html` | View encrypted API keys |
 | POST | `/admin/events/{event_id}/api-settings` | — | Update transcription API keys (Fernet-encrypted) |
 | POST | `/admin/events/{event_id}/delete` | — | Cascade-deletes event |

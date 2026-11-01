@@ -27,7 +27,7 @@ coordinates with #751. Plans were written against `dev` at `250aefde`.
 | Plan | Title | Priority | Effort | Depends on | Status |
 |---|---|---|---|---|---|
 | [002](002-youtube-intake-spike.md) | Verify the four YouTube-intake assumptions (spike) | P1 | S | — | TODO |
-| [003](003-browser-tab-audio-source.md) | Browser-tab audio source in the program sender | P1 | S | 002 (step 1) | TODO |
+| [003](003-browser-tab-audio-source.md) | Browser-tab audio source in the program sender | P1 | S | 002 (step 1) | DONE |
 | [004](004-rtmps-destination-without-relay.md) | RTMPS as an independent second destination | P1 | M | 002 (step 2); invariant-3 approval | TODO |
 | [005](005-connect-youtube-account.md) | Sign in with YouTube and pick a broadcast | P1 | L (2 PRs) | 002 (step 3) | TODO |
 | [006](006-youtube-native-captions.md) | Post captions to YouTube's native caption track | P2 | M | 005; 002 (step 4) | TODO |
