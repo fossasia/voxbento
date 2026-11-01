@@ -2407,7 +2407,8 @@ async def admin_transcription_settings(
             if not transcription_enabled:
                 await stop_transcription_worker(bid)
                 await broadcast_transcription(bid, "")
-                captions_change = "stopped"
+                if old_enabled:
+                    captions_change = "stopped"
             elif (
                 old_enabled != transcription_enabled
                 or old_provider != transcription_provider

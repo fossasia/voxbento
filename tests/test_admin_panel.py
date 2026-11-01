@@ -3246,3 +3246,51 @@ class TestBoothDetailTabs:
         assert "What's next for this booth" in fresh.text
         assert 'data-booth-tab-link="captions"' in fresh.text
         assert "What's next for this booth" not in configured.text
+
+    @pytest.mark.anyio
+    async def test_every_offered_caption_model_can_be_saved(self, admin_cookie, seed_event):
+        from portal.crypto import encrypt_val
+        from portal.database import get_session
+        from portal.room_setup import SPEECH_MODELS
+
+        event, room, booth = seed_event
+        async with get_session() as s:
+            db_event = await s.get(type(event), event.id)
+            db_event.encrypted_openai_api_key = encrypt_val("sk-test")
+            db_event.transcription_api_enabled = True
+        url = f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/transcription-settings"
+        async with _client() as c:
+            for model, _label in SPEECH_MODELS["openai"]:
+                resp = await c.post(
+                    url,
+                    data={"transcription_provider": "openai", "transcription_model": model},
+                    cookies=admin_cookie,
+                    follow_redirects=False,
+                )
+                assert resp.status_code == 303, model
+
+    @pytest.mark.anyio
+    async def test_saving_captions_that_were_already_off_says_saved_not_stopped(
+        self, admin_cookie, seed_event, monkeypatch
+    ):
+        from types import SimpleNamespace
+
+        from portal.routers import admin
+
+        event, room, booth = seed_event
+
+        async def ignore(*args, **kwargs):
+            return None
+
+        live = SimpleNamespace(active_interpreter_id="p1", participants={}, ingest_status="connected")
+        monkeypatch.setattr(admin.booths, "get_booth_sync", lambda booth_id: live)
+        monkeypatch.setattr(admin, "stop_transcription_worker", ignore)
+        monkeypatch.setattr(admin, "broadcast_transcription", ignore)
+        async with _client() as c:
+            resp = await c.post(
+                f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/transcription-settings",
+                data={"transcription_provider": "local", "transcription_model": "tiny"},
+                cookies=admin_cookie,
+                follow_redirects=False,
+            )
+        assert resp.headers["location"].endswith("?saved=captions")

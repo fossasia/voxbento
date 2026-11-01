@@ -14,7 +14,14 @@ class ProviderEnum(str, Enum):
 
 ALLOWED_MODELS: Dict[ProviderEnum, Set[str]] = {
     ProviderEnum.LOCAL: {"tiny", "base", "small", "medium", "large-v2", "large-v3"},
-    ProviderEnum.OPENAI: {"whisper-1", "gpt-4o-realtime-preview", "gpt-4o-mini-realtime-preview"},
+    ProviderEnum.OPENAI: {
+        "whisper-1",
+        "gpt-4o-transcribe",
+        "gpt-4o-mini-transcribe",
+        "gpt-realtime-whisper",
+        "gpt-4o-realtime-preview",
+        "gpt-4o-mini-realtime-preview",
+    },
     ProviderEnum.DEEPGRAM: {"nova-2"},
     ProviderEnum.NVIDIA: {"parakeet-rnnt", "parakeet-ctc"},
     ProviderEnum.ELEVENLABS: {"scribe_v2_realtime"},
