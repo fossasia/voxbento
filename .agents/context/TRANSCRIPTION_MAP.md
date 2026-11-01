@@ -215,6 +215,11 @@ encoder timecode is claimed. See `docs/program-stream-ingest.md` for capacity,
 
 ## Broadcast caption overlays
 
+The event overview links to the owner-only **Caption overlays** workspace at
+`/workspace/events/{event_id}/caption-overlays/` (`admin/caption_overlays.html`).
+The live preview and styling controls load only on that dedicated page, not on
+the overview; room and booth overlay links retain their default styling.
+
 `portal/overlay_channels.py` builds the room/language catalog from all booths and
 enabled floor/booth translation targets (including targets with no DBBooth). It
 uses the same room/language keys as `translations/worker.py`; multiple producers

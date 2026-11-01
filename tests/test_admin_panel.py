@@ -10,11 +10,14 @@ Covers:
 
 from __future__ import annotations
 
+import json
 import os
+import re
 
 os.environ["BOOTH_ACCESS_TOKEN"] = ""
 
 from datetime import datetime, timedelta, timezone
+from html.parser import HTMLParser
 
 import pytest
 
@@ -149,6 +152,32 @@ def _client():
     from fastapi_app import app
 
     return AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
+
+
+class _InlineScripts(HTMLParser):
+    """Collect the attributes of every script a strict CSP would block: no `src` and not a JSON data block."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.found: list[dict[str, str | None]] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attributes = dict(attrs)
+        if tag == "script" and "src" not in attributes and attributes.get("type") != "application/json":
+            self.found.append(attributes)
+
+
+def _inline_scripts(html: str) -> list[dict[str, str | None]]:
+    parser = _InlineScripts()
+    parser.feed(html)
+    return parser.found
+
+
+def _booth_detail_config(html: str) -> dict:
+    """The JSON data block booth-detail.js reads on the booth page."""
+    match = re.search(r'<script type="application/json" id="booth-detail-config">(.*?)</script>', html, re.S)
+    assert match is not None
+    return json.loads(match.group(1))
 
 
 # ---------------------------------------------------------------------------
@@ -1743,7 +1772,7 @@ class TestRoomCRUD:
         assert room.has_floor_captions is expected
 
     @pytest.mark.anyio
-    async def test_event_detail_shows_subtitle_overlay_builder(self, admin_cookie, seed_event):
+    async def test_event_detail_links_to_separate_caption_overlay_builder(self, admin_cookie, seed_event):
         event, room, booth = seed_event
 
         from portal.database import get_session
@@ -1754,12 +1783,18 @@ class TestRoomCRUD:
             db_event.listener_join_code = "ROOM42"
 
         async with _client() as c:
-            resp = await c.get(f"/admin/events/{event.id}/", cookies=admin_cookie)
+            overview = await c.get(f"/admin/events/{event.id}/", cookies=admin_cookie)
+            resp = await c.get(f"/admin/events/{event.id}/caption-overlays/", cookies=admin_cookie)
 
+        assert overview.status_code == 200
+        assert f"/admin/events/{event.id}/caption-overlays/" in overview.text
+        assert "subtitle-overlay-builder" not in overview.text
+        assert "js/overlay-builder.js" not in overview.text
         assert resp.status_code == 200
-        assert b'id="subtitle-overlay-builder"' in resp.content
-        assert f'value="{room.id}/{booth.language_code}"'.encode() in resp.content
+        assert b"id='subtitle-overlay-builder'" in resp.content
+        assert f"value='{room.id}/{booth.language_code}'".encode() in resp.content
         assert b"js/overlay-builder.js" in resp.content
+        assert resp.headers["cache-control"] == "no-store"
 
         # Floor option is absent if room provider is 'none' even if enabled
         async with get_session() as s:
@@ -1770,8 +1805,8 @@ class TestRoomCRUD:
             await s.flush()
 
         async with _client() as c:
-            resp_none = await c.get(f"/admin/events/{event.id}/", cookies=admin_cookie)
-        assert f'value="{room.id}/floor"'.encode() not in resp_none.content
+            resp_none = await c.get(f"/admin/events/{event.id}/caption-overlays/", cookies=admin_cookie)
+        assert f"value='{room.id}/floor'".encode() not in resp_none.content
 
         # Floor option appears once a valid provider is configured
         async with get_session() as s:
@@ -1781,8 +1816,8 @@ class TestRoomCRUD:
             await s.flush()
 
         async with _client() as c:
-            resp_local = await c.get(f"/admin/events/{event.id}/", cookies=admin_cookie)
-        assert f'value="{room.id}/floor"'.encode() in resp_local.content
+            resp_local = await c.get(f"/admin/events/{event.id}/caption-overlays/", cookies=admin_cookie)
+        assert f"value='{room.id}/floor'".encode() in resp_local.content
 
     @pytest.mark.anyio
     async def test_subtitle_overlay_and_selector_channels_beyond_100(self, admin_cookie, seed_event):
@@ -1823,7 +1858,7 @@ class TestRoomCRUD:
         async with _client() as c:
             resp_booth = await c.get(booth_overlay)
             resp_floor = await c.get(floor_overlay)
-            resp_admin = await c.get(f"/admin/events/{event.id}/", cookies=admin_cookie)
+            resp_admin = await c.get(f"/admin/events/{event.id}/caption-overlays/", cookies=admin_cookie)
 
         assert resp_booth.status_code == 200
         assert f'data-booth-id="{event.slug}-{target_room.id}-{target_booth.language_code}"'.encode() in resp_booth.content
@@ -1833,8 +1868,8 @@ class TestRoomCRUD:
 
         # 2. Selector includes channels beyond the first 100
         assert resp_admin.status_code == 200
-        assert f'value="{target_room.id}/{target_booth.language_code}"'.encode() in resp_admin.content
-        assert f'value="{target_room.id}/floor"'.encode() in resp_admin.content
+        assert f"value='{target_room.id}/{target_booth.language_code}'".encode() in resp_admin.content
+        assert f"value='{target_room.id}/floor'".encode() in resp_admin.content
 
     @pytest.mark.anyio
     async def test_delete_room(self, admin_cookie, seed_event):
@@ -2071,6 +2106,57 @@ class TestBoothCRUD:
         assert resp.status_code == 200
         assert b"English" in resp.content
         assert b"whep" in resp.content.lower()
+
+    @pytest.mark.anyio
+    async def test_booth_detail_has_no_inline_script(self, admin_cookie, seed_event):
+        """The pickers live in booth-detail.js; the page only ships their data (#1081)."""
+        event, room, booth = seed_event
+        async with _client() as c:
+            resp = await c.get(
+                f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/",
+                cookies=admin_cookie,
+            )
+        assert resp.status_code == 200
+        # Every script is external or a JSON data block, whatever attributes it carries.
+        assert _inline_scripts(resp.text) == []
+        assert "js/booth-detail.js" in resp.text
+        data = _booth_detail_config(resp.text)
+        assert {"code": "de", "name": "German"} in data["languages"]
+        assert data["selected_codes"] == []
+
+    @pytest.mark.anyio
+    async def test_booth_detail_config_carries_saved_translation_languages(self, admin_cookie, seed_event):
+        """Saved target languages reach the picker through the JSON config, and removed ones drop out (#1081)."""
+        event, room, booth = seed_event
+        url = f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/"
+        async with _client() as c:
+            for languages in (["fr", "es"], ["fr"]):
+                saved = await c.post(
+                    f"{url}translation-settings",
+                    data={
+                        "translation_enabled": "true",
+                        "translation_provider": "openai",
+                        "translation_model": "gpt-4o-mini",
+                        "translation_languages": languages,
+                    },
+                    cookies=admin_cookie,
+                    follow_redirects=False,
+                )
+                assert saved.status_code == 303
+                page = await c.get(url, cookies=admin_cookie)
+                assert sorted(_booth_detail_config(page.text)["selected_codes"]) == sorted(languages)
+
+    @pytest.mark.anyio
+    async def test_inline_script_detector_flags_every_blocked_form(self):
+        for blocked in (
+            "<script>run()</script>",
+            '<SCRIPT type="text/javascript">run()</SCRIPT>',
+            '<script type="module">run()</script>',
+            '<script data-src="x">run()</script>',
+        ):
+            assert _inline_scripts(blocked), blocked
+        assert _inline_scripts('<script src="/static/js/a.js"></script>') == []
+        assert _inline_scripts('<script type="application/json" id="x">{}</script>') == []
 
     @pytest.mark.anyio
     async def test_booth_detail_shows_whep_url(self, admin_cookie, seed_event):
