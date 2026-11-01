@@ -474,7 +474,7 @@ async def _stop_deleted_event_workers(room_ids: set[int]) -> None:
             )
         ).all()
     for room_id, slug in rows:
-        await _stop_worker(health[room_id], make_booth_id(slug, room_id, "floor"))
+        await _stop_worker(health.get(room_id) or AgentHealth(), make_booth_id(slug, room_id, "floor"))
 
 
 async def reconcile_once() -> None:

@@ -740,3 +740,20 @@ async def test_deleted_event_agent_and_worker_are_stopped(env):
     assert env["agents"].stops == [env["key"]]
     env["stop"].assert_awaited_once_with(env["booth_id"])
     assert env["room_id"] not in meeting.health
+
+
+@pytest.mark.anyio
+async def test_deleted_event_worker_is_stopped_when_its_health_record_is_gone(env):
+    response = await env["client"].post(
+        env["url"], json={"action": "connect", "meeting_url": "https://meet.example.org/TrackA"}
+    )
+    assert response.status_code == 200, response.text
+    async with get_session() as session:
+        event = await session.get(Event, env["event_id"])
+        event.deleted_at = datetime.now(timezone.utc)
+
+    # disconnect() can drop the room's health record while the reconciler is querying the database.
+    meeting.health.pop(env["room_id"], None)
+    env["stop"].reset_mock()
+    await meeting._stop_deleted_event_workers({env["room_id"]})
+    env["stop"].assert_awaited_once_with(env["booth_id"])
