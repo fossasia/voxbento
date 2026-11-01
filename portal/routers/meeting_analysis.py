@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from fastapi import APIRouter, Depends, Form, HTTPException, Request, status
 from fastapi.responses import JSONResponse, Response
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 
 from portal.auth import get_access_flags, require_event_owner, require_owner_or_coordinator
 from portal.database import (
@@ -27,6 +28,12 @@ from portal.workspace_routing import management_url
 router = APIRouter()
 
 FLOOR = "floor"
+
+
+class _Refused(Exception):
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
 
 
 @dataclass(frozen=True)
@@ -115,13 +122,24 @@ async def room_analysis_generate(request: Request, event_id: int, room_id: int, 
     if not verify_same_origin(request):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Invalid request origin.")
     page = f"events/{event_id}/rooms/{room_id}/analysis/"
+    try:
+        report_id = await _create_report(event_id, room_id, channel)
+    except IntegrityError:
+        return safe_redirect(url=management_url(request, f"{page}?error=busy"), status_code=303)
+    except _Refused as refused:
+        return safe_redirect(url=management_url(request, f"{page}?error={refused.reason}"), status_code=303)
+    start_analysis(report_id)
+    return safe_redirect(url=management_url(request, page), status_code=status.HTTP_303_SEE_OTHER)
+
+
+async def _create_report(event_id: int, room_id: int, channel: str) -> int:
     async with get_session() as session:
         event = await get_event_by_id(session, event_id)
         if event is None:
             raise HTTPException(status_code=404, detail="Event not found.")
         room = await room_in_event(session, event_id, room_id)
         if not event.meeting_analysis_enabled:
-            return safe_redirect(url=management_url(request, f"{page}?error=disabled"), status_code=303)
+            raise _Refused("disabled")
         await mark_interrupted_reports(session, room_id)
         busy = await session.scalar(
             select(func.count())
@@ -129,10 +147,10 @@ async def room_analysis_generate(request: Request, event_id: int, room_id: int, 
             .where(MeetingReport.room_id == room_id, MeetingReport.status.in_(IN_PROGRESS))
         )
         if busy:
-            return safe_redirect(url=management_url(request, f"{page}?error=busy"), status_code=303)
+            raise _Refused("busy")
         chosen = next((c for c in await _channels(session, room) if c.id == channel), None)
         if chosen is None:
-            return safe_redirect(url=management_url(request, f"{page}?error=channel"), status_code=303)
+            raise _Refused("channel")
         report = await create_meeting_report(
             session,
             event_id=event_id,
@@ -144,9 +162,7 @@ async def room_analysis_generate(request: Request, event_id: int, room_id: int, 
             model=model_for(event.meeting_analysis_provider, event.meeting_analysis_model),
             status=STATUS_PENDING,
         )
-        report_id = report.id
-    start_analysis(report_id)
-    return safe_redirect(url=management_url(request, page), status_code=status.HTTP_303_SEE_OTHER)
+        return report.id
 
 
 @router.get(

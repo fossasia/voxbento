@@ -30,6 +30,7 @@ logger = logging.getLogger(__name__)
 
 FAILED_UNEXPECTEDLY = "Something went wrong while writing the report. Try again."
 INTERRUPTED = "The server restarted before the report was ready. Generate it again."
+UNREADABLE_KEY = "The saved API key for this AI service can't be read. Save it again on the API keys page."
 
 
 @dataclass(frozen=True)
@@ -74,7 +75,10 @@ async def _prepare(report_id: int) -> _Job | None:
             return None
         api_key = None
         if report.provider != AnalysisProviderEnum.LOCAL.value:
-            api_key = get_translation_api_key(event, report.provider)
+            try:
+                api_key = get_translation_api_key(event, report.provider)
+            except ValueError as exc:
+                raise AnalysisError(UNREADABLE_KEY) from exc
             if not api_key:
                 report.status = STATUS_FAILED
                 report.error = "The event has no API key for the chosen AI service. Add it on the API keys page."
@@ -95,22 +99,24 @@ async def _prepare(report_id: int) -> _Job | None:
 
 
 async def run_analysis(report_id: int) -> None:
-    job = await _prepare(report_id)
-    if job is None:
-        return
     try:
-        completion = await get_provider(job.provider).complete(
-            system=job.system, user=job.user, model=job.model, api_key=job.api_key
-        )
-        result = parse_analysis(completion.text)
+        await _run(report_id)
     except AnalysisError as exc:
         logger.warning("Meeting report %s failed: %s", report_id, exc)
         await _fail(report_id, str(exc))
-        return
     except Exception:
-        logger.exception("Meeting report %s failed unexpectedly", report_id)
         await _fail(report_id, FAILED_UNEXPECTEDLY)
+        raise
+
+
+async def _run(report_id: int) -> None:
+    job = await _prepare(report_id)
+    if job is None:
         return
+    completion = await get_provider(job.provider).complete(
+        system=job.system, user=job.user, model=job.model, api_key=job.api_key
+    )
+    result = parse_analysis(completion.text)
     async with get_session() as session:
         report = await session.get(MeetingReport, report_id)
         if report is None:

@@ -982,7 +982,16 @@ class EmailDelivery(Base):
 
 class MeetingReport(Base):
     __tablename__ = "meeting_reports"
-    __table_args__ = (Index("ix_meeting_reports_room_created", "room_id", "created_at"),)
+    __table_args__ = (
+        Index("ix_meeting_reports_room_created", "room_id", "created_at"),
+        Index(
+            "uq_meeting_reports_room_in_progress",
+            "room_id",
+            unique=True,
+            sqlite_where=sa.text("status IN ('pending', 'running')"),
+            postgresql_where=sa.text("status IN ('pending', 'running')"),
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     event_id: Mapped[int] = mapped_column(ForeignKey("events.id", ondelete="CASCADE"))

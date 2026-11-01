@@ -60,9 +60,18 @@ def upgrade() -> None:
             sa.Column("generated_at", sa.DateTime(timezone=True), nullable=True),
         )
         op.create_index("ix_meeting_reports_room_created", "meeting_reports", ["room_id", "created_at"])
+        op.create_index(
+            "uq_meeting_reports_room_in_progress",
+            "meeting_reports",
+            ["room_id"],
+            unique=True,
+            sqlite_where=sa.text("status IN ('pending', 'running')"),
+            postgresql_where=sa.text("status IN ('pending', 'running')"),
+        )
 
 
 def downgrade() -> None:
+    op.drop_index("uq_meeting_reports_room_in_progress", table_name="meeting_reports")
     op.drop_index("ix_meeting_reports_room_created", table_name="meeting_reports")
     op.drop_table("meeting_reports")
     with op.batch_alter_table("events") as batch_op:

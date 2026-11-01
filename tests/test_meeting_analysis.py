@@ -6,6 +6,7 @@ from datetime import timedelta
 import httpx
 import pytest
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy.exc import IntegrityError
 
 import portal.globals as pg
 from fastapi_app import app
@@ -325,7 +326,9 @@ async def test_failures_are_saved_on_the_report(world, monkeypatch):
 
     monkeypatch.setattr(worker, "get_provider", lambda name: FakeProvider(error=RuntimeError("boom sk-123")))
     crashed = await _report(world)
-    await worker.run_analysis(crashed)
+    with pytest.raises(RuntimeError):
+        await worker.run_analysis(crashed)
+    assert (await _load(crashed)).status == "failed"
     assert (await _load(crashed)).error == worker.FAILED_UNEXPECTEDLY
 
     empty = await _report(world, channel_id="es", channel_label="Spanish booth", language_code="es")
@@ -345,13 +348,53 @@ async def test_only_pending_reports_run(world, monkeypatch):
 
 @pytest.mark.anyio
 async def test_reports_left_running_by_a_restart_are_marked_failed(world):
+    async with get_session() as s:
+        other = await create_room(s, event_id=world["event"], display_name="Side Room")
+        other_id = other.id
     stale = await _report(world, status="running", created_at=utc_now() - timedelta(hours=1))
-    fresh = await _report(world, status="running")
+    fresh = await _report(world, room_id=other_id, status="running")
     async with get_session() as s:
         await worker.mark_interrupted_reports(s, world["room"])
+        await worker.mark_interrupted_reports(s, other_id)
     assert (await _load(stale)).status == "failed"
     assert (await _load(stale)).error == worker.INTERRUPTED
     assert (await _load(fresh)).status == "running"
+
+
+@pytest.mark.anyio
+async def test_a_room_holds_only_one_report_in_progress(world):
+    await _report(world, status="running")
+    await _report(world, status="done")
+    await _report(world, status="failed")
+    with pytest.raises(IntegrityError):
+        await _report(world, status="pending")
+
+
+@pytest.mark.anyio
+async def test_an_unreadable_saved_key_fails_the_report(world, monkeypatch):
+    monkeypatch.setattr(worker, "get_provider", lambda name: FakeProvider())
+    await _enable(world, encrypted_translation_openai_api_key="not-a-fernet-token")
+    report_id = await _report(world, provider="openai", model="gpt-4o-mini")
+    await worker.run_analysis(report_id)
+    report = await _load(report_id)
+    assert report.status == "failed"
+    assert report.error == worker.UNREADABLE_KEY
+
+
+@pytest.mark.anyio
+async def test_a_report_that_cannot_be_saved_is_marked_failed_and_the_error_surfaces(world, monkeypatch):
+    monkeypatch.setattr(worker, "get_provider", lambda name: FakeProvider())
+
+    def broken_clock():
+        raise RuntimeError("clock broke")
+
+    monkeypatch.setattr(worker, "utc_now", broken_clock)
+    report_id = await _report(world)
+    with pytest.raises(RuntimeError, match="clock broke"):
+        await worker.run_analysis(report_id)
+    report = await _load(report_id)
+    assert report.status == "failed"
+    assert report.error == worker.FAILED_UNEXPECTEDLY
 
 
 # ── Pages ────────────────────────────────────────────────────────────────
@@ -428,6 +471,7 @@ async def test_owner_generates_a_report_for_a_channel_with_a_transcript(world, m
     assert busy.headers["location"].endswith("?error=busy")
     assert len(started) == 1
     report = await _load(started[0])
+    assert report.status == "pending"
     assert (report.channel_id, report.language_code, report.provider, report.model) == (
         "floor",
         "en",
@@ -509,3 +553,27 @@ async def test_markdown_export_lists_every_section(world):
     assert "## Action items\n\nNone." in text
     assert "## Key topics\n\n- Budget" in text
     assert "**00:00**\nIntro." in text
+
+
+@pytest.mark.anyio
+async def test_a_second_request_that_slips_past_the_busy_check_is_refused(world, monkeypatch):
+    await _enable(world)
+    started: list[int] = []
+    monkeypatch.setattr(analysis_router, "start_analysis", started.append)
+    real_create = analysis_router.create_meeting_report
+
+    async def racing_create(session, **fields):
+        await _report(world, status="running")
+        return await real_create(session, **fields)
+
+    monkeypatch.setattr(analysis_router, "create_meeting_report", racing_create)
+    async with _client() as c:
+        resp = await c.post(
+            f"/admin/events/{world['event']}/rooms/{world['room']}/analysis/",
+            data={"channel": "floor"},
+            headers=ORIGIN,
+            cookies=world["admin"],
+            follow_redirects=False,
+        )
+    assert resp.headers["location"].endswith("?error=busy")
+    assert started == []
