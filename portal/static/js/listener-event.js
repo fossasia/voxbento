@@ -1209,3 +1209,56 @@ window.addEventListener("beforeunload", function () {
 });
 
 window.setInterval(applyCurrentRoomAudioDelay, 3000);
+
+function selectOption(select, matches) {
+  var index = Array.from(select.options).findIndex(matches);
+  if (index < 1) return false;
+  select.selectedIndex = index;
+  select.dispatchEvent(new Event("change"));
+  return true;
+}
+
+function syncListenerLink() {
+  var url = new URL(window.location.href);
+  url.searchParams.delete("code");
+  url.searchParams.delete("room");
+  url.searchParams.delete("lang");
+  if (roomSelect.value) {
+    url.searchParams.set("room", roomSelect.value);
+    var selectedOpt = languageSelect.options[languageSelect.selectedIndex];
+    if (selectedOpt && selectedOpt.dataset.languageCode) {
+      url.searchParams.set("lang", selectedOpt.dataset.languageCode);
+    }
+  }
+  window.history.replaceState(null, "", url);
+}
+
+function applyListenerLink() {
+  var params = new URLSearchParams(window.location.search);
+  var requestedRoom = params.get("room");
+  var requestedLang = (params.get("lang") || "").toLowerCase();
+  var rooms = Array.from(roomSelect.options).filter(function (opt) {
+    return opt.value;
+  });
+
+  var roomSelected =
+    Boolean(requestedRoom) &&
+    selectOption(roomSelect, function (opt) {
+      return opt.value === requestedRoom;
+    });
+  if (!roomSelected && rooms.length === 1) {
+    roomSelected = selectOption(roomSelect, function (opt) {
+      return opt.value === rooms[0].value;
+    });
+  }
+  if (roomSelected && requestedLang) {
+    selectOption(languageSelect, function (opt) {
+      return opt.dataset.languageCode === requestedLang;
+    });
+  }
+}
+
+applyListenerLink();
+syncListenerLink();
+roomSelect.addEventListener("change", syncListenerLink);
+languageSelect.addEventListener("change", syncListenerLink);
