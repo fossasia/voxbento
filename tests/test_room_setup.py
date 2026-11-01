@@ -911,6 +911,18 @@ async def test_ai_settings_tab_explains_a_room_without_ai(admin_cookie, event_ro
     assert 'id="room_ai_form"' not in page.text
 
 
+@pytest.mark.anyio
+async def test_room_page_renders_youtube_audio_panel(admin_cookie, event_room):
+    event, _ = event_room
+    room_id = await _create_ai_room(admin_cookie, event)
+    async with _client() as c:
+        page = await c.get(f"/admin/events/{event.id}/rooms/{room_id}/", cookies=admin_cookie)
+    html = page.text
+    assert 'value="youtube"' in html
+    assert 'data-audio-panel="youtube"' in html
+    assert "From a YouTube stream" in html
+
+
 @pytest.mark.parametrize(
     ("fields", "choice"),
     [
