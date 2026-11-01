@@ -1,0 +1,44 @@
+{# Sign in with YouTube (#1087). Not rendered until the operator configures a Google OAuth client. #}
+{% if youtube_connect_enabled %}
+<div id='youtube-connect' class='program-setup-step youtube-connect' hidden
+  data-status-url='{{ management_prefix }}/events/{{ event.id }}/youtube'
+  data-broadcasts-url='{{ management_prefix }}/events/{{ event.id }}/youtube/broadcasts'
+  data-broadcast-url='{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/youtube/broadcast'
+  data-room-status-url='{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/program-ingest'>
+  <div class='program-section-head'>
+    <span class='program-step youtube-connect-mark' aria-hidden='true'>▶</span>
+    <div>
+      <h4>YouTube broadcast</h4>
+      <p>VoxBento reads your broadcasts and fills in the stream key for you. It never downloads your video.</p>
+    </div>
+  </div>
+
+  <div data-youtube-state='disconnected' hidden>
+    <a class='btn btn-primary' id='youtube-signin' href='{{ management_prefix }}/events/{{ event.id }}/youtube/connect?room_id={{ room.id }}'>Sign in with YouTube</a>
+    <p class='program-relay-note' data-mode-panel='rtmps_relay' hidden>Or paste the stream key manually below.</p>
+  </div>
+
+  <div data-youtube-state='connected' hidden>
+    <div class='youtube-connect-channel'>
+      <p>Connected to <strong id='youtube-channel'></strong></p>
+      <button type='button' class='btn btn-outline program-revoke-button' id='youtube-disconnect'>Disconnect</button>
+    </div>
+    <form id='youtube-broadcast-form' class='program-relay-destination'>
+      <label for='youtube-broadcast-select'>Your live and upcoming broadcasts</label>
+      <select id='youtube-broadcast-select' class='input'>
+        <option value=''>Loading broadcasts…</option>
+      </select>
+      <label for='youtube-broadcast-link'>or paste the broadcast link</label>
+      <input id='youtube-broadcast-link' class='input' type='text' maxlength='300' autocomplete='off' spellcheck='false' placeholder='https://youtube.com/live/…'>
+      <div class='program-relay-actions'>
+        <button type='submit' class='btn btn-primary' id='youtube-use-broadcast'>Use this broadcast</button>
+        <button type='button' class='btn btn-outline' id='youtube-unlink' hidden>Unlink</button>
+      </div>
+    </form>
+    <p id='youtube-status-line' class='program-relay-note' role='status' aria-live='polite'></p>
+  </div>
+
+  <p id='youtube-message' class='alert alert-info' role='status' aria-live='polite' hidden></p>
+</div>
+<script type='module' src='/static/js/youtube-connect.js?v={{ asset_version }}'></script>
+{% endif %}

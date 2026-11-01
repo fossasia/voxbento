@@ -919,3 +919,21 @@ async def test_idle_events_leave_no_locks_or_stale_cache_entries(yt_env):
     status_url = f"/workspace/events/{yt_env['event'].id}/rooms/{room.id}/program-ingest"
     assert "youtube" in (await client.get(status_url)).json()
     assert 999 not in yt._tokens and 999 not in yt._status
+
+
+@pytest.mark.anyio
+async def test_room_page_renders_the_youtube_controls(yt_env, monkeypatch):
+    event, room = yt_env["event"], yt_env["rooms"][0]
+    response = await yt_env["client"].get(f"/workspace/events/{event.id}/rooms/{room.id}/")
+    assert response.status_code == 200, response.text
+    page = response.text
+    assert "id='youtube-connect'" in page
+    assert f"/workspace/events/{event.id}/youtube/connect?room_id={room.id}" in page
+    assert f"data-broadcast-url='/workspace/events/{event.id}/rooms/{room.id}/youtube/broadcast'" in page
+    assert "/static/js/youtube-connect.js" in page
+    assert "Sign in with YouTube" in page
+    # Without a Google client the card and its script are not rendered at all.
+    monkeypatch.setattr(settings, "youtube_oauth_client_secret", "")
+    page = (await yt_env["client"].get(f"/workspace/events/{event.id}/rooms/{room.id}/")).text
+    assert "youtube-connect" not in page
+    assert "Sign in with YouTube" not in page
