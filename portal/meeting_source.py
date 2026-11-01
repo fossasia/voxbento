@@ -277,16 +277,24 @@ async def disconnect(room: Room, event: Event) -> bool:
 def status(room: Room) -> dict:
     """Public status. Never include the meeting URL or media addresses."""
     enabled = room.meeting_agent_enabled and room.floor_source == "jitsi_bot"
-    current = health.get(room.id) if enabled else None
+    current = health.get(room.id)
     if enabled:
         state = current.state if current else "starting"
         reason = current.reason if current else "Launching the meeting agent."
     else:
-        state = "stopped"
+        state = (
+            current.state
+            if current and current.reason == "The meeting agent stopped because the room remained empty."
+            else "stopped"
+        )
         reason = (
-            "Program ingest (an encoder or the browser sender) owns the floor."
-            if room.floor_source != "jitsi_bot"
-            else ""
+            current.reason
+            if current and current.reason == "The meeting agent stopped because the room remained empty."
+            else (
+                "Program ingest (an encoder or the browser sender) owns the floor."
+                if room.floor_source != "jitsi_bot"
+                else ""
+            )
         )
     return {
         "enabled": enabled,
@@ -340,6 +348,18 @@ async def reconcile_room(
     booth_id = make_booth_id(event.slug, room.id, "floor")
     now = monotonic()
     target_url = agent_url(room, event)
+    if agent and agent.get("state") == "stopped" and agent.get("stage") == "left_empty_room":
+        await _stop_worker(current, booth_id)
+        room.meeting_agent_enabled = False
+        current.state = "stopped"
+        current.reason = "The meeting agent stopped because the room remained empty."
+        current.next_restart_at = None
+        current.joined_at = None
+        current.last_progress = None
+        current.last_bytes = -1
+        current.failure = None
+        logger.info("meeting_agent left_empty_room room_id=%s", room.id)
+        return
     if joined_other_url(agent, current.agent_url, target_url):
         # The owner changed the meeting URL. Rejoin with a fresh budget even if the old
         # agent failed: retries spent on the previous URL say nothing about the new one.
@@ -459,9 +479,19 @@ async def reconcile_once() -> None:
     global _last_sweep, _unreachable
     async with get_session() as session:
         rows = (await session.execute(select(Room.id, Event.slug).join(Event).where(Room.meeting_agent_enabled))).all()
+        room_states = (await session.execute(select(Room.id, Room.meeting_agent_enabled))).all()
+        existing_room_ids = {room_id for room_id, _ in room_states}
+        enabled_room_ids = {room_id for room_id, enabled in room_states if enabled}
+
     ids = [room_id for room_id, _ in rows]
-    for room_id in set(health) - set(ids):
-        health.pop(room_id, None)
+
+    for room_id in list(health):
+        current = health[room_id]
+        if room_id not in existing_room_ids or (
+            room_id not in enabled_room_ids
+            and current.reason != "The meeting agent stopped because the room remained empty."
+        ):
+            health.pop(room_id, None)
     if not rows and monotonic() - _last_sweep < IDLE_SWEEP_SECS:
         return
     try:
