@@ -18,7 +18,6 @@ from portal.auth import (
     resolve_ws_auth,
 )
 from portal.database import get_booth_language_name, get_session, get_user_by_id
-from portal.globals import booths
 from portal.websockets.manager import (
     REASON_ACCOUNT_DEACTIVATED,
     REASON_AUTH_REVOKED,
@@ -36,7 +35,7 @@ from portal.websockets.manager import (
     _handle_set_active,
     _handle_set_broadcast_unlocked,
     _handle_update_state,
-    broadcast_booth_state,
+    cleanup_participant,
     listener_manager,
     manager,
     tts_manager,
@@ -196,14 +195,8 @@ async def ws_booth(websocket: WebSocket, booth_id: str) -> None:
         pass
     finally:
         manager.remove(websocket)
-        if session.participant_id:
-            state = await booths.leave_participant(
-                session.booth_id,
-                session.participant_id,
-                session.language,
-                session.channel_id,
-            )
-            await broadcast_booth_state(session.booth_id, state)
+        # Runs for a clean close and for a dropped connection alike.
+        await cleanup_participant(session)
 
 
 @router.websocket("/ws/captions/{booth_id}")

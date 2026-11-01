@@ -16,7 +16,7 @@ from fastapi import WebSocket, WebSocketDisconnect
 import portal.webhooks.worker as _wh_worker
 from portal.auth import can_perform_role
 from portal.booth_identity import booth_id_to_mediamtx_path
-from portal.booth_publish import TICKET_TTL_SECS, issue_ticket
+from portal.booth_publish import TICKET_TTL_SECS, evict_publisher, issue_ticket
 from portal.globals import booths
 from portal.roles import ALL_ROLES, INTERPRETER, can_set_active
 
@@ -731,14 +731,28 @@ async def _handle_join(ws: WebSocket, session: Session, data: dict) -> None:
         )
 
 
-async def _handle_leave(session: Session) -> None:
-    if not session.participant_id:
+async def cleanup_participant(session: Session) -> None:
+    """Remove the session's participant, tell the booth, and free their WHIP stream.
+
+    Shared by a clean ``booth:leave`` and by the socket dropping without one
+    (tab closed, Wi-Fi gone, machine asleep), so both end the same way: the
+    booth goes idle and the interpreter can publish again immediately.
+    """
+    participant_id = session.participant_id
+    if not participant_id:
         return
-    state = await booths.leave_participant(
-        session.booth_id, session.participant_id, session.language, session.channel_id
-    )
+    state = await booths.leave_participant(session.booth_id, participant_id, session.language, session.channel_id)
     session.participant_id = None
     await broadcast_booth_state(session.booth_id, state)
+    try:
+        await evict_publisher(session.booth_id, participant_id)
+    except Exception:
+        # The booth state is already correct; MediaMTX's own timeout is the fallback.
+        logger.exception("Failed to evict WHIP publisher for booth %s", session.booth_id)
+
+
+async def _handle_leave(session: Session) -> None:
+    await cleanup_participant(session)
 
 
 async def _handle_chat(ws: WebSocket, session: Session, data: dict) -> None:
@@ -816,6 +830,14 @@ async def _handle_request_publish_ticket(ws: WebSocket, session: Session, data: 
         except (ValueError, PermissionError) as exc:
             reply["error"] = str(exc)
         else:
+            # Only the active interpreter gets here, so any stream still recorded for
+            # this booth is stale (a dropped socket not yet noticed, or a previous
+            # interpreter after a handoff). Clear it so this publish isn't refused
+            # as a duplicate.
+            try:
+                await evict_publisher(session.booth_id)
+            except Exception:
+                logger.exception("Failed to evict stale WHIP publisher for booth %s", session.booth_id)
             reply["ticket"] = issue_ticket(session.booth_id, session.participant_id, path)
             reply["expires_in"] = int(TICKET_TTL_SECS)
     await ws.send_text(json.dumps(reply))
