@@ -1,11 +1,9 @@
 from __future__ import annotations
 
 import anyio
-import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
-import portal.routers.api as api_module
 from fastapi_app import app
 from portal.auth import create_user_token
 from portal.config import settings
@@ -267,6 +265,7 @@ def test_delete_booth_external_room_id_not_found(monkeypatch):
             f"/api/events/{slug}/eventyay-rooms/nonexistent-ext-id/booths/en",
             headers={"Authorization": "Bearer test-token"},
         )
+        # Missing rooms return 404 because the lookup precedes _verify_event_access.
         assert resp.status_code == 404
         assert resp.json()["detail"] == "Room not found"
     finally:
@@ -387,34 +386,50 @@ def test_delete_booth_authorization_restrictions(monkeypatch):
         anyio.run(cleanup)
 
 
-def test_router_has_no_duplicate_or_dead_booth_delete_routes():
-    """Verify that route registration contains no duplicate or dead DELETE endpoints for booths.
+BOOTH_DELETE_PATHS = {
+    "/api/events/{event_slug}/rooms/{room_id}/booths/{language_code}",
+    "/api/events/{event_slug}/eventyay-rooms/{eventyay_room_id}/booths/{language_code}",
+    "/api/events/{event_slug}/rooms/{eventyay_room_id}/booths/{language_code}",
+}
 
-    Guarantees:
-    1. /api/events/{event_slug}/rooms/{room_id}/booths/{language_code} is only registered to delete_booth_by_language.
-    2. /api/events/{event_slug}/eventyay-rooms/{eventyay_room_id}/booths/{language_code} is only registered to delete_event_booth.
-    3. The dead route /api/events/{event_slug}/rooms/{eventyay_room_id}/booths/{language_code} is not registered.
-    """
-    delete_routes = []
-    for r in app.routes:
-        if hasattr(r, "original_router") and r.original_router == api_module.router:
-            for route in r.original_router.routes:
-                if "booths/{language_code}" in route.path and "DELETE" in route.methods:
-                    delete_routes.append((route.path, route.endpoint.__name__))
+
+def test_router_has_no_duplicate_or_dead_booth_delete_routes():
+    """Verify route registration has no duplicate or dead booth DELETE endpoints."""
+    raw_routes = []
+    # Installed FastAPI represents included routers as nested route candidates,
+    # so a flat inspection of app.routes alone does not yield individual endpoints.
+    for route in app.routes:
+        if getattr(route, "path", None):
+            raw_routes.append(route)
+        elif hasattr(route, "effective_candidates"):
+            raw_routes.extend(route.effective_candidates())
+        elif hasattr(route, "routes"):
+            raw_routes.extend(route.routes)
+
+    delete_routes = [
+        (route.path, route.endpoint.__name__)
+        for route in raw_routes
+        if (
+            getattr(route, "path", None) in BOOTH_DELETE_PATHS
+            and "DELETE" in (getattr(route, "methods", None) or set())
+        )
+    ]
 
     assert len(delete_routes) == 2, f"Expected exactly 2 delete routes, found {len(delete_routes)}: {delete_routes}"
 
     paths_and_handlers = set(delete_routes)
+
     assert (
         "/api/events/{event_slug}/rooms/{room_id}/booths/{language_code}",
         "delete_booth_by_language",
     ) in paths_and_handlers
+
     assert (
         "/api/events/{event_slug}/eventyay-rooms/{eventyay_room_id}/booths/{language_code}",
         "delete_event_booth",
     ) in paths_and_handlers
 
-    # Confirm dead conflicting decorator was removed
+    # Confirm the dead, conflicting decorator was removed.
     assert (
         "/api/events/{event_slug}/rooms/{eventyay_room_id}/booths/{language_code}",
         "delete_event_booth",
