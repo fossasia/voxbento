@@ -1772,7 +1772,7 @@ class TestRoomCRUD:
         assert room.has_floor_captions is expected
 
     @pytest.mark.anyio
-    async def test_event_detail_shows_subtitle_overlay_builder(self, admin_cookie, seed_event):
+    async def test_event_detail_links_to_separate_caption_overlay_builder(self, admin_cookie, seed_event):
         event, room, booth = seed_event
 
         from portal.database import get_session
@@ -1783,12 +1783,18 @@ class TestRoomCRUD:
             db_event.listener_join_code = "ROOM42"
 
         async with _client() as c:
-            resp = await c.get(f"/admin/events/{event.id}/", cookies=admin_cookie)
+            overview = await c.get(f"/admin/events/{event.id}/", cookies=admin_cookie)
+            resp = await c.get(f"/admin/events/{event.id}/caption-overlays/", cookies=admin_cookie)
 
+        assert overview.status_code == 200
+        assert f"/admin/events/{event.id}/caption-overlays/" in overview.text
+        assert "subtitle-overlay-builder" not in overview.text
+        assert "js/overlay-builder.js" not in overview.text
         assert resp.status_code == 200
-        assert b'id="subtitle-overlay-builder"' in resp.content
-        assert f'value="{room.id}/{booth.language_code}"'.encode() in resp.content
+        assert b"id='subtitle-overlay-builder'" in resp.content
+        assert f"value='{room.id}/{booth.language_code}'".encode() in resp.content
         assert b"js/overlay-builder.js" in resp.content
+        assert resp.headers["cache-control"] == "no-store"
 
         # Floor option is absent if room provider is 'none' even if enabled
         async with get_session() as s:
@@ -1799,8 +1805,8 @@ class TestRoomCRUD:
             await s.flush()
 
         async with _client() as c:
-            resp_none = await c.get(f"/admin/events/{event.id}/", cookies=admin_cookie)
-        assert f'value="{room.id}/floor"'.encode() not in resp_none.content
+            resp_none = await c.get(f"/admin/events/{event.id}/caption-overlays/", cookies=admin_cookie)
+        assert f"value='{room.id}/floor'".encode() not in resp_none.content
 
         # Floor option appears once a valid provider is configured
         async with get_session() as s:
@@ -1810,8 +1816,8 @@ class TestRoomCRUD:
             await s.flush()
 
         async with _client() as c:
-            resp_local = await c.get(f"/admin/events/{event.id}/", cookies=admin_cookie)
-        assert f'value="{room.id}/floor"'.encode() in resp_local.content
+            resp_local = await c.get(f"/admin/events/{event.id}/caption-overlays/", cookies=admin_cookie)
+        assert f"value='{room.id}/floor'".encode() in resp_local.content
 
     @pytest.mark.anyio
     async def test_subtitle_overlay_and_selector_channels_beyond_100(self, admin_cookie, seed_event):
@@ -1852,7 +1858,7 @@ class TestRoomCRUD:
         async with _client() as c:
             resp_booth = await c.get(booth_overlay)
             resp_floor = await c.get(floor_overlay)
-            resp_admin = await c.get(f"/admin/events/{event.id}/", cookies=admin_cookie)
+            resp_admin = await c.get(f"/admin/events/{event.id}/caption-overlays/", cookies=admin_cookie)
 
         assert resp_booth.status_code == 200
         assert f'data-booth-id="{event.slug}-{target_room.id}-{target_booth.language_code}"'.encode() in resp_booth.content
@@ -1862,8 +1868,8 @@ class TestRoomCRUD:
 
         # 2. Selector includes channels beyond the first 100
         assert resp_admin.status_code == 200
-        assert f'value="{target_room.id}/{target_booth.language_code}"'.encode() in resp_admin.content
-        assert f'value="{target_room.id}/floor"'.encode() in resp_admin.content
+        assert f"value='{target_room.id}/{target_booth.language_code}'".encode() in resp_admin.content
+        assert f"value='{target_room.id}/floor'".encode() in resp_admin.content
 
     @pytest.mark.anyio
     async def test_delete_room(self, admin_cookie, seed_event):

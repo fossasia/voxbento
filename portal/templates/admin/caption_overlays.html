@@ -1,0 +1,107 @@
+{% extends 'admin/base.html' %}
+{% block title %}Caption overlays — {{ event.display_name }}{% endblock %}
+
+{% block breadcrumb %}
+<nav class='breadcrumb'>
+  <a href='{{ management_prefix }}/'>{{ 'My events' if is_workspace else 'Overview' }}</a> <span>/</span>
+  <a href='{{ management_prefix }}/events/{{ event.id }}/'>{{ event.display_name }}</a> <span>/</span>
+  <span class='breadcrumb-current' aria-current='page'>Caption overlays</span>
+</nav>
+{% endblock %}
+
+{% block content %}
+<div class='page-header'>
+  <div>
+    <h1>Caption overlays</h1>
+    <p class='meta-text'>{{ event.display_name }} · Live captions for your OBS or vMix broadcast</p>
+  </div>
+  <a href='{{ management_prefix }}/events/{{ event.id }}/' class='btn btn-outline'>&larr; Back to event</a>
+</div>
+
+<div class='section-card overlay-builder' id='subtitle-overlay-builder'
+     data-event-slug='{{ event.slug }}' data-join-code='{{ event.listener_join_code or "" }}'>
+  {% if event.listener_join_code and overlay_channels %}
+  <div class='overlay-workspace'>
+    <section class='overlay-preview-panel' aria-labelledby='overlay-preview-title'>
+      <div class='section-header'>
+        <h2 id='overlay-preview-title'>Preview</h2>
+        <span class='meta-text'>1920 &times; 1080 · Transparent</span>
+      </div>
+      <div class='overlay-preview' id='overlay-preview'>
+        <iframe id='overlay-preview-frame' title='Subtitles overlay preview' tabindex='-1'></iframe>
+      </div>
+      <p id='overlay-status' role='status'>Connecting to captions…</p>
+      <p id='overlay-source' class='muted'></p>
+      <div class='overlay-preview-actions'>
+        <span class='muted'>Test captions stay in this preview. They never appear on your live output.</span>
+        <button type='button' class='btn btn-sm btn-outline' id='overlay-test'>Send test caption</button>
+      </div>
+    </section>
+    <section class='overlay-settings-panel' aria-labelledby='overlay-settings-title'>
+      <div class='section-header'><h2 id='overlay-settings-title'>Source &amp; appearance</h2></div>
+      <div class='overlay-controls'>
+        <label class='overlay-control'>
+          <span>Room &amp; language</span>
+          <select id='overlay-channel'>
+            {% for room in rooms %}
+            <optgroup label='{{ room.display_name }}'>
+              {% for channel in overlay_channels if channel.room_id == room.id %}
+              <option value='{{ channel.room_id }}/{{ channel.code }}' data-source='{{ channel.source }}'>{{ room.display_name }} — {{ channel.name }} ({{ channel.code }})</option>
+              {% endfor %}
+            </optgroup>
+            {% endfor %}
+          </select>
+        </label>
+        <fieldset class='overlay-control overlay-position'>
+          <legend>Position</legend>
+          <label><input type='radio' name='overlay-position' value='top' /> Top</label>
+          <label><input type='radio' name='overlay-position' value='center' /> Center</label>
+          <label><input type='radio' name='overlay-position' value='bottom' checked /> Bottom</label>
+        </fieldset>
+        <label class='overlay-control'>
+          <span>Font size · <output id='overlay-font-size-value'>36</output>px</span>
+          <input type='range' id='overlay-font-size' min='16' max='96' step='2' value='36' />
+        </label>
+        <label class='overlay-control'>
+          <span>Background opacity · <output id='overlay-bg-value'>70</output>%</span>
+          <input type='range' id='overlay-bg' min='0' max='100' step='5' value='70' />
+        </label>
+        <label class='overlay-control'>
+          <span>Lines · <output id='overlay-lines-value'>2</output></span>
+          <input type='range' id='overlay-lines' min='1' max='4' step='1' value='2' />
+        </label>
+      </div>
+    </section>
+  </div>
+  <section class='overlay-export' aria-labelledby='overlay-export-title'>
+    <h2 id='overlay-export-title'>Add to your broadcast</h2>
+    <p class='muted'>Copy this URL into a 1920 &times; 1080 Browser source in OBS or vMix. Use a separate source for each room and language.</p>
+    <div class='copy-field'>
+      <input type='text' readonly aria-label='Subtitles overlay URL' id='overlay-url' />
+      <button type='button' class='btn btn-primary btn-copy' data-copy-target='overlay-url'>Copy URL</button>
+    </div>
+    <p class='muted'>Changing the controls updates this preview and URL. Paste the new URL into your streaming software to apply the changes.</p>
+  </section>
+  <details class='overlay-help'>
+    <summary>Set up in vMix or OBS</summary>
+    <ol>
+      <li>Choose a room and language above. Enable its transcription or translation, and connect live audio. Live captions appear while broadcasting.</li>
+      <li><strong>vMix:</strong> Add Input → Web Browser. Paste the URL, set Width to 1920 and Height to 1080, then choose OK. Use an Overlay button (1–4) on that input to place captions over your video.</li>
+      <li><strong>OBS:</strong> Sources → + → Browser. Paste the URL, set Width to 1920 and Height to 1080, and place the source above your video. Keep “Shutdown source when not visible” off for continuous captions.</li>
+      <li>Speak into the selected source and confirm captions on the output before going live. The page is transparent and carries no audio; no chroma key is needed.</li>
+    </ol>
+    <p>Keep overlay URLs private: the included join code also grants listener access to the event. Regenerating the event join code requires replacing saved URLs. If captions stop, check the source audio and transcription, then refresh the browser input.</p>
+    <p><a href='https://www.vmix.com/help28/WebBrowser.html' target='_blank' rel='noopener noreferrer'>vMix Web Browser help</a> · <a href='https://obsproject.com/kb/browser-source' target='_blank' rel='noopener noreferrer'>OBS Browser Source help</a></p>
+  </details>
+  {% elif not event.listener_join_code %}
+  <h2>Generate a listener join code first</h2>
+  <p class='muted'>Caption overlay URLs use the event's join code to read captions. Generate one under Listener access, then return here.</p>
+  <a href='{{ management_prefix }}/events/{{ event.id }}/#listener-access' class='btn btn-primary'>Go to listener access</a>
+  {% else %}
+  <h2>Set up a caption source</h2>
+  <p class='muted'>Turn on floor captions in a room or add an interpreter booth. Its room and language will appear here once configured.</p>
+  <a href='{{ management_prefix }}/events/{{ event.id }}/rooms/' class='btn btn-primary'>Open rooms &amp; booths</a>
+  {% endif %}
+</div>
+<script type='module' src='{{ url_for("static", path="js/overlay-builder.js") }}?v={{ asset_version }}'></script>
+{% endblock %}

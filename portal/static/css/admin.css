@@ -1922,7 +1922,30 @@ code { font-family: var(--font-mono); font-size: 0.85em; background: var(--color
 
 .rs-change-list { margin: 12px 0 24px; padding-left: 24px; }
 
-/* Subtitles overlay configurator (event detail) */
+/* Dedicated caption overlay workspace */
+.overlay-builder { max-width: 1200px; margin-inline: auto; }
+.overlay-workspace {
+  display: grid;
+  grid-template-columns: minmax(0, 1.8fr) minmax(280px, 1fr);
+  gap: 2rem;
+}
+.overlay-preview-panel, .overlay-settings-panel { min-width: 0; }
+.overlay-builder .overlay-controls { grid-template-columns: minmax(0, 1fr); }
+.overlay-builder .overlay-control select { width: 100%; min-height: 44px; }
+.overlay-builder .overlay-control input[type='range'] { width: 100%; min-height: 44px; }
+.overlay-builder .overlay-position label { min-height: 44px; }
+.overlay-export {
+  border-top: 1px solid var(--vb-color-border);
+  margin-top: 1.5rem;
+  padding-top: 1.5rem;
+}
+.overlay-export h2 { margin: 0; }
+.overlay-help { margin-top: 1.5rem; }
+.overlay-help summary { cursor: pointer; padding-block: 0.75rem; }
+@media (max-width: 800px) {
+  .overlay-workspace { grid-template-columns: minmax(0, 1fr); gap: 1.5rem; }
+}
+
 .overlay-preview {
   --preview-checker: color-mix(in srgb, var(--vb-color-text) 88%, var(--vb-color-surface));
   position: relative;

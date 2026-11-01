@@ -44,6 +44,7 @@ def client():
     [
         ("/workspace/events", "/admin/events"),
         ("/workspace/setup", "/admin/setup"),
+        ("/workspace/events/1/caption-overlays/", "/admin/events/1/caption-overlays/"),
         ("/workspace/api/events/1/api-keys", "/admin/api/events/1/api-keys"),
         ("/workspace/models/trigger_download", "/admin/models/trigger_download"),
         ("/workspace/models/download_progress", "/admin/models/download_progress"),
@@ -198,7 +199,7 @@ async def test_admin_retains_admin_namespace(organizer):
     assert f"/workspace/events/{organizer['event_id']}/rooms/" not in response.text
 
 
-@pytest.mark.parametrize("page", ["rooms/", "team/"])
+@pytest.mark.parametrize("page", ["rooms/", "team/", "caption-overlays/"])
 @pytest.mark.anyio
 async def test_admin_nav_is_complete_on_event_pages(organizer, page):
     async with get_session() as s:
@@ -220,7 +221,7 @@ async def test_admin_nav_is_complete_on_event_pages(organizer, page):
     assert 'href="/admin/developer-accounts"' in response.text
 
 
-@pytest.mark.parametrize("page", ["rooms/", "team/"])
+@pytest.mark.parametrize("page", ["rooms/", "team/", "caption-overlays/"])
 @pytest.mark.anyio
 async def test_event_owner_event_pages_show_my_events_header(organizer, page):
     # The "My events" area has no header links (#766); the shared user menu and the
@@ -232,7 +233,7 @@ async def test_event_owner_event_pages_show_my_events_header(organizer, page):
     assert response.status_code == 200
     assert '<span class="app-area app-area--events">My events</span>' in response.text
     assert 'data-user-menu-button' in response.text
-    assert f'href="/workspace/events/{organizer["event_id"]}/"' in response.text
+    assert f'href="/workspace/events/{organizer["event_id"]}/"' in response.text.replace("'", '"')
     assert 'href="/admin/users/"' not in response.text
     assert 'href="/mission-control/shared-event/"' in event_page.text
 
