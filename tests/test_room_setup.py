@@ -944,3 +944,13 @@ def test_room_audio_tab_opens_on_the_source_in_use(fields, choice):
     for key, value in fields.items():
         setattr(room, key, value)
     assert room_setup.room_audio_choice(room) == choice
+
+
+def test_locked_services_skip_providers_without_a_brand_name(monkeypatch):
+    catalog = engine_catalog(_event())
+    monkeypatch.setattr(
+        room_setup,
+        "_SPEECH_ENGINES",
+        (*room_setup._SPEECH_ENGINES, ("mystery", "m", "Mystery", "encrypted_openai_api_key")),
+    )
+    assert room_setup.locked_services(catalog, "speech") == ["Deepgram", "ElevenLabs", "OpenAI", "NVIDIA"]

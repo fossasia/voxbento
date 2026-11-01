@@ -174,6 +174,7 @@ SPEECH_MODELS: dict[str, tuple[tuple[str, str], ...]] = {
 
 BOOTH_SPEECH_MODELS: dict[str, tuple[tuple[str, str], ...]] = {
     **SPEECH_MODELS,
+    "openai": tuple(model for model in SPEECH_MODELS["openai"] if model[0] != "gpt-realtime-whisper"),
     "local": (
         *SPEECH_MODELS["local"],
         ("small", "Small"),
@@ -240,9 +241,9 @@ def locked_services(catalog: EngineCatalog, kind: str) -> list[str]:
     engines = _SPEECH_ENGINES if kind == "speech" else _TRANSLATION_ENGINES
     available = {engine.provider for engine in getattr(catalog, kind)}
     return [
-        _BRANDS[provider]
+        brand
         for provider, *_ in engines
-        if provider not in available and _BRANDS[provider] in catalog.locked
+        if provider not in available and (brand := _BRANDS.get(provider)) and brand in catalog.locked
     ]
 
 

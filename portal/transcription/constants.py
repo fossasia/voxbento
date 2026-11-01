@@ -18,7 +18,6 @@ ALLOWED_MODELS: Dict[ProviderEnum, Set[str]] = {
         "whisper-1",
         "gpt-4o-transcribe",
         "gpt-4o-mini-transcribe",
-        "gpt-realtime-whisper",
         "gpt-4o-realtime-preview",
         "gpt-4o-mini-realtime-preview",
     },

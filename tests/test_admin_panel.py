@@ -3257,7 +3257,7 @@ class TestBoothDetailTabs:
     async def test_every_offered_caption_model_can_be_saved(self, admin_cookie, seed_event):
         from portal.crypto import encrypt_val
         from portal.database import get_session
-        from portal.room_setup import SPEECH_MODELS
+        from portal.room_setup import BOOTH_SPEECH_MODELS
 
         event, room, booth = seed_event
         async with get_session() as s:
@@ -3266,7 +3266,7 @@ class TestBoothDetailTabs:
             db_event.transcription_api_enabled = True
         url = f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/transcription-settings"
         async with _client() as c:
-            for model, _label in SPEECH_MODELS["openai"]:
+            for model, _label in BOOTH_SPEECH_MODELS["openai"]:
                 resp = await c.post(
                     url,
                     data={"transcription_provider": "openai", "transcription_model": model},
@@ -3317,3 +3317,29 @@ class TestBoothDetailTabs:
         for model in ("tiny", "base", "small", "medium", "large-v2", "large-v3"):
             assert f'value="{model}" data-provider="local"' in captions
         assert saved.status_code == 303
+
+
+    @pytest.mark.anyio
+    async def test_booth_does_not_offer_models_that_cannot_work(self, admin_cookie, seed_event):
+        from portal.crypto import encrypt_val
+        from portal.database import get_session
+
+        event, room, booth = seed_event
+        async with get_session() as s:
+            db_event = await s.get(type(event), event.id)
+            db_event.encrypted_openai_api_key = encrypt_val("sk-test")
+            db_event.encrypted_translation_openai_api_key = encrypt_val("sk-test")
+            db_event.transcription_api_enabled = True
+        url = f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/"
+        async with _client() as c:
+            page = await c.get(url, cookies=admin_cookie)
+            refused = await c.post(
+                f"{url}transcription-settings",
+                data={"transcription_provider": "openai", "transcription_model": "gpt-realtime-whisper"},
+                cookies=admin_cookie,
+            )
+        assert 'value="gpt-4o-transcribe" data-provider="openai"' in _booth_panel(page.text, "captions")
+        assert "gpt-realtime-whisper" not in _booth_panel(page.text, "captions")
+        assert 'value="gpt-4o-mini" data-trans-provider="openai"' in _booth_panel(page.text, "translations")
+        assert "gpt-4o-mini-realtime-preview" not in _booth_panel(page.text, "translations")
+        assert refused.status_code == 400
