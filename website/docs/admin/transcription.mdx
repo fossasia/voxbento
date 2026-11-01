@@ -111,20 +111,25 @@ Click **Save**. Voxbento encrypts each key and stores it. The keys are never dis
 
 ## Configuring Transcription per Booth
 
-Each booth can use a different provider and model. You configure transcription on the booth detail page.
+Each booth can use a different provider and model. You configure transcription on the **Captions** tab of the booth detail page.
 
 ### Open the booth detail page
 
 In the admin panel, navigate to your event → **Rooms** → select a room → **Booths** → click the target booth.
-  ### Find Transcription Settings
+  ### Open the Captions tab
 
-Scroll to the **Transcription Settings** section on the booth detail page.
-  ### Select provider and model
+Click **Captions**. Turn on **Show live captions**.
+  ### Select a service and model
 
-Choose a **Provider** from the dropdown — for example, `deepgram`. Then select the **Model** for that provider — for example, `nova-2`.
+Choose a **Service** from the dropdown — for example, **Deepgram Nova**. The list only offers services this event can use: the built-in Whisper, plus any cloud service whose API key you have saved (and with external APIs enabled on the event). A note names the services that still need a key and links to the API keys page. To pick a specific model, open **Choose a specific model**.
   ### Save
 
-Click **Save**. If the booth is currently live (an interpreter is broadcasting), the transcription worker restarts immediately with the new settings. There is no need to wait for the next session.
+Click **Save caption settings**. You return to the Captions tab with a notice that says what happened:
+
+- If the booth is live (an interpreter is broadcasting) and the settings changed, the transcription worker restarts immediately with the new settings.
+- If you turned captions off while it was running, the worker is stopped.
+- If nothing changed, the worker keeps running.
+- If nobody is live, the settings are used the next time an interpreter goes live.
 
 ## Caption Logic and Finalization
 
