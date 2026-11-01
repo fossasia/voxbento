@@ -497,6 +497,8 @@ async function keepAwake() {
 }
 
 async function start() {
+  // One capture at a time: a second prompt could replace the stream the first one is about to send.
+  if (capturing) return;
   if (!supported()) {
     setState('error', unsupportedMessage());
     return;
@@ -591,6 +593,7 @@ function reportInputError(error) {
 }
 
 async function startTest() {
+  if (capturing) return;
   if (!supported()) {
     setState('error', unsupportedMessage());
     return;
@@ -615,6 +618,7 @@ function stopTest(resetState) {
 }
 
 async function recordCheck() {
+  if (capturing) return;
   if (!window.MediaRecorder) {
     setState('error', 'This browser cannot record a sound check.');
     return;
