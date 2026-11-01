@@ -43,10 +43,12 @@ MAX_SECTIONS = 8
 MAX_POINTS = 8
 REQUEST_TIMEOUT_SECONDS = 180.0
 PART_CHARS = 8_000
+REQUEST_CHARS = 12_000
 RATE_LIMIT_RETRIES = 3
 MAX_RETRY_WAIT_SECONDS = 60.0
 DEFAULT_RETRY_WAIT_SECONDS = 15.0
 STALE_AFTER = timedelta(minutes=30)
+JOB_TIMEOUT = timedelta(minutes=25)
 
 
 def model_for(provider: str, model: str | None) -> str:

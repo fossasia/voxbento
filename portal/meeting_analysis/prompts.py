@@ -100,7 +100,7 @@ Rules:
 
 MERGE_RULES = """
 You are given notes that were written for consecutive parts of the same session, in order. Merge them into one
-set of notes for the whole session: one title, one overview, and sections that combine the same theme across
+set of notes covering all of these parts: one title, one overview, and sections that combine the same theme across
 parts instead of repeating it. Keep the same JSON keys and follow the rules above."""
 
 
@@ -134,6 +134,29 @@ def build_analysis_messages(
     return _system(language_name), "\n".join(context) + f"\n\n<transcript>\n{transcript}\n</transcript>"
 
 
+def _note(number: int, result: AnalysisResult, limit: int) -> str:
+    lines = [f"Part {number}: {result.title}", result.overview]
+    lines += [f"- {section.heading}: " + "; ".join(section.points) for section in result.sections]
+    return "\n".join(lines)[: limit // 2 - 16]
+
+
+def _notes(parts: Sequence[AnalysisResult], limit: int = PART_CHARS) -> str:
+    return "\n".join(_note(number, result, limit) for number, result in enumerate(parts, start=1))
+
+
+def merge_batches(parts: Sequence[AnalysisResult], limit: int = PART_CHARS) -> list[list[AnalysisResult]]:
+    batches: list[list[AnalysisResult]] = []
+    current: list[AnalysisResult] = []
+    for result in parts:
+        if current and len(_notes([*current, result], limit)) > limit:
+            batches.append(current)
+            current = []
+        current.append(result)
+    if current:
+        batches.append(current)
+    return batches
+
+
 def build_merge_messages(
     *,
     event_name: str,
@@ -146,10 +169,4 @@ def build_merge_messages(
     context = _context(event_name, room_name, channel_label)
     if truncated:
         context.append("Only the first part of the session fits, so report on that part.")
-    notes = []
-    for number, result in enumerate(parts, start=1):
-        notes.append(f"Part {number}: {result.title}\n{result.overview}")
-        for section in result.sections:
-            notes.append(f"- {section.heading}: " + "; ".join(section.points))
-    body = "\n".join(notes)
-    return _system(language_name) + "\n" + MERGE_RULES, "\n".join(context) + f"\n\n<notes>\n{body}\n</notes>"
+    return _system(language_name) + "\n" + MERGE_RULES, "\n".join(context) + f"\n\n<notes>\n{_notes(parts)}\n</notes>"

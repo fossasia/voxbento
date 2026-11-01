@@ -854,3 +854,95 @@ async def test_groq_json_validation_failures_are_retried(world, monkeypatch):
     await worker.run_analysis(report_id)
     report = await _load(report_id)
     assert (report.status, report.title, report.tokens_used) == ("done", "Summit opening", 4)
+
+
+def _large_report(name: str) -> str:
+    point = "x" * 132
+    sections = [{"heading": f"{name} theme {i}", "points": [point] * 6} for i in range(6)]
+    return json.dumps({"title": f"{name} title", "overview": "o" * 400, "sections": sections})
+
+
+@pytest.mark.anyio
+async def test_every_request_of_a_long_session_stays_within_the_budget(world, monkeypatch):
+    from portal.meeting_analysis.constants import REQUEST_CHARS
+
+    monkeypatch.setattr(worker, "split_transcript", lambda transcript: [transcript] * 8)
+    calls: list[dict] = []
+
+    class LargeAnswers:
+        async def complete(self, **kwargs):
+            calls.append(kwargs)
+            return Completion(_large_report("Merged" if "<notes>" in kwargs["user"] else "Part"), 1)
+
+    monkeypatch.setattr(worker, "get_provider", lambda name: LargeAnswers())
+    report_id = await _report(world)
+    await worker.run_analysis(report_id)
+    report = await _load(report_id)
+    merges = [call for call in calls if "<notes>" in call["user"]]
+    assert report.status == "done"
+    assert len(merges) > 1
+    assert "<notes>" in calls[-1]["user"]
+    assert max(len(call["system"]) + len(call["user"]) for call in calls) <= REQUEST_CHARS
+
+
+def test_merge_batches_always_make_progress():
+    from portal.meeting_analysis.constants import PART_CHARS
+    from portal.meeting_analysis.prompts import _notes, merge_batches
+
+    huge = parse_analysis(_large_report("Huge").replace("x" * 132, "x" * 600))
+    parts = [huge] * 9
+    batches = merge_batches(parts)
+    assert len(batches) < len(parts)
+    assert all(len(_notes(batch)) <= PART_CHARS for batch in batches)
+    assert sum(len(batch) for batch in batches) == len(parts)
+
+
+@pytest.mark.anyio
+async def test_a_retired_job_makes_no_more_requests_after_a_replacement_starts(world, monkeypatch):
+    from portal.meeting_analysis import prompts
+
+    monkeypatch.setattr(worker, "split_transcript", lambda transcript: prompts.split_transcript(transcript, limit=40))
+    report_id = await _report(world)
+    replacement: list[int] = []
+    calls: list[dict] = []
+
+    class RetiredDuringFirstCall:
+        async def complete(self, **kwargs):
+            calls.append(kwargs)
+            if len(calls) == 1:
+                async with get_session() as s:
+                    report = await s.get(MeetingReport, report_id)
+                    report.created_at = utc_now() - timedelta(hours=1)
+                async with get_session() as s:
+                    await worker.mark_interrupted_reports(s, world["room"])
+                replacement.append(await _report(world))
+            return Completion(json.dumps(REPORT), 1)
+
+    monkeypatch.setattr(worker, "get_provider", lambda name: RetiredDuringFirstCall())
+    await worker.run_analysis(report_id)
+    old = await _load(report_id)
+    assert len(calls) == 1
+    assert (old.status, old.error, old.summary) == ("failed", worker.INTERRUPTED, "")
+    assert (await _load(replacement[0])).status == "pending"
+
+
+@pytest.mark.anyio
+async def test_a_job_that_runs_past_its_deadline_is_failed(world, monkeypatch):
+    import asyncio
+
+    class Slow:
+        async def complete(self, **kwargs):
+            await asyncio.sleep(5)
+
+    monkeypatch.setattr(worker, "JOB_TIMEOUT", timedelta(seconds=0.05))
+    monkeypatch.setattr(worker, "get_provider", lambda name: Slow())
+    report_id = await _report(world)
+    await worker.run_analysis(report_id)
+    report = await _load(report_id)
+    assert (report.status, report.error) == ("failed", worker.TOOK_TOO_LONG)
+
+
+def test_jobs_finish_before_they_can_be_retired_as_stale():
+    from portal.meeting_analysis.constants import JOB_TIMEOUT, STALE_AFTER
+
+    assert JOB_TIMEOUT < STALE_AFTER

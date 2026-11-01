@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from portal.database import get_session
 from portal.meeting_analysis.constants import (
     IN_PROGRESS,
+    JOB_TIMEOUT,
     STALE_AFTER,
     STATUS_DONE,
     STATUS_FAILED,
@@ -21,6 +22,7 @@ from portal.meeting_analysis.prompts import (
     build_analysis_messages,
     build_merge_messages,
     build_transcript,
+    merge_batches,
     split_transcript,
     transcript_lines,
 )
@@ -37,6 +39,11 @@ PARSE_ATTEMPTS = 2
 FAILED_UNEXPECTEDLY = "Something went wrong while writing the report. Try again."
 INTERRUPTED = "The server restarted before the report was ready. Generate it again."
 UNREADABLE_KEY = "The saved API key for this AI service can't be read. Save it again on the API keys page."
+TOOK_TOO_LONG = "The AI service took too long to write the report. Try again, or choose a faster model."
+
+
+class _Retired(Exception):
+    pass
 
 
 @dataclass(frozen=True)
@@ -56,6 +63,12 @@ async def _fail(report_id: int, message: str) -> None:
             .where(MeetingReport.id == report_id, MeetingReport.status.in_(IN_PROGRESS))
             .values(status=STATUS_FAILED, error=message[:500])
         )
+
+
+async def _still_running(report_id: int) -> bool:
+    async with get_session() as session:
+        status = await session.scalar(select(MeetingReport.status).where(MeetingReport.id == report_id))
+    return status == STATUS_RUNNING
 
 
 async def _prepare(report_id: int) -> _Job | None:
@@ -115,7 +128,13 @@ async def _prepare(report_id: int) -> _Job | None:
 
 async def run_analysis(report_id: int) -> None:
     try:
-        await _run(report_id)
+        async with asyncio.timeout(JOB_TIMEOUT.total_seconds()):
+            await _run(report_id)
+    except _Retired:
+        logger.info("Meeting report %s was retired, so its job stopped", report_id)
+    except TimeoutError:
+        logger.warning("Meeting report %s took longer than %s", report_id, JOB_TIMEOUT)
+        await _fail(report_id, TOOK_TOO_LONG)
     except AnalysisError as exc:
         logger.warning("Meeting report %s failed: %s", report_id, exc)
         await _fail(report_id, str(exc))
@@ -133,6 +152,8 @@ async def _run(report_id: int) -> None:
 
     async def ask(system: str, user: str) -> AnalysisResult:
         for attempt in range(PARSE_ATTEMPTS):
+            if not await _still_running(report_id):
+                raise _Retired
             try:
                 completion = await provider.complete(system=system, user=user, model=job.model, api_key=job.api_key)
                 used.append(completion.tokens_used or 0)
@@ -143,9 +164,14 @@ async def _run(report_id: int) -> None:
         raise AnalysisError("The AI service didn't return a report.")
 
     results = [await ask(system, user) for system, user in job.parts]
+    while len(results) > 1:
+        results = [
+            batch[0]
+            if len(batch) == 1
+            else await ask(*build_merge_messages(**job.context, parts=batch, truncated=job.truncated))
+            for batch in merge_batches(results)
+        ]
     result = results[0]
-    if len(results) > 1:
-        result = await ask(*build_merge_messages(**job.context, parts=results, truncated=job.truncated))
     async with get_session() as session:
         await session.execute(
             update(MeetingReport)

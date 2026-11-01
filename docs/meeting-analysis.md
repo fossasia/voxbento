@@ -58,9 +58,12 @@ Each finished report can also be downloaded as Markdown.
 
 - Only one report per room is written at a time.
 - Long sessions are written in parts: when the transcript is longer than about
-  8,000 characters, each part gets its own notes and a final request merges
-  them into one report. This keeps every request small enough for models with a
-  small context window and for free-tier rate limits.
+  8,000 characters, each part gets its own notes, and the notes are merged a
+  few parts at a time, with each merge also kept to about 8,000 characters,
+  until one report is left. Every request, including the instructions, stays
+  under 12,000 characters (about 3,000 tokens), which leaves room for the answer
+  in models with a small context window and keeps free-tier rate limits in
+  reach.
 - Transcripts are capped at the first 60,000 characters; the report says when
   this happened.
 - When a service answers "too many requests" (HTTP 429), the report waits for
@@ -70,9 +73,11 @@ Each finished report can also be downloaded as Markdown.
   requested once more before the report fails.
 - Errors explain what to do: a rejected key, a transcript too long for the
   model, a model the service doesn't offer, or a rate limit.
+- A report has 25 minutes to finish. After that it stops and is marked failed.
 - A report still marked as being written 30 minutes after it was requested
-  (for example because the server restarted) is marked failed. Generate it
-  again.
+  (for example because the server restarted) is marked failed, and its job
+  checks this before every request, so it never keeps calling the AI service
+  once a new report has been started. Generate it again.
 
 ## Tested models
 
