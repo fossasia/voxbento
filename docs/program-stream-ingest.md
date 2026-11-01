@@ -10,8 +10,10 @@ single-output RTMPS workflow where VoxBento relays to YouTube, see
 
 V1 supports **HTTPS WHIP with a bearer token**, Opus audio, and optional video.
 Choose H.264 for broad encoder/browser compatibility. MediaMTX terminates WebRTC;
-Caddy terminates HTTPS signalling. Media never flows through FastAPI. RTMP/SRT
-encoder outputs are not supported in this version; use a WHIP-capable output or
+Caddy terminates HTTPS signalling. Media never flows through FastAPI. Streaming
+tools without WHIP can instead send an authenticated **RTMPS** stream when the
+operator opts in ([RTMPS as an extra destination](#rtmps-as-an-extra-destination)).
+Plaintext RTMP and SRT are not supported; otherwise use a WHIP-capable output or
 external distribution service, or retain the Jitsi floor bot.
 
 The integration is pinned to MediaMTX **1.18.2**. The opt-in native transport test
@@ -30,7 +32,8 @@ Operator rollout (not an automatic deployment):
    Compose. Set `MEDIAMTX_AUTH_HOOK_SECRET` to the same strong random value for the
    portal and MediaMTX (`openssl rand -hex 32`); Compose wires the value to both.
    The portal refuses production startup without it. Never forward 9997/8554 at
-   the firewall. No public RTMP/SRT listener.
+   the firewall. No public RTMP/SRT listener; RTMPS on 1936 opens only with the
+   opt-in `docker-compose.rtmps.yml` or `docker-compose.relay.yml` override.
 3. Set `PUBLIC_BASE_URL` to the actual HTTPS origin and `MEDIAMTX_WHIP_BASE` to
    the same public origin. Set `PROGRAM_INGEST_ENABLED=true` after validating
    this boundary. Default is off. Set the reachable public IP/domain in MediaMTX's
@@ -82,6 +85,33 @@ ownership (it does not silently restart the bot).
 room's **Room audio → From the online meeting** panel. Connecting the meeting while program ingest owns
 the floor asks for confirmation, then performs the same switch.
 All source changes affect VoxBento only, not the independent YouTube output.
+
+### RTMPS as an extra destination
+
+StreamYard, Restream, vMix, Zoom/Teams live streaming and OBS multi-output plugins
+can add a **Custom RTMP** destination next to YouTube. In this mode VoxBento accepts
+that second, authenticated RTMPS stream for captions, translation and TTS, while
+YouTube keeps receiving the tool's own output, so a VoxBento outage never touches
+YouTube. Nothing is relayed and `program-relay` is not needed. The server operator
+turns it on once with `scripts/setup-youtube-relay.sh --ingest-only`, which sets
+`PROGRAM_RTMPS_ENABLED=true` through `docker-compose.rtmps.yml`
+([server setup](program-relay.md#rtmps-ingest-only-no-relay)); until then the option
+says *Not switched on for this server yet*.
+
+1. Room page → **Room audio → From streaming software** → **Add VoxBento as an extra
+   destination**, then **Create stream key**.
+2. In the streaming tool add a **Custom RTMP** destination and paste the **Server**
+   (`rtmps://<host>:1936/{event_slug}/{room_id}`) and the **Stream key**
+   (`floor?key=…`, shown once, valid 30 days). Tools with a single URL field use
+   **Copy full URL**.
+3. Keep the YouTube destination as it is and start streaming. *Encoder → VoxBento*
+   turns **Connected**; captions start when audio arrives (send AAC audio).
+
+The key is bound to RTMPS over TLS (`rtmpEncryption: strict`); it never works over
+WHIP, and a browser-sender session secret never works over RTMPS. Which platforms
+accept the `floor?key=…` key shape is being verified in
+[plan 002 step 2](../plans/002-youtube-intake-spike.md); rehearse with your exact
+tool before an event.
 
 ## Browser program-audio sender
 

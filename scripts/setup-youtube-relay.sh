@@ -1,22 +1,26 @@
 #!/usr/bin/env bash
 # Turn on YouTube relay mode (#749) for this VoxBento deployment. See docs/program-relay.md.
 #
-#   scripts/setup-youtube-relay.sh [--host voxbento.com] [--cert-dir DIR --cert-name NAME] [--yes]
+#   scripts/setup-youtube-relay.sh [--ingest-only] [--host voxbento.com] [--cert-dir DIR --cert-name NAME] [--yes]
 #
 # Run from the repository root on the server. It is safe to run again: existing values are
-# kept. It writes the relay settings into .env (never printing secrets), finds the TLS
-# certificate Caddy already manages for the host, validates the Compose configuration,
-# then (after confirmation, or with --yes) starts the relay and checks that it answers.
+# kept. It writes the settings into .env (never printing secrets), finds the TLS certificate
+# Caddy already manages for the host, validates the Compose configuration, then (after
+# confirmation, or with --yes) starts the services and checks that they answer.
+# --ingest-only opens only the authenticated RTMPS listener (docker-compose.rtmps.yml) so a
+# streaming tool can add VoxBento as an extra destination; no program-relay, YouTube stays independent.
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
 ENV_FILE=.env
 RELAY_COMPOSE=docker-compose.relay.yml
-host="" cert_dir="" cert_name="" assume_yes=0
+RTMPS_COMPOSE=docker-compose.rtmps.yml
+host="" cert_dir="" cert_name="" assume_yes=0 ingest_only=0
 
-usage() { sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+usage() { sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 while [ $# -gt 0 ]; do
   case "$1" in
+    --ingest-only) ingest_only=1; shift ;;
     --host) host=$2; shift 2 ;;
     --cert-dir) cert_dir=$2; shift 2 ;;
     --cert-name) cert_name=$2; shift 2 ;;
@@ -55,7 +59,13 @@ sudo_if_needed() { if "$@" 2>/dev/null; then return 0; fi; command -v sudo >/dev
 
 command -v docker >/dev/null || fail "docker is not installed."
 command -v openssl >/dev/null || fail "openssl is not installed."
-[ -f "$RELAY_COMPOSE" ] || fail "Run this from the VoxBento checkout ($RELAY_COMPOSE not found)."
+# Relay mode already opens the RTMPS listener, so the two override files are never combined.
+if [ "$ingest_only" -eq 1 ]; then
+  OVERRIDE=$RTMPS_COMPOSE OTHER=$RELAY_COMPOSE
+else
+  OVERRIDE=$RELAY_COMPOSE OTHER=$RTMPS_COMPOSE
+fi
+[ -f "$OVERRIDE" ] || fail "Run this from the VoxBento checkout ($OVERRIDE not found)."
 [ -f "$ENV_FILE" ] || fail "$ENV_FILE not found. Create it first (see README.md)."
 umask 077
 # .env holds every production secret; make sure no other local user can read it.
@@ -78,10 +88,12 @@ if [ -z "$(env_get MEDIAMTX_AUTH_HOOK_SECRET)" ]; then
   env_set MEDIAMTX_AUTH_HOOK_SECRET "$(secret)"
   echo "Generated MEDIAMTX_AUTH_HOOK_SECRET"
 fi
-control=$(env_get PROGRAM_RELAY_CONTROL_SECRET)
-if [ "${#control}" -lt 32 ]; then
-  env_set PROGRAM_RELAY_CONTROL_SECRET "$(secret)"
-  echo "Generated PROGRAM_RELAY_CONTROL_SECRET"
+if [ "$ingest_only" -ne 1 ]; then
+  control=$(env_get PROGRAM_RELAY_CONTROL_SECRET)
+  if [ "${#control}" -lt 32 ]; then
+    env_set PROGRAM_RELAY_CONTROL_SECRET "$(secret)"
+    echo "Generated PROGRAM_RELAY_CONTROL_SECRET"
+  fi
 fi
 env_set PROGRAM_INGEST_ENABLED true
 [ -n "$(env_get PROGRAM_RTMPS_PUBLIC_BASE)" ] || env_set PROGRAM_RTMPS_PUBLIC_BASE "rtmps://$host:1936"
@@ -107,11 +119,17 @@ env_set PROGRAM_RTMPS_CERT_DIR "$cert_dir"
 env_set PROGRAM_RTMPS_CERT_NAME "$cert_name"
 echo "Using $cert_dir/$cert_name.crt (MediaMTX reloads it when Caddy renews)"
 
-step "Include $RELAY_COMPOSE in every docker compose command and deploy"
+step "Include $OVERRIDE in every docker compose command and deploy"
 files=$(env_get COMPOSE_FILE)
 case ":${files}:" in
-  *":$RELAY_COMPOSE:"*) ;;
-  *) env_set COMPOSE_FILE "${files:-docker-compose.yml}:$RELAY_COMPOSE" ;;
+  *":$OVERRIDE:"*) ;;
+  *":$RELAY_COMPOSE:"*)
+    # Only reachable with --ingest-only: relay mode implies RTMPS ingest.
+    echo "$RELAY_COMPOSE is already included and accepts RTMPS ingest; ingest-only is already covered." ;;
+  *)
+    # Switching from ingest-only to relay replaces the RTMPS-only override.
+    files=$(printf '%s\n' "${files:-docker-compose.yml}" | tr ':' '\n' | { grep -vxF "$OTHER" || true; } | paste -sd: -)
+    env_set COMPOSE_FILE "${files:-docker-compose.yml}:$OVERRIDE" ;;
 esac
 echo "COMPOSE_FILE=$(env_get COMPOSE_FILE)"
 
@@ -120,39 +138,77 @@ docker compose config --quiet
 echo "OK"
 
 if [ "$assume_yes" -ne 1 ]; then
-  printf '\nBuild and start program-relay, then recreate portal and MediaMTX (a few seconds of\ninterruption for live booths)? [y/N] '
+  if [ "$ingest_only" -eq 1 ]; then
+    printf '\nRecreate portal and MediaMTX (a few seconds of interruption for live booths)? [y/N] '
+    not_started="docker compose up -d --build mediamtx portal"
+  else
+    printf '\nBuild and start program-relay, then recreate portal and MediaMTX (a few seconds of\ninterruption for live booths)? [y/N] '
+    not_started="docker compose up -d --build"
+  fi
   read -r answer
-  case "$answer" in y|Y|yes) ;; *) echo "Not started. Run: docker compose up -d --build"; exit 0 ;; esac
+  case "$answer" in y|Y|yes) ;; *) echo "Not started. Run: $not_started"; exit 0 ;; esac
 fi
 
-step "Start the relay"
-docker compose up -d --build program-relay
-docker compose up -d mediamtx portal
-
-step "Check"
 ok=1
-relay_answers() {
-  docker compose exec -T portal python -c \
-    "import urllib.request; urllib.request.urlopen('http://program-relay:8090/healthz', timeout=3)" 2>/dev/null
-}
-for _ in $(seq 1 20); do relay_answers && break; sleep 3; done
-if relay_answers; then
-  echo "Portal reaches the relay service: OK"
+if [ "$ingest_only" -eq 1 ]; then
+  step "Start RTMPS ingest"
+  # Build the portal from this checkout: an older image would not offer the RTMPS mode.
+  docker compose up -d --build mediamtx portal
+
+  step "Check"
 else
-  echo "Portal cannot reach program-relay. Check: docker compose logs program-relay"; ok=0
+  step "Start the relay"
+  docker compose up -d --build program-relay
+  docker compose up -d mediamtx portal
+
+  step "Check"
+  relay_answers() {
+    docker compose exec -T portal python -c \
+      "import urllib.request; urllib.request.urlopen('http://program-relay:8090/healthz', timeout=3)" 2>/dev/null
+  }
+  for _ in $(seq 1 20); do relay_answers && break; sleep 3; done
+  if relay_answers; then
+    echo "Portal reaches the relay service: OK"
+  else
+    echo "Portal cannot reach program-relay. Check: docker compose logs program-relay"; ok=0
+  fi
 fi
-if echo | openssl s_client -connect 127.0.0.1:1936 -servername "$host" -verify_hostname "$host" \
-  -verify_return_error >/dev/null 2>&1; then
+# `up -d` returns before the services are ready; wait (bounded) for both before reporting.
+portal_answers() {
+  docker compose exec -T portal python -c \
+    "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz', timeout=3)" 2>/dev/null
+}
+rtmps_answers() {
+  echo | openssl s_client -connect 127.0.0.1:1936 -servername "$host" -verify_hostname "$host" \
+    -verify_return_error >/dev/null 2>&1
+}
+for _ in $(seq 1 20); do portal_answers && break; sleep 3; done
+if portal_answers; then
+  echo "Portal is healthy (it authorizes every RTMPS publish): OK"
+else
+  echo "Portal is not healthy, so no publish can be authorized. Check: docker compose logs portal"; ok=0
+fi
+for _ in $(seq 1 20); do rtmps_answers && break; sleep 3; done
+if rtmps_answers; then
   echo "RTMPS listener on 1936 presents a valid certificate for $host: OK"
 else
   echo "RTMPS on 1936 is not answering with a valid certificate. Check: docker compose logs mediamtx"; ok=0
 fi
 
-cat <<EOF
+if [ "$ingest_only" -eq 1 ]; then
+  cat <<EOF
+
+Next:
+  1. Open TCP port 1936 in the firewall / cloud security group (for ufw: sudo ufw allow 1936/tcp).
+  2. Organizers: room page -> Program stream ingest -> "Add VoxBento as an extra destination".
+EOF
+else
+  cat <<EOF
 
 Next:
   1. Open TCP port 1936 in the firewall / cloud security group (for ufw: sudo ufw allow 1936/tcp).
   2. Organizers: room page -> Program stream ingest -> "VoxBento forwards to YouTube".
   3. Before the first real event, do the unlisted YouTube test run in docs/program-relay-rehearsal.md.
 EOF
+fi
 [ "$ok" -eq 1 ] || exit 1

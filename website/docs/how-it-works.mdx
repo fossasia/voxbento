@@ -446,6 +446,18 @@ manual synchronization, not shared encoder timecode.
 See the repository's `docs/program-stream-ingest.md` for rollout, security limits,
 encoder compatibility, capacity and the required two-destination rehearsal.
 
+### RTMPS as an extra destination
+
+Streaming tools without WHIP (StreamYard, Restream, vMix, OBS multi-output plugins) can
+add VoxBento as a "Custom RTMP" destination next to YouTube. In this `rtmps` mode MediaMTX
+accepts a room-authenticated RTMPS stream (TLS only) through the same callback, with the
+stream key bound to the RTMPS transport; a browser-sender session secret never authorizes
+it. Nothing is relayed and no `program-relay` service is involved, so YouTube stays
+independent. Operators enable it once with `scripts/setup-youtube-relay.sh --ingest-only`
+(`docker-compose.rtmps.yml`); switching it off disconnects live feeds. Which platforms
+accept the `floor?key=…` stream key is still being verified (YouTube intake plan 002,
+step 2), so rehearse with the exact tool before an event.
+
 ### RTMPS relay mode
 
 A room can choose relay mode instead: the encoder sends a single RTMPS stream
