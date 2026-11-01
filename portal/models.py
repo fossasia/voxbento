@@ -732,6 +732,8 @@ class YouTubeConnection(Base):
     scope: Mapped[str] = mapped_column(String(500))
     connected_by_user_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     last_error: Mapped[str | None] = mapped_column(String(300), nullable=True)
+    # When the owner last signed in; updated_at also moves when last_error changes.
+    connected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
 
