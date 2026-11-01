@@ -156,11 +156,16 @@ function releaseInput() {
 
 /** @throws {DOMException} when the input cannot be opened or permission is denied */
 async function openInput() {
+  const requestedGeneration = inputGeneration;
   const deviceId = deviceSelect.value;
   // Program audio must bypass voice DSP, which pumps levels and hurts music and STT.
   const audioConstraints = {...RAW_AUDIO};
   if (deviceId) audioConstraints.deviceId = {exact: deviceId};
   const next = await navigator.mediaDevices.getUserMedia({audio: audioConstraints});
+  if (requestedGeneration !== inputGeneration) {
+    next.getTracks().forEach(track => track.stop());
+    return false;
+  }
   releaseInput();
   stream = next;
   const track = stream.getAudioTracks()[0];
@@ -173,6 +178,7 @@ async function openInput() {
   if (deviceSelect.value) saveDevice(deviceSelect.value);
   const sender = pc?.getSenders().find(item => item.track?.kind === 'audio' || item.track === null);
   if (sender) await sender.replaceTrack(track);
+  return true;
 }
 
 /** @throws {SourceError} when the user shared no tab audio; {DOMException} when the picker is cancelled or blocked */
@@ -245,7 +251,7 @@ async function handleInputLost(inputGen) {
     return;
   }
   try {
-    await openInput();
+    if (!await openInput()) return;
     setState(sending ? (muted ? 'muted' : 'live') : 'testing', 'Audio input restored.');
   } catch (error) {
     console.warn('Audio input still unavailable; retrying', error);

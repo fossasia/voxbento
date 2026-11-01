@@ -3,6 +3,8 @@
  *
  * Run with: node tests/test_program_sender_source.mjs
  */
+import { readFileSync } from 'node:fs'
+import { runInNewContext } from 'node:vm'
 import {
   isTabSurface,
   normalizeSource,
@@ -80,6 +82,48 @@ assert(audio.stopped === false, 'the audio track keeps running')
 const lonelyVideo = fakeTrack()
 assert(pickTabAudio(fakeStream([lonelyVideo], [])) === null, 'no shared audio returns null')
 assert(lonelyVideo.stopped === true, 'the video track is stopped even without audio')
+
+const senderCode = readFileSync(new URL('../portal/static/js/program-sender.js', import.meta.url), 'utf8')
+const openInputCode = senderCode.slice(senderCode.indexOf('async function openInput()'), senderCode.indexOf('/** @throws {SourceError}'))
+const recoveryCode = senderCode.slice(senderCode.indexOf('async function handleInputLost('), senderCode.indexOf('function startMeter()'))
+
+for (const released of [false, true]) {
+  let resolveCapture
+  const capture = new Promise(resolve => { resolveCapture = resolve })
+  let markRequested
+  const requested = new Promise(resolve => { markRequested = resolve })
+  const track = { ...fakeTrack(), clone() { return fakeTrack() }, addEventListener() {} }
+  const acquired = { getTracks: () => [track], getAudioTracks: () => [track] }
+  const context = {
+    inputGeneration: 1,
+    deviceSelect: { value: '' },
+    RAW_AUDIO,
+    navigator: { mediaDevices: { getUserMedia() { markRequested(); return capture } } },
+    stream: null,
+    meterStream: null,
+    muted: false,
+    sending: true,
+    testing: false,
+    preferredDevice: '',
+    pc: null,
+    MediaStream: class { constructor(tracks) { this.tracks = tracks } },
+    startMeter() {},
+    listDevices: async () => {},
+    saveDevice() {},
+    states: [],
+    setState(state, message) { context.states.push(message) },
+    releaseInput() { context.inputGeneration += 1; context.stream = null },
+  }
+  runInNewContext(`${openInputCode}\n${recoveryCode}`, context)
+  const recovery = context.handleInputLost(1)
+  await requested
+  if (released) context.releaseInput()
+  resolveCapture(acquired)
+  await recovery
+  assert(track.stopped === released, released ? 'released pending capture stops its newly acquired tracks' : 'current recovery keeps the acquired track running')
+  assert(context.stream === (released ? null : acquired), released ? 'released pending capture is not adopted' : 'current recovery adopts the acquired input')
+  assert(context.states.includes('Audio input restored.') === !released, released ? 'discarded recovery does not report restoration' : 'current recovery reports restoration')
+}
 
 console.log(`\n${passed} passed, ${failed} failed`)
 process.exit(failed > 0 ? 1 : 0)
