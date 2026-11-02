@@ -137,7 +137,7 @@ class _UvicornTokenRedactor(logging.Filter):
 
         lowered = message.casefold()
         if self._TOKEN_RE.search(message) and any(
-            x in lowered for x in ["/api/", "/embed/", "/ws/", "/oauth/", "/internal/"]
+            x in lowered for x in ["/api/", "/embed/", "/overlay/", "/ws/", "/oauth/", "/internal/"]
         ):
             if isinstance(record.msg, str):
                 record.msg = self._TOKEN_RE.sub(r"\1[REDACTED]", record.msg)
