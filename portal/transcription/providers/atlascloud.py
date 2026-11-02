@@ -152,7 +152,9 @@ class AtlasCloudProvider(TranscriptionProvider):
                     raise httpx.HTTPStatusError(f"HTTP {result.status_code}", request=result.request, response=result)
             except (httpx.RequestError, httpx.HTTPStatusError) as exc:
                 if attempt == MAX_POLL_ATTEMPTS - 1:
-                    raise
+                    raise AtlasCloudError(
+                        f"Atlas Cloud prediction poll failed after {MAX_POLL_ATTEMPTS} attempts: {exc}"
+                    ) from exc
                 logger.warning("Atlas Cloud prediction poll failed, will retry: %s", exc)
                 continue
 

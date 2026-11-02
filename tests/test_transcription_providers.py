@@ -99,6 +99,30 @@ class TestTranscriptionProviders:
         assert await _run_atlas(AtlasCloudProvider(), mock_client) == ""
         mock_client.get.assert_not_awaited()
 
+    async def test_atlascloud_outputs_only_empty_speech_returns_empty(self):
+        from portal.transcription.providers.atlascloud import AtlasCloudProvider
+
+        mock_client = _atlas_client(
+            submit=_atlas_response(200, {"code": 200, "data": {"id": "p", "status": "completed", "outputs": [""]}}),
+            polls=[],
+        )
+
+        assert await _run_atlas(AtlasCloudProvider(), mock_client) == ""
+        mock_client.get.assert_not_awaited()
+
+    async def test_atlascloud_exhausted_transient_poll_failures_raise_provider_error(self):
+        from portal.transcription.providers.atlascloud import AtlasCloudError, AtlasCloudProvider
+
+        mock_client = _atlas_client(
+            submit=_atlas_response(200, {"code": 200, "data": {"id": "p", "status": "processing"}}),
+            polls=[_atlas_response(503, {"code": 503, "msg": "unavailable"})] * 2,
+        )
+
+        with patch("portal.transcription.providers.atlascloud.MAX_POLL_ATTEMPTS", 2):
+            with pytest.raises(AtlasCloudError, match="after 2 attempts"):
+                await _run_atlas(AtlasCloudProvider(), mock_client)
+        assert mock_client.get.await_count == 2
+
     async def test_atlascloud_omits_language_in_auto_detect(self):
         from portal.transcription.providers.atlascloud import AtlasCloudProvider
 
