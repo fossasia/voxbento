@@ -911,7 +911,12 @@ async def start_transcription(
     room = await _verify_token_rbac(db, token, event, room_id, lock_event=True, write_lock=True)
     target_room_id = _extract_room_id(room, room_id)
 
-    booth_id = make_booth_id(event_slug, target_room_id, language_code)
+    try:
+        canonical_language = validate_language_code(language_code)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    booth_id = make_booth_id(event_slug, target_room_id, canonical_language)
 
     stmt = (
         select(DBBooth)
@@ -919,7 +924,7 @@ async def start_transcription(
         .where(
             DBBooth.event_id == event.id,
             DBBooth.room_id == target_room_id,
-            DBBooth.language_code == language_code,
+            DBBooth.language_code == canonical_language,
         )
     )
     result = await db.execute(stmt)

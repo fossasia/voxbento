@@ -432,13 +432,91 @@ async def test_start_success_invokes_worker_with_resolved_config(event):
     }
     start_mock.assert_awaited_once()
     args, kwargs = start_mock.await_args
+    assert len(args) == 7
     assert args[0] == EVENT_SLUG
     assert args[1] == "en"
     assert args[2] == "pycon2026-3-en"
     assert args[3] == api_v1.broadcast_transcription
     assert args[4] == "local"
     assert args[5] == "tiny"
+    _, _, expected_config = api_v1.resolve_transcription_config(db_booth, event=event)
+    assert args[6] == expected_config
     assert kwargs.get("room_id") == ROOM_ID
+
+
+@pytest.mark.anyio
+async def test_start_uppercase_language_canonicalized_and_reaches_worker(event):
+    """Calling start_transcription with uppercase language canonicalizes the code and invokes worker."""
+    start_mock = AsyncMock()
+    mock_booth = MagicMock()
+    db_booth = SimpleNamespace(
+        transcription_enabled=True,
+        transcription_provider="local",
+        transcription_model="tiny",
+        event=event,
+    )
+    db = _db(_result(first=event), _result(first=db_booth))
+
+    with patch.object(api_v1.booths, "get_booth_sync", return_value=mock_booth), \
+         patch.object(api_v1, "start_transcription_worker", start_mock):
+        response = await api_v1.start_transcription(
+            EVENT_SLUG, ROOM_ID, "EN", db=db, token=object()
+        )
+
+    assert response["status"] == "started"
+    start_mock.assert_awaited_once()
+    args, _ = start_mock.await_args
+    assert args[1] == "EN"
+    assert args[2] == "pycon2026-3-en"
+    query_stmt = db.execute.call_args_list[1][0][0]
+    compiled_params = query_stmt.compile().params
+    assert "en" in compiled_params.values()
+    assert compiled_params.get("language_code_1") == "en"
+
+
+@pytest.mark.anyio
+async def test_start_external_provider_resolves_api_key(event):
+    """External provider resolves API key and passes it in ProviderConfig to worker."""
+    event.transcription_api_enabled = True
+    start_mock = AsyncMock()
+    mock_booth = MagicMock()
+    db_booth = SimpleNamespace(
+        transcription_enabled=True,
+        transcription_provider="openai",
+        transcription_model="whisper-1",
+        event=event,
+    )
+    db = _db(_result(first=event), _result(first=db_booth))
+
+    with patch.object(api_v1.booths, "get_booth_sync", return_value=mock_booth), \
+         patch.object(api_v1, "start_transcription_worker", start_mock), \
+         patch("portal.routers.api.get_api_key", return_value="known-key"):
+        response = await api_v1.start_transcription(
+            EVENT_SLUG, ROOM_ID, "en", db=db, token=object()
+        )
+
+    assert response == {
+        "status": "started",
+        "booth_id": "pycon2026-3-en",
+        "provider": "openai",
+        "model": "whisper-1",
+    }
+    start_mock.assert_awaited_once()
+    args, _ = start_mock.await_args
+    assert len(args) == 7
+    assert args[6].api_key == "known-key"
+
+
+@pytest.mark.anyio
+async def test_start_invalid_language_code_raises_400(event):
+    """Calling start_transcription with an invalid language code raises 400 Bad Request."""
+    with pytest.raises(api_v1.HTTPException) as exc_info:
+        await api_v1.start_transcription(
+            EVENT_SLUG, ROOM_ID, "xx-garbage", db=_db(_result(first=event)), token=object()
+        )
+
+    assert exc_info.value.status_code == 400
+    assert "Language code must be exactly two lowercase ASCII letters" in exc_info.value.detail
 
 
 @pytest.mark.anyio
