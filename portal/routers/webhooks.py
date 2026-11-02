@@ -1,11 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 import ipaddress
 import logging
+import os
 import secrets
 import socket
-import urllib.parse
 
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -33,6 +35,8 @@ class WebhookResponse(BaseModel):
     secret_key: str | None = None
 
 
+_DEV_LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1"}
+_NAT64_PREFIX = ipaddress.IPv6Network("64:ff9b::/96")
 _CLOUD_METADATA_ADDRS = {
     ipaddress.ip_address("169.254.169.254"),
     ipaddress.ip_address("fd00:ec2::254"),
@@ -41,8 +45,11 @@ _CLOUD_METADATA_ADDRS = {
 
 
 def _is_forbidden_ip(ip_obj: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
-    if isinstance(ip_obj, ipaddress.IPv6Address) and ip_obj.ipv4_mapped is not None:
-        ip_obj = ip_obj.ipv4_mapped
+    if isinstance(ip_obj, ipaddress.IPv6Address):
+        if ip_obj.ipv4_mapped:
+            ip_obj = ip_obj.ipv4_mapped
+        elif ip_obj in _NAT64_PREFIX:
+            ip_obj = ipaddress.IPv4Address(int(ip_obj) & 0xFFFFFFFF)
     return (
         not ip_obj.is_global
         or ip_obj.is_private or ip_obj.is_loopback or ip_obj.is_link_local
@@ -50,54 +57,35 @@ def _is_forbidden_ip(ip_obj: ipaddress.IPv4Address | ipaddress.IPv6Address) -> b
     )
 
 
-def resolve_and_validate_url(url: str) -> list[tuple[str, int]]:
-    """Resolve hostname to all addresses and reject any that point to internal networks.
+async def validate_ssrf(url: str) -> list[str] | None:
+    """Resolve every A/AAAA record of a webhook URL and return the vetted IPs.
 
-    Returns a list of (ip_string, port) pairs safe to connect to.
-    Raises ValueError on any violation.
+    Delivery must connect to one of the returned IPs rather than resolving the
+    name again, otherwise a DNS answer that changes after this check (rebinding)
+    reaches internal services.  Returns None for the development localhost bypass.
     """
-    import os
-
-    parsed = urllib.parse.urlparse(url)
-
-    if os.getenv("ENVIRONMENT") == "development":
-        if parsed.scheme in ("http", "https") and parsed.hostname in ("localhost", "127.0.0.1", "::1"):
-            port = parsed.port or (443 if parsed.scheme == "https" else 80)
-            return [(parsed.hostname, port)]
-
-    if parsed.scheme != "https":
-        raise ValueError("Webhook URLs must use HTTPS.")
-
-    hostname = parsed.hostname
-    if not hostname:
-        raise ValueError("Invalid hostname.")
-
-    port = parsed.port or 443
-
     try:
-        addr_infos = socket.getaddrinfo(hostname, port, proto=socket.IPPROTO_TCP)
-    except socket.gaierror as exc:
-        raise ValueError(f"DNS resolution failed for {hostname}: {exc}") from exc
+        parsed = httpx.URL(url)
+        if os.getenv("ENVIRONMENT") == "development" and parsed.host in _DEV_LOCAL_HOSTS:
+            return None
 
-    if not addr_infos:
-        raise ValueError(f"No addresses found for {hostname}.")
+        if parsed.scheme != "https":
+            raise ValueError("Webhook URLs must use HTTPS.")
+        if not parsed.host:
+            raise ValueError("Invalid hostname.")
+        if parsed.port is not None and not 0 < parsed.port < 65536:
+            raise ValueError("Invalid port.")
 
-    safe_addrs: list[tuple[str, int]] = []
-    for family, _type, _proto, _canonname, sockaddr in addr_infos:
-        ip_str = sockaddr[0]
-        ip_obj = ipaddress.ip_address(ip_str)
-        if _is_forbidden_ip(ip_obj):
-            raise ValueError(f"Webhook URL resolves to a forbidden address ({ip_str}).")
-        safe_addrs.append((ip_str, sockaddr[1]))
-
-    return safe_addrs
-
-
-def validate_ssrf(url: str) -> None:
-    try:
-        resolve_and_validate_url(url)
-    except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid webhook URL: {e}") from e
+        infos = await asyncio.get_running_loop().getaddrinfo(
+            parsed.raw_host.decode("ascii"), None, type=socket.SOCK_STREAM
+        )
+        ips = list(dict.fromkeys(info[4][0] for info in infos))
+        for ip in ips:
+            if _is_forbidden_ip(ipaddress.ip_address(ip)):
+                raise ValueError(f"Webhook URL resolves to a forbidden internal IP address ({ip}).")
+        return ips
+    except (httpx.InvalidURL, ValueError, OSError) as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid webhook URL: {e}")
 
 
 @router.post("", response_model=WebhookResponse, status_code=status.HTTP_201_CREATED)
@@ -106,7 +94,7 @@ async def create_webhook(
     token: OAuthToken = Depends(require_oauth_scope("webhooks:manage")),
     db: AsyncSession = Depends(get_db_session),
 ):
-    validate_ssrf(data.target_url)
+    await validate_ssrf(data.target_url)
 
     if not data.event_types:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="event_types cannot be empty")

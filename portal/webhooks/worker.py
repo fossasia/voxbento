@@ -6,15 +6,15 @@ import hmac
 import json
 import logging
 import time
-import urllib.parse
 from datetime import datetime, timedelta, timezone
 
 import httpx
+from fastapi import HTTPException
 from sqlalchemy import select, update
 
 from portal.database import get_session
 from portal.models import OAuthAuditLog, WebhookDelivery, WebhookSubscription
-from portal.routers.webhooks import resolve_and_validate_url
+from portal.routers.webhooks import validate_ssrf
 
 logger = logging.getLogger(__name__)
 
@@ -51,6 +51,30 @@ def sign_payload(secret: str, payload_str: str, timestamp: int) -> str:
     return mac.hexdigest()
 
 
+async def post_to_vetted_ip(
+    client: httpx.AsyncClient, target_url: str, vetted_ips: list[str] | None, content: str, headers: dict
+) -> httpx.Response:
+    """POST to the IPs vetted by validate_ssrf, keeping the original Host header and TLS hostname."""
+    if vetted_ips is None:
+        return await client.post(target_url, content=content, headers=headers)
+
+    url = httpx.URL(target_url)
+    headers = {**headers, "Host": url.netloc.decode("ascii")}
+    extensions = {"sni_hostname": url.raw_host.decode("ascii")}
+    # One address per family falls back across IPv6 and IPv4 without letting a
+    # name with many unreachable records hold the worker for one connect timeout each.
+    first_per_family: dict[bool, str] = {}
+    for ip in vetted_ips:
+        first_per_family.setdefault(":" in ip, ip)
+    *fallbacks, last = first_per_family.values()
+    for ip in fallbacks:
+        try:
+            return await client.post(url.copy_with(host=ip), content=content, headers=headers, extensions=extensions)
+        except (httpx.ConnectError, httpx.ConnectTimeout):
+            continue
+    return await client.post(url.copy_with(host=last), content=content, headers=headers, extensions=extensions)
+
+
 async def process_delivery(client: httpx.AsyncClient, db, delivery: WebhookDelivery) -> None:
     result = await db.execute(select(WebhookSubscription).where(WebhookSubscription.id == delivery.subscription_id))
     sub = result.scalars().first()
@@ -61,11 +85,11 @@ async def process_delivery(client: httpx.AsyncClient, db, delivery: WebhookDeliv
         return
 
     try:
-        safe_addrs = resolve_and_validate_url(sub.target_url)
-    except ValueError as e:
-        err_msg = str(e)
-        if "DNS resolution failed" in err_msg:
-            delivery.last_error = f"Temporary DNS failure: {e}"
+        vetted_ips = await validate_ssrf(sub.target_url)
+    except HTTPException as e:
+        err_detail = e.detail if isinstance(e.detail, str) else str(e.detail)
+        if "DNS resolution failed" in err_detail or "Name or service not known" in err_detail:
+            delivery.last_error = f"Temporary DNS failure: {err_detail}"
             delivery.attempt_count += 1
             if delivery.attempt_count >= 4:
                 delivery.status = "dead"
@@ -74,11 +98,7 @@ async def process_delivery(client: httpx.AsyncClient, db, delivery: WebhookDeliv
                 delivery.next_attempt_at = datetime.now(timezone.utc) + timedelta(seconds=2**delivery.attempt_count)
             return
         delivery.status = "dead"
-        delivery.last_error = f"SSRF Validation failed at dispatch: {e}"
-        return
-    except Exception as e:
-        delivery.status = "dead"
-        delivery.last_error = f"SSRF Validation failed at dispatch: {e}"
+        delivery.last_error = f"SSRF Validation failed at dispatch: {e.detail}"
         return
 
     envelope = {
@@ -97,23 +117,8 @@ async def process_delivery(client: httpx.AsyncClient, db, delivery: WebhookDeliv
     success = False
     last_error = None
 
-    pinned_ip, pinned_port = safe_addrs[0]
-    parsed = urllib.parse.urlparse(sub.target_url)
-    pinned_url = urllib.parse.urlunparse(
-        parsed._replace(netloc=f"[{pinned_ip}]:{pinned_port}" if ":" in pinned_ip else f"{pinned_ip}:{pinned_port}")
-    )
-    host_header = parsed.hostname or ""
-    if parsed.port and parsed.port != 443:
-        host_header = f"{host_header}:{parsed.port}"
-    pin_headers = {**headers, "Host": host_header}
-
     try:
-        response = await client.post(
-            pinned_url,
-            content=payload_str,
-            headers=pin_headers,
-            extensions={"sni_hostname": parsed.hostname},
-        )
+        response = await post_to_vetted_ip(client, sub.target_url, vetted_ips, payload_str, headers)
         response.raise_for_status()
         success = True
     except httpx.RequestError as e:
@@ -160,14 +165,12 @@ async def process_delivery(client: httpx.AsyncClient, db, delivery: WebhookDeliv
 
 async def webhook_worker_loop():
     """Background polling worker for webhooks."""
-    # Deliveries connect to a pinned IP, so httpcore would pool them by that IP
-    # rather than the hostname and could reuse one host's TLS connection for
-    # another host sharing the address. Keep-alive is disabled so every delivery
-    # handshakes against its own certificate.
-    async with httpx.AsyncClient(
-        timeout=5.0,
-        limits=httpx.Limits(max_keepalive_connections=0),
-    ) as client:
+    # Delivery connects to the IP vetted by validate_ssrf. Pooled connections
+    # are keyed by that IP, so keep-alive would reuse a TLS session verified
+    # for one webhook hostname for another. The explicit transport also skips
+    # environment proxies, which would tunnel to the IP and verify TLS against it.
+    transport = httpx.AsyncHTTPTransport(limits=httpx.Limits(max_keepalive_connections=0))
+    async with httpx.AsyncClient(timeout=5.0, transport=transport) as client:
         while True:
             try:
                 claimed = False
