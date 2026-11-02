@@ -31,9 +31,9 @@ MediaMTX ──auth hook──▶ portal /internal/media-auth   (room/key/mode c
 - **One floor owner.** Relay mode is a `program_ingest` source. It replaces the Jitsi
   agent; no second OBS output is needed for captions/translation/TTS.
 - **Independent health.** The room page reports three stages separately:
-  *Contribution ingest* (authenticated feed present, codecs, stalls),
-  *YouTube relay* (`idle`, `unconfigured`, `starting`, `live`, `retrying`, `stalled`,
-  `capacity`, `degraded`) and *Language processing* (STT worker). Captions being off or
+  *Encoder → VoxBento* (authenticated feed present, codecs, stalls),
+  *VoxBento → YouTube* (`idle`, `unconfigured`, `starting`, `live`, `retrying`, `stalled`,
+  `capacity`, `degraded`) and *Captions and translation* (STT worker). Captions being off or
   an STT provider outage never stops the relay; a relay failure never stops captions.
 
 ## Input contract (v1)
@@ -46,33 +46,95 @@ MediaMTX ──auth hook──▶ portal /internal/media-auth   (room/key/mode c
 | Bitrate | What YouTube accepts for the chosen resolution; VoxBento does not transcode |
 
 Feeds without H.264 + AAC are accepted for captions when they carry decodable audio,
-but are **not relayed** — relay health shows *Needs attention* with the reason.
+but are **not relayed**; relay health shows *Needs attention* with the reason.
 Codec conversion and SRT are follow-up work.
 
-## Organizer setup
+## Organizer setup (step by step)
 
-1. **Room AI settings:** enable floor transcription, pick the source language and
-   provider, and configure translation/TTS as usual.
-2. **Room page → Program stream ingest → Delivery mode:** choose
-   *VoxBento relays to YouTube* and read the warning. Click **Enable relay ingest and
-   create stream key**. This stops the Jitsi agent/any existing floor publisher.
-3. Copy the **RTMPS server** (`rtmps://<host>:1936/<event>/<room>`) and the one-time
-   **Stream key** (`floor?key=…`). It is shown once and expires in 30 days.
-4. **YouTube destination:** in YouTube Studio create an **unlisted** event, copy its
-   RTMPS server URL (`rtmps://a.rtmps.youtube.com/live2`) and stream key, paste both and
-   **Save destination**. The key is write-only: it is never displayed again.
-5. **OBS:** *Settings → Stream → Service: Custom…*, paste Server and Stream Key.
-   *Output → Streaming:* x264 or hardware H.264, keyframe interval 2 s, AAC audio.
-   vMix/Wirecast/hardware encoders: use their custom RTMP(S) destination with the same
-   two values (some encoders need the full URL `<server>/<stream key>`).
-6. Start streaming. *Contribution ingest* → Connected, *YouTube relay* → Live,
-   *Language processing* → Processing. Confirm the YouTube preview before going public.
+Before you start, the server operator must have turned relay mode on once
+([Server setup](#server-setup-operator)). If the room page says *Not switched on for
+this server yet* under **VoxBento forwards to YouTube**, ask them to do that first.
 
-**Rotate:** *Rotate token* issues a new stream key and disconnects the encoder (update
-OBS). Saving a new YouTube key restarts only the relay. **Revoke:** *Revoke token* kills
-the encoder session and the relay and rejects the old key; *Remove destination* stops
-the relay and deletes the stored YouTube key. **Switch:** choosing *Independent outputs*
-and enabling again, or *Switch to Jitsi bot*, stops the relay and rebinds the credential.
+You need: YouTube Studio access for the channel (live streaming enabled; new channels
+wait up to 24 h after enabling), OBS (or vMix, Wirecast, a hardware encoder with RTMPS)
+and the room page in VoxBento.
+
+**0. Captions settings (optional, can be done later).** Room page → AI settings: turn on
+floor transcription, pick the spoken language and a provider. YouTube forwarding works
+without captions; the *Captions and translation* row just stays off.
+
+**1. Get the YouTube stream key.**
+1. YouTube Studio → **Create → Go live → Stream**. For the first run create an
+   **Unlisted** stream.
+2. In *Stream settings*, keep *Default stream key* (or pick a reusable key) and copy the
+   **Stream key**. You do not need the Stream URL.
+3. Recommended: turn **Auto-start off**, so you can check the preview before going public
+   (with it on, YouTube goes live as soon as video arrives), and **Auto-stop off**, so a
+   short reconnect does not end the broadcast.
+
+**2. Room page → Room audio → From streaming software.**
+1. Under *How does your stream reach YouTube?* choose **VoxBento forwards to YouTube**.
+2. Step **1 — Add your YouTube stream key:** paste the key and click **Save stream key**.
+   You can also paste the full URL (`rtmp://a.rtmp.youtube.com/live2/<key>`); VoxBento
+   splits it, and sends to YouTube over RTMPS either way. The key is encrypted and never
+   shown again. To change it, paste a new one and click **Replace stream key**.
+3. Step **2 — Connect OBS:** click **Create stream key** and confirm. This makes
+   VoxBento the room's floor source (it stops the Jitsi bot). Copy the **Server**
+   (`rtmps://<host>:1936/<event>/<room>`) and the **Stream key** (`floor?key=…`). The key is
+   **shown only once** and lasts 30 days. If you lose it, click **Create a new stream key**.
+
+**3. OBS.**
+1. *Settings → Stream:* Service **Custom…**, paste **Server** and **Stream Key**. Leave
+   *Use authentication* off.
+2. *Settings → Output → Streaming:* video encoder **x264** or a hardware **H.264**
+   encoder (NVENC H.264, QuickSync H.264, Apple VT H.264), **not HEVC or AV1**. Rate
+   control CBR at YouTube's recommended bitrate (for example 4500–6000 kb/s for 1080p30),
+   **keyframe interval 2 s**.
+3. *Audio:* AAC (the default), 128–160 kb/s, sample rate 48 kHz (*Settings → Audio*).
+4. vMix, Wirecast or hardware encoders with one URL field: use **Copy full URL** below
+   the stream key (`<server>/floor?key=…`).
+
+**4. Go live and check.** Click **Start Streaming** in OBS. On the room page, step 3
+shows three rows:
+
+| Row | Expected | Meaning |
+|---|---|---|
+| Encoder → VoxBento | **Connected** | OBS reached VoxBento with a valid key |
+| VoxBento → YouTube | **Live** (within ~10 s) | YouTube is receiving the stream |
+| Captions and translation | **Processing** | floor audio is being transcribed |
+
+The badge at the top reads **Live on YouTube**. Check the preview in YouTube Studio
+(stream health *Good/Excellent*), then click **Go live** in Studio. Use
+**Sync with the YouTube picture** to align caption/speech delay.
+
+**After the event:** stop streaming in OBS, then click **End stream** in YouTube Studio
+(with Auto-stop off, YouTube does not end it for you). The stored keys stay for the next session.
+
+**Change or stop things.**
+- *New YouTube stream / key:* paste it in step 1 → **Replace stream key**. Only the
+  forwarding restarts; OBS stays connected.
+- *Lost the VoxBento key:* **New stream key** (bottom of the card); paste it into OBS.
+- *Stop forwarding to YouTube:* step 1 → **Remove**. OBS stays connected; captions continue.
+- *Lock out the encoder:* **Revoke stream key** disconnects OBS immediately; the old key
+  stops working.
+- *Leave relay mode:* choose **OBS streams to YouTube itself** and click **Switch…**, or
+  **Switch to the online meeting**. Both stop forwarding and replace the credential.
+
+## Troubleshooting
+
+| What you see | Cause | Fix |
+|---|---|---|
+| OBS: *Failed to connect to server* | Port 1936 closed or wrong server | Copy the **Server** again; the operator opens TCP 1936 |
+| OBS connects then drops immediately | Wrong or expired stream key, or the key belongs to another room | Click **New stream key** and paste it into OBS |
+| *Encoder → VoxBento: Needs attention — No supported audio track* | OBS audio is not AAC | Use AAC audio (the OBS default) |
+| *VoxBento → YouTube: Needs attention — needs H.264 video and AAC audio* | HEVC/AV1 encoder selected | Choose x264 or an H.264 hardware encoder |
+| *VoxBento → YouTube: Not configured* | No YouTube key saved | Step 1: paste the key, **Save stream key** |
+| *Retrying — Destination rejected the stream key* | YouTube key wrong, reset, or the stream was deleted | Copy the current key from YouTube Studio → **Replace stream key** |
+| *Live* here, but YouTube Studio shows *No data* | Studio is showing a different stream/key | Open the stream whose key you saved |
+| YouTube preview plays but never goes public | Auto-start is off (recommended) | Click **Go live** in YouTube Studio |
+| *The YouTube relay service on the server is not responding* | `program-relay` container not running | Operator: `docker compose ps program-relay`, `docker compose logs program-relay` |
+| *Not switched on for this server yet* | Relay mode not deployed | Operator: run `scripts/setup-youtube-relay.sh` |
+| *At capacity* | `PROGRAM_RELAY_MAX` rooms already forwarding | Stop another room's forwarding, or the operator raises the limit |
 
 ## Security
 
@@ -92,7 +154,10 @@ and enabling again, or *Switch to Jitsi bot*, stops the relay and rebinds the cr
   destination changes (a keyed fingerprint detects changes without resending the key).
 - **Destination allow-list (SSRF).** Only `rtmps://` to `PROGRAM_RELAY_ALLOWED_HOSTS`
   (default `a.rtmps.youtube.com,b.rtmps.youtube.com`), without credentials or query, is
-  accepted — checked by both the portal and the relay service.
+  stored, and both the portal and the relay service check it. With no server URL the
+  portal uses `rtmps://a.rtmps.youtube.com/live2`. YouTube Studio's plain
+  `rtmp://a.rtmp.youtube.com/live2` (or `b.`) is rewritten to the RTMPS host for the same
+  ingest; no other `rtmp://` URL is accepted, and nothing is ever pushed over plain RTMP.
 - **Verified upstream TLS.** The relay always pushes with `-tls_verify 1` against the
   image's CA bundle (`RELAY_CA_FILE`, default Debian `ca-certificates`). FFmpeg builds
   before 8.0 do not verify by default, which would expose the YouTube key to an
@@ -108,27 +173,87 @@ and enabling again, or *Switch to Jitsi bot*, stops the relay and rebinds the cr
 - The YouTube key is visible in the relay container's process list (FFmpeg argv). Treat
   host shell access to that container as access to the keys.
 
-## Deployment
+## Server setup (operator)
 
-1. Back up the database. Apply migration 028 (`uv run alembic upgrade head`).
-2. Obtain a certificate for the public RTMPS hostname. Caddy cannot proxy RTMPS; MediaMTX
-   terminates TLS itself. Copy (or bind) the hostname's certificate and key into a
-   directory as `rtmps.crt` / `rtmps.key` (e.g. from Caddy's certificate storage) and
-   renew alongside it.
-3. Set in `.env`: `PROGRAM_INGEST_ENABLED=true`, `MEDIAMTX_AUTH_HOOK_SECRET`,
-   `PROGRAM_RELAY_CONTROL_SECRET` (`openssl rand -hex 32`),
-   `PROGRAM_RTMPS_PUBLIC_BASE=rtmps://voxbento.com:1936`, `PROGRAM_RTMPS_CERT_DIR`.
-   Optional: `PROGRAM_RELAY_MAX`, `PROGRAM_RELAY_ALLOWED_HOSTS`.
-4. Validate, then deploy with the override (the portal refuses production startup with
-   relay enabled and no control secret):
+Prerequisites: the standard production deployment (host Caddy with a certificate for the
+public hostname, `.env` with `MEDIAMTX_AUTH_HOOK_SECRET` and the other production
+secrets), migrations applied (028 adds relay mode), and a database backup.
 
-   ```bash
-   docker compose -f docker-compose.yml -f docker-compose.relay.yml config --quiet
-   docker compose -f docker-compose.yml -f docker-compose.relay.yml up -d --build program-relay
-   docker compose -f docker-compose.yml -f docker-compose.relay.yml up -d portal mediamtx
-   ```
-5. Open TCP 1936 at the firewall. Nothing else new is public.
-6. Keep **one portal replica** (ownership and reconciliation are process-local).
+Run once on the server, from the checkout:
+
+```bash
+scripts/setup-youtube-relay.sh            # --host, --cert-dir/--cert-name, --yes are optional
+```
+
+It is safe to re-run. It:
+
+1. derives the hostname from `PUBLIC_BASE_URL` and sets `PROGRAM_RTMPS_PUBLIC_BASE`
+   (`rtmps://<host>:1936`);
+2. generates `PROGRAM_RELAY_CONTROL_SECRET` (and `MEDIAMTX_AUTH_HOOK_SECRET` if missing) and
+   sets `PROGRAM_INGEST_ENABLED=true`, never printing a secret;
+3. finds the certificate Caddy already manages for the host
+   (`/var/lib/caddy/.local/share/caddy/certificates/*/<host>/`) and sets
+   `PROGRAM_RTMPS_CERT_DIR` / `PROGRAM_RTMPS_CERT_NAME`. MediaMTX terminates RTMPS itself
+   (Caddy cannot proxy it) and reloads the files when Caddy renews them, so there is no
+   copy step and no renewal job;
+4. adds `COMPOSE_FILE=docker-compose.yml:docker-compose.relay.yml` to `.env`, so every
+   `docker compose` command **and the production deploy workflow** include relay mode;
+5. validates the configuration, then (after confirmation) builds and starts
+   `program-relay`, recreates `mediamtx` and `portal`, and checks that the portal reaches the
+   relay and that port 1936 presents a valid certificate.
+
+Then open **TCP 1936** in the firewall / cloud security group. Nothing else becomes public.
+For EC2, select the instance's security group → **Inbound rules → Edit inbound rules**
+and add **Custom TCP**, port **1936**, source the encoder's public IP (or
+`0.0.0.0/0` for organizers connecting from varying networks). Save the rule.
+
+### Websites behind Cloudflare
+
+Cloudflare's standard web proxy does not carry RTMPS on port 1936. Use a separate
+**DNS-only** A record pointing to the server. The production Caddyfile includes
+`rtmps.voxbento.com` so Caddy obtains and renews its certificate; Caddy does not proxy
+the RTMPS stream. Deploy/reload that Caddyfile and wait for certificate issuance first.
+
+For the voxbento.com deployment, set this value in `.env` (the setup script preserves
+an existing public base, even when `--host` is supplied):
+
+```dotenv
+PROGRAM_RTMPS_PUBLIC_BASE=rtmps://rtmps.voxbento.com:1936
+```
+
+Then select the matching managed certificate explicitly, replacing an old certificate
+directory setting if necessary:
+
+```bash
+scripts/setup-youtube-relay.sh --host rtmps.voxbento.com \
+  --cert-dir /var/lib/caddy/.local/share/caddy/certificates/acme-v02.api.letsencrypt.org-directory/rtmps.voxbento.com \
+  --cert-name rtmps.voxbento.com
+```
+
+Use the actual certificate directory if Caddy uses another issuer. Other deployments
+should substitute their own DNS-only hostname in both Caddy and the relay settings.
+Check port 1936 **from another machine**: the setup script's loopback TLS check cannot
+detect a blocked cloud security group or a proxied DNS record. For example:
+
+```bash
+openssl s_client -connect rtmps.voxbento.com:1936 -servername rtmps.voxbento.com \
+  -verify_hostname rtmps.voxbento.com -verify_return_error </dev/null
+```
+
+Keep **one portal replica** (ownership and reconciliation are process-local). Optional
+`.env` settings: `PROGRAM_RELAY_MAX` (default 4), `PROGRAM_RELAY_ALLOWED_HOSTS`.
+
+**Deploys.** `deploy.yml` copies `.env`, so `COMPOSE_FILE` keeps the relay in every
+deploy. Without it, `docker compose up --remove-orphans` would delete `program-relay`
+and close port 1936. The deploy therefore **refuses to continue** when `program-relay`
+is running but the new configuration would not include it.
+
+Manual equivalent: set the variables above in `.env`, then
+
+```bash
+docker compose config --quiet
+docker compose up -d --build program-relay && docker compose up -d mediamtx portal
+```
 
 ## Capacity
 
@@ -184,11 +309,11 @@ spawned. No old process outlives a successful stop or replacement.
 
 ## Rollback
 
-1. In each relay room choose *Independent outputs* (or *Switch to Jitsi bot*) and
-   reconfigure the encoder to stream to YouTube directly.
-2. Redeploy without `docker-compose.relay.yml` and recreate `mediamtx` so port 1936
-   closes; set `PROGRAM_RELAY_ENABLED` unset/false. RTMP publishes are then refused even
-   for rooms still in relay mode.
+1. In each relay room choose *OBS streams to YouTube itself* (or *Switch to the online meeting*)
+   and reconfigure the encoder to stream to YouTube directly.
+2. Remove `COMPOSE_FILE` from `.env` (or drop `docker-compose.relay.yml` from it) and run
+   `docker compose up -d --remove-orphans`: `program-relay` is removed and port 1936
+   closes. RTMP publishes are then refused even for rooms still in relay mode.
 3. Migration 028 supports downgrade (back up first): it drops the mode and the stored
    destinations.
 

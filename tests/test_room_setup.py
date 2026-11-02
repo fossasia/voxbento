@@ -1,4 +1,4 @@
-"""Guided room setup: one form for a room's language, listener languages, captions and AI."""
+"""Guided room setup: one form for a room's language, how each listener language is delivered, and captions."""
 
 from __future__ import annotations
 
@@ -30,12 +30,10 @@ from portal.database import (
 from portal.models import Event, InviteToken, Room, RoomTranslationLanguage, User
 from portal.roles import EVENT_OWNER, ROOM_COORDINATOR
 from portal.room_setup import (
-    AI,
+    AI_TEXT,
+    AI_VOICE,
     BOTH,
     INTERPRETER,
-    MODE_AI,
-    MODE_BOTH,
-    MODE_INTERPRETERS,
     engine_catalog,
     parse_plan,
 )
@@ -103,6 +101,18 @@ async def _ai_codes(room_id: int) -> set[str]:
         rows = await s.scalars(
             select(RoomTranslationLanguage.language_code).where(
                 RoomTranslationLanguage.room_id == room_id, RoomTranslationLanguage.enabled.is_(True)
+            )
+        )
+        return set(rows)
+
+
+async def _voice_codes(room_id: int) -> set[str]:
+    async with get_session() as s:
+        rows = await s.scalars(
+            select(RoomTranslationLanguage.language_code).where(
+                RoomTranslationLanguage.room_id == room_id,
+                RoomTranslationLanguage.enabled.is_(True),
+                RoomTranslationLanguage.tts_enabled.is_(True),
             )
         )
         return set(rows)
@@ -185,39 +195,67 @@ def _parse(**fields: object):
     return parse_plan(_form(**base), engine_catalog(_event()))
 
 
-def test_mode_applies_to_every_language_unless_both():
-    plan, errors = _parse(mode=MODE_INTERPRETERS, languages=["es", "fr"], delivery_es=AI)
+def test_each_language_is_delivered_one_way():
+    plan, errors = _parse(
+        languages=["es", "fr", "de"], delivery_es=INTERPRETER, delivery_fr=AI_VOICE, delivery_de=AI_TEXT
+    )
     assert not errors
-    assert plan.languages == (("es", INTERPRETER), ("fr", INTERPRETER))
+    assert plan.languages == (("es", INTERPRETER), ("fr", AI_VOICE), ("de", AI_TEXT))
+    assert plan.interpreter_languages == ("es",)
+    assert plan.ai_languages == ("fr", "de")
+    assert plan.voice_languages == ("fr",)
 
-    plan, _ = _parse(mode=MODE_AI, languages=["es"])
-    assert plan.languages == (("es", AI),)
 
-    plan, _ = _parse(mode=MODE_BOTH, languages=["es", "fr", "de"], delivery_es=INTERPRETER, delivery_fr=AI)
-    assert plan.languages == (("es", INTERPRETER), ("fr", AI), ("de", BOTH))
+@pytest.mark.parametrize("delivery", ["", BOTH, "ai"])
+def test_a_language_needs_exactly_one_delivery(delivery):
+    plan, errors = _parse(languages=["es"], delivery_es=delivery)
+    assert any("Choose Interpreter, AI voice or AI captions for Spanish." in e for e in errors), errors
+    assert plan.languages == (("es", ""),)
 
 
 def test_the_rooms_own_language_and_duplicates_are_dropped():
-    plan, errors = _parse(mode=MODE_INTERPRETERS, languages=["en", "es", "es", ""])
+    plan, errors = _parse(languages=["en", "es", "es", ""], delivery_es=INTERPRETER)
     assert not errors
     assert plan.languages == (("es", INTERPRETER),)
 
 
-def test_ai_turns_captions_on():
-    plan, errors = _parse(mode=MODE_AI, languages=["es"])
+@pytest.mark.parametrize("delivery", [AI_VOICE, AI_TEXT])
+def test_ai_turns_captions_on(delivery):
+    plan, errors = _parse(languages=["es"], delivery_es=delivery)
     assert not errors
     assert plan.captions is True
+
+
+def test_captions_are_optional_for_interpreters_only():
+    plan, _ = _parse(languages=["es"], delivery_es=INTERPRETER)
+    assert plan.captions is False
+    plan, _ = _parse(languages=["es"], delivery_es=INTERPRETER, captions="on")
+    assert plan.captions is True
+
+
+def test_ai_services_default_to_the_recommended_ones():
+    plan, errors = parse_plan(
+        _form(display_name="Main Hall", spoken_language="en", languages=["fr"], delivery_fr=AI_VOICE),
+        engine_catalog(_event()),
+    )
+    assert not errors
+    assert (plan.speech_engine, plan.translation_engine, plan.voice_engine) == ("local", "local", "supertonic")
 
 
 @pytest.mark.parametrize(
     ("fields", "message"),
     [
-        ({"display_name": "", "mode": MODE_INTERPRETERS, "languages": ["es"]}, "Give the room a name."),
-        ({"mode": "", "languages": ["es"]}, "Choose how the room will be interpreted"),
-        ({"mode": MODE_INTERPRETERS, "languages": ["xx"]}, "isn't recognised"),
-        ({"mode": MODE_INTERPRETERS}, "Choose at least one listener language, or turn on captions."),
-        ({"mode": MODE_AI, "languages": ["es"], "translation_engine": "openai"}, "Choose a translation service"),
-        ({"spoken_language": "zz", "mode": MODE_INTERPRETERS, "languages": ["es"]}, "language spoken in the room"),
+        ({"display_name": "", "languages": ["es"], "delivery_es": INTERPRETER}, "Give the room a name."),
+        ({"languages": ["xx"]}, "isn't recognised"),
+        ({}, "Choose at least one listener language, or turn on captions."),
+        (
+            {"languages": ["es"], "delivery_es": AI_TEXT, "translation_engine": "openai"},
+            "Choose a service to translate",
+        ),
+        (
+            {"spoken_language": "zz", "languages": ["es"], "delivery_es": INTERPRETER},
+            "language spoken in the room",
+        ),
     ],
 )
 def test_problems_are_explained(fields, message):
@@ -226,21 +264,39 @@ def test_problems_are_explained(fields, message):
 
 
 def test_captions_only_room_is_allowed():
-    plan, errors = _parse(mode=MODE_INTERPRETERS, captions="on")
+    plan, errors = _parse(captions="on")
     assert not errors
     assert plan.languages == () and plan.captions
 
 
 def test_unsupported_local_translation_is_explained():
-    _, errors = _parse(mode=MODE_AI, languages=["az"], ai_output="captions")
-    assert any("Local translation doesn't support Azerbaijani" in error for error in errors)
+    _, errors = _parse(languages=["az"], delivery_az=AI_TEXT)
+    assert any("The built-in translator doesn't support Azerbaijani" in error for error in errors)
 
 
-def test_unsupported_ai_voice_can_use_captions_instead():
-    _, errors = _parse(mode=MODE_AI, languages=["th"], ai_output="voice")
-    assert any("AI voice doesn't support Thai" in error for error in errors)
-    _, errors = _parse(mode=MODE_AI, languages=["th"], ai_output="captions")
+def test_unsupported_ai_voice_is_explained_per_language():
+    _, errors = _parse(languages=["th", "fr"], delivery_th=AI_VOICE, delivery_fr=AI_VOICE)
+    assert errors == (
+        "AI voice isn't supported for Thai: Supertonic (built in) can't speak it. Choose AI captions so listeners "
+        "can read it, or Interpreter, or another voice under AI services in the review step.",
+    )
+    _, errors = _parse(languages=["th", "fr"], delivery_th=AI_TEXT, delivery_fr=AI_VOICE)
     assert not errors
+
+
+def test_ai_voice_without_any_voice_service_is_explained(monkeypatch):
+    monkeypatch.setattr(room_setup, "find_spec", lambda name: None)
+    form = _form(display_name="Main Hall", spoken_language="en", languages=["fr"], delivery_fr=AI_VOICE)
+    _, errors = parse_plan(form, engine_catalog(_event()))
+    assert any("AI voice isn't available for French: no voice service is set up" in e for e in errors), errors
+    form = _form(display_name="Main Hall", spoken_language="en", languages=["fr"], delivery_fr=AI_TEXT)
+    assert parse_plan(form, engine_catalog(_event()))[1] == ()
+
+
+def test_voice_support_is_listed_for_the_form():
+    support = engine_catalog(_event(encrypted_deepgram_api_key=encrypt_val("k"))).voice_support
+    assert "fr" in support["deepgram"] and "mr" not in support["deepgram"] and "hi" not in support["deepgram"]
+    assert "fr" in support["supertonic"]
 
 
 @pytest.mark.anyio
@@ -258,8 +314,9 @@ async def test_saving_legacy_spoken_language_booth_keeps_its_invites(admin_cooki
             data={
                 "display_name": "Renamed",
                 "spoken_language": "en",
-                "mode": MODE_INTERPRETERS,
                 "languages": ["en", "fr"],
+                "delivery_en": INTERPRETER,
+                "delivery_fr": INTERPRETER,
             },
             headers=ORIGIN,
             cookies=admin_cookie,
@@ -279,7 +336,7 @@ async def test_captions_only_setup_can_be_saved_again(admin_cookie, event_room):
         for booth in await list_booths_for_room(session, room.id):
             await session.delete(booth)
         snapshot = await room_setup.load_snapshot(session, db_room, engine_catalog(event))
-    assert snapshot.plan.mode == MODE_INTERPRETERS
+    assert snapshot.plan.languages == () and snapshot.plan.captions
 
 
 @pytest.mark.anyio
@@ -294,7 +351,7 @@ async def test_workspace_setup_is_owner_only(event_room):
         await set_room_membership(session, user_id=coordinator.id, room_id=room.id, role=ROOM_COORDINATOR)
         owner_cookie = {"user_token": create_user_token(user_id=owner.id, email=owner.email)}
         coordinator_cookie = {"user_token": create_user_token(user_id=coordinator.id, email=coordinator.email)}
-    data = {"display_name": "Owner's room", "spoken_language": "en", "mode": MODE_INTERPRETERS, "languages": ["es"]}
+    data = {"display_name": "Owner's room", "spoken_language": "en", "languages": ["es"], "delivery_es": INTERPRETER}
     async with _client() as client:
         for path in (f"/workspace/events/{event.id}/rooms/new", f"/workspace/events/{event.id}/rooms/{room.id}/setup"):
             assert (await client.get(path, cookies=coordinator_cookie)).status_code == 403
@@ -314,17 +371,34 @@ async def test_workspace_setup_is_owner_only(event_room):
 
 
 @pytest.mark.anyio
-async def test_add_room_page_asks_four_questions_without_inline_code(admin_cookie, event_room):
+async def test_add_room_page_asks_three_steps_without_inline_code(admin_cookie, event_room):
     event, _ = event_room
     async with _client() as c:
         resp = await c.get(f"/admin/events/{event.id}/rooms/new", cookies=admin_cookie)
     assert resp.status_code == 200
     html = resp.text
-    for heading in ("The room", "Languages for listeners", "Captions &amp; AI", "Review"):
+    for heading in ("The room", "Languages", "Captions in English", "Review"):
         assert heading in html
-    assert "How will this room be interpreted?" in html
-    assert 'value="interpreters"' in html and 'value="ai"' in html and 'value="both"' in html
-    assert "Whisper, self-hosted" in html and "OpenAI" not in re.sub(r"also use[^<]*", "", html)
+    assert "Captions &amp; AI" not in html and "How will this room be interpreted?" not in html
+    assert "Which other languages can listeners choose?" in html
+    assert "How will listeners get each language?" in html
+    # Each choice says what it does, in words a listener would use.
+    for label in (
+        "Interpreter",
+        "AI voice",
+        "AI captions",
+        "A person interprets live",
+        "AI translates it as text only",
+    ):
+        assert label in html
+    assert "AI text" not in html
+    for value in (INTERPRETER, AI_VOICE, AI_TEXT):
+        assert f'value="{value}"' in html
+    assert 'value="both"' not in html and 'name="ai_output"' not in html
+    assert "Show the speaker&#39;s words on screen" in html or "Show the speaker's words on screen" in html
+    assert '<h3 class="rs-engines-title">AI services</h3>' in html
+    assert re.search(r"<details data-rs-advanced>", html)  # closed by default
+    assert "Whisper (built in)" in html and "OpenAI" not in re.sub(r"also use[^<]*", "", html)
     assert not re.search(r"\sstyle\s*=", html, re.IGNORECASE)
     assert not re.search(r"<script(?![^>]*\bsrc=)", html)
 
@@ -335,12 +409,10 @@ async def test_creating_a_mixed_room(admin_cookie, event_room):
     data = {
         "display_name": "Track B",
         "spoken_language": "de",
-        "mode": MODE_BOTH,
         "languages": ["es", "fr", "ja"],
         "delivery_es": INTERPRETER,
-        "delivery_fr": BOTH,
-        "delivery_ja": AI,
-        "ai_output": "voice",
+        "delivery_fr": AI_VOICE,
+        "delivery_ja": AI_TEXT,
         "speech_engine": "local",
         "translation_engine": "local",
         "voice_engine": "supertonic",
@@ -363,21 +435,22 @@ async def test_creating_a_mixed_room(admin_cookie, event_room):
     assert room.display_name == "Track B"
     assert room.floor_language_code == "de"
     assert room.jitsi_url and "Voxbento-setupcon-TrackB" in room.jitsi_url
-    assert await _booth_codes(room_id) == ["es", "fr"]
+    assert await _booth_codes(room_id) == ["es"]
     assert await _ai_codes(room_id) == {"fr", "ja"}
+    assert await _voice_codes(room_id) == {"fr"}
     assert room.floor_transcription_enabled and room.floor_transcription_provider == "local"
     assert room.floor_translation_enabled and room.floor_translation_provider == "local"
     assert room.floor_translation_model == "nllb-200-distilled-600M"
     assert room.floor_tts_enabled and room.floor_tts_provider == "supertonic"
 
     assert "Here&#39;s what&#39;s next" in page.text or "Here's what's next" in page.text
-    assert "Interpreter + AI" in page.text and "Change languages &amp; captions" in page.text
+    assert "AI voice" in page.text and "AI captions" in page.text and "Edit languages" in page.text
 
 
 @pytest.mark.anyio
 async def test_interpreters_only_room_without_captions(admin_cookie, event_room):
     event, _ = event_room
-    data = {"display_name": "Hall C", "spoken_language": "en", "mode": MODE_INTERPRETERS, "languages": ["es"]}
+    data = {"display_name": "Hall C", "spoken_language": "en", "languages": ["es"], "delivery_es": INTERPRETER}
     async with _client() as c:
         resp = await c.post(
             f"/admin/events/{event.id}/rooms/new",
@@ -403,9 +476,9 @@ async def test_local_translation_stores_names_the_provider_recognizes(admin_cook
             data={
                 "display_name": "Local languages",
                 "spoken_language": "en",
-                "mode": MODE_AI,
                 "languages": ["bn", "oc"],
-                "ai_output": "captions",
+                "delivery_bn": AI_TEXT,
+                "delivery_oc": AI_TEXT,
                 "speech_engine": "local",
                 "translation_engine": "local",
             },
@@ -429,7 +502,7 @@ async def test_rejected_form_is_shown_again_with_answers(admin_cookie, event_roo
     async with _client() as c:
         resp = await c.post(f"/admin/events/{event.id}/rooms/new", data=data, headers=ORIGIN, cookies=admin_cookie)
     assert resp.status_code == 400
-    assert "Choose how the room will be interpreted" in resp.text
+    assert "Choose Interpreter, AI voice or AI captions for Spanish." in resp.text
     assert 'value="Hall D"' in resp.text
     assert re.search(r'value="es"\s+checked', resp.text)
 
@@ -437,7 +510,7 @@ async def test_rejected_form_is_shown_again_with_answers(admin_cookie, event_roo
 @pytest.mark.anyio
 async def test_creating_requires_same_origin(admin_cookie, event_room):
     event, _ = event_room
-    data = {"display_name": "Hall E", "spoken_language": "en", "mode": MODE_INTERPRETERS, "languages": ["es"]}
+    data = {"display_name": "Hall E", "spoken_language": "en", "languages": ["es"], "delivery_es": INTERPRETER}
     async with _client() as c:
         resp = await c.post(f"/admin/events/{event.id}/rooms/new", data=data, cookies=admin_cookie)
     assert resp.status_code == 403
@@ -450,8 +523,8 @@ async def test_wizard_returns_to_the_rooms_step(admin_cookie, event_room):
         "from": "setup",
         "display_name": "Hall F",
         "spoken_language": "en",
-        "mode": MODE_INTERPRETERS,
         "languages": ["es"],
+        "delivery_es": INTERPRETER,
     }
     async with _client() as c:
         form = await c.get(f"/admin/events/{event.id}/rooms/new?from=setup", cookies=admin_cookie)
@@ -499,7 +572,7 @@ async def test_editing_opens_with_the_rooms_current_setup(admin_cookie, event_ro
     assert resp.status_code == 200
     assert 'value="Main Hall"' in resp.text
     assert re.search(r'value="fr"\s+checked', resp.text)
-    assert re.search(r'value="interpreters" required\s+checked', resp.text)
+    assert re.search(r'name="delivery_fr" value="interpreter" required\s+checked', resp.text)
     assert "Save changes" in resp.text
 
 
@@ -509,7 +582,7 @@ async def test_editing_changes_booths_but_keeps_live_ones(admin_cookie, event_ro
     async with get_session() as s:
         await create_booth(s, event_id=event.id, room_id=room.id, language_code="de", language_name="German")
     monkeypatch.setattr(admin, "_live_booth_codes", lambda slug, room_id, codes: frozenset({"de"}))
-    data = {"display_name": "Main Hall", "spoken_language": "en", "mode": MODE_INTERPRETERS, "languages": ["es"]}
+    data = {"display_name": "Main Hall", "spoken_language": "en", "languages": ["es"], "delivery_es": INTERPRETER}
     async with _client() as c:
         resp = await c.post(
             f"/admin/events/{event.id}/rooms/{room.id}/setup",
@@ -535,9 +608,8 @@ async def test_editing_keeps_a_fine_tuned_model_for_the_same_provider(admin_cook
     data = {
         "display_name": "Main Hall",
         "spoken_language": "en",
-        "mode": MODE_AI,
         "languages": ["es"],
-        "ai_output": "captions",
+        "delivery_es": AI_TEXT,
         "speech_engine": "local",
         "translation_engine": "local",
     }
@@ -556,7 +628,7 @@ async def test_cannot_set_up_another_events_room(admin_cookie, event_room):
     async with get_session() as s:
         other = await create_event(s, slug="othercon", display_name="Other")
         other_room = await create_room(s, event_id=other.id, display_name="Elsewhere")
-    data = {"display_name": "Taken", "spoken_language": "en", "mode": MODE_INTERPRETERS, "languages": ["es"]}
+    data = {"display_name": "Taken", "spoken_language": "en", "languages": ["es"], "delivery_es": INTERPRETER}
     async with _client() as c:
         page = await c.get(f"/admin/events/{event.id}/rooms/{other_room.id}/setup", cookies=admin_cookie)
         resp = await c.post(
@@ -600,7 +672,7 @@ async def test_editing_with_from_setup_returns_to_wizard_rooms(admin_cookie, eve
     async with _client() as c:
         page = await c.get(f"/admin/events/{event.id}/rooms/{room.id}/setup?from=setup", cookies=admin_cookie)
         assert page.status_code == 200
-        assert 'href="/admin/events/' f"{event.id}" '/setup/rooms" class="btn">Cancel</a>' in page.text
+        assert f'href="/admin/events/{event.id}/setup/rooms" class="btn">Cancel</a>' in page.text
         assert 'name="from" value="setup"' in page.text
 
         resp = await c.post(
@@ -608,8 +680,8 @@ async def test_editing_with_from_setup_returns_to_wizard_rooms(admin_cookie, eve
             data={
                 "display_name": "Main Hall",
                 "spoken_language": "en",
-                "mode": MODE_INTERPRETERS,
                 "languages": ["es"],
+                "delivery_es": INTERPRETER,
                 "from": "setup",
             },
             headers=ORIGIN,
@@ -619,3 +691,237 @@ async def test_editing_with_from_setup_returns_to_wizard_rooms(admin_cookie, eve
         assert resp.status_code == 303
         assert resp.headers["location"].endswith(f"/events/{event.id}/setup/rooms")
 
+
+@pytest.mark.anyio
+async def test_one_room_can_mix_ai_voice_and_ai_text(admin_cookie, event_room):
+    event, room = event_room
+    data = {
+        "display_name": "Main Hall",
+        "spoken_language": "en",
+        "languages": ["de", "fr"],
+        "delivery_de": AI_TEXT,
+        "delivery_fr": AI_VOICE,
+    }
+    async with _client() as c:
+        resp = await c.post(
+            f"/admin/events/{event.id}/rooms/{room.id}/setup", data=data, headers=ORIGIN, cookies=admin_cookie
+        )
+        assert resp.status_code == 303
+        page = await c.get(f"/admin/events/{event.id}/rooms/{room.id}/setup", cookies=admin_cookie)
+    db_room = await _room(room.id)
+    assert db_room.floor_translation_enabled and db_room.floor_tts_enabled
+    assert await _ai_codes(room.id) == {"de", "fr"}
+    assert await _voice_codes(room.id) == {"fr"}
+    assert await _booth_codes(room.id) == []
+    # Reopening the setup shows each language as it was saved.
+    assert re.search(r'name="delivery_de" value="ai_text" required\s+checked', page.text)
+    assert re.search(r'name="delivery_fr" value="ai_voice" required\s+checked', page.text)
+
+    # Switching French to text only stops its voice without touching German.
+    data["delivery_fr"] = AI_TEXT
+    async with _client() as c:
+        await c.post(f"/admin/events/{event.id}/rooms/{room.id}/setup", data=data, headers=ORIGIN, cookies=admin_cookie)
+    assert await _voice_codes(room.id) == set()
+    assert not (await _room(room.id)).floor_tts_enabled
+
+
+@pytest.mark.anyio
+async def test_an_old_interpreter_and_ai_language_must_be_chosen_again(admin_cookie, event_room):
+    event, room = event_room
+    async with get_session() as s:
+        db_room = await s.get(Room, room.id)
+        db_room.floor_transcription_enabled = True
+        db_room.floor_translation_enabled = True
+        s.add(RoomTranslationLanguage(room_id=room.id, language_code="fr", language_name="French", enabled=True))
+    async with _client() as c:
+        page = await c.get(f"/admin/events/{event.id}/rooms/{room.id}/setup", cookies=admin_cookie)
+        assert "French used to offer both an interpreter and AI." in page.text
+        assert not re.search(r'name="delivery_fr" value="[a-z_]+" required\s+checked', page.text)
+        rejected = await c.post(
+            f"/admin/events/{event.id}/rooms/{room.id}/setup",
+            data={"display_name": "Main Hall", "spoken_language": "en", "languages": ["fr"]},
+            headers=ORIGIN,
+            cookies=admin_cookie,
+        )
+        assert rejected.status_code == 400
+        assert "Choose Interpreter, AI voice or AI captions for French." in rejected.text
+        saved = await c.post(
+            f"/admin/events/{event.id}/rooms/{room.id}/setup",
+            data={
+                "display_name": "Main Hall",
+                "spoken_language": "en",
+                "languages": ["fr"],
+                "delivery_fr": INTERPRETER,
+            },
+            headers=ORIGIN,
+            cookies=admin_cookie,
+        )
+    assert saved.status_code == 303
+    assert await _booth_codes(room.id) == ["fr"]
+    assert await _ai_codes(room.id) == set()
+
+
+@pytest.mark.anyio
+async def test_unsupported_ai_voice_is_not_saved(admin_cookie, event_room):
+    event, room = event_room
+    data = {"display_name": "Main Hall", "spoken_language": "en", "languages": ["mr"], "delivery_mr": AI_VOICE}
+    async with _client() as c:
+        resp = await c.post(
+            f"/admin/events/{event.id}/rooms/{room.id}/setup", data=data, headers=ORIGIN, cookies=admin_cookie
+        )
+    assert resp.status_code == 400
+    assert "AI voice isn&#39;t supported for Marathi" in resp.text
+    assert await _booth_codes(room.id) == ["fr"]
+
+
+@pytest.mark.anyio
+async def test_saving_drops_the_rooms_cached_voice_settings(admin_cookie, event_room):
+    from portal.tts import worker
+
+    event, room = event_room
+    worker._config_cache[room.id] = (float("inf"), {"voice_languages": {"fr"}})
+    worker._config_cache[room.id + 1] = (float("inf"), None)
+    data = {"display_name": "Main Hall", "spoken_language": "en", "languages": ["fr"], "delivery_fr": AI_TEXT}
+    async with _client() as c:
+        resp = await c.post(
+            f"/admin/events/{event.id}/rooms/{room.id}/setup", data=data, headers=ORIGIN, cookies=admin_cookie
+        )
+    assert resp.status_code == 303
+    assert room.id not in worker._config_cache
+    assert room.id + 1 in worker._config_cache
+    worker._config_cache.pop(room.id + 1)
+
+
+# ── Room page: AI settings and room audio ─────────────────────────────────
+
+
+async def _create_ai_room(admin_cookie, event) -> int:
+    data = {
+        "display_name": "AI Hall",
+        "spoken_language": "en",
+        "languages": ["es", "fr"],
+        "delivery_es": AI_VOICE,
+        "delivery_fr": AI_TEXT,
+        "speech_engine": "local",
+        "translation_engine": "local",
+        "voice_engine": "supertonic",
+    }
+    async with _client() as c:
+        resp = await c.post(
+            f"/admin/events/{event.id}/rooms/new",
+            data=data,
+            headers=ORIGIN,
+            cookies=admin_cookie,
+            follow_redirects=False,
+        )
+    assert resp.status_code == 303
+    return int(re.search(r"/rooms/(\d+)/", resp.headers["location"]).group(1))
+
+
+@pytest.mark.anyio
+async def test_ai_settings_never_switch_languages_or_captions(admin_cookie, event_room):
+    event, _ = event_room
+    room_id = await _create_ai_room(admin_cookie, event)
+    async with _client() as c:
+        resp = await c.post(
+            f"/admin/events/{event.id}/rooms/{room_id}/edit",
+            data={
+                "form_section": "ai",
+                "floor_transcription_provider": "local",
+                "floor_transcription_model": "base",
+                "floor_translation_provider": "local",
+                "floor_translation_model": "",
+                "floor_ai_interpreter_persona": "A developer conference",
+                "floor_ai_interpretation_style": "",
+                "floor_tts_provider": "supertonic",
+                "floor_tts_voice": "f2",
+                # Switches from the old page must not do anything here.
+                "floor_translation_enabled": "",
+                "floor_tts_enabled": "",
+                "floor_translation_languages": ["de"],
+            },
+            headers=ORIGIN,
+            cookies=admin_cookie,
+            follow_redirects=False,
+        )
+    assert resp.status_code == 303
+    room = await _room(room_id)
+    assert room.floor_transcription_enabled and room.floor_translation_enabled and room.floor_tts_enabled
+    assert await _ai_codes(room_id) == {"es", "fr"}
+    assert await _voice_codes(room_id) == {"es"}
+    assert room.floor_transcription_model == "base"
+    # A blank model means the service's recommended one.
+    assert room.floor_translation_model == "nllb-200-distilled-600M"
+    assert room.floor_ai_interpreter_persona == "A developer conference"
+    assert room.floor_ai_interpretation_style is None
+    assert room.floor_ai_vocabulary_enabled is False
+    assert room.floor_tts_voice == "F2"
+
+
+@pytest.mark.anyio
+async def test_ai_settings_ignore_services_the_event_cannot_use(admin_cookie, event_room):
+    event, _ = event_room
+    room_id = await _create_ai_room(admin_cookie, event)
+    async with _client() as c:
+        await c.post(
+            f"/admin/events/{event.id}/rooms/{room_id}/edit",
+            data={
+                "form_section": "ai",
+                "floor_transcription_provider": "openai",  # no key on this event
+                "floor_transcription_model": "whisper-1",
+                "floor_translation_provider": "anthropic",
+                "floor_tts_provider": "deepgram",
+                "floor_tts_voice": "Z9",
+            },
+            headers=ORIGIN,
+            cookies=admin_cookie,
+        )
+    room = await _room(room_id)
+    assert room.floor_transcription_provider == "local" and room.floor_transcription_model == "tiny"
+    assert room.floor_translation_provider == "local"
+    assert room.floor_tts_provider == "supertonic"
+    # Fields left out of the form keep their values.
+    assert room.floor_ai_vocabulary_enabled is True
+
+
+@pytest.mark.anyio
+async def test_room_page_uses_the_setup_words_and_offers_only_usable_services(admin_cookie, event_room):
+    event, _ = event_room
+    room_id = await _create_ai_room(admin_cookie, event)
+    async with _client() as c:
+        page = await c.get(f"/admin/events/{event.id}/rooms/{room_id}/", cookies=admin_cookie)
+    html = page.text
+    for words in ("Room audio", "AI settings", "How will VoxBento hear this room?", "Glossary", "Female voice 2"):
+        assert words in html
+    assert 'delivery-tag--ai_text">AI captions<' in html
+    for jargon in ("TTS", "Direct Push", "LLM", "Floor Audio", "Floor source", "AI text"):
+        assert jargon not in html, jargon
+    # Only services the event can use are offered.
+    assert 'value="openai"' not in html and 'value="local"' in html
+
+
+@pytest.mark.anyio
+async def test_ai_settings_tab_explains_a_room_without_ai(admin_cookie, event_room):
+    event, room = event_room
+    async with _client() as c:
+        page = await c.get(f"/admin/events/{event.id}/rooms/{room.id}/", cookies=admin_cookie)
+    assert (
+        "This room doesn&#39;t use captions or AI" in page.text or "This room doesn't use captions or AI" in page.text
+    )
+    assert 'id="room_ai_form"' not in page.text
+
+
+@pytest.mark.parametrize(
+    ("fields", "choice"),
+    [
+        ({}, ""),
+        ({"meeting_agent_enabled": True}, room_setup.AUDIO_MEETING),
+        ({"floor_source": "program_ingest", "program_key_hash": "k"}, room_setup.AUDIO_ENCODER),
+        ({"floor_source": "program_ingest", "program_session_secret_hash": "s"}, room_setup.AUDIO_DESK),
+    ],
+)
+def test_room_audio_tab_opens_on_the_source_in_use(fields, choice):
+    room = Room(event_id=1, display_name="Hall", floor_source="jitsi_bot", meeting_agent_enabled=False)
+    for key, value in fields.items():
+        setattr(room, key, value)
+    assert room_setup.room_audio_choice(room) == choice

@@ -29,13 +29,13 @@ jobs:
 
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7.0.1
       - name: Install Bandit
         run: pip install bandit[toml] bandit-sarif-formatter
       - name: Run Bandit Scan
         run: bandit -c pyproject.toml -r . -f sarif -o results.sarif || true
       - name: Upload SARIF file
-        uses: github/codeql-action/upload-sarif@v4.39.0
+        uses: github/codeql-action/upload-sarif@v4.39.1
         with:
           sarif_file: results.sarif
 
