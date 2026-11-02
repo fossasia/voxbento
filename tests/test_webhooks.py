@@ -9,14 +9,16 @@ from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
-from fastapi import HTTPException
+from fastapi import HTTPException, Response
 from fastapi.testclient import TestClient
-from sqlalchemy import select
+from sqlalchemy import select, update
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
 import portal.webhooks.worker as wh_worker
 from fastapi_app import app
 from portal.auth import require_oauth_scope
+from portal.config import settings
 from portal.models import (
     Base,
     DeveloperAccount,
@@ -250,8 +252,6 @@ async def test_process_delivery_circuit_breaker(db):
 
 @pytest.mark.anyio
 async def test_process_delivery_circuit_breaker_with_multiple_clients(db):
-    from portal.models import OAuthClient
-
     client1 = OAuthClient(developer_account_id=1, client_id="client_1", name="C1")
     client2 = OAuthClient(developer_account_id=1, client_id="client_2", name="C2")
     db.add_all([client1, client2])
@@ -312,7 +312,6 @@ async def test_atomic_queue_claim(db):
     await db.flush()
 
     now = datetime.now(timezone.utc)
-    from sqlalchemy import select, update
 
     # Simulate worker 1 claiming 3 items
     subquery1 = (
@@ -358,9 +357,6 @@ async def test_atomic_queue_claim(db):
 
 @pytest.mark.anyio
 async def test_create_webhook_idempotency_and_deduplication(db, monkeypatch):
-    from portal.models import DeveloperAccount, Event, OAuthClient, OAuthToken, User
-    from portal.routers.webhooks import WebhookCreate, create_webhook
-
     monkeypatch.setattr("portal.routers.webhooks.validate_ssrf", lambda url: None)
 
     user = User(email="dev@example.com", display_name="Dev User", is_active=True)
@@ -408,8 +404,6 @@ async def test_create_webhook_idempotency_and_deduplication(db, monkeypatch):
     orig_secret = res1.secret_key
 
     # 2. Call again with same target_url but updated event_types
-    from fastapi import Response
-
     resp2 = Response()
     req2 = WebhookCreate(
         target_url="https://client.example.com/webhook/",
@@ -435,8 +429,6 @@ async def test_create_webhook_idempotency_and_deduplication(db, monkeypatch):
     )
     db.add(dup)
     await db.flush()
-
-    from portal.models import WebhookDelivery
 
     delivery = WebhookDelivery(
         subscription_id=dup.id,
@@ -466,10 +458,6 @@ async def test_create_webhook_idempotency_and_deduplication(db, monkeypatch):
 
 @pytest.mark.anyio
 async def test_create_webhook_quota_limit(db, monkeypatch):
-    from portal.config import settings
-    from portal.models import DeveloperAccount, Event, OAuthClient, OAuthToken, User
-    from portal.routers.webhooks import WebhookCreate, create_webhook
-
     monkeypatch.setattr("portal.routers.webhooks.validate_ssrf", lambda url: None)
     monkeypatch.setattr(settings, "max_webhook_subscriptions", 3)
 
@@ -599,12 +587,6 @@ async def test_create_webhook_quota_limit(db, monkeypatch):
 
 @pytest.mark.anyio
 async def test_process_delivery_handles_failed_refresh_gracefully(db, monkeypatch):
-    from unittest.mock import AsyncMock
-
-    from sqlalchemy.exc import SQLAlchemyError
-
-    from portal.webhooks.worker import process_delivery
-
     sub = WebhookSubscription(
         developer_account_id=1,
         target_url="https://example.com/webhook",
@@ -798,17 +780,16 @@ async def test_create_webhook_accepts_all_supported_event_types(db, monkeypatch)
 
 def test_list_available_events():
     """Verify that GET /api/v1/webhooks/events requires auth and returns all supported event types."""
-    with TestClient(app) as client:
-        unauth_resp = client.get("/api/v1/webhooks/events")
-        assert unauth_resp.status_code == 401
+    client = TestClient(app)
+    unauth_resp = client.get("/api/v1/webhooks/events")
+    assert unauth_resp.status_code == 401
 
     mock_token = OAuthToken(scopes=["webhooks:manage"])
     app.dependency_overrides[require_webhooks_manage] = lambda: mock_token
     try:
-        with TestClient(app) as client:
-            resp = client.get("/api/v1/webhooks/events")
-            assert resp.status_code == 200
-            assert resp.json() == sorted(SUPPORTED_EVENT_TYPES)
+        resp = client.get("/api/v1/webhooks/events")
+        assert resp.status_code == 200
+        assert resp.json() == sorted(SUPPORTED_EVENT_TYPES)
     finally:
         app.dependency_overrides.pop(require_webhooks_manage, None)
 
@@ -924,8 +905,6 @@ async def test_reconcile_preexisting_subscriptions_frees_quota(db, monkeypatch):
     )
     db.add_all([sub1, sub2])
     await db.flush()
-
-    from portal.config import settings
 
     monkeypatch.setattr(settings, "max_webhook_subscriptions", 2)
 

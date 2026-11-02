@@ -288,6 +288,13 @@ async def list_webhooks(
     if not client:
         return []
 
+    # Serialize webhook operations per developer account
+    is_sqlite = db.get_bind().dialect.name == "sqlite"
+    dev_stmt = select(DeveloperAccount).where(DeveloperAccount.id == client.developer_account_id)
+    if not is_sqlite:
+        dev_stmt = dev_stmt.with_for_update()
+    await db.execute(dev_stmt)
+
     subs = await reconcile_subscriptions(db, client.developer_account_id)
 
     return [

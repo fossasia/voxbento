@@ -8,6 +8,8 @@ import pytest
 
 os.environ["API_KEY_ENCRYPTION_KEY"] = "test-encryption-key-value-for-all-tests"
 os.environ["BOOTH_ACCESS_TOKEN"] = ""
+os.environ["SECRET_KEY"] = "test-secret-key-at-least-32-chars-long-for-testing"
+os.environ["JWT_SECRET"] = "test-secret-key-at-least-32-chars-long-for-testing"
 
 
 ROOT = Path(__file__).resolve().parents[1]
