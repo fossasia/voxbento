@@ -466,7 +466,7 @@ async def test_start_uppercase_language_canonicalized_and_reaches_worker(event):
     assert response["status"] == "started"
     start_mock.assert_awaited_once()
     args, _ = start_mock.await_args
-    assert args[1] == "EN"
+    assert args[1] == "en"
     assert args[2] == "pycon2026-3-en"
     query_stmt = db.execute.call_args_list[1][0][0]
     compiled_params = query_stmt.compile().params

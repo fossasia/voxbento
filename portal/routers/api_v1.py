@@ -940,7 +940,7 @@ async def start_transcription(
     try:
         await start_transcription_worker(
             event_slug,
-            language_code,
+            canonical_language,
             booth_id,
             broadcast_transcription,
             provider,
