@@ -16,6 +16,7 @@ from portal.booth_identity import (
 )
 from portal.roles import Role, can_go_live, can_set_active, role_label
 from portal.tasks import track_task
+from portal.webhooks.events import SESSION_STATUS_CHANGED
 
 # Booth roles come from portal.roles, the one place roles are defined (#757).
 ParticipantRole = Role
@@ -325,7 +326,6 @@ class BoothRegistry:
             import asyncio
 
             import portal.webhooks.worker as _wh
-            from portal.webhooks.events import SESSION_STATUS_CHANGED
 
             track_task(
                 asyncio.create_task(

@@ -79,21 +79,20 @@ def validate_ssrf(url: str) -> None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid webhook URL: {str(e)}")
 
 
-async def reconcile_subscriptions(
-    db: AsyncSession, developer_account_id: int | None = None
-) -> list[WebhookSubscription]:
-    """Reconcile subscriptions with unsupported event names.
+async def reconcile_subscriptions(db: AsyncSession, developer_account_id: int) -> list[WebhookSubscription]:
+    """Reconcile subscriptions with unsupported event names for a developer account.
 
-    Prunes unsupported event types from pre-existing subscriptions. If a
-    subscription has no valid event types remaining, it is deactivated
-    (is_active=False) so it stops consuming quota without receiving deliveries.
+    Prunes unsupported event types from pre-existing subscriptions belonging to
+    the specified developer account. If a subscription has no valid event types
+    remaining, it is deactivated (is_active=False) so it stops consuming quota
+    without receiving deliveries.
 
     Returns the list of matching subscriptions after reconciliation.
     """
-    stmt = select(WebhookSubscription)
-    if developer_account_id is not None:
-        stmt = stmt.where(WebhookSubscription.developer_account_id == developer_account_id)
+    if developer_account_id is None:
+        return []
 
+    stmt = select(WebhookSubscription).where(WebhookSubscription.developer_account_id == developer_account_id)
     result = await db.execute(stmt)
     subs = result.scalars().all()
     modified = False
@@ -143,7 +142,7 @@ async def create_webhook(
 
     client_result = await db.execute(select(OAuthClient).where(OAuthClient.id == token.client_id))
     client = client_result.scalars().first()
-    if not client:
+    if not client or client.developer_account_id is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid client")
 
     # Serialize webhook operations per developer account
@@ -285,7 +284,7 @@ async def list_webhooks(
     """
     client_result = await db.execute(select(OAuthClient).where(OAuthClient.id == token.client_id))
     client = client_result.scalars().first()
-    if not client:
+    if not client or client.developer_account_id is None:
         return []
 
     # Serialize webhook operations per developer account

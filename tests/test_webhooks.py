@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import importlib
 import json
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
@@ -15,6 +16,7 @@ from sqlalchemy import select, update
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
+import portal.webhooks.events as wh_events
 import portal.webhooks.worker as wh_worker
 from fastapi_app import app
 from portal.auth import require_oauth_scope
@@ -855,6 +857,51 @@ async def test_enqueue_webhook_rejects_unsupported_event(monkeypatch):
 
 
 @pytest.mark.anyio
+async def test_reconcile_subscriptions_enforces_tenant_isolation(db):
+    """Verify reconcile_subscriptions strictly scopes to developer_account_id and rejects None."""
+    # Sub for account 1
+    sub1 = WebhookSubscription(
+        developer_account_id=1,
+        target_url="https://example.com/acct1",
+        event_types=["unsupported.evt", SESSION_STATUS_CHANGED],
+        secret_key="sec1",
+        is_active=True,
+    )
+    # Sub for account 2
+    sub2 = WebhookSubscription(
+        developer_account_id=2,
+        target_url="https://example.com/acct2",
+        event_types=["unsupported.evt2"],
+        secret_key="sec2",
+        is_active=True,
+    )
+    db.add_all([sub1, sub2])
+    await db.flush()
+
+    # Reconciling with developer_account_id=None must return empty list and touch nothing
+    res_none = await reconcile_subscriptions(db, None)
+    assert res_none == []
+
+    # Verify neither sub was modified
+    db_sub2 = (await db.execute(select(WebhookSubscription).where(WebhookSubscription.id == sub2.id))).scalars().first()
+    assert db_sub2.is_active is True
+    assert db_sub2.event_types == ["unsupported.evt2"]
+
+    # Reconciling account 1 only touches account 1
+    res_acct1 = await reconcile_subscriptions(db, 1)
+    assert len(res_acct1) == 1
+    assert res_acct1[0].id == sub1.id
+    assert res_acct1[0].event_types == [SESSION_STATUS_CHANGED]
+
+    # Sub 2 is still untouched
+    db_sub2_after = (
+        (await db.execute(select(WebhookSubscription).where(WebhookSubscription.id == sub2.id))).scalars().first()
+    )
+    assert db_sub2_after.is_active is True
+    assert db_sub2_after.event_types == ["unsupported.evt2"]
+
+
+@pytest.mark.anyio
 async def test_reconcile_preexisting_subscriptions_frees_quota(db, monkeypatch):
     """Verify that pre-existing subscriptions with unsupported events are reconciled and free quota."""
     monkeypatch.setattr("portal.routers.webhooks.validate_ssrf", lambda url: None)
@@ -953,10 +1000,42 @@ def test_event_registry_single_source_of_truth():
     with pytest.raises(ValueError, match="Unsupported event types"):
         validate_event_types(["invalid"])
 
+    # Verify runtime producer import bindings evaluate to valid supported constants
+    producer_bindings = [
+        ("portal.booth_state", {"SESSION_STATUS_CHANGED": SESSION_STATUS_CHANGED}),
+        (
+            "portal.transcription.worker",
+            {
+                "BOOTH_TRANSCRIPTION_STARTED": BOOTH_TRANSCRIPTION_STARTED,
+                "BOOTH_TRANSCRIPTION_STOPPED": BOOTH_TRANSCRIPTION_STOPPED,
+            },
+        ),
+        ("portal.websockets.manager", {"BOOTH_INTERPRETER_JOINED": BOOTH_INTERPRETER_JOINED}),
+    ]
+    for module_name, bindings in producer_bindings:
+        mod = importlib.import_module(module_name)
+        for attr_name, expected_val in bindings.items():
+            actual_val = getattr(mod, attr_name, None)
+            assert actual_val == expected_val, (
+                f"{module_name}.{attr_name} evaluated to {actual_val!r}, expected {expected_val!r}"
+            )
+            assert actual_val in SUPPORTED_EVENT_TYPES, (
+                f"{module_name}.{attr_name} value {actual_val!r} is not in SUPPORTED_EVENT_TYPES"
+            )
+
     # AST verification of all calls to enqueue_webhook across portal/
     portal_dir = Path(__file__).resolve().parents[1] / "portal"
     for py_file in portal_dir.rglob("*.py"):
         tree = ast.parse(py_file.read_text(encoding="utf-8"), filename=str(py_file))
+
+        # Track event constant bindings imported from portal.webhooks.events in this file
+        imported_event_bindings: dict[str, str] = {}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module == "portal.webhooks.events":
+                for alias in node.names:
+                    local_name = alias.asname or alias.name
+                    imported_event_bindings[local_name] = getattr(wh_events, alias.name, None)
+
         for node in ast.walk(tree):
             if isinstance(node, ast.Call):
                 func = node.func
@@ -985,3 +1064,15 @@ def test_event_registry_single_source_of_truth():
                                 "BOOTH_INTERPRETER_JOINED",
                                 "event_type",  # Inside worker.py itself
                             }, f"{py_file}: Unknown identifier {event_arg.id} passed to enqueue_webhook"
+
+                            # Confirm identifier was imported from portal.webhooks.events and evaluates to supported event
+                            if event_arg.id != "event_type":
+                                assert event_arg.id in imported_event_bindings, (
+                                    f"{py_file}: Identifier {event_arg.id} passed to enqueue_webhook "
+                                    f"was not imported from portal.webhooks.events"
+                                )
+                                bound_val = imported_event_bindings[event_arg.id]
+                                assert bound_val in SUPPORTED_EVENT_TYPES, (
+                                    f"{py_file}: Identifier {event_arg.id} binds to {bound_val!r}, "
+                                    f"which is not in SUPPORTED_EVENT_TYPES"
+                                )
