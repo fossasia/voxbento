@@ -498,7 +498,7 @@ def test_recovered_admin_query_token_cannot_open_captions(recovery):
         client.portal.call(listener_manager.broadcast, booth_id, {"type": "caption", "text": "private"})
         with pytest.raises(WebSocketDisconnect) as exc:
             socket.receive_json()
-        assert exc.value.code == 4003
+        assert exc.value.code == 4001
 
 
 @pytest.mark.parametrize("revoked", [False, True])
