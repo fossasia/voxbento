@@ -15,6 +15,8 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from portal.webhooks.events import SUPPORTED_EVENT_TYPES  # noqa: E402
+
 pytest_plugins = ("anyio",)
 
 
@@ -36,10 +38,8 @@ def _reset_shared_http_client():
     async def _dummy_loop():
         pass
 
-    import portal.webhooks.events
-
     async def _dummy_enqueue(event_type: str, payload: dict):
-        if event_type not in portal.webhooks.events.SUPPORTED_EVENT_TYPES:
+        if event_type not in SUPPORTED_EVENT_TYPES:
             raise ValueError(f"Unknown webhook event type: {event_type!r}")
 
     portal.webhooks.worker.webhook_worker_loop = _dummy_loop

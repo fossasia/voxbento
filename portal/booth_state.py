@@ -300,6 +300,12 @@ class BoothRegistry:
         language: str,
         channel_id: str,
     ) -> dict:
+        """Update broadcast unlock state for a booth and notify webhooks.
+
+        When unlocked is False, disconnects all active participants and sets
+        the ingest status to disconnected. Asynchronously enqueues a
+        session.status_changed webhook event.
+        """
         async with self._lock:
             booth = self._get_or_create_booth(booth_id, language, channel_id)
             booth.broadcast_unlocked = unlocked

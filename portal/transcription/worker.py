@@ -97,6 +97,12 @@ class TranscriptionWorkerSession:
                 logger.error(f"[{self.booth_id}][{self.session_id}] Task ended with exception: {e}")
 
     async def _run_loop(self):
+        """Run the audio capture and transcription processing loop.
+
+        Spawns and manages the ffmpeg process to read from the RTSP stream,
+        enqueues webhook events on start and stop, and feeds audio chunks to the
+        transcription provider while handling reconnections.
+        """
         self.loop_entered = True
         retry_count = 0
         try:

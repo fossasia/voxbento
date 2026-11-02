@@ -23,7 +23,11 @@ logger = logging.getLogger(__name__)
 
 
 async def enqueue_webhook(event_type: str, payload: dict) -> None:
-    """Helper to insert a new webhook delivery into the queue."""
+    """Helper to insert a new webhook delivery into the queue.
+
+    Validates that the event type is supported before looking up active
+    subscriptions and creating pending delivery records in the database.
+    """
     if event_type not in SUPPORTED_EVENT_TYPES:
         raise ValueError(f"Unknown webhook event type: {event_type!r}")
     try:
