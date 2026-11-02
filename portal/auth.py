@@ -532,6 +532,17 @@ async def get_access_flags(request: Request, event_id: int | None = None, room_i
     return flags
 
 
+def is_cookie_secure(request: Request) -> bool:
+    """Whether cookies set on this response should carry the ``Secure`` flag.
+
+    True for direct or proxied HTTPS requests; otherwise only when the configured public URL
+    is HTTPS outside debug mode, so plain-HTTP local development keeps working.
+    """
+    if request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https":
+        return True
+    return bool(settings.public_base_url.lower().startswith("https://") and not settings.debug)
+
+
 def create_user_token(*, user_id: int, email: str, display_name: str = "", is_admin: bool = False) -> str:
     """Create a JWT for a registered user session."""
     now = datetime.now(timezone.utc)
