@@ -913,9 +913,6 @@ async def start_transcription(
 
     booth_id = make_booth_id(event_slug, target_room_id, language_code)
 
-    if booths.get_booth_sync(booth_id) is None:
-        raise HTTPException(status_code=400, detail="Booth not active in memory")
-
     stmt = (
         select(DBBooth)
         .options(selectinload(DBBooth.event))
@@ -929,6 +926,9 @@ async def start_transcription(
     db_booth = result.scalars().first()
     if not db_booth or not db_booth.transcription_enabled:
         return {"status": "disabled", "message": "Transcription is not enabled for this booth."}
+
+    if booths.get_booth_sync(booth_id) is None:
+        raise HTTPException(status_code=400, detail="Booth not active in memory")
 
     provider, model_size, config = resolve_transcription_config(db_booth, event=event)
 

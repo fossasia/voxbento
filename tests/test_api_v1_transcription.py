@@ -444,10 +444,18 @@ async def test_start_success_invokes_worker_with_resolved_config(event):
 @pytest.mark.anyio
 async def test_start_inactive_booth_raises_400(event):
     """If the booth is not active in memory, route raises 400 Bad Request."""
+    db_booth = SimpleNamespace(
+        transcription_enabled=True,
+        transcription_provider="local",
+        transcription_model="tiny",
+        event=event,
+    )
+    db = _db(_result(first=event), _result(first=db_booth))
+
     with patch.object(api_v1.booths, "get_booth_sync", return_value=None):
         with pytest.raises(api_v1.HTTPException) as exc_info:
             await api_v1.start_transcription(
-                EVENT_SLUG, ROOM_ID, "en", db=_db(_result(first=event)), token=object()
+                EVENT_SLUG, ROOM_ID, "en", db=db, token=object()
             )
 
     assert exc_info.value.status_code == 400
@@ -457,7 +465,6 @@ async def test_start_inactive_booth_raises_400(event):
 @pytest.mark.anyio
 async def test_start_disabled_transcription_returns_disabled(event):
     """If transcription is disabled for the booth in DB, return disabled status."""
-    mock_booth = MagicMock()
     db_booth = SimpleNamespace(
         transcription_enabled=False,
         transcription_provider="local",
@@ -466,7 +473,7 @@ async def test_start_disabled_transcription_returns_disabled(event):
     )
     db = _db(_result(first=event), _result(first=db_booth))
 
-    with patch.object(api_v1.booths, "get_booth_sync", return_value=mock_booth):
+    with patch.object(api_v1.booths, "get_booth_sync", return_value=None):
         response = await api_v1.start_transcription(
             EVENT_SLUG, ROOM_ID, "en", db=db, token=object()
         )
