@@ -319,10 +319,11 @@ class BoothRegistry:
             import asyncio
 
             import portal.webhooks.worker as _wh
+            from portal.webhooks.events import SESSION_STATUS_CHANGED
 
             track_task(
                 asyncio.create_task(
-                    _wh.enqueue_webhook("session.status_changed", {"booth_id": booth_id, "is_active": unlocked})
+                    _wh.enqueue_webhook(SESSION_STATUS_CHANGED, {"booth_id": booth_id, "is_active": unlocked})
                 )
             )
 

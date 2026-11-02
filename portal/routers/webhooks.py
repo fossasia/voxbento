@@ -7,7 +7,7 @@ import socket
 import urllib.parse
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -21,6 +21,7 @@ from portal.models import (
     WebhookDelivery,
     WebhookSubscription,
 )
+from portal.webhooks.events import SUPPORTED_EVENT_TYPES, validate_event_types
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +30,12 @@ router = APIRouter(prefix="/api/v1/webhooks", tags=["Webhooks"])
 
 class WebhookCreate(BaseModel):
     target_url: str
-    event_types: list[str]
+    event_types: list[str] = Field(
+        ...,
+        description=(
+            f"List of event names to subscribe to. Supported event types: {', '.join(sorted(SUPPORTED_EVENT_TYPES))}"
+        ),
+    )
 
 
 class WebhookResponse(BaseModel):
@@ -74,8 +80,10 @@ async def create_webhook(
 ):
     validate_ssrf(data.target_url)
 
-    if not data.event_types:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="event_types cannot be empty")
+    try:
+        validated_event_types = validate_event_types(data.event_types)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
     client_result = await db.execute(select(OAuthClient).where(OAuthClient.id == token.client_id))
     client = client_result.scalars().first()
@@ -124,7 +132,7 @@ async def create_webhook(
                     status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="Maximum webhook subscriptions reached"
                 )
 
-        sub.event_types = sorted(set(data.event_types))
+        sub.event_types = validated_event_types
         sub.is_active = True
         sub.consecutive_failures = 0
         if not sub.secret_key:
@@ -179,7 +187,7 @@ async def create_webhook(
     sub = WebhookSubscription(
         developer_account_id=client.developer_account_id,
         target_url=data.target_url,
-        event_types=data.event_types,
+        event_types=validated_event_types,
         secret_key=secret_key,
         is_active=True,
     )
@@ -227,6 +235,14 @@ async def list_webhooks(
         )
         for s in subs
     ]
+
+
+@router.get("/events", response_model=list[str])
+async def list_available_events(
+    token: OAuthToken = Depends(require_oauth_scope("webhooks:manage")),
+) -> list[str]:
+    """Return all supported webhook event types."""
+    return sorted(SUPPORTED_EVENT_TYPES)
 
 
 @router.delete("/{sub_id}", status_code=status.HTTP_204_NO_CONTENT)

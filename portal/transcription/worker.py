@@ -13,6 +13,7 @@ from portal.transcription.providers.elevenlabs import ElevenLabsProvider
 from portal.transcription.providers.local import LocalProvider
 from portal.transcription.providers.nvidia import NVIDIAProvider
 from portal.transcription.providers.openai import OpenAIProvider
+from portal.webhooks.events import BOOTH_TRANSCRIPTION_STARTED, BOOTH_TRANSCRIPTION_STOPPED
 
 logger = logging.getLogger(__name__)
 
@@ -106,7 +107,8 @@ class TranscriptionWorkerSession:
 
                 self.state = State.RUNNING
                 await _wh_worker.enqueue_webhook(
-                    "booth.transcription.started", {"booth_id": self.booth_id, "session_id": self.session_id, "event_slug": self.event_slug}
+                    BOOTH_TRANSCRIPTION_STARTED,
+                    {"booth_id": self.booth_id, "session_id": self.session_id, "event_slug": self.event_slug},
                 )
 
                 # The context manager entirely encapsulates ffmpeg process lifecycle and cleanup.
@@ -171,7 +173,8 @@ class TranscriptionWorkerSession:
         finally:
             self.state = State.STOPPED
             await _wh_worker.enqueue_webhook(
-                "booth.transcription.stopped", {"booth_id": self.booth_id, "session_id": self.session_id, "event_slug": self.event_slug}
+                BOOTH_TRANSCRIPTION_STOPPED,
+                {"booth_id": self.booth_id, "session_id": self.session_id, "event_slug": self.event_slug},
             )
             if self.provider_name == "local":
                 from portal.transcription.providers.local import decrement_model_ref

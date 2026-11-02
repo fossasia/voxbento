@@ -15,12 +15,17 @@ from sqlalchemy.exc import SQLAlchemyError
 from portal.database import get_session
 from portal.models import OAuthAuditLog, WebhookDelivery, WebhookSubscription
 from portal.routers.webhooks import validate_ssrf
+from portal.webhooks.events import (
+    SUPPORTED_EVENT_TYPES,
+)
 
 logger = logging.getLogger(__name__)
 
 
 async def enqueue_webhook(event_type: str, payload: dict) -> None:
     """Helper to insert a new webhook delivery into the queue."""
+    if event_type not in SUPPORTED_EVENT_TYPES:
+        raise ValueError(f"Unknown webhook event type: {event_type!r}")
     try:
         async with get_session() as db:
             result = await db.execute(select(WebhookSubscription).where(WebhookSubscription.is_active.is_(True)))
@@ -43,6 +48,9 @@ async def enqueue_webhook(event_type: str, payload: dict) -> None:
                 await db.flush()
     except Exception as e:
         logger.error(f"Failed to enqueue webhook: {e}", exc_info=True)
+
+
+_real_enqueue_webhook = enqueue_webhook
 
 
 def sign_payload(secret: str, payload_str: str, timestamp: int) -> str:
