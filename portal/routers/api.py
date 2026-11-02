@@ -794,6 +794,34 @@ async def ingest_status_api(channel_id: str) -> dict:
     return {"channel_id": channel_id, "state": "mediamtx", "reachable": await _check_mediamtx()}
 
 
+def resolve_transcription_config(
+    db_booth: DBBooth, event: Event | None = None
+) -> tuple[str, str, ProviderConfig]:
+    """Resolve provider, model size, and ProviderConfig for a booth."""
+    provider = db_booth.transcription_provider
+    model_size = db_booth.transcription_model
+    try:
+        provider_enum = ProviderEnum(provider)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid transcription provider")
+    evt = event if event is not None else db_booth.event
+    if not evt.transcription_api_enabled and provider_enum != ProviderEnum.LOCAL:
+        raise HTTPException(status_code=400, detail="External API transcription is disabled for this event.")
+    api_key = None
+    if provider_enum != ProviderEnum.LOCAL:
+        try:
+            api_key = get_api_key(evt, provider_enum)
+        except ValueError:
+            raise HTTPException(
+                status_code=400,
+                detail="API Key decryption failed. The encryption key has rotated. Please go to the Admin portal, clear your existing keys, and re-enter them.",
+            )
+        if not api_key:
+            raise HTTPException(status_code=400, detail=f"{provider} API key missing. Cannot start transcription.")
+    config = ProviderConfig(api_key=api_key)
+    return provider, model_size, config
+
+
 @router.post("/events/{event_slug}/rooms/{room_id}/booths/{language_code}/transcription/start")
 async def api_transcription_start(
     event_slug: str,
@@ -841,24 +869,7 @@ async def api_transcription_start(
                 getattr(db_booth, "transcription_enabled", None),
             )
             return {"status": "disabled", "message": "Transcription is not enabled for this booth."}
-        provider = db_booth.transcription_provider
-        model_size = db_booth.transcription_model
-        try:
-            provider_enum = ProviderEnum(provider)
-        except ValueError:
-            raise HTTPException(status_code=400, detail="Invalid transcription provider")
-        if not db_booth.event.transcription_api_enabled and provider_enum != ProviderEnum.LOCAL:
-            raise HTTPException(status_code=400, detail="External API transcription is disabled for this event.")
-        try:
-            api_key = get_api_key(db_booth.event, provider_enum)
-        except ValueError:
-            raise HTTPException(
-                status_code=400,
-                detail="API Key decryption failed. The encryption key has rotated. Please go to the Admin portal, clear your existing keys, and re-enter them.",
-            )
-        if provider_enum != ProviderEnum.LOCAL and (not api_key):
-            raise HTTPException(status_code=400, detail=f"{provider} API key missing. Cannot start transcription.")
-        config = ProviderConfig(api_key=api_key)
+        provider, model_size, config = resolve_transcription_config(db_booth)
     try:
         await start_transcription_worker(
             event_slug, language_code, booth_id, broadcast_transcription, provider, model_size, config, room_id=room_id
