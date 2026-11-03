@@ -705,6 +705,94 @@ async def test_consent_rejects_a_missing_event_binding(setup_oauth_clients):
 
 
 @pytest.mark.anyio
+async def test_consent_binding_is_bound_to_the_client(setup_oauth_clients):
+    """A MAC minted for one client does not authorise consent through another."""
+    from portal.auth import create_user_token
+    from portal.routers.oauth import _event_binding_mac
+
+    user = setup_oauth_clients["user"]
+    event = setup_oauth_clients["event"]
+    confidential = setup_oauth_clients["confidential_client"]
+    public = setup_oauth_clients["public_client"]
+    cookies = {"user_token": create_user_token(user_id=user.id, email=user.email)}
+
+    mac_for_confidential = _event_binding_mac(event.id, confidential.client_id, str(user.id))
+    async with _client() as c:
+        res = await c.post(
+            "/oauth/authorize",
+            data=_allow_form(public, event.id, event_binding=mac_for_confidential),
+            cookies=cookies,
+        )
+    assert res.status_code == 400
+
+
+@pytest.mark.anyio
+async def test_consent_binding_alone_does_not_stop_a_chosen_event(setup_oauth_clients):
+    """The binding stops form tampering, not the attacker's choice of event.
+
+    ``get_effective_scopes`` grants a confidential client every scope for any
+    event, so an attacker can simply name the victim's event in the authorize
+    URL and the server mints a valid binding for it. Nothing is tampered with
+    here and consent still succeeds, which is why the token exchange has to
+    check the event the client itself started the flow for.
+    """
+    import re
+    import urllib.parse
+
+    from portal.auth import create_user_token
+
+    attacker = setup_oauth_clients["unrelated_user"]
+    victim_event = setup_oauth_clients["ownerless_event"]
+    client = setup_oauth_clients["confidential_client"]
+    cookies = {"user_token": create_user_token(user_id=attacker.id, email=attacker.email)}
+
+    async with _client() as c:
+        page = await c.get(
+            "/oauth/authorize",
+            params={
+                "client_id": client.client_id,
+                "redirect_uri": "http://localhost/callback",
+                "response_type": "code",
+                "code_challenge": "challenge",
+                "code_challenge_method": "S256",
+                "state": "state123",
+                "event": victim_event.slug,
+                "scope": "events:write events:read",
+            },
+            cookies=cookies,
+        )
+        assert page.status_code == 200, "the server renders consent for an event the attacker does not own"
+        mac = re.search(r'name="event_binding" value="([0-9a-f]{64})"', page.text).group(1)
+
+        allow = await c.post(
+            "/oauth/authorize",
+            data=_allow_form(client, victim_event.id, event_binding=mac),
+            cookies=cookies,
+        )
+        assert allow.status_code == 303, "a server-issued binding is valid, so consent succeeds"
+        code = urllib.parse.parse_qs(urllib.parse.urlparse(allow.headers["location"]).query)["code"][0]
+
+        # Eventyay started the flow for a different event, so it sends that one.
+        res = await c.post(
+            "/oauth/token",
+            data={
+                "grant_type": "authorization_code",
+                "code": code,
+                "redirect_uri": "http://localhost/callback",
+                "client_id": client.client_id,
+                "client_secret": "test_secret",
+                "code_verifier": "event-binding-verifier-event-binding-0123",
+                "event": setup_oauth_clients["event"].slug,
+            },
+        )
+
+    assert res.status_code == 400
+    assert await _role(attacker.id, victim_event.id) is None, (
+        "only the token-exchange event check stops this path"
+    )
+
+
+@pytest.mark.anyio
 async def test_consent_binding_is_not_transferable_between_users(setup_oauth_clients):
     """A MAC minted for one signed-in user does not authorise another user's consent."""
     from portal.auth import create_user_token
