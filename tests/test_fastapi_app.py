@@ -329,6 +329,54 @@ def test_ws_join_receives_joined_and_state():
     assert "state" in joined
 
 
+def _valid_join_payload(**overrides) -> dict:
+    payload = {
+        "type": "booth:join",
+        "display_name": "Alice",
+        "role": "interpreter",
+        "language": "French",
+        "channel_id": "ws-join-validation-audio",
+    }
+    payload.update(overrides)
+    return payload
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "expected_message"),
+    [
+        ("display_name", 123, "display_name must be a string."),
+        ("display_name", None, "display_name must be a string."),
+        ("display_name", ["Alice"], "display_name must be a string."),
+        ("language", 123, "language must be a string."),
+        ("channel_id", 456, "channel_id must be a string."),
+        ("display_name", "x" * 201, "display_name must be at most 200 characters."),
+    ],
+)
+def test_ws_join_rejects_invalid_fields_with_an_error_and_keeps_the_socket_open(field, value, expected_message):
+    """A bad field gets a booth:error (not a dropped socket), and the same socket can still join."""
+    with client.websocket_connect("/ws/booth/ws-join-validation-booth", cookies=_ws_auth()) as ws:
+        ws.send_text(json.dumps(_valid_join_payload(**{field: value})))
+        error = json.loads(ws.receive_text())
+        assert error["type"] == "booth:error"
+        assert error["message"] == expected_message
+
+        # The connection survived: a valid join on the same socket succeeds.
+        ws.send_text(json.dumps(_valid_join_payload()))
+        replies = {json.loads(ws.receive_text())["type"], json.loads(ws.receive_text())["type"]}
+        assert "booth:joined" in replies
+
+
+def test_ws_join_accepts_a_display_name_at_the_length_limit():
+    """200 characters is allowed, and surrounding whitespace does not count towards the limit."""
+    name = "x" * 200
+    with client.websocket_connect("/ws/booth/ws-join-limit-booth", cookies=_ws_auth()) as ws:
+        ws.send_text(json.dumps(_valid_join_payload(display_name=f"  {name}  ")))
+        replies = [json.loads(ws.receive_text()), json.loads(ws.receive_text())]
+    joined = next(m for m in replies if m["type"] == "booth:joined")
+    participants = joined["state"]["participants"]
+    assert [p["display_name"] for p in participants] == [name]
+
+
 def test_ws_join_without_language_and_unconfigured_booth_returns_error():
     """If neither the client specifies a language nor the booth exists in DB, join must error."""
     with client.websocket_connect("/ws/booth/unknown-booth", cookies=_ws_auth()) as ws:

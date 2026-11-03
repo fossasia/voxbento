@@ -34,6 +34,11 @@ REASON_AUTH_REVOKED: str = "Authorization revoked"
 REASON_SESSION_EXPIRED: str = "Session authorization expired"
 REASON_INVITE_REVOKED: str = "Invitation revoked"
 
+# Longest display name a booth will accept. Matches the 200 characters an account
+# display name is stored with (``User.display_name``); the name is rebroadcast to
+# every booth socket in each ``booth:state``, so it must not be unbounded.
+MAX_DISPLAY_NAME_LENGTH: int = 200
+
 
 @dataclass
 class Session:
@@ -647,6 +652,21 @@ async def broadcast_transcription(booth_id: str, payload: str | dict):
         await listener_manager.broadcast(booth_id, payload)
 
 
+def _join_field_error(display_name: object, language: object, channel_id: object) -> str | None:
+    """Return a client-facing message if a ``booth:join`` text field is unusable, else ``None``.
+
+    These values come straight from the client and are later ``.strip()``-ed and
+    stored, so a non-string would raise out of the join handler and drop the socket,
+    and an unbounded name would be resent to every booth socket in each state update.
+    """
+    for field_name, value in (("display_name", display_name), ("language", language), ("channel_id", channel_id)):
+        if not isinstance(value, str):
+            return f"{field_name} must be a string."
+    if len(display_name.strip()) > MAX_DISPLAY_NAME_LENGTH:
+        return f"display_name must be at most {MAX_DISPLAY_NAME_LENGTH} characters."
+    return None
+
+
 async def _handle_join(ws: WebSocket, session: Session, data: dict) -> None:
     """Handle a client joining a booth session.
 
@@ -662,6 +682,10 @@ async def _handle_join(ws: WebSocket, session: Session, data: dict) -> None:
         )
         return
     channel_id = data.get("channel_id", f"{session.booth_id}-audio")
+    field_error = _join_field_error(display_name, language, channel_id)
+    if field_error:
+        await ws.send_text(json.dumps({"type": "booth:error", "message": field_error}))
+        return
     participant_id = data.get("participant_id")
     if session.granted_role is None:
         await ws.send_text(json.dumps({"type": "booth:error", "message": "No role assigned for this session."}))
