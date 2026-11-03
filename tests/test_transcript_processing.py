@@ -14,6 +14,8 @@ import pytest
 
 from portal.transcript_processing import (
     MAX_WORD_LENGTH,
+    _normalise,
+    hallucination_reason,
     has_no_printable_content,
     has_overlong_word,
     is_hallucination,
@@ -112,6 +114,43 @@ def test_non_latin_speech_is_kept():
     assert is_hallucination("Привет, добро пожаловать.") is False
 
 
+# ---------------------------------------------------------------------------
+# Scripts written without spaces between words
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "这是一个关于人工智能和机器翻译的非常重要的会议演讲内容今天我们将讨论很多有趣的技术话题和研究成果",
+        "これは人工知能と機械翻訳に関する非常に重要な会議の講演内容です今日は多くの話題について議論します",
+        "นี่คือการประชุมที่สำคัญมากเกี่ยวกับปัญญาประดิษฐ์และการแปลภาษาด้วยเครื่อง",
+    ],
+)
+def test_long_unspaced_script_speech_is_kept(text):
+    """A whole sentence is one token in these scripts, so the cap must not apply."""
+    assert len(text) > MAX_WORD_LENGTH
+    assert has_overlong_word(text) is False
+    assert is_hallucination(text) is False
+
+
+def test_latin_garbage_is_still_capped_alongside_unspaced_text():
+    assert has_overlong_word("x" * (MAX_WORD_LENGTH + 1)) is True
+
+
+def test_combining_marks_survive_normalisation():
+    """Stripping marks mangles Devanagari and Thai and can fake a repeated word."""
+    hindi = "यह सम्मेलन कृत्रिम बुद्धिमत्ता के बारे में है"
+    assert _normalise(hindi) == hindi
+    assert is_hallucination(hindi) is False
+
+
+def test_words_differing_only_by_marks_stay_distinct():
+    thai = "ที่ ทิ"
+    assert len(set(_normalise(thai).split())) == 2
+    assert is_hallucination(thai) is False
+
+
 @pytest.mark.parametrize("text", ["room 1 room 2", "word0 word1 word2", "booth 3 booth 4 booth 5"])
 def test_digits_keep_otherwise_identical_words_distinct(text):
     """Normalising must not strip digits, or these collapse into one repeated word."""
@@ -201,6 +240,99 @@ async def test_a_discarded_final_resets_the_utterance_state():
     assert state.current_word_count == 0
     assert state.utterance_start_time == 0.0
     assert state.segment_id != before, "the next utterance starts a new segment"
+
+
+# ---------------------------------------------------------------------------
+# Partial turns (Deepgram is_final before speech_final)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("text", ["you", "thank you", "uh", "Click click click"])
+def test_mid_turn_fragments_keep_short_phrases(text):
+    """A bare is_final can finalise part of a turn, so one short word is legitimate."""
+    assert is_hallucination(text) is True
+    assert is_hallucination(text, complete_turn=False) is False
+
+
+@pytest.mark.parametrize("text", ["a" * (MAX_WORD_LENGTH + 1), "...", "   "])
+def test_mid_turn_fragments_still_drop_structural_garbage(text):
+    assert is_hallucination(text, complete_turn=False) is True
+
+
+@pytest.mark.anyio
+async def test_deepgram_mid_turn_chunk_is_published():
+    broadcast = AsyncMock()
+    agg = _aggregator(broadcast)
+
+    await agg.handle_final("ev-1-en", "thank you", complete_turn=False)
+
+    finals = [c.args[1] for c in broadcast.await_args_list if c.args[1]["status"] == "final"]
+    assert len(finals) == 1, "a mid-turn fragment of real speech must survive"
+
+
+@pytest.mark.anyio
+async def test_deepgram_complete_turn_is_still_filtered():
+    broadcast = AsyncMock()
+    agg = _aggregator(broadcast)
+
+    await agg.handle_final("ev-1-en", "thank you", complete_turn=True)
+
+    statuses = [c.args[1]["status"] for c in broadcast.await_args_list]
+    assert "final" not in statuses
+
+
+def test_deepgram_passes_speech_final_as_the_turn_flag():
+    """The bare is_final branch must not be filtered as a complete turn."""
+    import inspect
+
+    from portal.transcription.providers import deepgram
+
+    src = inspect.getsource(deepgram)
+    assert "complete_turn=speech_final" in src
+
+
+# ---------------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------------
+
+
+def test_reason_names_a_category_and_not_the_text():
+    secret = "Thanks for watching"
+    reason = hallucination_reason(secret)
+    assert reason == "subtitle phrase"
+    assert secret not in reason
+
+
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("", "empty"),
+        ("...", "no printable content"),
+        ("a" * (MAX_WORD_LENGTH + 1), "overlong word"),
+        ("Thank you", "subtitle phrase"),
+        ("Click click click", "repeated word"),
+        ("Hello world.", None),
+    ],
+)
+def test_reason_categories(text, expected):
+    assert hallucination_reason(text) == expected
+
+
+@pytest.mark.anyio
+async def test_discarded_transcript_text_is_not_logged(caplog):
+    """The classifier can be wrong, so private speech must not reach the logs."""
+    import logging
+
+    broadcast = AsyncMock()
+    agg = _aggregator(broadcast)
+
+    with caplog.at_level(logging.INFO, logger="portal.transcription.aggregator"):
+        await agg.handle_final("ev-1-en", "Thanks for watching")
+
+    assert caplog.records, "the drop is still recorded"
+    logged = " ".join(r.getMessage() for r in caplog.records)
+    assert "Thanks for watching" not in logged
+    assert "subtitle phrase" in logged
 
 
 @pytest.mark.anyio

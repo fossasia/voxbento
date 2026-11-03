@@ -75,7 +75,11 @@ class DeepgramProvider(TranscriptionProvider):
 
                                         if transcript:
                                             if speech_final or is_final:
-                                                await aggregator.handle_final(booth_id, transcript)
+                                                # A bare is_final can finalise part of a longer
+                                                # turn, so it may legitimately be one short word.
+                                                await aggregator.handle_final(
+                                                    booth_id, transcript, complete_turn=speech_final
+                                                )
                                             else:
                                                 await aggregator.handle_partial(booth_id, transcript)
 

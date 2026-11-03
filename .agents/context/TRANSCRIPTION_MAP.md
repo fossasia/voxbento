@@ -173,8 +173,23 @@ Rejected: empty or punctuation-only text, any word longer than
 ("Click click click"), and known subtitle-training phrases
 ("Thanks for watching", "[Music]", bare fillers like "uh"). A phrase is only
 rejected when it is the whole utterance, so the same words inside real speech
-survive. Comparison case-folds and strips punctuation but keeps digits, so
-"room 1 room 2" is not read as one repeated word.
+survive. Comparison case-folds and strips punctuation but keeps digits and
+combining marks, so "room 1 room 2" is not read as one repeated word and
+Devanagari, Thai and Arabic are not mangled into fragments.
+
+The length cap skips tokens containing characters from scripts written without
+spaces (CJK, kana, Thai, Lao, Khmer, Myanmar, Tibetan), where a whole sentence
+is one whitespace-delimited token.
+
+`handle_final` takes `complete_turn` (default `True`). Deepgram passes
+`complete_turn=speech_final`, because a bare `is_final` finalises part of a
+longer turn and may legitimately be one short word; such a fragment gets only
+the structural checks, not the phrase, filler or repetition rules. The other
+providers finalise complete turns and use the default.
+
+`hallucination_reason()` returns the category ("subtitle phrase",
+"repeated word", …) and is what gets logged. The transcript itself is never
+logged: it may be private speech, and the classifier can be wrong about it.
 
 This is the text-level pass. The decoder-level guards
 (`compression_ratio_threshold`, `no_speech_threshold`, `log_prob_threshold`,

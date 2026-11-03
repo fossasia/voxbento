@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 import unicodedata
 
 # Whisper invents speech from silence, breath and room noise. The decoder-level
@@ -14,6 +13,19 @@ import unicodedata
 # dropped to keep garbage out; raise this if a deployment interprets German or
 # Finnish and loses real words to it.
 MAX_WORD_LENGTH = 40
+
+# Scripts written without spaces between words. A whole sentence in one of these
+# is a single whitespace-delimited token, so the length cap would reject ordinary
+# speech; tokens containing them are exempt from it.
+_UNSPACED_RANGES = (
+    (0x0E00, 0x0EFF),  # Thai, Lao
+    (0x0F00, 0x0FFF),  # Tibetan
+    (0x1000, 0x109F),  # Myanmar
+    (0x1780, 0x17FF),  # Khmer
+    (0x2E80, 0x9FFF),  # CJK radicals, kana, CJK unified ideographs
+    (0xF900, 0xFAFF),  # CJK compatibility ideographs
+    (0x20000, 0x323AF),  # CJK extensions B and later
+)
 
 # Phrases Whisper emits over near-silence, mostly learned from subtitle training
 # data. Compared after case folding and stripping punctuation, and only when
@@ -52,16 +64,26 @@ _HALLUCINATION_PHRASES = frozenset(
 # Two occurrences are enough: real speech rarely finalises as one word twice.
 _MIN_REPEATS = 2
 
-# Letters and digits, dropping punctuation and underscores. Digits are kept so
-# that distinct tokens stay distinct: stripping them would collapse "room 1
-# room 2" into one repeated word.
-_WORD_RE = re.compile(r"[^\W_]+", re.UNICODE)
+
+def _is_unspaced(ch: str) -> bool:
+    cp = ord(ch)
+    return any(low <= cp <= high for low, high in _UNSPACED_RANGES)
+
+
+def _keeps_meaning(ch: str) -> bool:
+    """Whether a character carries word content rather than punctuation.
+
+    Combining marks are kept: stripping them mangles Devanagari, Thai and Arabic
+    into fragments and can collapse distinct words into one repeated token.
+    """
+    return ch.isalnum() or unicodedata.category(ch)[0] == "M"
 
 
 def _normalise(text: str) -> str:
     """Case-fold and drop punctuation so phrase matching ignores styling."""
     folded = unicodedata.normalize("NFKC", text).casefold()
-    return " ".join(_WORD_RE.findall(folded))
+    kept = "".join(ch if _keeps_meaning(ch) else " " for ch in folded)
+    return " ".join(kept.split())
 
 
 def _is_repeated_single_word(words: list[str]) -> bool:
@@ -78,22 +100,44 @@ def has_no_printable_content(text: str) -> bool:
 
 
 def has_overlong_word(text: str) -> bool:
-    return any(len(word) > MAX_WORD_LENGTH for word in text.split())
+    return any(
+        len(word) > MAX_WORD_LENGTH and not any(_is_unspaced(ch) for ch in word)
+        for word in text.split()
+    )
 
 
-def is_hallucination(text: str) -> bool:
-    """Whether a finalised transcript looks invented rather than spoken."""
+def hallucination_reason(text: str, *, complete_turn: bool = True) -> str | None:
+    """Why a finalised transcript looks invented, or None if it looks spoken.
+
+    The reason names a category only. It is safe to log, unlike the transcript,
+    which may carry what someone said in a private session.
+
+    ``complete_turn`` is False for a recogniser result that finalises part of a
+    longer turn, as Deepgram's ``is_final`` does before ``speech_final``. Such a
+    fragment can legitimately be one short word, so only the structural checks
+    apply to it.
+    """
     stripped = text.strip()
     if not stripped:
-        return True
+        return "empty"
     if has_no_printable_content(stripped):
-        return True
+        return "no printable content"
     if has_overlong_word(stripped):
-        return True
+        return "overlong word"
+
+    if not complete_turn:
+        return None
 
     normalised = _normalise(stripped)
     if not normalised:
-        return True
+        return "no printable content"
     if normalised in _HALLUCINATION_PHRASES:
-        return True
-    return _is_repeated_single_word(normalised.split())
+        return "subtitle phrase"
+    if _is_repeated_single_word(normalised.split()):
+        return "repeated word"
+    return None
+
+
+def is_hallucination(text: str, *, complete_turn: bool = True) -> bool:
+    """Whether a finalised transcript looks invented rather than spoken."""
+    return hallucination_reason(text, complete_turn=complete_turn) is not None
