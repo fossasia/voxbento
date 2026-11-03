@@ -160,9 +160,30 @@ Cancels the asyncio Task and awaits it; removes from state dicts.
 | Method | Input | Behavior |
 |---|---|---|
 | `handle_partial(booth_id, text)` | streaming partial | Broadcasts `{type:"caption", status:"partial", text}`. Force-finalizes if ≥50 words or ≥15 seconds in same utterance |
-| `handle_final(booth_id, text)` | completed utterance | Broadcasts `{type:"caption", status:"final", text}`; resets state |
+| `handle_final(booth_id, text)` | completed utterance | Drops the text if `is_hallucination()`; otherwise broadcasts `{type:"caption", status:"final", text}`; resets state |
 | `handle_chunk(booth_id, text)` | Whisper text chunk | Appends to buffer; splits on sentence boundary (`[.?!]+`); broadcasts `final` for each sentence, `partial` for remainder |
 | `handle_clear(booth_id)` | silence/endpoint | Broadcasts `{type:"caption", status:"clear"}` |
+
+---
+
+## Transcript Validation (`portal/transcript_processing.py`)
+
+`handle_final` is the one funnel where text reaches listeners, the stored
+transcript, the translation LLM and TTS, so `is_hallucination(text)` is checked
+there. A rejected utterance broadcasts `clear`, resets the utterance state and
+consumes no caption sequence number, so listeners see no gap.
+
+Rejected: empty or punctuation-only text, any word longer than
+`MAX_WORD_LENGTH` (40), a single token repeated with nothing else
+("Click click click"), and known subtitle-training phrases
+("Thanks for watching", "[Music]", bare fillers like "uh"). A phrase is only
+rejected when it is the whole utterance, so the same words inside real speech
+survive. Comparison case-folds and strips punctuation but keeps digits, so
+"room 1 room 2" is not read as one repeated word.
+
+This is the text-level pass. The decoder-level guards
+(`compression_ratio_threshold`, `no_speech_threshold`, `log_prob_threshold`,
+`vad_filter`) stay in `providers/local.py`.
 
 ---
 
