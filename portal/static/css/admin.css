@@ -1258,6 +1258,18 @@ code { font-family: var(--font-mono); font-size: 0.85em; background: var(--color
 .program-relay-risk p { color: #991b1b; }
 .program-relay-risk .program-ingest-warning-icon { background: var(--color-danger); }
 .program-setup-step + .program-setup-step { margin-top: 22px; padding-top: 18px; border-top: 1px dashed var(--color-border); }
+.youtube-source-body { padding: 6px 26px 26px; }
+.youtube-source-body .program-setup-step ~ .program-setup-step { margin-top: 22px; padding-top: 18px; border-top: 1px dashed var(--color-border); }
+.youtube-source-body .program-ingest-warning { margin: 0; }
+.youtube-source-skip { color: var(--color-text-secondary); font-size: 0.8rem; }
+.youtube-route-picker { display: grid; gap: 10px; margin: 0; padding: 0; border: 0; }
+.youtube-route-panel { margin-top: 14px; }
+.youtube-route-box { display: grid; gap: 10px; justify-items: start; padding: 16px 18px; border: 1px solid var(--color-border); border-radius: 10px; background: var(--color-surface-2); font-size: 0.84rem; }
+.youtube-route-box h4 { margin: 0; font-size: 0.95rem; }
+.youtube-route-box p { margin: 0; color: var(--color-text-secondary); }
+.youtube-route-box > div,
+.youtube-route-box .program-copy-field { width: 100%; }
+.youtube-listener-link label { display: block; margin-bottom: 6px; color: var(--color-text-secondary); font-size: 0.75rem; font-weight: 650; }
 .program-step[data-status='todo'] { background: var(--color-surface-2); color: var(--color-muted); box-shadow: inset 0 0 0 1px var(--color-border-strong); }
 .program-step[data-status='done'] { background: var(--color-success); font-size: 0; }
 .program-step[data-status='done']::after { content: '✓'; font-size: 0.8rem; }
@@ -1303,6 +1315,7 @@ code { font-family: var(--font-mono); font-size: 0.85em; background: var(--color
   .program-ingest-warning,
   .program-mode-picker { margin-inline: 20px; }
   .program-ingest-layout { padding: 20px; }
+  .youtube-source-body { padding: 4px 20px 20px; }
   .program-copy-field { flex-wrap: wrap; }
   .program-copy-field .btn { flex: 1; }
   .program-primary-action { align-items: stretch; flex-direction: column; }

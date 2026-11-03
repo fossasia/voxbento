@@ -9,6 +9,7 @@
     </div>
   </div>
 
+  <div class="youtube-source-body">
   <div class="program-setup-step">
     <div class="program-section-head">
       <span class="program-step">1</span>
@@ -19,9 +20,10 @@
     </div>
     {% if settings is defined and settings.youtube_connect_enabled is defined and settings.youtube_connect_enabled %}
     {% include 'admin/_youtube_connect.html' %}
-    <p class="card youtube-source-skip">Not your channel or can't sign in? <a href="#youtube-step-route" data-youtube-skip-broadcast>Skip to step 2</a></p>
+    <p class="youtube-source-skip">Not your channel or can't sign in? <a href="#youtube-step-route" data-youtube-skip-broadcast>Skip to step 2</a></p>
     {% else %}
-    <div class="card youtube-source-fallback">
+    <div class="program-ingest-warning youtube-source-fallback" role="note">
+      <span class="program-ingest-warning-icon" aria-hidden="true">!</span>
       <p>YouTube sign-in is not configured by the server operator. You can still set up audio below — you will paste the stream key or share a browser tab yourself.</p>
     </div>
     {% endif %}
@@ -61,7 +63,7 @@
   </div>
 
   <div class="youtube-route-panel" data-youtube-route="encoder" hidden>
-    <div class="card">
+    <div class="youtube-route-box">
       <h4>Set up forwarding</h4>
       <p>VoxBento receives your encoder stream and forwards it to YouTube unchanged. You keep one output, one upload.</p>
       <button type="button" class="btn btn-primary" id="youtube-setup-forwarding">Set up forwarding</button>
@@ -70,7 +72,7 @@
   </div>
 
   <div class="youtube-route-panel" data-youtube-route="multi" hidden>
-    <div class="card">
+    <div class="youtube-route-box">
       <h4>Add VoxBento as an extra destination</h4>
       <p>In your streaming platform, add a <strong>Custom RTMP</strong> destination with the server URL and stream key shown below after you enable ingest.</p>
       <button type="button" class="btn btn-primary" id="youtube-setup-multi">Enable ingest</button>
@@ -98,7 +100,7 @@
   </div>
 
   <div class="youtube-route-panel" data-youtube-route="none" hidden>
-    <div class="card">
+    <div class="youtube-route-box">
       <h4>Share the stream's browser tab</h4>
       <p>Open the YouTube stream in a browser tab, then open the sender page below and share that tab's audio.</p>
       <a class="btn btn-primary" id="youtube-tab-sender" href="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/sender/?source=tab" target="_blank" rel="noopener">Open sender (tab audio)</a>
@@ -126,6 +128,7 @@
         <button type="button" class="btn btn-outline" data-copy-target="youtube-listener-url">Copy link</button>
       </div>
     </div>
+  </div>
   </div>
 </section>
 <script type="module" src="/static/js/youtube-source.js"></script>
