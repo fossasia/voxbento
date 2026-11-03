@@ -930,19 +930,26 @@ async def test_room_page_renders_youtube_audio_panel(admin_cookie, event_room):
         ({"meeting_agent_enabled": True}, room_setup.AUDIO_MEETING),
         ({"floor_source": "program_ingest", "program_key_hash": "k"}, room_setup.AUDIO_ENCODER),
         ({"floor_source": "program_ingest", "program_session_secret_hash": "s"}, room_setup.AUDIO_DESK),
-        # YouTube broadcast linked and floor_source is program_ingest → youtube wins.
-        ({"youtube_broadcast_id": "b1", "floor_source": "program_ingest", "program_key_hash": "k"}, room_setup.AUDIO_YOUTUBE),
-        # YouTube broadcast linked and floor_source is unset → youtube.
-        ({"youtube_broadcast_id": "b1", "floor_source": ""}, room_setup.AUDIO_YOUTUBE),
-        ({"youtube_broadcast_id": "b1", "floor_source": None}, room_setup.AUDIO_YOUTUBE),
-        # No broadcast → falls through to normal logic.
-        ({"youtube_broadcast_id": None, "floor_source": "program_ingest", "program_key_hash": "k"}, room_setup.AUDIO_ENCODER),
-        # YouTube broadcast linked but floor_source is something else (e.g. jitsi_bot) → not youtube.
-        ({"youtube_broadcast_id": "b1", "floor_source": "jitsi_bot"}, ""),
+        (
+            {"floor_source": "program_ingest", "program_ingest_mode": "rtmps_relay", "program_key_hash": "k"},
+            room_setup.AUDIO_YOUTUBE,
+        ),
+        (
+            {"floor_source": "program_ingest", "program_ingest_mode": "whip", "program_key_hash": "k"},
+            room_setup.AUDIO_ENCODER,
+        ),
+        # A relay mode left behind after switching back to the meeting must not reopen YouTube.
+        ({"floor_source": "jitsi_bot", "program_ingest_mode": "rtmps_relay"}, ""),
     ],
 )
 def test_room_audio_tab_opens_on_the_source_in_use(fields, choice):
-    room = Room(event_id=1, display_name="Hall", floor_source="jitsi_bot", meeting_agent_enabled=False)
+    room = Room(
+        event_id=1,
+        display_name="Hall",
+        floor_source="jitsi_bot",
+        program_ingest_mode="whip",
+        meeting_agent_enabled=False,
+    )
     for key, value in fields.items():
         setattr(room, key, value)
     assert room_setup.room_audio_choice(room) == choice
