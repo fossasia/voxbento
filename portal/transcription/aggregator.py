@@ -11,7 +11,7 @@ from portal import youtube_captions
 from portal.database import get_session
 from portal.models import Room
 from portal.tasks import track_task
-from portal.transcript_processing import is_hallucination
+from portal.transcript_processing import hallucination_reason
 from portal.transcription.timing import SegmentTiming, segment_timing, timing_metadata
 
 logger = logging.getLogger(__name__)
@@ -130,11 +130,7 @@ class CaptionAggregator:
             # ensuring the frontend's partial box is cleared out.
             await self.broadcast_callback(booth_id, {"type": "caption", "status": "clear", "text": ""})
 
-    async def handle_final(self, booth_id: str, text: str):
-        """
-        Finalizes an utterance, triggers database save, and initiates translation.
-        Called automatically on punctuation split, timeout, or explicit clear.
-        """
+    async def handle_final(self, booth_id: str, text: str, complete_turn: bool = True):
         state = self._get_state(booth_id)
         final_text = text.strip() or state.current_utterance
 
@@ -143,8 +139,11 @@ class CaptionAggregator:
 
         # Dropped before it reaches listeners, the stored transcript, the
         # translation LLM and TTS, so an invented phrase costs none of them.
-        if is_hallucination(final_text):
-            logger.info(f"[{booth_id}] Discarded hallucinated transcript: {final_text[:80]!r}")
+        # Only the reason is logged: the text may be private speech, and the
+        # classifier can be wrong about it.
+        reason = hallucination_reason(final_text, complete_turn=complete_turn)
+        if reason is not None:
+            logger.info("[%s] Discarded transcript (%s, %d chars)", booth_id, reason, len(final_text))
             state.current_utterance = ""
             state.utterance_start_time = 0.0
             state.current_word_count = 0
