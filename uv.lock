@@ -1231,11 +1231,11 @@ wheels = [
 
 [[package]]
 name = "unilimit"
-version = "0.1.0"
+version = "0.1.1"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/ce/56/38601a2eaea37cef4c3a182612a40f56f3861927d0657bfd007ffb2ae45d/unilimit-0.1.0.tar.gz", hash = "sha256:c780e4a36fc1b91540666c0b45f0dd43044afeacc40831688ca7a816960f3c19", size = 232557, upload-time = "2026-10-30T19:49:54.239Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/98/80/12ecefa51989f4d2b8503d4bcebee711cca675df3ffba9e75a2a14e86e8e/unilimit-0.1.1.tar.gz", hash = "sha256:1b7b2af301b4988e3fdf61e50b02a7527599974c2db691b5b535fae5c06fe724", size = 241462, upload-time = "2026-10-30T20:31:00.426Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/ad/a5/e502c47606315c77357b205b1c5ef49e3bf11367c1f94a4ef2f1eda2aa00/unilimit-0.1.0-py3-none-any.whl", hash = "sha256:d4ebdf9b83a7e3b011cf7bb9978658be780c574928ea5f7eae978a9d705f36ab", size = 109095, upload-time = "2026-10-30T19:49:52.294Z" },
+    { url = "https://files.pythonhosted.org/packages/1e/dc/f638f9916e679e9c70ceac0b1b2ac378f1fed36d30db501e2a9eb62c95e3/unilimit-0.1.1-py3-none-any.whl", hash = "sha256:e2e6b040531275195a71000c7cabf154e88ae83c57351334a3f8af11a8273965", size = 113166, upload-time = "2026-10-30T20:30:58.717Z" },
 ]
 
 [[package]]
