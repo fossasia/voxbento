@@ -97,6 +97,29 @@ async def setup_oauth_clients(setup_db):
     }
 
 
+def _allow_form(client, event_id, challenge="challenge", user_id=None, event_binding=None, scope=None):
+    """The consent form a browser posts, with the server-issued event binding (#925).
+
+    ``event_binding`` overrides the correct MAC so a test can replay a tampered form.
+    """
+    from portal.routers.oauth import _event_binding_mac
+
+    if event_binding is None and user_id is not None:
+        event_binding = _event_binding_mac(event_id, client.client_id, str(user_id))
+    return {
+        "client_id": client.client_id,
+        "redirect_uri": "http://localhost/callback",
+        "response_type": "code",
+        "code_challenge": challenge,
+        "code_challenge_method": "S256",
+        "state": "state123",
+        "event_id": str(event_id),
+        "event_binding": event_binding or "",
+        "scope": scope if scope is not None else "events:write events:read",
+        "action": "allow",
+    }
+
+
 class TestOAuthMultiOrganizer:
     @pytest.mark.anyio
     async def test_oauth_confidential_client_authorized_organizer(self, setup_oauth_clients):
@@ -113,17 +136,7 @@ class TestOAuthMultiOrganizer:
         async with _client() as c:
             response = await c.post(
                 "/oauth/authorize",
-                data={
-                    "client_id": client.client_id,
-                    "redirect_uri": "http://localhost/callback",
-                    "response_type": "code",
-                    "code_challenge": "challenge",
-                    "code_challenge_method": "S256",
-                    "state": "state123",
-                    "event_id": str(event.id),
-                    "scope": "events:write events:read",
-                    "action": "allow",
-                },
+                data=_allow_form(client, event.id, user_id=setup_oauth_clients["user"].id),
                 cookies={"user_token": user_token},
             )
 
@@ -145,17 +158,7 @@ class TestOAuthMultiOrganizer:
         async with _client() as c:
             response = await c.post(
                 "/oauth/authorize",
-                data={
-                    "client_id": client.client_id,
-                    "redirect_uri": "http://localhost/callback",
-                    "response_type": "code",
-                    "code_challenge": "challenge",
-                    "code_challenge_method": "S256",
-                    "state": "state123",
-                    "event_id": str(event.id),
-                    "scope": "events:write events:read",
-                    "action": "allow",
-                },
+                data=_allow_form(client, event.id, user_id=setup_oauth_clients["unrelated_user"].id),
                 cookies={"user_token": user_token},
             )
 
@@ -178,17 +181,7 @@ class TestOAuthMultiOrganizer:
         async with _client() as c:
             response = await c.post(
                 "/oauth/authorize",
-                data={
-                    "client_id": client.client_id,
-                    "redirect_uri": "http://localhost/callback",
-                    "response_type": "code",
-                    "code_challenge": "challenge",
-                    "code_challenge_method": "S256",
-                    "state": "state123",
-                    "event_id": str(event.id),
-                    "scope": "events:write events:read",
-                    "action": "allow",
-                },
+                data=_allow_form(client, event.id, user_id=setup_oauth_clients["user"].id),
                 cookies={"user_token": user_token},
             )
 
@@ -210,17 +203,7 @@ class TestOAuthMultiOrganizer:
         async with _client() as c:
             response = await c.post(
                 "/oauth/authorize",
-                data={
-                    "client_id": client.client_id,
-                    "redirect_uri": "http://localhost/callback",
-                    "response_type": "code",
-                    "code_challenge": "challenge",
-                    "code_challenge_method": "S256",
-                    "state": "state123",
-                    "event_id": str(event.id),
-                    "scope": "events:write events:read",
-                    "action": "allow",
-                },
+                data=_allow_form(client, event.id, user_id=setup_oauth_clients["unrelated_user"].id),
                 cookies={"user_token": user_token},
             )
 
@@ -242,17 +225,9 @@ class TestOAuthMultiOrganizer:
         async with _client() as c:
             response = await c.post(
                 "/oauth/authorize",
-                data={
-                    "client_id": client.client_id,
-                    "redirect_uri": "http://localhost/callback",
-                    "response_type": "code",
-                    "code_challenge": "challenge",
-                    "code_challenge_method": "S256",
-                    "state": "state123",
-                    "event_id": str(event.id),
-                    "scope": "rooms:read",
-                    "action": "allow",
-                },
+                data=_allow_form(
+                    client, event.id, user_id=setup_oauth_clients["user"].id, scope="rooms:read"
+                ),
                 cookies={"user_token": user_token},
             )
 
@@ -394,6 +369,7 @@ class TestOAuthMultiOrganizer:
             "client_id": client.client_id,
             "client_secret": "test_secret",
             "code_verifier": verifier,
+            "event": event.slug,
         }
 
         async with _client() as c:
@@ -495,20 +471,6 @@ class TestOAuthMultiOrganizer:
 # ── Clicking Allow gives no role; the token exchange does (fix for #740) ──
 
 
-def _allow_form(client, event_id, challenge="challenge"):
-    return {
-        "client_id": client.client_id,
-        "redirect_uri": "http://localhost/callback",
-        "response_type": "code",
-        "code_challenge": challenge,
-        "code_challenge_method": "S256",
-        "state": "state123",
-        "event_id": str(event_id),
-        "scope": "events:write events:read",
-        "action": "allow",
-    }
-
-
 async def _role(user_id, event_id):
     from sqlalchemy import select
 
@@ -532,7 +494,11 @@ async def test_allow_alone_does_not_make_anyone_event_owner(setup_oauth_clients,
     cookies = {"user_token": create_user_token(user_id=stranger.id, email=stranger.email)}
     async with _client() as c:
         for key in ("confidential_client", "public_client"):
-            await c.post("/oauth/authorize", data=_allow_form(setup_oauth_clients[key], event.id), cookies=cookies)
+            await c.post(
+                "/oauth/authorize",
+                data=_allow_form(setup_oauth_clients[key], event.id, user_id=stranger.id),
+                cookies=cookies,
+            )
     assert await _role(stranger.id, event.id) is None
 
 
@@ -548,7 +514,9 @@ async def test_allow_alone_does_not_upgrade_an_existing_role(setup_oauth_clients
     cookies = {"user_token": create_user_token(user_id=stranger.id, email=stranger.email)}
     async with _client() as c:
         res = await c.post(
-            "/oauth/authorize", data=_allow_form(setup_oauth_clients["confidential_client"], event.id), cookies=cookies
+            "/oauth/authorize",
+            data=_allow_form(setup_oauth_clients["confidential_client"], event.id, user_id=stranger.id),
+            cookies=cookies,
         )
     assert res.status_code == 303
     assert await _role(stranger.id, event.id) == "interpreter"
@@ -570,7 +538,11 @@ async def test_token_exchange_with_the_client_secret_makes_the_organizer_owner(s
     challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip("=")
     cookies = {"user_token": create_user_token(user_id=organizer.id, email=organizer.email)}
     async with _client() as c:
-        allow = await c.post("/oauth/authorize", data=_allow_form(client, event.id, challenge), cookies=cookies)
+        allow = await c.post(
+            "/oauth/authorize",
+            data=_allow_form(client, event.id, challenge, user_id=organizer.id),
+            cookies=cookies,
+        )
         code = urllib.parse.parse_qs(urllib.parse.urlparse(allow.headers["location"]).query)["code"][0]
         assert await _role(organizer.id, event.id) is None
 
@@ -580,6 +552,7 @@ async def test_token_exchange_with_the_client_secret_makes_the_organizer_owner(s
             "redirect_uri": "http://localhost/callback",
             "client_id": client.client_id,
             "code_verifier": verifier,
+            "event": event.slug,
         }
         wrong_secret = await c.post("/oauth/token", data={**token_data, "client_secret": "wrong"})
         assert wrong_secret.status_code == 401
@@ -603,7 +576,9 @@ async def _code_for(c, client, user, event_id):
     verifier = "event-binding-verifier-event-binding-0123"
     challenge = base64.urlsafe_b64encode(hashlib.sha256(verifier.encode()).digest()).decode().rstrip("=")
     cookies = {"user_token": create_user_token(user_id=user.id, email=user.email)}
-    allow = await c.post("/oauth/authorize", data=_allow_form(client, event_id, challenge), cookies=cookies)
+    allow = await c.post(
+        "/oauth/authorize", data=_allow_form(client, event_id, challenge, user_id=user.id), cookies=cookies
+    )
     code = urllib.parse.parse_qs(urllib.parse.urlparse(allow.headers["location"]).query)["code"][0]
     return {
         "grant_type": "authorization_code",
@@ -655,13 +630,137 @@ async def test_token_exchange_with_the_matching_event_returns_it(setup_oauth_cli
 
 
 @pytest.mark.anyio
-async def test_token_exchange_without_event_still_returns_the_code_event(setup_oauth_clients):
-    """Clients that do not send ``event`` yet keep working and can check the returned slug."""
+async def test_confidential_token_exchange_without_event_is_refused(setup_oauth_clients):
+    """A confidential client must name the event it started the flow for.
+
+    Leaving ``event`` out was the remaining way to reach the hidden-field swap: the
+    server had nothing to compare the code's event against, so it granted ownership.
+    """
     organizer = setup_oauth_clients["unrelated_user"]
     event = setup_oauth_clients["ownerless_event"]
     client = setup_oauth_clients["confidential_client"]
     async with _client() as c:
         token_data = await _code_for(c, client, organizer, event.id)
         res = await c.post("/oauth/token", data=token_data)
+    assert res.status_code == 400
+    assert res.json()["error"] == "invalid_request"
+    assert await _role(organizer.id, event.id) is None
+
+
+@pytest.mark.anyio
+async def test_public_token_exchange_without_event_still_works(setup_oauth_clients):
+    """Public clients grant no ownership, so they keep working without ``event``."""
+    owner = setup_oauth_clients["user"]
+    event = setup_oauth_clients["event"]
+    client = setup_oauth_clients["public_client"]
+    async with _client() as c:
+        token_data = await _code_for(c, client, owner, event.id)
+        token_data.pop("client_secret")
+        res = await c.post("/oauth/token", data=token_data)
     assert res.status_code == 200
     assert res.json()["event"] == event.slug
+
+
+# ── The consent form's event cannot be swapped in the browser (#925) ──
+
+
+@pytest.mark.anyio
+async def test_consent_rejects_a_swapped_event_id(setup_oauth_clients):
+    """Replaying the victim's event_id with the MAC issued for the attacker's event fails."""
+    from portal.auth import create_user_token
+    from portal.routers.oauth import _event_binding_mac
+
+    attacker = setup_oauth_clients["unrelated_user"]
+    own_event = setup_oauth_clients["event"]
+    victim_event = setup_oauth_clients["ownerless_event"]
+    client = setup_oauth_clients["confidential_client"]
+    cookies = {"user_token": create_user_token(user_id=attacker.id, email=attacker.email)}
+
+    # The MAC the server issued for the attacker's own event, replayed against the victim's.
+    stale_mac = _event_binding_mac(own_event.id, client.client_id, str(attacker.id))
+    async with _client() as c:
+        res = await c.post(
+            "/oauth/authorize",
+            data=_allow_form(client, victim_event.id, event_binding=stale_mac),
+            cookies=cookies,
+        )
+    assert res.status_code == 400
+    assert await _role(attacker.id, victim_event.id) is None
+
+
+@pytest.mark.anyio
+async def test_consent_rejects_a_missing_event_binding(setup_oauth_clients):
+    from portal.auth import create_user_token
+
+    attacker = setup_oauth_clients["unrelated_user"]
+    victim_event = setup_oauth_clients["ownerless_event"]
+    client = setup_oauth_clients["confidential_client"]
+    cookies = {"user_token": create_user_token(user_id=attacker.id, email=attacker.email)}
+    async with _client() as c:
+        res = await c.post(
+            "/oauth/authorize", data=_allow_form(client, victim_event.id), cookies=cookies
+        )
+    assert res.status_code == 400
+    assert await _role(attacker.id, victim_event.id) is None
+
+
+@pytest.mark.anyio
+async def test_consent_binding_is_not_transferable_between_users(setup_oauth_clients):
+    """A MAC minted for one signed-in user does not authorise another user's consent."""
+    from portal.auth import create_user_token
+    from portal.routers.oauth import _event_binding_mac
+
+    owner = setup_oauth_clients["user"]
+    attacker = setup_oauth_clients["unrelated_user"]
+    event = setup_oauth_clients["ownerless_event"]
+    client = setup_oauth_clients["confidential_client"]
+
+    owners_mac = _event_binding_mac(event.id, client.client_id, str(owner.id))
+    cookies = {"user_token": create_user_token(user_id=attacker.id, email=attacker.email)}
+    async with _client() as c:
+        res = await c.post(
+            "/oauth/authorize",
+            data=_allow_form(client, event.id, event_binding=owners_mac),
+            cookies=cookies,
+        )
+    assert res.status_code == 400
+    assert await _role(attacker.id, event.id) is None
+
+
+@pytest.mark.anyio
+async def test_consent_page_issues_a_binding_the_post_accepts(setup_oauth_clients):
+    """End to end: the MAC rendered into the real consent page is the one POST accepts."""
+    import re
+
+    from portal.auth import create_user_token
+
+    owner = setup_oauth_clients["user"]
+    event = setup_oauth_clients["event"]
+    client = setup_oauth_clients["confidential_client"]
+    cookies = {"user_token": create_user_token(user_id=owner.id, email=owner.email)}
+
+    async with _client() as c:
+        page = await c.get(
+            "/oauth/authorize",
+            params={
+                "client_id": client.client_id,
+                "redirect_uri": "http://localhost/callback",
+                "response_type": "code",
+                "code_challenge": "challenge",
+                "code_challenge_method": "S256",
+                "state": "state123",
+                "event": event.slug,
+                "scope": "events:write events:read",
+            },
+            cookies=cookies,
+        )
+        assert page.status_code == 200
+        match = re.search(r'name="event_binding" value="([0-9a-f]{64})"', page.text)
+        assert match, "consent page must render an event_binding"
+
+        res = await c.post(
+            "/oauth/authorize",
+            data=_allow_form(client, event.id, event_binding=match.group(1)),
+            cookies=cookies,
+        )
+    assert res.status_code == 303
