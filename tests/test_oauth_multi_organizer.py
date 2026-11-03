@@ -862,6 +862,35 @@ async def test_consent_binding_is_not_transferable_between_users(setup_oauth_cli
 
 
 @pytest.mark.anyio
+async def test_authorize_get_redirects_an_unauthenticated_visitor_to_login(setup_oauth_clients):
+    """No cookie must reach the binding, which dereferences user["sub"].
+
+    ``authorize_get`` returns early when ``user`` is None, so the signed-out
+    case is a redirect rather than a crash.
+    """
+    event = setup_oauth_clients["event"]
+    client = setup_oauth_clients["confidential_client"]
+
+    async with _client() as c:
+        res = await c.get(
+            "/oauth/authorize",
+            params={
+                "client_id": client.client_id,
+                "redirect_uri": "http://localhost/callback",
+                "response_type": "code",
+                "code_challenge": "challenge",
+                "code_challenge_method": "S256",
+                "state": "state123",
+                "event": event.slug,
+                "scope": "events:write events:read",
+            },
+        )
+
+    assert res.status_code == 303
+    assert res.headers["location"].startswith("/login?next=")
+
+
+@pytest.mark.anyio
 async def test_consent_page_issues_a_binding_the_post_accepts(setup_oauth_clients):
     """End to end: the MAC rendered into the real consent page is the one POST accepts."""
     from portal.auth import create_user_token
