@@ -87,6 +87,7 @@ var audioEl = document.getElementById("audio-player");
 var statusEl = document.getElementById("status");
 var captionsBox = document.getElementById("live-captions");
 var captionsWs = null;
+var boothStateVersions = new Map();
 
 var ttsWs = null;
 var audioCtx = null;
@@ -370,6 +371,9 @@ function openCaptionsWs(boothId) {
   captionsWs = new WebSocket(
     wsProto + "//" + window.location.host + "/ws/captions/" + boothId,
   );
+  captionsWs.onopen = function () {
+    captionsWs.send(JSON.stringify({ type: "booth:sync" }));
+  };
   captionsWs.onmessage = handleCaptionsMessage;
 }
 
@@ -654,6 +658,20 @@ function handleCaptionsMessage(event) {
 
     if (data.type === "booth:state") {
       var bstate = data.state || {};
+      if (Number.isInteger(bstate.state_version) && bstate.booth_id) {
+        var knownVersion = boothStateVersions.get(bstate.booth_id);
+        if (
+          knownVersion &&
+          knownVersion.epoch === bstate.state_epoch &&
+          bstate.state_version < knownVersion.version
+        ) {
+          return;
+        }
+        boothStateVersions.set(bstate.booth_id, {
+          epoch: bstate.state_epoch,
+          version: bstate.state_version,
+        });
+      }
       // If we were waiting for the broadcast to go live, start WHEP or TTS now.
       if (bstate.ingest_status === "connected") {
         if (pendingWhepUrl) {

@@ -45,6 +45,8 @@ Floor Audio Bot (floor-bot)
   └──► ffmpeg → RTSP → MediaMTX → Transcription/Translation
 ```
 
+Booth WebSocket messages are decoded and dispatched by the WebSocket handlers. Booth operations are coordinated by `portal/booth_coordinator.py`, which calls the state and permission logic in `BoothRegistry` and attempts the corresponding WebSocket notification. Booth-state snapshots carry a registry epoch and increasing version. Clients ignore older snapshots, and booth and caption sockets request the latest snapshot after connecting. This converges clients on current state after reconnects; it does not replay every intermediate state or persist messages while a client is offline. `portal/websockets/manager.py` tracks connections and fans messages out to connected clients.
+
 
 ---
 

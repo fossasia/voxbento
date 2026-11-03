@@ -88,6 +88,7 @@ function connectWs(boothId) {
   entry.ws = ws;
 
   ws.onopen = () => {
+    ws.send(JSON.stringify({ type: 'booth:sync' }));
     renderCard(boothId);
   };
 
@@ -96,7 +97,17 @@ function connectWs(boothId) {
     try { data = JSON.parse(e.data); } catch { return; }
 
     if (data.type === 'booth:state') {
-      entry.state = data.state;
+      const current = entry.state;
+      const incoming = data.state;
+      if (
+        Number.isInteger(incoming.state_version) &&
+        current.state_epoch === incoming.state_epoch &&
+        Number.isInteger(current.state_version) &&
+        incoming.state_version < current.state_version
+      ) {
+        return;
+      }
+      entry.state = incoming;
       renderCard(boothId);
     }
     // Silently ignore booth:joined — we do not join as a participant.

@@ -29,6 +29,7 @@ from portal.auth import (
     require_super_admin,
     require_user,
 )
+from portal.booth_coordinator import booth_coordinator
 from portal.booth_identity import make_booth_id, make_mediamtx_path, validate_event_slug, validate_language_code
 from portal.config import settings
 from portal.crypto import encrypt_val
@@ -93,7 +94,6 @@ from portal.transcription import ALLOWED_MODELS, ProviderConfig, ProviderEnum, g
 from portal.transcription.worker import start_transcription_worker, stop_transcription_worker
 from portal.translations.constants import TRANSLATION_MODELS, TranslationProviderEnum
 from portal.utils import _check_mediamtx, _make_jitsi_url, safe_redirect
-from portal.websockets.manager import broadcast_transcription
 from portal.workspace_routing import management_template_context, management_url
 
 _BASE_DIR = Path(__file__).resolve().parent.parent
@@ -1512,14 +1512,14 @@ async def admin_transcription_settings(
         if is_live:
             if not transcription_enabled:
                 await stop_transcription_worker(bid)
-                await broadcast_transcription(bid, "")
+                await booth_coordinator.broadcast_transcription(bid, "")
             elif (
                 old_enabled != transcription_enabled
                 or old_provider != transcription_provider
                 or old_model != transcription_model
             ):
                 await stop_transcription_worker(bid)
-                await broadcast_transcription(bid, "")
+                await booth_coordinator.broadcast_transcription(bid, "")
                 api_key = get_api_key(event, ProviderEnum(transcription_provider))
                 config = ProviderConfig(api_key=api_key)
                 await asyncio.sleep(0.1)
@@ -1527,7 +1527,7 @@ async def admin_transcription_settings(
                     event.slug,
                     db_booth.language_code,
                     bid,
-                    broadcast_transcription,
+                    booth_coordinator.broadcast_transcription,
                     transcription_provider,
                     transcription_model,
                     config,

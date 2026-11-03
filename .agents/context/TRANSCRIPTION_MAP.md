@@ -48,7 +48,8 @@ Jitsi Meet Floor Conference
         ├───────────────────────────────────────────────────────┐
         ▼                                                       ▼
    Database (TranscriptSegment)                            broadcast_transcription()
-        │                                                  (WebSocket /ws/captions)
+        │                                                  (`portal/booth_coordinator.py`,
+        │                                                   WebSocket /ws/captions)
         ▼
    Translation Worker (translations/worker.py)
    Reads 'final' segments → _translate_and_broadcast()

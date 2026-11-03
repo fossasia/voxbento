@@ -111,8 +111,10 @@ Legacy organizer requests to allowlisted event-management paths under `/admin/`,
 | `portal/routers/api.py` | Booth state REST API, WHIP URL generation |
 | `portal/routers/admin.py` | Shared event-management handlers and system-admin routes |
 | `portal/workspace_routing.py` | `/workspace` handler mapping, legacy organizer redirects, and template URL context |
-| `portal/websockets/manager.py` | `ws_booth` and `ws_captions` endpoints |
-| `portal/websockets/handlers.py` | Specific `_handle_*` logic for WS messages |
+| `portal/websockets/handlers.py` | WebSocket endpoints and transport-level message dispatch |
+| `portal/websockets/booth_handlers.py` | Booth protocol message handling |
+| `portal/websockets/manager.py` | WebSocket connection tracking and broadcasts |
+| `portal/booth_coordinator.py` | Booth state operations paired with WebSocket notifications; transcription broadcasts |
 | `fastapi_app.py` | Application lifespan, router include aggregation |
 
 ## Program ingest routes (#690)

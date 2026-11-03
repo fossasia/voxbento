@@ -39,6 +39,50 @@ async def test_first_interpreter_becomes_active():
 
 
 @pytest.mark.anyio
+async def test_state_version_increases_for_each_successful_mutation():
+    registry = BoothRegistry()
+    booth_id = "versioned-event-1-en"
+    language = "English"
+    channel_id = f"{booth_id}-audio"
+    initial = await registry.snapshot(booth_id, language, channel_id)
+
+    participant_a, state = await registry.join_participant(
+        booth_id, "Interpreter A", "interpreter", language, channel_id
+    )
+    assert state["state_epoch"] == initial["state_epoch"]
+    assert state["state_version"] == initial["state_version"] + 1
+
+    participant_b, state = await registry.join_participant(
+        booth_id, "Interpreter B", "interpreter", language, channel_id
+    )
+    assert state["state_version"] == initial["state_version"] + 2
+
+    state = await registry.set_active_interpreter(
+        booth_id, participant_a.participant_id, participant_b.participant_id, language, channel_id
+    )
+    assert state["state_version"] == initial["state_version"] + 3
+
+    with pytest.raises(ValueError):
+        await registry.set_active_interpreter(booth_id, participant_a.participant_id, "missing", language, channel_id)
+
+    unchanged = await registry.get_booth(booth_id)
+    assert unchanged is not None
+    assert unchanged["state_version"] == state["state_version"]
+
+
+@pytest.mark.anyio
+async def test_state_version_increases_when_booth_is_recreated():
+    registry = BoothRegistry()
+    initial = await registry.create_booth("versioned-event", "en", "English", room_id=1)
+    await registry.remove_booth("versioned-event", 1, "en")
+
+    recreated = await registry.snapshot(initial["booth_id"], "English", "versioned-event/1/en")
+
+    assert recreated["state_epoch"] == initial["state_epoch"]
+    assert recreated["state_version"] > initial["state_version"]
+
+
+@pytest.mark.anyio
 async def test_active_interpreter_can_pass_relay_and_old_publisher_is_cleared():
     registry = BoothRegistry()
     interpreter_a = await join(registry, "Interpreter A")

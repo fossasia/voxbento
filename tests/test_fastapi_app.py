@@ -270,6 +270,49 @@ def test_ws_join_receives_joined_and_state():
     assert "state" in joined
 
 
+def test_ws_sync_returns_current_booth_state():
+    booth_id = "ws-sync-event-1-en"
+    with client.websocket_connect(f"/ws/booth/{booth_id}", cookies=_ws_auth()) as ws:
+        ws.send_text(
+            json.dumps(
+                {
+                    "type": "booth:join",
+                    "display_name": "Alice",
+                    "role": "interpreter",
+                    "language": "English",
+                    "channel_id": f"{booth_id}-audio",
+                }
+            )
+        )
+        joined_or_state = json.loads(ws.receive_text())
+        if joined_or_state["type"] == "booth:joined":
+            ws.receive_text()
+
+        with client.websocket_connect(f"/ws/booth/{booth_id}", cookies=_ws_auth()) as reconnected:
+            reconnected.send_text(json.dumps({"type": "booth:sync"}))
+            message = json.loads(reconnected.receive_text())
+        with client.websocket_connect(f"/ws/captions/{booth_id}", cookies=_ws_auth()) as captions:
+            captions.send_text(json.dumps({"type": "booth:sync"}))
+            caption_state = json.loads(captions.receive_text())
+
+    assert message["type"] == "booth:state"
+    assert message["state"]["booth_id"] == booth_id
+    assert message["state"]["state_version"] >= 2
+    assert len(message["state"]["participants"]) == 1
+    assert caption_state["type"] == "booth:state"
+    assert caption_state["state"]["state_version"] == message["state"]["state_version"]
+
+
+def test_ws_sync_requires_a_booth_role():
+    guest_cookie = {"user_token": create_user_token(user_id=999, email="guest@test.com", is_admin=False)}
+    with client.websocket_connect("/ws/booth/sync-role-event-1-en", cookies=guest_cookie) as ws:
+        ws.send_text(json.dumps({"type": "booth:sync"}))
+        message = json.loads(ws.receive_text())
+
+    assert message["type"] == "booth:error"
+    assert message["message"] == "No role assigned for this session."
+
+
 def test_ws_join_without_language_and_unconfigured_booth_returns_error():
     """If neither the client specifies a language nor the booth exists in DB, join must error."""
     with client.websocket_connect("/ws/booth/unknown-booth", cookies=_ws_auth()) as ws:

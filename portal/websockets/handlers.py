@@ -6,9 +6,8 @@ import logging
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from portal.auth import WSAuthError, resolve_booth_role, resolve_ws_auth
-from portal.globals import booths
-from portal.websockets.manager import (
-    Session,
+from portal.booth_coordinator import booth_coordinator
+from portal.websockets.booth_handlers import (
     _handle_accept_handoff,
     _handle_cancel_handoff,
     _handle_chat,
@@ -18,6 +17,9 @@ from portal.websockets.manager import (
     _handle_set_active,
     _handle_set_broadcast_unlocked,
     _handle_update_state,
+)
+from portal.websockets.manager import (
+    Session,
     listener_manager,
     manager,
     tts_manager,
@@ -66,7 +68,14 @@ async def ws_booth(websocket: WebSocket, booth_id: str) -> None:
                 continue
 
             msg_type = data.get("type", "")
-            if msg_type == "booth:join":
+            if msg_type == "booth:sync":
+                if session.granted_role is not None:
+                    await booth_coordinator.sync_state(websocket, session.booth_id)
+                else:
+                    await websocket.send_text(
+                        json.dumps({"type": "booth:error", "message": "No role assigned for this session."})
+                    )
+            elif msg_type == "booth:join":
                 await _handle_join(websocket, session, data)
             elif msg_type == "booth:leave":
                 await _handle_leave(session)
@@ -93,13 +102,7 @@ async def ws_booth(websocket: WebSocket, booth_id: str) -> None:
     finally:
         manager.remove(websocket)
         if session.participant_id:
-            state = await booths.leave_participant(
-                session.booth_id,
-                session.participant_id,
-                session.language,
-                session.channel_id,
-            )
-            await manager.broadcast(session.booth_id, {"type": "booth:state", "state": state})
+            await booth_coordinator.leave_participant(session)
 
 
 @router.websocket("/ws/captions/{booth_id}")
@@ -113,7 +116,13 @@ async def ws_captions(websocket: WebSocket, booth_id: str) -> None:
     listener_manager.add(websocket, booth_id)
     try:
         while True:
-            await websocket.receive_text()
+            raw = await websocket.receive_text()
+            try:
+                data = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(data, dict) and data.get("type") == "booth:sync":
+                await booth_coordinator.sync_state(websocket, booth_id)
     except WebSocketDisconnect:
         pass
     finally:

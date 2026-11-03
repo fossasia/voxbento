@@ -6,6 +6,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from portal.auth import create_embed_token, create_listener_token, security
+from portal.booth_coordinator import booth_coordinator
 from portal.booth_identity import make_booth_id, make_mediamtx_path
 from portal.config import settings
 from portal.database import (
@@ -24,7 +25,6 @@ from portal.schemas.booth import CreateBoothRequest
 from portal.transcription import ProviderConfig, ProviderEnum, get_api_key
 from portal.transcription.worker import start_transcription_worker, stop_transcription_worker
 from portal.utils import _check_mediamtx, _ensure_mediamtx_path, _require_access, _resolve_whip_url
-from portal.websockets.manager import broadcast_transcription
 
 router = APIRouter(prefix="/api")
 bearer_scheme = HTTPBearer(auto_error=False)
@@ -265,7 +265,7 @@ async def list_event_booths(
         # Fallback to checking API Key
         async with get_session() as session:
             key = None
-            if credentials and credentials.scheme.lower() == 'bearer':
+            if credentials and credentials.scheme.lower() == "bearer":
                 key = await verify_api_key(session, credentials.credentials)
             if not key or key.event.slug != event_slug:
                 raise orig_exc
@@ -280,9 +280,10 @@ async def list_event_booths(
         b["label"] = f"{b.get('language_name', b.get('language_code', ''))} (Human)"
 
     async with get_session() as session:
-
-        stmt = select(Event).where(Event.slug == event_slug).options(
-            selectinload(Event.rooms).selectinload(Room.translation_languages)
+        stmt = (
+            select(Event)
+            .where(Event.slug == event_slug)
+            .options(selectinload(Event.rooms).selectinload(Room.translation_languages))
         )
         event = await session.scalar(stmt)
         if event:
@@ -433,7 +434,14 @@ async def api_transcription_start(
         config = ProviderConfig(api_key=api_key)
     try:
         await start_transcription_worker(
-            event_slug, language_code, booth_id, broadcast_transcription, provider, model_size, config, room_id=room_id
+            event_slug,
+            language_code,
+            booth_id,
+            booth_coordinator.broadcast_transcription,
+            provider,
+            model_size,
+            config,
+            room_id=room_id,
         )
     except ValueError as e:
         raise HTTPException(status_code=429, detail=str(e))

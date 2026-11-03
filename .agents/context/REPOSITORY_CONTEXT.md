@@ -40,7 +40,10 @@ Attendees receive sub-second audio via WHEP. All coordination flows through Fast
 |---|---|
 | `fastapi_app.py` | Application lifespan, router aggregation |
 | `portal/routers/` | All HTTP routes (pages, admin, REST API) |
-| `portal/websockets/` | WebSocket connection manager and handlers |
+| `portal/websockets/manager.py` | WebSocket connection tracking and broadcasts |
+| `portal/websockets/booth_handlers.py` | Booth WebSocket protocol handlers |
+| `portal/websockets/handlers.py` | WebSocket routes and transport dispatch |
+| `portal/booth_coordinator.py` | Booth state operations paired with WebSocket notifications; transcription broadcasts |
 | `portal/config.py` | `Settings` (pydantic-settings); reads `.env` or env vars |
 | `portal/models.py` | SQLAlchemy declarative models (7 tables) |
 | `portal/database.py` | Async engine, session factory, all CRUD helpers |

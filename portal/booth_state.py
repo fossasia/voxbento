@@ -69,6 +69,8 @@ class Booth:
     participants: dict[str, Participant] = field(default_factory=dict)
     chat_messages: list[ChatMessage] = field(default_factory=list)
     ingest_status: str = "disconnected"
+    state_epoch: str = field(default_factory=lambda: uuid4().hex)
+    state_version: int = 0
 
     def __post_init__(self) -> None:
         if self.event_slug and self.language_code and self.room_id is not None:
@@ -86,6 +88,8 @@ class Booth:
     def as_public_dict(self) -> dict:
         return {
             "booth_id": self.booth_id,
+            "state_epoch": self.state_epoch,
+            "state_version": self.state_version,
             "event_slug": self.event_slug,
             "language_code": self.language_code,
             "instance": self.instance,
@@ -121,6 +125,13 @@ class BoothRegistry:
     def __init__(self) -> None:
         self._booths: dict[str, Booth] = {}
         self._lock = asyncio.Lock()
+        self._state_epoch = uuid4().hex
+        self._state_version = 0
+
+    def _mark_changed(self, booth: Booth) -> None:
+        self._state_version += 1
+        booth.state_epoch = self._state_epoch
+        booth.state_version = self._state_version
 
     def _get_or_create_booth(
         self,
@@ -157,6 +168,7 @@ class BoothRegistry:
                 channel_id=channel_id,
                 room_id=room_id,
             )
+            self._mark_changed(booth)
             self._booths[booth_id] = booth
         return booth
 
@@ -200,6 +212,7 @@ class BoothRegistry:
                 instance=inst,
                 room_id=room_id,
             )
+            self._mark_changed(booth)
             self._booths[booth_id] = booth
             return booth.as_public_dict()
 
@@ -241,6 +254,7 @@ class BoothRegistry:
                 and booth.active_interpreter_id is None
             ):
                 booth.active_interpreter_id = participant.participant_id
+            self._mark_changed(booth)
             return participant, booth.as_public_dict()
 
     async def leave_participant(self, booth_id: str, participant_id: str, language: str, channel_id: str) -> dict:
@@ -262,6 +276,7 @@ class BoothRegistry:
             if not booth.participants:
                 booth.ingest_status = "disconnected"
                 booth.handoff_state = "idle"
+            self._mark_changed(booth)
             return booth.as_public_dict()
 
     async def set_broadcast_unlocked(
@@ -295,6 +310,7 @@ class BoothRegistry:
                 _wh.enqueue_webhook("session.status_changed", {"booth_id": booth_id, "is_active": unlocked})
             )
 
+            self._mark_changed(booth)
             return booth.as_public_dict()
 
     async def set_active_interpreter(
@@ -329,6 +345,7 @@ class BoothRegistry:
                 p.mic_active = p.participant_id == target_id and p.mic_active
                 p.updated_at = utc_now_iso()
             booth.refresh_ingest_status()
+            self._mark_changed(booth)
             return booth.as_public_dict()
 
     async def initiate_handoff(
@@ -367,6 +384,7 @@ class BoothRegistry:
             is_active = booth.active_interpreter_id == requester_id
             booth.handoff_state = "offered" if is_active else "requested"
             booth.handoff_initiator_id = requester_id
+            self._mark_changed(booth)
             return booth.as_public_dict()
 
     async def accept_handoff(
@@ -424,6 +442,7 @@ class BoothRegistry:
                 p.mic_active = p.participant_id == new_active and p.mic_active
                 p.updated_at = utc_now_iso()
             booth.refresh_ingest_status()
+            self._mark_changed(booth)
             return booth.as_public_dict()
 
     async def cancel_handoff(
@@ -442,6 +461,7 @@ class BoothRegistry:
                 raise PermissionError("Only the handoff initiator can cancel.")
             booth.handoff_state = "idle"
             booth.handoff_initiator_id = None
+            self._mark_changed(booth)
             return booth.as_public_dict()
 
     async def add_chat_message(
@@ -468,6 +488,7 @@ class BoothRegistry:
             booth.chat_messages.append(message)
             if len(booth.chat_messages) > 500:
                 booth.chat_messages = booth.chat_messages[-500:]
+            self._mark_changed(booth)
             return asdict(message), booth.as_public_dict()
 
     async def update_participant_state(
@@ -488,7 +509,11 @@ class BoothRegistry:
                 raise ValueError("Participant does not exist in booth.")
             # Reject non-boolean flags so a truthy value like 1 or "true" cannot slip
             # past the publisher permission checks below (which compare with `is True`).
-            for name, value in (("mic_active", mic_active), ("ingest_connected", ingest_connected), ("connected", connected)):
+            for name, value in (
+                ("mic_active", mic_active),
+                ("ingest_connected", ingest_connected),
+                ("connected", connected),
+            ):
                 if value is not None and not isinstance(value, bool):
                     raise ValueError(f"{name} must be a boolean.")
             from portal.roles import Permission, has_permission
@@ -506,6 +531,7 @@ class BoothRegistry:
                 participant.connected = connected
             participant.updated_at = utc_now_iso()
             booth.refresh_ingest_status()
+            self._mark_changed(booth)
             return booth.as_public_dict()
 
     async def check_publish_permission(
@@ -550,6 +576,15 @@ class BoothRegistry:
         Safe for read-only admin panel access (snapshot of volatile state).
         """
         return self._booths.get(booth_id)
+
+    async def mark_ingest_overloaded(self, booth_id: str) -> dict | None:
+        async with self._lock:
+            booth = self._booths.get(booth_id)
+            if booth is None:
+                return None
+            booth.ingest_status = "overloaded"
+            self._mark_changed(booth)
+            return booth.as_public_dict()
 
     async def get_booth_for_event(self, event_slug: str, room_id: int, language_code: str) -> dict | None:
         """Return the booth for a specific event + language, or None.

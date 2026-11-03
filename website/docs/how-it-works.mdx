@@ -133,10 +133,12 @@ Administrators can search the event list by either slug or display name. Filteri
 
 In a professional interpretation setting, interpreters rotate every 20–30 minutes to prevent fatigue. Voxbento handles this transition without interrupting listeners.
 
+Booth WebSocket messages are decoded by the transport handlers and passed to the booth protocol handlers. Those handlers call `BoothCoordinator` (`portal/booth_coordinator.py`) for state-changing operations. The coordinator delegates booth invariants and mutations to `BoothRegistry` (`portal/booth_state.py`), then attempts the associated booth-state notification through the WebSocket connection manager. The connection manager owns client tracking and message fan-out; it does not own booth rules. Booth-state snapshots include a registry epoch and monotonically increasing version. Clients discard older snapshots, and booth/caption sockets request the current snapshot when they connect so they can recover after a disconnect. This converges clients on the latest state but does not replay intermediate states or guarantee delivery while offline.
+
 Here is what happens when a room_coordinator switches the active interpreter:
 
 1. The room_coordinator clicks **Set Active** next to the incoming interpreter in the booth.
-2. The portal updates the active interpreter state and notifies all booth participants over WebSocket.
+2. The coordinator asks `BoothRegistry` to validate and update the active interpreter, then attempts to broadcast the resulting booth state to connected participants.
 3. The incoming interpreter's browser calls the gated `/api/booth/{booth_id}/whip-url` endpoint, receives the WHIP URL, and begins publishing.
 4. MediaMTX is configured with `overridePublisher: yes` — it immediately accepts the new publisher and disconnects the outgoing interpreter's WHIP session.
 5. All existing WHEP listeners receive the new publisher's audio within approximately one to two seconds. Their `RTCPeerConnection` stays open throughout; MediaMTX routes the new track into it automatically.

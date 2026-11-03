@@ -16,6 +16,8 @@ const state = {
   participantId: null,
   participants: [],
   activeInterpreterId: null,
+  boothStateEpoch: null,
+  boothStateVersion: -1,
   chatMessages: [],
   relayingOut: false,   // true while outgoing interp is in silence-mode handoff
   micStream: null,
@@ -165,6 +167,7 @@ function connectWebSocket() {
       clearTimeout(openTimer)
       state.wsConnected = true
       setBadge(elements.connectionStatus, 'Connected', 'success')
+      ws.send(JSON.stringify({ type: 'booth:sync' }))
       resolve()
     })
 
@@ -203,13 +206,12 @@ function handleServerMessage(data) {
     // publishing; if it is Off, we stay off. Going live is driven by broadcast
     // being unlocked from Mission Control — never by the act of joining itself,
     // because a booth defaults to locked (Off) until a coordinator turns it on.
-    applyBoothState(data.state)
+    applyVersionedBoothState(data.state)
     joinMonitoringFeed()
     render()
     showError('')
   } else if (type === 'booth:state') {
-    applyBoothState(data.state)
-    render()
+    if (applyVersionedBoothState(data.state)) render()
   } else if (type === 'booth:chat') {
     state.chatMessages.push(data.message)
     renderChat()
@@ -462,7 +464,19 @@ async function fetchBoothState() {
     const payload = await response.json().catch(() => ({ error: response.statusText }))
     throw new Error(payload.error || 'Failed to fetch booth state.')
   }
-  applyBoothState(await response.json())
+  applyVersionedBoothState(await response.json())
+}
+
+function applyVersionedBoothState(payload) {
+  if (!payload) return false
+  const version = payload.state_version
+  if (Number.isInteger(version)) {
+    if (state.boothStateEpoch === payload.state_epoch && version < state.boothStateVersion) return false
+    state.boothStateEpoch = payload.state_epoch || null
+    state.boothStateVersion = version
+  }
+  applyBoothState(payload)
+  return true
 }
 
 async function fetchIngestReachability() {

@@ -82,7 +82,7 @@
 ---
 
 ### TD-11: No WebSocket reconnection handling on the server
-**File:** `portal/websockets/manager.py` — `ws_booth` endpoint
+**File:** `portal/websockets/handlers.py` — `ws_booth` endpoint
 **Problem:** If a participant reconnects after a network drop, they get a new `participant_id` and appear as a new participant. The old participant remains until server-side cleanup.
 **Impact:** Medium — room_coordinator sees ghost participants; handoff state may be incorrect.
 **Fix:** Allow reconnect with an existing `participant_id` (with token re-validation); clean up stale participant records after a timeout.

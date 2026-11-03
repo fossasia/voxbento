@@ -89,10 +89,12 @@
 ## 8. Changing the WebSocket Protocol
 
 **Files to change:**
-1. `portal/websockets/` — WS endpoint (`manager.py`) + `_handle_*` functions (`handlers.py`)
-2. `portal/static/js/interpreter-booth.js` — client `sendMessage`, `onMessage` handling
-3. `portal/booth_state.py` — if new state fields added to `Booth.as_public_dict()`
-4. `tests/test_booth_state.py` — if new state operations added
+1. `portal/websockets/handlers.py` — WebSocket endpoint and transport dispatch
+2. `portal/websockets/booth_handlers.py` — WebSocket protocol validation and responses
+3. `portal/booth_coordinator.py` — state transitions paired with notifications
+4. `portal/booth_state.py` — booth state and invariants
+5. `portal/static/js/interpreter-booth.js` — client `sendMessage`, `onMessage` handling
+6. `tests/test_booth_state.py` — if new state operations added
 
 ---
 

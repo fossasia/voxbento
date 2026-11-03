@@ -24,6 +24,7 @@ from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import func, select
 from sqlalchemy.exc import SQLAlchemyError
 
+from portal.booth_coordinator import booth_coordinator
 from portal.booth_identity import make_booth_id, make_mediamtx_path
 from portal.config import settings
 from portal.database import get_session
@@ -32,7 +33,6 @@ from portal.models import Event, Room
 from portal.transcription.process import audio_progress
 from portal.transcription.providers.base import ProviderConfig, ProviderEnum, get_api_key
 from portal.transcription.worker import start_transcription_worker, stop_transcription_worker
-from portal.websockets.manager import broadcast_transcription
 
 logger = logging.getLogger(__name__)
 room_locks: dict[int, asyncio.Lock] = {}
@@ -436,7 +436,9 @@ async def open_sender_session(room: Room, event: Event, offset_ms: int, ttl_secs
             and time.monotonic() - reservation.reservation_started_at < SENDER_PENDING_SECS
         )
         if (current_path and current_path.source is not None) or reservation_recent:
-            raise HTTPException(409, "Another source is publishing to the floor; stop it before starting the browser sender.")
+            raise HTTPException(
+                409, "Another source is publishing to the floor; stop it before starting the browser sender."
+            )
     else:
         # Explicit takeover from the Jitsi floor bot. Stop it before judging occupancy.
         room.meeting_agent_enabled = False
@@ -558,7 +560,7 @@ async def reconcile_room(room: Room, event: Event, path: MediaPath | None) -> No
         event_slug=event.slug,
         language_code="floor",
         booth_id=booth_id,
-        broadcast_callback=broadcast_transcription,
+        broadcast_callback=booth_coordinator.broadcast_transcription,
         provider=room.floor_transcription_provider,
         model_size=room.floor_transcription_model,
         config=ProviderConfig(api_key=api_key),

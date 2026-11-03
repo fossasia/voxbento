@@ -22,6 +22,7 @@ from fastapi import HTTPException
 from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 
+from portal.booth_coordinator import booth_coordinator
 from portal.booth_identity import make_booth_id, make_mediamtx_path
 from portal.config import settings
 from portal.database import get_session
@@ -31,7 +32,6 @@ from portal.program_ingest import MediaPath, configure_source, media_paths, pipe
 from portal.transcription.process import audio_progress
 from portal.transcription.providers.base import ProviderConfig, ProviderEnum, get_api_key
 from portal.transcription.worker import start_transcription_worker, stop_transcription_worker
-from portal.websockets.manager import broadcast_transcription
 
 logger = logging.getLogger(__name__)
 AGENT_CONTROL_TIMEOUT = 10.0
@@ -407,7 +407,7 @@ async def reconcile_room(
         event_slug=event.slug,
         language_code="floor",
         booth_id=booth_id,
-        broadcast_callback=broadcast_transcription,
+        broadcast_callback=booth_coordinator.broadcast_transcription,
         provider=room.floor_transcription_provider,
         model_size=room.floor_transcription_model,
         config=ProviderConfig(api_key=get_api_key(event, ProviderEnum(room.floor_transcription_provider))),
