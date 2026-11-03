@@ -4,6 +4,11 @@ import os
 
 os.environ["BOOTH_ACCESS_TOKEN"] = ""
 
+import hashlib
+import hmac
+import re
+import urllib.parse
+
 import pytest
 from httpx import ASGITransport, AsyncClient
 
@@ -705,6 +710,50 @@ async def test_consent_rejects_a_missing_event_binding(setup_oauth_clients):
 
 
 @pytest.mark.anyio
+async def test_event_binding_mac_is_keyed_with_the_server_secret(monkeypatch):
+    """Pin the MAC to an independently computed keyed vector.
+
+    Every other binding test takes its MAC from ``_event_binding_mac`` itself, so
+    swapping it for an unkeyed digest would keep them all passing while letting
+    anyone forge a consent binding.
+    """
+    from portal.config import settings
+    from portal.routers.oauth import _event_binding_mac
+
+    monkeypatch.setattr(settings, "jwt_secret", "known-test-secret-for-binding-vector")
+    message = b"7:some-client:42"
+
+    expected = hmac.new(
+        b"known-test-secret-for-binding-vector", message, hashlib.sha256
+    ).hexdigest()
+    produced = _event_binding_mac(7, "some-client", "42")
+
+    assert produced == expected
+    assert produced != hashlib.sha256(message).hexdigest(), "an unkeyed digest would be forgeable"
+
+
+@pytest.mark.anyio
+async def test_consent_rejects_an_unkeyed_digest_of_the_same_tuple(setup_oauth_clients):
+    """The forgeable digest an attacker could compute without the secret is refused."""
+    from portal.auth import create_user_token
+
+    attacker = setup_oauth_clients["unrelated_user"]
+    event = setup_oauth_clients["ownerless_event"]
+    client = setup_oauth_clients["confidential_client"]
+
+    forged = hashlib.sha256(f"{event.id}:{client.client_id}:{attacker.id}".encode()).hexdigest()
+    cookies = {"user_token": create_user_token(user_id=attacker.id, email=attacker.email)}
+    async with _client() as c:
+        res = await c.post(
+            "/oauth/authorize",
+            data=_allow_form(client, event.id, event_binding=forged),
+            cookies=cookies,
+        )
+    assert res.status_code == 400
+    assert await _role(attacker.id, event.id) is None
+
+
+@pytest.mark.anyio
 async def test_consent_binding_is_bound_to_the_client(setup_oauth_clients):
     """A MAC minted for one client does not authorise consent through another."""
     from portal.auth import create_user_token
@@ -736,9 +785,6 @@ async def test_consent_binding_alone_does_not_stop_a_chosen_event(setup_oauth_cl
     here and consent still succeeds, which is why the token exchange has to
     check the event the client itself started the flow for.
     """
-    import re
-    import urllib.parse
-
     from portal.auth import create_user_token
 
     attacker = setup_oauth_clients["unrelated_user"]
@@ -818,8 +864,6 @@ async def test_consent_binding_is_not_transferable_between_users(setup_oauth_cli
 @pytest.mark.anyio
 async def test_consent_page_issues_a_binding_the_post_accepts(setup_oauth_clients):
     """End to end: the MAC rendered into the real consent page is the one POST accepts."""
-    import re
-
     from portal.auth import create_user_token
 
     owner = setup_oauth_clients["user"]
