@@ -63,9 +63,9 @@
 
 ---
 
-### TD-09: `alembic/versions/` uses integer revision IDs (001–031)
+### TD-09: `alembic/versions/` uses integer revision IDs (001–038)
 **File:** `alembic/versions/*.py`
-**Problem:** Alembic expects random hex IDs. Using sequential integer IDs (`001`–`031`) works for linear migrations but creates merge conflict risk with parallel feature branches.
+**Problem:** Alembic expects random hex IDs. Using sequential integer IDs (`001`–`038`) works for linear migrations but creates merge conflict risk with parallel feature branches.
 **Impact:** Low — functional; requires renumbering if branches land out of order.
 **Fix:** Switch to Alembic-generated hex IDs for future migrations; update `alembic.ini` to use `revision_id_length`.
 

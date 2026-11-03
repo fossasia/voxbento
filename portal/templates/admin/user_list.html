@@ -137,7 +137,18 @@
     </table>
   </div>
   {% else %}
-  <p class="ul-empty">No users match{% if search %} “{{ search }}”{% endif %}.</p>
+  <div class="empty-state" role="status" aria-live="polite">
+    <div class="empty-state-icon empty-state-icon--sm" aria-hidden="true">🔎</div>
+    <h2 class="empty-state-title">No users found</h2>
+    {% if search %}
+    <p class="empty-state-text">Nobody matches “{{ search }}”.</p>
+    {% else %}
+    <p class="empty-state-text">No users match the selected filter.</p>
+    {% endif %}
+    {% if search or show != 'all' %}
+    <a href="/admin/users/" class="btn btn-outline">Clear filters</a>
+    {% endif %}
+  </div>
   {% endif %}
 </section>
 
