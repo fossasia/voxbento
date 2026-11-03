@@ -64,12 +64,15 @@ async def event_api_access() -> tuple[str, int]:
     return access_token, event.id
 
 
-def _client():
+def _client(*, raise_app_exceptions: bool = True):
     from httpx import ASGITransport, AsyncClient
 
     from fastapi_app import app
 
-    return AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
+    return AsyncClient(
+        transport=ASGITransport(app=app, raise_app_exceptions=raise_app_exceptions),
+        base_url="http://test",
+    )
 
 
 @pytest.mark.anyio
@@ -205,6 +208,50 @@ async def test_update_event_api_keys_rolls_back_on_lifecycle_error_after_flush(e
                 json={"anthropic_api_key": "uncommitted-anthropic-key"},
                 headers=headers,
             )
+
+    async with get_session() as session:
+        event = await session.get(Event, event_id)
+        assert event is not None
+        assert event.encrypted_anthropic_api_key == initial_ciphertext
+        assert decrypt_val(event.encrypted_anthropic_api_key) == initial_key
+
+
+@pytest.mark.anyio
+async def test_update_event_api_keys_rolls_back_on_commit_failure_during_cleanup(event_api_access, monkeypatch):
+    """Verify that a commit failure during dependency cleanup produces HTTP 500 and rolls back changes (#1040)."""
+    access_token, event_id = event_api_access
+    headers = {"Authorization": f"Bearer {access_token}"}
+
+    from fastapi_app import app
+    from portal.database import get_db_session
+
+    initial_key = "initial-anthropic-key"
+    async with get_session() as session:
+        event = await session.get(Event, event_id)
+        assert event is not None
+        event.encrypted_anthropic_api_key = encrypt_val(initial_key)
+        await session.flush()
+        initial_ciphertext = event.encrypted_anthropic_api_key
+
+    async def _failing_commit_db_session():
+        async with get_session() as session:
+            trans = session.sync_session.get_transaction()
+
+            def _failing_commit(*args, **kwargs):
+                raise RuntimeError("Simulated transaction failure during commit")
+
+            monkeypatch.setattr(trans, "commit", _failing_commit)
+            yield session
+
+    monkeypatch.setitem(app.dependency_overrides, get_db_session, _failing_commit_db_session)
+
+    async with _client(raise_app_exceptions=False) as client:
+        response = await client.patch(
+            "/api/v1/events/api-key-test/api_keys",
+            json={"anthropic_api_key": "uncommitted-anthropic-key"},
+            headers=headers,
+        )
+    assert response.status_code == 500
 
     async with get_session() as session:
         event = await session.get(Event, event_id)

@@ -1093,7 +1093,7 @@ async def update_event_api_keys(
     payload: EventAPIKeysUpdate,
     request: Request,
     token: OAuthToken = Depends(require_oauth_scope("events:write")),
-    db: AsyncSession = Depends(get_db_session),
+    db: AsyncSession = Depends(get_db_session, scope="function"),
 ):
     from portal.crypto import encrypt_val
 
