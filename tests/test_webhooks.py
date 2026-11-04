@@ -124,6 +124,10 @@ async def test_validate_ssrf():
         ["0.0.0.0"],
         ["::"],
         ["::ffff:127.0.0.1"],
+        ["::127.0.0.1"],
+        ["::10.0.0.1"],
+        ["::169.254.169.254"],
+        ["::93.184.216.34"],
         ["64:ff9b::a00:1"],
         ["2002:a00:1::1"],
         ["240.0.0.1"],
@@ -236,18 +240,19 @@ async def _make_delivery(db, target_url: str) -> WebhookDelivery:
 
 
 @pytest.mark.anyio
-async def test_process_delivery_rejects_rebound_dns(db, dns):
+@pytest.mark.parametrize("rebound_ip", ["127.0.0.1", "::7f00:1", "::a00:1"])
+async def test_process_delivery_rejects_rebound_dns(db, dns, rebound_ip):
     dns["rebind.attacker.test"] = ["93.184.216.34"]
     await validate_ssrf("https://rebind.attacker.test:9443/hook")
     delivery = await _make_delivery(db, "https://rebind.attacker.test:9443/hook")
 
-    dns["rebind.attacker.test"] = ["127.0.0.1"]
+    dns["rebind.attacker.test"] = [rebound_ip]
     mock_client = AsyncMock(spec=httpx.AsyncClient)
     await process_delivery(mock_client, db, delivery)
 
     mock_client.post.assert_not_called()
     assert delivery.status == "dead"
-    assert "127.0.0.1" in delivery.last_error
+    assert rebound_ip in delivery.last_error
 
 
 @pytest.mark.anyio
