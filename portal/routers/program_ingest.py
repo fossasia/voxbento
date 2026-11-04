@@ -38,8 +38,10 @@ class IngestChange(BaseModel):
 
 
 class RelayDestination(BaseModel):
-    server_url: str = Field(min_length=1, max_length=255)
-    stream_key: str = Field(min_length=1, max_length=128, repr=False)
+    # Omitted means YouTube's primary RTMPS ingest; most organizers only paste the stream key.
+    server_url: str | None = Field(default=None, max_length=255)
+    # Room for a full "<server>/<key>" URL pasted into the key field.
+    stream_key: str = Field(min_length=1, max_length=400, repr=False)
 
 
 class SenderSessionRequest(BaseModel):
@@ -125,6 +127,8 @@ async def ingest_status(event_id: int, room_id: int) -> JSONResponse:
                 "warnings": warnings,
                 "mode": room.program_ingest_mode,
                 "relay_available": settings.program_ingest_enabled and settings.program_relay_enabled,
+                # The reconciler's last call to the relay service failed: the operator must start it.
+                "relay_service_down": settings.program_relay_enabled and program_relay.list_outage.failures > 0,
                 "rtmps_server": _rtmps_server(event.slug, room_id),
                 # Write-only: only the non-secret server URL and the change time are ever returned.
                 "destination": {

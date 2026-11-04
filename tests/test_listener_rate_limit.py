@@ -2,7 +2,7 @@
 
 Covers:
 - Repeated bad join codes from one client get throttled with 429
-- A valid join code succeeds and is not throttled
+- Further guesses, including correct codes, are blocked until the window expires
 - A client holding a valid session cookie reaches the listener page and is never throttled
 - Viewing the join page, and polling for the room audio delay, are not join-code attempts
 - A wrong code submitted through the listener_code_ cookie is still throttled
@@ -11,12 +11,13 @@ Covers:
 from __future__ import annotations
 
 import os
+import types
 
 os.environ["BOOTH_ACCESS_TOKEN"] = ""
 
 import pytest
 
-from portal.routers import listener as listener_router
+from portal import join_code_limit
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -37,9 +38,9 @@ async def setup_db():
 @pytest.fixture(autouse=True)
 def reset_rate_limit_state():
     """Rate-limit state is a module-level dict shared across tests/clients."""
-    listener_router._join_code_attempts.clear()
+    join_code_limit._join_code_attempts.clear()
     yield
-    listener_router._join_code_attempts.clear()
+    join_code_limit._join_code_attempts.clear()
 
 
 @pytest.fixture
@@ -97,13 +98,18 @@ class TestListenerRateLimit:
             assert b"Too Many Attempts" in resp.content
 
     @pytest.mark.anyio
-    async def test_valid_code_succeeds_and_is_not_throttled(self, seed_event):
+    async def test_valid_guess_is_blocked_until_window_expires(self, seed_event, monkeypatch):
         event, _ = seed_event
         async with _client() as c:
             for _ in range(10):
                 resp = await c.get(f"/listener/{event.slug}?code=WRONGCODE")
                 assert resp.status_code == 200
 
+            resp = await c.get(f"/listener/{event.slug}?code=ROOM42")
+            assert resp.status_code == 429
+            assert 1 <= int(resp.headers["Retry-After"]) <= 60
+            now = join_code_limit.time.monotonic()
+            monkeypatch.setattr(join_code_limit, "time", types.SimpleNamespace(monotonic=lambda: now + 61))
             resp = await c.get(f"/listener/{event.slug}?code=ROOM42")
             assert resp.status_code == 200
             assert b"Invalid join code." not in resp.content
