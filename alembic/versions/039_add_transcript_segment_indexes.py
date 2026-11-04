@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from typing import Sequence, Union
 
+from sqlalchemy import text
+
 from alembic import op
 
 # revision identifiers, used by Alembic.
@@ -17,11 +19,12 @@ revision: str = "039"
 down_revision: Union[str, Sequence[str], None] = "038"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
-disable_transaction: bool = True
 
 ROOM_LANGUAGE_CREATED = "ix_transcript_segments_room_language_created"
 BOOTH_ID = "ix_transcript_segments_booth_id"
 MIGRATION_ADVISORY_LOCK_ID = 20261026039
+ADVISORY_LOCK = text("SELECT pg_advisory_lock(:lock_id)").bindparams(lock_id=MIGRATION_ADVISORY_LOCK_ID)
+ADVISORY_UNLOCK = text("SELECT pg_advisory_unlock(:lock_id)").bindparams(lock_id=MIGRATION_ADVISORY_LOCK_ID)
 
 
 def upgrade() -> None:
@@ -48,50 +51,59 @@ def upgrade() -> None:
     rather than a table lock, preventing startup races without blocking concurrent
     application reads/writes on ``transcript_segments``. ``postgresql_concurrently``
     ensures index building does not block writes on large tables.
+
+    The DDL runs inside ``autocommit_block()``. ``CREATE INDEX CONCURRENTLY`` cannot
+    execute inside a transaction block (SQLSTATE 25001), and the container command
+    applies migrations on startup, so the transaction Alembic opens by default would
+    abort every deployment before the application starts. The block emits a ``COMMIT``
+    before the statements and resumes a transaction afterwards; the advisory lock is
+    session-scoped, so it still spans the block.
     """
     context = op.get_context()
     if context.dialect.name == "postgresql":
-        op.execute(f"SELECT pg_advisory_lock({MIGRATION_ADVISORY_LOCK_ID})")
+        op.execute(ADVISORY_LOCK)
 
     try:
-        op.create_index(
-            ROOM_LANGUAGE_CREATED,
-            "transcript_segments",
-            ["room_id", "language_code", "created_at", "id"],
-            if_not_exists=True,
-            postgresql_concurrently=True,
-        )
-        op.create_index(
-            BOOTH_ID,
-            "transcript_segments",
-            ["booth_id"],
-            if_not_exists=True,
-            postgresql_concurrently=True,
-        )
+        with context.autocommit_block():
+            op.create_index(
+                ROOM_LANGUAGE_CREATED,
+                "transcript_segments",
+                ["room_id", "language_code", "created_at", "id"],
+                if_not_exists=True,
+                postgresql_concurrently=True,
+            )
+            op.create_index(
+                BOOTH_ID,
+                "transcript_segments",
+                ["booth_id"],
+                if_not_exists=True,
+                postgresql_concurrently=True,
+            )
     finally:
         if context.dialect.name == "postgresql":
-            op.execute(f"SELECT pg_advisory_unlock({MIGRATION_ADVISORY_LOCK_ID})")
+            op.execute(ADVISORY_UNLOCK)
 
 
 def downgrade() -> None:
     """Drop the transcript segment indexes."""
     context = op.get_context()
     if context.dialect.name == "postgresql":
-        op.execute(f"SELECT pg_advisory_lock({MIGRATION_ADVISORY_LOCK_ID})")
+        op.execute(ADVISORY_LOCK)
 
     try:
-        op.drop_index(
-            BOOTH_ID,
-            table_name="transcript_segments",
-            if_exists=True,
-            postgresql_concurrently=True,
-        )
-        op.drop_index(
-            ROOM_LANGUAGE_CREATED,
-            table_name="transcript_segments",
-            if_exists=True,
-            postgresql_concurrently=True,
-        )
+        with context.autocommit_block():
+            op.drop_index(
+                BOOTH_ID,
+                table_name="transcript_segments",
+                if_exists=True,
+                postgresql_concurrently=True,
+            )
+            op.drop_index(
+                ROOM_LANGUAGE_CREATED,
+                table_name="transcript_segments",
+                if_exists=True,
+                postgresql_concurrently=True,
+            )
     finally:
         if context.dialect.name == "postgresql":
-            op.execute(f"SELECT pg_advisory_unlock({MIGRATION_ADVISORY_LOCK_ID})")
+            op.execute(ADVISORY_UNLOCK)

@@ -258,6 +258,9 @@ def test_migration_039_emits_sql_offline():
             assert "pg_advisory_lock" in emitted
             assert "pg_advisory_unlock" in emitted
             assert "CONCURRENTLY" in emitted
+            # CONCURRENTLY is rejected inside a transaction (SQLSTATE 25001), so the
+            # emitted script has to commit before the index build starts.
+            assert emitted.index("COMMIT") < emitted.index("CREATE INDEX CONCURRENTLY")
         else:
             assert "pg_advisory" not in emitted
             assert "CONCURRENTLY" not in emitted
@@ -278,6 +281,7 @@ def test_migration_039_emits_sql_offline():
             assert "pg_advisory_lock" in emitted_down
             assert "pg_advisory_unlock" in emitted_down
             assert "CONCURRENTLY" in emitted_down
+            assert emitted_down.index("COMMIT") < emitted_down.index("DROP INDEX CONCURRENTLY")
         else:
             assert "pg_advisory" not in emitted_down
             assert "CONCURRENTLY" not in emitted_down
