@@ -955,15 +955,16 @@ code { font-family: var(--font-mono); font-size: 0.85em; background: var(--color
 /* ── Action tiles ────────────────────────────────────────────────────────── */
 .tile-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 16px; }
 .tile {
-  display: flex; flex-direction: column; gap: 4px;
+  display: grid; grid-template-columns: 42px minmax(0, 1fr); grid-template-rows: auto 1fr;
+  align-items: center; column-gap: 12px; row-gap: 14px; min-height: 150px;
   background: var(--color-surface); border: 1px solid var(--color-border);
   border-radius: var(--radius); padding: 20px; text-decoration: none; color: inherit;
   box-shadow: var(--shadow-sm); transition: box-shadow 0.15s, border-color 0.15s, transform 0.1s;
 }
 .tile:hover { box-shadow: var(--shadow-md); border-color: var(--color-primary-border); transform: translateY(-2px); text-decoration: none; }
-.tile-icon { width: 42px; height: 42px; border-radius: 12px; background: var(--color-primary-subtle); color: var(--color-primary-active); display: inline-flex; align-items: center; justify-content: center; font-size: 1.25rem; margin-bottom: 8px; }
+.tile-icon { width: 42px; height: 42px; border-radius: 12px; background: var(--color-primary-subtle); color: var(--color-primary-active); display: inline-flex; align-items: center; justify-content: center; font-size: 1.25rem; margin-bottom: 0; flex-shrink: 0; }
 .tile-title { font-weight: 700; font-size: 1rem; }
-.tile-desc { color: var(--color-text-secondary); font-size: 0.85rem; }
+.tile-desc { grid-column: 1 / -1; align-self: start; color: var(--color-text-secondary); font-size: 0.85rem; }
 
 /* ── Toolbar ─────────────────────────────────────────────────────────────── */
 .toolbar { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 18px; }
