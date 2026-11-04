@@ -27,14 +27,20 @@ function init(root) {
   root.querySelectorAll('[data-copy-target]').forEach(btn => {
     btn.addEventListener('click', () => {
       const input = document.getElementById(btn.dataset.copyTarget);
-      if (input) {
+      if (!input) return;
+      if (navigator.clipboard && navigator.clipboard.writeText) {
         navigator.clipboard.writeText(input.value).catch(() => {
           input.select();
           document.execCommand('copy');
         });
+      } else {
+        input.select();
+        document.execCommand('copy');
       }
     });
   });
+
+  restoreRouteState();
 
   function onSkip(event) {
     event.preventDefault();
@@ -48,6 +54,40 @@ function init(root) {
     routePanels.forEach(panel => {
       panel.hidden = panel.dataset.youtubeRoute !== selected.value;
     });
+  }
+
+  function restoreRouteState() {
+    fetchStatus().then(data => {
+      if (!data) return;
+      if (data.enabled) startPolling();
+      const mode = data.mode;
+      let route = null;
+      if (mode === 'rtmps_relay') route = 'encoder';
+      else if (mode === 'whip' && data.credential_present) route = 'multi';
+      if (!route) return;
+      const radio = root.querySelector(`input[name="youtube-route"][value="${route}"]`);
+      if (radio && !root.querySelector('input[name="youtube-route"]:checked')) {
+        radio.checked = true;
+        onRouteChange();
+      }
+      if (route === 'multi' && data.credential_present && multiCredentials) {
+        multiCredentials.hidden = false;
+        const serverInput = document.getElementById('youtube-multi-server');
+        const keyInput = document.getElementById('youtube-multi-key');
+        if (serverInput && data.rtmps_server) serverInput.value = data.rtmps_server;
+        if (keyInput && data.stream_key) keyInput.value = data.stream_key;
+      }
+    });
+  }
+
+  async function fetchStatus() {
+    try {
+      const response = await fetch(ingestUrl, {cache: 'no-store'});
+      if (!response.ok) return null;
+      return await response.json();
+    } catch {
+      return null;
+    }
   }
 
   async function onSetupForwarding() {
@@ -67,7 +107,7 @@ function init(root) {
         forwardingBtn.disabled = false;
         return;
       }
-      forwardingStatus.textContent = 'Forwarding enabled. Your YouTube stream key was filled in for you.';
+      forwardingStatus.textContent = 'Forwarding enabled. Save the YouTube stream key to start relaying.';
       startPolling();
     } catch (error) {
       console.error('Forwarding setup failed', error);
@@ -82,20 +122,21 @@ function init(root) {
       const response = await fetch(ingestUrl, {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({action: 'enable', mode: 'rtmps'}),
+        body: JSON.stringify({action: 'enable', mode: 'whip'}),
       });
       if (!response.ok) {
         const data = await response.json().catch(() => ({}));
+        multiBtn.textContent = data.detail || 'Could not enable ingest.';
         multiBtn.disabled = false;
         return;
       }
-      const data = await response.json();
-      if (multiCredentials) {
+      const status = await fetchStatus();
+      if (multiCredentials && status) {
         multiCredentials.hidden = false;
         const serverInput = document.getElementById('youtube-multi-server');
         const keyInput = document.getElementById('youtube-multi-key');
-        if (serverInput && data.server) serverInput.value = data.server;
-        if (keyInput && data.stream_key) keyInput.value = data.stream_key;
+        if (serverInput) serverInput.value = status.rtmps_server || '';
+        if (keyInput && status.stream_key) keyInput.value = status.stream_key;
       }
       startPolling();
     } catch (error) {

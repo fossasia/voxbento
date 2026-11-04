@@ -124,11 +124,11 @@
     <div class="youtube-listener-link">
       <label for="youtube-listener-url">Listener link</label>
       <div class="program-copy-field">
-        <input id="youtube-listener-url" class="input" readonly value="{{ request.url.scheme }}://{{ request.headers.get('host', '') }}/listener/{{ event.slug }}">
+        <input id="youtube-listener-url" class="input" readonly value="/listener/{{ event.slug }}">
         <button type="button" class="btn btn-outline" data-copy-target="youtube-listener-url">Copy link</button>
       </div>
     </div>
   </div>
   </div>
 </section>
-<script type="module" src="/static/js/youtube-source.js"></script>
+<script type="module" src="{{ url_for('static', path='js/youtube-source.js') }}?v={{ asset_version }}"></script>
