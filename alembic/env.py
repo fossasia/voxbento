@@ -12,6 +12,7 @@ import asyncio
 import os
 from logging.config import fileConfig
 
+import sqlalchemy as sa
 from sqlalchemy import pool
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
@@ -29,6 +30,21 @@ if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
 target_metadata = Base.metadata
+
+
+# ---------------------------------------------------------------------------
+# Concurrent startup
+# ---------------------------------------------------------------------------
+
+# Every instance applies migrations on startup (see the container command), so two
+# of them can read the same current revision, run the same step, and have the second
+# one fail the version-table update with "expected to match one row". Serialize the
+# whole run with an advisory lock, taken before run_migrations() reads the revision
+# and released only after the migration transaction has committed. Migration 039
+# acquires the same id; advisory locks are re-entrant within a session.
+MIGRATION_LOCK_ID = 20261026039
+ADVISORY_LOCK = sa.text("SELECT pg_advisory_lock(:lock_id)").bindparams(lock_id=MIGRATION_LOCK_ID)
+ADVISORY_UNLOCK = sa.text("SELECT pg_advisory_unlock(:lock_id)").bindparams(lock_id=MIGRATION_LOCK_ID)
 
 
 # ---------------------------------------------------------------------------
@@ -78,8 +94,26 @@ def do_run_migrations(connection) -> None:
         target_metadata=target_metadata,
         process_revision_directives=process_revision_directives,
     )
-    with context.begin_transaction():
-        context.run_migrations()
+
+    serialized = connection.dialect.name == "postgresql"
+    if serialized:
+        connection.execute(ADVISORY_LOCK)
+        # The SELECT above opens an implicit transaction. Commit it so
+        # begin_transaction() starts a real one instead of reusing that transaction,
+        # which would drop Alembic's single-transaction guarantee for the whole run.
+        connection.commit()
+
+    try:
+        with context.begin_transaction():
+            context.run_migrations()
+    finally:
+        if serialized:
+            try:
+                connection.execute(ADVISORY_UNLOCK)
+                connection.commit()
+            except sa.exc.SQLAlchemyError:
+                # Either way the session lock goes away when the connection closes.
+                connection.rollback()
 
 
 async def run_async_migrations() -> None:
