@@ -1,12 +1,13 @@
 # Plan 002 results: YouTube-intake assumptions
 
 Measurements for [plan 002](002-youtube-intake-spike.md), issue #1087. No source files were
-changed. Every stream key, OAuth token, client secret and caption ingestion URL is written
-as `<redacted>`.
+changed. Every stream key, OAuth token, client secret, stream id and caption ingestion URL is
+written as `<redacted>`.
 
 This file consolidates two drafts. Each observation names its operator, date and commit:
 
-- @hazelmayank (#1096): Step 1 browser measurements, first Step 3 API observations.
+- @hazelmayank (#1096): Step 1 browser measurements (regular video and live stream), Step 3 API
+  observations, Step 4 caption POST observations.
 - @SanketKokate712 (#1091): preflight at `4e14999`, the Step 2 reading of `portal/program_ingest.py`
   (code reading, not yet observed on a platform), and the PENDING scaffold.
 
@@ -17,10 +18,10 @@ been measured. They are not passes. Plan 002 stays IN PROGRESS until every step 
 
 | Step | Assumption | Verdict | Gates |
 |---|---|---|---|
-| 1 | Chrome gives a live tab-audio track from `getDisplayMedia` that survives stopping video and backgrounding | PARTIAL: yes for a regular YouTube video in Chrome and Edge; Firefox gives no audio track; **live-stream case PENDING**; Safari untested | Plan 003 (merged in #1097) |
+| 1 | Chrome gives a live tab-audio track from `getDisplayMedia` that survives stopping video and backgrounding | YES in Chrome 156 and Edge 156, for a regular video and for a live stream (synthetic test stream); Firefox 159 gives no audio track; Safari untested | Plan 003 (merged in #1097) |
 | 2 | At least one third-party platform publishes to VoxBento RTMPS with the `floor?key=<secret>` key | PENDING | Plan 004 |
-| 3 | `liveStreams.list` returns `cdn.ingestionInfo.streamName` with `youtube.force-ssl` | PENDING (three observations recorded; `streamName` not yet seen) | Plan 005 |
-| 4 | A caption POST to `closedCaptionsIngestionUrl` renders in the YouTube player | PENDING | Plan 006 |
+| 3 | `liveStreams.list` returns `cdn.ingestionInfo.streamName` with `youtube.force-ssl` | YES with `youtube.force-ssl`; `youtube.readonly` result recorded but the granted scope was not captured (see Step 3); quota costs are 1 unit per call (documented) | Plan 005 |
+| 4 | A caption POST to `closedCaptionsIngestionUrl` renders in the YouTube player | YES on a live unlisted broadcast; delay not timed | Plan 006 |
 
 ## Preflight (historical)
 
@@ -41,12 +42,13 @@ of `dev`.
 
 ## Step 1: Chrome tab audio
 
-Operator @hazelmayank, 2026-11-01, commit `c17147c`.
+The capture was started from the DevTools console of another tab, with the constraints exactly
+as in the plan. Chrome and Edge ran it from the console, which works because "Treat code
+evaluation as user action" is on.
 
-Source: a **regular YouTube video** (not a live stream) in a separate tab, "Also share tab
-audio" ticked. The plan specifies a live stream, so the live-stream case is still PENDING.
-The capture was started from the DevTools console of another tab, with the constraints
-exactly as in the plan.
+### Run A: regular YouTube video (operator @hazelmayank, 2026-11-01, `dev` at `c17147c`)
+
+Source: a regular YouTube video (not a live stream) in a separate tab, "Also share tab audio" ticked.
 
 | Browser (version) | Tab audio track | Plays locally | Survives video stop | Track stays `live` for 10 min in background | Audio heard for the whole 10 min | `ended` fires on Stop sharing |
 |---|---|---|---|---|---|---|
@@ -55,14 +57,25 @@ exactly as in the plan.
 | Firefox 159.0 (64-bit) | no (0 audio tracks, 1 video track; `displaySurface` not reported) | n/a | n/a | n/a | n/a | n/a |
 | Safari | untested (no Mac available) | - | - | - | - | - |
 
+### Run B: YouTube live stream (operator @hazelmayank, 2026-11-05, `dev` at `6d9cbd4`)
+
+Source: an unlisted YouTube live broadcast on the operator's own channel, watched in a normal tab.
+The stream was a synthetic signal pushed with ffmpeg over RTMPS (test pattern plus a 440 Hz tone),
+not a real event.
+
+| Browser (version) | Tab audio track | Survives video stop | Track stays `live` for 10 min in background | Audio heard for the whole 10 min | `ended` fires on Stop sharing |
+|---|---|---|---|---|---|
+| Chrome 156.0.8078.74 | yes (1 track, "Tab audio") | yes (`live`) | yes (`live`, `muted: false` every minute, no `mute` event) | yes, apart from about 30 s (operator estimate) during the 10 min when the player was paused | yes (`ended` at 2026-11-05T11:43:10.072Z) |
+| Edge 156.0.4314.50 | yes (1 track, "Tab audio") | yes (`live`) | yes (`live`, `muted: false` every minute, no `mute` event) | yes (heard throughout) | yes (`ended` at 2026-11-05T11:56:47.256Z) |
+
 Notes:
 
-- Chrome and Edge returned one tab audio track and kept it `live` for 10 minutes with the shared tab in the background; `ended` fired when Stop sharing was clicked. Local playback with `suppressLocalAudioPlayback: false` was heard in both. The Chrome row records track liveness; audible audio for the full 10 minutes was only noted for Edge.
-- Firefox 159.0 exposes `getDisplayMedia` but returned no audio track and does not report `displaySurface`. Chrome and Edge ran from the DevTools console, which works because "Treat code evaluation as user action" is on; Firefox rejects the same call with `InvalidStateError` (transient activation required) and needs a real click.
+- A paused player does not change the track state (`live`, `muted: false`), so "track survives" and "audio was audible" are separate measurements. In Chrome run B the player was paused for about 30 s of the 10 min (operator estimate, not timed), and the track stayed `live` and unmuted during that time; only Edge run B was audible for the whole 10 min.
+- Firefox 159.0 exposes `getDisplayMedia` but returned no audio track and does not report `displaySurface`. Firefox rejects the same console call with `InvalidStateError` (transient activation required) and needs a real click.
 - Chrome 156 and Edge 156 report `getSupportedConstraints().suppressLocalAudioPlayback` as `true`; Firefox 159 does not report it (checked 2026-11-01).
-- Not measured: a YouTube **live stream** as the source, Safari, and other Chrome/Edge versions.
+- Not measured: Safari, other Chrome/Edge versions, and a real (non-synthetic) live event.
 
-**Verdict: PARTIAL.** Regular-video tab audio works in Chrome 156 and Edge 156. The live-stream case is PENDING and the claim for other browsers is limited to what is in the table.
+**Verdict: YES** for Chrome 156 and Edge 156, with a regular video and with a live stream. Firefox 159: no tab audio. Safari: untested.
 
 ## Step 2: Third-party "Custom RTMP" -> VoxBento RTMPS
 
@@ -107,53 +120,94 @@ not run by him):
 
 ## Step 3: YouTube API
 
-Operator @hazelmayank, 2026-11-01. OAuth client: Web application in a test-mode Cloud project,
-tester = the operator. Broadcast: unlisted, to be created in YouTube Studio. YouTube live
-streaming was not enabled yet on the channel when these first calls ran.
+Operator @hazelmayank. OAuth client: Web application in a test-mode Cloud project, tester = the
+operator, via the OAuth 2.0 Playground. Broadcast: unlisted, scheduled in YouTube Studio with
+latency "Normal" and closed captions set to "POST captions to URL". Calls on 2026-11-01 ran
+before live streaming was enabled on the channel; the rest ran on 2026-11-05.
 
 | Question | Answer |
 |---|---|
-| Plan 002's original example `liveBroadcasts.list` call with both `mine=true` and `broadcastStatus=upcoming` | **400** `incompatibleParameters: mine, broadcastStatus`. The list filters (`broadcastStatus`, `id`, `mine`) are alternatives, so the call must use `broadcastStatus=upcoming` alone, as the [API reference](https://developers.google.com/youtube/data/live/reference/rest/v3/liveBroadcasts/list) says. The example in plan 002 is corrected in this PR. |
-| `liveBroadcasts.list?broadcastStatus=upcoming` on a channel with no broadcast and live streaming not yet enabled | **200**, `items: []`, `pageInfo.totalResults: 0`. This is one run only: it does not show that `liveStreamingNotEnabled` can never occur, since the reference still documents that error. |
-| `channels.list?part=snippet&mine=true` with `youtube.force-ssl` (the call plan 005 uses to show the organiser's channel) | **200**, one channel in `items` |
-| `liveBroadcasts.list` (`broadcastStatus=upcoming`) lists the broadcast and `contentDetails.boundStreamId` | PENDING |
-| `cdn.ingestionInfo.streamName` present with `youtube.force-ssl` | PENDING |
-| `streamName` equals the Studio stream key | PENDING |
-| `cdn.ingestionInfo.ingestionAddress` host | PENDING |
-| `contentDetails.closedCaptionsIngestionUrl` host and path (query redacted) | PENDING |
-| `contentDetails.isDefaultStream` | PENDING |
-| `streamName` returned with `youtube.readonly` only | PENDING |
-| `liveBroadcasts.update` setting `closedCaptionsType=closedCaptionsHttpPost` succeeds while `upcoming` | PENDING |
-| Same update succeeds while `live` | PENDING |
+| Plan 002's original example `liveBroadcasts.list` call with both `mine=true` and `broadcastStatus=upcoming` (2026-11-01) | **400** `incompatibleParameters: mine, broadcastStatus`. The list filters (`broadcastStatus`, `id`, `mine`) are alternatives, so the call must use `broadcastStatus=upcoming` alone, as the [API reference](https://developers.google.com/youtube/data/live/reference/rest/v3/liveBroadcasts/list) says. The example in plan 002 is corrected in this PR. |
+| `liveBroadcasts.list?broadcastStatus=upcoming` on a channel with no broadcast and live streaming not yet enabled (2026-11-01) | **200**, `items: []`, `pageInfo.totalResults: 0`. One run only: it does not show that `liveStreamingNotEnabled` can never occur, since the reference still documents that error. |
+| `channels.list?part=snippet&mine=true` with `youtube.force-ssl` (2026-11-01) | **200**, one channel in `items` |
+| `liveBroadcasts.list` (`broadcastStatus=upcoming`) lists the broadcast and `contentDetails.boundStreamId` (2026-11-05) | **200**, 1 item, `lifeCycleStatus: ready`, `privacyStatus: unlisted`, `latencyPreference: normal`, `closedCaptionsType: closedCaptionsHttpPost` (set in Studio), `enableClosedCaptions: true`, `boundStreamId: <redacted>` present |
+| `cdn.ingestionInfo.streamName` present with `youtube.force-ssl` | **yes** (`liveStreams?part=cdn,status,contentDetails&id=<boundStreamId>` returned 200) |
+| `streamName` equals the Studio stream key | not compared by the operator. Separately observed: `streamName` has the same value as the `cid` query parameter of `closedCaptionsIngestionUrl` |
+| `cdn.ingestionInfo.ingestionAddress` host | `a.rtmp.youtube.com` (`rtmp://a.rtmp.youtube.com/live2`). The response also returns `rtmpsIngestionAddress` (`rtmps://a.rtmps.youtube.com/live2`) and backup addresses on `b.rtmp.youtube.com` / `b.rtmps.youtube.com` |
+| `contentDetails.closedCaptionsIngestionUrl` host and path (query redacted) | `http://upload.youtube.com/closedcaption?cid=<redacted>`: **`http`** scheme as returned; `https` was also accepted (see Step 4) |
+| `contentDetails.isDefaultStream` | **absent** from the response. `contentDetails.isReusable: true` was returned instead |
+| `streamName` returned with `youtube.readonly` only | 200 with `streamName` and `closedCaptionsIngestionUrl` present. Caveat: the granted scope was re-authorised as `youtube.readonly` but the Playground's authorised-scope list was not captured, so scope isolation is unconfirmed |
+| `liveBroadcasts.update` setting `closedCaptionsType=closedCaptionsHttpPost` succeeds while `ready` (`upcoming`) | **200**. The body copied the whole `contentDetails` (including `boundStreamId` and `boundStreamLastUpdateTimeMs`), omitted `enableClosedCaptions`, and carried `snippet.title` and `snippet.scheduledStartTime` (already in the past). Round trip `closedCaptionsDisabled` -> `closedCaptionsHttpPost` both **200**; `enableClosedCaptions` followed the type (`false` then `true`) |
+| Same update while `live` | **403** `enableClosedCaptionsModificationNotAllowed` ("Modification on enableClosedCaptions is not allowed in current status") when setting `closedCaptionsDisabled`, and **also 403 with the same reason when sending `closedCaptionsHttpPost` while the broadcast was already `closedCaptionsHttpPost`** (a no-op update) |
 
-A channel lookup or an empty upcoming list does not verify `streamName`, the caption URL,
-broadcast updates or rendered native captions.
+Other observations: `liveStreams.list` returned one item but `pageInfo.totalResults: 0`.
+`liveBroadcasts.update` responses with `part=id,snippet,contentDetails` do not include `status`.
 
-Quota cost per call type (Cloud console -> APIs & Services -> YouTube Data API v3 -> Quotas):
+Quota cost per call type, from the [quota cost table](https://developers.google.com/youtube/data/determine_quota_cost)
+(read 2026-11-05; documented cost, not measured per call):
 
-| Call | Units |
+| Call | Units (documented) |
 |---|---|
-| `liveBroadcasts.list` | PENDING |
-| `liveStreams.list` | PENDING |
-| `liveBroadcasts.update` | PENDING |
+| `liveBroadcasts.list` | 1 |
+| `liveStreams.list` | 1 |
+| `liveBroadcasts.update` | 1 |
+| `channels.list` (plan 005's channel lookup) | 1 |
 
-**Verdict: PENDING.**
+Observed in the Cloud console (project dashboard, "1 day" view, 2026-11-05): 7 requests to the
+YouTube Data API v3 with 28% errors, which matches this run: 1 `liveBroadcasts.list`, 2 `liveStreams.list`
+and 4 `liveBroadcasts.update`, of which 2 were rejected with 403. That is 7 units against the default
+10,000 units/day, shown as 0% in the console. Per-call units were not isolated with a before/after
+reading, and it was not checked whether a rejected call is charged.
+
+**Verdict: YES** for `streamName`, the ingestion addresses and `closedCaptionsIngestionUrl` with
+`youtube.force-ssl` on this channel. The `youtube.readonly` scope isolation is unconfirmed.
 
 ## Step 4: Caption POST
 
-Broadcast from step 3 live, captions set to "POST captions to URL".
+Operator @hazelmayank, 2026-11-05. Broadcast from Step 3, `live`, captions set to "POST captions to URL",
+source language English, viewed in a normal Chrome watch page with CC on. The stream was a synthetic
+ffmpeg signal over RTMPS. Posts were made with `curl` from a WSL shell over `https`
+(`http` also returned 200 once, before the broadcast was live).
+
+Request: `POST <closedCaptionsIngestionUrl>&seq=<n>`, `Content-Type: text/plain; charset=UTF-8`.
 
 | Case | HTTP status / body | Rendered in player CC | Delay |
 |---|---|---|---|
-| Current UTC timestamp, `seq=1` | PENDING | PENDING | PENDING |
-| Timestamp 30 s in the past | PENDING | PENDING | n/a |
-| Timestamp 30 s in the future | PENDING | PENDING | n/a |
-| Non-ASCII (Hindi) | PENDING | PENDING | n/a |
-| Non-ASCII (German umlauts) | PENDING | PENDING | n/a |
+| Before the broadcast was live, current timestamp (`http`) | 200, body = server time | not observed | n/a |
+| Current UTC timestamp, live (`https`) | 200, body = server time | **yes** ("Hello from VoxBento" shown in CC) | not timed (operator's informal estimate 20-30 s, not measured) |
+| Timestamp 30 s in the past | 200 | render not captured | n/a |
+| Timestamp 30 s in the future | 200 | **yes** ("Thirty seconds in the future" shown) | n/a |
+| Timestamp 90 s in the past | **400** `Timestamp skew from local=<server time> larger than 60 sec` | n/a | n/a |
+| Timestamp 90 s in the future | **400** same error | n/a | n/a |
+| Timestamp 1 h in the past | **400** same error | n/a | n/a |
+| Non-ASCII (Hindi) | 200 | **yes** (Devanagari rendered correctly) | n/a |
+| Non-ASCII (German umlauts, `ß`) | 200 | **yes** (`Grüße` rendered) | n/a |
 
-Working body template: PENDING.
+Working body template (timestamp line, then the caption text, in UTC with millisecond precision):
 
-**Verdict: PENDING.**
+```
+2026-11-05T11:24:52.978
+Hello from VoxBento
+```
+
+Observations:
+
+- The response body is YouTube's server time. A timestamp more than 60 s from it, in either direction, is rejected with 400; 30 s was accepted. The exact boundary between 30 s and 90 s was not tested.
+- Each `curl` round trip took about 2 s (new TLS connection each time).
+- Captions arrive in the player as a roll-up: later lines appear next to earlier ones.
+- The caption delay was not timed. The operator's informal estimate (20-30 s) is plausibly the viewer latency of a "Normal" latency broadcast, but that is an inference, not a measurement.
+
+**Verdict: YES.** A caption POST to the broadcast's ingestion URL renders in the YouTube player's native CC for ASCII and non-ASCII text. Delay is PENDING.
+
+## Findings for plans 004, 005 and 006
+
+- **Caption URL is as secret as the stream key.** The `cid` of `closedCaptionsIngestionUrl` has the same value as `streamName`. Never log it or return it to the browser (plan 006 already says so).
+- **Use `https` for the caption POST.** The API returns an `http://` URL, but `https://` is accepted. A client that posts to the returned URL as-is sends the secret in clear text.
+- **Timestamps must stay within 60 s of YouTube's clock.** A caption that sat in a queue for more than about a minute is rejected with 400, and so is every caption if the host clock is off by more than 60 s. Plan 006's sender should clamp or drop old items.
+- **Live broadcasts cannot have their caption settings updated, even to the same value.** Plan 006 Step 2 checks the lifecycle status first and the "already `closedCaptionsHttpPost`" shortcut after. With this order a broadcast that was already set to "POST captions to URL" in Studio and then went live would be refused. The check for "already `closedCaptionsHttpPost`" should come first and return without a PUT; only otherwise should a non-`created`/`ready` status raise the "set it up in Studio" error.
+- **`isDefaultStream` is not returned** by `liveStreams.list` on this channel. Plan 005 should not rely on it; `isReusable` was present.
+- **`youtube.readonly` also returned `streamName`** in this run (scope isolation unconfirmed), so a read-only grant still exposes the stream key. Plan 005 should say so in its consent copy.
+- **The API also returns `rtmpsIngestionAddress`** (`rtmps://a.rtmps.youtube.com/live2`), which plan 004 can use when it relays to YouTube.
 
 ## Documentation gap to decide
 
