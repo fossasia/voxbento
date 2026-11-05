@@ -322,10 +322,16 @@ async def test_user_menu_carries_its_own_colour_tokens():
     css = (Path(__file__).resolve().parent.parent / "portal" / "static" / "css" / "app-header.css").read_text()
     token_block = re.search(r"\.app-header,\s*\.app-user\s*\{([^}]*)\}", css)
     assert token_block is not None, "the --ah-* tokens must be defined for .app-user as well as .app-header"
-    defined = set(re.findall(r"(--ah-[a-z-]+)\s*:", token_block.group(1)))
+    values = {name: value.strip() for name, value in re.findall(r"(--ah-[a-z-]+)\s*:\s*([^;]*);", token_block.group(1))}
+    defined = set(values)
     used_by_menu = set()
     for selector_block in re.finditer(r"([^{}]*\.app-user[^{}]*)\{([^}]*)\}", css):
         used_by_menu |= set(re.findall(r"var\((--ah-[a-z-]+)\)", selector_block.group(2)))
     # --ah-gutter belongs to the header layout; every colour the menu uses must be defined.
     assert used_by_menu - {"--ah-gutter"} <= defined, used_by_menu - defined
-    assert "--ah-surface" in defined
+    # A declared but empty value, or a var() that points at another undefined token, would
+    # leave the menu background transparent again, so the surface must be a real colour.
+    assert re.fullmatch(r"#[0-9a-fA-F]{3,8}|rgba?\([^)]*\)", values["--ah-surface"]), values["--ah-surface"]
+    # The menu must also set its own stacking so it opens above the page's panels.
+    menu_rule = re.search(r"\.app-user-menu\s*\{([^}]*)\}", css)
+    assert menu_rule is not None and re.search(r"z-index\s*:\s*\d+", menu_rule.group(1)), "the menu needs a z-index"
