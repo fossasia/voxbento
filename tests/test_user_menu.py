@@ -310,3 +310,22 @@ async def test_signed_in_pages_version_their_stylesheets_and_scripts():
             assert res.status_code == 200, path
             for asset in assets:
                 assert f"/static/{asset}?v={_JS_CACHE_BUST}" in res.text, (path, asset)
+
+
+@pytest.mark.anyio
+async def test_user_menu_carries_its_own_colour_tokens():
+    # The booth's compact top bar renders the menu outside .app-header. With the tokens
+    # scoped to .app-header alone, var(--ah-surface) was undefined there and the menu
+    # opened transparent over the page (#1135).
+    from pathlib import Path
+
+    css = (Path(__file__).resolve().parent.parent / "portal" / "static" / "css" / "app-header.css").read_text()
+    token_block = re.search(r"\.app-header,\s*\.app-user\s*\{([^}]*)\}", css)
+    assert token_block is not None, "the --ah-* tokens must be defined for .app-user as well as .app-header"
+    defined = set(re.findall(r"(--ah-[a-z-]+)\s*:", token_block.group(1)))
+    used_by_menu = set()
+    for selector_block in re.finditer(r"([^{}]*\.app-user[^{}]*)\{([^}]*)\}", css):
+        used_by_menu |= set(re.findall(r"var\((--ah-[a-z-]+)\)", selector_block.group(2)))
+    # --ah-gutter belongs to the header layout; every colour the menu uses must be defined.
+    assert used_by_menu - {"--ah-gutter"} <= defined, used_by_menu - defined
+    assert "--ah-surface" in defined
