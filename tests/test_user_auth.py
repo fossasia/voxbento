@@ -80,7 +80,13 @@ class TestPasswordHashing:
         hashed = hash_password("a" * 72)
         assert verify_password("a" * 72, hashed)
         assert not verify_password("a" * 73, hashed)
-        # 72 bytes is fewer characters for non-ASCII text
+
+    @pytest.mark.anyio
+    async def test_verify_counts_bytes_not_characters(self, setup_db):
+        # "é" is 2 bytes, so 36 of them is exactly 72 bytes and 37 is too long.
+        # 37 truncated to 72 bytes would match this hash, so this catches truncation too.
+        hashed = hash_password("é" * 36)
+        assert verify_password("é" * 36, hashed)
         assert not verify_password("é" * 37, hashed)
 
 
