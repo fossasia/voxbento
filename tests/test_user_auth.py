@@ -75,6 +75,14 @@ class TestPasswordHashing:
         hashed = hash_password("correct")
         assert not verify_password("wrong", hashed)
 
+    @pytest.mark.anyio
+    async def test_verify_rejects_password_longer_than_72_bytes(self, setup_db):
+        hashed = hash_password("a" * 72)
+        assert verify_password("a" * 72, hashed)
+        assert not verify_password("a" * 73, hashed)
+        # 72 bytes is fewer characters for non-ASCII text
+        assert not verify_password("é" * 37, hashed)
+
 
 # ---------------------------------------------------------------------------
 # Registration
@@ -303,6 +311,26 @@ class TestRegistration:
             assert await get_user_by_email(s, "short@example.com") is None
 
     @pytest.mark.anyio
+    async def test_register_rejects_password_longer_than_72_bytes(self, setup_db):
+        from portal.database import get_session, get_user_by_email
+
+        long_password = "a" * 80
+        async with _client() as c:
+            resp = await c.post(
+                "/register",
+                data={
+                    "email": "long@example.com",
+                    "display_name": "Long User",
+                    "password": long_password,
+                    "password_confirm": long_password,
+                },
+            )
+        assert resp.status_code == 422
+        assert b"Password must be at most 72 bytes." in resp.content
+        async with get_session() as s:
+            assert await get_user_by_email(s, "long@example.com") is None
+
+    @pytest.mark.anyio
     async def test_register_accepts_eight_character_password(self, setup_db):
         from portal.database import get_session, get_user_by_email
 
@@ -507,6 +535,15 @@ class TestUserLogin:
             )
         assert resp.status_code == 403
         assert b"Invalid email or password" in resp.content
+
+    @pytest.mark.anyio
+    async def test_login_with_password_longer_than_72_bytes_is_rejected(self, setup_db):
+        await _create_test_user(email="login@example.com", password="securepass123")
+        async with _client() as c:
+            for email in ("login@example.com", "nobody@example.com"):
+                resp = await c.post("/login", data={"email": email, "password": "a" * 80})
+                assert resp.status_code == 403
+                assert b"Invalid email or password" in resp.content
 
     @pytest.mark.anyio
     async def test_login_with_passwordless_account_uses_generic_error(self, setup_db):
@@ -800,6 +837,14 @@ class TestPasswordReset:
             )
             assert resp_short.status_code == 400
             assert b"Password must be at least 8 characters" in resp_short.content
+
+            resp_long = await c.post(
+                "/auth/reset/retryable-token",
+                data={"password": "a" * 80},
+                follow_redirects=False,
+            )
+            assert resp_long.status_code == 400
+            assert b"Password must be at most 72 bytes." in resp_long.content
             assert b'<form method="post" action="/auth/reset/retryable-token"' in resp_short.content
             assert b"Back to Login to request a new link" not in resp_short.content
 

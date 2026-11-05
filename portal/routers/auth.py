@@ -21,12 +21,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from unilimit.integrations.fastapi import RateLimit
 
 from portal.auth import (
+    PASSWORD_TOO_LONG_MESSAGE,
     create_participant_token,
     create_token,
     create_user_token,
     decode_token,
     get_current_user,
     hash_password,
+    password_too_long,
     require_user,
     resolve_request_principal,
     verify_password,
@@ -241,6 +243,8 @@ async def register_submit(request: Request):
         errors.append("Password cannot be blank or only whitespace.")
     elif password_raw and len(password_raw) < 8:
         errors.append("Password must be at least 8 characters.")
+    elif password_raw and password_too_long(password_raw):
+        errors.append(PASSWORD_TOO_LONG_MESSAGE)
     elif password_raw and password_raw != password_confirm:
         errors.append("Passwords do not match.")
 
@@ -594,11 +598,12 @@ async def reset_password_submit(request: Request, token: str):
     form = await request.form()
     password = form.get("password", "")
 
-    if len(password) < 8:
+    if len(password) < 8 or password_too_long(password):
+        error = "Password must be at least 8 characters" if len(password) < 8 else PASSWORD_TOO_LONG_MESSAGE
         return templates.TemplateResponse(
             request=request,
             name="reset_password.html",
-            context={"token": token, "error": "Password must be at least 8 characters"},
+            context={"token": token, "error": error},
             status_code=status.HTTP_400_BAD_REQUEST,
         )
 
@@ -828,6 +833,8 @@ async def set_password_api(request: Request):
 
     if not isinstance(password, str) or len(password) < 8:
         raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
+    if password_too_long(password):
+        raise HTTPException(status_code=400, detail=PASSWORD_TOO_LONG_MESSAGE)
 
     async with get_session() as session:
         user = await get_user_by_id(session, int(user_token["sub"]))
@@ -985,6 +992,8 @@ async def invite_accept_submit(request: Request, token: str):
                 display_name = form.get("display_name", "").strip()
                 if len(submitted_password) < 8:
                     raise HTTPException(status_code=400, detail="Password must be at least 8 characters.")
+                if password_too_long(submitted_password):
+                    raise HTTPException(status_code=400, detail=PASSWORD_TOO_LONG_MESSAGE)
                 if submitted_password != raw_confirm:
                     raise HTTPException(status_code=400, detail="Passwords do not match.")
                 user.password_hash = hash_password(submitted_password)

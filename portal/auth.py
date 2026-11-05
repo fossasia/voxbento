@@ -64,11 +64,23 @@ async def is_invite_token_revoked(token_str: str, ttl: float = 5.0) -> bool:
     return True
 
 
+# bcrypt only uses the first 72 bytes of a password, and bcrypt 5 raises
+# ValueError for anything longer, so longer passwords are rejected up front.
+PASSWORD_MAX_BYTES = 72
+PASSWORD_TOO_LONG_MESSAGE = f"Password must be at most {PASSWORD_MAX_BYTES} bytes."
+
+
+def password_too_long(password: str) -> bool:
+    return len(password.encode()) > PASSWORD_MAX_BYTES
+
+
 def hash_password(password: str) -> str:
     return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
 
 
 def verify_password(password: str, password_hash: str) -> bool:
+    if password_too_long(password):
+        return False
     return bcrypt.checkpw(password.encode(), password_hash.encode())
 
 
