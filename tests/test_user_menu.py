@@ -329,9 +329,11 @@ async def test_user_menu_carries_its_own_colour_tokens():
         used_by_menu |= set(re.findall(r"var\((--ah-[a-z-]+)\)", selector_block.group(2)))
     # --ah-gutter belongs to the header layout; every colour the menu uses must be defined.
     assert used_by_menu - {"--ah-gutter"} <= defined, used_by_menu - defined
-    # A declared but empty value, or a var() that points at another undefined token, would
-    # leave the menu background transparent again, so the surface must be a real colour.
-    assert re.fullmatch(r"#[0-9a-fA-F]{3,8}|rgba?\([^)]*\)", values["--ah-surface"]), values["--ah-surface"]
+    # A declared but empty value, a var() that points at another undefined token, or a colour
+    # with an alpha channel (rgba(), #rgba, #rrggbbaa) could leave the menu see-through again,
+    # so the surface must be an opaque colour: #rgb, #rrggbb or rgb().
+    opaque_colour = r"#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})|rgb\(\s*\d{1,3}\s*,\s*\d{1,3}\s*,\s*\d{1,3}\s*\)"
+    assert re.fullmatch(opaque_colour, values["--ah-surface"]), values["--ah-surface"]
     # The menu must also set its own stacking so it opens above the page's panels.
     menu_rule = re.search(r"\.app-user-menu\s*\{([^}]*)\}", css)
     assert menu_rule is not None and re.search(r"z-index\s*:\s*\d+", menu_rule.group(1)), "the menu needs a z-index"
