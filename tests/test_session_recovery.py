@@ -45,6 +45,8 @@ def recovery(monkeypatch):
 
     monkeypatch.setattr(app.router, "lifespan_context", lifespan)
     monkeypatch.setattr(settings, "booth_access_token", "recovery-test-access")
+    # Recheck on every bundle so a revocation is observed by the next broadcast in these tests.
+    monkeypatch.setattr(tts_manager, "reauthorize_seconds", 0)
 
     async def setup():
         configure("sqlite+aiosqlite://")
@@ -408,7 +410,7 @@ def test_revoked_account_cookie_does_not_override_valid_invite(recovery, channel
 
 
 @pytest.mark.anyio
-async def test_tts_authorization_database_failure_disconnects_without_delivery():
+async def test_tts_authorization_database_failure_withholds_bundle_and_keeps_subscriber():
     from sqlalchemy.exc import OperationalError
 
     from portal.websockets.manager import TTSConnectionManager
@@ -424,16 +426,88 @@ async def test_tts_authorization_database_failure_disconnects_without_delivery()
         async def close(self, code=1000, reason=""):
             self.closed = code
 
-    async def unavailable():
-        raise OperationalError("SELECT users", {}, RuntimeError("database unavailable"))
+    database_up = False
+
+    async def authorize():
+        if not database_up:
+            raise OperationalError("SELECT users", {}, RuntimeError("database unavailable"))
 
     socket = Socket()
     manager = TTSConnectionManager()
-    manager.add(socket, 1, "en", "recovery-test-1-en", authorize=unavailable)
+    manager.add(socket, 1, "en", "recovery-test-1-en", authorize=authorize)
     await manager.broadcast_bundle(1, "en", "recovery-test-1-en", b"private", "segment", 1)
     assert socket.frames == []
-    assert socket.closed == 1011
+    assert socket.closed is None
+    assert manager.has_listeners(1, "en", "recovery-test-1-en")
+
+    database_up = True
+    await manager.broadcast_bundle(1, "en", "recovery-test-1-en", b"private", "segment", 2)
+    assert len(socket.frames) == 1
+
+
+@pytest.mark.anyio
+async def test_tts_rechecks_authorization_once_per_window():
+    from portal.auth import WSAuthError
+    from portal.websockets.manager import TTSConnectionManager
+
+    frames = []
+    closed = []
+
+    class Socket:
+        async def send_bytes(self, data):
+            frames.append(data)
+
+        async def close(self, code=1000, reason=""):
+            closed.append(code)
+
+    calls = 0
+    revoked = False
+
+    async def authorize():
+        nonlocal calls
+        calls += 1
+        if revoked:
+            raise WSAuthError("Revoked")
+
+    manager = TTSConnectionManager(reauthorize_seconds=60)
+    manager.add(Socket(), 1, "en", "recovery-test-1-en", authorize=authorize)
+    for seq in (1, 2, 3):
+        await manager.broadcast_bundle(1, "en", "recovery-test-1-en", b"pcm", "segment", seq)
+    assert calls == 1
+    assert len(frames) == 3
+
+    revoked = True
+    manager.reauthorize_seconds = 0
+    await manager.broadcast_bundle(1, "en", "recovery-test-1-en", b"pcm", "segment", 4)
+    assert calls == 2
+    assert len(frames) == 3
+    assert closed == [4003]
     assert not manager.has_listeners(1, "en", "recovery-test-1-en")
+
+
+@pytest.mark.anyio
+async def test_tts_bounds_concurrent_authorization_checks():
+    from portal.websockets.manager import TTSConnectionManager
+
+    running = 0
+    peak = 0
+
+    class Socket:
+        async def send_bytes(self, data):
+            pass
+
+    async def authorize():
+        nonlocal running, peak
+        running += 1
+        peak = max(peak, running)
+        await asyncio.sleep(0.01)
+        running -= 1
+
+    manager = TTSConnectionManager(max_concurrent_authorizations=2)
+    for _ in range(6):
+        manager.add(Socket(), 1, "en", "recovery-test-1-en", authorize=authorize)
+    await manager.broadcast_bundle(1, "en", "recovery-test-1-en", b"pcm", "segment", 1)
+    assert peak == 2
 
 
 def test_listener_routes_reject_reset_account_cookie_without_join_code(recovery):

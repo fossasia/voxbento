@@ -558,9 +558,15 @@ logger = logging.getLogger(__name__)
 
 
 class TTSConnectionManager:
-    def __init__(self) -> None:
+    def __init__(self, reauthorize_seconds: float = 5.0, max_concurrent_authorizations: int = 4) -> None:
         self._rooms: dict[str, set[WebSocket]] = {}
         self._authorizers: dict[WebSocket, Callable[[], Awaitable[None]]] = {}
+        # Rechecking on every bundle would cost one DB read per subscriber per segment, so a
+        # subscriber is rechecked at most once per window, the same staleness the booth channel allows.
+        self.reauthorize_seconds = reauthorize_seconds
+        self._authorized_at: dict[WebSocket, float] = {}
+        # Keeps a large audience from taking every pooled DB connection at once.
+        self._authorization_slots = asyncio.Semaphore(max_concurrent_authorizations)
 
     def _get_key(self, room_id: int, language_code: str, booth_id: str) -> str:
         return f"{room_id}-{language_code}-{booth_id}"
@@ -581,6 +587,7 @@ class TTSConnectionManager:
 
     def remove(self, ws: WebSocket, room_id: int, language_code: str, booth_id: str) -> None:
         self._authorizers.pop(ws, None)
+        self._authorized_at.pop(ws, None)
         key = self._get_key(room_id, language_code, booth_id)
         room = self._rooms.get(key, set())
         room.discard(ws)
@@ -621,29 +628,40 @@ class TTSConnectionManager:
         frame = struct.pack(">BI", 1, len(header_bytes)) + header_bytes + audio_bytes
 
         sockets = [(ws, self._authorizers.get(ws)) for ws in list(self._rooms.get(key, set()))]
+        check_failed = False
 
         async def deliver(ws: WebSocket, authorize: Callable[[], Awaitable[None]] | None) -> None:
+            nonlocal check_failed
             try:
                 if ws not in self._rooms.get(key, set()):
                     return
                 if authorize is not None:
-                    await authorize()
+                    checked_at = self._authorized_at.get(ws)
+                    if checked_at is None or time.monotonic() - checked_at >= self.reauthorize_seconds:
+                        started = time.monotonic()
+                        async with self._authorization_slots:
+                            await authorize()
+                        if ws in self._rooms.get(key, set()):
+                            self._authorized_at[ws] = started
                 if ws not in self._rooms.get(key, set()):
                     return
                 await ws.send_bytes(frame)
-            except (WSAuthError, SQLAlchemyError) as exc:
+            except WSAuthError:
                 self.remove(ws, room_id, language_code, booth_id)
-                code = WS_CLOSE_REVOKED if isinstance(exc, WSAuthError) else 1011
-                if code == 1011:
-                    logger.error("TTS authorization database check failed; disconnecting subscriber")
                 try:
-                    await asyncio.wait_for(ws.close(code=code), timeout=2.0)
+                    await asyncio.wait_for(ws.close(code=WS_CLOSE_REVOKED), timeout=2.0)
                 except (WebSocketDisconnect, RuntimeError, OSError, TimeoutError):
                     pass
+            except SQLAlchemyError:
+                # Withhold this bundle but keep the socket, as the booth channel does: a database
+                # blip must not disconnect the whole audience. The next bundle rechecks.
+                check_failed = True
             except Exception:
                 self.remove(ws, room_id, language_code, booth_id)
 
         await asyncio.gather(*(deliver(ws, authorize) for ws, authorize in sockets))
+        if check_failed:
+            logger.error("TTS authorization database check failed; withholding bundle for room %s", room_id)
 
 
 manager = ConnectionManager()

@@ -442,14 +442,15 @@ the cutoff.
 
 TTS subscriptions authorize Admins from their current account record, rather
 than an Admin claim saved at sign-in. Each subscription rechecks its credentials
-before sending a text/audio bundle, so existing connections cannot keep receiving
-after access is revoked or the token expires. Listener and invitation credentials
+before sending a text/audio bundle, at most once every 5 seconds, so existing connections
+stop receiving within that window after access is revoked or the token expires. Listener and invitation credentials
 keep their existing scope checks, including independent listener-code access.
 An unrelated or revoked account cookie does not hide a separately valid invitation
 cookie. Invitation authorization reads current revocation state before delivery;
-TTS subscribers are checked concurrently so one slow check does not hold up others.
-If a TTS authorization database check fails, the subscriber is disconnected with
-code 1011 before any bundle is sent, instead of remaining silently connected.
+TTS subscribers are checked concurrently so one slow check does not hold up others,
+with a small cap on simultaneous checks so a large audience cannot take every
+database connection. If a TTS authorization database check fails, that bundle is
+withheld and the subscriber stays connected; the next bundle checks again.
 
 ## Program floor source
 
