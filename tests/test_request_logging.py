@@ -78,6 +78,22 @@ def test_the_id_does_not_leak_between_requests(client):
     assert current_request_id() == ""
 
 
+def test_health_polling_is_not_logged(caplog):
+    application = FastAPI()
+    application.add_middleware(RequestLoggingMiddleware)
+
+    @application.get("/healthz")
+    async def healthz():
+        return {"ok": True}
+
+    with caplog.at_level(logging.INFO, logger="portal.request"):
+        response = TestClient(application).get("/healthz")
+
+    # The probe still gets an id for tracing, it just does not flood the log.
+    assert response.headers[REQUEST_ID_HEADER]
+    assert not [r for r in caplog.records if getattr(r, "event", "") == "request.completed"]
+
+
 def test_completion_is_logged_with_route_status_and_duration(client, caplog):
     with caplog.at_level(logging.INFO, logger="portal.request"):
         client.get("/items/7")
