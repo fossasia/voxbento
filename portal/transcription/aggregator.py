@@ -60,7 +60,13 @@ class CaptionAggregator:
                     },
                 )
             elif isinstance(event, FinalCaption):
-                await self._emit_final(event)
+                try:
+                    await self._emit_final(event)
+                except Exception:
+                    # The buffer was cleared when the event was produced; put it
+                    # back so a failed publish does not lose the caption.
+                    self.stream.restore(event)
+                    raise
             elif isinstance(event, ClearCaption):
                 await self.broadcast_callback(event.booth_id, {"type": "caption", "status": "clear", "text": ""})
 
