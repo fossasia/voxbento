@@ -89,8 +89,27 @@ before startup — and rewrites the message, its args, every `extra` field
   percent-encoded values
 - RTMP/RTMPS destinations, which carry the YouTube stream key in the path
 - Email addresses
-- Any `extra` field *named* like a credential (`extra={"password": …}`), whose
-  value need not look like a secret on its own
+- Any `extra` field *named* like a credential or personal detail
+  (`password`, `api_key`, `cookie`, `email`, `phone`, `full_name`, `postal`,
+  `address`, …), whose value need not look like a secret on its own
+
+### Categories with no pattern
+
+Some of the prohibited categories cannot be recognised by shape, so they are
+caller rules rather than filter rules:
+
+| Category | Status |
+|---|---|
+| Email addresses | Pattern-matched |
+| Auth tokens, API keys, webhook secrets, join codes | Pattern-matched |
+| Phone numbers, postal addresses | No such field exists in the schema; guarded by field name only |
+| Payment data | Not handled by VoxBento at all |
+| Full names | Cannot be pattern-matched — a name is just words. Log `user_id`, never a participant's display name |
+
+A person's name looks like ordinary prose, so no filter can find it. Where a
+participant display name would otherwise go in a log line, log the opaque id
+instead. The same applies to any free-text a user typed, such as booth chat:
+never log the body.
 
 Redaction is a safety net, not a licence. Do not pass a secret or an email to a
 log call and rely on the filter — log the opaque id instead:
