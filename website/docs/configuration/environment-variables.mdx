@@ -120,6 +120,17 @@ These variables control external encoder ingest and YouTube RTMPS forwarding.
 | `SELF_HOSTED_LLM_MODELS` | _(empty)_ | Comma-separated models rooms and booths may use, spelled exactly as the server names them (for Ollama, as `ollama list` shows them). The first one is the default. Each name can be at most 100 characters. Self-hosted translation is offered only when this and the URL are both set. |
 | `SELF_HOSTED_LLM_API_KEY` | _(empty)_ | Optional bearer token, for servers started with an API key (for example vLLM `--api-key`). |
 
+## Logging Variables
+
+Logs are emitted as one structured record per event, carrying a correlation ID that ties a request to the work it triggered. Secrets and personal data are redacted centrally — see [Logging](https://github.com/fossasia/voxbento/blob/dev/docs/logging.md) for the policy and the list of redacted fields.
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `LOG_LEVEL` | `INFO` | Root log level: `DEBUG`, `INFO`, `WARNING`, `ERROR` or `CRITICAL`. |
+| `LOG_FORMAT` | `text` in development, `json` otherwise | Output format. JSON is preferred in production so operators can filter on `request_id`. |
+
+Every HTTP response and WebSocket handshake carries an `X-Request-ID` header holding that correlation ID. If a reverse proxy already sets `X-Request-ID`, the portal reuses it to extend the existing trace.
+
 ## Email and Notification Variables
 
 Configured for transactional emails (invitations, password resets, hosting access approvals).
