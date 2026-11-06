@@ -42,9 +42,12 @@ Jitsi Meet Floor Conference
    TranscriptionProvider.run_stream()
         │
         ▼
-   CaptionAggregator (aggregator.py)
-   partial / final / chunk events
+   CaptionStream (caption_stream.py) — pure, no I/O
+   yields PartialCaption / FinalCaption / ClearCaption
    Sentence split threshold: ≥5 words at punctuation boundary
+        │
+        ▼
+   CaptionAggregator (aggregator.py) — the side-effect seam
         ├───────────────────────────────────────────────────────┐
         ▼                                                       ▼
    Database (TranscriptSegment)                            broadcast_transcription()
@@ -80,7 +83,8 @@ Jitsi Meet Floor Conference
 | `portal/transcription/__init__.py` | Re-exports public API; holds `shared_http_client` (AsyncClient) |
 | `portal/transcription/constants.py` | `ProviderEnum`, `ALLOWED_MODELS` dict |
 | `portal/transcription/worker.py` | `transcription_worker`, `start_transcription_worker`, `stop_transcription_worker`; `active_workers`/`active_processes` dicts |
-| `portal/transcription/aggregator.py` | `CaptionAggregator`, `CaptionState` — partial/final merging, forced finalization |
+| `portal/transcription/caption_stream.py` | `CaptionStream` — pure partial/final merging, sentence splitting, forced finalization; emits caption events |
+| `portal/transcription/aggregator.py` | `CaptionAggregator` — applies a caption event's side effects (broadcast, DB, translation, TTS, floor sequence) |
 | `portal/transcription/providers/base.py` | `TranscriptionProvider` ABC, `ProviderConfig`, `BoothTranscriptionState`, `pcm_to_wav`, `get_api_key` |
 | `portal/transcription/providers/local.py` | `LocalProvider` — faster-whisper CPU; model cache + LRU eviction |
 | `portal/transcription/providers/openai.py` | `OpenAIProvider` — whisper-1 (REST) + gpt-4o-realtime (WebSocket) |
@@ -149,6 +153,24 @@ Cancels the asyncio Task and awaits it; removes from state dicts.
 **`LocalProvider`** extends this with a 1-second overlap buffer (appends last 32000 bytes of previous chunk) and runs inference in `asyncio.to_thread`.
 
 ---
+
+## CaptionStream / CaptionAggregator split (#352)
+
+Caption buffering and its side effects are separate, so a change to subtitle
+formatting cannot break translation routing.
+
+- **`caption_stream.py` — `CaptionStream`** owns the rules and performs no I/O.
+  It is synchronous and returns events: `PartialCaption`, `FinalCaption`,
+  `ClearCaption`. Thresholds are named constants (`MAX_UTTERANCE_SECONDS=15.0`,
+  `MAX_UTTERANCE_WORDS=50`, `MIN_SENTENCE_WORDS=5`). `clock` and
+  `new_segment_id` are injectable, so timing rules are deterministic in tests.
+- **`aggregator.py` — `CaptionAggregator`** iterates those events and applies
+  the side effects: broadcast, `save_transcript_segment`, `TranslationWorker`,
+  TTS. A program-ingest floor caption takes its `seq` from
+  `rooms.floor_caption_seq` here, not from the stream's counter.
+
+Add a buffering rule to the stream and test it in `tests/test_caption_stream.py`
+with no mocks. Add a side effect to the aggregator.
 
 ## CaptionAggregator Logic
 
