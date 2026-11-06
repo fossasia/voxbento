@@ -78,6 +78,10 @@ _created_paths: set[str] = set()
 # The cache is therefore re-checked against the Control API on a short cycle.
 _paths_verified_at: float = 0.0
 _PATH_REVALIDATE_TTL = 30.0
+# A failed check retries sooner: the cache may be claiming paths that a
+# restarting MediaMTX has already lost, and waiting a full cycle keeps streams
+# without alwaysAvailable for longer than necessary.
+_PATH_REVALIDATE_RETRY_TTL = 5.0
 _PATH_LIST_PAGE_SIZE = 1000
 _MAX_PATH_LIST_PAGES = 20
 
@@ -98,12 +102,30 @@ async def _configured_mediamtx_paths(api_base: str) -> set[str] | None:
             if r.status_code != 200:
                 return None
             payload = r.json()
-            names.update(item["name"] for item in (payload.get("items") or []) if item.get("name"))
-            if page + 1 >= payload.get("pageCount", 1):
-                break
-    except (httpx.ConnectError, httpx.TimeoutException, httpx.RequestError, RuntimeError, ValueError, KeyError):
+            if not isinstance(payload, dict):
+                return None
+            items = payload.get("items") or []
+            if not isinstance(items, list):
+                return None
+            # A malformed entry makes the whole answer untrustworthy: skipping it
+            # would under-report the configured set and evict a live path.
+            if any(not isinstance(i, dict) or not isinstance(i.get("name"), str) for i in items):
+                return None
+            names.update(i["name"] for i in items)
+            page_count = payload.get("pageCount", 1)
+            if not isinstance(page_count, int):
+                return None
+            if page + 1 >= page_count:
+                return names
+    except (
+        httpx.ConnectError, httpx.TimeoutException, httpx.RequestError,
+        RuntimeError, ValueError, KeyError, TypeError, AttributeError,
+    ):
         return None
-    return names
+    # The page cap was hit before the last page. Treating a truncated list as
+    # authoritative would evict live paths, so report it as unanswerable.
+    logger.warning("MediaMTX path list exceeded %d pages; skipping revalidation", _MAX_PATH_LIST_PAGES)
+    return None
 
 
 async def _revalidate_created_paths() -> None:
@@ -123,13 +145,19 @@ async def _revalidate_created_paths() -> None:
         return
 
     _paths_verified_at = now
+    # Snapshot before awaiting: a concurrent _ensure_mediamtx_path may add a
+    # path while the list request is in flight, and that path would be absent
+    # from the response through no fault of MediaMTX.
+    known_paths = set(_created_paths)
+
     configured = await _configured_mediamtx_paths(api_base)
     if configured is None:
         _path_list_outage.failed()
+        _paths_verified_at = now - _PATH_REVALIDATE_TTL + _PATH_REVALIDATE_RETRY_TTL
         return
     _path_list_outage.recovered()
 
-    dropped = _created_paths - configured
+    dropped = known_paths - configured
     if dropped:
         _created_paths.difference_update(dropped)
         # Expected after a MediaMTX restart; the next request re-adds each path.

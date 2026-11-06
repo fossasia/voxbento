@@ -201,6 +201,101 @@ async def test_a_failing_control_api_does_not_stampede(mtx, monkeypatch):
     assert client.list_calls == 1
 
 
+async def test_a_path_added_during_the_list_call_is_not_dropped(mtx, monkeypatch):
+    """A concurrent ensure must not have its cache entry evicted (race)."""
+
+    class _SlowList(_FakeClient):
+        async def get(self, url, params=None, timeout=None):
+            # Stand in for the await: another request adds a path mid-flight.
+            utils_mod._created_paths.add("demo/14/de")
+            return await super().get(url, params=params, timeout=timeout)
+
+    mtx(_SlowList(configured={CHANNEL}))
+    utils_mod._created_paths.add(CHANNEL)
+    monkeypatch.setattr(utils_mod.time, "monotonic", lambda: 10_000.0)
+
+    await utils_mod._revalidate_created_paths()
+
+    assert "demo/14/de" in utils_mod._created_paths
+    assert CHANNEL in utils_mod._created_paths
+
+
+async def test_a_failed_check_retries_sooner_than_a_full_window(mtx, monkeypatch):
+    client = mtx(_FakeClient(list_fails=True))
+    utils_mod._created_paths.add(CHANNEL)
+    clock = {"now": 10_000.0}
+    monkeypatch.setattr(utils_mod.time, "monotonic", lambda: clock["now"])
+
+    await utils_mod._revalidate_created_paths()
+    assert client.list_calls == 1
+
+    clock["now"] += utils_mod._PATH_REVALIDATE_RETRY_TTL + 0.1
+    await utils_mod._revalidate_created_paths()
+    assert client.list_calls == 2
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        ["not", "a", "dict"],
+        {"items": "not-a-list", "pageCount": 1},
+        {"items": [{"name": CHANNEL}], "pageCount": "lots"},
+        {"items": ["not-a-dict"], "pageCount": 1},
+        {"items": [{"name": 42}], "pageCount": 1},
+    ],
+)
+async def test_a_malformed_list_response_keeps_the_cache_and_does_not_raise(mtx, monkeypatch, payload):
+    class _Malformed(_FakeClient):
+        async def get(self, url, params=None, timeout=None):
+            self.list_calls += 1
+            return _FakeResponse(200, payload)
+
+    mtx(_Malformed())
+    utils_mod._created_paths.add(CHANNEL)
+    monkeypatch.setattr(utils_mod.time, "monotonic", lambda: 10_000.0)
+
+    # A bad payload must not surface as a 500 on the triggering request.
+    await utils_mod._revalidate_created_paths()
+
+    assert CHANNEL in utils_mod._created_paths
+
+
+async def test_a_truncated_page_run_does_not_evict_anything(mtx, monkeypatch):
+    """Hitting the page cap means the list is incomplete, not authoritative."""
+
+    class _EndlessPages(_FakeClient):
+        async def get(self, url, params=None, timeout=None):
+            self.list_calls += 1
+            return _FakeResponse(200, {"items": [], "pageCount": 10_000})
+
+    client = mtx(_EndlessPages())
+    utils_mod._created_paths.add(CHANNEL)
+    monkeypatch.setattr(utils_mod.time, "monotonic", lambda: 10_000.0)
+
+    await utils_mod._revalidate_created_paths()
+
+    assert CHANNEL in utils_mod._created_paths
+    assert client.list_calls == utils_mod._MAX_PATH_LIST_PAGES
+
+
+async def test_every_page_of_a_multi_page_list_is_read(mtx, monkeypatch):
+    class _TwoPages(_FakeClient):
+        async def get(self, url, params=None, timeout=None):
+            self.list_calls += 1
+            page = (params or {}).get("page", 0)
+            items = [{"name": CHANNEL}] if page == 0 else [{"name": "demo/14/fr"}]
+            return _FakeResponse(200, {"items": items, "pageCount": 2})
+
+    mtx(_TwoPages())
+    utils_mod._created_paths.update({CHANNEL, "demo/14/fr"})
+    monkeypatch.setattr(utils_mod.time, "monotonic", lambda: 10_000.0)
+
+    await utils_mod._revalidate_created_paths()
+
+    # A name only on page 2 must not be mistaken for a dropped path.
+    assert utils_mod._created_paths == {CHANNEL, "demo/14/fr"}
+
+
 async def test_revalidation_is_skipped_without_a_control_api_base(mtx, monkeypatch):
     client = mtx(_FakeClient())
     monkeypatch.setattr(utils_mod.settings, "mediamtx_api_base", "")
