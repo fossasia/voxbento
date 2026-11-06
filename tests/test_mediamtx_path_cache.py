@@ -88,7 +88,7 @@ async def test_a_cached_path_skips_the_add_call(mtx, monkeypatch):
 
 async def test_a_mediamtx_restart_invalidates_the_cache(mtx, monkeypatch):
     # The portal believes the path exists; MediaMTX restarted and lost it.
-    client = mtx(_FakeClient(configured=set()))
+    mtx(_FakeClient(configured=set()))
     utils_mod._created_paths.add(CHANNEL)
     monkeypatch.setattr(utils_mod.time, "monotonic", lambda: 10_000.0)
 
@@ -121,7 +121,7 @@ async def test_an_existing_path_is_patched_to_restore_always_available(mtx, monk
 
 
 async def test_revalidation_keeps_paths_mediamtx_still_has(mtx, monkeypatch):
-    client = mtx(_FakeClient(configured={CHANNEL, "demo/14/fr"}))
+    mtx(_FakeClient(configured={CHANNEL, "demo/14/fr"}))
     utils_mod._created_paths.update({CHANNEL, "demo/14/fr"})
     monkeypatch.setattr(utils_mod.time, "monotonic", lambda: 10_000.0)
 
@@ -131,7 +131,7 @@ async def test_revalidation_keeps_paths_mediamtx_still_has(mtx, monkeypatch):
 
 
 async def test_revalidation_drops_only_the_missing_paths(mtx, monkeypatch):
-    client = mtx(_FakeClient(configured={CHANNEL}))
+    mtx(_FakeClient(configured={CHANNEL}))
     utils_mod._created_paths.update({CHANNEL, "demo/14/fr"})
     monkeypatch.setattr(utils_mod.time, "monotonic", lambda: 10_000.0)
 
@@ -166,7 +166,7 @@ async def test_revalidation_skips_entirely_when_nothing_is_cached(mtx, monkeypat
 
 
 async def test_an_unreachable_control_api_is_non_fatal_and_keeps_the_cache(mtx, monkeypatch):
-    client = mtx(_FakeClient(configured={CHANNEL}, list_fails=True))
+    mtx(_FakeClient(configured={CHANNEL}, list_fails=True))
     utils_mod._created_paths.add(CHANNEL)
     monkeypatch.setattr(utils_mod.time, "monotonic", lambda: 10_000.0)
 
@@ -179,7 +179,7 @@ async def test_an_unreachable_control_api_is_non_fatal_and_keeps_the_cache(mtx, 
 async def test_an_unreachable_control_api_is_observable(mtx, monkeypatch, caplog):
     import logging
 
-    client = mtx(_FakeClient(list_fails=True))
+    mtx(_FakeClient(list_fails=True))
     utils_mod._created_paths.add(CHANNEL)
     monkeypatch.setattr(utils_mod.time, "monotonic", lambda: 10_000.0)
 
