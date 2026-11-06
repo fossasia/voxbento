@@ -115,6 +115,27 @@ def test_health_polling_is_not_logged(caplog):
     assert not [r for r in caplog.records if getattr(r, "event", "") == "request.completed"]
 
 
+async def test_a_response_without_a_headers_key_does_not_crash():
+    """"headers" is optional on http.response.start per the ASGI spec."""
+    sent: list = []
+
+    async def bare_app(scope, receive, send):
+        await send({"type": "http.response.start", "status": 204})
+        await send({"type": "http.response.body", "body": b""})
+
+    async def capture(message):
+        sent.append(message)
+
+    await RequestLoggingMiddleware(bare_app)(
+        {"type": "http", "method": "GET", "path": "/bare", "headers": []},
+        None,
+        capture,
+    )
+
+    headers = dict(sent[0]["headers"])
+    assert headers[REQUEST_ID_HEADER.encode()]
+
+
 def test_a_failing_health_probe_is_still_logged(caplog):
     application = FastAPI()
     application.add_middleware(RequestLoggingMiddleware)

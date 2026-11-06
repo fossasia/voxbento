@@ -81,6 +81,9 @@ class RequestLoggingMiddleware:
             nonlocal status_code
             if message["type"] == "http.response.start":
                 status_code = message["status"]
+                # "headers" is optional in the ASGI spec, and MutableHeaders
+                # indexes it directly, so an app that omits it would KeyError.
+                message.setdefault("headers", [])
                 MutableHeaders(scope=message).append(REQUEST_ID_HEADER, request_id)
             elif message["type"] == "websocket.accept":
                 # The handshake response carries headers too, so a socket client

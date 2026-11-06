@@ -67,8 +67,11 @@ def redact(text: str) -> str:
 # An extra field named like a credential is redacted whole: its value need not
 # look like a secret on its own (extra={"password": "hunter2"}).
 _SENSITIVE_FIELD_RE = re.compile(
-    r"(?i)(token|api_?key|secret|password|passwd|signature|credential|authorization"
-    r"|cookie|email|join_code|phone|full_name|postal|address)"
+    # Deliberately not the bare words "key" or "code": those also name
+    # operational fields (an outcome code, a cache key) whose loss would make
+    # the logs less useful without protecting anything.
+    r"(?i)(token|api_?key|stream_key|secret|password|passwd|signature|credential"
+    r"|authorization|cookie|email|join_code|phone|full_name|postal|address)"
 )
 
 
@@ -156,8 +159,16 @@ class RedactionFilter(logging.Filter):
             if key not in _RESERVED_RECORD_FIELDS:
                 record.__dict__[key] = _redact_structure(value, name=key)
         # A traceback can carry a credential in its message or a local's repr.
-        if record.exc_text:
+        # exc_text is normally still empty here — the formatter fills it later —
+        # so it is rendered and redacted now. A standard formatter reuses a
+        # populated exc_text rather than re-rendering, which means a handler
+        # the host installed also gets the redacted version.
+        if record.exc_info and not record.exc_text:
+            record.exc_text = redact(logging.Formatter().formatException(record.exc_info))
+        elif record.exc_text:
             record.exc_text = redact(record.exc_text)
+        if record.stack_info:
+            record.stack_info = redact(record.stack_info)
         return True
 
 
