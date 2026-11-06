@@ -27,8 +27,9 @@ _PLACEHOLDER = "[REDACTED]"
 _REDACTIONS: tuple[tuple[re.Pattern[str], str], ...] = (
     # JWTs — user_token, session_token, listener and participant tokens.
     (re.compile(r"eyJ[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]+"), _PLACEHOLDER),
-    # Authorization headers and bearer tickets.
-    (re.compile(r"(?i)\b(bearer|token)\s+\S+"), r"\1 " + _PLACEHOLDER),
+    # Authorization headers and bearer tickets. The value must look like a real
+    # credential, so a "%s" placeholder in a format string is left intact.
+    (re.compile(r"(?i)\b(bearer|token)\s+[A-Za-z0-9._~+/=-]{8,}"), r"\1 " + _PLACEHOLDER),
     # Webhook signing secrets.
     (re.compile(r"\bwhsec_[A-Za-z0-9_-]+"), _PLACEHOLDER),
     # Query-string and form-encoded credentials.
@@ -36,7 +37,8 @@ _REDACTIONS: tuple[tuple[re.Pattern[str], str], ...] = (
         re.compile(
             r"(?i)\b(token|key|api_key|apikey|client_secret|secret|code|access_token"
             r"|refresh_token|password|passwd|signature|stream_key|join_code)"
-            r"(=|\"?\s*[:=]\s*\"?)[^&\s,;}\"\']+"
+            # "%" is excluded so "token=%s" keeps its placeholder.
+            r"(=|\"?\s*[:=]\s*\"?)[^&\s,;}\"\'%]+"
         ),
         r"\1\2" + _PLACEHOLDER,
     ),
@@ -56,6 +58,17 @@ def redact(text: str) -> str:
 
 def _redact_value(value: Any) -> Any:
     return redact(value) if isinstance(value, str) else value
+
+
+def _redact_format_string(msg: str) -> str:
+    """Redact a format string without disturbing its "%" placeholders.
+
+    A pattern that swallowed a placeholder would make the record fail to
+    interpolate and lose the log line entirely, so a redaction that changes
+    the placeholder count is discarded and the args pass redacted instead.
+    """
+    cleaned = redact(msg)
+    return cleaned if cleaned.count("%") == msg.count("%") else msg
 
 
 def new_request_id() -> str:
@@ -95,7 +108,7 @@ class RedactionFilter(logging.Filter):
 
     def filter(self, record: logging.LogRecord) -> bool:
         if isinstance(record.msg, str):
-            record.msg = redact(record.msg)
+            record.msg = _redact_format_string(record.msg) if record.args else redact(record.msg)
         if isinstance(record.args, tuple):
             record.args = tuple(_redact_value(value) for value in record.args)
         elif isinstance(record.args, dict):
@@ -114,7 +127,9 @@ class JsonFormatter(logging.Formatter):
             "ts": self.formatTime(record, "%Y-%m-%dT%H:%M:%S%z"),
             "level": record.levelname,
             "logger": record.name,
-            "msg": record.getMessage(),
+            # Redacted after interpolation, which catches a secret that only
+            # forms once an arg lands in its placeholder (e.g. "token=%s").
+            "msg": redact(record.getMessage()),
         }
         request_id = getattr(record, "request_id", "")
         if request_id:
@@ -136,7 +151,8 @@ class TextFormatter(logging.Formatter):
         super().__init__("%(asctime)s %(levelname)-7s %(name)s %(message)s")
 
     def format(self, record: logging.LogRecord) -> str:
-        line = super().format(record)
+        # Redacted after interpolation, for the same reason as JsonFormatter.
+        line = redact(super().format(record))
         request_id = getattr(record, "request_id", "")
         extras = " ".join(
             f"{key}={value}"
