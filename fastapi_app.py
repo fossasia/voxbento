@@ -21,7 +21,9 @@ from portal.auth import require_owner_or_coordinator
 from portal.config import settings
 from portal.exceptions import RedirectRequired
 from portal.globals import asset_version_context
+from portal.logging_config import configure_logging
 from portal.rate_limit import auth_rate_limiter, login_limiter, token_rate_limiter
+from portal.request_logging import RequestLoggingMiddleware
 from portal.routers.admin import router as admin_router
 from portal.routers.api import router as api_router
 from portal.routers.api_v1 import router as api_v1_router
@@ -66,6 +68,7 @@ async def lifespan(app: FastAPI):
     from portal.tts import demo_gen as dg
     from portal.tts.demo_gen import ensure_demo_generated
 
+    configure_logging()
     settings.validate_production_secrets()
 
     pg.shared_http_client = httpx.AsyncClient(timeout=10.0)
@@ -101,8 +104,6 @@ async def lifespan(app: FastAPI):
 
     dg.track_task(asyncio.create_task(_gen()))
 
-    logging.getLogger("uvicorn.access").addFilter(_UvicornTokenRedactor())
-    logging.getLogger("uvicorn.access").addFilter(_HealthCheckFilter())
     yield
 
     tasks_to_cancel = [reaper_task, webhook_task, notification_task, rate_limit_cleanup_task, meeting_task]
@@ -116,41 +117,10 @@ async def lifespan(app: FastAPI):
         await pg.shared_http_client.aclose()
 
 
-class _HealthCheckFilter(logging.Filter):
-    def filter(self, record):
-        try:
-            return record.getMessage().find("GET /healthz") == -1
-        except Exception:
-            return True
-
-
-class _UvicornTokenRedactor(logging.Filter):
-    import re as _re
-
-    _TOKEN_RE = _re.compile(r"(?i)((?:^|&|\?)(?:token|client_secret|code|access_token|refresh_token|key)=)[^&\s]*")
-
-    def filter(self, record):
-        try:
-            message = record.getMessage()
-        except Exception:
-            return True
-
-        lowered = message.casefold()
-        if self._TOKEN_RE.search(message) and any(
-            x in lowered for x in ["/api/", "/embed/", "/overlay/", "/ws/", "/oauth/", "/internal/"]
-        ):
-            if isinstance(record.msg, str):
-                record.msg = self._TOKEN_RE.sub(r"\1[REDACTED]", record.msg)
-            if isinstance(record.args, tuple):
-                record.args = tuple(
-                    self._TOKEN_RE.sub(r"\1[REDACTED]", value) if isinstance(value, str) else value
-                    for value in record.args
-                )
-        return True
-
-
 app = FastAPI(title="Voxbento", version="1.0.0", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
 app.add_middleware(WorkspaceRoutingMiddleware)
+# Outermost, so the correlation id is bound before any other middleware logs.
+app.add_middleware(RequestLoggingMiddleware)
 setup(app, login_limiter)
 
 
