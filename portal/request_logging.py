@@ -14,6 +14,10 @@ logger = logging.getLogger("portal.request")
 
 REQUEST_ID_HEADER = "x-request-id"
 
+# The load balancer polls these every few seconds; logging each one buries
+# everything else, the same reason uvicorn's access log drops them.
+_UNLOGGED_PATHS = frozenset({"/healthz"})
+
 # An upstream proxy may supply the id; keep only characters that cannot break a log line.
 _SAFE_REQUEST_ID = re.compile(r"[^A-Za-z0-9._-]")
 _MAX_INBOUND_ID_LEN = 64
@@ -81,6 +85,8 @@ class RequestLoggingMiddleware:
             )
             raise
         else:
+            if scope.get("path") in _UNLOGGED_PATHS:
+                return
             duration_ms = round((time.perf_counter() - started) * 1000, 2)
             if scope["type"] == "websocket":
                 logger.info(

@@ -148,6 +148,13 @@ def test_json_formatter_emits_one_parsable_object():
     assert payload["status"] == 200
 
 
+def test_json_formatter_drops_uvicorns_ansi_copy_of_the_message():
+    # uvicorn attaches color_message with raw escape codes; it is terminal-only.
+    record = _record("Uvicorn running", color_message="Uvicorn running on \u001b[1m%s\u001b[0m")
+    payload = json.loads(JsonFormatter().format(record))
+    assert "color_message" not in payload
+
+
 def test_json_formatter_omits_an_absent_request_id():
     assert "request_id" not in json.loads(JsonFormatter().format(_record("plain")))
 

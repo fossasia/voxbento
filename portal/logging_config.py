@@ -18,6 +18,9 @@ _RESERVED_RECORD_FIELDS = frozenset(
         "levelname", "levelno", "lineno", "module", "msecs", "message", "msg", "name",
         "pathname", "process", "processName", "relativeCreated", "stack_info",
         "taskName", "thread", "threadName", "request_id",
+        # uvicorn attaches an ANSI-coloured copy of its own message; it is for a
+        # terminal handler, not for structured output.
+        "color_message",
     }
 )
 
