@@ -42,9 +42,12 @@ logger.info("transcription started", extra={"event": "transcription.started", "r
  "event":"transcription.started","room_id":14}
 ```
 
-An upstream proxy may supply `X-Request-ID` to extend an existing trace. The
-value is untrusted input: it is stripped to `[A-Za-z0-9._-]` and capped at 64
-characters so it cannot forge fields or inject a newline into a log line.
+The id is always minted by the portal. An upstream `X-Request-ID` is recorded
+beside it as `upstream_request_id` rather than adopted — these endpoints are
+public, so honouring the header would let a caller file its activity under
+another trace's id. The supplied value is untrusted input either way: it is
+stripped to `[A-Za-z0-9._-]` and capped at 64 characters so it cannot forge a
+field or inject a newline into a log line.
 
 Background work that is not tied to a request can open its own trail with
 `set_request_id(new_request_id())`, and must `reset_request_id(token)` afterwards.
@@ -56,7 +59,9 @@ string, so records group cleanly.
 
 - **Requests** — handled by the middleware: method, route template, status,
   duration. The route *template* is logged (`/items/{item_id}`), never the
-  concrete path, to keep ids out of the label and cardinality low.
+  concrete path, to keep ids out of the label and cardinality low. A request
+  that matched no route is labelled `<unmatched>`; the concrete path is not a
+  safe fallback, because an invite or revocation URL carries its token in it.
 - **Lifecycle** — booth, transcription, relay and meeting-agent transitions,
   with opaque ids (`booth_id`, `room_id`, `event_id`, `user_id`).
 - **Outbound calls** — operation, status, duration, retry count. Never headers
@@ -71,17 +76,21 @@ for a degraded-but-handled condition (including a 5xx response), `ERROR` with
 
 ## What is never logged
 
-The redaction filter runs on every handler and rewrites the message, its args,
-and any string `extra` field. It covers:
+The redaction filter runs on every handler — including any the host installed
+before startup — and rewrites the message, its args, every `extra` field
+(recursing into dicts and lists) and the formatted traceback. It covers:
 
 - JWTs — `user_token`, `session_token`, listener and participant tokens
-- `Authorization` headers and booth publish tickets
+- `Authorization` headers, both `Bearer` and `Basic`, and booth publish tickets
 - Webhook signing secrets (`whsec_…`)
-- Query-string and form credentials — `token`, `key`, `api_key`,
-  `client_secret`, `code`, `access_token`, `refresh_token`, `password`,
-  `signature`, `stream_key`, `join_code`
+- Query-string, form and Python-mapping credentials — `token`, `key`,
+  `api_key`, `client_secret`, `code`, `access_token`, `refresh_token`,
+  `password`, `signature`, `stream_key`, `join_code` — including
+  percent-encoded values
 - RTMP/RTMPS destinations, which carry the YouTube stream key in the path
 - Email addresses
+- Any `extra` field *named* like a credential (`extra={"password": …}`), whose
+  value need not look like a secret on its own
 
 Redaction is a safety net, not a licence. Do not pass a secret or an email to a
 log call and rely on the filter — log the opaque id instead:

@@ -5,6 +5,7 @@ import logging
 import os
 import re
 import uuid
+from collections.abc import Mapping
 from contextvars import ContextVar
 from typing import Any
 
@@ -32,16 +33,20 @@ _REDACTIONS: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"eyJ[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]+"), _PLACEHOLDER),
     # Authorization headers and bearer tickets. The value must look like a real
     # credential, so a "%s" placeholder in a format string is left intact.
-    (re.compile(r"(?i)\b(bearer|token)\s+[A-Za-z0-9._~+/=-]{8,}"), r"\1 " + _PLACEHOLDER),
+    (re.compile(r"(?i)\b(bearer|basic|token)\s+[A-Za-z0-9._~+/=-]{8,}"), r"\1 " + _PLACEHOLDER),
     # Webhook signing secrets.
     (re.compile(r"\bwhsec_[A-Za-z0-9_-]+"), _PLACEHOLDER),
-    # Query-string and form-encoded credentials.
+    # Query-string, form-encoded and mapping-repr credentials. The separator
+    # allows either quote style so a Python dict repr ({'password': 'x'}) is
+    # covered as well as "password=x" and '"password": "x"'.
     (
         re.compile(
             r"(?i)\b(token|key|api_key|apikey|client_secret|secret|code|access_token"
             r"|refresh_token|password|passwd|signature|stream_key|join_code)"
-            # "%" is excluded so "token=%s" keeps its placeholder.
-            r"(=|\"?\s*[:=]\s*\"?)[^&\s,;}\"\'%]+"
+            r"(['\"]?\s*[:=]\s*['\"]?)"
+            # A percent escape is part of the value, but a bare "%" is not, so
+            # "token=%s" keeps its format placeholder while "token=a%2Fb" is covered.
+            r"(?:%[0-9A-Fa-f]{2}|[^&\s,;}\"\'%])+"
         ),
         r"\1\2" + _PLACEHOLDER,
     ),
@@ -59,7 +64,37 @@ def redact(text: str) -> str:
     return text
 
 
-def _redact_value(value: Any) -> Any:
+# An extra field named like a credential is redacted whole: its value need not
+# look like a secret on its own (extra={"password": "hunter2"}).
+_SENSITIVE_FIELD_RE = re.compile(
+    r"(?i)(token|api_?key|secret|password|passwd|signature|credential|authorization|cookie|email|join_code)"
+)
+
+
+def _is_sensitive_name(name: str) -> bool:
+    return bool(_SENSITIVE_FIELD_RE.search(name))
+
+
+def _redact_structure(value: object, *, name: str = "") -> object:
+    """Redact a value of any shape, recursing into containers.
+
+    A log call may pass a dict or a list as an `extra` field, and a secret
+    nested inside it reaches the formatter untouched unless it is walked.
+    """
+    if name and _is_sensitive_name(name):
+        return _PLACEHOLDER
+    if isinstance(value, str):
+        return redact(value)
+    if isinstance(value, Mapping):
+        return {k: _redact_structure(v, name=str(k)) for k, v in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [_redact_structure(v) for v in value]
+    if value is None or isinstance(value, (bool, int, float)):
+        return value
+    return redact(str(value))
+
+
+def _redact_value(value: object) -> object:
     return redact(value) if isinstance(value, str) else value
 
 
@@ -117,8 +152,11 @@ class RedactionFilter(logging.Filter):
         elif isinstance(record.args, dict):
             record.args = {key: _redact_value(value) for key, value in record.args.items()}
         for key, value in list(record.__dict__.items()):
-            if key not in _RESERVED_RECORD_FIELDS and isinstance(value, str):
-                record.__dict__[key] = redact(value)
+            if key not in _RESERVED_RECORD_FIELDS:
+                record.__dict__[key] = _redact_structure(value, name=key)
+        # A traceback can carry a credential in its message or a local's repr.
+        if record.exc_text:
+            record.exc_text = redact(record.exc_text)
         return True
 
 
@@ -140,10 +178,12 @@ class JsonFormatter(logging.Formatter):
         for key, value in record.__dict__.items():
             if key not in _RESERVED_RECORD_FIELDS:
                 payload[key] = value
+        # A traceback or stack dump can quote a credential, an email or a local's
+        # repr, so both go through redaction like any other message.
         if record.exc_info:
-            payload["exc"] = self.formatException(record.exc_info)
+            payload["exc"] = redact(self.formatException(record.exc_info))
         if record.stack_info:
-            payload["stack"] = self.formatStack(record.stack_info)
+            payload["stack"] = redact(self.formatStack(record.stack_info))
         return json.dumps(payload, default=str, ensure_ascii=False)
 
 
@@ -215,10 +255,20 @@ def configure_logging(*, level: str | None = None, json_output: bool | None = No
     root.addHandler(handler)
     root.setLevel(_resolve_level(level))
 
+    # A handler the host installed before startup would otherwise emit records
+    # unredacted. Its output is not ours to remove, but it must not leak.
+    for existing in root.handlers:
+        if not getattr(existing, "_voxbento", False):
+            existing.addFilter(RequestIdFilter())
+            existing.addFilter(RedactionFilter())
+
     # uvicorn ships its own handlers; let its records flow through ours instead
-    # so they are redacted and carry the correlation id too.
+    # so they are redacted and carry the correlation id too. Its loggers also
+    # pin an explicit INFO level, which would ignore LOG_LEVEL, so they are
+    # reset to NOTSET and inherit the root level like everything else.
     for name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
         uvicorn_logger = logging.getLogger(name)
         uvicorn_logger.handlers.clear()
+        uvicorn_logger.setLevel(logging.NOTSET)
         uvicorn_logger.propagate = True
     logging.getLogger("uvicorn.access").addFilter(HealthCheckFilter())

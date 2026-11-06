@@ -108,6 +108,64 @@ def test_redaction_filter_scrubs_extra_fields():
     assert "dave@example.com" not in record.target
 
 
+@pytest.mark.parametrize(
+    "raw,leaked",
+    [
+        ("params {'password': 'hunter2'}", "hunter2"),
+        ('params {"client_secret": "s3cr3t"}', "s3cr3t"),
+        ("Authorization: Basic dXNlcjpwYXNzd29yZA==", "dXNlcjpwYXNzd29yZA=="),
+        ("GET /x?token=abc%2Fdef%2Fghi", "abc%2Fdef%2Fghi"),
+    ],
+)
+def test_redact_covers_mapping_reprs_basic_auth_and_encoded_values(raw, leaked):
+    cleaned = redact(raw)
+    assert leaked not in cleaned
+    assert "[REDACTED]" in cleaned
+
+
+def test_redaction_filter_scrubs_a_credential_named_extra():
+    # The value looks like nothing on its own; the field name is the signal.
+    record = _record("saved", password="hunter2")
+    RedactionFilter().filter(record)
+    assert record.password == "[REDACTED]"
+
+
+def test_redaction_filter_recurses_into_a_nested_extra():
+    record = _record("sent", context={"user": {"email": "gina@example.com"}, "ok": True})
+    RedactionFilter().filter(record)
+    assert "gina@example.com" not in json.dumps(record.context)
+
+
+def test_redaction_filter_recurses_into_a_list_extra():
+    record = _record("sent", recipients=["h@example.com", "i@example.com"])
+    RedactionFilter().filter(record)
+    assert not [r for r in record.recipients if "@example.com" in r]
+
+
+def test_json_formatter_redacts_the_traceback():
+    import sys
+
+    try:
+        raise ValueError("rejected token=sekritvalue for jane@example.com")
+    except ValueError:
+        record = _record("failed")
+        record.exc_info = sys.exc_info()
+    payload = json.loads(JsonFormatter().format(record))
+    assert "sekritvalue" not in payload["exc"]
+    assert "jane@example.com" not in payload["exc"]
+
+
+def test_text_formatter_redacts_the_traceback():
+    import sys
+
+    try:
+        raise ValueError("rejected kyle@example.com")
+    except ValueError:
+        record = _record("failed")
+        record.exc_info = sys.exc_info()
+    assert "kyle@example.com" not in TextFormatter().format(record)
+
+
 def test_redaction_filter_leaves_non_string_extras_alone():
     record = _record("done", status=204, duration_ms=12.5)
     RedactionFilter().filter(record)
@@ -189,10 +247,37 @@ def test_configure_logging_is_idempotent():
 
 
 def test_configure_logging_installs_redaction_on_the_handler(capsys):
-    configure_logging(json_output=True)
+    configure_logging(level="INFO", json_output=True)
     logging.getLogger("portal.test.redaction").info("signed in as erin@example.com")
-    captured = capsys.readouterr()
-    assert "erin@example.com" not in (captured.err + captured.out)
+    output = "".join(capsys.readouterr())
+    # Assert the record was emitted *and* redacted — absence alone would also
+    # pass if logging had dropped the record entirely.
+    assert "signed in as [REDACTED]" in output
+    assert "erin@example.com" not in output
+
+
+def test_configure_logging_redacts_through_a_preexisting_handler(capsys):
+    """A handler installed before startup must not emit records unredacted."""
+    root = logging.getLogger()
+    foreign = logging.StreamHandler()
+    foreign.setFormatter(logging.Formatter("%(message)s"))
+    root.addHandler(foreign)
+    try:
+        configure_logging(level="INFO", json_output=True)
+        logging.getLogger("portal.test.foreign").info("code=ROOM42 for frank@example.com")
+        output = "".join(capsys.readouterr())
+        assert "ROOM42" not in output
+        assert "frank@example.com" not in output
+    finally:
+        root.removeHandler(foreign)
+
+
+def test_configure_logging_applies_the_level_to_uvicorn(capsys):
+    configure_logging(level="ERROR", json_output=True)
+    # uvicorn pins its loggers to INFO; without a reset those records would
+    # still be emitted when LOG_LEVEL asks for ERROR.
+    logging.getLogger("uvicorn.access").info("GET / 200")
+    assert "GET / 200" not in "".join(capsys.readouterr())
 
 
 def test_configure_logging_routes_uvicorn_through_our_handler():
