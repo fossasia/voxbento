@@ -67,7 +67,8 @@ def redact(text: str) -> str:
 # An extra field named like a credential is redacted whole: its value need not
 # look like a secret on its own (extra={"password": "hunter2"}).
 _SENSITIVE_FIELD_RE = re.compile(
-    r"(?i)(token|api_?key|secret|password|passwd|signature|credential|authorization|cookie|email|join_code)"
+    r"(?i)(token|api_?key|secret|password|passwd|signature|credential|authorization"
+    r"|cookie|email|join_code|phone|full_name|postal|address)"
 )
 
 
