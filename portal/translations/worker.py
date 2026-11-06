@@ -114,6 +114,40 @@ class TranslationWorker:
     def __init__(self, broadcast_callback):
         self.broadcast_callback = broadcast_callback
 
+    def _accumulate_sentence(self, current: str | None, chunk: str = "") -> str:
+        """Accumulate sentence fragments or normalize text for completed-sentence processing."""
+        if not current:
+            return chunk.strip() if chunk else ""
+        if not chunk:
+            return current.strip()
+        c = current.strip()
+        k = chunk.strip()
+        if k in {".", ",", "!", "?", ";", ":", "..."}:
+            return f"{c}{k}"
+        return f"{c} {k}"
+
+    async def _process_completed_sentence(
+        self,
+        session,
+        room_id: int,
+        segment,
+        segment_id: int,
+        text: str,
+        booth_id_str: str,
+        uuid_segment_id: str = "",
+        seq: int = 0,
+    ) -> list | None:
+        """Process a completed sentence segment by resolving the job and executing translation tasks."""
+        job = await self._resolve_translation_job(session, room_id, segment, booth_id_str)
+        if job is None:
+            return None
+
+        tasks = self._build_language_tasks(job, segment_id, text, booth_id_str, uuid_segment_id, seq)
+        if tasks:
+            logger.error(f"[{booth_id_str}] Spawning {len(tasks)} translation tasks for active listeners")
+            await asyncio.gather(*tasks)
+        return tasks
+
     async def handle_translation(
         self, room_id: int, segment_id: int, text: str, booth_id_str: str, uuid_segment_id: str = "", seq: int = 0
     ):
@@ -132,14 +166,10 @@ class TranslationWorker:
                 "[%s] handle_translation triggered for segment %s (len=%s)", booth_id_str, segment_id, len(text)
             )
 
-            job = await self._resolve_translation_job(session, room_id, segment, booth_id_str)
-            if job is None:
-                return
-
-            tasks = self._build_language_tasks(job, segment_id, text, booth_id_str, uuid_segment_id, seq)
-            if tasks:
-                logger.error(f"[{booth_id_str}] Spawning {len(tasks)} translation tasks for active listeners")
-                await asyncio.gather(*tasks)
+            sentence = self._accumulate_sentence(text)
+            await self._process_completed_sentence(
+                session, room_id, segment, segment_id, sentence, booth_id_str, uuid_segment_id, seq
+            )
 
     async def _resolve_translation_job(
         self, session, room_id: int, segment, booth_id_str: str

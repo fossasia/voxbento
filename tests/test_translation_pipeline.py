@@ -428,8 +428,20 @@ async def test_queue_counter_restored_when_glossary_lookup_cancelled(db_data, mo
     with patch("portal.translations.worker.resolve_vocabulary_entries", new=hanging_lookup):
         task = asyncio.create_task(
             worker._translate_and_broadcast(
-                event, room, "local", "nllb", "k", lang, "Lang", "en", "English",
-                db_data["segment"].id, "Hello", "floor", "uuid", 1,
+                event,
+                room,
+                "local",
+                "nllb",
+                "k",
+                lang,
+                "Lang",
+                "en",
+                "English",
+                db_data["segment"].id,
+                "Hello",
+                "floor",
+                "uuid",
+                1,
             )
         )
         await asyncio.wait_for(started.wait(), timeout=2)
@@ -448,8 +460,20 @@ async def test_queue_counter_restored_when_glossary_lookup_cancelled(db_data, mo
                 ) as bundle:
                     room.floor_ai_vocabulary_enabled = False
                     await worker._translate_and_broadcast(
-                        event, room, "local", "nllb", "k", lang, "Lang", "en", "English",
-                        db_data["segment"].id, "Hello", "floor", "uuid2", 2,
+                        event,
+                        room,
+                        "local",
+                        "nllb",
+                        "k",
+                        lang,
+                        "Lang",
+                        "en",
+                        "English",
+                        db_data["segment"].id,
+                        "Hello",
+                        "floor",
+                        "uuid2",
+                        2,
                     )
     assert bundle.call_count >= 1
     assert worker_module.LANGUAGE_QUEUES[queue_key] == 0
@@ -718,3 +742,81 @@ async def test_translate_and_broadcast_queue_full_drops_and_broadcasts_failure(d
     finally:
         worker_module.LANGUAGE_QUEUES[queue_key] = 0
 
+
+def test_accumulate_sentence_combines_fragments_and_punctuation():
+    """Sentence accumulation handles normalization, chunk concatenation, and punctuation attachment."""
+    worker = TranslationWorker(AsyncMock())
+
+    # Single input normalization
+    assert worker._accumulate_sentence("Hello world") == "Hello world"
+    assert worker._accumulate_sentence("  Hello world  ") == "Hello world"
+
+    # Fragment concatenation
+    assert worker._accumulate_sentence("Hello", "world") == "Hello world"
+    assert worker._accumulate_sentence("  Hello  ", "  world  ") == "Hello world"
+
+    # Punctuation attachment without extra space
+    assert worker._accumulate_sentence("Hello world", "!") == "Hello world!"
+    assert worker._accumulate_sentence("Hello world", ".") == "Hello world."
+    assert worker._accumulate_sentence("Hello world", ",") == "Hello world,"
+    assert worker._accumulate_sentence("Hello world", "...") == "Hello world..."
+
+    # Empty and None cases
+    assert worker._accumulate_sentence(None, "Hello") == "Hello"
+    assert worker._accumulate_sentence("", "Hello") == "Hello"
+    assert worker._accumulate_sentence("Hello", "") == "Hello"
+    assert worker._accumulate_sentence(None, "") == ""
+
+
+@pytest.mark.anyio
+async def test_process_completed_sentence_orchestrates_tasks():
+    """_process_completed_sentence resolves the job and executes generated tasks."""
+    worker = TranslationWorker(AsyncMock())
+    mock_job = _make_resolved_job()
+    executed_tasks = []
+
+    async def fake_task():
+        executed_tasks.append("ran")
+
+    with (
+        patch.object(worker, "_resolve_translation_job", new=AsyncMock(return_value=mock_job)),
+        patch.object(worker, "_build_language_tasks", return_value=[fake_task()]),
+    ):
+        tasks = await worker._process_completed_sentence(
+            session=AsyncMock(),
+            room_id=1,
+            segment=AsyncMock(),
+            segment_id=10,
+            text="Completed sentence",
+            booth_id_str="floor",
+            uuid_segment_id="uuid-1",
+            seq=1,
+        )
+
+    assert tasks is not None
+    assert len(tasks) == 1
+    assert executed_tasks == ["ran"]
+
+
+@pytest.mark.anyio
+async def test_process_completed_sentence_aborts_when_job_unresolved():
+    """When _resolve_translation_job returns None, _process_completed_sentence returns None and aborts."""
+    worker = TranslationWorker(AsyncMock())
+
+    with (
+        patch.object(worker, "_resolve_translation_job", new=AsyncMock(return_value=None)),
+        patch.object(worker, "_build_language_tasks") as mock_build,
+    ):
+        result = await worker._process_completed_sentence(
+            session=AsyncMock(),
+            room_id=1,
+            segment=AsyncMock(),
+            segment_id=10,
+            text="Completed sentence",
+            booth_id_str="floor",
+            uuid_segment_id="uuid-1",
+            seq=1,
+        )
+
+    assert result is None
+    mock_build.assert_not_called()
