@@ -10,6 +10,7 @@ from portal.logging_config import (
     RedactionFilter,
     RequestIdFilter,
     TextFormatter,
+    _is_sensitive_name,
     configure_logging,
     current_request_id,
     new_request_id,
@@ -163,6 +164,40 @@ def test_redaction_filter_scrubs_a_credential_named_extra():
     record = _record("saved", password="hunter2")
     RedactionFilter().filter(record)
     assert record.password == "[REDACTED]"
+
+
+@pytest.mark.parametrize("name", ["private_key", "api_key", "stream_key", "signing_key", "encryption_key"])
+def test_a_qualified_key_name_is_sensitive(name):
+    assert _is_sensitive_name(name)
+
+
+@pytest.mark.parametrize("name", ["key", "code", "status", "route", "monkey", "duration_ms", "request_id"])
+def test_a_bare_key_or_code_name_stays_operational(name):
+    # "key" alone is as likely a cache key, and "code" an outcome code.
+    assert not _is_sensitive_name(name)
+
+
+@pytest.mark.anyio
+async def test_a_background_task_inherits_the_correlation_id():
+    """Work spawned during a request stays on the same trail.
+
+    asyncio copies the current context into a new task, so a save-and-translate
+    or webhook-delivery task started mid-request carries its id without being
+    passed one.
+    """
+    import asyncio
+
+    token = set_request_id("rid-parent")
+    try:
+        seen: dict[str, str] = {}
+
+        async def background() -> None:
+            seen["id"] = current_request_id()
+
+        await asyncio.create_task(background())
+        assert seen["id"] == "rid-parent"
+    finally:
+        reset_request_id(token)
 
 
 @pytest.mark.parametrize("field", ["stream_key", "api_key", "join_code", "phone", "full_name"])

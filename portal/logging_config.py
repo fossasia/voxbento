@@ -67,16 +67,19 @@ def redact(text: str) -> str:
 # An extra field named like a credential is redacted whole: its value need not
 # look like a secret on its own (extra={"password": "hunter2"}).
 _SENSITIVE_FIELD_RE = re.compile(
-    # Deliberately not the bare words "key" or "code": those also name
-    # operational fields (an outcome code, a cache key) whose loss would make
-    # the logs less useful without protecting anything.
-    r"(?i)(token|api_?key|stream_key|secret|password|passwd|signature|credential"
+    r"(?i)(token|secret|password|passwd|signature|credential"
     r"|authorization|cookie|email|join_code|phone|full_name|postal|address)"
 )
 
+# A qualified "…_key" (private_key, api_key, stream_key, signing_key) is a
+# credential. A field named exactly "key" is not: that is as likely to be a
+# cache or lookup key, and redacting it costs diagnostics for nothing. Same for
+# a bare "code", which names outcome codes.
+_QUALIFIED_KEY_RE = re.compile(r"(?i)\w+_key$|^key_\w+")
+
 
 def _is_sensitive_name(name: str) -> bool:
-    return bool(_SENSITIVE_FIELD_RE.search(name))
+    return bool(_SENSITIVE_FIELD_RE.search(name) or _QUALIFIED_KEY_RE.search(name))
 
 
 def _redact_structure(value: object, *, name: str = "") -> object:
