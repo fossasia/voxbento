@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import time
 from urllib.parse import urlparse
 
@@ -12,6 +13,9 @@ from fastapi.security import HTTPAuthorizationCredentials
 from portal.auth import decode_token, is_listener_token
 from portal.config import settings
 from portal.globals import booths, get_http_client
+from portal.outage_log import OutageLog
+
+logger = logging.getLogger(__name__)
 
 
 def safe_redirect(url: str, status_code: int = status.HTTP_303_SEE_OTHER) -> RedirectResponse:
@@ -69,6 +73,68 @@ async def _check_mediamtx() -> bool:
 # to avoid redundant API calls on every page load.
 _created_paths: set[str] = set()
 
+# MediaMTX holds its path configuration in memory, so a restart drops every
+# path this process added while the cache above still claims they exist (#729).
+# The cache is therefore re-checked against the Control API on a short cycle.
+_paths_verified_at: float = 0.0
+_PATH_REVALIDATE_TTL = 30.0
+_PATH_LIST_PAGE_SIZE = 1000
+_MAX_PATH_LIST_PAGES = 20
+
+_path_list_outage = OutageLog(logger, "mediamtx path revalidation failed")
+
+
+async def _configured_mediamtx_paths(api_base: str) -> set[str] | None:
+    """Names MediaMTX currently has configured, or None if it could not be asked."""
+    names: set[str] = set()
+    try:
+        client = get_http_client()
+        for page in range(_MAX_PATH_LIST_PAGES):
+            r = await client.get(
+                f"{api_base}/v3/config/paths/list",
+                params={"page": page, "itemsPerPage": _PATH_LIST_PAGE_SIZE},
+                timeout=3.0,
+            )
+            if r.status_code != 200:
+                return None
+            payload = r.json()
+            names.update(item["name"] for item in (payload.get("items") or []) if item.get("name"))
+            if page + 1 >= payload.get("pageCount", 1):
+                break
+    except (httpx.ConnectError, httpx.TimeoutException, httpx.RequestError, RuntimeError, ValueError, KeyError):
+        return None
+    return names
+
+
+async def _revalidate_created_paths() -> None:
+    """Forget cached paths MediaMTX no longer has, so they are added again.
+
+    One list call reconciles every cached id, keeping this off the per-request
+    path. A Control API that cannot answer leaves the cache as it is: the paths
+    cannot be recreated while it is down either, and the next cycle retries.
+    """
+    global _paths_verified_at
+    now = time.monotonic()
+    if not _created_paths or now < _paths_verified_at + _PATH_REVALIDATE_TTL:
+        return
+
+    api_base = settings.mediamtx_api_base
+    if not api_base:
+        return
+
+    _paths_verified_at = now
+    configured = await _configured_mediamtx_paths(api_base)
+    if configured is None:
+        _path_list_outage.failed()
+        return
+    _path_list_outage.recovered()
+
+    dropped = _created_paths - configured
+    if dropped:
+        _created_paths.difference_update(dropped)
+        # Expected after a MediaMTX restart; the next request re-adds each path.
+        logger.info("MediaMTX dropped %d configured path(s); cache invalidated", len(dropped))
+
 
 async def _ensure_mediamtx_path(channel_id: str) -> None:
     """Create a named MediaMTX path with alwaysAvailable if it doesn't exist.
@@ -81,6 +147,7 @@ async def _ensure_mediamtx_path(channel_id: str) -> None:
     alwaysAvailable is set (handles MediaMTX restarts where the runtime
     config was lost while the portal's in-memory cache was stale).
     """
+    await _revalidate_created_paths()
     if channel_id in _created_paths:
         return
     api_base = settings.mediamtx_api_base

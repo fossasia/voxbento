@@ -71,7 +71,7 @@ These variables configure how Voxbento talks to MediaMTX and other local Docker 
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `MEDIAMTX_API_BASE` | `http://localhost:9997` | MediaMTX Control API URL. |
+| `MEDIAMTX_API_BASE` | `http://localhost:9997` | MediaMTX Control API URL. Used to create the named `alwaysAvailable` paths that keep WHEP readers connected across publisher handoffs. The portal caches which paths it has created and re-checks that list against the Control API every 30 seconds, so a MediaMTX restart — which clears its in-memory path configuration — is picked up and the paths are recreated on the next booth or listener request. |
 | `MEDIAMTX_RTSP_BASE` | `rtsp://mediamtx:8554` | Internal RTSP URL for floor audio transcription. |
 | `MEDIAMTX_AUTH_HOOK_SECRET` | _(none)_ | Shared secret used to authenticate private internal MediaMTX webhooks to `/internal/media-auth`. Required in production. |
 | `FLOOR_BOT_BASE` | `http://floor-bot:8080` | URL for the floor-bot container. |
