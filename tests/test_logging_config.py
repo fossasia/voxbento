@@ -200,11 +200,32 @@ async def test_a_background_task_inherits_the_correlation_id():
         reset_request_id(token)
 
 
-@pytest.mark.parametrize("field", ["stream_key", "api_key", "join_code", "phone", "full_name"])
+_SENSITIVE_EXTRAS = [
+    "stream_key", "api_key", "private_key", "join_code",
+    "phone", "full_name", "postal", "address", "cookie", "password",
+]
+
+
+@pytest.mark.parametrize("field", _SENSITIVE_EXTRAS)
 def test_redaction_filter_scrubs_each_sensitive_extra_name(field):
     record = _record("saved", **{field: "abcd-efgh"})
     RedactionFilter().filter(record)
     assert getattr(record, field) == "[REDACTED]"
+
+
+@pytest.mark.parametrize("field", _SENSITIVE_EXTRAS)
+def test_redaction_filter_scrubs_a_sensitive_name_nested_in_an_extra(field):
+    record = _record("saved", context={"outer": {field: "abcd-efgh"}})
+    RedactionFilter().filter(record)
+    assert record.context["outer"][field] == "[REDACTED]"
+
+
+@pytest.mark.parametrize("field", _SENSITIVE_EXTRAS)
+def test_both_formatters_hide_a_sensitive_nested_extra(field):
+    record = _record("saved", context={field: "abcd-efgh"})
+    RedactionFilter().filter(record)
+    assert "abcd-efgh" not in JsonFormatter().format(record)
+    assert "abcd-efgh" not in TextFormatter().format(record)
 
 
 @pytest.mark.parametrize("field,value", [("status", 200), ("code", "booth_full"), ("duration_ms", 12.5)])
