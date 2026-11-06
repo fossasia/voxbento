@@ -19,6 +19,41 @@ from portal.logging_config import (
 )
 
 
+@pytest.fixture
+def isolated_logging():
+    """Restore global logging state, which configure_logging() mutates.
+
+    Without this, root handlers/levels and the uvicorn loggers stay changed for
+    every later test in the session, and records can be written to a capture
+    stream that has already been torn down.
+    """
+    root = logging.getLogger()
+    saved_handlers = list(root.handlers)
+    saved_level = root.level
+    uvicorn_names = ("uvicorn", "uvicorn.error", "uvicorn.access")
+    saved_uvicorn = {
+        name: (list(logging.getLogger(name).handlers),
+               logging.getLogger(name).level,
+               logging.getLogger(name).propagate,
+               list(logging.getLogger(name).filters))
+        for name in uvicorn_names
+    }
+    saved_filters = {id(h): list(h.filters) for h in saved_handlers}
+    try:
+        yield
+    finally:
+        root.handlers[:] = saved_handlers
+        root.setLevel(saved_level)
+        for handler in saved_handlers:
+            handler.filters[:] = saved_filters[id(handler)]
+        for name, (handlers, level, propagate, filters) in saved_uvicorn.items():
+            uvicorn_logger = logging.getLogger(name)
+            uvicorn_logger.handlers[:] = handlers
+            uvicorn_logger.setLevel(level)
+            uvicorn_logger.propagate = propagate
+            uvicorn_logger.filters[:] = filters
+
+
 def _record(msg: str, args: tuple | dict = (), **extra) -> logging.LogRecord:
     record = logging.LogRecord(
         name="portal.test", level=logging.INFO, pathname="", lineno=0, msg=msg, args=args, exc_info=None
@@ -130,6 +165,47 @@ def test_redaction_filter_scrubs_a_credential_named_extra():
     assert record.password == "[REDACTED]"
 
 
+@pytest.mark.parametrize("field", ["stream_key", "api_key", "join_code", "phone", "full_name"])
+def test_redaction_filter_scrubs_each_sensitive_extra_name(field):
+    record = _record("saved", **{field: "abcd-efgh"})
+    RedactionFilter().filter(record)
+    assert getattr(record, field) == "[REDACTED]"
+
+
+@pytest.mark.parametrize("field,value", [("status", 200), ("code", "booth_full"), ("duration_ms", 12.5)])
+def test_redaction_filter_keeps_operational_extras(field, value):
+    # A bare "code" or "key" names outcome codes too; redacting those by name
+    # would cost diagnostics without protecting anything.
+    record = _record("done", **{field: value})
+    RedactionFilter().filter(record)
+    assert getattr(record, field) == value
+
+
+def test_redaction_filter_renders_a_redacted_traceback_for_foreign_formatters():
+    import sys
+
+    try:
+        raise ValueError("rejected lee@example.com")
+    except ValueError:
+        record = _record("failed")
+        record.exc_info = sys.exc_info()
+
+    RedactionFilter().filter(record)
+
+    # A standard formatter reuses a populated exc_text instead of rendering
+    # its own, so a handler the host installed gets the redacted version.
+    assert record.exc_text
+    assert "lee@example.com" not in record.exc_text
+    assert "lee@example.com" not in logging.Formatter().format(record)
+
+
+def test_redaction_filter_scrubs_stack_info():
+    record = _record("trace")
+    record.stack_info = 'File "x.py", line 1\n  connect("mia@example.com")'
+    RedactionFilter().filter(record)
+    assert "mia@example.com" not in record.stack_info
+
+
 def test_redaction_filter_recurses_into_a_nested_extra():
     record = _record("sent", context={"user": {"email": "gina@example.com"}, "ok": True})
     RedactionFilter().filter(record)
@@ -237,7 +313,7 @@ def test_text_formatter_shows_the_request_id_and_extras():
     assert "status=200" in line
 
 
-def test_configure_logging_is_idempotent():
+def test_configure_logging_is_idempotent(isolated_logging):
     configure_logging()
     configure_logging()
     root = logging.getLogger()
@@ -246,7 +322,7 @@ def test_configure_logging_is_idempotent():
     assert len(ours) == 1
 
 
-def test_configure_logging_installs_redaction_on_the_handler(capsys):
+def test_configure_logging_installs_redaction_on_the_handler(isolated_logging, capsys):
     configure_logging(level="INFO", json_output=True)
     logging.getLogger("portal.test.redaction").info("signed in as erin@example.com")
     output = "".join(capsys.readouterr())
@@ -256,7 +332,7 @@ def test_configure_logging_installs_redaction_on_the_handler(capsys):
     assert "erin@example.com" not in output
 
 
-def test_configure_logging_redacts_through_a_preexisting_handler(capsys):
+def test_configure_logging_redacts_through_a_preexisting_handler(isolated_logging, capsys):
     """A handler installed before startup must not emit records unredacted."""
     root = logging.getLogger()
     foreign = logging.StreamHandler()
@@ -272,15 +348,21 @@ def test_configure_logging_redacts_through_a_preexisting_handler(capsys):
         root.removeHandler(foreign)
 
 
-def test_configure_logging_applies_the_level_to_uvicorn(capsys):
+def test_configure_logging_applies_the_level_to_uvicorn(isolated_logging, capsys):
     configure_logging(level="ERROR", json_output=True)
     # uvicorn pins its loggers to INFO; without a reset those records would
     # still be emitted when LOG_LEVEL asks for ERROR.
-    logging.getLogger("uvicorn.access").info("GET / 200")
-    assert "GET / 200" not in "".join(capsys.readouterr())
+    access = logging.getLogger("uvicorn.access")
+    access.info("GET / 200")
+    access.error("boom at the access layer")
+    output = "".join(capsys.readouterr())
+    assert "GET / 200" not in output
+    # Positive control: without it this would also pass if the handler wrote
+    # nowhere, or dropped every record regardless of level.
+    assert "boom at the access layer" in output
 
 
-def test_configure_logging_routes_uvicorn_through_our_handler():
+def test_configure_logging_routes_uvicorn_through_our_handler(isolated_logging):
     configure_logging()
     access = logging.getLogger("uvicorn.access")
     assert access.handlers == []
