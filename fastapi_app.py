@@ -29,7 +29,9 @@ from portal.auth import (
 from portal.config import settings
 from portal.exceptions import RedirectRequired
 from portal.globals import asset_version_context
+from portal.logging_config import configure_logging
 from portal.rate_limit import auth_rate_limiter, login_limiter, token_rate_limiter
+from portal.request_logging import RequestLoggingMiddleware
 from portal.routers.admin import router as admin_router
 from portal.routers.api import router as api_router
 from portal.routers.api_v1 import router as api_v1_router
@@ -77,6 +79,7 @@ async def lifespan(app: FastAPI):
     from portal.tts import demo_gen as dg
     from portal.tts.demo_gen import ensure_demo_generated
 
+    configure_logging()
     settings.validate_production_secrets()
 
     pg.shared_http_client = httpx.AsyncClient(timeout=10.0)
@@ -113,8 +116,6 @@ async def lifespan(app: FastAPI):
 
     dg.track_task(asyncio.create_task(_gen()))
 
-    logging.getLogger("uvicorn.access").addFilter(_UvicornTokenRedactor())
-    logging.getLogger("uvicorn.access").addFilter(_HealthCheckFilter())
     yield
 
     tasks_to_cancel = [reaper_task, webhook_task, notification_task, rate_limit_cleanup_task, meeting_task, attendance_task]
@@ -205,10 +206,12 @@ class AdminCSRFMiddleware(BaseHTTPMiddleware):
         return response
 
 
+
 app = FastAPI(title="Voxbento", version="1.0.0", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
 app.add_middleware(WorkspaceRoutingMiddleware)
 app.add_middleware(AdminCSRFMiddleware)
 app.add_middleware(SecurityHeadersMiddleware)
+app.add_middleware(RequestLoggingMiddleware)
 setup(app, login_limiter)
 
 
