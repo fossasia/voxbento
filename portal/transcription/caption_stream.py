@@ -86,8 +86,25 @@ class CaptionStream:
 
     def state_for(self, booth_id: str) -> CaptionState:
         if booth_id not in self.states:
-            self.states[booth_id] = CaptionState(booth_id=booth_id)
+            self.states[booth_id] = CaptionState(booth_id=booth_id, segment_id=self._new_segment_id())
         return self.states[booth_id]
+
+    def restore(self, event: FinalCaption) -> None:
+        """Put a settled utterance back because the caller could not publish it.
+
+        `_finalise` clears the buffer as soon as it yields the event, so without
+        this a failed publish would drop the caption entirely and the next
+        silence would emit only a clear. Newer speech wins: if the booth has
+        started a fresh utterance meanwhile, the stale one is discarded rather
+        than overwriting it.
+        """
+        state = self.state_for(event.booth_id)
+        if state.current_utterance:
+            return
+        state.current_utterance = event.text
+        state.utterance_start_time = event.utterance_start_time
+        state.current_word_count = len(event.text.split())
+        state.segment_id = event.segment_id
 
     def _is_overdue(self, state: CaptionState) -> bool:
         return (

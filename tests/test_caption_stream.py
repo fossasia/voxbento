@@ -178,6 +178,55 @@ class TestFinalAndClear:
         assert isinstance(stream.clear("b")[0], ClearCaption)
 
 
+class TestInjectedSegmentIds:
+    def test_the_first_segment_id_comes_from_the_injected_factory(self, stream):
+        # Regression: state_for used the dataclass UUID default, so the very
+        # first caption for a booth ignored the caller's factory.
+        assert stream.partial("b", "hello")[0].segment_id == "seg-1"
+
+    def test_the_first_final_also_uses_the_injected_factory(self, stream):
+        assert stream.final("b", "hello")[0].segment_id == "seg-1"
+
+    def test_later_segment_ids_keep_following_the_factory(self, stream):
+        stream.final("b", "one")
+        assert stream.partial("b", "two")[0].segment_id == "seg-2"
+
+
+class TestRestore:
+    def test_a_failed_publish_can_put_the_utterance_back(self, stream):
+        stream.partial("b", "in progress")
+        event = stream.final("b", "in progress")[0]
+        assert stream.state_for("b").current_utterance == ""
+
+        stream.restore(event)
+
+        state = stream.state_for("b")
+        assert state.current_utterance == "in progress"
+        assert state.segment_id == event.segment_id
+        assert state.current_word_count == 2
+
+    def test_a_restored_utterance_settles_again_on_the_next_clear(self, stream):
+        event = stream.final("b", "keep me")[0]
+        stream.restore(event)
+        assert stream.clear("b")[0].text == "keep me"
+
+    def test_restore_does_not_clobber_newer_speech(self, stream):
+        event = stream.final("b", "stale")[0]
+        stream.partial("b", "newer words")
+
+        stream.restore(event)
+
+        assert stream.state_for("b").current_utterance == "newer words"
+
+    def test_restore_preserves_the_original_start_time(self, stream, clock):
+        started = clock.now
+        stream.partial("b", "hello")
+        clock.advance(3.0)
+        event = stream.final("b", "hello")[0]
+        stream.restore(event)
+        assert stream.state_for("b").utterance_start_time == started
+
+
 class TestSequenceAndIsolation:
     def test_the_sequence_increases_across_finals(self, stream):
         first = stream.final("b", "one")[0].seq

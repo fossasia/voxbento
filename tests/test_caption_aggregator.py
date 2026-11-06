@@ -164,3 +164,39 @@ class TestCaptionAggregator:
 
         finals = [msg for bid, msg in received if msg.get("status") == "final"]
         assert len(finals) == 0
+
+    async def test_a_failed_publish_keeps_the_utterance_buffered(self):
+        """Matches dev, which reset state only after publish_final returned."""
+
+        async def failing_callback(booth_id, message):
+            raise RuntimeError("broadcast is down")
+
+        aggregator = CaptionAggregator(failing_callback)
+        aggregator.stream.state_for("b").current_utterance = "do not lose me"
+
+        with pytest.raises(RuntimeError):
+            await aggregator.handle_clear("b")
+
+        # Without the restore the buffer would be empty and the caption gone.
+        assert aggregator.states["b"].current_utterance == "do not lose me"
+
+    async def test_a_recovered_broadcast_can_still_publish_the_utterance(self):
+        failing = True
+        received = []
+
+        async def flaky_callback(booth_id, message):
+            if failing:
+                raise RuntimeError("broadcast is down")
+            await collect_broadcasts(booth_id, message, received)
+
+        aggregator = CaptionAggregator(flaky_callback)
+        aggregator.stream.state_for("b").current_utterance = "retry me"
+
+        with pytest.raises(RuntimeError):
+            await aggregator.handle_clear("b")
+
+        failing = False
+        await aggregator.handle_clear("b")
+
+        finals = [msg for bid, msg in received if msg.get("status") == "final"]
+        assert [m["text"] for m in finals] == ["retry me"]
