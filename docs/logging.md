@@ -93,6 +93,18 @@ before startup — and rewrites the message, its args, every `extra` field
   (`password`, `api_key`, `cookie`, `email`, `phone`, `full_name`, `postal`,
   `address`, …), whose value need not look like a secret on its own
 
+### The filter matches labels, not bare values
+
+Redaction works on a credential's *context*, not its appearance. `code=ROOM42`
+is redacted; a bare `ROOM42` in prose is not, because nothing distinguishes it
+from an ordinary word. The same holds for a join code, a room name or an id
+quoted without its label. JWTs, `whsec_` secrets and RTMP(S) URLs are the
+exception — those are self-identifying by shape.
+
+So write `logger.info("join rejected code=%s", code)` rather than
+`logger.info("join rejected for %s", code)`: the labelled form is the one the
+filter can see.
+
 ### Categories with no pattern
 
 Some of the prohibited categories cannot be recognised by shape, so they are

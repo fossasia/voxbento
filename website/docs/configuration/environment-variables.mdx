@@ -129,7 +129,7 @@ Logs are emitted as one structured record per event, carrying a correlation ID t
 | `LOG_LEVEL` | `INFO` | Root log level: `DEBUG`, `INFO`, `WARNING`, `ERROR` or `CRITICAL`. |
 | `LOG_FORMAT` | `text` in development, `json` otherwise | Output format. JSON is preferred in production so operators can filter on `request_id`. |
 
-Every HTTP response and WebSocket handshake carries an `X-Request-ID` header holding that correlation ID. The portal always mints the ID itself. If a request arrives with an `X-Request-ID` already set, that value is recorded alongside it as `upstream_request_id` rather than adopted, so an upstream trace stays linkable without letting a caller choose the ID its activity is filed under.
+Responses carry an `X-Request-ID` header holding that correlation ID, with two exceptions: a 500 produced by an unhandled exception is generated outside the request middleware, and a rejected WebSocket never completes a handshake, so neither carries the header. Both are still logged against the ID. The portal always mints the ID itself. If a request arrives with an `X-Request-ID` already set, that value is recorded alongside it as `upstream_request_id` rather than adopted, so an upstream trace stays linkable without letting a caller choose the ID its activity is filed under.
 
 ## Email and Notification Variables
 
