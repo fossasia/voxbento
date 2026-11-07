@@ -42,13 +42,15 @@ def no_membership_recheck(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def setup_db():
-    """Initialize an in-memory SQLite database for test isolation."""
+def setup_db(tmp_path):
+    """Give concurrent WebSocket sessions independent database transactions."""
     import anyio
 
     from portal.database import configure, dispose, init_db
 
-    configure("sqlite+aiosqlite://")
+    # In-memory SQLite shares one connection across TestClient threads. A
+    # connecting socket's read can end the transaction creating the actor user.
+    configure(f"sqlite+aiosqlite:///{tmp_path / 'broadcast-isolation.db'}")
     anyio.run(init_db)
     yield
     anyio.run(dispose)

@@ -3,7 +3,7 @@
 // step at once and still submits; this script turns it into one step at a time when
 // adding a room, puts the review on its own screen when changing one, keeps the
 // per-language choices in sync and shows only the questions that apply. Each language
-// reaches listeners one way: an interpreter, an AI voice or AI text. Captions are the
+// reaches listeners one way: an interpreter, an AI voice or AI captions. Captions are the
 // speaker's own words and stay on whenever a language uses AI.
 
 const root = document.getElementById('room-setup');
@@ -38,6 +38,7 @@ if (root && form) {
   const captionsForced = form.querySelector('[data-rs-captions-forced]');
   const captionsReason = form.querySelector('[data-rs-captions-reason]');
   const captionContext = form.querySelector('[data-rs-caption-context]');
+  const captionTitle = form.querySelector('[data-rs-caption-title]');
   const roomContext = form.querySelector('[data-rs-room-context]');
   const enginesGroup = form.querySelector('[data-rs-engines]');
   const advanced = form.querySelector('[data-rs-advanced]');
@@ -87,16 +88,16 @@ if (root && form) {
   function voiceProblem(code) {
     const engines = voiceEngines();
     if (!engines.length) {
-      return `AI voice isn't available for this event yet: no voice service is set up. Choose AI text, or add a Deepgram key on the event's API keys page.`;
+      return `AI voice isn't available for this event yet: no voice service is set up. Choose AI captions, or add a Deepgram key on the event's API keys page.`;
     }
     const chosen = engines.find((e) => e.provider === voiceSelect.value) || engines[0];
     if (speaks(chosen.provider, code)) return '';
     const name = nameOf(code);
     const others = engines.filter((e) => e !== chosen && speaks(e.provider, code));
     if (others.length) {
-      return `${chosen.label} can't speak ${name}. Choose AI text, or switch the AI voice to ${others[0].label} under AI services · Advanced in the next step.`;
+      return `${chosen.label} can't speak ${name}. Choose AI captions, or switch the voice to ${others[0].label} under AI services in the review step.`;
     }
-    return `AI voice isn't supported for ${name} yet. None of this event's voice services can speak it. Choose AI text so listeners can read ${name}, or Interpreter.`;
+    return `AI voice isn't supported for ${name} yet. None of this event's voice services can speak it. Choose AI captions so listeners can read ${name}, or Interpreter.`;
   }
 
   // A language with no voice service that can speak it can't use AI voice at all.
@@ -167,7 +168,7 @@ if (root && form) {
       if (!delivery) {
         text = 'rsWasBoth' in row.dataset
           ? `${nameOf(code)} used to offer both an interpreter and AI. Choose one way for listeners to get it before saving.`
-          : `Choose how ${nameOf(code)} reaches listeners.`;
+          : `Choose how listeners get ${nameOf(code)}.`;
       } else if (delivery === 'ai_voice') {
         text = voiceProblem(code);
       }
@@ -188,9 +189,10 @@ if (root && form) {
     roomContext.replaceChildren(
       'Speakers in ',
       Object.assign(document.createElement('strong'), { textContent: form.querySelector('#rs-name').value.trim() || 'this room' }),
-      ` use ${spoken}. Listeners can always hear the room in ${spoken}.`,
+      ` use ${spoken}. Choose the other languages listeners can pick.`,
     );
-    captionContext.textContent = `Captions are the speaker's words as text, in ${spoken}, as they are spoken.`;
+    captionTitle.textContent = `Captions in ${spoken}`;
+    captionContext.textContent = `Listeners can read what is said, in ${spoken}, as it is spoken.`;
 
     // When a language uses AI, captions are on and there is nothing to switch.
     captionsBox.checked = ai.length ? true : captionsWanted;
@@ -198,7 +200,7 @@ if (root && form) {
     captionsForced.hidden = ai.length === 0;
     if (ai.length) {
       const verb = ai.length === 1 ? 'uses' : 'use';
-      captionsReason.textContent = `${listNames(ai.map((l) => l.name))} ${verb} AI, and the AI translates from the captions, so they stay on. Listeners can also read the ${spoken} captions.`;
+      captionsReason.textContent = `${listNames(ai.map((l) => l.name))} ${verb} AI. The AI translates from these captions, so they stay on while any language uses AI. Listeners can read them in ${spoken} too.`;
     }
 
     const shows = { speech: captionsBox.checked, translation: ai.length > 0, voice: voiceLanguages().length > 0 };
@@ -256,7 +258,7 @@ if (root && form) {
     terms.forEach((term, i) => {
       if (term.textContent !== 'Listener languages') values.set(term.textContent, details[i].textContent);
     });
-    languages().forEach((lang) => values.set(lang.name, deliveryLabels[lang.delivery] || 'Interpreter + AI (choose one)'));
+    languages().forEach((lang) => values.set(lang.name, deliveryLabels[lang.delivery] || 'Interpreter and AI (choose one)'));
     return values;
   }
 
@@ -293,8 +295,7 @@ if (root && form) {
       langs.length ? langs.map((l) => `${l.name}: ${deliveryLabels[l.delivery] || 'not chosen yet'}`) : 'None',
     );
     const captions = ai || captionsBox.checked;
-    addReviewItem('Live captions', captions ? `On, in ${spokenName()}` : 'Off');
-    if (captions) addReviewItem('AI services', engineSummary.textContent);
+    addReviewItem('Captions', captions ? `On, in ${spokenName()}` : 'Off');
     renderChanges();
     review.hidden = false;
     reviewFallback.hidden = true;
@@ -331,19 +332,19 @@ if (root && form) {
       if (missing) return rowOf(missing.code).querySelector('input[type="radio"]');
       const noVoice = voiceLanguages().find((l) => voiceImpossible(l.code));
       if (noVoice) return problemRadio(noVoice.code, voiceProblem(noVoice.code));
-    }
-    if (index === 2) {
       if (!chosenCodes().length && !captionsBox.checked) {
-        captionsBox.setCustomValidity('Turn on captions, or go back and choose at least one language.');
+        captionsBox.setCustomValidity('Choose at least one language, or turn on captions.');
         return captionsBox;
       }
       captionsBox.setCustomValidity('');
+    }
+    if (index === 2) {
       voiceSelect?.setCustomValidity('');
       const unspoken = voiceLanguages().filter((l) => voiceProblem(l.code));
       if (unspoken.length && voiceSelect?.options.length) {
         advanced.open = true;
         voiceSelect.setCustomValidity(
-          `${shortName(voiceSelect)} can't speak ${listNames(unspoken.map((l) => l.name))}. Choose another AI voice, or go back and choose AI text for ${unspoken.length === 1 ? 'it' : 'them'}.`,
+          `${shortName(voiceSelect)} can't speak ${listNames(unspoken.map((l) => l.name))}. Choose another voice, or go back and choose AI captions for ${unspoken.length === 1 ? 'it' : 'them'}.`,
         );
         return voiceSelect;
       }

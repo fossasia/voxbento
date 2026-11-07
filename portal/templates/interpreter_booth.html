@@ -37,7 +37,9 @@
   {% from "_app_header.html" import user_menu_dropdown with context %}
   <header class='booth-topbar'>
     <div class='topbar-brand'>
-      <a class='brand-mark' href='/interpreter' title='My booths' aria-label='Back to my booths'>V</a>
+      <a class='brand-mark' href='/interpreter' title='My booths' aria-label='Back to my booths'>
+        <img src="{{ url_for('static', path='img/email-mark.svg') }}" alt='' width='51' height='34' />
+      </a>
       <div class='brand-text'>
         <span class='brand-name'>{{ language_name or booth_language }} booth</span>
         <span class='brand-context'>{% if room_name %}{{ room_name }} · {% endif %}{{ event_name or event_slug }}</span>
