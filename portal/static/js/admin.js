@@ -4,6 +4,7 @@
  */
 
 import { initLocalModelDownloader } from './download-model.js';
+import './split-datetime.js';
 
 function managementPrefix() {
   return document.body.dataset.managementPrefix || '/admin';
