@@ -140,6 +140,7 @@ from portal.rate_limit import check_rate_limit
 from portal.roles import EVENT_OWNER, assignment_error, role_label
 from portal.room_setup import (
     AI_VOICE,
+    BOOTH_SPEECH_MODELS,
     EngineCatalog,
     RoomPlan,
     RoomSummary,
@@ -148,9 +149,11 @@ from portal.room_setup import (
     default_jitsi_url,
     engine_catalog,
     load_snapshot,
+    locked_services,
     parse_plan,
     room_audio_choice,
     summarize,
+    translation_models,
 )
 from portal.room_setup import ALL_LANGUAGES as ROOM_ALL_LANGUAGES
 from portal.room_setup import COMMON_LANGUAGES as ROOM_COMMON_LANGUAGES
@@ -169,7 +172,7 @@ from portal.team import remove_assignment as remove_team_assignment
 from portal.team import revoke_invite_link as revoke_team_invite_link
 from portal.transcription import ALLOWED_MODELS, ProviderConfig, ProviderEnum, get_api_key
 from portal.transcription.worker import start_transcription_worker, stop_transcription_worker
-from portal.translations.constants import TRANSLATION_MODELS, TranslationProviderEnum
+from portal.translations.constants import RETIRED_TRANSLATION_MODELS, TRANSLATION_MODELS, TranslationProviderEnum
 from portal.translations.vocabulary import (
     VocabularyOverlapIndex,
     VocabularyScopeError,
@@ -2055,6 +2058,8 @@ async def admin_booth_detail(request: Request, event_id: int, room_id: int, boot
     ]
     translation_languages_dataset.sort(key=lambda x: x["name"])
     enabled_translation_language_codes = [lang.language_code for lang in db_booth.translation_languages if lang.enabled]
+    catalog = engine_catalog(event)
+    saved = request.query_params.get("saved", "")
     return templates.TemplateResponse(
         request=request,
         name="admin/booth_detail.html",
@@ -2075,6 +2080,29 @@ async def admin_booth_detail(request: Request, event_id: int, room_id: int, boot
             "membership_map": membership_map,
             "translation_languages_dataset": translation_languages_dataset,
             "enabled_translation_language_codes": enabled_translation_language_codes,
+            "catalog": catalog,
+            "locked_speech": locked_services(catalog, "speech"),
+            "locked_translation": locked_services(catalog, "translation"),
+            "speech_models": BOOTH_SPEECH_MODELS,
+            "translation_models": translation_models(
+                catalog, db_booth.translation_provider, db_booth.translation_model
+            ),
+            "speech_choice": (
+                db_booth.transcription_provider if catalog.find("speech", db_booth.transcription_provider) else ""
+            ),
+            "speech_model_choice": (
+                "scribe_v2_realtime" if db_booth.transcription_model == "scribe_v2" else db_booth.transcription_model
+            ),
+            "retired_translation_model": (
+                db_booth.translation_model if db_booth.translation_model in RETIRED_TRANSLATION_MODELS else ""
+            ),
+            "translation_choice": (
+                db_booth.translation_provider if catalog.find("translation", db_booth.translation_provider) else ""
+            ),
+            "show_next_steps": not db_booth.transcription_enabled and not db_booth.translation_enabled,
+            "captions_live": mem_booth is not None and mem_booth.active_interpreter_id is not None,
+            "saved": saved if saved in {"captions", "translations", "settings"} else "",
+            "captions_change": request.query_params.get("captions", ""),
             **admin_flags,
         },
     )
@@ -2316,6 +2344,8 @@ async def admin_booth_translation_settings(
             TranslationProviderEnum(translation_provider)
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid translation provider")
+        if translation_model in RETIRED_TRANSLATION_MODELS:
+            raise HTTPException(status_code=400, detail=f"The model '{translation_model}' is no longer available.")
         db_booth.translation_enabled = translation_enabled
         db_booth.translation_provider = translation_provider
         db_booth.translation_model = translation_model
@@ -2336,7 +2366,7 @@ async def admin_booth_translation_settings(
                 lang_model.enabled = False
         await session.flush()
     return safe_redirect(
-        url=management_url(request, f"events/{event_id}/rooms/{room_id}/booths/{booth_id}/"),
+        url=management_url(request, f"events/{event_id}/rooms/{room_id}/booths/{booth_id}/?saved=translations"),
         status_code=status.HTTP_303_SEE_OTHER,
     )
 
@@ -2357,7 +2387,7 @@ async def admin_edit_booth(request: Request, event_id: int, room_id: int, booth_
                 raise HTTPException(status_code=400, detail=str(e))
         await session.flush()
     return safe_redirect(
-        url=management_url(request, f"events/{event_id}/rooms/{room_id}/booths/{booth_id}/"),
+        url=management_url(request, f"events/{event_id}/rooms/{room_id}/booths/{booth_id}/?saved=settings"),
         status_code=status.HTTP_303_SEE_OTHER,
     )
 
@@ -2405,10 +2435,13 @@ async def admin_transcription_settings(
         bid = make_booth_id(event.slug, db_booth.room_id, db_booth.language_code)
         state = booths.get_booth_sync(bid)
         is_live = state is not None and state.active_interpreter_id is not None
+        captions_change = ""
         if is_live:
             if not transcription_enabled:
                 await stop_transcription_worker(bid)
                 await broadcast_transcription(bid, "")
+                if old_enabled:
+                    captions_change = "stopped"
             elif (
                 old_enabled != transcription_enabled
                 or old_provider != transcription_provider
@@ -2429,8 +2462,10 @@ async def admin_transcription_settings(
                     config,
                     room_id=db_booth.room_id,
                 )
+                captions_change = "restarted"
+    query = "?saved=captions" + (f"&captions={captions_change}" if captions_change else "")
     return safe_redirect(
-        url=management_url(request, f"events/{event_id}/rooms/{room_id}/booths/{booth_id}/"),
+        url=management_url(request, f"events/{event_id}/rooms/{room_id}/booths/{booth_id}/{query}"),
         status_code=status.HTTP_303_SEE_OTHER,
     )
 

@@ -14,6 +14,7 @@
 {% endblock %}
 
 {% block content %}
+{% set booth_url = management_prefix ~ '/events/' ~ event.id ~ '/rooms/' ~ room.id ~ '/booths/' ~ booth.id %}
 <div class="page-header">
   <h1>
     {{ booth.language_name }} ({{ booth.language_code }})
@@ -29,17 +30,74 @@
   </div>
 </div>
 
-<!-- Booth Info Cards -->
+<div id="booth-detail" data-booth-id="{{ booth.id }}">
+
+{% if is_event_owner %}
+<div class="room-tabs" role="tablist" aria-label="Booth sections" data-booth-tabs hidden>
+  <button type="button" class="room-tab" role="tab" id="booth-tab-overview" aria-controls="booth-panel-overview" data-booth-tab="overview">Overview</button>
+  <button type="button" class="room-tab" role="tab" id="booth-tab-captions" aria-controls="booth-panel-captions" data-booth-tab="captions">Captions</button>
+  <button type="button" class="room-tab" role="tab" id="booth-tab-translations" aria-controls="booth-panel-translations" data-booth-tab="translations">Translations</button>
+  <button type="button" class="room-tab" role="tab" id="booth-tab-settings" aria-controls="booth-panel-settings" data-booth-tab="settings">Settings</button>
+</div>
+{% endif %}
+
+<section class="room-panel rs" id="booth-panel-overview"{% if is_event_owner %} role="tabpanel" aria-labelledby="booth-tab-overview"{% endif %} data-booth-panel="overview">
+{% if is_event_owner and show_next_steps %}
+<div class="room-next" role="status">
+  <h2>What's next for this booth</h2>
+  <ol class="room-next-list">
+    <li>
+      <span><strong>Invite an interpreter.</strong> Someone needs to interpret into {{ booth.language_name }}.</span>
+      <a href="{{ management_prefix }}/events/{{ event.id }}/team/" class="btn btn-sm">Open Team</a>
+    </li>
+    <li>
+      <span><strong>Turn on captions</strong> if listeners should read what the interpreter says.</span>
+      <a href="#captions" class="btn btn-sm" data-booth-tab-link="captions">Captions</a>
+    </li>
+    <li>
+      <span><strong>Turn on translations</strong> if the captions should also appear in other languages.</span>
+      <a href="#translations" class="btn btn-sm" data-booth-tab-link="translations">Translations</a>
+    </li>
+  </ol>
+</div>
+{% endif %}
+
 <div class="detail-grid">
+  <div class="detail-card">
+    <h3>Live Status</h3>
+    <dl class="detail-list">
+      <dt>Status</dt>
+      <dd>
+        {% if is_live %}
+        <span class="status-live">● LIVE — Audio streaming</span>
+        {% else %}
+        <span class="status-offline">○ OFFLINE — No active stream</span>
+        {% endif %}
+      </dd>
+      <dt>Active Interpreter</dt>
+      <dd>
+        {% if active_interpreter %}
+        {{ active_interpreter.display_name }} ({{ active_interpreter.role }})
+        {% else %}
+        <span class="muted">None</span>
+        {% endif %}
+      </dd>
+      <dt>Captions</dt>
+      <dd>{{ 'On' if booth.transcription_enabled else 'Off' }}</dd>
+      <dt>Translations</dt>
+      <dd>{{ 'On' if booth.translation_enabled else 'Off' }}</dd>
+    </dl>
+  </div>
+
   <div class="detail-card">
     <h3>Booth Information</h3>
     <dl class="detail-list">
+      <dt>Language</dt>
+      <dd>{{ booth.language_name }} ({{ booth.language_code }})</dd>
       <dt>Booth ID</dt>
       <dd><code>{{ booth_id }}</code></dd>
       <dt>MediaMTX Path</dt>
       <dd><code>{{ mediamtx_path }}</code></dd>
-      <dt>Language</dt>
-      <dd>{{ booth.language_name }} ({{ booth.language_code }})</dd>
       <dt>Created</dt>
       <dd>{{ booth.created_at.strftime('%b %d, %Y, %H:%M UTC') if booth.created_at else '—' }}</dd>
     </dl>
@@ -76,190 +134,8 @@
       {% endif %}
     </dl>
   </div>
-
-  <div class="detail-card">
-    <h3>Live Status</h3>
-    <dl class="detail-list">
-      <dt>Status</dt>
-      <dd>
-        {% if is_live %}
-        <span class="status-live">● LIVE — Audio streaming</span>
-        {% else %}
-        <span class="status-offline">○ OFFLINE — No active stream</span>
-        {% endif %}
-      </dd>
-      <dt>Active Interpreter</dt>
-      <dd>
-        {% if active_interpreter %}
-        {{ active_interpreter.display_name }} ({{ active_interpreter.role }})
-        {% else %}
-        <span class="muted">None</span>
-        {% endif %}
-      </dd>
-    </dl>
-  </div>
 </div>
 
-{# Booth settings: Event owners and Admins only (#757). #}
-{% if is_event_owner %}
-<!-- Booth Settings Form -->
-<form method="post" action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/booths/{{ booth.id }}/edit" class="token-form">
-  <div class="token-form-card token-form-card--spaced">
-    <h3>Booth Settings</h3>
-    <div class="form-row">
-      <div class="form-group form-group--grow">
-        <label for="language_name">Language Name</label>
-        <input type="text" id="language_name" name="language_name" class="input" value="{{ booth.language_name }}">
-      </div>
-      <div class="form-group form-group--grow">
-        <label for="language_code">Language Code</label>
-        <input type="text" id="language_code" name="language_code" class="input" value="{{ booth.language_code }}">
-      </div>
-      <div class="form-group form-group-btn form-group--action">
-        <button type="submit" class="btn btn-primary">Save Settings</button>
-      </div>
-    </div>
-  </div>
-</form>
-
-<!-- Transcription Settings Form -->
-<form method="post" action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/booths/{{ booth.id }}/transcription-settings" class="token-form">
-  <div class="token-form-card token-form-card--spaced">
-    <div class="transcripts-head">
-      <div>
-        <h3>Stored Transcripts</h3>
-        <p class="form-help form-help--tight">View and download past transcripts and translations generated for this booth.</p>
-      </div>
-      <a href="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/transcripts/" class="btn btn-primary">View Transcripts</a>
-    </div>
-  </div>
-
-  <div class="token-form-card token-form-card--spaced">
-    <h3>Transcription Settings</h3>
-    <div class="form-row">
-      <div class="form-group form-group--grow">
-        <label for="transcription_enabled" class="checkbox-label">
-          <input type="checkbox" id="transcription_enabled" name="transcription_enabled" value="true" {% if booth.transcription_enabled %}checked{% endif %}>
-          <strong>Enable Live Transcription</strong>
-        </label>
-        <p class="form-help form-help--spaced">
-          When enabled, a background worker will consume the RTSP feed and generate live captions. Turn off to save CPU/RAM.
-        </p>
-      </div>
-      <div class="form-group form-group--grow">
-        <label for="transcription_provider">Transcription Provider</label>
-        <select id="transcription_provider" name="transcription_provider" class="input">
-          <option value="local" {% if booth.transcription_provider == 'local' %}selected{% endif %}>Local CPU (Faster-Whisper)</option>
-          {% if event.transcription_api_enabled %}
-          <option value="openai" {% if booth.transcription_provider == 'openai' %}selected{% endif %}>OpenAI</option>
-          <option value="deepgram" {% if booth.transcription_provider == 'deepgram' %}selected{% endif %}>Deepgram</option>
-          <option value="nvidia" {% if booth.transcription_provider == 'nvidia' %}selected{% endif %}>NVIDIA Parakeet</option>
-          <option value="elevenlabs" {% if booth.transcription_provider == 'elevenlabs' %}selected{% endif %}>ElevenLabs</option>
-          {% else %}
-          <option disabled>External APIs disabled in Event settings</option>
-          {% endif %}
-        </select>
-      </div>
-      <div class="form-group form-group--grow">
-        <label for="transcription_model">Model Variant</label>
-        <select id="transcription_model" name="transcription_model" class="input">
-          <option value="tiny" data-provider="local" {% if booth.transcription_model == 'tiny' %}selected{% endif %}>Local: tiny (Fastest)</option>
-          <option value="base" data-provider="local" {% if booth.transcription_model == 'base' %}selected{% endif %}>Local: base</option>
-          <option value="small" data-provider="local" {% if booth.transcription_model == 'small' %}selected{% endif %}>Local: small</option>
-          <option value="medium" data-provider="local" {% if booth.transcription_model == 'medium' %}selected{% endif %}>Local: medium</option>
-          <option value="large-v2" data-provider="local" {% if booth.transcription_model == 'large-v2' %}selected{% endif %}>Local: large-v2</option>
-          <option value="large-v3" data-provider="local" {% if booth.transcription_model == 'large-v3' %}selected{% endif %}>Local: large-v3 (Accurate/Slow)</option>
-          <option value="gpt-realtime-whisper" data-provider="openai" {% if booth.transcription_model == 'gpt-realtime-whisper' %}selected{% endif %}>OpenAI: gpt-realtime-whisper</option>
-          <option value="gpt-4o-transcribe" data-provider="openai" {% if booth.transcription_model == 'gpt-4o-transcribe' %}selected{% endif %}>OpenAI: gpt-4o-transcribe</option>
-          <option value="gpt-4o-mini-transcribe" data-provider="openai" {% if booth.transcription_model == 'gpt-4o-mini-transcribe' %}selected{% endif %}>OpenAI: gpt-4o-mini-transcribe</option>
-          <option value="whisper-1" data-provider="openai" {% if booth.transcription_model == 'whisper-1' %}selected{% endif %}>OpenAI: whisper-1</option>
-          <option value="nova-2" data-provider="deepgram" {% if booth.transcription_model == 'nova-2' %}selected{% endif %}>Deepgram: nova-2</option>
-          <option value="parakeet-rnnt" data-provider="nvidia" {% if booth.transcription_model == 'parakeet-rnnt' %}selected{% endif %}>NVIDIA: parakeet-rnnt</option>
-          <option value="parakeet-ctc" data-provider="nvidia" {% if booth.transcription_model == 'parakeet-ctc' %}selected{% endif %}>NVIDIA: parakeet-ctc</option>
-          <option value="scribe_v2_realtime" data-provider="elevenlabs" {% if booth.transcription_model == 'scribe_v2_realtime' or booth.transcription_model == 'scribe_v2' %}selected{% endif %}>ElevenLabs: scribe_v2_realtime (Streaming)</option>
-        </select>
-      </div>
-      <div class="form-group form-group-btn">
-        <button type="submit" class="btn btn-primary">Save Settings</button>
-      </div>
-    </div>
-  </div>
-</form>
-
-<!-- Translation Settings Form -->
-<form method="post" action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/booths/{{ booth.id }}/translation-settings" class="token-form">
-  <div class="token-form-card token-form-card--spaced">
-    <h3>Translation Settings</h3>
-    <div class="form-row">
-      <div class="form-group form-group--grow">
-        <label for="translation_enabled" class="checkbox-label">
-          <input type="checkbox" id="translation_enabled" name="translation_enabled" value="true" {% if booth.translation_enabled %}checked{% endif %}>
-          <strong>Enable Live Translation</strong>
-        </label>
-        <p class="form-help form-help--spaced">
-          When enabled, the transcripts generated by this booth will be automatically translated into the target languages selected below.
-        </p>
-      </div>
-      <div class="form-group form-group--grow">
-        <label for="translation_provider">Translation Provider</label>
-        <select id="translation_provider" name="translation_provider" class="input">
-          <option value="openai" {% if booth.translation_provider == 'openai' %}selected{% endif %}>OpenAI</option>
-          <option value="anthropic" {% if booth.translation_provider == 'anthropic' %}selected{% endif %}>Anthropic</option>
-          <option value="gemini" {% if booth.translation_provider == 'gemini' %}selected{% endif %}>Gemini</option>
-          <option value="groq" {% if booth.translation_provider == 'groq' %}selected{% endif %}>Groq</option>
-          <option value="openrouter" {% if booth.translation_provider == 'openrouter' %}selected{% endif %}>OpenRouter</option>
-          <option value="local" {% if booth.translation_provider == 'local' %}selected{% endif %}>Local LLM</option>
-        </select>
-      </div>
-      <div class="form-group form-group--grow">
-        <label for="translation_model">Model Variant</label>
-        <select id="translation_model" name="translation_model" class="input">
-          <option value="gpt-4o-mini" data-trans-provider="openai" {% if booth.translation_model == 'gpt-4o-mini' %}selected{% endif %}>OpenAI: gpt-4o-mini</option>
-          <option value="gpt-4o" data-trans-provider="openai" {% if booth.translation_model == 'gpt-4o' %}selected{% endif %}>OpenAI: gpt-4o</option>
-          <option value="claude-3-haiku-20240307" data-trans-provider="anthropic" {% if booth.translation_model == 'claude-3-haiku-20240307' %}selected{% endif %}>Anthropic: claude-3-haiku</option>
-          <option value="claude-3-5-sonnet-20240620" data-trans-provider="anthropic" {% if booth.translation_model == 'claude-3-5-sonnet-20240620' %}selected{% endif %}>Anthropic: claude-3.5-sonnet</option>
-          <option value="gemini-1.5-flash" data-trans-provider="gemini" {% if booth.translation_model == 'gemini-1.5-flash' %}selected{% endif %}>Gemini: 1.5 Flash</option>
-          <option value="llama-3.1-8b-instant" data-trans-provider="groq" {% if booth.translation_model == 'llama-3.1-8b-instant' %}selected{% endif %}>Groq: LLaMA 3.1 8B</option>
-          <option value="llama-3.3-70b-versatile" data-trans-provider="groq" {% if booth.translation_model == 'llama-3.3-70b-versatile' %}selected{% endif %}>Groq: LLaMA 3.3 70B</option>
-          <option value="mixtral-8x7b-32768" data-trans-provider="groq" {% if booth.translation_model == 'mixtral-8x7b-32768' %}selected{% endif %}>Groq: Mixtral 8x7B</option>
-          <option value="anthropic/claude-3-haiku" data-trans-provider="openrouter" {% if booth.translation_model == 'anthropic/claude-3-haiku' %}selected{% endif %}>OpenRouter: Claude 3 Haiku</option>
-          <option value="meta-llama/llama-3-8b-instruct" data-trans-provider="openrouter" {% if booth.translation_model == 'meta-llama/llama-3-8b-instruct' %}selected{% endif %}>OpenRouter: LLaMA 3 8B</option>
-          <option value="google/gemma-7b-it" data-trans-provider="openrouter" {% if booth.translation_model == 'google/gemma-7b-it' %}selected{% endif %}>OpenRouter: Gemma 7B</option>
-          <option value="nllb-200-distilled-600M" data-trans-provider="local" {% if booth.translation_model == 'nllb-200-distilled-600M' %}selected{% endif %}>Local: NLLB 200 (600M)</option>
-        </select>
-      </div>
-    </div>
-    <div class="form-row">
-      <div class="form-group form-group--grow">
-        <label>Target Languages</label>
-        <div class="lang-picker" id="lp_translation" aria-label="Target languages picker">
-          <div class="lang-picker-tags" id="lp_translation_tags"></div>
-          <div class="lang-picker-search-wrap">
-            <input type="text" class="lang-picker-input" id="lp_translation_search"
-                   placeholder="Search and add a language…" autocomplete="off">
-            <ul class="lang-picker-dropdown" id="lp_translation_dropdown" hidden></ul>
-          </div>
-        </div>
-        <div id="lp_translation_hidden"></div>
-        <p class="form-help form-help--spaced">Only selected languages will be available to listeners.</p>
-      </div>
-      <div class="form-group form-group-btn form-group--action">
-        <button type="submit" class="btn btn-primary">Save Settings</button>
-      </div>
-    </div>
-  </div>
-</form>
-
-<script type="application/json" id="booth-detail-config">
-  {
-    "languages": {{ translation_languages_dataset | tojson }},
-    "selected_codes": {{ enabled_translation_language_codes | tojson }}
-  }
-</script>
-<script type="module" src="{{ url_for('static', path='js/booth-detail.js') }}?v={{ asset_version }}"></script>
-{% endif %}
-
-<!-- Participant Roster -->
 <div class="section-card">
   <div class="section-header">
     <h2>Participant Roster ({{ participants|length }})</h2>
@@ -299,21 +175,180 @@
   {% endif %}
 </div>
 
-{# Link to the Team page and deleting the booth: Event owners and Admins only (#757). #}
 {% if is_event_owner %}
 <div class="tm-pointer">
   <p><strong>Interpreters, coordinators and invite links</strong> for this booth are managed on the event's Team page.</p>
   <a href="{{ management_prefix }}/events/{{ event.id }}/team/" class="btn btn-outline">Open Team</a>
 </div>
-
-<div class="danger-zone">
-  <h3>Danger Zone</h3>
-  <form method="post" action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/booths/{{ booth.id }}/delete"
-        class="inline-delete"
-        data-confirm="Delete the {{ booth.language_name }} booth? All invite tokens will be removed.">
-    <button type="submit" class="btn btn-danger">Delete Booth</button>
-    <span class="danger-text">This removes all invite tokens for this booth.</span>
-  </form>
-</div>
 {% endif %}
+</section>
+
+{% if is_event_owner %}
+<section class="room-panel rs" id="booth-panel-captions" role="tabpanel" aria-labelledby="booth-tab-captions" data-booth-panel="captions">
+  {% if saved == 'captions' %}
+  {% if captions_change == 'restarted' %}
+  <div class="alert alert-success" role="status">Caption settings saved. Captions were running, so they restarted with the new settings.</div>
+  {% elif captions_change == 'stopped' %}
+  <div class="alert alert-success" role="status">Captions turned off. Live captions for this booth have stopped.</div>
+  {% else %}
+  <div class="alert alert-success" role="status">Caption settings saved.</div>
+  {% endif %}
+  {% endif %}
+  <p class="room-panel-intro">Captions turn what the {{ booth.language_name }} interpreter says into text that listeners can read.</p>
+  {% if locked_speech %}
+  <p class="rs-note">More services ({{ locked_speech | join(', ') }}) appear here once you add their API key on <a href="{{ management_prefix }}/events/{{ event.id }}/api-settings/">API keys</a>.</p>
+  {% endif %}
+  <form method="post" action="{{ booth_url }}/transcription-settings">
+    <div class="room-card">
+      <h2>Live captions</h2>
+      <label class="rs-toggle">
+        <span class="rs-toggle-text"><span class="rs-toggle-title">Show live captions</span>
+          <span class="hint">Turn this off when you don't need captions. It frees up the server.</span>
+        </span>
+        <input type="checkbox" class="rs-switch" role="switch" id="transcription_enabled" name="transcription_enabled" value="true" {% if booth.transcription_enabled %}checked{% endif %}>
+      </label>
+      <div class="field">
+        <label for="transcription_provider">Service</label>
+        <select id="transcription_provider" name="transcription_provider" required>
+          {% if not speech_choice and booth.transcription_enabled %}
+          <option value="" selected disabled>{{ booth.transcription_provider | capitalize }} — not available now, choose another</option>
+          {% endif %}
+          {% for engine in catalog.speech %}
+          <option value="{{ engine.provider }}" {% if engine.provider == speech_choice %}selected{% endif %}>{{ engine.label }} — {{ engine.note }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <details class="room-more">
+        <summary>Choose a specific model <span class="rs-label-note">optional</span></summary>
+        <div class="field room-model">
+          <label for="transcription_model">Model</label>
+          <select id="transcription_model" name="transcription_model">
+            {% for provider, models in speech_models.items() %}
+            {% for value, label in models %}
+            <option value="{{ value }}" data-provider="{{ provider }}" {% if provider == booth.transcription_provider and value == speech_model_choice %}selected{% endif %}>{{ label }}</option>
+            {% endfor %}
+            {% endfor %}
+          </select>
+        </div>
+      </details>
+      {% if captions_live %}
+      <p class="rs-note">An interpreter is live in this booth. If you change these settings, captions restart with them, which takes a few seconds.</p>
+      {% endif %}
+      <div class="room-save-bar"><button type="submit" class="btn btn-primary">Save captions</button></div>
+    </div>
+  </form>
+
+  <div class="room-card room-card--row">
+    <div>
+      <h2>Transcripts</h2>
+      <p class="room-card-sub">Read and download what was said in this booth, and its translations.</p>
+    </div>
+    <a href="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/transcripts/" class="btn btn-outline">View transcripts</a>
+  </div>
+</section>
+
+<section class="room-panel rs" id="booth-panel-translations" role="tabpanel" aria-labelledby="booth-tab-translations" data-booth-panel="translations">
+  {% if saved == 'translations' %}
+  <div class="alert alert-success" role="status">Translation settings saved.</div>
+  {% endif %}
+  <p class="room-panel-intro">Translations let listeners read this booth's captions in other languages.{% if not booth.transcription_enabled %} They need captions, so turn on captions too.{% endif %}</p>
+  {% if locked_translation %}
+  <p class="rs-note">More services ({{ locked_translation | join(', ') }}) appear here once you add their API key on <a href="{{ management_prefix }}/events/{{ event.id }}/api-settings/">API keys</a>.</p>
+  {% endif %}
+  {% if retired_translation_model %}
+  <div class="alert alert-warning" role="status">The saved model <code>{{ retired_translation_model }}</code> is no longer available, so translations won't work. Choose another model below and save.</div>
+  {% endif %}
+  <form method="post" action="{{ booth_url }}/translation-settings">
+    <div class="room-card">
+      <h2>Translated captions</h2>
+      <label class="rs-toggle">
+        <span class="rs-toggle-text"><span class="rs-toggle-title">Translate the captions</span>
+          <span class="hint">Listeners can pick one of the languages below.</span>
+        </span>
+        <input type="checkbox" class="rs-switch" role="switch" id="translation_enabled" name="translation_enabled" value="true" {% if booth.translation_enabled %}checked{% endif %}>
+      </label>
+      <div class="field">
+        <label for="lp_translation_search">Languages to translate into</label>
+        <div class="lang-picker" id="lp_translation" aria-label="Target languages picker">
+          <div class="lang-picker-tags" id="lp_translation_tags"></div>
+          <div class="lang-picker-search-wrap">
+            <input type="text" class="lang-picker-input" id="lp_translation_search"
+                   placeholder="Search and add a language…" autocomplete="off">
+            <ul class="lang-picker-dropdown" id="lp_translation_dropdown" hidden></ul>
+          </div>
+        </div>
+        <div id="lp_translation_hidden"></div>
+        <span class="hint">Listeners only see the languages you add here.</span>
+      </div>
+      <div class="field">
+        <label for="translation_provider">Service</label>
+        <select id="translation_provider" name="translation_provider" required>
+          {% if not translation_choice and booth.translation_enabled %}
+          <option value="" selected disabled>{{ booth.translation_provider | capitalize }} — not available now, choose another</option>
+          {% endif %}
+          {% for engine in catalog.translation %}
+          <option value="{{ engine.provider }}" {% if engine.provider == translation_choice %}selected{% endif %}>{{ engine.label }} — {{ engine.note }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <details class="room-more">
+        <summary>Choose a specific model <span class="rs-label-note">optional</span></summary>
+        <div class="field room-model">
+          <label for="translation_model">Model</label>
+          <select id="translation_model" name="translation_model">
+            {% for provider, models in translation_models.items() %}
+            {% for value in models %}
+            <option value="{{ value }}" data-trans-provider="{{ provider }}" {% if provider == booth.translation_provider and value == booth.translation_model %}selected{% endif %}>{{ value }}{{ ' (recommended)' if loop.first else '' }}</option>
+            {% endfor %}
+            {% endfor %}
+          </select>
+        </div>
+      </details>
+      <div class="room-save-bar"><button type="submit" class="btn btn-primary">Save translations</button></div>
+    </div>
+  </form>
+</section>
+
+<section class="room-panel rs" id="booth-panel-settings" role="tabpanel" aria-labelledby="booth-tab-settings" data-booth-panel="settings">
+  {% if saved == 'settings' %}
+  <div class="alert alert-success" role="status">Booth language saved.</div>
+  {% endif %}
+  <form method="post" action="{{ booth_url }}/edit">
+    <div class="room-card">
+      <h2>Booth language</h2>
+      <div class="field">
+        <label for="language_name">Language name</label>
+        <input type="text" id="language_name" name="language_name" value="{{ booth.language_name }}">
+        <span class="hint">Interpreters and listeners see this name.</span>
+      </div>
+      <div class="field">
+        <label for="language_code">Language code</label>
+        <input type="text" id="language_code" name="language_code" value="{{ booth.language_code }}">
+        <span class="hint">The two-letter code, such as en or hi. Changing it also changes this booth's links.</span>
+      </div>
+      <div class="room-save-bar"><button type="submit" class="btn btn-primary">Save</button></div>
+    </div>
+  </form>
+
+  <div class="danger-zone">
+    <h3>Delete this booth</h3>
+    <form method="post" action="{{ booth_url }}/delete"
+          class="inline-delete"
+          data-confirm="Delete the {{ booth.language_name }} booth? All invite tokens will be removed.">
+      <button type="submit" class="btn btn-danger">Delete booth</button>
+      <span class="danger-text">This removes its invite links. It can't be undone.</span>
+    </form>
+  </div>
+</section>
+
+<script type="application/json" id="booth-detail-config">
+  {
+    "languages": {{ translation_languages_dataset | tojson }},
+    "selected_codes": {{ enabled_translation_language_codes | tojson }}
+  }
+</script>
+<script type="module" src="{{ url_for('static', path='js/booth-detail.js') }}?v={{ asset_version }}"></script>
+{% endif %}
+
+</div>
 {% endblock %}
