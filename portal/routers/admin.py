@@ -169,7 +169,12 @@ from portal.team import parse_place as parse_team_place
 from portal.team import remove_assignment as remove_team_assignment
 from portal.team import revoke_invite_link as revoke_team_invite_link
 from portal.transcription import ALLOWED_MODELS, ProviderConfig, ProviderEnum, get_api_key
-from portal.transcription.worker import WorkerCapacityError, start_transcription_worker, stop_transcription_worker
+from portal.transcription.worker import (
+    WorkerCapacityError,
+    active_workers,
+    start_transcription_worker,
+    stop_transcription_worker,
+)
 from portal.translations.constants import TRANSLATION_MODELS, TranslationProviderEnum
 from portal.translations.vocabulary import (
     VocabularyOverlapIndex,
@@ -2478,6 +2483,8 @@ async def admin_transcription_settings(
                 old_enabled != transcription_enabled
                 or old_provider != transcription_provider
                 or old_model != transcription_model
+                # A start that failed earlier left the settings saved but no worker: saving again retries it.
+                or bid not in active_workers
             ):
                 await stop_transcription_worker(bid)
                 await broadcast_transcription(bid, "")

@@ -2331,6 +2331,8 @@ class TestBoothCRUD:
                 "get_booth_sync",
                 lambda _bid: SimpleNamespace(active_interpreter_id="p1", ingest_status="connected", participants={}),
             )
+            bid = admin.make_booth_id(event.slug, booth.room_id, booth.language_code)
+            monkeypatch.setattr(admin, "active_workers", {bid: object()})  # a worker is running
             location, page = await save(c, enabled=True)
             assert location == f"{url}?saved=captions&worker=kept#captions"
             assert "The caption worker was restarted" not in page
@@ -2360,10 +2362,18 @@ class TestBoothCRUD:
                 raise WorkerCapacityError("System at maximum capacity (10 concurrent transcription booths).")
 
             monkeypatch.setattr(admin, "start_transcription_worker", full)
+            monkeypatch.setattr(admin, "active_workers", {})
             location, page = await save(c, enabled=True)
             assert location == f"{url}?saved=captions&worker=failed#captions"
             assert "The caption worker could not be started" in page
             assert calls == ["stop", "start", "stop", "stop", "stop"]
+
+            # The settings were saved but nothing is running, so saving again with no changes retries the start.
+            monkeypatch.setattr(admin, "start_transcription_worker", start)
+            location, page = await save(c, enabled=True)
+            assert location == f"{url}?saved=captions&worker=restarted#captions"
+            assert "The caption worker was restarted with the new settings." in page
+            assert calls == ["stop", "start", "stop", "stop", "stop", "stop", "start"]
 
     @pytest.mark.anyio
     async def test_captions_can_be_turned_off_when_the_saved_service_lost_its_key(self, admin_cookie, seed_event):
