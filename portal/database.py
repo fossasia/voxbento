@@ -40,6 +40,7 @@ from portal.models import (
     EventMembership,
     HostingRequest,
     InviteToken,
+    MeetingReport,
     Room,
     RoomMembership,
     TranscriptSegment,
@@ -1250,3 +1251,24 @@ async def get_booth_language_name(booth_id: str) -> str | None:
         logger.warning("Database error while resolving language for booth '%s': %s", booth_id, exc, exc_info=True)
         return None
     return None
+
+
+async def create_meeting_report(session: AsyncSession, **fields: object) -> MeetingReport:
+    report = MeetingReport(**fields)
+    session.add(report)
+    await session.flush()
+    return report
+
+
+async def list_meeting_reports(session: AsyncSession, room_id: int, limit: int = 50) -> list[MeetingReport]:
+    result = await session.scalars(
+        select(MeetingReport)
+        .where(MeetingReport.room_id == room_id)
+        .order_by(MeetingReport.created_at.desc(), MeetingReport.id.desc())
+        .limit(limit)
+    )
+    return list(result.all())
+
+
+async def get_meeting_report(session: AsyncSession, report_id: int) -> MeetingReport | None:
+    return await session.get(MeetingReport, report_id)

@@ -259,6 +259,7 @@ jobs:
           node --check portal/static/js/whep-listener.js
           node --check portal/static/js/admin.js
           node --check portal/static/js/booth-detail.js
+          node --check portal/static/js/room-analysis.js
           node --check portal/static/js/overlay-builder.js
           node --check portal/static/js/subtitle-overlay.js
           node --check portal/static/js/program-sender.js

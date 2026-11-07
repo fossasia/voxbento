@@ -1,0 +1,87 @@
+{% extends "admin/base.html" %}
+{% block title %}Meeting reports — {{ room.display_name }}{% endblock %}
+
+{% block breadcrumb %}
+<nav class="breadcrumb">
+  <a href="{{ management_prefix }}/">{{ 'My events' if is_workspace else 'Overview' }}</a> <span>/</span>
+  <a href="{{ management_prefix }}/events/">Events</a> <span>/</span>
+  <a href="{{ management_prefix }}/events/{{ event.id }}/">{{ event.display_name }}</a> <span>/</span>
+  <a href="{{ management_prefix }}/events/{{ event.id }}/rooms/">Rooms</a> <span>/</span>
+  <a href="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/">{{ room.display_name }}</a> <span>/</span>
+  <span class="breadcrumb-current" aria-current="page">Meeting reports</span>
+</nav>
+{% endblock %}
+
+{% block content %}
+{% set analysis_url = management_prefix ~ '/events/' ~ event.id ~ '/rooms/' ~ room.id ~ '/analysis/' %}
+<div class="page-header">
+  <h1>Meeting reports: {{ room.display_name }}</h1>
+  <div class="header-meta">
+    <span class="meta-text">Event: {{ event.display_name }}</span>
+  </div>
+</div>
+
+<div class="room-panel rs" id="room-analysis" data-status-url="/api{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/analysis/">
+  {% if error == 'busy' %}
+  <div class="alert alert-warning" role="status">A report is still being written for this room. Wait for it to finish, then try again.</div>
+  {% elif error == 'channel' %}
+  <div class="alert alert-error" role="status">Choose a channel that has a transcript.</div>
+  {% elif error == 'disabled' %}
+  <div class="alert alert-error" role="status">Meeting reports are turned off for this event.</div>
+  {% endif %}
+
+  {% if not event.meeting_analysis_enabled %}
+  <div class="room-card room-empty">
+    <h2>Meeting reports are off for this event</h2>
+    <p class="room-card-sub">When they're on, an AI service reads a room's stored transcript and writes meeting notes, grouped by the topics that came up.</p>
+    {% if is_event_owner %}
+    <a href="{{ management_prefix }}/events/{{ event.id }}/api-settings/" class="btn btn-primary">Turn on in API keys</a>
+    {% endif %}
+  </div>
+  {% elif is_event_owner %}
+  <form method="post" action="{{ analysis_url }}" class="room-card analysis-form">
+    <h2>Write a report</h2>
+    {% if channels %}
+    <p class="room-card-sub">Reports use <strong>{{ provider_label }}</strong> ({{ model }}). You can change this on <a href="{{ management_prefix }}/events/{{ event.id }}/api-settings/">API keys</a>.</p>
+    <div class="field">
+      <label for="analysis_channel">Transcript</label>
+      <select id="analysis_channel" name="channel" required>
+        {% for channel in channels %}
+        <option value="{{ channel.id }}">{{ channel.label }} — {{ channel.lines }} {{ 'line' if channel.lines == 1 else 'lines' }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="room-save-bar">
+      <button type="submit" class="btn btn-primary" {% if in_progress %}disabled{% endif %}>Generate report</button>
+    </div>
+    {% else %}
+    <p class="room-card-sub">There are no transcripts in this room yet. Reports are written from stored captions, so turn on captions for the room or a booth and run a session first.</p>
+    {% endif %}
+  </form>
+  {% endif %}
+
+  {% for view in reports %}
+  {% set report = view.report %}
+  <article class="room-card analysis-report" data-report-id="{{ report.id }}" data-report-status="{{ report.status }}">
+    <div class="room-card-head">
+      <div>
+        <h2>{% if report.status == 'done' %}<a href="{{ analysis_url }}{{ report.id }}/">{{ view.title }}</a>{% else %}{{ report.channel_label }}{% endif %}</h2>
+        <p class="room-card-sub">{{ report.channel_label }} · {{ report.created_at.strftime('%b %d, %Y, %H:%M UTC') }} · {{ view.provider_label }} ({{ report.model }}){% if report.segment_count %} · {{ report.segment_count }} {{ 'line' if report.segment_count == 1 else 'lines' }}{% endif %}</p>
+      </div>
+      {% if report.status == 'done' %}
+      <a href="{{ analysis_url }}{{ report.id }}/" class="btn btn-outline btn-sm">Open report</a>
+      {% endif %}
+    </div>
+    {% if report.status in ('pending', 'running') %}
+    <p class="analysis-progress" role="status">Writing the report. This can take a minute.</p>
+    {% elif report.status == 'failed' %}
+    <p class="alert alert-error">{{ report.error or "The report couldn't be written." }}</p>
+    {% else %}
+    <p class="analysis-summary">{{ report.summary }}</p>
+    {% endif %}
+  </article>
+  {% endfor %}
+</div>
+
+<script type="module" src="{{ url_for('static', path='js/room-analysis.js') }}?v={{ asset_version }}"></script>
+{% endblock %}
