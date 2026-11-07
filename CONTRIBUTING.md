@@ -127,5 +127,12 @@ Always commit the generated migration files in `alembic/versions/`. Do **not** c
 5. Do not use jQuery or external UI frameworks.
 6. Push your branch and open a PR against `dev`.
 7. **Keep no more than 3 PRs open at a time when possible.** Limiting the number of concurrent PRs helps maintainers and reviewers focus on each change and provide thorough, timely reviews. Before opening another PR, try to get one of your existing PRs merged or otherwise closed.
+8. **AI attribution** — if you used an AI coding assistant (e.g. Claude, Gemini, Copilot) to write or substantially shape the code or PR description, add an **AI Attribution** section to the PR body:
+   ```
+   ## AI Attribution
+
+   This PR was created with the assistance of **<Model Name>** (e.g. Claude Sonnet 4.6).
+   ```
+   Name the specific model. This helps maintainers calibrate review depth and keeps the project's history transparent.
 
 Thank you for contributing!

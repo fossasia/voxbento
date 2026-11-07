@@ -5,9 +5,11 @@ import logging
 from datetime import timezone
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from jwt import InvalidTokenError
 
 from portal.auth import (
     WSAuthError,
+    _current_user,
     booth_session_key,
     decode_token,
     is_invite_token_revoked,
@@ -209,26 +211,31 @@ async def ws_captions(websocket: WebSocket, booth_id: str) -> None:
     """WebSocket endpoint for live captions. Listener tokens are limited to their own event"""
     token = websocket.query_params.get("token", "")
     is_anonymous = not bool(token)
+
+    booth_event: str | None = None
+    try:
+        from portal.booth_identity import parse_booth_id
+
+        booth_event, _, _ = parse_booth_id(booth_id)
+    except ValueError:
+        if "/" in booth_id:
+            booth_event = booth_id.split("/")[0]
+        elif "-" in booth_id:
+            booth_event = booth_id.rsplit("-", 1)[0]
+
     if token:
         reject_code: int | None = None
         try:
             payload = decode_token(token)
-            if not (payload.get("is_admin") or payload.get("admin")):
-                token_event = payload.get("event_slug", "")
-                booth_event: str | None = None
-                try:
-                    from portal.booth_identity import parse_booth_id
-
-                    booth_event, _, _ = parse_booth_id(booth_id)
-                except ValueError:
-                    if "/" in booth_id:
-                        booth_event = booth_id.split("/")[0]
-                    elif "-" in booth_id:
-                        booth_event = booth_id.rsplit("-", 1)[0]
-
-                if not token_event or booth_event != token_event:
+            if payload.get("user"):
+                if not await _current_user(payload):
+                    reject_code = 4001
+            elif is_listener_token(payload):
+                if not payload.get("event_slug") or booth_event != payload["event_slug"]:
                     reject_code = 4003
-        except Exception:
+            elif not payload.get("event_slug") or not await resolve_booth_role(payload, booth_id):
+                reject_code = 4003
+        except InvalidTokenError:
             reject_code = 4001
         if reject_code is not None:
             # Accept before closing: a close before accept() becomes an HTTP 403 and
@@ -238,12 +245,45 @@ async def ws_captions(websocket: WebSocket, booth_id: str) -> None:
             await websocket.close(code=reject_code)
             return
     else:
-        from portal.config import settings
+        if booth_event:
+            from portal.auth import get_booth_sessions
+            from portal.database import get_event_by_slug, get_session
 
-        max_anon = getattr(settings, "max_anonymous_caption_listeners_per_booth", 500)
-        if not listener_manager.try_reserve_anonymous(websocket, booth_id, max_anon):
-            await websocket.close(code=1008)
-            return
+            async with get_session() as db_session:
+                ev = await get_event_by_slug(db_session, booth_event)
+
+            if ev and ev.listener_join_code:
+                from portal.join_code_limit import JoinCodeThrottled, verify_join_code
+
+                sessions = get_booth_sessions(websocket)
+                user_sess = sessions.get("user_token")
+                invite_sess = sessions.get("session_token")
+                is_authorized = bool(user_sess and user_sess.get("user") and await _current_user(user_sess))
+                if not is_authorized and invite_sess:
+                    is_authorized = bool(await resolve_booth_role(invite_sess, booth_id))
+                reject_code = 4001
+                if not is_authorized:
+                    submitted = websocket.query_params.get("code") or websocket.cookies.get(f"listener_code_{booth_event}")
+                    try:
+                        is_authorized = verify_join_code(
+                            websocket.client.host if websocket.client else "unknown", submitted, ev.listener_join_code,
+                        )
+                    except JoinCodeThrottled:
+                        reject_code = 1008
+                if not is_authorized:
+                    await websocket.accept()
+                    await websocket.close(code=reject_code)
+                    return
+                is_anonymous = False
+
+        if is_anonymous:
+            from portal.config import settings
+
+            max_anon = getattr(settings, "max_anonymous_caption_listeners_per_booth", 500)
+            if not listener_manager.try_reserve_anonymous(websocket, booth_id, max_anon):
+                await websocket.accept()
+                await websocket.close(code=1008)
+                return
 
     accepted = False
     try:

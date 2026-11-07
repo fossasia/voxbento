@@ -88,7 +88,9 @@ jobs:
             git checkout main
             git merge --ff-only "$candidate_commit"
             if [ -f Caddyfile ]; then
-              sudo cp Caddyfile /etc/caddy/Caddyfile
+              # Rename on the same filesystem: Caddy must never read a partial copy.
+              sudo install -m 644 Caddyfile /etc/caddy/Caddyfile.next
+              sudo mv -f /etc/caddy/Caddyfile.next /etc/caddy/Caddyfile
               sudo systemctl reload caddy
               echo "Caddy config updated and reloaded"
             fi
