@@ -406,8 +406,8 @@ body:has(.login-page) .portal-footer {
 }
 
 .password-toggle-btn:hover {
-  color: #0d0f10;
-  background-color: rgba(13, 15, 16, 0.06);
+  color: var(--color-text);
+  background-color: color-mix(in srgb, var(--color-text) 6%, transparent);
 }
 
 .password-toggle-btn:focus {
