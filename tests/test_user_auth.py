@@ -482,6 +482,41 @@ class TestUserLogin:
         assert "user_token" in resp.headers.get("set-cookie", "")
 
     @pytest.mark.anyio
+    @pytest.mark.parametrize(
+        ("public_base_url", "request_url", "forwarded_proto", "debug", "secure"),
+        [
+            ("https://voxbento.com", "http://test", None, False, True),
+            ("HTTPS://voxbento.com", "http://test", None, False, True),
+            ("http://localhost:8000", "http://test", None, False, False),
+            ("https://voxbento.com", "http://test", None, True, False),
+            ("http://localhost:8000", "https://test", None, False, True),
+            ("http://localhost:8000", "https://test", None, True, True),
+            ("http://localhost:8000", "http://test", "https", False, True),
+            ("http://localhost:8000", "http://test", "https", True, True),
+        ],
+    )
+    async def test_login_cookie_secure_follows_deployment(
+        self, setup_db, monkeypatch, public_base_url, request_url, forwarded_proto, debug, secure
+    ):
+        from portal.config import settings
+
+        monkeypatch.setattr(settings, "public_base_url", public_base_url)
+        monkeypatch.setattr(settings, "debug", debug)
+        await _create_test_user(email="secure@example.com", password="securepass123")
+        async with _client() as c:
+            c.base_url = request_url
+            resp = await c.post(
+                "/login",
+                data={"email": "secure@example.com", "password": "securepass123"},
+                headers={"X-Forwarded-Proto": forwarded_proto} if forwarded_proto else {},
+                follow_redirects=False,
+            )
+        assert resp.status_code == 303
+        cookie = resp.headers["set-cookie"]
+        assert cookie.startswith("user_token=")
+        assert ("; secure" in cookie.lower()) is secure
+
+    @pytest.mark.anyio
     async def test_login_with_wrong_password(self, setup_db):
         await _create_test_user(email="login@example.com", password="securepass123")
         async with _client() as c:

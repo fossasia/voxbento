@@ -11,7 +11,14 @@ from fastapi import APIRouter, HTTPException, Query, Request, status
 from fastapi.templating import Jinja2Templates
 from starlette.responses import JSONResponse
 
-from portal.auth import _current_user, create_listener_token, decode_token, get_booth_session, is_listener_token
+from portal.auth import (
+    _current_user,
+    create_listener_token,
+    decode_token,
+    get_booth_session,
+    is_cookie_secure,
+    is_listener_token,
+)
 from portal.booth_identity import make_booth_id
 from portal.config import settings
 from portal.database import (
@@ -159,8 +166,17 @@ async def listen_event_page(request: Request, event_slug: str, code: str | None 
             "share_url": f"{settings.public_base_url}/listener/{ev.slug}",
         },
     )
-    if code and code == ev.listener_join_code:
-        response.set_cookie(f"listener_code_{event_slug}", code, httponly=True, max_age=31536000)
+    # Reissue on cookie visits too, so cookies set before the Secure flag existed get upgraded.
+    submitted_code = _submitted_code(request, event_slug, code)
+    if submitted_code and submitted_code == ev.listener_join_code:
+        response.set_cookie(
+            f"listener_code_{event_slug}",
+            submitted_code,
+            httponly=True,
+            samesite="lax",
+            secure=is_cookie_secure(request),
+            max_age=31536000,
+        )
     return response
 
 
@@ -218,8 +234,16 @@ async def subtitle_overlay(
             "Content-Security-Policy": "frame-ancestors 'self'",
         },
     )
-    if code and code == ev.listener_join_code:
-        response.set_cookie(f"listener_code_{event_slug}", code, httponly=True, max_age=31536000)
+    submitted_code = _submitted_code(request, event_slug, code)
+    if submitted_code and submitted_code == ev.listener_join_code:
+        response.set_cookie(
+            f"listener_code_{event_slug}",
+            submitted_code,
+            httponly=True,
+            samesite="lax",
+            secure=is_cookie_secure(request),
+            max_age=31536000,
+        )
     return response
 
 

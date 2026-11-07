@@ -12,7 +12,7 @@ from fastapi.templating import Jinja2Templates
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from portal.auth import require_user
+from portal.auth import is_cookie_secure, require_user
 from portal.config import settings
 from portal.database import get_db_session
 from portal.globals import asset_version_context
@@ -151,7 +151,9 @@ async def developer_dashboard(
 
     response = await render_dashboard(request, user, db, account, csrf_token)
     if should_set_cookie:
-        response.set_cookie("dashboard_csrf", csrf_token, httponly=True, samesite="lax")
+        response.set_cookie(
+            "dashboard_csrf", csrf_token, httponly=True, samesite="lax", secure=is_cookie_secure(request)
+        )
     return response
 
 

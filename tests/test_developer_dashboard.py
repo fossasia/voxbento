@@ -13,11 +13,13 @@ import os
 os.environ["BOOTH_ACCESS_TOKEN"] = ""
 
 import re
+from http.cookies import SimpleCookie
 
 import pytest
 from sqlalchemy import select
 
 from portal.auth import create_user_token, hash_password
+from portal.config import settings
 from portal.database import configure, create_user, dispose, get_session, init_db
 from portal.models import DeveloperAccount, OAuthClient
 from portal.routers.developer import (
@@ -57,6 +59,41 @@ async def _developer_cookies(account_status: str | None = "approved") -> dict[st
         await s.commit()
         token = create_user_token(user_id=user.id, email=user.email)
     return {"user_token": token, "dashboard_csrf": CSRF}
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("public_base_url", "request_url", "forwarded_proto", "secure"),
+    [
+        ("https://voxbento.com", "http://test", None, True),
+        ("http://localhost:8000", "http://test", None, False),
+        ("http://localhost:8000", "https://test", None, True),
+        ("http://localhost:8000", "http://test", "https", True),
+    ],
+)
+async def test_dashboard_csrf_cookie_secure_follows_deployment(
+    setup_db, monkeypatch, public_base_url, request_url, forwarded_proto, secure
+):
+    monkeypatch.setattr(settings, "public_base_url", public_base_url)
+    monkeypatch.setattr(settings, "debug", False)
+    cookies = await _developer_cookies()
+    cookies.pop("dashboard_csrf")
+
+    async with _client() as c:
+        c.base_url = request_url
+        c.cookies.update(cookies)
+        resp = await c.get(
+            "/developer",
+            headers={"X-Forwarded-Proto": forwarded_proto} if forwarded_proto else {},
+            follow_redirects=False,
+        )
+
+    assert resp.status_code == 200, resp.text
+    cookie = SimpleCookie(resp.headers["set-cookie"])["dashboard_csrf"]
+    assert cookie.value
+    assert bool(cookie["secure"]) is secure
+    assert cookie["httponly"]
+    assert cookie["samesite"] == "lax"
 
 
 async def _stored_clients() -> list[OAuthClient]:

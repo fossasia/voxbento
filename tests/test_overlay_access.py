@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import types
+from http.cookies import SimpleCookie
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -14,6 +15,7 @@ from fastapi_app import app
 from portal import join_code_limit
 from portal.auth import create_user_token, decode_token
 from portal.booth_identity import ISO_639_1_CODES
+from portal.config import settings
 from portal.database import (
     configure,
     create_booth,
@@ -127,6 +129,43 @@ async def test_overlay_and_refresh_validate_live_account(channel, state):
                 assert '"token"' not in response.text
         # Possession of the event code is an independent authorization method.
         assert (await c.get(path + "/session?code=ROOM42")).status_code == 200
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("stored_cookie", [False, True])
+@pytest.mark.parametrize(
+    ("public_base_url", "request_url", "forwarded_proto", "secure"),
+    [
+        ("https://voxbento.com", "http://testserver", None, True),
+        ("http://localhost:8000", "http://testserver", None, False),
+        ("http://localhost:8000", "https://testserver", None, True),
+        ("http://localhost:8000", "http://testserver", "https", True),
+    ],
+)
+async def test_overlay_join_code_cookie_follows_deployment(
+    channel, monkeypatch, stored_cookie, public_base_url, request_url, forwarded_proto, secure
+):
+    monkeypatch.setattr(settings, "public_base_url", public_base_url)
+    monkeypatch.setattr(settings, "debug", False)
+    event, room, _ = channel
+    cookie_name = f"listener_code_{event.slug}"
+    async with client() as c:
+        c.base_url = request_url
+        if stored_cookie:
+            c.cookies.set(cookie_name, "ROOM42")
+        response = await c.get(
+            f"/overlay/{event.slug}/{room.id}/en",
+            params={} if stored_cookie else {"code": "ROOM42"},
+            headers={"X-Forwarded-Proto": forwarded_proto} if forwarded_proto else {},
+        )
+
+    assert response.status_code == 200, response.text
+    cookie = SimpleCookie(response.headers["set-cookie"])[cookie_name]
+    assert cookie.value == "ROOM42"
+    assert bool(cookie["secure"]) is secure
+    assert cookie["httponly"]
+    assert cookie["samesite"] == "lax"
+    assert cookie["max-age"] == "31536000"
 
 
 @pytest.mark.anyio

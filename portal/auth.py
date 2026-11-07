@@ -72,6 +72,12 @@ def verify_password(password: str, password_hash: str) -> bool:
     return bcrypt.checkpw(password.encode(), password_hash.encode())
 
 
+def is_cookie_secure(request: Request) -> bool:
+    if request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https":
+        return True
+    return settings.is_https and not settings.debug
+
+
 def create_token() -> str:
     now = datetime.now(timezone.utc)
     payload = {
