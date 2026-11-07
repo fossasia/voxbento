@@ -196,7 +196,7 @@ jobs:
 
   # Hourly check: remind, release or close.
   enforce:
-    if: github.event_name != 'issue_comment'
+    if: github.event_name != 'pull_request_target' && github.event_name != 'issue_comment'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/github-script@v9
