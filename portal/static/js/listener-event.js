@@ -3,17 +3,130 @@ import { createDeliveryQueue } from './program-delivery.js';
 const captionDelivery = createDeliveryQueue();
 const speechDelivery = createDeliveryQueue();
 
-document
-  .getElementById("toggle-captions-btn")
-  .addEventListener("click", function () {
-    var container = document.getElementById("captions-container");
-    container.classList.toggle("minimized");
-    if (container.classList.contains("minimized")) {
-      this.textContent = "Maximize Captions ▲";
-    } else {
-      this.textContent = "Minimize Captions ▼";
-    }
-  });
+var captionsContainer = document.getElementById("captions-container");
+var toggleCaptionsBtn = document.getElementById("toggle-captions-btn");
+toggleCaptionsBtn.addEventListener("click", function () {
+  var hidden = captionsContainer.classList.toggle("minimized");
+  toggleCaptionsBtn.textContent = hidden ? "Show" : "Hide";
+  toggleCaptionsBtn.setAttribute("aria-expanded", String(!hidden));
+  if (!hidden) scrollCaptionsToLatest();
+});
+
+// Caption text size, remembered per browser.
+var CAPTION_SIZES = [0.875, 1, 1.125, 1.25, 1.5, 1.75];
+var CAPTION_SIZE_KEY = "voxbento.listener.captionSize";
+var captionSizeIndex = (function () {
+  var saved = null;
+  try {
+    saved = parseInt(window.localStorage.getItem(CAPTION_SIZE_KEY), 10);
+  } catch (e) {
+    // Storage blocked (private mode); fall back to the default size.
+  }
+  return Number.isInteger(saved) && saved >= 0 && saved < CAPTION_SIZES.length
+    ? saved
+    : null;
+})();
+var captionSizeDownBtn = document.getElementById("caption-size-down");
+var captionSizeUpBtn = document.getElementById("caption-size-up");
+
+function applyCaptionSize() {
+  var box = document.getElementById("live-captions");
+  if (captionSizeIndex === null) {
+    box.style.removeProperty("--caption-font-size");
+  } else {
+    box.style.setProperty(
+      "--caption-font-size",
+      CAPTION_SIZES[captionSizeIndex] + "rem",
+    );
+  }
+  var index = captionSizeIndex === null ? 1 : captionSizeIndex;
+  captionSizeDownBtn.disabled = index === 0;
+  captionSizeUpBtn.disabled = index === CAPTION_SIZES.length - 1;
+}
+
+function changeCaptionSize(step) {
+  var index = captionSizeIndex === null ? 1 : captionSizeIndex;
+  captionSizeIndex = Math.max(
+    0,
+    Math.min(CAPTION_SIZES.length - 1, index + step),
+  );
+  try {
+    window.localStorage.setItem(CAPTION_SIZE_KEY, String(captionSizeIndex));
+  } catch (e) {
+    // Not persisted; the size still applies for this visit.
+  }
+  var follow = followLatest;
+  applyCaptionSize();
+  if (follow) scrollCaptionsToLatest();
+}
+
+captionSizeDownBtn.addEventListener("click", function () {
+  changeCaptionSize(-1);
+});
+captionSizeUpBtn.addEventListener("click", function () {
+  changeCaptionSize(1);
+});
+
+// Follow new captions only while the reader is at the bottom. Scrolling up to
+// reread pauses following and offers a button back to the newest line.
+var FOLLOW_THRESHOLD_PX = 40;
+var followLatest = true;
+var captionsAutoScrollTop = 0;
+var jumpToLatestBtn = document.getElementById("jump-to-latest");
+
+function captionsNearBottom() {
+  var box = document.getElementById("live-captions");
+  return (
+    box.scrollHeight - box.scrollTop - box.clientHeight <= FOLLOW_THRESHOLD_PX
+  );
+}
+
+function scrollCaptionsToLatest() {
+  var box = document.getElementById("live-captions");
+  box.scrollTop = box.scrollHeight;
+  captionsAutoScrollTop = box.scrollTop;
+  followLatest = true;
+  jumpToLatestBtn.hidden = true;
+}
+
+function onCaptionsChanged() {
+  if (followLatest) {
+    scrollCaptionsToLatest();
+  } else {
+    jumpToLatestBtn.hidden = false;
+  }
+}
+
+document.getElementById("live-captions").addEventListener(
+  "scroll",
+  function () {
+    followLatest =
+      document.getElementById("live-captions").scrollTop === captionsAutoScrollTop ||
+      captionsNearBottom();
+    if (followLatest) jumpToLatestBtn.hidden = true;
+  },
+  { passive: true },
+);
+
+jumpToLatestBtn.addEventListener("click", scrollCaptionsToLatest);
+
+function resetCaptions() {
+  document.getElementById("caption-history").innerHTML = "";
+  document.getElementById("caption-current").innerHTML = "";
+  var waitingText = document.getElementById("waiting-text");
+  if (waitingText) waitingText.classList.remove("listener-hidden");
+  scrollCaptionsToLatest();
+}
+
+// Writes "<label> text" into a caption line; text stays untrusted (textContent only).
+function fillCaptionLine(div, langName, text) {
+  div.innerHTML =
+    '<span class="lang-label"></span><span class="untrusted-text"></span>';
+  div.querySelector(".lang-label").textContent = langName;
+  div.querySelector(".untrusted-text").textContent = text;
+}
+
+applyCaptionSize();
 
 const eventDataEl = document.getElementById("listener-data");
 const eventData = JSON.parse(eventDataEl.textContent);
@@ -85,7 +198,6 @@ var translationLangSelect = document.getElementById("translation-lang-select");
 
 var audioEl = document.getElementById("audio-player");
 var statusEl = document.getElementById("status");
-var captionsBox = document.getElementById("live-captions");
 var captionsWs = null;
 var captionsRetryTimer = null;
 var captionsRetryDelayMs = 1000;
@@ -207,10 +319,7 @@ function stopCurrentStream() {
   }
   showAudioPlayer(false);
   audioEl.muted = false;
-  document.getElementById("caption-history").innerHTML = "";
-  document.getElementById("caption-current").innerHTML = "";
-  followCaptions = true;
-  document.getElementById("waiting-text").classList.remove("listener-hidden");
+  resetCaptions();
 
   setStatus("Waiting for selection...", "waiting");
 }
@@ -406,26 +515,6 @@ function openCaptionsWs(boothId) {
   };
 }
 
-// Follow new captions only until the listener scrolls away from the end, so
-// reading back isn't undone by the next partial. Decided on scroll rather than
-// per caption because rows can grow after they render (late styles, wrapping)
-// without the listener moving.
-var CAPTIONS_FOLLOW_THRESHOLD_PX = 40;
-var followCaptions = true;
-var captionsAutoScrollTop = 0;
-
-function scrollCaptionsToEnd() {
-  captionsBox.scrollTop = captionsBox.scrollHeight;
-  captionsAutoScrollTop = captionsBox.scrollTop;
-}
-
-captionsBox.addEventListener("scroll", function () {
-  followCaptions =
-    captionsBox.scrollTop === captionsAutoScrollTop ||
-    captionsBox.scrollHeight - captionsBox.scrollTop - captionsBox.clientHeight <=
-      CAPTIONS_FOLLOW_THRESHOLD_PX;
-});
-
 function renderItem(data) {
   var historyBox = document.getElementById("caption-history");
   var currentBox = document.getElementById("caption-current");
@@ -443,19 +532,15 @@ function renderItem(data) {
         if (!existingBlock) {
           var block = document.createElement("div");
           block.className =
-            "caption-history-block mb-4 pb-4 border-b border-gray-200 last:border-b-0 w-full flex flex-col gap-1";
+            "caption-history-block";
           if (data.segment_id) {
             block.id = "segment-" + data.segment_id;
           }
 
           var srcDiv = document.createElement("div");
           srcDiv.id = "src-" + data.segment_id;
-          srcDiv.className = "text-[#0d0f10] caption-src-text";
-          srcDiv.innerHTML =
-            '<span class="font-extrabold lang-label"></span> : <span class="untrusted-text"></span>';
-          srcDiv.querySelector(".lang-label").textContent =
-            "[" + srcLangName + "]";
-          srcDiv.querySelector(".untrusted-text").textContent = data.text;
+          srcDiv.className = "caption-src-text";
+          fillCaptionLine(srcDiv, srcLangName, data.text);
 
           if (mode === "translated") {
             srcDiv.classList.add("listener-hidden");
@@ -467,13 +552,7 @@ function renderItem(data) {
             historyBox.removeChild(historyBox.firstChild);
         } else {
           var srcDiv = existingBlock.querySelector(".caption-src-text");
-          if (srcDiv) {
-            srcDiv.innerHTML =
-              '<span class="font-extrabold lang-label"></span> : <span class="untrusted-text"></span>';
-            srcDiv.querySelector(".lang-label").textContent =
-              "[" + srcLangName + "]";
-            srcDiv.querySelector(".untrusted-text").textContent = data.text;
-          }
+          if (srcDiv) fillCaptionLine(srcDiv, srcLangName, data.text);
         }
       }
       if (data.status === "final") {
@@ -482,7 +561,7 @@ function renderItem(data) {
     } else if (data.status === "clear") {
       currentBox.textContent = "";
     }
-    if (followCaptions) scrollCaptionsToEnd();
+    onCaptionsChanged();
   } else if (data.type === "translation") {
     if (data.language_code === translationLangSelect.value) {
       var tgtLangOpt =
@@ -490,11 +569,8 @@ function renderItem(data) {
       var tgtLangName = tgtLangOpt ? tgtLangOpt.text : "Translation";
 
       var tDiv = document.createElement("div");
-      tDiv.className = "text-brand-600 translation-text caption-tgt-text";
-      tDiv.innerHTML =
-        '<span class="font-extrabold lang-label"></span> : <span class="untrusted-text"></span>';
-      tDiv.querySelector(".lang-label").textContent = "[" + tgtLangName + "]";
-      tDiv.querySelector(".untrusted-text").textContent = data.text;
+      tDiv.className = "translation-text caption-tgt-text";
+      fillCaptionLine(tDiv, tgtLangName, data.text);
 
       if (mode === "original") {
         tDiv.classList.add("listener-hidden");
@@ -506,11 +582,7 @@ function renderItem(data) {
       if (block) {
         var existingTDiv = block.querySelector(".translation-text");
         if (existingTDiv) {
-          existingTDiv.innerHTML =
-            '<span class="font-extrabold lang-label"></span> : <span class="untrusted-text"></span>';
-          existingTDiv.querySelector(".lang-label").textContent =
-            "[" + tgtLangName + "]";
-          existingTDiv.querySelector(".untrusted-text").textContent = data.text;
+          fillCaptionLine(existingTDiv, tgtLangName, data.text);
         } else {
           block.appendChild(tDiv);
           applyCaptionMode();
@@ -519,13 +591,13 @@ function renderItem(data) {
         // Fallback if we missed the original caption
         block = document.createElement("div");
         block.className =
-          "caption-history-block mb-4 pb-4 border-b border-gray-200 last:border-b-0 w-full flex flex-col gap-1";
+          "caption-history-block";
         block.appendChild(tDiv);
         historyBox.appendChild(block);
         while (historyBox.children.length > 50)
           historyBox.removeChild(historyBox.firstChild);
       }
-      if (followCaptions) scrollCaptionsToEnd();
+      onCaptionsChanged();
     }
   }
 }
@@ -860,7 +932,10 @@ function applyCaptionMode() {
   }
 }
 
-captionModeSelect.addEventListener("change", applyCaptionMode);
+captionModeSelect.addEventListener("change", function () {
+  applyCaptionMode();
+  if (followLatest) scrollCaptionsToLatest();
+});
 
 roomSelect.addEventListener("change", function () {
   var roomId = parseInt(this.value, 10);
