@@ -89,13 +89,45 @@ class Settings(BaseSettings):
 
         Called once at application startup. No-op in debug mode so local
         development works without configuring a SECRET_KEY.
+
+        Note for upgrades: Existing production deployments that previously ran
+        with a weak or short secret must configure a 32+ character random
+        JWT_SECRET (or SECRET_KEY if JWT_SECRET is unset) before starting.
+        If stored credentials were tied to the old secret, reissue them after
+        rotation.
         """
         if self.debug:
             return
-        weak_defaults = {"change-me", "", "secret", "your-secret-key"}
-        if self.effective_jwt_secret in weak_defaults:
+        weak_defaults = {
+            "change-me",
+            "",
+            "secret",
+            "your-secret-key",
+            "admin",
+            "password",
+            "123456",
+            "qwerty",
+            "letmein",
+            "changeme",
+            "test",
+            "1234567890",
+        }
+        effective_secret = (self.effective_jwt_secret or "").strip()
+        if not effective_secret or effective_secret in weak_defaults:
             raise RuntimeError(
                 "SECRET_KEY (or JWT_SECRET) is set to a known-weak default value. "
+                "Set a strong random value before running in production. "
+                "Generate one with: openssl rand -hex 32"
+            )
+        if len(effective_secret) < 32:
+            raise RuntimeError(
+                "SECRET_KEY (or JWT_SECRET) is too short for production use. "
+                "It must be at least 32 characters. "
+                "Generate one with: openssl rand -hex 32"
+            )
+        if len(set(effective_secret)) < 8:
+            raise RuntimeError(
+                "SECRET_KEY (or JWT_SECRET) lacks sufficient character diversity. "
                 "Set a strong random value before running in production. "
                 "Generate one with: openssl rand -hex 32"
             )
