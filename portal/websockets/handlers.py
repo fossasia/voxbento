@@ -128,7 +128,6 @@ async def ws_booth(websocket: WebSocket, booth_id: str) -> None:
         try:
             await websocket.close(code=WS_CLOSE_REVOKED, reason=REASON_AUTH_REVOKED)
         except (WebSocketDisconnect, RuntimeError, OSError):
-            # The socket was already closing; not registering it is what matters.
             _log.debug("Revoked booth socket was already closing", exc_info=True)
         return
 
@@ -139,7 +138,12 @@ async def ws_booth(websocket: WebSocket, booth_id: str) -> None:
             _log.debug("Revoked invite booth socket was already closing", exc_info=True)
         return
 
-    manager.add(websocket, session)
+    # Only connections that carry an authorized booth role join the broadcast
+    # room; a role-less socket (e.g. anonymous when BOOTH_ACCESS_TOKEN is unset)
+    # is still accepted so booth:join can reply with a role error, but it never
+    # receives private booth:state / chat / handoff broadcasts (#809).
+    if ws_granted_role is not None:
+        manager.add(websocket, session)
 
     try:
         while True:
