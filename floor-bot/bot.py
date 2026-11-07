@@ -7,7 +7,7 @@ import os
 import re
 import subprocess  # nosec B404
 import threading
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Dict
 
 logging.basicConfig(level=logging.INFO)
@@ -19,6 +19,32 @@ SECRET_VALUE = re.compile(
 )
 
 
+def _wait_for_proc(proc: subprocess.Popen, label: str) -> None:
+    """Terminate and wait for a subprocess, falling back to SIGKILL on timeout."""
+    if proc.poll() is None:
+        try:
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                logger.warning(f"Graceful stop timed out for {label}; sending SIGKILL")
+                proc.kill()
+                try:
+                    proc.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    logger.error(f"Subprocess for {label} did not exit after SIGKILL")
+        except Exception as exc:
+            logger.error(f"Unexpected error stopping subprocess for {label}: {exc}")
+            try:
+                proc.kill()
+                try:
+                    proc.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    logger.error(f"Subprocess for {label} did not exit after SIGKILL")
+            except Exception as kill_exc:
+                logger.debug(f"Kill failed for {label}: {kill_exc}")
+
+
 class SubprocessManager:
     def __init__(self):
         self.rooms: Dict[str, subprocess.Popen] = {}
@@ -28,14 +54,32 @@ class SubprocessManager:
         # Last failure code from the subprocess (join_failed, not_jitsi, redirected, left_meeting, audio_failed).
         self.room_failures: Dict[str, str] = {}
         self.room_meta: Dict[str, dict] = {}
-        self.lock = threading.Lock()
+        self.stopping_threads: Dict[str, threading.Thread] = {}
+        self.lock = threading.RLock()
 
     def start_room(self, event_slug: str, room_id: int, jitsi_url: str, mediamtx_rtsp_base: str):
+        """Start a floor-bot browser subprocess for the given room, waiting for any in-flight teardown."""
         process_key = f"{event_slug}-{room_id}"
-        with self.lock:
-            if process_key in self.rooms:
-                self.stop_room_locked(process_key)
+        while True:
+            to_join = None
+            with self.lock:
+                stop_thread = self.stopping_threads.get(process_key)
+                if stop_thread and stop_thread.is_alive():
+                    to_join = stop_thread
+                elif process_key in self.rooms:
+                    self._stop_room_async_locked(process_key)
+                    to_join = self.stopping_threads.get(process_key)
+                else:
+                    self._spawn_room_locked(process_key, event_slug, room_id, jitsi_url, mediamtx_rtsp_base)
+                    return
+            if to_join and to_join.is_alive():
+                to_join.join()
 
+    def _spawn_room_locked(
+        self, process_key: str, event_slug: str, room_id: int, jitsi_url: str, mediamtx_rtsp_base: str
+    ):
+        """Spawn the browser/ffmpeg subprocess for a room while caller holds self.lock."""
+        with self.lock:
             logger.info(f"Starting subprocess for event: {event_slug}, room: {room_id}")
             env = os.environ.copy()
             env["BOT_EVENT_SLUG"] = event_slug
@@ -367,29 +411,58 @@ raise SystemExit(asyncio.run(run_capture()))
             self.rooms[process_key] = proc
 
     def stop_room_locked(self, process_key: str):
+        """Synchronously terminate and wait for a room subprocess under lock."""
         if process_key in self.rooms:
             logger.info(f"Terminating subprocess for {process_key}")
             self.room_states[process_key] = "stopping"
-            proc = self.rooms[process_key]
-            if proc.poll() is None:
-                proc.terminate()
-                try:
-                    proc.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    logger.warning(f"Graceful stop timed out for {process_key}; sending SIGKILL")
-                    proc.kill()
-                    try:
-                        proc.wait(timeout=3)
-                    except subprocess.TimeoutExpired:
-                        logger.error(f"Subprocess for {process_key} did not exit after SIGKILL")
-            del self.rooms[process_key]
-            self.room_states[process_key] = "stopped"
+            proc = self.rooms.pop(process_key)
             self.room_failures.pop(process_key, None)
             self.room_meta.pop(process_key, None)
+            _wait_for_proc(proc, process_key)
+            self.room_states[process_key] = "stopped"
+
+    def _stop_room_async_locked(self, process_key: str) -> None:
+        if process_key not in self.rooms:
+            return
+        logger.info(f"Terminating subprocess for {process_key} in background")
+        self.room_states[process_key] = "stopping"
+        proc = self.rooms.pop(process_key)
+        self.room_failures.pop(process_key, None)
+        self.room_meta.pop(process_key, None)
+
+        def _teardown():
+            try:
+                _wait_for_proc(proc, process_key)
+            finally:
+                with self.lock:
+                    self.room_states[process_key] = "stopped"
+                    self.stopping_threads.pop(process_key, None)
+
+        t = threading.Thread(target=_teardown, daemon=True)
+        self.stopping_threads[process_key] = t
+        t.start()
+
+    def stop_room_async(self, process_key: str) -> None:
+        """Eagerly remove room from active tracking and perform teardown in a background daemon thread."""
+        with self.lock:
+            self._stop_room_async_locked(process_key)
 
     def stop_room(self, process_key: str):
+        """Synchronously stop a room, awaiting any active background teardown."""
+        stop_thread = None
         with self.lock:
-            self.stop_room_locked(process_key)
+            stop_thread = self.stopping_threads.get(process_key)
+            if process_key in self.rooms:
+                self.stop_room_locked(process_key)
+        if stop_thread and stop_thread.is_alive():
+            stop_thread.join()
+
+    def wait_for_all_stops(self, timeout: float = 10.0):
+        """Wait for all outstanding background teardown threads to complete."""
+        with self.lock:
+            threads = list(self.stopping_threads.values())
+        for t in threads:
+            t.join(timeout=timeout)
 
 
 manager = SubprocessManager()
@@ -426,11 +499,11 @@ class RequestHandler(BaseHTTPRequestHandler):
             if not event_slug or room_id is None:
                 self.send_error(400, "Missing event_slug or room_id")
                 return
-            manager.stop_room(f"{event_slug}-{room_id}")
-            self.send_response(200)
+            manager.stop_room_async(f"{event_slug}-{room_id}")
+            self.send_response(202)
             self.send_header("Content-type", "application/json")
             self.end_headers()
-            self.wfile.write(json.dumps({"status": "stopped", "event_slug": event_slug}).encode())
+            self.wfile.write(json.dumps({"status": "stopping", "event_slug": event_slug}).encode())
         else:
             self.send_error(404, "Not Found")
 
@@ -461,7 +534,7 @@ class RequestHandler(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     server_address = ("0.0.0.0", 8080)  # nosec B104
-    httpd = HTTPServer(server_address, RequestHandler)
+    httpd = ThreadingHTTPServer(server_address, RequestHandler)
     logger.info("Starting floor-bot on port 8080...")
     try:
         httpd.serve_forever()
@@ -470,4 +543,5 @@ if __name__ == "__main__":
     finally:
         for p_key in list(manager.rooms.keys()):
             manager.stop_room(p_key)
+        manager.wait_for_all_stops()
         httpd.server_close()
