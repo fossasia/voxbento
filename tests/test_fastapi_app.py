@@ -3078,3 +3078,18 @@ def test_embed_rendered_html_uses_sanitized_theme_values():
     assert '"audio_delay_ms"' in res.text
     # CSP header is still emitted with the sanitized policy.
     assert "frame-ancestors" in res.headers.get("content-security-policy", "")
+
+
+def test_unhandled_exception_response_has_security_headers():
+    @app.get("/__boom", include_in_schema=False)
+    async def boom():
+        raise RuntimeError("boom")
+
+    try:
+        res = TestClient(app, raise_server_exceptions=False).get("/__boom")
+    finally:
+        app.router.routes = [r for r in app.router.routes if getattr(r, "path", "") != "/__boom"]
+
+    assert res.status_code == 500
+    assert res.headers["x-content-type-options"] == "nosniff"
+    assert res.headers["content-security-policy"] == "frame-ancestors 'self'"
