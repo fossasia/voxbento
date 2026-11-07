@@ -10,39 +10,38 @@
 
 /* ── 1. Design tokens ───────────────────────────────────────────────────── */
 :root {
-  --color-primary: #2185d0;
-  --color-primary-text: #1a69a4;
-  --color-bg: #ffffff;
-  --color-text: #0d0f10;
-  --color-muted: #6c757d;
-  --color-border: #ced4da;
-  --color-panel-header: rgb(0 0 0 / 0.03);
-  --color-panel-border: rgb(0 0 0 / 0.125);
-  --color-success: #2a8f4c;
-  --color-danger: #b23e65;
-  --color-warning: #d18538;
-  --radius: 0.25rem;
-  --shadow-lightest: 0 1px 2px rgb(0 0 0 / 0.24);
+  /* Values come from the shared tokens in tokens.css (#243), linked before this file.
+     Status colours here are only used for text, so they map to the *-text tokens. */
+  --color-primary: var(--vb-color-primary);
+  --color-primary-text: var(--vb-color-primary-hover);
+  --color-bg: var(--vb-color-surface);
+  --color-text: var(--vb-color-text);
+  --color-muted: var(--vb-color-muted);
+  --color-border: var(--vb-color-border-strong);
+  --color-success: var(--vb-color-success-text);
+  --color-danger: var(--vb-color-danger-text);
+  --color-warning: var(--vb-color-warning-text);
+  --radius: var(--vb-radius-sm);
   --portal-gutter: 0.9rem;
 
   /* Booth redesign tokens */
-  --bx-bg: #eef1f6;
-  --bx-surface: #ffffff;
-  --bx-surface-2: #f6f8fb;
-  --bx-border: #e4e8f0;
-  --bx-border-strong: #d3dae6;
-  --bx-text: #1a2230;
-  --bx-muted: #6b7484;
-  --bx-accent: #2f6df6;
-  --bx-accent-ink: #1c4fd6;
-  --bx-live: #16a34a;
-  --bx-live-ink: #12833f;
-  --bx-danger: #e11d48;
-  --bx-warn: #b45309;
-  --bx-radius: 14px;
-  --bx-radius-sm: 10px;
-  --bx-shadow: 0 1px 2px rgb(16 24 40 / 0.04), 0 8px 24px rgb(16 24 40 / 0.06);
-  --bx-shadow-sm: 0 1px 2px rgb(16 24 40 / 0.05);
+  --bx-bg: var(--vb-color-bg);
+  --bx-surface: var(--vb-color-surface);
+  --bx-surface-2: var(--vb-color-surface-2);
+  --bx-border: var(--vb-color-border);
+  --bx-border-strong: var(--vb-color-border-strong);
+  --bx-text: var(--vb-color-text);
+  --bx-muted: var(--vb-color-muted);
+  --bx-accent: var(--vb-color-primary);
+  --bx-accent-ink: var(--vb-color-primary-hover);
+  --bx-live: var(--vb-color-live);
+  --bx-live-ink: var(--vb-color-success-text);
+  --bx-danger: var(--vb-color-danger-text);
+  --bx-warn: var(--vb-color-warning-text);
+  --bx-radius: var(--vb-radius-lg);
+  --bx-radius-sm: var(--vb-radius-md);
+  --bx-shadow: var(--vb-shadow-md);
+  --bx-shadow-sm: var(--vb-shadow-sm);
 }
 
 /* ── 2. Base + shared components ────────────────────────────────────────── */
@@ -108,7 +107,7 @@ label {
 .input:focus {
   outline: none;
   border-color: var(--color-primary);
-  box-shadow: 0 0 0 0.2rem rgb(33 133 208 / 18%);
+  box-shadow: 0 0 0 0.2rem color-mix(in srgb, var(--color-primary) 18%, transparent);
 }
 
 .input[readonly] {
@@ -175,21 +174,21 @@ label {
 }
 
 .status-badge.success {
-  border-color: rgb(42 143 76 / 35%);
+  border-color: color-mix(in srgb, var(--vb-color-success) 35%, transparent);
   color: var(--color-success);
-  background: rgb(42 143 76 / 10%);
+  background: color-mix(in srgb, var(--vb-color-success) 10%, transparent);
 }
 
 .status-badge.warning {
-  border-color: rgb(209 133 56 / 35%);
+  border-color: color-mix(in srgb, var(--vb-color-warning) 35%, transparent);
   color: var(--color-warning);
-  background: rgb(209 133 56 / 10%);
+  background: color-mix(in srgb, var(--vb-color-warning) 10%, transparent);
 }
 
 .status-badge.danger {
-  border-color: rgb(178 62 101 / 35%);
+  border-color: color-mix(in srgb, var(--vb-color-danger) 35%, transparent);
   color: var(--color-danger);
-  background: rgb(178 62 101 / 10%);
+  background: color-mix(in srgb, var(--vb-color-danger) 10%, transparent);
 }
 
 .hint {
@@ -284,25 +283,22 @@ label {
   min-width: 0;
 }
 
+/* VoxBento V mark (img/email-mark.svg), linking back to My booths */
 .brand-mark {
-  width: 34px;
-  height: 34px;
-  border-radius: 10px;
-  display: grid;
-  place-items: center;
-  font-weight: 800;
-  font-size: 1.05rem;
-  color: #fff;
-  background: linear-gradient(135deg, var(--bx-accent), #6b8cff);
-  box-shadow: 0 4px 12px rgb(47 109 246 / 0.35);
+  display: flex;
+  align-items: center;
   flex-shrink: 0;
-  text-decoration: none;
+  border-radius: var(--bx-radius-sm);
+}
+
+.brand-mark img {
+  display: block;
+  width: auto;
+  height: 34px;
 }
 
 .brand-mark:hover,
 .brand-mark:focus-visible {
-  color: #fff;
-  text-decoration: none;
   filter: brightness(1.08);
 }
 
@@ -520,7 +516,7 @@ label {
 .header-btn:hover:not(:disabled) {
   border-color: var(--bx-accent);
   color: var(--bx-accent-ink);
-  box-shadow: 0 2px 10px rgb(47 109 246 / 0.14);
+  box-shadow: 0 2px 10px color-mix(in srgb, var(--bx-accent) 14%, transparent);
 }
 
 .header-btn:disabled {
@@ -542,16 +538,16 @@ label {
 
 /* Mic button — colour reflects current state (red = muted, green = on air) */
 .header-btn--mic.muted {
-  background: #fff1f4;
+  background: color-mix(in srgb, var(--vb-color-danger) 6%, var(--bx-surface));
   color: var(--bx-danger);
-  border-color: #f7c6d3;
+  border-color: color-mix(in srgb, var(--vb-color-danger) 25%, var(--bx-surface));
 }
 
 .header-btn--mic.muted:hover:not(:disabled) {
-  background: #ffe4ea;
+  background: color-mix(in srgb, var(--vb-color-danger) 12%, var(--bx-surface));
   border-color: var(--bx-danger);
   color: var(--bx-danger);
-  box-shadow: 0 2px 10px rgb(225 29 72 / 0.18);
+  box-shadow: 0 2px 10px color-mix(in srgb, var(--vb-color-danger) 18%, transparent);
 }
 
 .header-btn--mic.unmuted {
@@ -608,12 +604,12 @@ label {
 .header-btn--leave {
   background: #fff;
   color: var(--bx-danger);
-  border-color: #f3c9d3;
+  border-color: color-mix(in srgb, var(--vb-color-danger) 25%, var(--bx-surface));
   padding: 0.45rem 0.85rem;
 }
 
-.header-btn--leave:hover {
-  background: #fff1f4;
+.header-btn--leave:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--vb-color-danger) 6%, var(--bx-surface));
   border-color: var(--bx-danger);
   color: var(--bx-danger);
   box-shadow: none;
@@ -998,8 +994,8 @@ label {
 }
 
 .preflight-item.preflight--fail {
-  border-color: rgb(225 29 72 / 0.35);
-  background: rgb(225 29 72 / 0.05);
+  border-color: color-mix(in srgb, var(--vb-color-danger) 35%, transparent);
+  background: color-mix(in srgb, var(--vb-color-danger) 5%, transparent);
 }
 
 .preflight-item.preflight--warn {
@@ -1090,11 +1086,11 @@ label {
 }
 
 .toast-error {
-  background-color: #e53e3e;
+  background-color: var(--vb-color-danger);
 }
 
 .toast-info {
-  background-color: #3182ce;
+  background-color: var(--vb-color-primary);
 }
 
 .toast-fade {
