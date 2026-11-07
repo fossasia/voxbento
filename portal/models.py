@@ -76,6 +76,9 @@ class Event(Base):
     encrypted_elevenlabs_api_key: Mapped[str | None] = mapped_column(
         "elevenlabs_api_key", Text, nullable=True, default=None
     )
+    encrypted_atlascloud_api_key: Mapped[str | None] = mapped_column(
+        "atlascloud_api_key", Text, nullable=True, default=None
+    )
     encrypted_translation_openai_api_key: Mapped[str | None] = mapped_column(
         "translation_openai_api_key", Text, nullable=True, default=None
     )
@@ -180,6 +183,12 @@ class Room(Base):
         back_populates="room", cascade="all, delete-orphan"
     )
 
+    @property
+    def has_floor_captions(self) -> bool:
+        """Floor transcription is on and has a real provider, so the floor has a caption channel."""
+        provider = (self.floor_transcription_provider or "").strip().lower()
+        return bool(self.floor_transcription_enabled) and provider not in {"", "none"}
+
     def __repr__(self) -> str:
         return f"<Room id={self.id} name={self.display_name!r}>"
 
@@ -208,7 +217,7 @@ class DBBooth(Base):
     language_name: Mapped[str] = mapped_column(String(100))
     transcription_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
     transcription_provider: Mapped[str] = mapped_column(String(20), default="local", server_default=sa.text("'local'"))
-    transcription_model: Mapped[str] = mapped_column(String(20), default="tiny", server_default=sa.text("'tiny'"))
+    transcription_model: Mapped[str] = mapped_column(String(40), default="tiny", server_default=sa.text("'tiny'"))
 
     # Broadcast Lock
     broadcast_unlocked: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
