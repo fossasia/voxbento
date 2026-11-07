@@ -187,12 +187,15 @@ def has_valid_credential(room: Room) -> bool:
 def publish_permitted(room: Room, protocol: str, digest: str) -> bool:
     """Bind each credential to the transport of the room's ingest mode.
 
-    Relay mode accepts only the encoder key over RTMPS (MediaMTX runs with
-    ``rtmpEncryption: strict``, so "rtmp" here is always TLS). WHIP mode keeps the
-    #690 behaviour. A key is never usable over the other mode's transport.
+    Both RTMPS modes accept only the encoder key over RTMPS (MediaMTX runs with
+    ``rtmpEncryption: strict``, so "rtmp" here is always TLS); a browser-sender
+    session secret never authorizes RTMPS. WHIP mode keeps the #690 behaviour.
+    A key is never usable over the other mode's transport.
     """
     if room.program_ingest_mode == program_relay.RELAY_MODE:
         return protocol == "rtmp" and settings.program_relay_enabled and key_digest_valid(room, digest)
+    if room.program_ingest_mode == program_relay.RTMPS_MODE:
+        return protocol == "rtmp" and settings.rtmps_ingest_enabled and key_digest_valid(room, digest)
     return protocol == "webrtc" and credential_digest_valid(room, digest)
 
 
@@ -200,7 +203,7 @@ def reserved_source(room: Room) -> MediaSource | None:
     """The MediaMTX session type a program-ingest reservation belongs to."""
     if not room.program_session_id:
         return None
-    kind = "rtmpsConn" if room.program_ingest_mode == program_relay.RELAY_MODE else "webRTCSession"
+    kind = "rtmpsConn" if room.program_ingest_mode in program_relay.RTMPS_MODES else "webRTCSession"
     return MediaSource(type=kind, id=room.program_session_id)
 
 
@@ -208,7 +211,7 @@ def presented_secret(data: MediaAuth) -> str:
     """Extract the publisher credential without accepting it from more than one place."""
     if data.protocol == "webrtc":
         return "" if data.query else (data.token or data.password)
-    if data.protocol == "rtmp" and settings.program_relay_enabled and not (data.token or data.password):
+    if data.protocol == "rtmp" and settings.rtmps_ingest_enabled and not (data.token or data.password):
         # OBS stream key "floor?key=<secret>": the query must be exactly one key parameter.
         try:
             query = parse_qs(data.query, strict_parsing=True)
@@ -272,6 +275,7 @@ async def authorize_publish(data: MediaAuth) -> None:
                     .where(
                         Room.id == parsed_room_id,
                         Event.slug == slug,
+                        Event.deleted_at.is_(None),
                     )
                 )
             ).first()
@@ -491,6 +495,10 @@ async def open_sender_session(room: Room, event: Event, offset_ms: int, ttl_secs
         raise HTTPException(
             409, "YouTube relay mode owns the floor; switch the room to independent outputs (WHIP) first."
         )
+    if room.floor_source == "program_ingest" and room.program_ingest_mode == program_relay.RTMPS_MODE:
+        raise HTTPException(
+            409, "An RTMPS encoder owns the floor; switch the room to independent outputs (WHIP) first."
+        )
     if room.floor_source == "program_ingest":
         # Floor already owned by program ingest; never displace a connected or
         # still-negotiating publisher (external encoder or another sender).
@@ -618,7 +626,14 @@ async def reconcile_room(room: Room, event: Event, path: MediaPath | None) -> tu
     now = time.monotonic()
     # A short-lived sender secret gates new publishes, not an already-connected session.
     session_live = bool(path and path.source and room.program_session_id and path.source.id == room.program_session_id)
-    permitted = bool(settings.program_ingest_enabled and (has_valid_credential(room) or session_live))
+    # Switching RTMPS ingest off or deleting the event also ends a feed that is already live.
+    rtmps_off = room.program_ingest_mode == program_relay.RTMPS_MODE and not settings.rtmps_ingest_enabled
+    permitted = bool(
+        settings.program_ingest_enabled
+        and event.deleted_at is None
+        and not rtmps_off
+        and (has_valid_credential(room) or session_live)
+    )
     if path and path.source and (not permitted or path.source.id != room.program_session_id):
         await kick(path_name, path.source)
         path = None
@@ -629,11 +644,12 @@ async def reconcile_room(room: Room, event: Event, path: MediaPath | None) -> tu
             current.missing_since = current.missing_since if current.missing_since is not None else now
             grace_started_at = current.missing_since
         current.state = "disconnected" if room.program_connected_at else "waiting"
-        current.reason = (
-            "No publisher. Reconnect the encoder."
-            if permitted
-            else "Credential revoked or expired; rotate it to publish."
-        )
+        if permitted:
+            current.reason = "No publisher. Reconnect the encoder."
+        elif rtmps_off:
+            current.reason = "RTMPS ingest is switched off on this server; ask the server operator."
+        else:
+            current.reason = "Credential revoked or expired; rotate it to publish."
         current.ingest_state, current.ingest_reason = current.state, current.reason
         current.processing_state, current.processing_reason = "idle", "No contribution feed to process."
         if now - grace_started_at >= settings.program_ingest_disconnect_grace_secs:
@@ -677,7 +693,7 @@ async def reconcile_processing(
     if not any(codec in {"Opus", "G711", "G722", "LPCM", "MPEG-4 Audio"} for codec in path.tracks):
         problem = (
             "No supported audio track. Configure the encoder to send AAC audio."
-            if room.program_ingest_mode == program_relay.RELAY_MODE
+            if room.program_ingest_mode in program_relay.RTMPS_MODES
             else "No supported audio track. Configure the WHIP encoder to send Opus audio."
         )
         current.ingest_state, current.ingest_reason = "degraded", problem
