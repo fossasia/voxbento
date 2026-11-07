@@ -1,0 +1,49 @@
+{% extends "admin/base.html" %}
+
+{% block title %}My events{% endblock %}
+
+{% block content %}
+<div class="me-header">
+  <div>
+    <h1 class="me-title">My events</h1>
+    <p class="me-subtitle">Events you own or work in.</p>
+  </div>
+  {% if can_create_events %}
+  <a href="/workspace/setup" class="me-new-event">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" aria-hidden="true" focusable="false"><path d="M12 5v14M5 12h14" /></svg>
+    New event
+  </a>
+  {% endif %}
+</div>
+
+{% if my_events %}
+<ul class="me-grid">
+  {% for item in my_events %}
+  <li class="me-card">
+    <h2 class="me-card-title">{{ item.event.display_name }}</h2>
+    <p class="me-card-meta">
+      {{ item.booth_count }} booth{{ '' if item.booth_count == 1 else 's' }}{% if item.languages %} · {{ item.languages|join(', ') }}{% endif %}
+    </p>
+    <ul class="me-roles" aria-label="Your roles">
+      {% for role in item.roles %}
+      <li class="me-role">{{ role }}</li>
+      {% endfor %}
+    </ul>
+    <div class="me-actions">
+      {% for action in item.actions %}
+      <a href="{{ action.href }}" class="me-action">{{ action.label }}</a>
+      {% endfor %}
+    </div>
+  </li>
+  {% endfor %}
+</ul>
+{% else %}
+<div class="me-empty">
+  <span class="me-empty-icon" aria-hidden="true">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" focusable="false"><rect x="3" y="4" width="18" height="18" rx="2" /><path d="M16 2v4M8 2v4M3 10h18" /></svg>
+  </span>
+  <h2 class="me-empty-title">No events yet</h2>
+  <p class="me-empty-text">You're not part of any event yet. When an event owner invites you, the event appears here.</p>
+</div>
+{% endif %}
+{% endblock %}

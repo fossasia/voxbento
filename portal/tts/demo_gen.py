@@ -7,6 +7,8 @@ import struct
 from pathlib import Path
 from typing import Any
 
+from portal.tasks import _tasks, track_task  # noqa: F401 -- re-exported for demo callers and tests
+
 logger = logging.getLogger(__name__)
 
 # Where pre-baked demo audio lives. Served by FastAPI StaticFiles.
@@ -17,20 +19,6 @@ MANIFEST_PATH = DEMO_DIR / "manifest.json"
 _generating = False
 _generation_error: str | None = None
 _generation_lock = asyncio.Lock()
-_tasks: set[asyncio.Task] = set()
-
-
-def track_task(task: asyncio.Task) -> None:
-    """Keep a strong reference to a background task so it isn't garbage
-    collected mid-run, and log any exception it raises once it completes."""
-    _tasks.add(task)
-
-    def _on_done(t: asyncio.Task) -> None:
-        _tasks.discard(t)
-        if not t.cancelled() and t.exception() is not None:
-            logger.error("[Demo] Background task failed", exc_info=t.exception())
-
-    task.add_done_callback(_on_done)
 
 
 # ---------------------------------------------------------------------------

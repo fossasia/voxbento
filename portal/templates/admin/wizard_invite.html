@@ -3,7 +3,7 @@
 
 {% block content %}
 <div class="wizard">
-  {% set step = 4 %}
+  {% set step = 3 %}
   {% include "admin/wizard_steps.html" %}
 
   <div class="wizard-card">
@@ -11,16 +11,17 @@
     <p class="wizard-sub">Invite the people who'll help run <strong>{{ event.display_name }}</strong>, and share the listener code with your audience.</p>
 
     {% if success == 'invite_sent' %}<div class="alert alert-success">Invitation sent.</div>{% endif %}
-    {% if error == 'invalid_role' %}<div class="alert alert-danger">That role isn't valid.</div>{% endif %}
+    {% if error == 'invalid_role' %}<div class="alert alert-danger">{{ roles.assignment_error(request.query_params.get('role', ''), 'event') or "That role can't be given here." }}</div>{% endif %}
 
     <h3 class="wizard-section-title">Event owners</h3>
+    <p class="text-secondary wizard-section-hint">Owners can change everything about this event. Interpreters and room coordinators are invited per room or booth on the <a href="{{ management_prefix }}/events/{{ event.id }}/team/">Team page</a>.</p>
     <form method="post" action="{{ management_prefix }}/events/{{ event.id }}/setup/invite">
       <div class="field-row field-row--end">
         <div class="field field--flush">
           <label for="email">Email address</label>
           <input type="email" id="email" name="email" placeholder="colleague@example.com" required />
         </div>
-        <input type="hidden" name="role" value="event_owner" />
+        <input type="hidden" name="role" value="{{ roles.EVENT_OWNER }}" />
         <div class="field field--flush">
           <button type="submit" class="btn btn-primary btn-field">Send invite</button>
         </div>
@@ -32,7 +33,7 @@
       {% for m in memberships %}
       <li>
         <span>✉️ &nbsp;{{ m.user.email }}</span>
-        <span class="badge badge-role badge-event_owner">{{ m.role }}</span>
+        <span class="badge badge-role badge-{{ m.role }}">{{ m.role|role_label }}</span>
       </li>
       {% endfor %}
     </ul>
@@ -51,7 +52,7 @@
     </div>
 
     <div class="wizard-actions">
-      <a href="{{ management_prefix }}/events/{{ event.id }}/setup/booths" class="btn">&larr; Back</a>
+      <a href="{{ management_prefix }}/events/{{ event.id }}/setup/rooms" class="btn">&larr; Back</a>
       <a href="{{ management_prefix }}/events/{{ event.id }}/" class="btn btn-primary btn-lg">Finish setup ✓</a>
     </div>
   </div>

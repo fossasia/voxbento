@@ -1,0 +1,103 @@
+{% extends "base.html" %}
+
+{% block title %}Request hosting access — Voxbento{% endblock %}
+
+{% block body_class %} class="account-area"{% endblock %}
+
+{% block head %}
+<link rel="stylesheet" href="{{ url_for('static', path='css/auth.css') }}?v={{ asset_version }}" />
+<link rel="stylesheet" href="{{ url_for('static', path='css/account-area.css') }}?v={{ asset_version }}" />
+<link rel="stylesheet" href="{{ url_for('static', path='css/app-header.css') }}?v={{ asset_version }}" />
+<script type="module" src="{{ url_for('static', path='js/user-menu.js') }}?v={{ asset_version }}"></script>
+{% endblock %}
+
+{% block header %}
+{% from "_app_header.html" import app_header with context %}
+{{ app_header() }}
+{% endblock %}
+
+
+{% macro field_error(name) -%}
+  {% if errors.get(name) %}
+  <p class="aa-error" id="{{ name }}-error">{{ errors[name] }}</p>
+  {% endif %}
+{%- endmacro %}
+
+{% macro invalid_attrs(name) -%}
+  {% if errors.get(name) %} aria-invalid="true" aria-describedby="{{ name }}-error"{% endif %}
+{%- endmacro %}
+
+{% block content %}
+
+<div class="aa-page">
+  <nav class="aa-breadcrumb" aria-label="Breadcrumb">
+    <a href="/account">Account</a>
+    <span aria-hidden="true">/</span>
+    <span aria-current="page">Request hosting access</span>
+  </nav>
+
+  <h1 class="aa-title">Request hosting access</h1>
+  <p class="aa-lead">Tell us about the event you want to host on VoxBento. The VoxBento team reviews each request and replies by email.</p>
+
+  <form class="aa-card aa-card--padded aa-form" method="post" action="/account/hosting-request">
+    <div class="aa-row">
+      <div class="aa-field">
+        <label for="hr-name">Name</label>
+        <input class="aa-input" id="hr-name" type="text" value="{{ user.display_name }}" readonly />
+      </div>
+      <div class="aa-field">
+        <label for="hr-email">Email</label>
+        <input class="aa-input" id="hr-email" type="email" value="{{ user.email }}" readonly />
+      </div>
+    </div>
+
+    <div class="aa-field">
+      <label for="hr-organization">Organization</label>
+      <input class="aa-input" id="hr-organization" name="organization" type="text" maxlength="200" required
+        placeholder="e.g. a university, community or company" value="{{ values.get('organization', '') }}"{{ invalid_attrs('organization') }} />
+      {{ field_error('organization') }}
+    </div>
+
+    <div class="aa-field">
+      <label for="hr-event-name">Event name</label>
+      <input class="aa-input" id="hr-event-name" name="event_name" type="text" maxlength="200" required
+        value="{{ values.get('event_name', '') }}"{{ invalid_attrs('event_name') }} />
+      {{ field_error('event_name') }}
+    </div>
+
+    <div class="aa-row">
+      <div class="aa-field">
+        <label for="hr-starts">Event starts</label>
+        <input class="aa-input" id="hr-starts" name="event_starts_on" type="date"
+          value="{{ values.get('event_starts_on', '') }}"{{ invalid_attrs('event_starts_on') }} />
+        {{ field_error('event_starts_on') }}
+      </div>
+      <div class="aa-field">
+        <label for="hr-ends">Event ends</label>
+        <input class="aa-input" id="hr-ends" name="event_ends_on" type="date"
+          value="{{ values.get('event_ends_on', '') }}"{{ invalid_attrs('event_ends_on') }} />
+        {{ field_error('event_ends_on') }}
+      </div>
+    </div>
+
+    <div class="aa-field">
+      <label for="hr-languages">Languages needed</label>
+      <input class="aa-input" id="hr-languages" name="languages" type="text" maxlength="500" required
+        placeholder="e.g. English, German, Vietnamese" value="{{ values.get('languages', '') }}"{{ invalid_attrs('languages') }} />
+      {{ field_error('languages') }}
+    </div>
+
+    <div class="aa-field">
+      <label for="hr-message">Message <span class="aa-optional">(optional)</span></label>
+      <textarea class="aa-input" id="hr-message" name="message" rows="4" maxlength="2000"
+        placeholder="Anything else we should know about your event"{{ invalid_attrs('message') }}>{{ values.get('message', '') }}</textarea>
+      {{ field_error('message') }}
+    </div>
+
+    <div class="aa-actions">
+      <button type="submit" class="aa-btn aa-btn--primary">Send request</button>
+      <a href="/account" class="aa-btn">Cancel</a>
+    </div>
+  </form>
+</div>
+{% endblock %}

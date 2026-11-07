@@ -6,19 +6,63 @@ on:
 
 permissions:
   pull-requests: write
+  issues: write
 
 jobs:
   congratulate:
     name: Congratulate first-time contributors
-    if: github.event.pull_request.merged == true
+    if: github.event.pull_request.merged == true && github.event.pull_request.user.type != 'Bot'
     runs-on: ubuntu-latest
     steps:
       - name: Congratulate on first merged PR
-        uses: plbstl/first-contribution@2c36bdb58684587f60549a69aaa3ec00b9d5f4fe # v4.3.3
+        uses: actions/github-script@v9
         with:
-          pr-merged-msg: |
-            🎉 Congratulations @{fc-author} on getting your first VoxBento pull request merged!
+          script: |
+            const pr = context.payload.pull_request;
+            const author = pr.user.login;
+            const { owner, repo } = context.repo;
 
-            Thank you for taking the time to contribute to VoxBento and help make open-source, real-time interpretation better. We really appreciate it! 💜
+            // Search for merged PRs by this author in this repository
+            const searchResult = await github.rest.search.issuesAndPullRequests({
+              q: `repo:${owner}/${repo} is:pr is:merged author:${author}`,
+              per_page: 10,
+            });
 
-            Welcome to the contributor community — we hope to see you around for your next contribution. 🚀
+            // Filter out current PR in case GitHub search index already includes it
+            const otherMerged = (searchResult.data.items ?? []).filter(item => item.number !== pr.number);
+            core.info(`Author @${author} has ${otherMerged.length} other merged PR(s) in ${owner}/${repo}`);
+
+            if (otherMerged.length === 0) {
+              const marker = '<!-- first-pr-merged-congratulations -->';
+              const { data: comments } = await github.rest.issues.listComments({
+                owner,
+                repo,
+                issue_number: pr.number,
+                per_page: 100,
+              });
+
+              if (comments.some((comment) => comment.body?.includes(marker))) {
+                core.info('A congratulations comment already exists on this PR.');
+                return;
+              }
+
+              const body = [
+                `🎉 Congratulations @${author} on getting your first VoxBento pull request merged!`,
+                ``,
+                `Thank you for taking the time to contribute to VoxBento and help make open-source, real-time interpretation better. We really appreciate it! 💜`,
+                ``,
+                `Welcome to the contributor community — we hope to see you around for your next contribution. 🚀`,
+                ``,
+                marker,
+              ].join('\n');
+
+              await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number: pr.number,
+                body,
+              });
+              core.info(`Successfully congratulated @${author} on their first merged PR (#${pr.number})`);
+            } else {
+              core.info(`Not @${author}'s first merged PR. Skipping congratulations.`);
+            }
