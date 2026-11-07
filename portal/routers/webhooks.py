@@ -7,7 +7,7 @@ import socket
 import urllib.parse
 
 from fastapi import APIRouter, Depends, HTTPException, Response, status
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -21,15 +21,23 @@ from portal.models import (
     WebhookDelivery,
     WebhookSubscription,
 )
+from portal.webhooks.events import SUPPORTED_EVENT_TYPES, validate_event_types
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/webhooks", tags=["Webhooks"])
 
+require_webhooks_manage = require_oauth_scope("webhooks:manage")
+
 
 class WebhookCreate(BaseModel):
     target_url: str
-    event_types: list[str]
+    event_types: list[str] = Field(
+        ...,
+        description=(
+            f"List of event names to subscribe to. Supported event types: {', '.join(sorted(SUPPORTED_EVENT_TYPES))}"
+        ),
+    )
 
 
 class WebhookResponse(BaseModel):
@@ -41,6 +49,12 @@ class WebhookResponse(BaseModel):
 
 
 def validate_ssrf(url: str) -> None:
+    """Validate that the webhook URL uses HTTPS and does not resolve to a private IP.
+
+    Raises HTTPException 400 if the scheme is not HTTPS, the hostname cannot be
+    resolved, or the resolved address is in a private, loopback, link-local, or
+    multicast range. Development mode permits localhost / loopback URLs.
+    """
     import os
 
     if os.getenv("ENVIRONMENT") == "development":
@@ -65,21 +79,70 @@ def validate_ssrf(url: str) -> None:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid webhook URL: {str(e)}")
 
 
+async def reconcile_subscriptions(db: AsyncSession, developer_account_id: int) -> list[WebhookSubscription]:
+    """Reconcile subscriptions with unsupported event names for a developer account.
+
+    Prunes unsupported event types from pre-existing subscriptions belonging to
+    the specified developer account. If a subscription has no valid event types
+    remaining, it is deactivated (is_active=False) so it stops consuming quota
+    without receiving deliveries.
+
+    Returns the list of matching subscriptions after reconciliation.
+    """
+    if developer_account_id is None:
+        return []
+
+    stmt = select(WebhookSubscription).where(WebhookSubscription.developer_account_id == developer_account_id)
+    result = await db.execute(stmt)
+    subs = result.scalars().all()
+    modified = False
+
+    for sub in subs:
+        valid_events = sorted({e for e in sub.event_types if e in SUPPORTED_EVENT_TYPES})
+        changed = False
+
+        if sub.event_types != valid_events:
+            sub.event_types = valid_events
+            changed = True
+
+        if not valid_events and sub.is_active:
+            sub.is_active = False
+            changed = True
+
+        if changed:
+            db.add(sub)
+            modified = True
+
+    if modified:
+        await db.flush()
+
+    return list(subs)
+
+
 @router.post("", response_model=WebhookResponse, status_code=status.HTTP_201_CREATED)
 async def create_webhook(
     data: WebhookCreate,
     response: Response = None,
-    token: OAuthToken = Depends(require_oauth_scope("webhooks:manage")),
+    token: OAuthToken = Depends(require_webhooks_manage),
     db: AsyncSession = Depends(get_db_session),
 ):
+    """Create or update a webhook subscription for the authenticated client.
+
+    Validates the target URL against SSRF and event_types against supported events.
+    Reconciles pre-existing subscriptions for the developer account so stale
+    unsupported subscriptions do not exhaust quota. Reactivates existing
+    subscriptions for the same URL idempotently and prunes duplicate records.
+    """
     validate_ssrf(data.target_url)
 
-    if not data.event_types:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="event_types cannot be empty")
+    try:
+        validated_event_types = validate_event_types(data.event_types)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
 
     client_result = await db.execute(select(OAuthClient).where(OAuthClient.id == token.client_id))
     client = client_result.scalars().first()
-    if not client:
+    if not client or client.developer_account_id is None:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid client")
 
     # Serialize webhook operations per developer account
@@ -88,6 +151,9 @@ async def create_webhook(
     if not is_sqlite:
         dev_stmt = dev_stmt.with_for_update()
     await db.execute(dev_stmt)
+
+    # Reconcile pre-existing subscriptions so stale unsupported events do not consume quota
+    await reconcile_subscriptions(db, client.developer_account_id)
 
     from portal.config import settings
 
@@ -124,7 +190,7 @@ async def create_webhook(
                     status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail="Maximum webhook subscriptions reached"
                 )
 
-        sub.event_types = sorted(set(data.event_types))
+        sub.event_types = validated_event_types
         sub.is_active = True
         sub.consecutive_failures = 0
         if not sub.secret_key:
@@ -179,7 +245,7 @@ async def create_webhook(
     sub = WebhookSubscription(
         developer_account_id=client.developer_account_id,
         target_url=data.target_url,
-        event_types=data.event_types,
+        event_types=validated_event_types,
         secret_key=secret_key,
         is_active=True,
     )
@@ -208,12 +274,17 @@ async def create_webhook(
 
 @router.get("", response_model=list[WebhookResponse])
 async def list_webhooks(
-    token: OAuthToken = Depends(require_oauth_scope("webhooks:manage")),
+    token: OAuthToken = Depends(require_webhooks_manage),
     db: AsyncSession = Depends(get_db_session),
 ):
+    """List all webhook subscriptions for the authenticated developer account.
+
+    Performs safe, read-only queries without row locks or database mutations,
+    filtering subscription event types in memory to return only supported events.
+    """
     client_result = await db.execute(select(OAuthClient).where(OAuthClient.id == token.client_id))
     client = client_result.scalars().first()
-    if not client:
+    if not client or client.developer_account_id is None:
         return []
 
     result = await db.execute(
@@ -223,18 +294,37 @@ async def list_webhooks(
 
     return [
         WebhookResponse(
-            id=s.id, target_url=s.target_url, event_types=s.event_types, is_active=s.is_active, secret_key=None
+            id=s.id,
+            target_url=s.target_url,
+            event_types=sorted({e for e in s.event_types if e in SUPPORTED_EVENT_TYPES}),
+            is_active=s.is_active and any(e in SUPPORTED_EVENT_TYPES for e in s.event_types),
+            secret_key=None,
         )
         for s in subs
     ]
 
 
+@router.get("/events", response_model=list[str])
+async def list_available_events(
+    token: OAuthToken = Depends(require_webhooks_manage),
+) -> list[str]:
+    """Return all supported webhook event types in sorted order.
+
+    Requires the webhooks:manage OAuth scope.
+    """
+    return sorted(SUPPORTED_EVENT_TYPES)
+
+
 @router.delete("/{sub_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_webhook(
     sub_id: int,
-    token: OAuthToken = Depends(require_oauth_scope("webhooks:manage")),
+    token: OAuthToken = Depends(require_webhooks_manage),
     db: AsyncSession = Depends(get_db_session),
 ):
+    """Delete an existing webhook subscription by its ID.
+
+    Requires the webhooks:manage OAuth scope and developer account ownership.
+    """
     client_result = await db.execute(select(OAuthClient).where(OAuthClient.id == token.client_id))
     client = client_result.scalars().first()
     if not client:
@@ -265,6 +355,7 @@ async def delete_webhook(
 
 @router.get("/debug/dump", include_in_schema=False)
 async def debug_dump(db: AsyncSession = Depends(get_db_session)):
+    """Dump all subscriptions and deliveries for debugging purposes."""
     from portal.models import WebhookDelivery
 
     subs_result = await db.execute(select(WebhookSubscription))

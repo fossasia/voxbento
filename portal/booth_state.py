@@ -16,6 +16,7 @@ from portal.booth_identity import (
 )
 from portal.roles import Role, can_go_live, can_set_active, role_label
 from portal.tasks import track_task
+from portal.webhooks.events import SESSION_STATUS_CHANGED
 
 # Booth roles come from portal.roles, the one place roles are defined (#757).
 ParticipantRole = Role
@@ -300,6 +301,12 @@ class BoothRegistry:
         language: str,
         channel_id: str,
     ) -> dict:
+        """Update broadcast unlock state for a booth and notify webhooks.
+
+        When unlocked is False, disconnects all active participants and sets
+        the ingest status to disconnected. Asynchronously enqueues a
+        session.status_changed webhook event.
+        """
         async with self._lock:
             booth = self._get_or_create_booth(booth_id, language, channel_id)
             booth.broadcast_unlocked = unlocked
@@ -322,7 +329,7 @@ class BoothRegistry:
 
             track_task(
                 asyncio.create_task(
-                    _wh.enqueue_webhook("session.status_changed", {"booth_id": booth_id, "is_active": unlocked})
+                    _wh.enqueue_webhook(SESSION_STATUS_CHANGED, {"booth_id": booth_id, "is_active": unlocked})
                 )
             )
 

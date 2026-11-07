@@ -1,17 +1,55 @@
 from __future__ import annotations
 
+import ast
+import importlib
 import json
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
 import httpx
 import pytest
-from fastapi import HTTPException
-from sqlalchemy import select
+from fastapi import HTTPException, Response
+from fastapi.testclient import TestClient
+from sqlalchemy import select, update
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 
-from portal.models import Base, OAuthAuditLog, WebhookDelivery, WebhookSubscription
-from portal.routers.webhooks import validate_ssrf
+import portal.webhooks.events as wh_events
+import portal.webhooks.worker as wh_worker
+from fastapi_app import app
+from portal.auth import require_oauth_scope
+from portal.config import settings
+from portal.models import (
+    Base,
+    DeveloperAccount,
+    Event,
+    OAuthAuditLog,
+    OAuthClient,
+    OAuthToken,
+    User,
+    WebhookDelivery,
+    WebhookSubscription,
+)
+from portal.routers.webhooks import (
+    WebhookCreate,
+    create_webhook,
+    list_available_events,
+    list_webhooks,
+    reconcile_subscriptions,
+    require_webhooks_manage,
+    validate_ssrf,
+)
+from portal.webhooks.events import (
+    ALL_WEBHOOK_EVENTS,
+    BOOTH_INTERPRETER_JOINED,
+    BOOTH_TRANSCRIPTION_STARTED,
+    BOOTH_TRANSCRIPTION_STOPPED,
+    SESSION_STATUS_CHANGED,
+    SUPPORTED_EVENT_TYPES,
+    validate_event_types,
+)
 from portal.webhooks.worker import process_delivery, sign_payload
 
 # ---------------------------------------------------------------------------
@@ -216,8 +254,6 @@ async def test_process_delivery_circuit_breaker(db):
 
 @pytest.mark.anyio
 async def test_process_delivery_circuit_breaker_with_multiple_clients(db):
-    from portal.models import OAuthClient
-
     client1 = OAuthClient(developer_account_id=1, client_id="client_1", name="C1")
     client2 = OAuthClient(developer_account_id=1, client_id="client_2", name="C2")
     db.add_all([client1, client2])
@@ -278,7 +314,6 @@ async def test_atomic_queue_claim(db):
     await db.flush()
 
     now = datetime.now(timezone.utc)
-    from sqlalchemy import select, update
 
     # Simulate worker 1 claiming 3 items
     subquery1 = (
@@ -324,9 +359,6 @@ async def test_atomic_queue_claim(db):
 
 @pytest.mark.anyio
 async def test_create_webhook_idempotency_and_deduplication(db, monkeypatch):
-    from portal.models import DeveloperAccount, Event, OAuthClient, OAuthToken, User
-    from portal.routers.webhooks import WebhookCreate, create_webhook
-
     monkeypatch.setattr("portal.routers.webhooks.validate_ssrf", lambda url: None)
 
     user = User(email="dev@example.com", display_name="Dev User", is_active=True)
@@ -374,8 +406,6 @@ async def test_create_webhook_idempotency_and_deduplication(db, monkeypatch):
     orig_secret = res1.secret_key
 
     # 2. Call again with same target_url but updated event_types
-    from fastapi import Response
-
     resp2 = Response()
     req2 = WebhookCreate(
         target_url="https://client.example.com/webhook/",
@@ -401,8 +431,6 @@ async def test_create_webhook_idempotency_and_deduplication(db, monkeypatch):
     )
     db.add(dup)
     await db.flush()
-
-    from portal.models import WebhookDelivery
 
     delivery = WebhookDelivery(
         subscription_id=dup.id,
@@ -432,10 +460,6 @@ async def test_create_webhook_idempotency_and_deduplication(db, monkeypatch):
 
 @pytest.mark.anyio
 async def test_create_webhook_quota_limit(db, monkeypatch):
-    from portal.config import settings
-    from portal.models import DeveloperAccount, Event, OAuthClient, OAuthToken, User
-    from portal.routers.webhooks import WebhookCreate, create_webhook
-
     monkeypatch.setattr("portal.routers.webhooks.validate_ssrf", lambda url: None)
     monkeypatch.setattr(settings, "max_webhook_subscriptions", 3)
 
@@ -472,7 +496,7 @@ async def test_create_webhook_quota_limit(db, monkeypatch):
 
     for i in range(3):
         await create_webhook(
-            WebhookCreate(target_url=f"https://example.com/wh/{i}", event_types=["test"]),
+            WebhookCreate(target_url=f"https://example.com/wh/{i}", event_types=["session.status_changed"]),
             token=token,
             db=db,
         )
@@ -480,7 +504,7 @@ async def test_create_webhook_quota_limit(db, monkeypatch):
     # Calling with a 4th distinct target URL should raise 429
     with pytest.raises(HTTPException) as exc_info:
         await create_webhook(
-            WebhookCreate(target_url="https://example.com/wh/4", event_types=["test"]),
+            WebhookCreate(target_url="https://example.com/wh/4", event_types=["session.status_changed"]),
             token=token,
             db=db,
         )
@@ -488,7 +512,9 @@ async def test_create_webhook_quota_limit(db, monkeypatch):
 
     # But re-subscribing to an EXISTING URL should still succeed (idempotent)!
     res_existing = await create_webhook(
-        WebhookCreate(target_url="https://example.com/wh/1", event_types=["test", "extra"]),
+        WebhookCreate(
+            target_url="https://example.com/wh/1", event_types=["session.status_changed", "booth.transcription.started"]
+        ),
         token=token,
         db=db,
     )
@@ -509,7 +535,7 @@ async def test_create_webhook_quota_limit(db, monkeypatch):
 
     # Now create another sub to reach the quota of 3 active subs again
     await create_webhook(
-        WebhookCreate(target_url="https://example.com/wh/filler", event_types=["test"]),
+        WebhookCreate(target_url="https://example.com/wh/filler", event_types=["session.status_changed"]),
         token=token,
         db=db,
     )
@@ -517,7 +543,7 @@ async def test_create_webhook_quota_limit(db, monkeypatch):
     # Trying to reactivate the inactive sub while active quota is full raises 429
     with pytest.raises(HTTPException) as exc_info:
         await create_webhook(
-            WebhookCreate(target_url="https://example.com/wh/1", event_types=["test"]),
+            WebhookCreate(target_url="https://example.com/wh/1", event_types=["session.status_changed"]),
             token=token,
             db=db,
         )
@@ -529,7 +555,7 @@ async def test_create_webhook_quota_limit(db, monkeypatch):
     dup_sub = WebhookSubscription(
         developer_account_id=client.developer_account_id,
         target_url="https://example.com/wh/1",
-        event_types=["test"],
+        event_types=["session.status_changed"],
         secret_key="whsec_duplicate",
         is_active=True,
     )
@@ -553,7 +579,7 @@ async def test_create_webhook_quota_limit(db, monkeypatch):
     # Total active subs is 3 (wh/2, wh/3, and wh/1-dup).
     # Calling create_webhook for wh/1 should SUCCEED because pruning wh/1-dup keeps projected count at 3.
     res_reactivated = await create_webhook(
-        WebhookCreate(target_url="https://example.com/wh/1", event_types=["test"]),
+        WebhookCreate(target_url="https://example.com/wh/1", event_types=["session.status_changed"]),
         token=token,
         db=db,
     )
@@ -563,12 +589,6 @@ async def test_create_webhook_quota_limit(db, monkeypatch):
 
 @pytest.mark.anyio
 async def test_process_delivery_handles_failed_refresh_gracefully(db, monkeypatch):
-    from unittest.mock import AsyncMock
-
-    from sqlalchemy.exc import SQLAlchemyError
-
-    from portal.webhooks.worker import process_delivery
-
     sub = WebhookSubscription(
         developer_account_id=1,
         target_url="https://example.com/webhook",
@@ -604,3 +624,455 @@ async def test_process_delivery_handles_failed_refresh_gracefully(db, monkeypatc
     await process_delivery(mock_client, db, delivery)
     assert delivery.status == "succeeded"
     assert delivery.last_error is None
+
+
+# ---------------------------------------------------------------------------
+# Tests for Webhook Validation, Event Types Registry, and Enqueueing
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.anyio
+async def test_create_webhook_rejects_empty_event_types(db, monkeypatch):
+    """Verify that creating a webhook with an empty list of event types is rejected with 400."""
+    monkeypatch.setattr("portal.routers.webhooks.validate_ssrf", lambda url: None)
+
+    user = User(email="empty@example.com", display_name="User", is_active=True)
+    db.add(user)
+    await db.flush()
+
+    event = Event(slug="ev-empty", display_name="Event")
+    db.add(event)
+    await db.flush()
+
+    dev_account = DeveloperAccount(user_id=user.id, status="approved")
+    db.add(dev_account)
+    await db.flush()
+
+    client = OAuthClient(developer_account_id=dev_account.id, client_id="client_empty", name="App")
+    db.add(client)
+    await db.flush()
+
+    token = OAuthToken(
+        client_id=client.id,
+        user_id=user.id,
+        event_id=event.id,
+        scopes=["webhooks:manage"],
+        access_token_hash="hash_empty",
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+    )
+    db.add(token)
+    await db.flush()
+
+    with pytest.raises(HTTPException) as exc_info:
+        await create_webhook(
+            WebhookCreate(target_url="https://example.com/wh", event_types=[]),
+            token=token,
+            db=db,
+        )
+    assert exc_info.value.status_code == 400
+    assert "event_types cannot be empty" in exc_info.value.detail
+
+
+@pytest.mark.anyio
+async def test_create_webhook_rejects_unknown_event_types(db, monkeypatch):
+    """Verify that creating a webhook with unknown event types is rejected with 400 and clear detail."""
+    monkeypatch.setattr("portal.routers.webhooks.validate_ssrf", lambda url: None)
+
+    user = User(email="unknown@example.com", display_name="User", is_active=True)
+    db.add(user)
+    await db.flush()
+
+    event = Event(slug="ev-unknown", display_name="Event")
+    db.add(event)
+    await db.flush()
+
+    dev_account = DeveloperAccount(user_id=user.id, status="approved")
+    db.add(dev_account)
+    await db.flush()
+
+    client = OAuthClient(developer_account_id=dev_account.id, client_id="client_unknown", name="App")
+    db.add(client)
+    await db.flush()
+
+    token = OAuthToken(
+        client_id=client.id,
+        user_id=user.id,
+        event_id=event.id,
+        scopes=["webhooks:manage"],
+        access_token_hash="hash_unknown",
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+    )
+    db.add(token)
+    await db.flush()
+
+    # Completely unknown event
+    with pytest.raises(HTTPException) as exc_info:
+        await create_webhook(
+            WebhookCreate(target_url="https://example.com/wh", event_types=["bogus.event"]),
+            token=token,
+            db=db,
+        )
+    assert exc_info.value.status_code == 400
+    assert "Unsupported event types: bogus.event" in exc_info.value.detail
+    assert "Supported event types are:" in exc_info.value.detail
+
+    # Mix of valid and invalid
+    with pytest.raises(HTTPException) as exc_info:
+        await create_webhook(
+            WebhookCreate(
+                target_url="https://example.com/wh",
+                event_types=["session.status_changed", "typo.interpreter.join"],
+            ),
+            token=token,
+            db=db,
+        )
+    assert exc_info.value.status_code == 400
+    assert "Unsupported event types: typo.interpreter.join" in exc_info.value.detail
+
+
+@pytest.mark.anyio
+async def test_create_webhook_accepts_all_supported_event_types(db, monkeypatch):
+    """Verify that all supported event types are accepted individually and together."""
+    monkeypatch.setattr("portal.routers.webhooks.validate_ssrf", lambda url: None)
+
+    user = User(email="all@example.com", display_name="User", is_active=True)
+    db.add(user)
+    await db.flush()
+
+    event = Event(slug="ev-all", display_name="Event")
+    db.add(event)
+    await db.flush()
+
+    dev_account = DeveloperAccount(user_id=user.id, status="approved")
+    db.add(dev_account)
+    await db.flush()
+
+    client = OAuthClient(developer_account_id=dev_account.id, client_id="client_all", name="App")
+    db.add(client)
+    await db.flush()
+
+    token = OAuthToken(
+        client_id=client.id,
+        user_id=user.id,
+        event_id=event.id,
+        scopes=["webhooks:manage"],
+        access_token_hash="hash_all",
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+    )
+    db.add(token)
+    await db.flush()
+
+    # Each individual event type must be accepted
+    for evt in sorted(SUPPORTED_EVENT_TYPES):
+        res = await create_webhook(
+            WebhookCreate(target_url=f"https://example.com/wh/{evt}", event_types=[evt]),
+            token=token,
+            db=db,
+        )
+        assert res.event_types == [evt]
+
+    # All together must be accepted
+    res_all = await create_webhook(
+        WebhookCreate(target_url="https://example.com/wh/all", event_types=list(SUPPORTED_EVENT_TYPES)),
+        token=token,
+        db=db,
+    )
+    assert set(res_all.event_types) == SUPPORTED_EVENT_TYPES
+
+
+def test_list_available_events():
+    """Verify that GET /api/v1/webhooks/events requires auth and returns all supported event types."""
+    client = TestClient(app)
+    unauth_resp = client.get("/api/v1/webhooks/events")
+    assert unauth_resp.status_code == 401
+
+    mock_token = OAuthToken(scopes=["webhooks:manage"])
+    app.dependency_overrides[require_webhooks_manage] = lambda: mock_token
+    try:
+        resp = client.get("/api/v1/webhooks/events")
+        assert resp.status_code == 200
+        assert resp.json() == sorted(SUPPORTED_EVENT_TYPES)
+    finally:
+        app.dependency_overrides.pop(require_webhooks_manage, None)
+
+
+@pytest.mark.anyio
+async def test_enqueue_webhook_queues_delivery_only_for_matching_subscription(db, monkeypatch):
+    """Verify that deliveries are only queued for active subscriptions matching the emitted event."""
+    # Sub 1: Active, subscribed to SESSION_STATUS_CHANGED
+    sub1 = WebhookSubscription(
+        developer_account_id=1,
+        target_url="https://example.com/webhook1",
+        event_types=[SESSION_STATUS_CHANGED],
+        secret_key="whsec_1",
+        is_active=True,
+    )
+    # Sub 2: Active, subscribed to BOOTH_INTERPRETER_JOINED
+    sub2 = WebhookSubscription(
+        developer_account_id=1,
+        target_url="https://example.com/webhook2",
+        event_types=[BOOTH_INTERPRETER_JOINED],
+        secret_key="whsec_2",
+        is_active=True,
+    )
+    # Sub 3: Inactive, subscribed to SESSION_STATUS_CHANGED
+    sub3 = WebhookSubscription(
+        developer_account_id=1,
+        target_url="https://example.com/webhook3",
+        event_types=[SESSION_STATUS_CHANGED],
+        secret_key="whsec_3",
+        is_active=False,
+    )
+    db.add_all([sub1, sub2, sub3])
+    await db.flush()
+
+    # Mock get_session in worker to return the test's db session
+    @asynccontextmanager
+    async def _mock_get_session():
+        yield db
+
+    monkeypatch.setattr("portal.webhooks.worker.get_session", _mock_get_session)
+    monkeypatch.setattr(wh_worker, "enqueue_webhook", wh_worker._real_enqueue_webhook)
+
+    payload = {"booth_id": "test-booth", "is_active": True}
+    await wh_worker.enqueue_webhook(SESSION_STATUS_CHANGED, payload)
+
+    delivs = (await db.execute(select(WebhookDelivery))).scalars().all()
+    assert len(delivs) == 1
+    d = delivs[0]
+    assert d.subscription_id == sub1.id
+    assert d.event_type == SESSION_STATUS_CHANGED
+    assert d.payload == payload
+    assert d.status == "pending"
+
+
+@pytest.mark.anyio
+async def test_enqueue_webhook_rejects_unsupported_event(monkeypatch):
+    """Verify that enqueueing an unsupported event raises ValueError."""
+    monkeypatch.setattr(wh_worker, "enqueue_webhook", wh_worker._real_enqueue_webhook)
+
+    with pytest.raises(ValueError) as exc_info:
+        await wh_worker.enqueue_webhook("unsupported.event", {"test": True})
+    assert "Unknown webhook event type: 'unsupported.event'" in str(exc_info.value)
+
+
+@pytest.mark.anyio
+async def test_reconcile_subscriptions_enforces_tenant_isolation(db):
+    """Verify reconcile_subscriptions strictly scopes to developer_account_id and rejects None."""
+    # Sub for account 1
+    sub1 = WebhookSubscription(
+        developer_account_id=1,
+        target_url="https://example.com/acct1",
+        event_types=["unsupported.evt", SESSION_STATUS_CHANGED],
+        secret_key="sec1",
+        is_active=True,
+    )
+    # Sub for account 2
+    sub2 = WebhookSubscription(
+        developer_account_id=2,
+        target_url="https://example.com/acct2",
+        event_types=["unsupported.evt2"],
+        secret_key="sec2",
+        is_active=True,
+    )
+    db.add_all([sub1, sub2])
+    await db.flush()
+
+    # Reconciling with developer_account_id=None must return empty list and touch nothing
+    res_none = await reconcile_subscriptions(db, None)
+    assert res_none == []
+
+    # Verify neither sub was modified
+    db_sub2 = (await db.execute(select(WebhookSubscription).where(WebhookSubscription.id == sub2.id))).scalars().first()
+    assert db_sub2.is_active is True
+    assert db_sub2.event_types == ["unsupported.evt2"]
+
+    # Reconciling account 1 only touches account 1
+    res_acct1 = await reconcile_subscriptions(db, 1)
+    assert len(res_acct1) == 1
+    assert res_acct1[0].id == sub1.id
+    assert res_acct1[0].event_types == [SESSION_STATUS_CHANGED]
+
+    # Sub 2 is still untouched
+    db_sub2_after = (
+        (await db.execute(select(WebhookSubscription).where(WebhookSubscription.id == sub2.id))).scalars().first()
+    )
+    assert db_sub2_after.is_active is True
+    assert db_sub2_after.event_types == ["unsupported.evt2"]
+
+
+@pytest.mark.anyio
+async def test_reconcile_preexisting_subscriptions_frees_quota(db, monkeypatch):
+    """Verify that pre-existing subscriptions with unsupported events are reconciled and free quota."""
+    monkeypatch.setattr("portal.routers.webhooks.validate_ssrf", lambda url: None)
+
+    user = User(email="reconcile@example.com", display_name="User", is_active=True)
+    db.add(user)
+    await db.flush()
+
+    event = Event(slug="ev-reconcile", display_name="Event")
+    db.add(event)
+    await db.flush()
+
+    dev_account = DeveloperAccount(user_id=user.id, status="approved")
+    db.add(dev_account)
+    await db.flush()
+
+    client = OAuthClient(developer_account_id=dev_account.id, client_id="client_reconcile", name="App")
+    db.add(client)
+    await db.flush()
+
+    token = OAuthToken(
+        client_id=client.id,
+        user_id=user.id,
+        event_id=event.id,
+        scopes=["webhooks:manage"],
+        access_token_hash="hash_reconcile",
+        expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+    )
+    db.add(token)
+    await db.flush()
+
+    # Create pre-existing active subscriptions directly in db:
+    # sub1 has ONLY unsupported event (should become inactive and free quota)
+    sub1 = WebhookSubscription(
+        developer_account_id=dev_account.id,
+        target_url="https://example.com/legacy1",
+        event_types=["unsupported.legacy.event"],
+        secret_key="sec1",
+        is_active=True,
+    )
+    # sub2 has mixed events (supported + unsupported)
+    sub2 = WebhookSubscription(
+        developer_account_id=dev_account.id,
+        target_url="https://example.com/legacy2",
+        event_types=[SESSION_STATUS_CHANGED, "old.deprecated.event"],
+        secret_key="sec2",
+        is_active=True,
+    )
+    db.add_all([sub1, sub2])
+    await db.flush()
+
+    monkeypatch.setattr(settings, "max_webhook_subscriptions", 2)
+
+    # Calling list_webhooks reconciles subscriptions
+    listed = await list_webhooks(token=token, db=db)
+    sub1_listed = next(s for s in listed if s.target_url == "https://example.com/legacy1")
+    sub2_listed = next(s for s in listed if s.target_url == "https://example.com/legacy2")
+
+    # sub1 should be deactivated and have empty event_types
+    assert sub1_listed.is_active is False
+    assert sub1_listed.event_types == []
+
+    # sub2 should remain active with unsupported event pruned
+    assert sub2_listed.is_active is True
+    assert sub2_listed.event_types == [SESSION_STATUS_CHANGED]
+
+    # Creating a new subscription now succeeds because sub1 is inactive and doesn't consume quota
+    new_sub = await create_webhook(
+        WebhookCreate(target_url="https://example.com/new", event_types=[SESSION_STATUS_CHANGED]),
+        token=token,
+        db=db,
+    )
+    assert new_sub.is_active is True
+    assert new_sub.target_url == "https://example.com/new"
+
+
+def test_event_registry_single_source_of_truth():
+    """Verify that event constants match values and AST checks prove callers use the registry."""
+    # Constants must match their expected string representations
+    assert SESSION_STATUS_CHANGED == "session.status_changed"
+    assert BOOTH_TRANSCRIPTION_STARTED == "booth.transcription.started"
+    assert BOOTH_TRANSCRIPTION_STOPPED == "booth.transcription.stopped"
+    assert BOOTH_INTERPRETER_JOINED == "booth.interpreter.joined"
+
+    # Set and tuple consistency
+    assert set(ALL_WEBHOOK_EVENTS) == SUPPORTED_EVENT_TYPES
+    assert len(ALL_WEBHOOK_EVENTS) == 4
+
+    # validate_event_types helper sorts and deduplicates
+    res = validate_event_types([SESSION_STATUS_CHANGED, SESSION_STATUS_CHANGED])
+    assert res == [SESSION_STATUS_CHANGED]
+
+    with pytest.raises(ValueError, match="event_types cannot be empty"):
+        validate_event_types([])
+
+    with pytest.raises(ValueError, match="Unsupported event types"):
+        validate_event_types(["invalid"])
+
+    # Verify runtime producer import bindings evaluate to valid supported constants
+    producer_bindings = [
+        ("portal.booth_state", {"SESSION_STATUS_CHANGED": SESSION_STATUS_CHANGED}),
+        (
+            "portal.transcription.worker",
+            {
+                "BOOTH_TRANSCRIPTION_STARTED": BOOTH_TRANSCRIPTION_STARTED,
+                "BOOTH_TRANSCRIPTION_STOPPED": BOOTH_TRANSCRIPTION_STOPPED,
+            },
+        ),
+        ("portal.websockets.manager", {"BOOTH_INTERPRETER_JOINED": BOOTH_INTERPRETER_JOINED}),
+    ]
+    for module_name, bindings in producer_bindings:
+        mod = importlib.import_module(module_name)
+        for attr_name, expected_val in bindings.items():
+            actual_val = getattr(mod, attr_name, None)
+            assert actual_val == expected_val, (
+                f"{module_name}.{attr_name} evaluated to {actual_val!r}, expected {expected_val!r}"
+            )
+            assert actual_val in SUPPORTED_EVENT_TYPES, (
+                f"{module_name}.{attr_name} value {actual_val!r} is not in SUPPORTED_EVENT_TYPES"
+            )
+
+    # AST verification of all calls to enqueue_webhook across portal/
+    portal_dir = Path(__file__).resolve().parents[1] / "portal"
+    for py_file in portal_dir.rglob("*.py"):
+        tree = ast.parse(py_file.read_text(encoding="utf-8"), filename=str(py_file))
+
+        # Track event constant bindings imported from portal.webhooks.events in this file
+        imported_event_bindings: dict[str, str] = {}
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module == "portal.webhooks.events":
+                for alias in node.names:
+                    local_name = alias.asname or alias.name
+                    imported_event_bindings[local_name] = getattr(wh_events, alias.name, None)
+
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call):
+                func = node.func
+                func_name = getattr(func, "id", None) or getattr(func, "attr", None)
+                if func_name == "enqueue_webhook":
+                    event_arg = None
+                    if node.args:
+                        event_arg = node.args[0]
+                    else:
+                        for kw in node.keywords:
+                            if kw.arg == "event_type":
+                                event_arg = kw.value
+                                break
+
+                    if event_arg is not None:
+                        if isinstance(event_arg, ast.Constant):
+                            assert event_arg.value in SUPPORTED_EVENT_TYPES, (
+                                f"{py_file}: String literal {event_arg.value!r} passed to enqueue_webhook "
+                                f"is not in SUPPORTED_EVENT_TYPES"
+                            )
+                        elif isinstance(event_arg, ast.Name):
+                            assert event_arg.id in {
+                                "SESSION_STATUS_CHANGED",
+                                "BOOTH_TRANSCRIPTION_STARTED",
+                                "BOOTH_TRANSCRIPTION_STOPPED",
+                                "BOOTH_INTERPRETER_JOINED",
+                                "event_type",  # Inside worker.py itself
+                            }, f"{py_file}: Unknown identifier {event_arg.id} passed to enqueue_webhook"
+
+                            # Confirm identifier was imported from portal.webhooks.events and evaluates to supported event
+                            if event_arg.id != "event_type":
+                                assert event_arg.id in imported_event_bindings, (
+                                    f"{py_file}: Identifier {event_arg.id} passed to enqueue_webhook "
+                                    f"was not imported from portal.webhooks.events"
+                                )
+                                bound_val = imported_event_bindings[event_arg.id]
+                                assert bound_val in SUPPORTED_EVENT_TYPES, (
+                                    f"{py_file}: Identifier {event_arg.id} binds to {bound_val!r}, "
+                                    f"which is not in SUPPORTED_EVENT_TYPES"
+                                )
