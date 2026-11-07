@@ -6,8 +6,9 @@ import logging
 import os
 import threading
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     import ctranslate2
@@ -216,6 +217,9 @@ def start_eviction_loop():
 
 
 class LocalProvider(TranslationProvider):
+    #: Set once the operator has been told the interpretation settings do not apply here.
+    _warned_unsupported_settings = False
+
     def __init__(self):
         start_eviction_loop()
 
@@ -228,12 +232,28 @@ class LocalProvider(TranslationProvider):
         source_lang_name: str,
         model: str,
         api_key: str | None,
+        persona: str | None = None,
+        style: str | None = None,
+        vocabulary_entries: Sequence[Any] = (),
     ) -> str | None:
         logger.debug(
             f"[NLLB] translate called: source='{source_lang_name}' -> target='{target_lang_name}' "
             f"model='{model}' text_len={len(text)}"
         )
-
+        # NLLB is sequence-to-sequence and has no system-prompt channel, so the room's
+        # interpretation settings cannot be applied here. Say so once per process rather
+        # than letting configured settings look active.
+        ignored = [
+            name
+            for name, value in (("persona", persona), ("style", style), ("vocabulary", vocabulary_entries))
+            if value
+        ]
+        if ignored and not LocalProvider._warned_unsupported_settings:
+            LocalProvider._warned_unsupported_settings = True
+            logger.warning(
+                f"[NLLB] The local provider ignores {', '.join(ignored)}: NLLB takes no system prompt. "
+                "Select a cloud translation provider for these settings to take effect."
+            )
 
 
         if target_lang_name in _CODE_TO_NAME:

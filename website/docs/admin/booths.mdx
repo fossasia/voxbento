@@ -11,13 +11,13 @@ A booth is the core unit of interpretation in Voxbento — it represents a singl
 
 ## What Is a Booth?
 
-Each booth maps one language to one room inside an event. Voxbento identifies booths by combining the event slug and the language code:
+Each booth maps one language to one room inside an event. Voxbento identifies booths by combining the event slug, room ID, and language code:
 
 ```text
-booth_id = {event_slug}-{language_code}
+booth_id = {event_slug}-{room_id}-{language_code}
 ```
 
-For example, the English booth for `pycon2026` has the ID `pycon2026-en`. This ID is used internally and in API routes. The language code must be a two-letter [ISO 639-1](https://en.wikipedia.org/wiki/List_of_ISO_639-1_codes) code in lowercase — for example `en`, `fr`, `es`, `de`, `zh`.
+For example, the English booth in room 14 for `pycon2026` has the ID `pycon2026-14-en`. This ID is used internally and in API routes. The language code must be a two-letter [ISO 639-1](https://en.wikipedia.org/wiki/List_of_ISO_639-1_codes) code in lowercase — for example `en`, `fr`, `es`, `de`, `zh`.
 
 ## Creating a Booth
 
@@ -42,9 +42,9 @@ The booth detail page is your primary control panel for a single language channe
 
 | Field | Description |
 | --- | --- |
-| **Interpreter Page URL** | The URL you share with interpreters — e.g. `/interpreter/pycon2026/en`. Opening it launches the interpreter booth console. |
+| **Interpreter Page URL** | The URL you share with interpreters — e.g. `/interpreter/pycon2026/14/en`. Opening it launches the interpreter booth console. |
 | **WHEP Listener URL** | The WebRTC playback endpoint for attendees. Copy this to embed in a listener page or share directly. |
-| **MediaMTX Stream Path** | The stream path on your MediaMTX server — e.g. `pycon2026/en`. Used internally for live captions and monitoring. |
+| **MediaMTX Stream Path** | The stream path on your MediaMTX server — e.g. `pycon2026/14/en`. Used internally for live captions and monitoring. |
 | **Live Status** | Whether an interpreter is currently broadcasting on this booth. |
 | **Active Interpreter** | The display name of the interpreter currently marked as active. |
 | **Participant Roster** | All users currently connected to the booth WebSocket, with their roles. |
@@ -56,7 +56,7 @@ The booth detail page is your primary control panel for a single language channe
 Voxbento uses two WebRTC signalling endpoints for each booth:
 
 :::tip WHIP — Publish Endpoint
-Used by the interpreter's browser to push audio to MediaMTX. The interpreter page handles this automatically — you do not need to share the WHIP URL with interpreters.
+Used by the interpreter's browser to push audio to MediaMTX with a single-use publish ticket. The interpreter page handles this automatically — you do not need to share the WHIP URL with interpreters.
 :::
 
 :::tip WHEP — Playback Endpoint
@@ -69,20 +69,20 @@ The URL format for both endpoints follows the booth identity scheme:
   <TabItem value="whip" label="WHIP (publish)">
 
 ```text
-{MEDIAMTX_WHIP_BASE}/{event_slug}/{language_code}/whip
+{MEDIAMTX_WHIP_BASE}/{event_slug}/{room_id}/{language_code}/whip
 
 # Example
-https://voxbento.com/pycon2026/en/whip
+https://voxbento.com/pycon2026/14/en/whip
 ```
 
   </TabItem>
   <TabItem value="whep" label="WHEP (playback)">
 
 ```text
-{MEDIAMTX_WHIP_BASE}/{event_slug}/{language_code}/whep
+{MEDIAMTX_WHIP_BASE}/{event_slug}/{room_id}/{language_code}/whep
 
 # Example
-https://voxbento.com/pycon2026/en/whep
+https://voxbento.com/pycon2026/14/en/whep
 ```
 
   </TabItem>

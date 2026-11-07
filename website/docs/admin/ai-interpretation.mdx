@@ -1,0 +1,80 @@
+---
+title: "Configure AI Interpretation, Prompts, and Vocabularies — Voxbento"
+sidebarTitle: "AI Interpretation"
+description: "Customize live translation personas, tone, style rules, and domain glossaries for floor translation and text-to-speech."
+---
+
+import Tabs from "@theme/Tabs";
+import TabItem from "@theme/TabItem";
+
+Voxbento can apply room-specific instructions to AI-generated translated captions and the translated text sent to direct-push text-to-speech (TTS). These settings guide LLM translation behavior while keeping the media path (WHIP, WHEP, RTSP) completely isolated and ultra-fast.
+
+## Persona and Style Configuration
+
+In the admin or workspace panel, navigate to **Events → Rooms → [Select Room]**, open the **AI settings** tab and expand **Instructions for the AI translator** (shown when a language uses AI voice or AI captions):
+
+- **What is this event about?** (stored as the AI interpreter persona): Defines the interpreter's role, background, and domain expertise. For example:
+  > *"A professional simultaneous interpreter specializing in open-source software, cloud infrastructure, and developer conferences."*
+- **How should it translate?** (stored as the AI interpretation style): Governs tone, output formatting, and translation conventions. For example:
+  > *"Maintain formal conference tone, preserve API and code symbol names verbatim, keep issue numbers intact, and translate spoken utterances without summarizing."*
+
+Voxbento merges these instructions with a system-level safety prompt requiring clean, spoken translation output without meta-commentary or Markdown markup. Empty settings retain standard translation output.
+
+:::info Shared Interpretation State
+The translated text is broadcast concurrently to listeners via the target booth's captions feed (`/ws/captions/{booth_id}`) and delivered via framed binary bundles (`/ws/tts/{room_id}/{language_code}/{booth_id}`) to the room's configured TTS engine (Deepgram Aura or Supertonic ONNX), ensuring that captions and speech share the exact same translation.
+:::
+
+## AI Vocabulary & Glossary CSV
+
+Event owners manage custom glossaries to enforce accurate translation of brand names, product terms, and technical acronyms. (The AI interpretation vocabulary card is displayed to event owners; room coordinators without event ownership do not have card access).
+
+### Uploading a Glossary
+
+On the room page's **AI settings** tab, use the **Glossary** card. Upload a UTF-8 CSV file (up to 2 MB) to append terms to the existing glossary or replace it entirely.
+
+#### CSV Format
+
+**Required headers:**
+```text
+source_term,target_language,target_term
+```
+
+**Optional headers:**
+```text
+description,case_sensitive,match_type,priority,notes
+```
+
+**Example:**
+```csv
+source_term,target_language,target_term,description,case_sensitive,match_type,priority
+FOSSASIA,all,FOSSASIA,Organizer organization,true,exact,100
+Voxbento,all,Voxbento,Interpretation platform,true,exact,100
+WebRTC,all,WebRTC,Real-time protocol,true,exact,90
+Pull Request,de,Pull Request,Developer term in German,false,phrase,80
+```
+
+- **`target_language`**: Accepts `all` or a specific ISO 639-1 language code (e.g. `de`, `fr`, `es`).
+- **`case_sensitive`**: Boolean flag (`true`, `false`, `1`, `0`, `yes`, `no`).
+- **`match_type`**: `exact` (matches on word boundaries) or `phrase` (substring/phrase match).
+- **`priority`**: Integer priority. Entries with priority ≥ 90 are prioritized for prompt inclusion, up to a maximum of 80 matching high-priority entries within the translation prompt's character budget.
+
+Exporting downloads the normalized glossary in the identical CSV schema. Formula characters (`=`, `+`, `-`, `@`) at the start of text cells are neutralized during export to protect against spreadsheet injection.
+
+## Prompt Bounding & Latency Optimization
+
+To prevent token bloating and latency spikes during live simultaneous interpretation, Voxbento does not transmit the complete vocabulary with every segment. For each incoming utterance, the vocabulary resolver:
+
+1. Filters entries matching the target language or marked `all`.
+2. Resolves scope hierarchy: booth-specific entries take precedence, followed by room entries, then event-wide entries.
+3. Detects source terms present in the current spoken transcript segment.
+4. Prioritizes matching high-priority terms (priority ≥ 90).
+5. Caps the final prompt glossary at a maximum of 80 entries within the prompt character budget.
+
+This keeps real-time prompts compact, minimizing LLM inference latency.
+
+## Provider Compatibility
+
+- **OpenAI / OpenRouter / Groq**: Shared system and user messages with contextual instructions.
+- **Anthropic**: Persona, style, and glossary terms supplied through the top-level `system` prompt parameter.
+- **Google Gemini**: Applied via `systemInstruction`.
+- **Local NLLB**: Deterministic sequence-to-sequence translation models do not support system prompts or glossaries. Persona, style, and vocabulary settings are safely stored but bypassed when running local NLLB.

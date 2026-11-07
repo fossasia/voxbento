@@ -1,0 +1,9 @@
+{% extends "error_base.html" %}
+
+{% block error_title %}Bad Request{% endblock %}
+{% block error_code %}{{ status_code or 400 }}{% endblock %}
+
+{% block error_actions %}
+<a href="javascript:history.back()" class="btn btn-primary">Go Back</a>
+<a href="/" class="btn">Return to Homepage</a>
+{% endblock %}

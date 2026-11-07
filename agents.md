@@ -66,24 +66,34 @@ VoxBento is a production-grade **browser-first interpretation booth console** fo
 |---|---|
 | `fastapi_app.py` | Application lifespan, router aggregation, global exception handlers |
 | `portal/routers/` | All HTTP routes (pages, admin, REST API), Jinja2 template rendering |
+| `portal/room_setup.py` | Room plan parsing, available AI services, booth/translation-language reconciliation, and room summaries |
 | `portal/workspace_routing.py` | `/workspace` handler mapping, legacy organizer redirects, management URL/template namespace helpers |
 | `portal/websockets/` | WebSocket connection manager, message handlers (`_handle_join`, etc.) |
 | `portal/booth_state.py` | In-memory `BoothRegistry`, `Booth`, `Participant`, handoff policy, chat history |
 | `portal/auth.py` | JWT create/decode, bcrypt password, `require_admin`, `require_user`, `resolve_booth_role`, `can_perform_role` |
 | `portal/config.py` | `Settings` — pydantic-settings; all env vars / `.env` |
-| `portal/models.py` | SQLAlchemy declarative models: `Event`, `Room`, `DBBooth`, `InviteToken`, `User`, `EventMembership`, `BoothMembership` |
+| `portal/models.py` | SQLAlchemy declarative models: `Event`, `Room`, `DBBooth`, `InviteToken`, `User`, `EventMembership`, `RoomMembership`, `BoothMembership`, `HostingRequest`, `AIVocabularyEntry`, etc. |
 | `portal/database.py` | Async engine, session factory (`get_session`), all CRUD helpers |
+| `portal/booth_publish.py` | Single-use WHIP publish tickets for interpreter booth paths; checked by the MediaMTX auth hook |
 | `portal/booth_identity.py` | `make_booth_id`, `make_mediamtx_path`, `parse_booth_id`, `validate_event_slug`, `validate_language_code` |
 | `portal/roles.py` | `Permission` enum, `ROLE_PERMISSIONS` dict, `ALL_ROLES` set, `_ROLE_RANK` |
 | `portal/crypto.py` | `encrypt_val` / `decrypt_val` (Fernet, SHA-256 key derivation) |
 | `portal/transcription/` | Transcription subsystem — see `TRANSCRIPTION_MAP.md` |
+| `portal/translations/` | Translation subsystem — LLM workers, contextual prompts (`prompts.py`), glossaries (`vocabulary.py`) |
+| `portal/tts/` | Text-to-speech subsystem — direct-push Deepgram Aura and Supertonic ONNX |
+| `portal/meeting_source.py` | Managed Jitsi floor agent lifecycle reconciler |
+| `portal/program_ingest.py` | Floor authorization and reconciliation for Program Stream Ingest |
+| `portal/program_relay.py` | YouTube RTMPS destination management and relay health convergence |
+| `portal/outage_log.py` | `OutageLog` — reconcile loops log a repeating failure once per outage, not per tick |
+| `portal/user_admin.py` | Administrative access rules, user flags (`can_host`, `is_admin`, `is_active`, `email_verified`) |
 | `portal/templates/` | Jinja2 HTML — `base.html`, `interpreter_booth.html`, `listener-event.html`, `admin/` |
+| `portal/static/css/tokens.css` | Shared design tokens (`--vb-*` colours, radii, shadows, fonts), linked first on every page; new CSS uses these instead of new hex values |
 | `portal/static/js/interpreter-booth.js` | Booth UI — WebRTC/WHIP, WebSocket, Jitsi iframe, mic controls, level meter |
 | `portal/static/js/whep-listener.js` | WHEP playback client — RTCPeerConnection, auto-reconnect with exponential back-off |
 | `portal/static/js/admin.js` | Admin panel JS helpers |
 | `mediamtx.yml` | MediaMTX config — WHIP/WHEP paths, RTSP, Control API, `overridePublisher` |
 | `docker-compose.yml` | portal + mediamtx + jitsi-web/prosody/jicofo/jvb |
-| `alembic/versions/` | 8 migrations (001–008); run `uv run alembic upgrade head` |
+| `alembic/versions/` | 38 migrations (001–038); run `uv run alembic upgrade head` |
 
 ---
 
@@ -91,7 +101,7 @@ VoxBento is a production-grade **browser-first interpretation booth console** fo
 
 1. **One active publisher per language channel.** MediaMTX enforces `overridePublisher: yes`; Python enforces via `BoothRegistry`.
 2. **Interpreter mic audio never routes to `AudioContext.destination`.** No local loopback.
-3. **Interpreter ingest remains browser-only WHIP.** Explicit exception: room-scoped Program Stream Ingest (#690) accepts authenticated HTTPS WHIP from an external encoder. No YouTube pulling/relay or public RTMP/SRT. Floor ownership is `jitsi_bot` or `program_ingest`; never last-publisher-wins.
+3. **Interpreter ingest remains browser-only WHIP.** Explicit exception: room-scoped Program Stream Ingest (#690) accepts authenticated HTTPS WHIP from an external encoder, and its operator-enabled relay mode (#749) accepts room-authenticated RTMPS (never plaintext RTMP) and pushes it to an allow-listed YouTube RTMPS destination from the dedicated `program-relay` service. No YouTube pulling, no unauthenticated or plaintext RTMP, no SRT. Floor ownership is `jitsi_bot` or `program_ingest`; never last-publisher-wins.
 4. **Jitsi is monitoring only** — receive-only iframe. Not the ingest transport.
 5. **No framework.** Frontend is plain ES modules in `portal/static/js/`. No Vue, React, jQuery, inline `<script>` blocks.
 6. **No Flask, Socket.IO, aiortc.**
@@ -100,23 +110,36 @@ VoxBento is a production-grade **browser-first interpretation booth console** fo
 9. **`portal.*` imports for all new Python code.**
 10. **Role is never trusted from client data.** WS handler reads `Session.granted_role` (derived from cookies at connect time).
 11. **No open redirects.** All redirects use `safe_redirect()` which validates path starts with `/` and has no netloc.
-12. **Management namespaces reflect privilege.** Event owners use `/workspace/*`; room coordinators use the room-scoped `/mission-control/*` surface. `/admin/*` is reserved for super-admin use, apart from legacy room-scoped coordinator handlers retained for compatibility. Legacy event-owner URLs redirect without changing OAuth routes or token behavior.
+12. **Management namespaces reflect privilege.** Event owners use `/workspace/*`; room coordinators use the room-scoped `/mission-control/*` surface. `/admin/*` is reserved for Admins, apart from legacy room-scoped coordinator handlers retained for compatibility. Legacy event-owner URLs redirect without changing OAuth routes or token behavior.
 
 ---
 
 ## Role Model
 
 ```
-super_admin > event_owner > room_coordinator > interpreter > listener
+admin > event_owner > room_coordinator > interpreter
 ```
 
-| Role | Go Live (WHIP) | Set Active | Chat | Manage Booths/Events |
-|---|---|---|---|---|
-| `super_admin` | ✓ | ✓ | ✓ | ✓ |
-| `event_admin` | ✓ | ✓ | ✓ | booths only |
-| `coordinator` | ✓ | ✓ | ✓ | — |
-| `interpreter` | ✓ (active only) | — | ✓ | — |
-| `listener` | — | — | — | — |
+Four roles, defined once in `portal/roles.py` (#757): role names, plain-language
+labels (`role_label`), where each can be given (`EVENT_ROLES`, `ROOM_ROLES`,
+`BOOTH_ROLES`, `assignment_error`) and one `Permission` per action. Never type a
+role name elsewhere; `tests/test_roles.py` fails if you do.
+
+| Action | Admin | Event owner | Room coordinator | Interpreter |
+|---|:-:|:-:|:-:|:-:|
+| Manage users, Admins, hosting access, developer apps | ✓ | | | |
+| See all events / create events (or hosting access) | ✓ | | | |
+| Edit/delete event; manage rooms, booths, team, keys | ✓ | ✓ | | |
+| Mission Control, floor transcription, choose active interpreter | ✓ | ✓ | ✓ | |
+| Go live, booth chat, view booths | ✓ | ✓ | ✓ | ✓ |
+| Can be given per | account | event | event, room, booth | event, booth |
+
+"Admin" means only the platform role (`users.is_admin`, read from the database).
+Access checks are named after who they admit: `require_admin` (Admins),
+`require_event_owner`, `require_owner_or_coordinator`; Admins pass every check.
+Hosting access is an account setting, not a role. Listening is not a role:
+listener/embed tokens carry `kind: "listener"`. Booth participants are sent to
+browsers with `can_go_live` / `can_set_active`, so client code never compares role names.
 
 Defined in: `portal/roles.py`
 Enforced in: `portal/websockets/handlers.py` (`_handle_join`), `portal/routers/api.py` (WHIP URL endpoints), `portal/booth_state.py` (`set_active_interpreter`)
@@ -127,7 +150,7 @@ Enforced in: `portal/websockets/handlers.py` (`_handle_join`), `portal/routers/a
 
 | Purpose | Token type | Cookie name | Key claims |
 |---|---|---|---|
-| Invite-link participant | `create_participant_token()` | `session_token` | `booth_id`, `role`, `event_slug`, `language_code` |
+| Invite-link participant | `create_participant_token()` | `session_token` | `booth_id`, `role`, `event_slug`, `room_id`, `language_code` |
 | Registered user / Admin | `create_user_token()` | `user_token` | `sub` (user_id), `email`, `is_admin`, `user=True` |
 
 All tokens: HS256, `settings.effective_jwt_secret`, expiry = `jwt_expiry_seconds`.
@@ -139,8 +162,8 @@ API key storage: Fernet-encrypted in DB (`portal/crypto.py`).
 ## Booth Identity
 
 ```python
-booth_id  = make_booth_id("pycon2026", "en")   # → "pycon2026-en"
-mtx_path  = make_mediamtx_path("pycon2026", "en")  # → "pycon2026/en"
+booth_id  = make_booth_id("pycon2026", 14, "en")   # → "pycon2026-14-en"
+mtx_path  = make_mediamtx_path("pycon2026", 14, "en")  # → "pycon2026/14/en"
 whip_url  = f"{settings.mediamtx_whip_base}/{mtx_path}/whip"
 whep_url  = f"{settings.mediamtx_whip_base}/{mtx_path}/whep"
 rtsp_url  = f"rtsp://mediamtx:8554/{mtx_path}"   # transcription only
@@ -159,10 +182,18 @@ Validation: `portal/booth_identity.py` — slug: `^[a-z0-9]+(?:-[a-z0-9]+)*$`; l
 | `booth:chat` | `_handle_chat` | `body` only |
 | `booth:set-active` | `_handle_set_active` | `target_id` |
 | `booth:update-state` | `_handle_update_state` | `mic_active`, `ingest_connected` |
+| `booth:request-publish-ticket` | `_handle_request_publish_ticket` | — (participant from the WS session) |
 
-Server → Client: `booth:joined`, `booth:state`, `booth:chat`, `booth:error`
+Server → Client: `booth:joined`, `booth:state`, `booth:chat`, `booth:error`, `booth:publish-ticket`
 
-Caption feed: `/ws/captions/{booth_id}` (no auth) — receives `caption` + `booth:state` messages.
+Booth WHIP publishing is authenticated (#783): MediaMTX forwards the `Authorization: Bearer` ticket to
+`/internal/media-auth`, which redeems it once (`portal/booth_publish.py`, 30 s TTL, bound to the booth's
+server-derived path) and re-checks that the holder is still the active interpreter and that Mission Control has
+broadcast unlocked. Anonymous publishes get 401. A `booth:join` naming another socket's `participant_id` gets a fresh ID.
+
+Caption feed: `/ws/captions/{booth_id}` receives `caption`, `translated_caption` and public `booth:state`. `ws_captions` validates query JWTs: listener tokens are event-scoped, participant tokens are booth-scoped, and user tokens require a currently active account. Without a query token, events with a listener join code require that code, an active user session, or a scoped invite. Code attempts share a bounded pre-verification budget across listener/overlay HTTP and caption WS paths (`portal/join_code_limit.py`); excess guesses close with 1008. Events without a join code retain public caption access with the anonymous connection cap. Rejections are accepted then closed with 4001 (missing/invalid credentials) or 4003 (scope mismatch), so browsers can distinguish them from transport failures. `booth:state` carries only `booth_id`, `event_slug`, `room_id`, `language_code`, `broadcast_unlocked` and `ingest_status`, never participants or booth chat. Overlay reconnects obtain a fresh listener token through `/overlay/.../session`, which rechecks the account/code and channel.
+
+Direct-push TTS feed: `/ws/tts/{room_id}/{language_code}/{booth_id}` — pre-authorized binary bundle stream (version byte, length-prefixed JSON header, optional 24 kHz PCM audio). Translation text is delivered concurrently over the captions feed and inside TTS bundle headers.
 
 ---
 
@@ -172,7 +203,7 @@ Caption feed: `/ws/captions/{booth_id}` (no auth) — receives `caption` + `boot
 MediaMTX RTSP (8554) → ffmpeg PCM → TranscriptionProvider → CaptionAggregator → WebSocket broadcast
 ```
 
-Providers: `local` (faster-whisper, CPU), `openai` (whisper-1/realtime), `deepgram` (nova-2), `nvidia` (Parakeet), `elevenlabs` (scribe_v2).
+Providers: `local` (faster-whisper, CPU), `openai` (whisper-1/realtime), `deepgram` (nova-2), `atlascloud` (Seed ASR 2.0 async predictions), `nvidia` (Parakeet), `elevenlabs` (scribe_v2).
 Worker lifecycle: `start_transcription_worker` / `stop_transcription_worker` in `portal/transcription/worker.py`.
 Max concurrent workers: 10 (`MAX_TOTAL_WORKERS`).
 
@@ -189,6 +220,31 @@ Max concurrent workers: 10 (`MAX_TOTAL_WORKERS`).
 | MediaMTX ICE/UDP | 8189 | UDP |
 | Jitsi Web | 8443 / 8080 | HTTPS / HTTP |
 | JVB | 10000 | UDP |
+
+---
+
+## Pull Request Target Branch
+
+- Create feature and fix branches from `dev`, and target all pull requests to `dev`.
+- Always specify the base explicitly when creating a PR: `gh pr create --base dev`.
+- Verify the PR's base branch is `dev` before reporting it as ready. Do not rely on
+  GitHub's default branch or target `main` unless the user explicitly requests it.
+
+## AI-Assisted Pull Requests
+
+When a PR is created or substantially authored by an AI coding assistant, include an
+**AI Attribution** section in the PR description:
+
+```
+## AI Attribution
+
+This PR was created with the assistance of **<Model Name>** (e.g. Claude Sonnet 4.6).
+```
+
+- Always name the specific model (e.g. "Claude Sonnet 4.6", "Gemini 2.5 Pro").
+- "AI-assisted" means the AI wrote or significantly shaped the code, commit messages,
+  or PR description — not just that it answered a question.
+- Human reviewers should validate AI-generated diffs with the same rigour as any other PR.
 
 ---
 
@@ -227,22 +283,51 @@ Migration 025 adds protected credentials, source ownership and persistent floor
 sequence. One portal replica; program media never traverses Python. Read
 `docs/program-stream-ingest.md` before changing this boundary or deploying it.
 
+Program relay (#749): `portal/program_relay.py` owns the YouTube destination
+(Fernet-encrypted, write-only), relay health and convergence of the `program-relay`
+service (`program-relay/relay.py`, the media plane; `docker-compose.relay.yml`);
+migration 028 adds `program_ingest_mode`, which binds the program key to WHIP or RTMPS.
+Never log, return or forward FFmpeg text containing the destination. Read
+`docs/program-relay.md` before changing relay mode. Relay deployments select the override
+with `COMPOSE_FILE` in `.env` (`scripts/setup-youtube-relay.sh`); the deploy workflow must
+never remove a running `program-relay`.
+
 ---
 
 ## Documentation Requirements
 
-Every PR that adds, removes, or changes a feature **must** update these files in the same commit:
+Keep documentation scoped to the change. Routine feature PRs, bug fixes, and
+refactors **must not update `README.md` by default**. The README is a stable
+project overview and quick start, not a feature changelog or a home for detailed
+UI walkthroughs, provider options, implementation notes, or rollout instructions.
 
-- `README.md` — operational usage and setup
-- `website/docs/how-it-works.mdx` — system design
-- `agents.md` (this file) — guardrails, if they changed
-- Relevant context file in `.agents/context/` — if the change affects routes, DB schema, or transcription
+Update `README.md` only when explicitly requested, to correct an existing factual
+error or broken link, or when a change makes its installation or quick-start
+instructions inaccurate. Keep those edits minimal; document feature details in
+the relevant `website/docs/` page or focused `docs/` guide instead.
 
-Do not defer documentation to a follow-up PR.
+Update documentation in the same PR when the change affects what it describes:
+
+- Relevant `website/docs/` pages or `docs/` guides — changed usage, configuration,
+  or operational procedures.
+- `website/docs/how-it-works.mdx` — changed system design only.
+- `agents.md` — changed agent guardrails or invariants only.
+- Relevant `.agents/context/` files — changed routes, DB schema, transcription,
+  or module ownership.
+
+Do not add unrelated documentation edits just to satisfy a checklist, and do not
+append feature summaries to the README or agent guide for every PR.
 
 Password sign-in requires `User.email_verified`; everyone, admins included, signs in
 at `/login` (`login` rate-limit bucket, 10 attempts per normalized email per hour).
 `/admin/login` only redirects to `/login?next=/admin/`.
+
+Registration protection lives in `portal/registration_protection.py`. Throttle
+by the ASGI-resolved client IP, never raw forwarding headers. When
+`REGISTRATION_TURNSTILE_ENABLED` is true, validate Cloudflare success, hostname
+and `register` action before signup side effects; service failures must reject
+the signup. Turnstile defaults off for compatible rollout. See
+`docs/registration-protection.md` for configuration and proxy trust.
 
 Production deployments validate a separate candidate checkout before advancing
 the live checkout. Portal source and dependencies must come from the built image,

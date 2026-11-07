@@ -1,0 +1,174 @@
+{% extends "admin/base.html" %}
+
+{% block title %}Hosting access{% endblock %}
+
+{% block content %}
+<div class="ha-header">
+  <h1>Hosting access</h1>
+  <p class="ha-subtitle">People with hosting access can create and run their own events.</p>
+</div>
+
+{% set err = request.query_params.get('error') %}
+{% set succ = request.query_params.get('success') %}
+{% if err %}
+<div class="alert alert-danger" role="alert">
+  {% if err == 'request_not_found' %}
+    This request was already handled or no longer exists.
+  {% elif err == 'decline_reason' %}
+    Enter a reason (up to {{ decline_reason_max }} characters) so the person knows why their request was declined.
+  {% elif err == 'inactive_user' %}
+    This account is deactivated. Reactivate it on the Users page before granting hosting access.
+  {% elif err == 'already_host' %}
+    This person already has hosting access.
+  {% else %}
+    Something went wrong. Please try again.
+  {% endif %}
+</div>
+{% elif succ %}
+<div class="alert alert-success" role="status">
+  {% if succ == 'request_granted' %}
+    Hosting access granted. The person can now create events and has been told by email.
+  {% elif succ == 'request_declined' %}
+    Request declined. The person has been told why by email.
+  {% elif succ == 'invite_sent' %}
+    Invitation sent.
+  {% elif succ == 'invite_cancelled' %}
+    Invitation cancelled.
+  {% elif succ == 'hosting_revoked' %}
+    Hosting access removed.
+  {% else %}
+    Done.
+  {% endif %}
+</div>
+{% endif %}
+
+<nav class="ha-tabs" aria-label="Hosting access">
+  <a href="/admin/hosting-access/" class="ha-tab{{ ' is-active' if tab == 'people' else '' }}"{% if tab == 'people' %} aria-current="page"{% endif %}>People with access</a>
+  <a href="/admin/hosting-access/requests/" class="ha-tab{{ ' is-active' if tab == 'requests' else '' }}"{% if tab == 'requests' %} aria-current="page"{% endif %}>
+    Requests
+    {% if open_hosting_requests %}
+    <span class="nav-count">{{ open_hosting_requests }}<span class="visually-hidden"> open</span></span>
+    {% endif %}
+  </a>
+</nav>
+
+{% if tab == 'requests' %}
+  {% if hosting_requests %}
+  <div class="ha-requests">
+    {% for hr in hosting_requests %}
+    <article class="ha-request" aria-labelledby="hr-{{ hr.id }}-name">
+      <header class="ha-request-head">
+        <div class="ha-request-who">
+          <h2 class="ha-request-name" id="hr-{{ hr.id }}-name">{{ hr.user.display_name }}</h2>
+          <a class="ha-request-email" href="/admin/users/{{ hr.user_id }}/">{{ hr.user.email }}</a>
+        </div>
+        <span class="ha-request-date">Requested {{ hr.created_at.strftime('%b %d, %Y') }}</span>
+      </header>
+      <dl class="ha-request-facts">
+        <div>
+          <dt>Organization</dt>
+          <dd>{{ hr.organization }}</dd>
+        </div>
+        <div>
+          <dt>Event</dt>
+          <dd>{{ hr.event_name }}</dd>
+        </div>
+        <div>
+          <dt>Event dates</dt>
+          <dd>{{ format_event_dates(hr.event_starts_on, hr.event_ends_on) }}</dd>
+        </div>
+        <div>
+          <dt>Languages</dt>
+          <dd>{{ hr.languages }}</dd>
+        </div>
+      </dl>
+      {% if hr.message %}
+      <p class="ha-request-message">{{ hr.message }}</p>
+      {% endif %}
+      <div class="ha-request-actions">
+        <form method="post" action="/admin/hosting-access/requests/{{ hr.id }}/grant">
+          <button type="submit" class="btn btn-primary ha-btn">Grant access</button>
+        </form>
+        <button type="button" class="btn btn-outline ha-btn" data-reveal-target="decline-{{ hr.id }}" aria-expanded="false" aria-controls="decline-{{ hr.id }}">Decline</button>
+      </div>
+      <form method="post" action="/admin/hosting-access/requests/{{ hr.id }}/decline" class="ha-decline" id="decline-{{ hr.id }}" hidden>
+        <label for="decline-{{ hr.id }}-reason">Reason for declining</label>
+        <p class="ha-decline-hint" id="decline-{{ hr.id }}-hint">This is sent to {{ hr.user.display_name }} by email.</p>
+        <textarea id="decline-{{ hr.id }}-reason" name="reason" rows="3" maxlength="{{ decline_reason_max }}" required aria-describedby="decline-{{ hr.id }}-hint"></textarea>
+        <div class="ha-request-actions">
+          <button type="submit" class="btn btn-danger ha-btn">Decline request</button>
+          <button type="button" class="btn btn-outline ha-btn" data-reveal-close="decline-{{ hr.id }}">Cancel</button>
+        </div>
+      </form>
+    </article>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="empty-state">
+    <h2 class="empty-state-title">No open requests</h2>
+    <p class="empty-state-text">Requests from people who want to host events appear here.</p>
+  </div>
+  {% endif %}
+{% else %}
+  <details class="create-panel">
+    <summary>Grant hosting access</summary>
+    <div class="create-body">
+      <p class="text-secondary create-hint">Enter an email address. An existing user gets hosting access when they accept the invitation; an address without an account is asked to create one.</p>
+      <form method="post" action="/admin/users/invite" class="inline-form">
+        <label class="visually-hidden" for="grant-email">Email address</label>
+        <input type="email" id="grant-email" name="email" placeholder="organizer@example.com" required />
+        <button type="submit" class="btn btn-primary">Send invitation</button>
+      </form>
+    </div>
+  </details>
+
+  {% if entries %}
+  <div class="ha-table-wrap">
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th>Name</th>
+          <th>Email</th>
+          <th>Events owned</th>
+          <th>Status</th>
+          <th><span class="visually-hidden">Actions</span></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for entry in entries %}
+        <tr>
+          <td><a href="/admin/users/{{ entry.user.id }}/">{{ entry.user.display_name }}</a></td>
+          <td>{{ entry.user.email }}</td>
+          <td>{{ entry.events_owned }}</td>
+          <td>
+            {% if entry.pending_invite %}
+            <span class="badge ha-badge--pending">Invitation pending</span>
+            {% else %}
+            <span class="badge badge-valid">Has access</span>
+            {% endif %}
+          </td>
+          <td class="actions-cell">
+            {% if entry.pending_invite %}
+            <form method="post" action="/admin/users/invite/{{ entry.pending_invite.id }}/cancel" class="inline-form">
+              <button type="submit" class="btn btn-sm btn-outline">Cancel invitation</button>
+            </form>
+            {% else %}
+            <form method="post" action="/admin/users/{{ entry.user.id }}/hosting" class="inline-form" data-confirm="Remove hosting access for {{ entry.user.display_name }}? Their existing events are kept.">
+              <input type="hidden" name="action" value="revoke" />
+              <button type="submit" class="btn btn-sm btn-outline">Remove access</button>
+            </form>
+            {% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="empty-state">
+    <h2 class="empty-state-title">Nobody has hosting access yet</h2>
+    <p class="empty-state-text">Grant hosting access by email, or review open requests.</p>
+  </div>
+  {% endif %}
+{% endif %}
+{% endblock %}

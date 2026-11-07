@@ -184,16 +184,14 @@ async def test_full_multi_event_scenario(db: AsyncSession):
     tok_expiring = await create_invite_token(
         db,
         booth_id=foss_zh.id,
-        role="event_owner",
-        label="Admin token",
+        role="interpreter",
+        label="Expiring token",
         expires_at=future,
     )
-    tok_super = await create_invite_token(
-        db,
-        booth_id=foss_zh.id,
-        role="super_admin",
-        label="Super admin token",
-    )
+    # Invite links only give booth roles (#757).
+    for role in ("event_owner", "admin", "super_admin"):
+        with pytest.raises(ValueError, match="can't be given to a booth|Unknown role"):
+            await create_invite_token(db, booth_id=foss_zh.id, role=role)
 
     # ── Verify token properties ──────────────────────────────────
     assert len(tok_interp.token) == 64
@@ -201,13 +199,12 @@ async def test_full_multi_event_scenario(db: AsyncSession):
     assert tok_interp.is_used is False
     assert tok_interp.is_expired is False
     assert tok_expiring.is_expired is False
-    assert tok_super.role == "super_admin"
 
     # ── Token listing per booth ──────────────────────────────────
     en_tokens = await list_tokens_for_booth(db, pycon_en.id)
     assert len(en_tokens) == 2
     zh_tokens = await list_tokens_for_booth(db, foss_zh.id)
-    assert len(zh_tokens) == 2
+    assert len(zh_tokens) == 1
 
     # ── Redeem a token ───────────────────────────────────────────
     redeemed = await redeem_invite_token(db, tok_interp.token)
@@ -380,7 +377,7 @@ async def test_invite_token_role_validation(db: AsyncSession):
         language_code="en",
         language_name="English",
     )
-    with pytest.raises(ValueError, match="Invalid role"):
+    with pytest.raises(ValueError, match="Unknown role"):
         await create_invite_token(db, booth_id=booth.id, role="hacker")
 
 

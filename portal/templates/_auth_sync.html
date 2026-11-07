@@ -1,0 +1,3 @@
+{% if request and request.cookies.get('user_token') and ((request.query_params and request.query_params.get('auth_sync')) or (request.cookies and request.cookies.get('auth_sync'))) %}
+<script type="module" src="{{ url_for('static', path='js/auth-sync.js') }}?v={{ asset_version or js_version or '1' }}"></script>
+{% endif %}

@@ -1,20 +1,27 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import Depends, FastAPI, Request
+from fastapi import Depends, FastAPI, Request, status
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.openapi.utils import get_openapi
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.exceptions import HTTPException as StarletteHTTPException
+from unilimit.integrations.fastapi import RateLimitExceeded, setup
 
 from portal import meeting_source, program_ingest
-from portal.auth import require_admin
+from portal.auth import require_owner_or_coordinator
 from portal.config import settings
+from portal.exceptions import RedirectRequired
+from portal.globals import asset_version_context
+from portal.rate_limit import auth_rate_limiter, login_limiter, token_rate_limiter
 from portal.routers.admin import router as admin_router
 from portal.routers.api import router as api_router
 from portal.routers.api_v1 import router as api_v1_router
@@ -35,7 +42,20 @@ from portal.workspace_routing import WorkspaceRoutingMiddleware
 
 _BASE_DIR = Path(__file__).resolve().parent
 
-templates = Jinja2Templates(directory=str(_BASE_DIR / "portal" / "templates"))
+templates = Jinja2Templates(
+    directory=str(_BASE_DIR / "portal" / "templates"), context_processors=[asset_version_context]
+)
+
+
+async def _rate_limit_cleanup_loop(interval_seconds: float = 300.0) -> None:
+    """Periodically purge expired rate limit entries to prevent unbounded memory growth."""
+    while True:
+        await asyncio.sleep(interval_seconds)
+        for name, limiter in (("auth", auth_rate_limiter), ("token", token_rate_limiter)):
+            try:
+                await limiter.cleanup()
+            except Exception:
+                logging.exception("Rate limit cleanup error (%s)", name)
 
 
 @asynccontextmanager
@@ -61,13 +81,21 @@ async def lifespan(app: FastAPI):
         finally:
             dg._generating = False
 
-    import asyncio
-
+    import portal.notifications as _notifications_mod
     import portal.webhooks.worker as _webhook_worker_mod
 
     # Reference via module attribute so test-time monkey-patching of
     # portal.webhooks.worker.webhook_worker_loop is respected.
+    import portal.websockets.reaper as _reaper_mod
+    from portal.websockets.manager import manager
+
+    manager.set_membership_checker(_reaper_mod.check_booth_memberships)
+    manager.set_token_checker(_reaper_mod.check_booth_tokens)
+    reaper_task = asyncio.create_task(_reaper_mod.session_reaper_loop())
+
     webhook_task = asyncio.create_task(_webhook_worker_mod.webhook_worker_loop())
+    notification_task = asyncio.create_task(_notifications_mod.notification_worker_loop())
+    rate_limit_cleanup_task = asyncio.create_task(_rate_limit_cleanup_loop())
     ingest_task = asyncio.create_task(program_ingest.reconcile_loop()) if settings.program_ingest_enabled else None
     meeting_task = asyncio.create_task(meeting_source.reconcile_loop())
 
@@ -76,18 +104,13 @@ async def lifespan(app: FastAPI):
     logging.getLogger("uvicorn.access").addFilter(_UvicornTokenRedactor())
     logging.getLogger("uvicorn.access").addFilter(_HealthCheckFilter())
     yield
-    import contextlib
 
-    webhook_task.cancel()
-    meeting_task.cancel()
-    with contextlib.suppress(asyncio.CancelledError):
-        await meeting_task
+    tasks_to_cancel = [reaper_task, webhook_task, notification_task, rate_limit_cleanup_task, meeting_task]
     if ingest_task:
-        ingest_task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await ingest_task
-    with contextlib.suppress(asyncio.CancelledError):
-        await webhook_task
+        tasks_to_cancel.append(ingest_task)
+    for task in tasks_to_cancel:
+        task.cancel()
+    await asyncio.gather(*tasks_to_cancel, return_exceptions=True)
 
     if pg.shared_http_client:
         await pg.shared_http_client.aclose()
@@ -113,8 +136,8 @@ class _UvicornTokenRedactor(logging.Filter):
             return True
 
         lowered = message.casefold()
-        if any(x in lowered for x in ["token=", "client_secret=", "code=", "key="]) and any(
-            x in lowered for x in ["/embed/", "/ws/", "/oauth/", "/internal/"]
+        if self._TOKEN_RE.search(message) and any(
+            x in lowered for x in ["/api/", "/embed/", "/overlay/", "/ws/", "/oauth/", "/internal/"]
         ):
             if isinstance(record.msg, str):
                 record.msg = self._TOKEN_RE.sub(r"\1[REDACTED]", record.msg)
@@ -128,16 +151,51 @@ class _UvicornTokenRedactor(logging.Filter):
 
 app = FastAPI(title="Voxbento", version="1.0.0", lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
 app.add_middleware(WorkspaceRoutingMiddleware)
+setup(app, login_limiter)
 
 
 @app.get("/docs", include_in_schema=False)
-async def custom_swagger_ui_html(request: Request, _=Depends(require_admin)):
+async def custom_swagger_ui_html(request: Request, _=Depends(require_owner_or_coordinator)):
     return get_swagger_ui_html(openapi_url="/openapi.json", title="Voxbento API Docs")
 
 
 @app.get("/openapi.json", include_in_schema=False)
-async def get_open_api_endpoint(request: Request, _=Depends(require_admin)):
+async def get_open_api_endpoint(request: Request, _=Depends(require_owner_or_coordinator)):
     return JSONResponse(get_openapi(title="Voxbento API", version="1.0.0", routes=app.routes))
+
+
+@app.exception_handler(RedirectRequired)
+async def redirect_required_handler(request: Request, exc: RedirectRequired):
+    return RedirectResponse(exc.url, status_code=exc.status_code)
+
+
+# Write-only secrets (e.g. the YouTube relay key) must never be echoed back by a 422.
+_REDACTED_INPUT_FIELDS = frozenset({"stream_key"})
+
+
+def _contains_secret_field(value: object) -> bool:
+    if isinstance(value, dict):
+        return any(key in _REDACTED_INPUT_FIELDS or _contains_secret_field(item) for key, item in value.items())
+    if isinstance(value, (list, tuple)):
+        return any(_contains_secret_field(item) for item in value)
+    return False
+
+
+@app.exception_handler(RequestValidationError)
+async def request_validation_exception_handler(request: Request, exc: RequestValidationError):
+    """FastAPI's default 422, minus the rejected input wherever it is or contains a secret field.
+
+    A ``missing`` error reports the whole body as its input, so the check covers the value
+    as well as the error location.
+    """
+    errors = []
+    for error in exc.errors():
+        if any(part in _REDACTED_INPUT_FIELDS for part in error.get("loc", ())) or _contains_secret_field(
+            error.get("input")
+        ):
+            error = {key: value for key, value in error.items() if key != "input"}
+        errors.append(error)
+    return JSONResponse({"detail": jsonable_encoder(errors)}, status_code=422)
 
 
 @app.exception_handler(StarletteHTTPException)
@@ -152,6 +210,11 @@ async def http_exception_handler(request: Request, exc: StarletteHTTPException):
 
     is_api = "/api/" in request.url.path or request.url.path.startswith("/api")
     if "text/html" in request.headers.get("accept", "") and not is_api:
+        detail_msg = exc.detail if isinstance(exc.detail, str) else str(exc.detail)
+        if exc.status_code == 400:
+            return templates.TemplateResponse(
+                request, "400.html", {"request": request, "detail": detail_msg, "status_code": 400}, status_code=400
+            )
         if exc.status_code in (401, 403):
             import urllib.parse
 
@@ -170,21 +233,65 @@ async def http_exception_handler(request: Request, exc: StarletteHTTPException):
                         f"/login?next={urllib.parse.quote(next_url)}", status_code=status.HTTP_303_SEE_OTHER
                     )
             return templates.TemplateResponse(
-                request, "403.html", {"request": request, "detail": exc.detail}, status_code=403
+                request, "403.html", {"request": request, "detail": detail_msg}, status_code=403
             )
         if exc.status_code == 404:
             return templates.TemplateResponse(
-                request, "404.html", {"request": request, "detail": exc.detail}, status_code=404
+                request, "404.html", {"request": request, "detail": detail_msg}, status_code=404
             )
         if exc.status_code == 429:
             return templates.TemplateResponse(
-                request, "429.html", {"request": request, "detail": exc.detail}, status_code=429
+                request, "429.html", {"request": request, "detail": detail_msg}, status_code=429
             )
         if exc.status_code >= 500:
             return templates.TemplateResponse(
-                request, "500.html", {"request": request, "detail": exc.detail}, status_code=exc.status_code
+                request, "500.html", {"request": request, "detail": detail_msg}, status_code=exc.status_code
             )
+        return templates.TemplateResponse(
+            request,
+            "400.html",
+            {"request": request, "detail": detail_msg, "status_code": exc.status_code},
+            status_code=exc.status_code,
+        )
     return JSONResponse({"detail": exc.detail}, status_code=exc.status_code, headers=headers)
+
+
+@app.exception_handler(RateLimitExceeded)
+async def unilimit_rate_limit_exceeded_handler(request: Request, exc: RateLimitExceeded):
+    headers = dict(exc.headers) if hasattr(exc, "headers") and exc.headers else {}
+    if request.url.path == "/login":
+        form_data: dict[str, str] = {}
+        try:
+            form = await request.form()
+            email = form.get("email", "")
+            next_url = form.get("next_url", "")
+            form_data = {
+                "email": email.strip().lower() if isinstance(email, str) else "",
+                "next_url": next_url if isinstance(next_url, str) else "",
+            }
+        except Exception as parse_exc:
+            logging.debug("Could not parse login form on rate limit rejection: %s", parse_exc)
+        return templates.TemplateResponse(
+            request=request,
+            name="login.html",
+            context={
+                "error": "Too many attempts. Try again later.",
+                "email": form_data.get("email", ""),
+                "next_url": form_data.get("next_url", ""),
+            },
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            headers=headers,
+        )
+    if "text/html" in request.headers.get("accept", ""):
+        detail_msg = getattr(exc, "detail", "Too Many Requests")
+        return templates.TemplateResponse(
+            request, "429.html", {"request": request, "detail": detail_msg}, status_code=429, headers=headers
+        )
+    return JSONResponse(
+        {"detail": getattr(exc, "detail", "Too Many Requests")},
+        status_code=getattr(exc, "status_code", status.HTTP_429_TOO_MANY_REQUESTS),
+        headers=headers,
+    )
 
 
 @app.exception_handler(Exception)
