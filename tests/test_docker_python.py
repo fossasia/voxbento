@@ -40,9 +40,12 @@ def test_base_image_python_matches_requires_python():
     )
 
 
-def test_uv_python_downloads_disabled():
+def test_uv_python_downloads_disabled_before_uv_sync():
     dockerfile = (ROOT / "Dockerfile").read_text()
-    assert re.search(r"^ENV UV_PYTHON_DOWNLOADS=never$", dockerfile, re.MULTILINE)
+    downloads = re.search(r"^ENV UV_PYTHON_DOWNLOADS=never$", dockerfile, re.MULTILINE)
+    first_sync = re.search(r"^RUN uv sync\b", dockerfile, re.MULTILINE)
+    assert downloads and first_sync
+    assert downloads.start() < first_sync.start()
 
 
 def test_python_version_file_not_copied_into_image():
