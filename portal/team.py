@@ -349,6 +349,7 @@ async def create_invite_link(
 
 
 async def revoke_invite_link(session: AsyncSession, *, team: Team, token: str) -> None:
+    """Revoke an invite and close its sockets even if cache invalidation fails."""
     import asyncio
 
     link = next((link for link in team.invite_links if link.token.token == token), None)
@@ -373,9 +374,11 @@ async def revoke_invite_link(session: AsyncSession, *, team: Team, token: str) -
         from portal.auth import invalidate_token_revocation_cache
 
         invalidate_token_revocation_cache(public_id)
-    except Exception:
+    except Exception as exc:
         # Still disconnect active sockets if the cache optimization fails.
-        logger.warning("Could not invalidate invite revocation cache; continuing socket revocation")
+        logger.warning(
+            "Could not invalidate invite revocation cache (%s); continuing socket revocation", type(exc).__name__
+        )
 
     await asyncio.shield(manager.close_token_sessions(public_id, booth_id=booth_id))
 
