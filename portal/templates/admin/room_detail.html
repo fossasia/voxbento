@@ -164,6 +164,10 @@
     <p class="room-card-sub">Captions and AI languages are made from the room's sound, so VoxBento needs to hear it.{% if not summary.captions %} This room doesn't use captions or AI right now, so you can skip this.{% endif %} Interpreters don't need this: they follow the room through the meeting link in Settings.</p>
     <div class="audio-choices" role="radiogroup" aria-label="How VoxBento hears this room">
       <label class="audio-choice">
+        <input type="radio" name="audio_choice" value="youtube" {% if audio_choice == 'youtube' %}checked{% endif %}>
+        <span><strong>From a YouTube stream</strong><small>Your event streams on YouTube. VoxBento adds captions, translations and translated speech.</small></span>
+      </label>
+      <label class="audio-choice">
         <input type="radio" name="audio_choice" value="meeting" {% if audio_choice == 'meeting' %}checked{% endif %}>
         <span><strong>From the online meeting</strong><small>VoxBento joins the room's Jitsi meeting as a silent listener.</small></span>
       </label>
@@ -177,6 +181,7 @@
       </label>
     </div>
   </div>
+  <div data-audio-panel="youtube">{% include 'admin/_youtube_source.html' %}</div>
   <div data-audio-panel="meeting">{% include 'admin/_meeting_source.html' %}</div>
   <div data-audio-panel="encoder">{% include 'admin/_program_ingest.html' %}</div>
   <div data-audio-panel="desk">{% include 'admin/_program_sender.html' %}</div>

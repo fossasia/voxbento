@@ -22,6 +22,7 @@ from starlette.datastructures import FormData
 from portal.config import settings
 from portal.database import create_booth, delete_booth, list_booths_for_room
 from portal.models import DBBooth, Event, Room, RoomTranslationLanguage
+from portal.program_relay import RELAY_MODE
 from portal.roles import INTERPRETER
 from portal.translations.constants import NLLB_LANGUAGE_MAP
 from portal.tts.constants import DEEPGRAM_VOICE_MAPPING, SUPERTONIC_SUPPORTED_LANGS
@@ -573,6 +574,7 @@ def summarize(room: Room, snapshot: RoomSnapshot) -> RoomSummary:
 
 # ── Room audio ───────────────────────────────────────────────────────────
 
+AUDIO_YOUTUBE = "youtube"
 AUDIO_MEETING = "meeting"
 AUDIO_ENCODER = "encoder"
 AUDIO_DESK = "desk"
@@ -581,6 +583,8 @@ AUDIO_DESK = "desk"
 def room_audio_choice(room: Room) -> str:
     """Which way VoxBento hears the room today, so the Room audio tab opens on it ('' if none yet)."""
     if room.floor_source == "program_ingest":
+        if room.program_ingest_mode == RELAY_MODE:
+            return AUDIO_YOUTUBE
         if room.program_key_hash:
             return AUDIO_ENCODER
         if room.program_session_secret_hash:

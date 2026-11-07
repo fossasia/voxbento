@@ -1,5 +1,8 @@
 # Meeting source (managed Jitsi floor agent)
 
+> **YouTube streams** use a different guided flow. See `website/docs/admin/youtube.mdx`
+> for the three intake routes (encoder forwarding, multi-destination RTMP, browser tab audio).
+
 An event owner can make a room's online meeting the floor source from the room
 page. VoxBento starts a managed agent that joins the meeting as a muted,
 listen-only participant (**VoxBento FloorBot**), publishes the meeting audio to

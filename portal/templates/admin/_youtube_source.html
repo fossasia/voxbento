@@ -1,0 +1,134 @@
+<section id="youtube-source" class="token-form-card token-form-card--spaced program-ingest-card youtube-source-card"
+  data-ingest-url="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/program-ingest"
+  data-sender-url="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/sender/?source=tab">
+  <div class="program-ingest-head">
+    <div>
+      <p class="program-ingest-eyebrow">Live source</p>
+      <h3>From a YouTube stream</h3>
+      <p class="program-ingest-lede">Your event streams on YouTube. VoxBento adds live captions, translations and translated speech to the stream's audio.</p>
+    </div>
+  </div>
+
+  <div class="youtube-source-body">
+  <div class="program-setup-step">
+    <div class="program-section-head">
+      <span class="program-step">1</span>
+      <div>
+        <h4>Which broadcast?</h4>
+        <p>Link the YouTube broadcast so VoxBento can fill in settings for you.</p>
+      </div>
+    </div>
+    {% if settings is defined and settings.youtube_connect_enabled is defined and settings.youtube_connect_enabled %}
+    {% include 'admin/_youtube_connect.html' %}
+    <p class="youtube-source-skip">Not your channel or can't sign in? <a href="#youtube-step-route" data-youtube-skip-broadcast>Skip to step 2</a></p>
+    {% else %}
+    <div class="program-ingest-warning youtube-source-fallback" role="note">
+      <span class="program-ingest-warning-icon" aria-hidden="true">!</span>
+      <p>YouTube sign-in is not configured by the server operator. You can still set up audio below — you will paste the stream key or share a browser tab yourself.</p>
+    </div>
+    {% endif %}
+  </div>
+
+  <div class="program-setup-step" id="youtube-step-route">
+    <div class="program-section-head">
+      <span class="program-step">2</span>
+      <div>
+        <h4>How does video reach YouTube?</h4>
+        <p>Pick the route that matches your setup. Each one gets audio to VoxBento differently.</p>
+      </div>
+    </div>
+    <fieldset class="youtube-route-picker" id="youtube-route-picker">
+      <label class="program-mode-option">
+        <input type="radio" name="youtube-route" value="encoder">
+        <span>
+          <strong>OBS, vMix or a hardware encoder</strong>
+          <small>VoxBento sits between your encoder and YouTube. One upload instead of two.</small>
+        </span>
+      </label>
+      <label class="program-mode-option">
+        <input type="radio" name="youtube-route" value="multi">
+        <span>
+          <strong>StreamYard, Restream, Zoom live streaming</strong>
+          <small>Your streaming platform sends to YouTube <em>and</em> to VoxBento as an extra RTMP destination.</small>
+        </span>
+      </label>
+      <label class="program-mode-option">
+        <input type="radio" name="youtube-route" value="none">
+        <span>
+          <strong>YouTube Studio webcam or a stream I don't control</strong>
+          <small>Share the stream's browser tab audio directly to VoxBento.</small>
+        </span>
+      </label>
+    </fieldset>
+  </div>
+
+  <div class="youtube-route-panel" data-youtube-route="encoder" hidden>
+    <div class="youtube-route-box">
+      <h4>Set up forwarding</h4>
+      <p>VoxBento receives your encoder stream and forwards it to YouTube unchanged. You keep one output, one upload.</p>
+      <button type="button" class="btn btn-primary" id="youtube-setup-forwarding">Set up forwarding</button>
+      <p class="youtube-route-note" id="youtube-forwarding-status"></p>
+    </div>
+  </div>
+
+  <div class="youtube-route-panel" data-youtube-route="multi" hidden>
+    <div class="youtube-route-box">
+      <h4>Add VoxBento as an extra destination</h4>
+      <p>In your streaming platform, add a <strong>Custom RTMP</strong> destination with the server URL and stream key shown below after you enable ingest.</p>
+      <button type="button" class="btn btn-primary" id="youtube-setup-multi">Enable ingest</button>
+      <div id="youtube-multi-credentials" hidden>
+        <label for="youtube-multi-server">Server</label>
+        <div class="program-copy-field">
+          <input id="youtube-multi-server" class="input" readonly>
+          <button type="button" class="btn btn-outline" data-copy-target="youtube-multi-server">Copy</button>
+        </div>
+        <label for="youtube-multi-key">Stream key</label>
+        <div class="program-copy-field">
+          <input id="youtube-multi-key" class="input" type="password" readonly autocomplete="off">
+          <button type="button" class="btn btn-outline" data-copy-target="youtube-multi-key">Copy</button>
+        </div>
+      </div>
+      <details class="program-advanced">
+        <summary>Platform-specific guides</summary>
+        <ul>
+          <li><strong>StreamYard:</strong> Destinations → Custom RTMP → paste the server and key.</li>
+          <li><strong>Restream:</strong> Channels → Add channel → Custom RTMP → paste the server and key.</li>
+          <li><strong>Zoom:</strong> Settings → In Meeting → Allow live streaming → Custom live streaming service → paste.</li>
+        </ul>
+      </details>
+    </div>
+  </div>
+
+  <div class="youtube-route-panel" data-youtube-route="none" hidden>
+    <div class="youtube-route-box">
+      <h4>Share the stream's browser tab</h4>
+      <p>Open the YouTube stream in a browser tab, then open the sender page below and share that tab's audio.</p>
+      <a class="btn btn-primary" id="youtube-tab-sender" href="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/sender/?source=tab" target="_blank" rel="noopener">Open sender (tab audio)</a>
+    </div>
+  </div>
+
+  <div class="program-setup-step">
+    <div class="program-section-head">
+      <span class="program-step">3</span>
+      <div>
+        <h4>Check it works</h4>
+        <p>The rows below update live once audio reaches VoxBento.</p>
+      </div>
+    </div>
+    <ul class="program-health-list youtube-health-list" aria-label="Health by stage">
+      <li><span>Audio → VoxBento</span><b class="program-health-chip" id="youtube-health-ingest" data-state="unknown">—</b></li>
+      <li data-youtube-health="relay" hidden><span>VoxBento → YouTube</span><b class="program-health-chip" id="youtube-health-relay" data-state="unknown">—</b></li>
+      <li data-youtube-health="captions" hidden><span>Captions on YouTube</span><b class="program-health-chip" id="youtube-health-captions" data-state="unknown">—</b></li>
+      <li><span>Captions and translation</span><b class="program-health-chip" id="youtube-health-processing" data-state="unknown">—</b></li>
+    </ul>
+    <div class="youtube-listener-link">
+      <label for="youtube-listener-url">Listener link</label>
+      <div class="program-copy-field">
+        <input id="youtube-listener-url" class="input" readonly value="/listener/{{ event.slug }}">
+        <button type="button" class="btn btn-outline" data-copy-target="youtube-listener-url">Copy link</button>
+      </div>
+    </div>
+  </div>
+  </div>
+</section>
+<script type="module" src="{{ url_for('static', path='js/youtube-source.js') }}?v={{ asset_version }}"></script>
