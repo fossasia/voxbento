@@ -395,24 +395,30 @@ BOOTH_DELETE_PATHS = {
 
 def test_router_has_no_duplicate_or_dead_booth_delete_routes():
     """Verify route registration has no duplicate or dead booth DELETE endpoints."""
-    raw_routes = []
-    # Installed FastAPI represents included routers as nested route candidates,
-    # so a flat inspection of app.routes alone does not yield individual endpoints.
-    for route in app.routes:
-        if getattr(route, "path", None):
-            raw_routes.append(route)
-        elif hasattr(route, "effective_candidates"):
-            raw_routes.extend(route.effective_candidates())
-        elif hasattr(route, "routes"):
-            raw_routes.extend(route.routes)
+
+    def collect_endpoints(routes, prefix: str = ""):
+        endpoints = []
+        for route in routes:
+            if hasattr(route, "routes") and route.routes is not None:
+                mount_path = getattr(route, "path", "")
+                stripped = mount_path.strip("/")
+                if prefix:
+                    mount_prefix = f"{prefix.rstrip('/')}/{stripped}".rstrip("/") if stripped else prefix
+                else:
+                    mount_prefix = f"/{stripped}" if stripped else ""
+                endpoints.extend(collect_endpoints(route.routes, prefix=mount_prefix))
+            elif hasattr(route, "effective_candidates"):
+                endpoints.extend(collect_endpoints(route.effective_candidates(), prefix=prefix))
+            elif getattr(route, "path", None) is not None:
+                route_path = getattr(route, "path", "")
+                full_path = f"{prefix.rstrip('/')}/{route_path.lstrip('/')}" if prefix else route_path
+                endpoints.append((full_path, route))
+        return endpoints
 
     delete_routes = [
-        (route.path, route.endpoint.__name__)
-        for route in raw_routes
-        if (
-            getattr(route, "path", None) in BOOTH_DELETE_PATHS
-            and "DELETE" in (getattr(route, "methods", None) or set())
-        )
+        (path, route.endpoint.__name__)
+        for path, route in collect_endpoints(app.routes)
+        if (path in BOOTH_DELETE_PATHS and "DELETE" in (getattr(route, "methods", None) or set()))
     ]
 
     assert len(delete_routes) == 2, f"Expected exactly 2 delete routes, found {len(delete_routes)}: {delete_routes}"
