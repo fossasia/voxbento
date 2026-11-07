@@ -334,6 +334,14 @@ async def test_user_menu_carries_its_own_colour_tokens():
     # so the surface must be an opaque colour: #rgb, #rrggbb or rgb().
     opaque_colour = r"#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})|rgb\(\s*\d{1,3}\s*,\s*\d{1,3}\s*,\s*\d{1,3}\s*\)"
     assert re.fullmatch(opaque_colour, values["--ah-surface"]), values["--ah-surface"]
-    # The menu must also set its own stacking so it opens above the page's panels.
+    # The menu sets its own stacking among the positioned elements of its host bar. The host bar's
+    # own z-index (.app-header 200, .booth-topbar 20) still bounds how high it can go.
     menu_rule = re.search(r"\.app-user-menu\s*\{([^}]*)\}", css)
     assert menu_rule is not None and re.search(r"z-index\s*:\s*\d+", menu_rule.group(1)), "the menu needs a z-index"
+    # The font lives on .app-user, so the button and the menu both inherit it outside .app-header.
+    widget_rules = [match.group(1) for match in re.finditer(r"\.app-user\s*\{([^}]*)\}", css)]
+    assert any(
+        all(re.search(rf"{prop}\s*:", rule) for prop in ("font-family", "font-size", "line-height"))
+        for rule in widget_rules
+    ), ".app-user must set font-family, font-size and line-height"
+    assert "font-family" not in menu_rule.group(1), "the menu inherits its font from .app-user"
