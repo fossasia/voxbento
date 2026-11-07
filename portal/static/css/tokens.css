@@ -23,13 +23,16 @@
   --vb-color-text-secondary: #5b6577;
   --vb-color-muted: #6b7484;
 
-  /* Status. Success, warning, live and offline are for fills, dots and badges; they
-     are too light for text on white, so green text uses --vb-color-success-text (4.8:1). */
+  /* Status. Danger, success, warning, live and offline are for fills, dots and badges.
+     Status text uses the *-text colours, which stay at 4.5:1 or more on white and on a
+     10% tint of their fill colour. */
   --vb-color-danger: #dc2626;
   --vb-color-danger-hover: #b91c1c;
+  --vb-color-danger-text: #b91c1c;
   --vb-color-success: #16a34a;
-  --vb-color-success-text: #12833f;
+  --vb-color-success-text: #137a3a;
   --vb-color-warning: #f59e0b;
+  --vb-color-warning-text: #b45309;
   --vb-color-live: #16a34a;
   --vb-color-offline: #9ca3af;
 
