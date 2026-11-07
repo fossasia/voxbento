@@ -329,8 +329,11 @@ def test_delete_booth_authorization_restrictions(monkeypatch):
                 room_a = await create_room(
                     session, event_id=event_a.id, display_name="Room A", eventyay_room_id="ext-a"
                 )
-                booth_a = DBBooth(event_id=event_a.id, room_id=room_a.id, language_code="en", language_name="English")
-                session.add(booth_a)
+                booth_a_en = DBBooth(
+                    event_id=event_a.id, room_id=room_a.id, language_code="en", language_name="English"
+                )
+                booth_a_de = DBBooth(event_id=event_a.id, room_id=room_a.id, language_code="de", language_name="German")
+                session.add_all([booth_a_en, booth_a_de])
 
                 # Owner of event_b (not event_a)
                 owner_b = await create_user(
@@ -350,6 +353,18 @@ def test_delete_booth_authorization_restrictions(monkeypatch):
         slug_a, room_a_id, owner_b_id, owner_a_id = anyio.run(seed)
         monkeypatch.setattr(settings, "booth_access_token", "master-token")
         monkeypatch.setattr(settings, "debug", False)
+
+        def get_room_booth_languages() -> set[str]:
+            """Return the set of language codes for booths in room_a."""
+
+            async def query():
+                async with get_session() as session:
+                    booths = (
+                        (await session.execute(select(DBBooth).where(DBBooth.room_id == room_a_id))).scalars().all()
+                    )
+                    return {b.language_code for b in booths}
+
+            return anyio.run(query)
 
         # 1. No token -> 403 on both routes
         assert client.delete(f"/api/events/{slug_a}/rooms/{room_a_id}/booths/en").status_code == 403
@@ -377,11 +392,19 @@ def test_delete_booth_authorization_restrictions(monkeypatch):
             == 403
         )
 
+        # Denied requests must leave both booths intact
+        assert get_room_booth_languages() == {"en", "de"}
+
         # 4. Authorized owner of A -> 204
         token_a = create_user_token(user_id=owner_a_id, email="owner_a@example.com")
         auth_headers = {"Authorization": f"Bearer {token_a}"}
-        resp_auth = client.delete(f"/api/events/{slug_a}/rooms/{room_a_id}/booths/en", headers=auth_headers)
-        assert resp_auth.status_code == 204
+        resp_internal = client.delete(f"/api/events/{slug_a}/rooms/{room_a_id}/booths/en", headers=auth_headers)
+        assert resp_internal.status_code == 204
+        assert get_room_booth_languages() == {"de"}
+
+        resp_external = client.delete(f"/api/events/{slug_a}/eventyay-rooms/ext-a/booths/de", headers=auth_headers)
+        assert resp_external.status_code == 204
+        assert get_room_booth_languages() == set()
     finally:
         anyio.run(cleanup)
 
