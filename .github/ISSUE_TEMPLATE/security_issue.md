@@ -8,7 +8,7 @@ assignees: ''
 ---
 
 ## 🛑 Security Issue Reporting
-Do not report vulnerabilities in a public issue. Email voxbento.dev@gmail.com instead, as described in [SECURITY.md](../../SECURITY.md). Use this template only for security hardening that is not exploitable, such as a missing header or a weak default.
+Do not report vulnerabilities in a public issue. Email voxbento.dev@gmail.com instead, as described in the [security policy](https://github.com/fossasia/voxbento/security/policy). Use this template only for security hardening that is not exploitable, such as a missing header or a weak default.
 
 ## Describe the Security Issue
 A clear and concise description of the security vulnerability.
