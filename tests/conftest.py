@@ -24,6 +24,9 @@ def _reset_shared_http_client():
     bound to a closed event loop never poisons subsequent tests."""
     import portal.globals as pg
     import portal.webhooks.worker
+    from portal.rate_limit import reset_login_limiter
+
+    reset_login_limiter()
 
     # Disable the background webhook loop and enqueueing during tests to prevent SQLite lock contention
     # and hanging threads when the test event loop closes.
@@ -42,6 +45,7 @@ def _reset_shared_http_client():
     pg.shared_http_client = None
     yield
     pg.shared_http_client = None
+    reset_login_limiter()
     portal.webhooks.worker.webhook_worker_loop = original_loop
     portal.webhooks.worker.enqueue_webhook = original_enqueue
 
