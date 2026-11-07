@@ -922,15 +922,16 @@ oauth2_bearer = HTTPBearer(auto_error=False)
 
 
 def require_oauth_scope(required_scope: str):
+    """Return a FastAPI dependency verifying the Bearer token has the required OAuth scope."""
+
     async def dependency(
         request: Request,
         db: AsyncSession = Depends(get_db_session),
         token: HTTPAuthorizationCredentials | None = Depends(oauth2_bearer),
     ):
+        """Verify Bearer token validity, client active status, expiration, and scope."""
         if not token:
             raise HTTPException(status_code=401, detail="Missing Bearer Token")
-
-        from datetime import datetime, timezone
 
         from sqlalchemy import select
         from sqlalchemy.orm import joinedload
@@ -952,13 +953,7 @@ def require_oauth_scope(required_scope: str):
         if not oauth_token.client or oauth_token.client.status != "active":
             raise HTTPException(status_code=401, detail="Client is not active")
 
-        # SQLAlchemy with SQLite might return naive datetimes for expires_at
-        expires_at_aware = (
-            oauth_token.expires_at.replace(tzinfo=timezone.utc)
-            if oauth_token.expires_at.tzinfo is None
-            else oauth_token.expires_at
-        )
-        if expires_at_aware < datetime.now(timezone.utc):
+        if oauth_token.is_expired:
             raise HTTPException(status_code=401, detail="Token expired")
 
         if required_scope not in oauth_token.scopes:
