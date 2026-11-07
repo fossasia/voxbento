@@ -389,8 +389,14 @@ async def require_owner_or_coordinator(request: Request) -> None:
             if request.url.path.startswith("/admin/models/") or request.url.path.startswith("/workspace/models/"):
                 if bool(principal["owned_event_ids"]):
                     return
-                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You don't have access to this event.")
-            if principal.get("can_host") or bool(principal["owned_event_ids"]) or bool(principal["coordinated_room_ids"]):
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN, detail="You don't have access to this event."
+                )
+            if (
+                principal.get("can_host")
+                or bool(principal["owned_event_ids"])
+                or bool(principal["coordinated_room_ids"])
+            ):
                 return
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You don't have access to this event.")
 
@@ -441,7 +447,9 @@ async def require_event_owner(request: Request) -> None:
             if request.url.path.startswith("/admin/models/") or request.url.path.startswith("/workspace/models/"):
                 if bool(principal["owned_event_ids"]):
                     return
-                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You don't have access to this event.")
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN, detail="You don't have access to this event."
+                )
             if principal.get("can_host") or bool(principal["owned_event_ids"]):
                 return
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You don't have access to this event.")
@@ -482,54 +490,54 @@ async def require_hosting_access(request: Request) -> dict:
         raise RedirectRequired("/account?error=hosting_access_required")
 
 
-async def get_access_flags(request: Request, event_id: int | None = None, room_id: int | None = None) -> dict[str, bool]:
-    """Which roles the signed-in person holds here, for templates (is_admin, is_event_owner, is_room_coordinator).
+def _grant_all_admin_flags(flags: dict[str, bool]) -> dict[str, bool]:
+    return dict.fromkeys(flags, True)
 
-    Flags are derived from the user's current database state, so a demoted or
-    deactivated administrator does not keep admin flags from a stale token.
-    """
-    flags = {"is_admin": False, "is_event_owner": False, "is_room_coordinator": False}
-    from portal.database import get_session
+
+async def get_access_flags(
+    request: Request,
+    event_id: int | None = None,
+    room_id: int | None = None,
+) -> dict[str, bool]:
+    """Return the current user's role flags for the requested scope."""
+    flags = {
+        "is_admin": False,
+        "is_event_owner": False,
+        "is_room_coordinator": False,
+    }
+    from portal.database import get_room_by_id, get_session
 
     async with get_session() as db_session:
+        room = None
+        if room_id is not None:
+            room = await get_room_by_id(db_session, room_id)
+            if room is None or (event_id is not None and room.event_id != event_id):
+                return flags
+
         principal = await resolve_request_principal(request, db_session)
         if principal["user"] is None:
             return flags
 
         if principal["is_admin"]:
-            flags["is_admin"] = True
-            flags["is_event_owner"] = True
-            flags["is_room_coordinator"] = True
-            return flags
+            return _grant_all_admin_flags(flags)
 
         owned_events = principal["owned_event_ids"]
-        coord_events = principal["coordinated_event_ids"]
-        coord_rooms = principal["coordinated_room_ids"]
 
-        if event_id is None and room_id is None:
-            if principal.get("can_host") or bool(owned_events):
-                flags["is_event_owner"] = True
-                flags["is_room_coordinator"] = True
-            if bool(coord_rooms):
-                flags["is_room_coordinator"] = True
-        if event_id is not None:
-            if event_id in owned_events:
-                flags["is_event_owner"] = True
-                flags["is_room_coordinator"] = True
         if room_id is not None:
-            if coordinates_room(principal, room_id, event_id):
-                flags["is_room_coordinator"] = True
-            if not flags["is_event_owner"] and event_id is None:
-                from portal.database import get_room_by_id
+            is_event_owner = room.event_id in owned_events
+            is_room_coordinator = is_event_owner or coordinates_room(principal, room_id, event_id)
+        elif event_id is not None:
+            is_event_owner = event_id in owned_events
+            is_room_coordinator = is_event_owner or event_id in principal["whole_event_coordinator_ids"]
+        else:
+            is_event_owner = bool(principal.get("can_host") or owned_events)
+            is_room_coordinator = is_event_owner or bool(principal["coordinated_room_ids"])
 
-                room = await get_room_by_id(db_session, room_id)
-                if room is not None and room.event_id in owned_events:
-                    flags["is_event_owner"] = True
-                    flags["is_room_coordinator"] = True
-        if not flags["is_event_owner"] and event_id is not None:
-            if event_id in coord_events:
-                flags["is_room_coordinator"] = True
-    return flags
+        return {
+            "is_admin": False,
+            "is_event_owner": is_event_owner,
+            "is_room_coordinator": is_room_coordinator,
+        }
 
 
 def create_user_token(*, user_id: int, email: str, display_name: str = "", is_admin: bool = False) -> str:
