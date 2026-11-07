@@ -163,7 +163,40 @@ class WSAuthError(Exception):
     pass
 
 
-async def _current_user(payload: dict) -> User | None:
+def token_issued_at(payload: dict) -> datetime | None:
+    issued_at = payload.get("iat")
+    if isinstance(issued_at, bool) or not isinstance(issued_at, (int, float)):
+        return None
+    try:
+        return datetime.fromtimestamp(issued_at, timezone.utc)
+    except (ValueError, OverflowError, OSError):
+        return None
+
+
+def user_session_version(user: User) -> str:
+    """Stable credential-snapshot version, including SQLite's naive UTC dates."""
+    cutoff = user.sessions_valid_after
+    if cutoff is None:
+        return ""
+    return cutoff.replace(tzinfo=timezone.utc).isoformat() if cutoff.tzinfo is None else cutoff.isoformat()
+
+
+def user_session_is_valid(user: User | None, payload: dict) -> bool:
+    """Honor account revocation for every consumer of a user session."""
+    if user is None or not user.is_active:
+        return False
+    if "session_version" in payload and payload["session_version"] != user_session_version(user):
+        return False
+    cutoff = user.sessions_valid_after
+    if cutoff is None:
+        return True
+    if cutoff.tzinfo is None:
+        cutoff = cutoff.replace(tzinfo=timezone.utc)
+    issued_at = token_issued_at(payload)
+    return issued_at is not None and issued_at > cutoff
+
+
+async def resolve_session_user(payload: dict) -> User | None:
     """Resolve the live ``User`` row for a decoded ``user_token`` payload.
 
     Authorization must reflect current database state, not the claims frozen
@@ -172,8 +205,8 @@ async def _current_user(payload: dict) -> User | None:
     on its own would let a demoted, deactivated, or deleted administrator keep
     full access until the token expires.
 
-    Returns the ``User`` only when the row still exists **and** is active;
-    otherwise ``None`` (which every caller treats as "not authorised").
+    Returns the ``User`` only when the row exists, is active, and the session
+    was issued after any account revocation cutoff; otherwise ``None``.
     """
     sub = payload.get("sub")
     if not sub:
@@ -186,9 +219,7 @@ async def _current_user(payload: dict) -> User | None:
 
     async with get_session() as db_session:
         user = await get_user_by_id(db_session, user_id)
-    if user is None or not user.is_active:
-        return None
-    return user
+    return user if user_session_is_valid(user, payload) else None
 
 
 async def load_membership_scope(db_session: AsyncSession, user_id: int) -> dict[str, set[int]]:
@@ -249,7 +280,7 @@ async def resolve_request_principal(request: Request, db_session: AsyncSession) 
                         from portal.database import get_user_by_id
 
                         found = await get_user_by_id(db_session, uid)
-                        if found and found.is_active:
+                        if user_session_is_valid(found, payload):
                             user = found
                     except (ValueError, TypeError):
                         user = None
@@ -532,18 +563,30 @@ async def get_access_flags(request: Request, event_id: int | None = None, room_i
     return flags
 
 
-def create_user_token(*, user_id: int, email: str, display_name: str = "", is_admin: bool = False) -> str:
+def create_user_token(
+    *,
+    user_id: int,
+    email: str,
+    display_name: str = "",
+    is_admin: bool = False,
+    issued_at: datetime | None = None,
+    session_version: str | None = None,
+) -> str:
     """Create a JWT for a registered user session."""
     now = datetime.now(timezone.utc)
+    # Datetime JWT claims lose fractional seconds, invalidating a fresh recovery
+    # cookie when the cutoff was written earlier in the same second.
     payload = {
         "sub": str(user_id),
         "email": email,
         "display_name": display_name,
         "is_admin": is_admin,
         "user": True,
-        "iat": now,
+        "iat": (issued_at or now).timestamp(),
         "exp": now + timedelta(seconds=settings.jwt_expiry_seconds),
     }
+    if session_version is not None:
+        payload["session_version"] = session_version
     return jwt.encode(payload, settings.effective_jwt_secret, algorithm="HS256")
 
 
@@ -558,7 +601,7 @@ async def get_current_user(request: Request) -> dict | None:
         return None
     if not payload.get("user"):
         return None
-    if await _current_user(payload) is None:
+    if await resolve_session_user(payload) is None:
         return None
     return payload
 
@@ -714,6 +757,8 @@ async def resolve_ws_auth(websocket: WebSocket, booth_id: str) -> dict:
     sessions = get_booth_sessions(websocket)
     user_sess = sessions.get("user_token")
     invite_sess = sessions.get("session_token")
+    if user_sess and invite_sess and user_sess.get("user") and await resolve_session_user(user_sess) is None:
+        user_sess = None
     if user_sess and (user_sess.get("is_admin") or user_sess.get("admin")):
         payload = user_sess
     elif user_sess and invite_sess:
@@ -816,8 +861,11 @@ async def resolve_booth_role(
     for sess in session_list:
         # 1. Admin: trust the account's current state, not the claim in the token.
         if sess.get("sub") and sess.get("user"):
-            if await user_is_active_admin(sess["sub"]):
-                roles.append(ADMIN)
+            user = await resolve_session_user(sess)
+            if user is None:
+                continue
+            if user.is_admin:
+                return ADMIN
         elif sess.get("is_admin") or sess.get("admin"):
             roles.append(ADMIN)
 
@@ -896,18 +944,6 @@ async def resolve_booth_role(
                 logger.exception("Failed to resolve booth role from database")
 
     return highest_role(roles)
-
-
-async def user_is_active_admin(user_id: object) -> bool:
-    from portal.database import get_session, get_user_by_id
-
-    try:
-        uid = int(user_id)  # type: ignore[call-overload]
-    except (TypeError, ValueError):
-        return False
-    async with get_session() as db_session:
-        user = await get_user_by_id(db_session, uid)
-    return bool(user and user.is_admin and user.is_active)
 
 
 def can_perform_role(granted_role: str | None, requested_role: str) -> bool:

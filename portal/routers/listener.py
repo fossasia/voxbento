@@ -11,7 +11,7 @@ from fastapi import APIRouter, HTTPException, Query, Request, status
 from fastapi.templating import Jinja2Templates
 from starlette.responses import JSONResponse
 
-from portal.auth import _current_user, create_listener_token, decode_token, get_booth_session, is_listener_token
+from portal.auth import create_listener_token, decode_token, get_current_user, is_listener_token
 from portal.booth_identity import make_booth_id
 from portal.config import settings
 from portal.database import (
@@ -52,8 +52,7 @@ async def has_listener_access(
     request: Request, event_slug: str, listener_join_code: str | None, code: str | None
 ) -> bool:
     """Authenticate live accounts or a rate-limited event code before issuing access."""
-    payload = get_booth_session(request)
-    if payload and payload.get("user") and await _current_user(payload):
+    if await get_current_user(request) is not None:
         return True
     try:
         return verify_join_code(_client_ip(request), _submitted_code(request, event_slug, code), listener_join_code)
