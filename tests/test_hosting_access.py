@@ -1064,6 +1064,7 @@ async def test_verified_user_with_password_requires_authentication_or_password()
             assert updated.can_host is True
             assert updated.email_verified is True
             assert verify_password(correct_pw, updated.password_hash) is True
+            assert updated.last_sign_in_at is not None
 
     # When already authenticated, accepts directly without password
     async with get_session() as session:
@@ -1098,6 +1099,7 @@ async def test_verified_user_with_password_requires_authentication_or_password()
         async with get_session() as session:
             updated2 = await get_user_by_id(session, user2_id)
             assert updated2.can_host is True
+            assert updated2.last_sign_in_at is None
 
 
 @pytest.mark.anyio
