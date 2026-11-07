@@ -636,7 +636,7 @@ async def reset_password_submit(request: Request, token: str):
             if user is None:
                 raise ValueError("User not found.")
             user.sessions_valid_after = utc_now()
-            await revoke_auth_tokens(session, user_id=user.id, token_type="magic_link")
+            await revoke_auth_tokens(session, user_id=user.id, token_type="magic_link")  # nosec B106
             await _queue_password_notice(session, user.email, user.id, "Your VoxBento password was reset.")
             jwt_token = create_user_token(
                 user_id=user.id, email=user.email, display_name=user.display_name, is_admin=user.is_admin
