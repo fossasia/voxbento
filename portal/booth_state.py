@@ -336,6 +336,17 @@ class BoothRegistry:
         language: str,
         channel_id: str,
     ) -> dict:
+        """Make *target_id* the active interpreter and take everyone else off air.
+
+        Only roles that can set active (room coordinators, event owners,
+        Admins) or the current active interpreter may do this. A passive
+        interpreter cannot name themselves here: that would take the mic from
+        whoever is live, so they have to use the handoff flow instead.
+
+        Raises ``ValueError`` if either participant is missing or the target
+        cannot go live, and ``PermissionError`` if the requester may not
+        reassign.
+        """
         async with self._lock:
             booth = self._get_or_create_booth(booth_id, language, channel_id)
             requester = booth.participants.get(requester_id)
@@ -346,8 +357,7 @@ class BoothRegistry:
                 raise ValueError("Only people who can go live can be set active.")
             requester_can_reassign = can_set_active(requester.role)
             requester_is_active = booth.active_interpreter_id == requester_id
-            requester_is_target = requester_id == target_id
-            if not requester_can_reassign and not requester_is_active and not requester_is_target:
+            if not requester_can_reassign and not requester_is_active:
                 raise PermissionError(
                     "Only room coordinators, event owners, Admins or the active interpreter can reassign another interpreter."
                 )
