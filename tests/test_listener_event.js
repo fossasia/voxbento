@@ -313,7 +313,12 @@ Object.assign(globalThis, {
   WebSocket: FakeWebSocket,
   fetch,
   window: {
-    location: { protocol: 'http:', host: 'portal.test' },
+    location: { protocol: 'http:', host: 'portal.test', href: 'http://portal.test/listener/demo', search: '' },
+    history: {
+      replaceState(_state, _title, url) {
+        globalThis.window.location.href = String(url);
+      },
+    },
     setTimeout,
     setInterval: () => 0,
     addEventListener: () => {},
@@ -340,6 +345,10 @@ function flush() {
 async function run() {
   await import(pathToFileURL(path.join(__dirname, '..', 'portal', 'static', 'js', 'listener-event.js')).href);
   choose(roomSelect, '1');
+
+  console.log('\n── Shareable listener link ──');
+  assert(new URL(window.location.href).searchParams.get('room') === '1', 'choosing a room puts it in the address bar');
+  assert(!new URL(window.location.href).searchParams.has('code'), 'the address bar never carries a join code');
 
   console.log('\n── Status badge (#985) ──');
 
