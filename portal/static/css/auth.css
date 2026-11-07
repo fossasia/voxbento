@@ -371,6 +371,64 @@ body:has(.login-page) .portal-footer {
   transform: translate(-2px, -2px); 
 }
 
+/* Password visibility toggle */
+.password-input-wrapper {
+  position: relative;
+  display: flex;
+  align-items: center;
+  width: 100%;
+}
+
+.password-input-wrapper input {
+  width: 100%;
+  box-sizing: border-box;
+  padding-right: 44px;
+}
+
+.password-toggle-btn {
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--color-text-secondary, #5b6577);
+  border-radius: 4px;
+  cursor: pointer;
+  transition: transform 0.2s ease, color 0.15s ease, background-color 0.15s ease;
+  z-index: 1;
+}
+
+.password-toggle-btn:hover {
+  color: #0d0f10;
+  background-color: rgba(13, 15, 16, 0.06);
+}
+
+.password-toggle-btn:focus {
+  outline: none;
+}
+
+.password-toggle-btn:focus-visible {
+  outline: 2px solid var(--color-primary, #2563eb);
+  outline-offset: 2px;
+}
+
+.password-input-wrapper:has(input:focus) .password-toggle-btn {
+  transform: translateY(-50%) translate(-2px, -2px);
+}
+
+/* Prevent duplicate eye icons in Edge / IE */
+.login-form input[type="password"]::-ms-reveal,
+.login-form input[type="password"]::-ms-clear {
+  display: none;
+}
+
 /* Brutalist Button Styles for Login/Register */
 .login-card .btn {
   border: 2px solid #0d0f10;
