@@ -257,3 +257,24 @@ async def test_high_concurrency_isolation_and_capacity_limits():
 
     # Verify cleanup is completely clean with no deadlocks
     assert len(active_workers) == 0
+
+
+@pytest.mark.anyio
+async def test_stop_before_task_starts_still_runs_cleanup():
+    """Stopping a session before its task's first step must still release the model ref."""
+    from portal.transcription.providers import local
+    from portal.transcription.providers.base import ProviderConfig
+    from portal.transcription.worker import State, start_transcription_worker, stop_transcription_worker
+
+    async def _noop_broadcast(*args, **kwargs):
+        pass
+
+    local._active_booths_per_model["tiny"] = 0
+    await start_transcription_worker("ev", "en", "ev-en", _noop_broadcast, "local", "tiny", ProviderConfig(api_key="x"))
+    session = active_workers["ev-en"]
+
+    # No event-loop yield between start and stop: the task has not run yet.
+    await stop_transcription_worker("ev-en")
+
+    assert session.state == State.STOPPED
+    assert local._active_booths_per_model["tiny"] == 0

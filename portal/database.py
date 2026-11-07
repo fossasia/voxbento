@@ -46,6 +46,7 @@ from portal.models import (
     TranscriptSegment,
     UsageMetric,
     User,
+    generate_public_id,
     generate_token,
     utc_now,
 )
@@ -301,7 +302,7 @@ async def list_rooms_for_event(
     event_id: int,
     *,
     search: str | None = None,
-    limit: int = 100,
+    limit: int | None = 100,
     offset: int = 0,
 ) -> list[Room]:
     from sqlalchemy.orm import selectinload
@@ -310,7 +311,11 @@ async def list_rooms_for_event(
     if search and search.strip():
         escaped_search = search.strip().replace("\\", "\\\\").replace("%", r"\%").replace("_", r"\_")
         query = query.where(Room.display_name.ilike(f"%{escaped_search}%", escape="\\"))
-    query = query.order_by(Room.created_at).limit(limit).offset(offset)
+    query = query.order_by(Room.created_at)
+    if limit is not None:
+        query = query.limit(limit)
+    if offset:
+        query = query.offset(offset)
 
     result = await session.execute(query)
     return list(result.scalars().all())
@@ -390,23 +395,29 @@ async def list_booths_for_event(
     session: AsyncSession,
     event_id: int,
     *,
-    limit: int = 100,
+    limit: int | None = 100,
     offset: int = 0,
 ) -> list[DBBooth]:
     from sqlalchemy.orm import selectinload
 
-    result = await session.execute(
+    query = (
         select(DBBooth)
+        .join(Room, Room.id == DBBooth.room_id)
         .options(
             joinedload(DBBooth.event),
             joinedload(DBBooth.room),
             selectinload(DBBooth.translation_languages),
         )
-        .where(DBBooth.event_id == event_id)
+        # A booth must belong to the room's event; keep inconsistent rows out of every list.
+        .where(DBBooth.event_id == event_id, DBBooth.event_id == Room.event_id)
         .order_by(DBBooth.language_code)
-        .limit(limit)
-        .offset(offset),
     )
+    if limit is not None:
+        query = query.limit(limit)
+    if offset:
+        query = query.offset(offset)
+
+    result = await session.execute(query)
     return list(result.scalars().all())
 
 
@@ -425,12 +436,14 @@ async def list_all_booths_for_events(
 
     result = await session.execute(
         select(DBBooth)
+        .join(Room, Room.id == DBBooth.room_id)
         .options(
             joinedload(DBBooth.event),
             joinedload(DBBooth.room),
             selectinload(DBBooth.translation_languages),
         )
-        .where(DBBooth.event_id.in_(event_ids))
+        # A booth must belong to the room's event; keep inconsistent rows out of every list.
+        .where(DBBooth.event_id.in_(event_ids), DBBooth.event_id == Room.event_id)
         .order_by(DBBooth.event_id, DBBooth.room_id, DBBooth.language_code),
     )
     booths_by_event: dict[int, list[DBBooth]] = {eid: [] for eid in event_ids}
@@ -444,8 +457,10 @@ async def list_booths_for_room(session: AsyncSession, room_id: int) -> list[DBBo
 
     result = await session.execute(
         select(DBBooth)
+        .join(Room, Room.id == DBBooth.room_id)
         .options(joinedload(DBBooth.event), selectinload(DBBooth.translation_languages))
-        .where(DBBooth.room_id == room_id)
+        # A booth must belong to the room's event; keep inconsistent rows out of every list.
+        .where(DBBooth.room_id == room_id, DBBooth.event_id == Room.event_id)
         .order_by(DBBooth.language_code),
     )
     return list(result.scalars().all())
@@ -482,9 +497,11 @@ async def create_invite_token(
     label: str = "",
     expires_at: datetime | None = None,
     created_by: str = "",
+    public_id: str | None = None,
 ) -> InviteToken:
     token = InviteToken(
         token=generate_token(),
+        public_id=public_id or generate_public_id(),
         booth_id=booth_id,
         role=role,
         label=label,
@@ -501,6 +518,15 @@ async def get_invite_token(session: AsyncSession, token_str: str) -> InviteToken
         select(InviteToken)
         .options(joinedload(InviteToken.booth).joinedload(DBBooth.event))
         .where(InviteToken.token == token_str),
+    )
+    return result.scalar_one_or_none()
+
+
+async def get_invite_token_by_public_id(session: AsyncSession, public_id: str) -> InviteToken | None:
+    result = await session.execute(
+        select(InviteToken)
+        .options(joinedload(InviteToken.booth).joinedload(DBBooth.event))
+        .where(InviteToken.public_id == public_id),
     )
     return result.scalar_one_or_none()
 

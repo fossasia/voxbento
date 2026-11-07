@@ -130,13 +130,15 @@ async def test_room_page_is_split_into_tabs_for_owners(world):
     async with client() as http:
         owner = await http.get(f"/workspace/events/{world['event']}/rooms/{world['hall']}/", cookies=world["cookies"]["owner"])
     assert owner.status_code == 200
-    for tab in ("overview", "source", "captions", "settings"):
+    for tab in ("overview", "audio", "ai", "settings"):
         assert f'data-room-tab="{tab}"' in owner.text
         assert f'data-room-panel="{tab}"' in owner.text
     # The pickers moved to a module; the page has no inline script.
     assert "room-detail.js" in owner.text
     assert "initialTransModel" not in owner.text
-    assert "data-translation-languages=" in owner.text
+    # One place switches languages and AI on or off: the room setup, not this page.
+    assert 'name="floor_translation_enabled"' not in owner.text
+    assert 'name="floor_translation_languages"' not in owner.text
     # The booth table shows short links, not raw paths.
     assert "Open booth ↗" in owner.text
     assert 'id="room-panel-overview" role="tabpanel" aria-labelledby="room-tab-overview"' in owner.text

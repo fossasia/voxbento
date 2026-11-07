@@ -13,10 +13,12 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import joinedload
 
+from portal.booth_identity import make_booth_id
 from portal.config import settings
 from portal.database import (
     create_invite_token,
     create_user,
+    get_booth_by_id,
     get_user_by_email,
     list_booths_for_event,
     list_memberships_for_event,
@@ -49,6 +51,8 @@ from portal.roles import (
     assignment_error,
     role_label,
 )
+from portal.websockets.manager import manager
+from portal.websockets.revocation import revoke_membership_push
 
 # What each role means, shown next to the role picker.
 ROLE_HELP = {
@@ -236,6 +240,8 @@ async def add_member(session: AsyncSession, *, event_id: int, email: str, role: 
         await set_room_membership(session, user_id=user.id, room_id=place.target_id, role=role)
     else:
         await set_booth_membership(session, user_id=user.id, booth_id=place.target_id, role=role)
+    if existing is not None:
+        await revoke_membership_push(session, user_id=user.id, level=place.level, target_id=place.target_id)
     return user, True
 
 
@@ -260,9 +266,16 @@ async def remove_assignment(session: AsyncSession, *, event_id: int, level: str,
     if level == "event" and membership.role == EVENT_OWNER:
         await ensure_another_owner(session, event_id)
     user = await session.get(User, membership.user_id)
+    user_id = membership.user_id
+    target_id = (
+        membership.event_id
+        if level == "event"
+        else (membership.room_id if level == "room" else membership.booth_id)
+    )
     where = await _place_name(session, level, membership, event_id)
     await session.delete(membership)
     await session.flush()
+    await revoke_membership_push(session, user_id=user_id, level=level, target_id=target_id)
     if user is not None:
         await queue_notification(
             session,
@@ -333,11 +346,34 @@ async def create_invite_link(
 
 
 async def revoke_invite_link(session: AsyncSession, *, team: Team, token: str) -> None:
+    import asyncio
+
     link = next((link for link in team.invite_links if link.token.token == token), None)
     if link is None:
         raise TeamError("That invite link no longer exists.")
-    link.token.used_at = utc_now()
+    tok = link.token
+
+    now = utc_now()
+    tok.revoked_at = now
+    if tok.used_at is None:
+        tok.used_at = now
     await session.flush()
+
+    public_id = tok.public_id
+    booth_id: str | None = None
+    if tok.booth_id:
+        booth = await get_booth_by_id(session, tok.booth_id)
+        if booth and booth.event:
+            booth_id = make_booth_id(booth.event.slug, booth.room_id, booth.language_code)
+
+    try:
+        from portal.auth import invalidate_token_revocation_cache
+
+        invalidate_token_revocation_cache(public_id)
+    except Exception:
+        pass
+
+    await asyncio.shield(manager.close_token_sessions(public_id, booth_id=booth_id))
 
 
 ROLE_CHOICES = tuple(

@@ -31,6 +31,10 @@ RELAY_CONTROL_TIMEOUT = 3.0
 # MediaMTX track names for the documented H.264/AAC contribution contract.
 RELAY_VIDEO_CODECS = {"H264"}
 RELAY_AUDIO_CODECS = {"MPEG-4 Audio"}
+YOUTUBE_DEFAULT_SERVER = "rtmps://a.rtmps.youtube.com/live2"
+SERVER_URL_MAX = 255  # rooms.program_relay_server column length
+# YouTube's plain-RTMP ingest hosts and their RTMPS equivalents.
+YOUTUBE_RTMPS_HOSTS = {"a.rtmp.youtube.com": "a.rtmps.youtube.com", "b.rtmp.youtube.com": "b.rtmps.youtube.com"}
 
 
 @dataclass
@@ -58,11 +62,14 @@ def normalize_destination(server_url: str, stream_key: str) -> str:
         port = parts.port
     except ValueError:
         raise ValueError("Enter a valid RTMPS server URL.") from None
+    host = (parts.hostname or "").casefold()
+    if parts.scheme == "rtmp" and host in YOUTUBE_RTMPS_HOSTS and port in {None, 1935}:
+        # YouTube Studio shows its plain-RTMP URL by default; the same ingest is served over RTMPS.
+        parts, host, port = parts._replace(scheme="rtmps"), YOUTUBE_RTMPS_HOSTS[host], None
     if parts.scheme != "rtmps":
         raise ValueError("The destination must use rtmps:// (TLS).")
     if parts.username or parts.password or parts.query or parts.fragment:
         raise ValueError("Paste the server URL without credentials or query parameters.")
-    host = (parts.hostname or "").casefold()
     if host not in allowed_hosts():
         raise ValueError("That destination host is not allowed. Use YouTube's RTMPS server URL.")
     path = parts.path.rstrip("/")
@@ -71,12 +78,24 @@ def normalize_destination(server_url: str, stream_key: str) -> str:
     if not STREAM_KEY.fullmatch(stream_key.strip()):
         raise ValueError("The stream key may contain only letters, digits, '-' and '_'.")
     netloc = host if port is None else f"{host}:{port}"
-    return f"rtmps://{netloc}{path}"
+    normalized = f"rtmps://{netloc}{path}"
+    if len(normalized) > SERVER_URL_MAX:
+        raise ValueError("The server URL is too long.")
+    return normalized
 
 
-def store_destination(room: Room, server_url: str, stream_key: str) -> None:
+def split_pasted_key(server_url: str | None, stream_key: str) -> tuple[str, str]:
+    """Accept a full ``<server>/<key>`` URL pasted into the key field; default the server to YouTube."""
+    key = stream_key.strip()
+    if "://" in key:
+        server_url, _, key = key.rstrip("/").rpartition("/")
+    return (server_url or "").strip() or YOUTUBE_DEFAULT_SERVER, key.strip()
+
+
+def store_destination(room: Room, server_url: str | None, stream_key: str) -> None:
+    server_url, stream_key = split_pasted_key(server_url, stream_key)
     room.program_relay_server = normalize_destination(server_url, stream_key)
-    room.program_relay_key_enc = encrypt_val(stream_key.strip())
+    room.program_relay_key_enc = encrypt_val(stream_key)
     room.program_relay_updated_at = datetime.now(timezone.utc)
 
 
