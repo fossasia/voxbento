@@ -116,6 +116,17 @@ These variables control external encoder ingest and YouTube RTMPS forwarding.
 | `SUPERTONIC_INTRA_OP_THREADS` | `0` | Intra-op threads for ONNX Runtime (`0` defaults to all available CPU cores). |
 | `NVIDIA_FUNCTION_ID` | _(empty)_ | Optional function ID for NVIDIA Cloud Riva integrations. |
 
+## Logging Variables
+
+Logs are emitted as one structured record per event, carrying a correlation ID that ties a request to the work it triggered. Secrets and personal data are redacted centrally — see [Logging](https://github.com/fossasia/voxbento/blob/dev/docs/logging.md) for the policy and the list of redacted fields.
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `LOG_LEVEL` | `INFO` | Root log level: `DEBUG`, `INFO`, `WARNING`, `ERROR` or `CRITICAL`. |
+| `LOG_FORMAT` | `text` in development, `json` otherwise | Output format. JSON is preferred in production so operators can filter on `request_id`. |
+
+Responses carry an `X-Request-ID` header holding that correlation ID, with two exceptions: a 500 produced by an unhandled exception is generated outside the request middleware, and a rejected WebSocket never completes a handshake, so neither carries the header. Both are still logged against the ID. The portal always mints the ID itself. If a request arrives with an `X-Request-ID` already set, that value is recorded alongside it as `upstream_request_id` rather than adopted, so an upstream trace stays linkable without letting a caller choose the ID its activity is filed under.
+
 ## Email and Notification Variables
 
 Configured for transactional emails (invitations, password resets, hosting access approvals).

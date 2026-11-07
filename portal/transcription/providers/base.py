@@ -161,7 +161,8 @@ class TranscriptionProvider:
                     booth_state.consecutive_drops = 0
 
                     if text:
-                        logger.debug(f"[{booth_id}] Transcribed: {text}")
+                        # What a speaker said is personal data; log the shape only.
+                        logger.debug("[%s] Transcribed %d chars", booth_id, len(text))
                         await aggregator.handle_chunk(booth_id, text)
                     else:
                         await aggregator.handle_clear(booth_id)
