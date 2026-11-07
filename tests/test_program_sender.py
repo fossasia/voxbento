@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from datetime import timedelta
 from unittest import mock
 from unittest.mock import AsyncMock
@@ -345,6 +346,35 @@ async def test_standalone_sender_page_renders(environment):
     assert response.headers["cache-control"] == "no-store"
     assert f"/rooms/{room.id}/program-sender" in response.text
     assert "/static/js/program-sender.js" in response.text
+    assert re.search(r"<input[^>]*\stype='radio'[^>]*\sname='sender-source'[^>]*\svalue='device'", response.text)
+    assert re.search(r"<input[^>]*\stype='radio'[^>]*\sname='sender-source'[^>]*\svalue='tab'", response.text)
+    assert re.search(r"<input[^>]*\stype='checkbox'[^>]*\sid='sender-tab-rights'", response.text)
+
+
+@pytest.mark.anyio
+async def test_sender_page_offers_floor_caption_overlay_url(environment):
+    client, event, room, _ = environment
+    async with get_session() as session:
+        (await session.get(Room, room.id)).floor_transcription_provider = "deepgram"
+        (await session.get(Event, event.id)).listener_join_code = "JOIN42"
+    response = await client.get(f"/admin/events/{event.id}/rooms/{room.id}/sender/")
+    assert response.status_code == 200
+    assert f"/overlay/{event.slug}/{room.id}/floor?code=JOIN42" in response.text
+    assert "data-copy-target='sender-overlay-floor'" in response.text
+
+
+@pytest.mark.anyio
+async def test_sender_page_explains_missing_overlay_prerequisites(environment):
+    client, event, room, _ = environment
+    async with get_session() as session:
+        (await session.get(Room, room.id)).floor_transcription_provider = "deepgram"
+    response = await client.get(f"/admin/events/{event.id}/rooms/{room.id}/sender/")
+    assert "Overlay URLs need a listener join code" in response.text
+    assert "/overlay/" not in response.text
+    async with get_session() as session:
+        (await session.get(Room, room.id)).floor_transcription_enabled = False
+    response = await client.get(f"/admin/events/{event.id}/rooms/{room.id}/sender/")
+    assert "Turn on captions for this room" in response.text
 
 
 @pytest.mark.anyio

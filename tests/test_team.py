@@ -344,7 +344,7 @@ async def test_legacy_member_removal_checks_the_event_and_keeps_the_last_owner(e
             f"/workspace/events/{event['event']}/members/{owner_row_id}/delete",
             headers=ORIGIN, cookies=event["owner_cookies"], follow_redirects=False,
         )
-    assert cross.status_code == 400
+    assert cross.status_code == 404
     assert last.status_code == 400
     assert "at least one Event owner" in last.text
     async with get_session() as s:
