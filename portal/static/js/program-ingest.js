@@ -51,10 +51,10 @@ const credentialWords = {
 };
 
 const confirmations = {
-  enable: 'This switches the room to this source and disconnects the current floor stream.',
+  enable: 'This switches the room to this source and stops VoxBento hearing the room any other way.',
   rotate: 'This creates a new credential. The encoder disconnects until you paste the new one.',
   revoke: 'This disconnects the encoder now and the current credential stops working.',
-  disable: 'This disconnects the encoder and switches the room back to the Jitsi bot.',
+  disable: 'This disconnects the encoder and switches the room back to the online meeting.',
 };
 
 function formatTime(value) {
@@ -89,7 +89,7 @@ function applyMode(mode) {
   const help = document.getElementById('program-enable-help');
   if (latest?.enabled && latest.mode !== mode) {
     enable.textContent = `Switch to ${modeLabels[mode]}`;
-    help.textContent = 'Creates a new credential and disconnects the current floor stream.';
+    help.textContent = 'Creates a new credential and stops VoxBento hearing the room any other way.';
   } else if (latest?.enabled && latest.credential_present) {
     enable.textContent = relay ? 'Create a new stream key' : 'Create a new token';
     help.textContent = 'Only needed if you lost it. The encoder disconnects until you paste the new one.';
