@@ -8,6 +8,7 @@ import portal.webhooks.worker as _wh_worker
 from portal.config import settings
 from portal.transcription.errors import TranscriptionAuthError
 from portal.transcription.process import FfmpegProcess
+from portal.transcription.providers.atlascloud import AtlasCloudProvider
 from portal.transcription.providers.base import ProviderConfig
 from portal.transcription.providers.deepgram import DeepgramProvider
 from portal.transcription.providers.elevenlabs import ElevenLabsProvider
@@ -18,6 +19,7 @@ from portal.transcription.providers.openai import OpenAIProvider
 logger = logging.getLogger(__name__)
 
 PROVIDERS = {
+    "atlascloud": AtlasCloudProvider(),
     "local": LocalProvider(),
     "openai": OpenAIProvider(),
     "deepgram": DeepgramProvider(),

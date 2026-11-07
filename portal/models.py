@@ -43,6 +43,10 @@ def generate_token() -> str:
     return secrets.token_hex(TOKEN_LENGTH // 2)
 
 
+def generate_public_id() -> str:
+    return secrets.token_urlsafe(12)
+
+
 # ---------------------------------------------------------------------------
 # Base
 # ---------------------------------------------------------------------------
@@ -71,6 +75,9 @@ class Event(Base):
     encrypted_nvidia_api_key: Mapped[str | None] = mapped_column("nvidia_api_key", Text, nullable=True, default=None)
     encrypted_elevenlabs_api_key: Mapped[str | None] = mapped_column(
         "elevenlabs_api_key", Text, nullable=True, default=None
+    )
+    encrypted_atlascloud_api_key: Mapped[str | None] = mapped_column(
+        "atlascloud_api_key", Text, nullable=True, default=None
     )
     encrypted_translation_openai_api_key: Mapped[str | None] = mapped_column(
         "translation_openai_api_key", Text, nullable=True, default=None
@@ -176,6 +183,12 @@ class Room(Base):
         back_populates="room", cascade="all, delete-orphan"
     )
 
+    @property
+    def has_floor_captions(self) -> bool:
+        """Floor transcription is on and has a real provider, so the floor has a caption channel."""
+        provider = (self.floor_transcription_provider or "").strip().lower()
+        return bool(self.floor_transcription_enabled) and provider not in {"", "none"}
+
     def __repr__(self) -> str:
         return f"<Room id={self.id} name={self.display_name!r}>"
 
@@ -204,7 +217,7 @@ class DBBooth(Base):
     language_name: Mapped[str] = mapped_column(String(100))
     transcription_enabled: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
     transcription_provider: Mapped[str] = mapped_column(String(20), default="local", server_default=sa.text("'local'"))
-    transcription_model: Mapped[str] = mapped_column(String(20), default="tiny", server_default=sa.text("'tiny'"))
+    transcription_model: Mapped[str] = mapped_column(String(40), default="tiny", server_default=sa.text("'tiny'"))
 
     # Broadcast Lock
     broadcast_unlocked: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
@@ -380,11 +393,13 @@ class InviteToken(Base):
     __tablename__ = "invite_tokens"
 
     token: Mapped[str] = mapped_column(String(TOKEN_LENGTH), primary_key=True, default=generate_token)
+    public_id: Mapped[str] = mapped_column(String(32), unique=True, index=True, nullable=False, default=generate_public_id)
     booth_id: Mapped[int] = mapped_column(ForeignKey("booths.id", ondelete="CASCADE"))
     role: Mapped[str] = mapped_column(String(20))
     label: Mapped[str] = mapped_column(String(200), default="")
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
     used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
     created_by: Mapped[str] = mapped_column(String(200), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
@@ -410,6 +425,10 @@ class InviteToken(Base):
     @property
     def is_used(self) -> bool:
         return self.used_at is not None
+
+    @property
+    def is_revoked(self) -> bool:
+        return self.revoked_at is not None
 
     def __repr__(self) -> str:
         return f"<InviteToken token={self.token[:8]}… role={self.role!r}>"
@@ -480,6 +499,7 @@ class User(Base):
     can_host: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
     hosting_requested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
     hosting_revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
+    sessions_valid_after: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
     memberships: Mapped[list[EventMembership]] = relationship(
