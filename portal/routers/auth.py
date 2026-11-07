@@ -28,11 +28,8 @@ from portal.auth import (
     decode_token,
     get_current_user,
     hash_password,
-<<<<<<< HEAD
     is_cookie_secure,
-=======
     password_too_long,
->>>>>>> upstream/dev
     require_user,
     resolve_request_principal,
     verify_password,
