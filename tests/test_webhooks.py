@@ -240,6 +240,77 @@ async def _make_delivery(db, target_url: str) -> WebhookDelivery:
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize("dns_errno", [socket.EAI_AGAIN, socket.EAI_NONAME])
+@pytest.mark.parametrize("recovered_ip, expected_status", [("93.184.216.34", "succeeded"), ("127.0.0.1", "dead")])
+async def test_process_delivery_revalidates_after_dns_failure(
+    db, dns, monkeypatch, dns_errno, recovered_ip, expected_status
+):
+    delivery = await _make_delivery(db, "https://recovery.example.test/hook")
+    mock_client = AsyncMock(spec=httpx.AsyncClient)
+    mock_client.post.return_value = MagicMock()
+    before = datetime.now(timezone.utc)
+
+    with monkeypatch.context() as resolver:
+        resolver.setattr(
+            socket, "getaddrinfo", MagicMock(side_effect=socket.gaierror(dns_errno, "resolver unavailable"))
+        )
+        await process_delivery(mock_client, db, delivery)
+
+    assert delivery.status == "failed"
+    assert delivery.attempt_count == 1
+    assert (
+        before + timedelta(seconds=2) <= delivery.next_attempt_at <= datetime.now(timezone.utc) + timedelta(seconds=2)
+    )
+    assert "resolver unavailable" in delivery.last_error
+    mock_client.post.assert_not_called()
+
+    dns["recovery.example.test"] = [recovered_ip]
+    await process_delivery(mock_client, db, delivery)
+
+    assert delivery.status == expected_status
+    if expected_status == "succeeded":
+        assert delivery.attempt_count == 2
+        assert delivery.last_error is None
+        assert str(mock_client.post.call_args.args[0]) == "https://93.184.216.34/hook"
+    else:
+        assert "forbidden internal IP" in delivery.last_error
+        mock_client.post.assert_not_called()
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "attempt_count, expected_status, backoff", [(1, "failed", 4), (2, "failed", 8), (3, "dead", None)]
+)
+async def test_process_delivery_dns_failures_use_retry_limit(db, monkeypatch, attempt_count, expected_status, backoff):
+    delivery = await _make_delivery(db, "https://outage.example.test/hook")
+    delivery.attempt_count = attempt_count
+    sub = await db.get(WebhookSubscription, delivery.subscription_id)
+    sub.consecutive_failures = 4
+    mock_client = AsyncMock(spec=httpx.AsyncClient)
+    monkeypatch.setattr(
+        socket, "getaddrinfo", MagicMock(side_effect=socket.gaierror(socket.EAI_AGAIN, "resolver unavailable"))
+    )
+    before = datetime.now(timezone.utc)
+
+    await process_delivery(mock_client, db, delivery)
+
+    assert delivery.status == expected_status
+    assert delivery.attempt_count == attempt_count + 1
+    mock_client.post.assert_not_called()
+    if backoff is not None:
+        assert (
+            before + timedelta(seconds=backoff)
+            <= delivery.next_attempt_at
+            <= datetime.now(timezone.utc) + timedelta(seconds=backoff)
+        )
+        assert sub.consecutive_failures == 4
+        assert sub.is_active
+    else:
+        assert sub.consecutive_failures == 5
+        assert not sub.is_active
+
+
+@pytest.mark.anyio
 @pytest.mark.parametrize("rebound_ip", ["127.0.0.1", "::7f00:1", "::a00:1"])
 async def test_process_delivery_rejects_rebound_dns(db, dns, rebound_ip):
     dns["rebind.attacker.test"] = ["93.184.216.34"]

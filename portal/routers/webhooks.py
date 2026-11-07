@@ -86,7 +86,7 @@ async def validate_ssrf(url: str) -> list[str] | None:
                 raise ValueError(f"Webhook URL resolves to a forbidden internal IP address ({ip}).")
         return ips
     except (httpx.InvalidURL, ValueError, OSError) as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid webhook URL: {e}")
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid webhook URL: {e}") from e
 
 
 @router.post("", response_model=WebhookResponse, status_code=status.HTTP_201_CREATED)

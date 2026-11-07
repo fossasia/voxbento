@@ -5,6 +5,7 @@ import hashlib
 import hmac
 import json
 import logging
+import socket
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -85,12 +86,15 @@ async def process_delivery(client: httpx.AsyncClient, db, delivery: WebhookDeliv
         delivery.last_error = "Subscription is inactive or deleted."
         return
 
+    last_error = None
     try:
         vetted_ips = await validate_ssrf(sub.target_url)
     except HTTPException as e:
-        delivery.status = "dead"
-        delivery.last_error = f"SSRF Validation failed at dispatch: {e}"
-        return
+        if not isinstance(e.__cause__, socket.gaierror):
+            delivery.status = "dead"
+            delivery.last_error = f"SSRF Validation failed at dispatch: {e}"
+            return
+        last_error = f"DNS resolution failed: {e.__cause__}"
 
     envelope = {
         "delivery_id": delivery.id,
@@ -106,12 +110,12 @@ async def process_delivery(client: httpx.AsyncClient, db, delivery: WebhookDeliv
 
     delivery.attempt_count += 1
     success = False
-    last_error = None
 
     try:
-        response = await post_to_vetted_ip(client, sub.target_url, vetted_ips, payload_str, headers)
-        response.raise_for_status()
-        success = True
+        if last_error is None:
+            response = await post_to_vetted_ip(client, sub.target_url, vetted_ips, payload_str, headers)
+            response.raise_for_status()
+            success = True
     except httpx.RequestError as e:
         last_error = f"Request error: {str(e)}"
     except httpx.HTTPStatusError as e:
