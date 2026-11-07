@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+from unittest.mock import AsyncMock, patch
 
 # Force auth off for all tests — setdefault would not override an already-set env var,
 # so use an unconditional assignment to guarantee a deterministic baseline.
@@ -349,8 +350,6 @@ def test_ws_join_without_language_and_unconfigured_booth_returns_error():
 
 def test_ws_join_uses_db_booth_language_when_unspecified():
     """If the client does not specify language in join, it should inherit the resolved booth language."""
-    from unittest.mock import AsyncMock, patch
-
     with patch("portal.websockets.handlers.get_booth_language_name", new=AsyncMock(return_value="Japanese")):
         with client.websocket_connect("/ws/booth/japan-booth", cookies=_ws_auth()) as ws:
             ws.send_text(
@@ -397,6 +396,77 @@ def test_ws_join_rejected_without_session():
         msg = json.loads(ws.receive_text())
     assert msg["type"] == "booth:error"
     assert "No role" in msg["message"]
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "error"),
+    [
+        ("display_name", 123, "display_name must be a string."),
+        ("display_name", "A" * 201, "display_name must not exceed 200 characters."),
+        ("language", 5, "language must be a string."),
+        ("language", None, "language must be a string."),
+        ("language", False, "language must be a string."),
+        ("language", "L" * 101, "language must not exceed 100 characters."),
+        ("channel_id", ["x"], "channel_id must be a string."),
+        ("channel_id", "c" * 201, "channel_id must not exceed 200 characters."),
+        ("role", ["interpreter"], "role must be a string."),
+        ("participant_id", ["x"], "participant_id must be a string."),
+        ("participant_id", "p" * 65, "participant_id must not exceed 64 characters."),
+        ("room_id", float("inf"), "room_id must be an integer."),
+        ("room_id", 1.5, "room_id must be an integer."),
+        ("room_id", True, "room_id must be an integer."),
+        ("room_id", "1", "room_id must be an integer."),
+    ],
+    ids=[
+        "display_name-not-string",
+        "display_name-too-long",
+        "language-not-string",
+        "language-null",
+        "language-false",
+        "language-too-long",
+        "channel_id-not-string",
+        "channel_id-too-long",
+        "role-not-string",
+        "participant_id-not-string",
+        "participant_id-too-long",
+        "room_id-infinity",
+        "room_id-float",
+        "room_id-bool",
+        "room_id-string",
+    ],
+)
+def test_ws_join_rejects_invalid_fields(field, value, error):
+    """An invalid booth:join field gets a booth:error, and the socket can still join afterwards."""
+    join = {
+        "type": "booth:join",
+        "display_name": "Grace",
+        "role": "interpreter",
+        "language": "French",
+        "channel_id": "join-validation-audio",
+    }
+    # A configured booth language, so a falsy language can't fail on the missing-language check instead.
+    with patch("portal.websockets.handlers.get_booth_language_name", new=AsyncMock(return_value="French")):
+        with client.websocket_connect("/ws/booth/join-validation-booth", cookies=_ws_auth()) as ws:
+            ws.send_text(json.dumps({**join, field: value}))
+            msg = json.loads(ws.receive_text())
+            assert msg == {"type": "booth:error", "message": error}
+
+            # The socket stays usable after the rejected join.
+            ws.send_text(json.dumps(join))
+            types = {json.loads(ws.receive_text())["type"], json.loads(ws.receive_text())["type"]}
+            assert types == {"booth:joined", "booth:state"}
+
+
+def test_ws_join_without_language_uses_booth_language():
+    """An empty language still falls back to the booth's configured language."""
+    with patch("portal.websockets.handlers.get_booth_language_name", new=AsyncMock(return_value="French")):
+        with client.websocket_connect("/ws/booth/join-fallback-booth", cookies=_ws_auth()) as ws:
+            ws.send_text(json.dumps({"type": "booth:join", "display_name": "Grace", "language": ""}))
+            msg1 = json.loads(ws.receive_text())
+            msg2 = json.loads(ws.receive_text())
+    joined = msg1 if msg1["type"] == "booth:joined" else msg2
+    assert joined["type"] == "booth:joined"
+    assert joined["state"]["language"] == "French"
 
 
 def test_ws_join_then_leave_broadcasts_state():

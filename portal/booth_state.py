@@ -23,6 +23,15 @@ ParticipantRole = Role
 # Every booth:state carries recent chat messages, so keep each one small.
 CHAT_MESSAGE_MAX_LENGTH = 1000
 
+# Every booth:state carries each participant's id, name, language and channel, so keep them small.
+# The name and language limits match User.display_name and DBBooth.language_name; real channel
+# ids are MediaMTX paths built from an event slug of at most 64 characters, and the server's
+# participant ids are 32-character hex strings.
+DISPLAY_NAME_MAX_LENGTH = 200
+LANGUAGE_MAX_LENGTH = 100
+CHANNEL_ID_MAX_LENGTH = 200
+PARTICIPANT_ID_MAX_LENGTH = 64
+
 
 def utc_now_iso() -> str:
     return datetime.now(tz=timezone.utc).isoformat()
@@ -249,6 +258,18 @@ class BoothRegistry:
         fresh ID instead of taking over that record, e.g. the active interpreter's.
         ``joined_by`` records the session that joined, for checks made outside the socket.
         """
+        fields = [
+            ("display_name", display_name, DISPLAY_NAME_MAX_LENGTH),
+            ("language", language, LANGUAGE_MAX_LENGTH),
+            ("channel_id", channel_id, CHANNEL_ID_MAX_LENGTH),
+        ]
+        if participant_id is not None:
+            fields.append(("participant_id", participant_id, PARTICIPANT_ID_MAX_LENGTH))
+        for name, value, max_length in fields:
+            if not isinstance(value, str):
+                raise ValueError(f"{name} must be a string.")
+            if len(value) > max_length:
+                raise ValueError(f"{name} must not exceed {max_length} characters.")
         async with self._lock:
             booth = self._get_or_create_booth(booth_id, language, channel_id, room_id=room_id)
             if participant_id in booth.participants and not reclaim:
