@@ -4,7 +4,7 @@ import asyncio
 import json
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, TypedDict
 
 import jwt
 from fastapi import APIRouter, HTTPException, Query, Request, status
@@ -164,10 +164,15 @@ async def listen_event_page(request: Request, event_slug: str, code: str | None 
     return response
 
 
-@router.get("/listener/{event_slug}/rooms/{room_id}/audio-delay", response_model=dict[str, int])
+class RoomAudioDelay(TypedDict):
+    audio_delay_ms: int
+
+
+@router.get("/listener/{event_slug}/rooms/{room_id}/audio-delay", response_model=RoomAudioDelay)
 async def listener_room_audio_delay(
     request: Request, event_slug: str, room_id: int, code: str | None = None
-) -> dict[str, int] | JSONResponse:
+) -> RoomAudioDelay | JSONResponse:
+    """Current audio delay for a room, polled by the listener page so organizer changes apply live."""
     async with get_session() as session:
         ev = await get_event_by_slug(session, event_slug)
         if not ev:

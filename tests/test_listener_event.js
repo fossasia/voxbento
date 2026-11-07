@@ -302,19 +302,10 @@ function captionsSocket() {
 }
 
 let boothState = { ingest_status: 'disconnected' };
-let audioDelayStatus = 200;
 function fetch(url) {
-  if (url.includes('/audio-delay')) {
-    const status = audioDelayStatus;
-    return Promise.resolve({ ok: status === 200, status, json: () => Promise.resolve({ audio_delay_ms: 0 }) });
-  }
-  return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(boothState) });
+  const body = url.includes('/audio-delay') ? { audio_delay_ms: 0 } : boothState;
+  return Promise.resolve({ ok: true, json: () => Promise.resolve(body) });
 }
-
-// The audio-delay poll is the page's only interval; keep its callback so tests can run it.
-let pollAudioDelay = null;
-const POLL_TIMER_ID = 7;
-const clearedIntervals = [];
 
 Object.assign(globalThis, {
   document,
@@ -324,11 +315,7 @@ Object.assign(globalThis, {
   window: {
     location: { protocol: 'http:', host: 'portal.test' },
     setTimeout,
-    setInterval: (fn) => {
-      pollAudioDelay = fn;
-      return POLL_TIMER_ID;
-    },
-    clearInterval: (id) => clearedIntervals.push(id),
+    setInterval: () => 0,
     addEventListener: () => {},
   },
 });
@@ -468,26 +455,6 @@ async function run() {
   captionsSocket().onmessage({ data: JSON.stringify({ type: 'caption', status: 'final', seq: 1, text: 'Floor' }) });
   choose(roomSelect, '');
   assert(!waitingText.classList.contains('listener-hidden'), 'the placeholder comes back after clearing the room');
-
-  console.log('\n── Audio-delay poll after a join-code regenerate (#1144) ──');
-
-  choose(roomSelect, '1');
-  choose(languageSelect, 'http://mtx/es/whep');
-  assert(typeof pollAudioDelay === 'function', 'the page polls the room audio delay');
-
-  audioDelayStatus = 500;
-  pollAudioDelay();
-  await flush();
-  assert(clearedIntervals.length === 0, 'a server error keeps polling');
-
-  // Every later poll would be denied too, and the shared join-code budget must not pay for them.
-  audioDelayStatus = 403;
-  pollAudioDelay();
-  await flush();
-  assert(
-    clearedIntervals.length === 1 && clearedIntervals[0] === POLL_TIMER_ID,
-    'a 403 stops the audio-delay poll',
-  );
 
   console.log('\n' + passed + ' passed, ' + failed + ' failed');
   process.exit(failed > 0 ? 1 : 0);

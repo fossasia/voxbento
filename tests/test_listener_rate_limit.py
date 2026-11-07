@@ -6,7 +6,8 @@ Covers:
 - A client holding a valid session cookie reaches the listener page and is never throttled
 - Viewing the join page, and polling for the room audio delay, are not join-code attempts
 - A wrong code submitted through the listener_code_ cookie is still throttled
-- A stale cookie left from before a code regenerate costs one attempt, not one per poll
+- A stale cookie left from before a code regenerate costs one attempt, not one per poll, and the tab
+  recovers once the new code is entered
 """
 
 from __future__ import annotations
@@ -216,6 +217,27 @@ class TestListenerRateLimit:
             resp = await new_listener.get(f"/listener/{event.slug}?code=NEW999")
             assert resp.status_code == 200
             assert b"Invalid join code." not in resp.content
+
+    @pytest.mark.anyio
+    async def test_stale_tab_recovers_once_the_new_code_is_entered(self, seed_event):
+        """The cleared tab keeps polling at no cost, so entering the new code in any tab brings it back."""
+        from portal.database import get_session
+        from portal.models import Event
+
+        event, room = seed_event
+        async with _client() as browser:
+            await browser.get(f"/listener/{event.slug}?code=ROOM42")
+            async with get_session() as s:
+                (await s.get(Event, event.id)).listener_join_code = "NEW999"
+            for _ in range(15):
+                resp = await browser.get(f"/listener/{event.slug}/rooms/{room.id}/audio-delay")
+                assert resp.status_code == 403
+
+            # The same browser joins again with the new code, e.g. from another tab.
+            await browser.get(f"/listener/{event.slug}?code=NEW999")
+            resp = await browser.get(f"/listener/{event.slug}/rooms/{room.id}/audio-delay")
+            assert resp.status_code == 200
+            assert resp.json() == {"audio_delay_ms": 0}
 
     @pytest.mark.anyio
     async def test_wrong_query_code_keeps_a_valid_cookie(self, seed_event):
