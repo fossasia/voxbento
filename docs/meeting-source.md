@@ -72,6 +72,9 @@ reconnect budget, so fixing a wrong URL recovers a room that shows **Needs atten
   disconnect that cannot reach the floor-bot service returns `202` with
   `cleanup_pending: true`; the desired state is already cleared and the stale
   agent is stopped on the next successful reconcile.
+- Rooms of a deleted event (`DELETE /api/v1/events/{slug}`) no longer count as wanting an
+  agent. The next reconcile stops their agent and floor transcription worker, within 30
+  seconds when no other room wants one.
 
 ## Deployment
 
