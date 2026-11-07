@@ -279,26 +279,26 @@ async def list_webhooks(
 ):
     """List all webhook subscriptions for the authenticated developer account.
 
-    Reconciles subscriptions so that inactive or pruned event types are
-    accurately reflected for the caller.
+    Performs safe, read-only queries without row locks or database mutations,
+    filtering subscription event types in memory to return only supported events.
     """
     client_result = await db.execute(select(OAuthClient).where(OAuthClient.id == token.client_id))
     client = client_result.scalars().first()
     if not client or client.developer_account_id is None:
         return []
 
-    # Serialize webhook operations per developer account
-    is_sqlite = db.get_bind().dialect.name == "sqlite"
-    dev_stmt = select(DeveloperAccount).where(DeveloperAccount.id == client.developer_account_id)
-    if not is_sqlite:
-        dev_stmt = dev_stmt.with_for_update()
-    await db.execute(dev_stmt)
-
-    subs = await reconcile_subscriptions(db, client.developer_account_id)
+    result = await db.execute(
+        select(WebhookSubscription).where(WebhookSubscription.developer_account_id == client.developer_account_id)
+    )
+    subs = result.scalars().all()
 
     return [
         WebhookResponse(
-            id=s.id, target_url=s.target_url, event_types=s.event_types, is_active=s.is_active, secret_key=None
+            id=s.id,
+            target_url=s.target_url,
+            event_types=sorted({e for e in s.event_types if e in SUPPORTED_EVENT_TYPES}),
+            is_active=s.is_active and any(e in SUPPORTED_EVENT_TYPES for e in s.event_types),
+            secret_key=None,
         )
         for s in subs
     ]
