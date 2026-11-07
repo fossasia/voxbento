@@ -84,6 +84,7 @@ Jitsi Meet Floor Conference
 | `portal/transcription/providers/base.py` | `TranscriptionProvider` ABC, `ProviderConfig`, `BoothTranscriptionState`, `pcm_to_wav`, `get_api_key` |
 | `portal/transcription/providers/local.py` | `LocalProvider` — faster-whisper CPU; model cache + LRU eviction |
 | `portal/transcription/providers/openai.py` | `OpenAIProvider` — whisper-1 (REST) + gpt-4o-realtime (WebSocket) |
+| `portal/transcription/providers/atlascloud.py` | `AtlasCloudProvider` — Seed ASR 2.0 async Audio API |
 | `portal/transcription/providers/deepgram.py` | `DeepgramProvider` — nova-2 WebSocket streaming |
 | `portal/transcription/providers/nvidia.py` | `NVIDIAProvider` — Parakeet-RNNT/CTC via Riva gRPC |
 | `portal/transcription/providers/elevenlabs.py` | `ElevenLabsProvider` — scribe_v2 |
@@ -103,6 +104,7 @@ Jitsi Meet Floor Conference
 |---|---|---|---|---|
 | `local` | `LocalProvider` | `tiny`, `base`, `small`, `medium`, `large-v2`, `large-v3` | None | CPU inference via `faster-whisper` (in thread pool) |
 | `openai` | `OpenAIProvider` | `whisper-1`, `gpt-4o-realtime-preview`, `gpt-4o-mini-realtime-preview` | `openai_api_key` | REST (whisper-1) or WebSocket realtime |
+| `atlascloud` | `AtlasCloudProvider` | `bytedance/seed-asr-2.0` | `atlascloud_api_key` | Async JSON submit + prediction polling |
 | `deepgram` | `DeepgramProvider` | `nova-2` | `deepgram_api_key` | WebSocket streaming (with `numerals=true` for interpretation) |
 | `nvidia` | `NVIDIAProvider` | `parakeet-rnnt`, `parakeet-ctc` | `nvidia_api_key` | Riva gRPC |
 | `elevenlabs` | `ElevenLabsProvider` | `scribe_v2` | `elevenlabs_api_key` | — |
@@ -227,3 +229,22 @@ per-segment receive-time/offset metadata through async translation tasks into te
 and TTS frames. Listener `program-delivery.js` schedules presentation only. No true
 encoder timecode is claimed. See `docs/program-stream-ingest.md` for capacity,
 30-day key expiry, disconnect grace and test rehearsal requirements.
+
+## Broadcast caption overlays
+
+The event overview links to the owner-only **Caption overlays** workspace at
+`/workspace/events/{event_id}/caption-overlays/` (`admin/caption_overlays.html`).
+The live preview and styling controls load only on that dedicated page, not on
+the overview; room and booth overlay links retain their default styling.
+
+`portal/overlay_channels.py` builds the room/language catalog from all booths and
+enabled floor/booth translation targets (including targets with no DBBooth). It
+uses the same room/language keys as `translations/worker.py`; multiple producers
+for one key share a feed. The overlay is a consumer, never a worker starter.
+`subtitle-overlay.js` reconnects via the authenticated `/overlay/.../session`
+route and keeps preview status off the video. See `website/docs/subtitle-overlays.mdx`.
+
+Validation: `tests/test_overlay_access.py`, `tests/test_subtitle_overlay.js`,
+`tests/test_overlay_connection.js`, and `tests/overlay_browser_smoke.py`. The latter
+runs real Chromium against ephemeral HTTP/WS and an in-memory database, without
+media services; it does not certify the native OBS/vMix compositor.
