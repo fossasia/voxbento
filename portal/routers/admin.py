@@ -1197,12 +1197,33 @@ async def admin_event_detail(request: Request, event_id: int):
         context={
             "event": event,
             "rooms": rooms,
-            "overlay_channels": overlay_channels(rooms, db_booths),
             "summaries": summaries,
             "booths": booth_statuses,
             "live_count": sum((1 for bs in booth_statuses if bs["is_live"])),
             **admin_flags,
         },
+    )
+
+
+@router.get("/admin/events/{event_id}/caption-overlays/", dependencies=[Depends(require_event_owner)])
+async def admin_event_caption_overlays(request: Request, event_id: int):
+    admin_flags = await get_access_flags(request, event_id=event_id)
+    async with get_session() as session:
+        event = await get_event_by_id(session, event_id)
+        if event is None:
+            raise HTTPException(status_code=404, detail="Event not found.")
+        rooms = await list_rooms_for_event(session, event_id, limit=None)
+        db_booths = await list_booths_for_event(session, event_id, limit=None)
+    return templates.TemplateResponse(
+        request=request,
+        name="admin/caption_overlays.html",
+        context={
+            "event": event,
+            "rooms": rooms,
+            "overlay_channels": overlay_channels(rooms, db_booths),
+            **admin_flags,
+        },
+        headers={"Cache-Control": "no-store"},
     )
 
 
@@ -1227,10 +1248,12 @@ async def admin_event_api_settings_post(
     deepgram_api_key: str | None = Form(None),
     nvidia_api_key: str | None = Form(None),
     elevenlabs_api_key: str | None = Form(None),
+    atlascloud_api_key: str | None = Form(None),
     clear_openai_api_key: bool | None = Form(False),
     clear_deepgram_api_key: bool | None = Form(False),
     clear_nvidia_api_key: bool | None = Form(False),
     clear_elevenlabs_api_key: bool | None = Form(False),
+    clear_atlascloud_api_key: bool | None = Form(False),
     translation_openai_api_key: str | None = Form(None),
     openrouter_api_key: str | None = Form(None),
     gemini_api_key: str | None = Form(None),
@@ -1255,6 +1278,7 @@ async def admin_event_api_settings_post(
                     ("encrypted_deepgram_api_key", deepgram_api_key, clear_deepgram_api_key),
                     ("encrypted_nvidia_api_key", nvidia_api_key, clear_nvidia_api_key),
                     ("encrypted_elevenlabs_api_key", elevenlabs_api_key, clear_elevenlabs_api_key),
+                    ("encrypted_atlascloud_api_key", atlascloud_api_key, clear_atlascloud_api_key),
                     (
                         "encrypted_translation_openai_api_key",
                         translation_openai_api_key,
@@ -1502,10 +1526,16 @@ async def admin_room_sender(request: Request, event_id: int, room_id: int):
         room = await get_room_by_id(session, room_id)
         if room is None or room.event_id != event_id:
             raise HTTPException(status_code=404, detail="Room not found.")
+        db_booths = await list_booths_for_room(session, room_id)
+        channels = overlay_channels([room], db_booths)
     return templates.TemplateResponse(
         request=request,
         name="admin/program_sender.html",
-        context={"event": event, "room": room},
+        context={
+            "event": event,
+            "room": room,
+            "overlay_links": [(channel, _overlay_url(event, room.id, channel.code)) for channel in channels],
+        },
         headers={"Cache-Control": "no-store"},
     )
 
