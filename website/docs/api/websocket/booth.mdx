@@ -20,9 +20,9 @@ ws://voxbento.com/ws/booth/{booth_id}
 Always use `wss://` (TLS) in production environments to protect session tokens in transit.
 :::
 
-The `booth_id` path parameter follows the format `{event_slug}-{language_code}`, where `event_slug` is lowercase alphanumeric with hyphens (max 64 chars) and `language_code` is an ISO 639-1 two-letter lowercase code.
+The `booth_id` path parameter follows the format `{event_slug}-{room_id}-{language_code}`, where `event_slug` is lowercase alphanumeric with hyphens (max 64 chars) and `language_code` is an ISO 639-1 two-letter lowercase code.
 
-**Example:** `pycon2026-en`
+**Example:** `pycon2026-14-en`
 
 ## Authentication
 
@@ -53,7 +53,7 @@ The server pushes JSON objects to every connected participant. You do not need t
 
 | `type` | Description |
 | --- | --- |
-| `booth:joined` | Sent only to the new participant confirming a successful join. Contains their server-assigned role. |
+| `booth:joined` | Sent only to the new participant confirming a successful join. Contains their `participant_id` and the current booth state. |
 | `booth:state` | Full booth state broadcast to all participants after any change (join, leave, chat, handoff, flag update). |
 | `booth:chat` | A chat message broadcast to all participants when anyone sends `booth:chat`. |
 | `booth:error` | An error message sent to the originating client (e.g. permission denied, unknown message type). |
@@ -87,7 +87,7 @@ The examples below show the exact JSON structure for the most common messages.
 ```json
 {
   "type": "booth:chat",
-  "message": "Ready for handoff in 60 seconds"
+  "body": "Ready for handoff in 60 seconds"
 }
 ```
 
@@ -97,7 +97,7 @@ The examples below show the exact JSON structure for the most common messages.
 ```json
 {
   "type": "booth:set-active",
-  "interpreter_id": "user-abc123"
+  "target_id": "3f2a9c1e7b4d4e0f9a6b2c8d1e5f7a90"
 }
 ```
 
@@ -118,7 +118,15 @@ The examples below show the exact JSON structure for the most common messages.
 ```json
 {
   "type": "booth:joined",
-  "role": "interpreter"
+  "participant_id": "3f2a9c1e7b4d4e0f9a6b2c8d1e5f7a90",
+  "state": {
+    "booth_id": "pycon2026-14-en",
+    "active_interpreter_id": "3f2a9c1e7b4d4e0f9a6b2c8d1e5f7a90",
+    "ingest_status": "disconnected",
+    "participants": [
+      { "participant_id": "3f2a9c1e7b4d4e0f9a6b2c8d1e5f7a90", "display_name": "Alice", "role": "interpreter", "mic_active": false, "ingest_connected": false }
+    ]
+  }
 }
 ```
 
@@ -128,14 +136,15 @@ The examples below show the exact JSON structure for the most common messages.
 ```json
 {
   "type": "booth:state",
-  "booth_id": "pycon2026-en",
-  "active_interpreter_id": "user-abc123",
-  "participants": [
-    { "user_id": "user-abc123", "display_name": "Alice", "role": "interpreter" },
-    { "user_id": "user-def456", "display_name": "Bob",   "role": "coordinator" }
-  ],
-  "mic_active": true,
-  "ingest_connected": true
+  "state": {
+    "booth_id": "pycon2026-14-en",
+    "active_interpreter_id": "3f2a9c1e7b4d4e0f9a6b2c8d1e5f7a90",
+    "ingest_status": "connected",
+    "participants": [
+      { "participant_id": "3f2a9c1e7b4d4e0f9a6b2c8d1e5f7a90", "display_name": "Alice", "role": "interpreter", "mic_active": true, "ingest_connected": true },
+      { "participant_id": "8c41d07e2a9b4f6e8d3c5b7a9e1f2d46", "display_name": "Bob", "role": "room_coordinator", "mic_active": false, "ingest_connected": false }
+    ]
+  }
 }
 ```
 
@@ -184,7 +193,7 @@ The examples below show the exact JSON structure for the most common messages.
   
 
   
-    The text content to broadcast. Required; empty strings are rejected.
+    The text content to broadcast. Required; must be a string of at most 1000 characters, and empty strings are rejected.
   
 
 </details>
@@ -197,7 +206,7 @@ The examples below show the exact JSON structure for the most common messages.
   
 
   
-    The `user_id` of the interpreter to promote to active. Must be a current booth participant.
+    `target_id`: the `participant_id` of the interpreter to promote to active (from `booth:joined` or `booth:state`). Must be a current booth participant.
   
 
 </details>
@@ -224,7 +233,9 @@ The examples below show the exact JSON structure for the most common messages.
 
 **`type`** *(string)* — Always `"booth:joined"`.
 
-  **`role`** *(string)* — The server-assigned role for this participant: `interpreter`, `room_coordinator`, `event_owner`, or `listener`.
+  **`participant_id`** *(string)* — Your participant ID in this booth. Use it to find yourself in `participants`; other clients use it as `target_id` in `booth:set-active`.
+
+  **`state`** *(object)* — The current booth state, in the same shape as `booth:state`.
 
 </details>
 
@@ -233,15 +244,15 @@ The examples below show the exact JSON structure for the most common messages.
 
 **`type`** *(string)* — Always `"booth:state"`.
 
-  **`booth_id`** *(string)* — The booth identifier in `{event_slug}-{language_code}` format.
+  **`state`** *(object)* — The booth state. The fields below are inside it.
 
-  **`active_interpreter_id`** *(string | null)* — The `user_id` of the currently active interpreter, or `null` if no interpreter is active.
+  **`booth_id`** *(string)* — The booth identifier in `{event_slug}-{room_id}-{language_code}` format.
 
-  **`participants`** *(array)* — List of all current booth participants, each with `user_id`, `display_name`, and `role`.
+  **`active_interpreter_id`** *(string | null)* — The `participant_id` of the currently active interpreter, or `null` if no interpreter is active.
 
-  **`mic_active`** *(boolean)* — Whether the active interpreter's microphone is currently live.
+  **`participants`** *(array)* — List of all current booth participants, each with `participant_id`, `display_name`, `role`, `mic_active` and `ingest_connected`.
 
-  **`ingest_connected`** *(boolean)* — Whether the active interpreter's WHIP stream is connected.
+  **`ingest_status`** *(string)* — `"connected"` while a participant's WHIP stream is connected, `"overloaded"` when transcription is overloaded, otherwise `"disconnected"`.
 
 </details>
 
@@ -260,7 +271,7 @@ The snippet below shows a minimal browser client that opens the booth WebSocket,
 
 ```javascript
 const ws = new WebSocket(
-  'wss://voxbento.com/ws/booth/pycon2026-en?token=eyJ...'
+  'wss://voxbento.com/ws/booth/pycon2026-14-en?token=eyJ...'
 );
 
 ws.onopen = () => {

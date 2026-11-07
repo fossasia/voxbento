@@ -344,7 +344,7 @@ async def test_legacy_member_removal_checks_the_event_and_keeps_the_last_owner(e
             f"/workspace/events/{event['event']}/members/{owner_row_id}/delete",
             headers=ORIGIN, cookies=event["owner_cookies"], follow_redirects=False,
         )
-    assert cross.status_code == 400
+    assert cross.status_code == 404
     assert last.status_code == 400
     assert "at least one Event owner" in last.text
     async with get_session() as s:
@@ -476,15 +476,15 @@ async def test_owner_cannot_assign_or_invite_in_another_events_rooms_and_booths(
 
 
 @pytest.mark.anyio
-async def test_setup_wizard_does_not_add_booths_to_another_events_room(event):
+async def test_room_setup_does_not_add_booths_to_another_events_room(event):
     from portal.database import list_booths_for_room
 
     async with client() as http:
         res = await http.post(
-            f"/workspace/events/{event['event']}/setup/booths",
-            data={"room_id": str(event["other_room"]), "language_code": "es"},
+            f"/workspace/events/{event['event']}/rooms/{event['other_room']}/setup",
+            data={"display_name": "Taken", "spoken_language": "en", "mode": "interpreters", "languages": ["es"]},
             headers=ORIGIN, cookies=event["owner_cookies"], follow_redirects=False,
         )
-    assert res.status_code == 303
+    assert res.status_code == 404
     async with get_session() as s:
         assert await list_booths_for_room(s, event["other_room"]) == []
