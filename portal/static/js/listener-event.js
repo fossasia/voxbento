@@ -457,6 +457,7 @@ function startWhepStream(whepUrl, audioDelayMs) {
 function fetchRoomAudioDelay(roomId) {
   return fetch("/listener/" + eventSlug + "/rooms/" + roomId + "/audio-delay")
     .then(function (resp) {
+      if (resp.status === 403) stopAudioDelayPoll();
       if (!resp.ok)
         throw new Error("Failed to fetch room audio delay: " + resp.status);
       return resp.json();
@@ -1208,4 +1209,9 @@ window.addEventListener("beforeunload", function () {
   stopTtsWs();
 });
 
-window.setInterval(applyCurrentRoomAudioDelay, 3000);
+var audioDelayPollTimer = window.setInterval(applyCurrentRoomAudioDelay, 3000);
+
+// Without access every further poll is denied too, so stop instead of polling forever.
+function stopAudioDelayPoll() {
+  window.clearInterval(audioDelayPollTimer);
+}
