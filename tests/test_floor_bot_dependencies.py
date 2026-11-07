@@ -6,6 +6,7 @@ import re
 import shlex
 import struct
 import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -13,17 +14,23 @@ import floor_bot_container_smoke as smoke
 import pytest
 from floor_bot_container_smoke import assert_fixture_tone
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "floor-bot"))
+
+from bot import EmptyRoomTracker  # noqa: E402
+
 
 def assert_playwright_versions_match(dockerfile: str) -> None:
     """Require the browser image and actual pip install instructions to agree."""
     logical_lines = dockerfile.replace("\\\n", " ").splitlines()
-    instructions = [line.strip().split(maxsplit=1) for line in logical_lines
-                    if line.strip() and not line.lstrip().startswith("#")]
-    image_versions = [match[1] for instruction in instructions
-                      if instruction[0].upper() == "FROM"
-                      and (match := re.fullmatch(
-                          r"mcr\.microsoft\.com/playwright/python:v([\d.]+)-[\w-]+",
-                          instruction[1]))]
+    instructions = [
+        line.strip().split(maxsplit=1) for line in logical_lines if line.strip() and not line.lstrip().startswith("#")
+    ]
+    image_versions = [
+        match[1]
+        for instruction in instructions
+        if instruction[0].upper() == "FROM"
+        and (match := re.fullmatch(r"mcr\.microsoft\.com/playwright/python:v([\d.]+)-[\w-]+", instruction[1]))
+    ]
     assert len(image_versions) == 1, "Expected one pinned Playwright browser image"
     sdk_versions = []
     for instruction, command in instructions:
@@ -60,45 +67,48 @@ def assert_playwright_versions_match(dockerfile: str) -> None:
 
 def test_floor_bot_playwright_sdk_matches_bundled_browsers() -> None:
     """Catch an image-only dependency upgrade before building the container."""
-    assert_playwright_versions_match(
-        (Path(__file__).resolve().parents[1] / "floor-bot/Dockerfile").read_text()
-    )
+    assert_playwright_versions_match((Path(__file__).resolve().parents[1] / "floor-bot/Dockerfile").read_text())
 
 
-@pytest.mark.parametrize("install", [
-    'CMD ["sh", "-c", "pip install playwright && python bot.py"]',
-    'CMD ["sh", "-c", "pip install playwright>=1.40.0 && python bot.py"]',
-    'CMD ["sh", "-c", "pip install playwright==1.63.0 && python bot.py"]',
-    'RUN echo "playwright==1.40.0"\nCMD ["python", "bot.py"]',
-    'RUN echo pip install playwright==1.40.0\nCMD ["python", "bot.py"]',
-    'CMD ["sh", "-c", "pip install playwright # playwright==1.40.0"]',
-])
+@pytest.mark.parametrize(
+    "install",
+    [
+        'CMD ["sh", "-c", "pip install playwright && python bot.py"]',
+        'CMD ["sh", "-c", "pip install playwright>=1.40.0 && python bot.py"]',
+        'CMD ["sh", "-c", "pip install playwright==1.63.0 && python bot.py"]',
+        'RUN echo "playwright==1.40.0"\nCMD ["python", "bot.py"]',
+        'RUN echo pip install playwright==1.40.0\nCMD ["python", "bot.py"]',
+        'CMD ["sh", "-c", "pip install playwright # playwright==1.40.0"]',
+    ],
+)
 def test_comments_and_echoes_cannot_satisfy_sdk_pin(install: str) -> None:
     """Reject unpinned/mismatched installs even with a matching pin in dead text."""
-    dockerfile = ('FROM mcr.microsoft.com/playwright/python:v1.40.0-jammy\n'
-                  '# Old command: pip install playwright==1.40.0\n' + install)
+    dockerfile = (
+        "FROM mcr.microsoft.com/playwright/python:v1.40.0-jammy\n"
+        "# Old command: pip install playwright==1.40.0\n" + install
+    )
     with pytest.raises(AssertionError):
         assert_playwright_versions_match(dockerfile)
 
 
-@pytest.mark.parametrize("install", [
-    'RUN pip install --no-cache-dir playwright==1.40.0',
-    'CMD ["sh", "-c", "pip install --no-cache-dir playwright==1.40.0 && python bot.py"]',
-    'CMD ["pip", "install", "playwright==1.40.0"]',
-    'RUN python -m pip install playwright==1.40.0',
-])
+@pytest.mark.parametrize(
+    "install",
+    [
+        "RUN pip install --no-cache-dir playwright==1.40.0",
+        'CMD ["sh", "-c", "pip install --no-cache-dir playwright==1.40.0 && python bot.py"]',
+        'CMD ["pip", "install", "playwright==1.40.0"]',
+        "RUN python -m pip install playwright==1.40.0",
+    ],
+)
 def test_exact_executable_sdk_pin_is_accepted(install: str) -> None:
     """Accept supported shell and exec-form installs with an exact matching pin."""
-    assert_playwright_versions_match(
-        'FROM mcr.microsoft.com/playwright/python:v1.40.0-jammy\n' + install
-    )
+    assert_playwright_versions_match("FROM mcr.microsoft.com/playwright/python:v1.40.0-jammy\n" + install)
 
 
 @pytest.mark.parametrize("frequency", [0, 440, 880])
 def test_audio_check_requires_fixture_frequency(frequency: int) -> None:
     """Accept the fixture tone while rejecting silence and another steady tone."""
-    samples = [int(8000 * math.sin(2 * math.pi * frequency * index / 16000))
-               for index in range(32000)]
+    samples = [int(8000 * math.sin(2 * math.pi * frequency * index / 16000)) for index in range(32000)]
     audio = struct.pack(f"<{len(samples)}h", *samples)
     if frequency == 440:
         assert_fixture_tone(audio)
@@ -114,8 +124,7 @@ def test_audio_check_rejects_transients_and_invalid_captures(kind: str) -> None:
     if kind == "spike":
         samples[0] = 32767
     elif kind == "brief_tone":
-        samples[:4000] = [int(8000 * math.sin(2 * math.pi * 440 * index / 16000))
-                         for index in range(4000)]
+        samples[:4000] = [int(8000 * math.sin(2 * math.pi * 440 * index / 16000)) for index in range(4000)]
     elif kind == "constant":
         samples = [8000] * 32000
     else:
@@ -136,9 +145,11 @@ def test_rtsp_capture_recovers_after_timeout(monkeypatch: pytest.MonkeyPatch) ->
             raise subprocess.TimeoutExpired(command, kwargs["timeout"])
         return subprocess.CompletedProcess(command, 0, stdout=b"decoded audio", stderr=b"")
 
-    monkeypatch.setattr(smoke, "time", SimpleNamespace(
-        monotonic=lambda: clock[0], sleep=lambda seconds: clock.__setitem__(0, clock[0] + seconds)
-    ))
+    monkeypatch.setattr(
+        smoke,
+        "time",
+        SimpleNamespace(monotonic=lambda: clock[0], sleep=lambda seconds: clock.__setitem__(0, clock[0] + seconds)),
+    )
     monkeypatch.setattr(smoke.subprocess, "run", run)
     assert smoke.capture_published_audio("rtsp://test/floor") == b"decoded audio"
     assert calls == [15, 14.5]
@@ -146,7 +157,8 @@ def test_rtsp_capture_recovers_after_timeout(monkeypatch: pytest.MonkeyPatch) ->
 
 @pytest.mark.parametrize("failure", ["timeout", "timeout_with_stderr", "exit"])
 def test_rtsp_capture_reports_latest_failure_at_deadline(
-    monkeypatch: pytest.MonkeyPatch, failure: str,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
 ) -> None:
     """Both timeout and exit diagnostics survive retries until the total deadline."""
     clock = [0.0]
@@ -162,9 +174,11 @@ def test_rtsp_capture_reports_latest_failure_at_deadline(
             raise subprocess.TimeoutExpired(command, kwargs["timeout"], stderr=stderr)
         return subprocess.CompletedProcess(command, 1, stdout=b"", stderr=b"latest exit detail")
 
-    monkeypatch.setattr(smoke, "time", SimpleNamespace(
-        monotonic=lambda: clock[0], sleep=lambda seconds: clock.__setitem__(0, clock[0] + seconds)
-    ))
+    monkeypatch.setattr(
+        smoke,
+        "time",
+        SimpleNamespace(monotonic=lambda: clock[0], sleep=lambda seconds: clock.__setitem__(0, clock[0] + seconds)),
+    )
     monkeypatch.setattr(smoke.subprocess, "run", run)
     with pytest.raises(AssertionError) as error:
         smoke.capture_published_audio("rtsp://test/floor")
@@ -175,3 +189,40 @@ def test_rtsp_capture_reports_latest_failure_at_deadline(
         assert "latest timeout detail" in detail
     assert calls == [15, 14.5]
     assert clock[0] == 30
+
+
+def test_empty_room_tracker_leaves_after_grace_period() -> None:
+    tracker = EmptyRoomTracker(grace_seconds=10)
+
+    assert tracker.update(1, now=100.0) is False
+    assert tracker.update(1, now=109.9) is False
+    assert tracker.update(1, now=110.0) is True
+
+
+def test_empty_room_tracker_resets_when_human_returns() -> None:
+    tracker = EmptyRoomTracker(grace_seconds=10)
+
+    assert tracker.update(1, now=100.0) is False
+    assert tracker.update(2, now=105.0) is False
+    assert tracker.update(1, now=106.0) is False
+    assert tracker.update(1, now=115.9) is False
+    assert tracker.update(1, now=116.0) is True
+
+
+def test_empty_room_tracker_resets_when_count_is_unknown() -> None:
+    tracker = EmptyRoomTracker(grace_seconds=10)
+
+    assert tracker.update(1, now=100.0) is False
+    assert tracker.update(None, now=105.0) is False
+    assert tracker.update(1, now=106.0) is False
+    assert tracker.update(1, now=116.0) is True
+
+
+@pytest.mark.parametrize("participant_count", [0, 2, 3, None])
+def test_empty_room_tracker_does_not_leave_without_confirmed_empty_room(
+    participant_count: int | None,
+) -> None:
+    tracker = EmptyRoomTracker(grace_seconds=10)
+
+    assert tracker.update(1, now=100.0) is False
+    assert tracker.update(participant_count, now=105.0) is False

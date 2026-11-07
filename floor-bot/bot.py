@@ -19,6 +19,24 @@ SECRET_VALUE = re.compile(
 )
 
 
+class EmptyRoomTracker:
+    """Track how long the bot is alone in a meeting."""
+
+    def __init__(self, grace_seconds: float):
+        self.grace_seconds = max(0.0, grace_seconds)
+        self.empty_since: float | None = None
+
+    def update(self, participant_count: int | None, now: float) -> bool:
+        if participant_count != 1:
+            self.empty_since = None
+            return False
+
+        if self.empty_since is None:
+            self.empty_since = now
+
+        return now - self.empty_since >= self.grace_seconds
+
+
 class SubprocessManager:
     def __init__(self):
         self.rooms: Dict[str, subprocess.Popen] = {}
@@ -52,7 +70,9 @@ import asyncio
 import os
 import signal
 import subprocess
+import time
 from playwright.async_api import async_playwright
+from bot import EmptyRoomTracker
 
 class AgentFailure(Exception):
     pass
@@ -112,6 +132,8 @@ async def run_capture():
     ffmpeg_proc = None
     user_data_dir = None
     exit_code = 0
+    monitor_task = None
+    exit_stage = "leaving"
 
     try:
         import tempfile
@@ -216,8 +238,125 @@ async def run_capture():
 
         print("BOT_STAGE:in_meeting", flush=True)
 
+        try:
+            grace_seconds = max(
+                0.0,
+                float(os.environ.get("BOT_EMPTY_ROOM_GRACE_SECONDS", "90")),
+            )
+        except (TypeError, ValueError):
+            print(
+                "Invalid BOT_EMPTY_ROOM_GRACE_SECONDS; using 90 seconds.",
+                flush=True,
+            )
+            grace_seconds = 90.0
+        tracker = EmptyRoomTracker(grace_seconds)
+        previous_join_count = 0
+
+        async def monitor_empty_room():
+            nonlocal previous_join_count
+            while True:
+                await asyncio.sleep(5)
+
+                try:
+                    diagnostic = await page.evaluate('''() => {
+                        const c = window.APP?.conference;
+                        const getValue = (name) => {
+                            const value = c?.[name];
+                            if (typeof value !== "function") {
+                                return value ?? null;
+                            }
+                            try {
+                                return value.call(c) ?? null;
+                            } catch (_) {
+                                return null;
+                            }
+                        };
+
+                        const event = window.JitsiMeetJS?.events?.conference?.USER_JOINED;
+
+                        if (c && typeof c.on === "function" && event) {
+                            window.__floorBotJoinCount ??= 0;
+
+                            if (window.__floorBotJoinListenerConference !== c) {
+                                c.on(event, () => {
+                                    window.__floorBotJoinCount += 1;
+                                });
+                                window.__floorBotJoinListenerConference = c;
+                            }
+                        }
+
+                        return {
+                            membersCount: getValue("membersCount"),
+                            memberIds: getValue("listMembersIds"),
+                            myUserId: getValue("getMyUserId"),
+                            joined: getValue("isJoined"),
+                            joinCount: window.__floorBotJoinCount ?? 0,
+                        };
+                    }''')
+
+                    if diagnostic.get("joined") is not True:
+                        tracker.update(None, time.monotonic())
+                        continue
+
+                    join_count = diagnostic.get("joinCount", 0)
+
+                    if join_count > previous_join_count:
+                        tracker.update(None, time.monotonic())
+
+                    previous_join_count = join_count
+
+                    member_ids = diagnostic.get("memberIds")
+                    my_user_id = diagnostic.get("myUserId")
+
+                    if isinstance(member_ids, list) and my_user_id:
+                        participant_count = len(member_ids)
+                        if my_user_id not in member_ids:
+                            participant_count += 1
+                    else:
+                        participant_count = None
+
+                    should_leave = tracker.update(
+                        participant_count, time.monotonic()
+                    )
+
+                    empty_for = (
+                        time.monotonic() - tracker.empty_since
+                        if tracker.empty_since is not None
+                        else 0
+                    )
+                    print(
+                        f"Jitsi diagnostic: {diagnostic!r}; "
+                        f"participant_count={participant_count}; "
+                        f"empty_for={empty_for:.1f}s",
+                        flush=True,
+                    )
+
+                    if should_leave:
+                        print(
+                            f"Bot alone for {grace_seconds}s; leaving Jitsi.",
+                            flush=True,
+                        )
+                        await page.evaluate('''() => {
+                            const c = window.APP?.conference;
+                            if (typeof c?.hangup === "function") {
+                                c.hangup();
+                            } else if (typeof c?.leaveRoom === "function") {
+                                c.leaveRoom();
+                            }
+                        }''')
+                        return "left_empty_room"
+
+                except Exception as exc:
+                    tracker.update(None, time.monotonic())
+                    print(
+                        f"Could not inspect Jitsi participants: {exc}",
+                        flush=True,
+                    )
+
+        monitor_task = asyncio.create_task(monitor_empty_room())
+
         async def stream_audio():
-            nonlocal ffmpeg_proc
+            nonlocal ffmpeg_proc, exit_stage
             # Retry loop: ffmpeg can exit if RTSP or PulseAudio isn't ready yet
             max_retries = 5
             retry_delay = 3
@@ -253,11 +392,30 @@ async def run_capture():
                             print(f"ffmpeg: {text}", flush=True)
 
                 stderr_task = asyncio.create_task(_drain_stderr(ffmpeg_proc))
+                ffmpeg_wait_task = asyncio.create_task(ffmpeg_proc.wait())
+                done, _ = await asyncio.wait(
+                    {ffmpeg_wait_task, monitor_task},
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
 
-                await ffmpeg_proc.wait()
+                if monitor_task in done:
+                    exit_stage = monitor_task.result()
+
+                    if ffmpeg_proc.returncode is None:
+                        ffmpeg_proc.terminate()
+                        try:
+                            await asyncio.wait_for(
+                                ffmpeg_proc.wait(), timeout=3
+                            )
+                        except asyncio.TimeoutError:
+                            ffmpeg_proc.kill()
+                            await ffmpeg_proc.wait()
+
+                    await stderr_task
+                    return
+
+                rc = ffmpeg_wait_task.result()
                 await stderr_task
-
-                rc = ffmpeg_proc.returncode
                 print(f"ffmpeg exited with code {rc}", flush=True)
 
                 if rc == 0:
@@ -267,7 +425,13 @@ async def run_capture():
 
                 if attempt < max_retries:
                     print(f"Retrying ffmpeg in {retry_delay}s...", flush=True)
-                    await asyncio.sleep(retry_delay)
+                    done, _ = await asyncio.wait(
+                        {monitor_task},
+                        timeout=retry_delay,
+                    )
+                    if monitor_task in done:
+                        exit_stage = monitor_task.result()
+                        return
                     retry_delay = min(retry_delay * 2, 15)
                 else:
                     print("ffmpeg failed after all retries", flush=True)
@@ -296,8 +460,17 @@ async def run_capture():
     except AgentFailure as failure:
         print(f"BOT_FAILURE:{failure}", flush=True)
         exit_code = 3
+
     finally:
-        print("BOT_STAGE:leaving", flush=True)
+        if monitor_task is not None and not monitor_task.done():
+            monitor_task.cancel()
+            try:
+                await monitor_task
+            except asyncio.CancelledError:
+                pass
+
+        print(f"BOT_STAGE:{exit_stage}", flush=True)
+
         if ffmpeg_proc is not None and ffmpeg_proc.returncode is None:
             ffmpeg_proc.terminate()
             try:
@@ -312,10 +485,21 @@ async def run_capture():
                 await asyncio.wait_for(browser.close(), timeout=4)
             except Exception:
                 pass
+
         if pw is not None:
-            await pw.stop()
+            try:
+                await pw.stop()
+            except Exception:
+                pass
+
         if pulse_proc is not None and pulse_proc.poll() is None:
             pulse_proc.terminate()
+            try:
+                pulse_proc.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                pulse_proc.kill()
+                pulse_proc.wait()
+
         if os.path.exists(pulse_socket):
             try:
                 os.remove(pulse_socket)
@@ -442,15 +626,28 @@ class RequestHandler(BaseHTTPRequestHandler):
                     stage = manager.room_states.get(process_key, "unknown")
                     meta = manager.room_meta.get(process_key, {})
                     if proc.poll() is not None:
+                        if stage == "left_empty_room" and proc.returncode == 0:
+                            status[process_key] = {
+                                **meta,
+                                "state": "stopped",
+                                "stage": "left_empty_room",
+                                "exit_code": proc.returncode,
+                            }
+                        else:
+                            status[process_key] = {
+                                **meta,
+                                "state": "dead",
+                                "stage": "dead",
+                                "exit_code": proc.returncode,
+                                "failure": manager.room_failures.get(process_key),
+                            }
+                    else:
                         status[process_key] = {
                             **meta,
-                            "state": "dead",
-                            "stage": "dead",
-                            "exit_code": proc.returncode,
-                            "failure": manager.room_failures.get(process_key),
+                            "state": "healthy",
+                            "stage": stage,
+                            "pid": proc.pid,
                         }
-                    else:
-                        status[process_key] = {**meta, "state": "healthy", "stage": stage, "pid": proc.pid}
             self.send_response(200)
             self.send_header("Content-type", "application/json")
             self.end_headers()
