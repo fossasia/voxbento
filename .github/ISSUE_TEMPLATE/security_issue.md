@@ -8,7 +8,7 @@ assignees: ''
 ---
 
 ## 🛑 Security Issue Reporting
-If you have discovered a security vulnerability, please do NOT report it here if it is critical. Instead, email the maintainers directly.
+Do not report vulnerabilities in a public issue. Email voxbento.dev@gmail.com instead, as described in [SECURITY.md](../../SECURITY.md). Use this template only for security hardening that is not exploitable, such as a missing header or a weak default.
 
 ## Describe the Security Issue
 A clear and concise description of the security vulnerability.
