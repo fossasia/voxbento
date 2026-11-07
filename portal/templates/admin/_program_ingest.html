@@ -4,7 +4,7 @@
   <div class='program-ingest-head'>
     <div>
       <p class='program-ingest-eyebrow'>Live source</p>
-      <h3>Program stream ingest</h3>
+      <h3>Streaming software</h3>
       <p class='program-ingest-lede'>Send this room's program feed to VoxBento for live captions, translation, and speech.</p>
     </div>
     <span id='program-state-badge' class='program-state-badge' data-state='loading'>Checking status</span>
@@ -15,14 +15,14 @@
     <span class='program-signal-arrow' aria-hidden='true'>→</span>
     <span class='program-signal-node program-signal-node--active'>VoxBento</span>
     <span class='program-signal-arrow' aria-hidden='true'>→</span>
-    <span class='program-signal-output'>Captions · Translation · TTS</span>
+    <span class='program-signal-output'>Captions · Translation · Voice</span>
   </div>
   <div class='program-signal-path' data-mode-panel='rtmps_relay' hidden aria-label='OBS sends one RTMPS stream to VoxBento, which relays it to YouTube and produces captions, translations, and speech'>
     <span class='program-signal-node'>OBS</span>
     <span class='program-signal-arrow' aria-hidden='true'>→</span>
     <span class='program-signal-node program-signal-node--active'>VoxBento</span>
     <span class='program-signal-arrow' aria-hidden='true'>→</span>
-    <span class='program-signal-output'>YouTube + Captions · Translation · TTS</span>
+    <span class='program-signal-output'>YouTube + Captions · Translation · Voice</span>
   </div>
 
   <fieldset class='program-mode-picker'>
@@ -192,7 +192,7 @@
       <div>
         <button type='button' class='btn btn-outline' data-ingest-action='rotate'>Rotate token</button>
         <button type='button' class='btn btn-outline program-revoke-button' data-ingest-action='revoke'>Revoke token</button>
-        <button type='button' class='btn btn-outline' data-ingest-action='disable'>Switch to Jitsi bot</button>
+        <button type='button' class='btn btn-outline' data-ingest-action='disable'>Switch to the online meeting</button>
       </div>
     </div>
   </div>

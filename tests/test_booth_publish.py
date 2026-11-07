@@ -218,3 +218,22 @@ async def test_socket_can_rejoin_with_its_own_id(booth):
     )
     await _handle_join(ws, own, {"role": "interpreter", "display_name": "Active", "participant_id": active})
     assert next(m for m in ws.sent if m["type"] == "booth:joined")["participant_id"] == active
+
+
+@pytest.mark.anyio
+async def test_reconnected_socket_rejoins_with_its_previous_id(booth):
+    """After its socket drops, an interpreter's new socket gets its ID back (the booth page relies on this)."""
+    _, (active, backup) = booth
+    await booths.leave_participant(BOOTH_ID, active, "English", PATH)
+    assert booths.get_booth_sync(BOOTH_ID).active_interpreter_id == backup
+
+    ws = MockWebSocket()
+    reconnected = Session(
+        booth_id=BOOTH_ID, participant_id=None, language="English", channel_id=PATH, granted_role="interpreter"
+    )
+    await _handle_join(ws, reconnected, {"role": "interpreter", "display_name": "Active", "participant_id": active})
+    joined = next(m for m in ws.sent if m["type"] == "booth:joined")
+    assert joined["participant_id"] == active
+    # The backup took over while the socket was down; rejoining does not take the booth back.
+    assert joined["state"]["active_interpreter_id"] == backup
+    assert "ticket" not in await request_ticket(active)

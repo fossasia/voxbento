@@ -41,20 +41,13 @@ Interpreters monitor the floor session and broadcast high-fidelity translation d
 - **⚡ Sub-Second Listener Playback:** Attendees receive ultra-low latency audio via WebRTC (WHEP) powered by MediaMTX, scaling effortlessly to thousands of listeners.
 - **🤖 Live AI Transcription & Translation:** Multi-provider speech-to-text (Faster-Whisper, OpenAI, Deepgram, NVIDIA Parakeet, ElevenLabs) paired with real-time LLM translations guided by custom personas, styles, and domain vocabulary glossaries.
 - **🗣️ Direct-Push Text-to-Speech (TTS):** Synthesize live translated speech on the fly (Deepgram Aura or self-hosted Supertonic ONNX), streamed directly to attendees over binary WebSocket frames.
-- **📡 Program Stream Ingest & YouTube Relay:** Ingest clean conference audio directly from hardware video switchers (OBS, ATEM, vMix) via authenticated HTTPS WHIP, or straight from a browser tab on the sound-desk computer with the program audio sender (mute, sound check, auto-reconnect), with optional automated RTMPS forwarding to YouTube.
+- **📡 Program Stream Ingest & YouTube Relay:** Send conference floor audio from an encoder or browser, with optional RTMPS forwarding to YouTube.
 - **🎛️ Mission Control & Coordination:** Real-time booth status monitoring, live audio meters, in-booth team chat, and coordinator controls via FastAPI WebSockets.
 - **💻 VoxBento Local:** Sovereign, 100% offline desktop application for private AI meeting intelligence and minutes on macOS, Windows, and Linux.
 
 ---
 
 ## 🏗️ Architecture
-
-**Signup abuse protection:** Registration limits each resolved client IP to 20
-attempts per minute. Enable server-verified Cloudflare Turnstile by configuring
-`TURNSTILE_SITE_KEY`, `TURNSTILE_SECRET_KEY`, and
-`REGISTRATION_TURNSTILE_ENABLED=true`. Turnstile is off by default for compatible
-rollout; see [registration protection](docs/registration-protection.md) for
-setup, trusted proxies, failure behavior and rollback.
 
 VoxBento isolates the real-time media plane from application coordination. Media streams flow directly through **MediaMTX**, ensuring that Python never processes or relays live interpreter microphone data.
 
@@ -110,10 +103,7 @@ uv sync --all-groups
 
 For **NEW local setups only**, copy the example configuration and generate separate strong secrets. Do not overwrite an existing `.env` or rotate existing keys with this command; it refuses to replace an existing file. The generated file is owner-readable only.
 
-The encryption key protects stored provider keys and queued email (sign-in links,
-invitations and password resets). Outgoing email is sent from a durable outbox once
-`SMTP_HOST` is set; Admins edit email templates and see delivery status in
-**Admin → Emails**. Email branding defaults to the transparent VoxBento V mark.
+The encryption key protects stored provider keys and queued email.
 
 ```bash
 uv run python -c "
@@ -149,11 +139,10 @@ Defaults keep debug disabled (`DEBUG=false`) and startup secret checks active. D
 
 For production, configure `BOOTH_ACCESS_TOKEN` and `MEDIAMTX_AUTH_HOOK_SECRET` with separate strong values, for example from `openssl rand -hex 32`. Startup rejects a missing or weak `BOOTH_ACCESS_TOKEN` and a missing `MEDIAMTX_AUTH_HOOK_SECRET`; it does not measure the hook secret's strength, so keep it strong and private.
 
-For self-hosted domains, set `PUBLIC_BASE_URL` in `.env` to your public URL, for
-example `PUBLIC_BASE_URL=https://interpret.example.com`. It defaults to
-`https://voxbento.com` and is used for email links and canonical URLs in
-`/sitemap.xml`. Sitemap URL generation accepts trailing slashes and preserves any
-configured path prefix.
+For self-hosted domains, set `PUBLIC_BASE_URL` in `.env` to your public URL
+for email links and canonical URLs. See the
+[deployment guide](website/docs/configuration/deployment.mdx) for production setup
+and [registration protection](docs/registration-protection.md) for signup controls.
 
 ### 4. Run the Stack
 
@@ -173,40 +162,8 @@ uv run uvicorn fastapi_app:app --reload --port 8000
 
 Once running, access the application at **`http://localhost:8000`**.
 
-### Set up an event's rooms
-
-In **My events**, create or open an event and choose **Add a room**. The guided
-form collects the room name, spoken language and listener languages, then one
-delivery per language: **Interpreter** (a person in a booth), **AI voice**
-(translated and read aloud, with text to read along) or **AI text** (translated
-text only). The **Captions** step covers the speaker's own words: captions are
-optional for interpreter-only rooms and always on when any language uses AI. The
-AI services are chosen automatically and can be changed under **AI services ·
-Advanced**. Rooms that previously offered a language as both an interpreter and
-AI ask the organizer to choose one before saving.
-When editing a room, choose **Review changes** to see the changes and any booth
-removal warnings on a separate screen, then **Save changes**. **Back to edit**
-returns to your answers without saving. Pressing Enter before review advances
-to review instead of saving immediately.
-
-The service choices use the event's configured API keys and installed server
-dependencies. Cloud speech recognition also requires **Enable External
-Transcription APIs** on the event's **API keys** page. Self-hosted translation
-uses NLLB; self-hosted voice needs the `supertonic` extra (included in the Docker
-image). Native installations can install it with
-`uv sync --python 3.13 --dev --extra supertonic`. NVIDIA additionally requires the
-`nvidia` extra and `NVIDIA_FUNCTION_ID`. Unsupported local translation or AI voice
-languages are explained next to the language and again when saving; choose AI
-text or another voice service for languages without voice support.
-
-After saving, invite interpreters from **Team**, connect audio on **Floor source**
-for captions and AI, and share the listener page. **Change languages & captions**
-reopens the same setup; **Captions & translation** retains advanced model, voice,
-prompt, and vocabulary controls. Removing an idle interpreter language also
-removes its booth, invite links, and assignments. Live booths are kept with a
-notice, and existing booths matching the spoken language remain selected until
-explicitly removed. Event owners and Admins can change setup; coordinators retain
-their operational access.
+For event and room setup, see the [events and rooms guide](website/docs/admin/events-and-rooms.mdx).
+For pipeline details and advanced configuration, see [how it works](website/docs/how-it-works.mdx).
 
 ---
 
