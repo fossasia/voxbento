@@ -423,7 +423,8 @@ async def reconcile_room(
     if started is True:
         current.healthy_since = None
     if started is True or current.worker_started_at is None:
-        current.worker_started_at = now
+        # Read the clock again: replacing the old worker can take a while, and the grace period starts now.
+        current.worker_started_at = monotonic()
     last_audio = audio_progress.get(booth_id)
     if now - (last_audio or current.worker_started_at) > settings.program_ingest_stall_secs:
         await _stop_worker(current, booth_id)

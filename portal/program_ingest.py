@@ -728,7 +728,8 @@ async def reconcile_processing(
     )
     current.worker_config = config
     if started is True or current.worker_started_at is None:
-        current.worker_started_at = now
+        # Read the clock again: replacing the old worker can take a while, and the grace period starts now.
+        current.worker_started_at = time.monotonic()
     last_audio = audio_progress.get(booth_id)
     if now - (last_audio or current.worker_started_at) > settings.program_ingest_stall_secs:
         current.state, current.reason = "degraded", "Audio decoder stalled or failed; restarting the processing worker."

@@ -91,11 +91,15 @@ class TranscriptionWorkerSession:
             self.task.cancel()
 
     async def wait_until_stopped(self):
+        """Wait for the session task to finish without letting a cancelled caller cut its cleanup short."""
         if self.task:
             try:
-                await self.task
+                await asyncio.shield(self.task)
             except asyncio.CancelledError:
-                pass
+                # The worker's own cancellation is how stop() ends it; the caller's must propagate.
+                current = asyncio.current_task()
+                if current is not None and current.cancelling():
+                    raise
             except Exception as e:
                 logger.error(f"[{self.booth_id}][{self.session_id}] Task ended with exception: {e}")
 

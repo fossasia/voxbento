@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import httpx
@@ -160,6 +161,7 @@ async def environment(request, monkeypatch):
             provider,
         )
     monkeypatch.setattr(meeting, "monotonic", lambda: env.clock)
+    monkeypatch.setattr(ingest, "time", SimpleNamespace(monotonic=lambda: env.clock))
     try:
         yield env
     finally:
@@ -318,18 +320,28 @@ async def test_key_refresh_is_opt_in_for_other_worker_callers(environment: Envir
 
 
 @pytest.mark.anyio
-async def test_key_rotation_resets_worker_start_time(environment: Environment) -> None:
-    """Replacement workers receive a fresh startup grace period."""
+async def test_key_rotation_resets_worker_start_time(environment: Environment, monkeypatch) -> None:
+    """Replacement workers get a startup grace period that begins after the old worker's teardown."""
     env = environment
     await env.tick()
     assert await env.next_call() == (OLD_KEY, "en")
     current_health = meeting.health[env.room_id] if env.source == "meeting" else ingest.health[env.room_id]
     current_health.worker_started_at = env.clock - 100
+    original = worker.active_workers[env.booth_id]
+    original_wait = original.wait_until_stopped
 
+    async def slow_teardown() -> None:
+        """Let the old worker's teardown outlast the stall window."""
+        env.clock += 1000
+        await original_wait()
+
+    monkeypatch.setattr(original, "wait_until_stopped", slow_teardown)
     await env.save_key(NEW_KEY)
+    tick_started = env.clock + 1
     await env.tick()
     assert await env.next_call() == (NEW_KEY, "en")
     assert current_health.worker_started_at == env.clock
+    assert current_health.worker_started_at > tick_started
 
 
 @pytest.mark.anyio
@@ -388,3 +400,49 @@ async def test_key_refresh_waits_for_stopped_worker_cleanup(environment: Environ
     assert original.task.done()
     assert refresh.result() is True
     assert await env.next_call() == (NEW_KEY, "en")
+
+
+@pytest.mark.anyio
+async def test_cancelled_key_refresh_lets_old_worker_finish_cleanup(environment: Environment, monkeypatch) -> None:
+    """Cancelling the refreshing caller must not cancel the old worker's stopped webhook and cleanup."""
+    env = environment
+    await env.tick()
+    assert await env.next_call() == (OLD_KEY, "en")
+    original = worker.active_workers[env.booth_id]
+    cleanup_started = asyncio.Event()
+    release_cleanup = asyncio.Event()
+    cleanup_finished = asyncio.Event()
+
+    async def enqueue_webhook(event_name: str, payload: dict) -> None:
+        """Hold the old session inside its stopped webhook until the test releases it."""
+        if event_name == "booth.transcription.stopped" and payload["session_id"] == original.session_id:
+            cleanup_started.set()
+            await release_cleanup.wait()
+            cleanup_finished.set()
+
+    monkeypatch.setattr(worker._wh_worker, "enqueue_webhook", enqueue_webhook)
+    refresh = asyncio.create_task(
+        worker.start_transcription_worker(
+            "rotation-test",
+            "floor",
+            env.booth_id,
+            AsyncMock(),
+            "deepgram",
+            "nova-2",
+            ProviderConfig(api_key=NEW_KEY),
+            transcription_language="en",
+            room_id=env.room_id,
+            restart_on_key_change=True,
+        )
+    )
+    await asyncio.wait_for(cleanup_started.wait(), timeout=3)
+    refresh.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await refresh
+    assert not original.task.done()
+
+    release_cleanup.set()
+    await asyncio.wait_for(cleanup_finished.wait(), timeout=3)
+    await asyncio.wait_for(original.wait_until_stopped(), timeout=3)
+    assert original.state == worker.State.STOPPED
+    assert env.provider.calls.empty()
