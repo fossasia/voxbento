@@ -6,6 +6,7 @@ room and booth pages. Which roles can be given where comes from portal.roles.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
@@ -53,6 +54,8 @@ from portal.roles import (
 )
 from portal.websockets.manager import manager
 from portal.websockets.revocation import revoke_membership_push
+
+logger = logging.getLogger(__name__)
 
 # What each role means, shown next to the role picker.
 ROLE_HELP = {
@@ -371,7 +374,8 @@ async def revoke_invite_link(session: AsyncSession, *, team: Team, token: str) -
 
         invalidate_token_revocation_cache(public_id)
     except Exception:
-        pass
+        # Still disconnect active sockets if the cache optimization fails.
+        logger.warning("Could not invalidate invite revocation cache; continuing socket revocation")
 
     await asyncio.shield(manager.close_token_sessions(public_id, booth_id=booth_id))
 

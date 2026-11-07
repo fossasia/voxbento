@@ -243,7 +243,8 @@ class TranslationWorker:
                             if prog and prog.get("status") == "downloading":
                                 timeout_val = 0.1  # Fail fast if downloading
                         except Exception:
-                            pass
+                            # Download status is advisory; inference keeps its normal timeout.
+                            logger.warning("Local model download status unavailable; using standard inference timeout")
 
                     translated_text = await asyncio.wait_for(
                         self._call_llm(

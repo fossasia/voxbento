@@ -199,7 +199,8 @@ class ConnectionManager:
             elif transport is not None and hasattr(transport, "close"):
                 transport.close()
         except Exception:
-            pass
+            # Authorization is already revoked; transport cleanup must not undo it.
+            logger.warning("Could not force-abort revoked WebSocket transport")
 
     async def close_session(
         self,
