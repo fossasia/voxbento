@@ -2040,6 +2040,8 @@ BOOTH_WORKER_NOTICES = {
     "restarted": "The caption worker was restarted with the new settings.",
     "stopped": "The caption worker was stopped.",
     "kept": "Nothing changed, so the caption worker kept running.",
+    "off": "Captions stay off.",
+    "failed": "The caption worker could not be started, so there are no live captions right now. Try saving again in a moment.",
 }
 BOOTH_IDLE_WORKER_NOTICE = "These settings are used the next time an interpreter goes live."
 
@@ -2446,7 +2448,9 @@ async def admin_transcription_settings(
         event = await get_event_by_id(session, event_id)
         if event is None:
             raise HTTPException(status_code=404, detail="Event not found.")
-        if provider_enum != ProviderEnum.LOCAL:
+        # Turning captions off must work even if the saved service lost its key, so the key and
+        # external-API checks only apply when captions will be on.
+        if transcription_enabled and provider_enum != ProviderEnum.LOCAL:
             if not event.transcription_api_enabled:
                 raise HTTPException(status_code=400, detail="External API transcription is disabled for this event.")
             if not get_api_key(event, provider_enum):
@@ -2469,7 +2473,7 @@ async def admin_transcription_settings(
             if not transcription_enabled:
                 await stop_transcription_worker(bid)
                 await broadcast_transcription(bid, "")
-                worker = "stopped" if old_enabled else ""
+                worker = "stopped" if old_enabled else "off"
             elif (
                 old_enabled != transcription_enabled
                 or old_provider != transcription_provider
@@ -2480,17 +2484,21 @@ async def admin_transcription_settings(
                 api_key = get_api_key(event, ProviderEnum(transcription_provider))
                 config = ProviderConfig(api_key=api_key)
                 await asyncio.sleep(0.1)
-                await start_transcription_worker(
-                    event.slug,
-                    db_booth.language_code,
-                    bid,
-                    broadcast_transcription,
-                    transcription_provider,
-                    transcription_model,
-                    config,
-                    room_id=db_booth.room_id,
-                )
-                worker = "restarted"
+                try:
+                    await start_transcription_worker(
+                        event.slug,
+                        db_booth.language_code,
+                        bid,
+                        broadcast_transcription,
+                        transcription_provider,
+                        transcription_model,
+                        config,
+                        room_id=db_booth.room_id,
+                    )
+                    worker = "restarted"
+                except ValueError:
+                    logger.warning("Could not start caption worker for %s", bid, exc_info=True)
+                    worker = "failed"
     return safe_redirect(
         url=_booth_saved_url(request, event_id, room_id, booth_id, "captions", worker),
         status_code=status.HTTP_303_SEE_OTHER,

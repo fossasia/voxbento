@@ -28,7 +28,7 @@ class FakeElement {
 const NAMES = ['overview', 'captions', 'settings'];
 
 // A page with a tab bar, one panel per tab and one link that opens a tab.
-function createPage({ hash = '', stored = null, storage = {} } = {}) {
+function createPage({ hash = '', stored = null, storage = {}, options = {} } = {}) {
   const tabs = NAMES.map((name) => new FakeElement({ 'data-booth-tab': name }));
   const panels = NAMES.map((name) => new FakeElement({ 'data-booth-panel': name }));
   const link = new FakeElement({ 'data-booth-tab-link': 'captions' });
@@ -52,7 +52,7 @@ function createPage({ hash = '', stored = null, storage = {} } = {}) {
     setItem: (key, value) => { written[key] = value; },
   };
 
-  initTabs({ name: 'booth', storageKey: 'booth-tab:7' });
+  initTabs({ name: 'booth', storageKey: 'booth-tab:7', ...options });
   return { tabs, panels, link, tabList, written, replaced };
 }
 
@@ -86,6 +86,15 @@ function key(name) {
 assert.deepEqual(shown(createPage({ stored: 'settings' })), ['settings']);
 assert.deepEqual(shown(createPage({ hash: '#nonsense' })), ['overview']);
 assert.deepEqual(shown(createPage({ stored: 'gone' })), ['overview']);
+
+// A page can choose the opening tab itself (the room page maps old names); an empty answer
+// falls back to the remembered tab, then to the page's default.
+{
+  const options = { resolveInitial: (hash) => ({ old: 'captions' })[hash] || '', fallback: 'settings' };
+  assert.deepEqual(shown(createPage({ hash: '#old', options })), ['captions'], 'an old name is mapped');
+  assert.deepEqual(shown(createPage({ stored: 'overview', options })), ['overview'], 'then the remembered tab');
+  assert.deepEqual(shown(createPage({ options })), ['settings'], 'then the default');
+}
 
 // Clicking a tab opens its panel and remembers it.
 {

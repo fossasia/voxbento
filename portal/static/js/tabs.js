@@ -5,7 +5,10 @@
 // is remembered per page, so saving a setting (which reloads the page) returns to the
 // same tab; a #hash in the link wins, so a redirect can choose the tab.
 
-export function initTabs({ name, storageKey }) {
+// resolveInitial(hash) may pick the opening tab from the #hash and the URL (the room page
+// uses it for old tab names and "back from setup"); an empty answer falls back to the
+// remembered tab, then to `fallback` (default: the first tab).
+export function initTabs({ name, storageKey, resolveInitial = (hash) => hash, fallback = '' }) {
   const tabList = document.querySelector(`[data-${name}-tabs]`);
   if (!tabList) return;
   const tabAttr = `data-${name}-tab`;
@@ -48,10 +51,10 @@ export function initTabs({ name, storageKey }) {
     });
   });
 
-  let initial = location.hash.slice(1);
+  let initial = resolveInitial(location.hash.slice(1));
   if (!initial) {
     try { initial = sessionStorage.getItem(storageKey) || ''; } catch (err) { console.debug('No remembered tab', err); }
   }
   tabList.hidden = false;
-  show(initial);
+  show(initial || fallback);
 }

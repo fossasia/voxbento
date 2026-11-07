@@ -2347,6 +2347,58 @@ class TestBoothCRUD:
             assert "The caption worker was stopped." in page
             assert calls == ["stop", "start", "stop"]
 
+            # Captions were already off and stay off: say so instead of "next time an interpreter goes live".
+            location, page = await save(c, enabled=False)
+            assert location == f"{url}?saved=captions&worker=off#captions"
+            assert "Caption settings saved. Captions stay off." in page
+            assert "next time an interpreter" not in page
+            assert calls == ["stop", "start", "stop", "stop"]
+
+            # The worker cannot start (system at capacity): the save is kept and the page says so.
+            async def full(*_args, **_kwargs):
+                raise ValueError("System at maximum capacity (10 concurrent transcription booths).")
+
+            monkeypatch.setattr(admin, "start_transcription_worker", full)
+            location, page = await save(c, enabled=True)
+            assert location == f"{url}?saved=captions&worker=failed#captions"
+            assert "The caption worker could not be started" in page
+            assert calls == ["stop", "start", "stop", "stop", "stop"]
+
+    @pytest.mark.anyio
+    async def test_captions_can_be_turned_off_when_the_saved_service_lost_its_key(self, admin_cookie, seed_event):
+        """Only turning captions on needs a working key; turning them off must never be blocked (#1081)."""
+        event, room, booth = seed_event
+        url = f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/"
+        await _update_row(type(booth), booth.id, transcription_enabled=True, transcription_provider="deepgram", transcription_model="nova-2")
+        data = {"transcription_provider": "deepgram", "transcription_model": "nova-2"}
+        async with _client() as c:
+            # On with no key for the service: refused.
+            refused = await c.post(
+                f"{url}transcription-settings",
+                data={**data, "transcription_enabled": "true"},
+                cookies=admin_cookie,
+                follow_redirects=False,
+            )
+            # Off with the same service: saved, still the same service and model.
+            off = await c.post(f"{url}transcription-settings", data=data, cookies=admin_cookie, follow_redirects=False)
+            # A service or model name that does not exist is still rejected.
+            bogus = await c.post(
+                f"{url}transcription-settings",
+                data={"transcription_provider": "deepgram", "transcription_model": "nope"},
+                cookies=admin_cookie,
+                follow_redirects=False,
+            )
+        assert refused.status_code == 400
+        assert off.status_code == 303
+        assert bogus.status_code == 400
+        from portal.database import get_session
+
+        async with get_session() as sess:
+            saved = await sess.get(type(booth), booth.id)
+        assert saved.transcription_enabled is False
+        assert saved.transcription_provider == "deepgram"
+        assert saved.transcription_model == "nova-2"
+
     @pytest.mark.anyio
     async def test_booth_detail_shows_next_steps_until_the_booth_is_configured(self, admin_cookie, seed_event):
         from portal.database import create_invite_token, get_session
