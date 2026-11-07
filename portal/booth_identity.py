@@ -261,6 +261,20 @@ def validate_language_code(code: str) -> str:
     return normalised
 
 
+def validate_booth_language_code(code: str) -> str:
+    """Validate a language code for a real booth.
+
+    ``floor`` marks the room floor captions, not a language, so it is rejected
+    here even though :func:`validate_language_code` accepts it when building a
+    stream path. A booth carrying it would share the floor MediaMTX path and its
+    captions would be stored with no booth id, mixed into the floor transcript.
+    """
+    normalised = validate_language_code(code)
+    if normalised == "floor":
+        raise ValueError("'floor' is not a valid booth language for a room.")
+    return normalised
+
+
 def validate_instance(instance: str) -> BoothInstance:
     """Validate a booth instance identifier.
 

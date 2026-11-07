@@ -21,7 +21,12 @@ from portal.auth import (
     resolve_booth_role,
     security,
 )
-from portal.booth_identity import make_booth_id, make_mediamtx_path, validate_event_slug, validate_language_code
+from portal.booth_identity import (
+    make_booth_id,
+    make_mediamtx_path,
+    validate_booth_language_code,
+    validate_event_slug,
+)
 from portal.config import settings
 from portal.database import (
     create_invite_token,
@@ -664,7 +669,7 @@ async def event_booth_state(
     """Event-scoped booth state — never auto-creates a booth."""
     try:
         slug = validate_event_slug(event_slug)
-        code = validate_language_code(language_code)
+        code = validate_booth_language_code(language_code)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     if room_id is None:
@@ -721,12 +726,18 @@ async def event_booth_state(
             )
             db_booth = await session.scalar(stmt)
         if db_booth is not None:
-            state = await booths.snapshot(
-                booth_id=make_booth_id(slug, room_id, code),
-                language=db_booth.language_name,
-                channel_id=make_mediamtx_path(slug, room_id, code),
-                room_id=room_id,
-            )
+            try:
+                state = await booths.snapshot(
+                    booth_id=make_booth_id(slug, room_id, code),
+                    language=db_booth.language_name,
+                    channel_id=make_mediamtx_path(slug, room_id, code),
+                    room_id=room_id,
+                )
+            except ValueError as exc:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=str(exc),
+                ) from exc
     if state is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
