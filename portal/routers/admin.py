@@ -169,7 +169,7 @@ from portal.team import parse_place as parse_team_place
 from portal.team import remove_assignment as remove_team_assignment
 from portal.team import revoke_invite_link as revoke_team_invite_link
 from portal.transcription import ALLOWED_MODELS, ProviderConfig, ProviderEnum, get_api_key
-from portal.transcription.worker import start_transcription_worker, stop_transcription_worker
+from portal.transcription.worker import WorkerCapacityError, start_transcription_worker, stop_transcription_worker
 from portal.translations.constants import TRANSLATION_MODELS, TranslationProviderEnum
 from portal.translations.vocabulary import (
     VocabularyOverlapIndex,
@@ -2496,7 +2496,7 @@ async def admin_transcription_settings(
                         room_id=db_booth.room_id,
                     )
                     worker = "restarted"
-                except ValueError:
+                except WorkerCapacityError:
                     logger.warning("Could not start caption worker for %s", bid, exc_info=True)
                     worker = "failed"
     return safe_redirect(

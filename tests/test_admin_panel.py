@@ -2290,6 +2290,7 @@ class TestBoothCRUD:
         from types import SimpleNamespace
 
         from portal.routers import admin
+        from portal.transcription.worker import WorkerCapacityError
 
         event, room, booth = seed_event
         url = f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/"
@@ -2356,7 +2357,7 @@ class TestBoothCRUD:
 
             # The worker cannot start (system at capacity): the save is kept and the page says so.
             async def full(*_args, **_kwargs):
-                raise ValueError("System at maximum capacity (10 concurrent transcription booths).")
+                raise WorkerCapacityError("System at maximum capacity (10 concurrent transcription booths).")
 
             monkeypatch.setattr(admin, "start_transcription_worker", full)
             location, page = await save(c, enabled=True)
