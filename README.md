@@ -165,6 +165,8 @@ Once running, access the application at **`http://localhost:8000`**.
 For event and room setup, see the [events and rooms guide](website/docs/admin/events-and-rooms.mdx).
 For pipeline details and advanced configuration, see [how it works](website/docs/how-it-works.mdx).
 
+API integrations using `POST /api/v1/events/` need current event-management access: retained tokens lose write access when their user is deactivated or their grant is removed. A current owner can retry provisioning an event they created. Deleting a room through the API clears relay references, including a room relaying its own booth; rooms with a live booth return 409.
+
 ---
 
 ## 🧪 Testing & Code Quality

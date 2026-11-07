@@ -64,6 +64,22 @@ and `docs/registration-protection.md`. Other routes are unaffected.
 
 ---
 
+## OAuth API v1 event provisioning
+
+`POST /api/v1/events/` requires `events:write` and current management access.
+An existing slug outside the token's event scope returns 403 unless the active
+user currently owns that event, so a client can retry an event it created.
+Removed or demoted public-client owners and inactive accounts get 403 before any
+event or membership changes. New-event creation checks and locks
+the grant's original event; a deleted authorizing event returns 404. Active Admins
+and trusted confidential clients retain their management access.
+
+`DELETE /api/v1/events/{event_slug}/rooms/{eventyay_room_id}` requires
+`rooms:write` and current event-management access. It uses the shared
+room-deletion helper to clear self-relay and incoming relay references and delete
+dependent data. Publishing booths return 409; missing or foreign events/rooms
+return 404; successful deletion returns 204.
+
 ## WebSocket Endpoints
 
 | Path | Auth | Protocol |
