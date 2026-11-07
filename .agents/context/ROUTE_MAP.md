@@ -61,6 +61,8 @@ and `docs/registration-protection.md`. Other routes are unaffected.
 | GET | `/api/events/{event_slug}/booths/{language_code}/whip-url` | configured token/Bearer | `{whip_url, channel_id, booth_id}` | Validates event ownership first; production protected |
 | POST | `/api/events/{event_slug}/rooms/{room_id}/booths/{language_code}/transcription/start` / `stop` | configured token/Bearer, or user/session whose booth role can go live (cookie-only requests must be same-origin) | `{status, …}` | Booth page calls these when the interpreter goes live or off live. An interpreter can stop only while live or when nobody is live (checked against the session that joined the live participant) |
 | GET | `/api/interpreter/status/{channel_id:path}` | open | `{channel_id, state, reachable}` | MediaMTX reachability (preflight check) |
+| DELETE | `/api/events/{event_slug}/rooms/{room_id}/booths/{language_code}` | configured token/Bearer, or event owner/admin | 204 No Content | Deletes booth by integer internal `Room.id`; stops worker; production protected |
+| DELETE | `/api/events/{event_slug}/eventyay-rooms/{eventyay_room_id}/booths/{language_code}` | configured token/Bearer, or event owner/admin | 204 No Content | Deletes booth by external string `Room.eventyay_room_id`; stops worker; production protected |
 
 ---
 
