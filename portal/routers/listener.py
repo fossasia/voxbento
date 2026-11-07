@@ -3,24 +3,28 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-import time
 from pathlib import Path
 from typing import Any
 
 import jwt
 from fastapi import APIRouter, HTTPException, Query, Request, status
 from fastapi.templating import Jinja2Templates
+from starlette.responses import JSONResponse
 
-from portal.auth import decode_token, get_booth_session, is_listener_token
+from portal.auth import _current_user, create_listener_token, decode_token, get_booth_session, is_listener_token
+from portal.booth_identity import make_booth_id
 from portal.config import settings
 from portal.database import (
     get_event_by_slug,
     get_room_by_id,
     get_session,
     list_booths_for_event,
+    list_booths_for_room,
     list_rooms_for_event,
 )
 from portal.globals import _JS_CACHE_BUST, asset_version_context
+from portal.join_code_limit import JoinCodeThrottled, verify_join_code
+from portal.overlay_channels import overlay_channels
 from portal.utils import _ensure_mediamtx_path
 
 # Allowlists for embed theming params — no free-text values accepted.
@@ -34,28 +38,6 @@ templates = Jinja2Templates(directory=str(_BASE_DIR / "templates"), context_proc
 
 router = APIRouter()
 
-_JOIN_CODE_RATE_LIMIT = 10
-_JOIN_CODE_RATE_WINDOW_SECONDS = 60
-_join_code_attempts: dict[str, tuple[int, float]] = {}
-
-
-def _register_failed_attempt(client_ip: str) -> bool:
-    """Record a failed join-code attempt for `client_ip`.
-
-    Returns True if the client has exceeded the allowed attempts within the window.
-    """
-    now = time.monotonic()
-    count, window_start = _join_code_attempts.get(client_ip, (0, now))
-    if now - window_start > _JOIN_CODE_RATE_WINDOW_SECONDS:
-        count, window_start = 0, now
-    count += 1
-    _join_code_attempts[client_ip] = (count, window_start)
-    return count > _JOIN_CODE_RATE_LIMIT
-
-
-def _reset_attempts(client_ip: str) -> None:
-    _join_code_attempts.pop(client_ip, None)
-
 
 def _client_ip(request: Request) -> str:
     return request.client.host if request.client else "unknown"
@@ -66,16 +48,21 @@ def _submitted_code(request: Request, event_slug: str, code: str | None) -> str 
     return code or request.cookies.get(f"listener_code_{event_slug}")
 
 
-def has_listener_access(request: Request, event_slug: str, listener_join_code: str | None, code: str | None) -> bool:
+async def has_listener_access(
+    request: Request, event_slug: str, listener_join_code: str | None, code: str | None
+) -> bool:
+    """Authenticate live accounts or a rate-limited event code before issuing access."""
     payload = get_booth_session(request)
-    if payload and payload.get("user"):
+    if payload and payload.get("user") and await _current_user(payload):
         return True
-
-    active_code = _submitted_code(request, event_slug, code)
-    if bool(listener_join_code and active_code == listener_join_code):
-        _reset_attempts(_client_ip(request))
-        return True
-    return False
+    try:
+        return verify_join_code(_client_ip(request), _submitted_code(request, event_slug, code), listener_join_code)
+    except JoinCodeThrottled as exc:
+        raise HTTPException(
+            status_code=429,
+            detail="Too many join attempts. Please try again later.",
+            headers={"Retry-After": str(exc.retry_after), "Cache-Control": "no-store"},
+        ) from exc
 
 
 @router.get("/listener/{event_slug}")
@@ -86,20 +73,15 @@ async def listen_event_page(request: Request, event_slug: str, code: str | None 
         if not ev:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event not found")
 
-        if not has_listener_access(request, event_slug, ev.listener_join_code, code):
-            if _submitted_code(request, event_slug, code) and _register_failed_attempt(_client_ip(request)):
-                raise HTTPException(
-                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                    detail="Too many join attempts. Please try again later.",
-                )
+        if not await has_listener_access(request, event_slug, ev.listener_join_code, code):
             return templates.TemplateResponse(
                 request=request,
                 name="listener_join.html",
                 context={"event": ev, "error": "Invalid join code." if code else None},
             )
 
-        rooms = await list_rooms_for_event(session, ev.id)
-        db_booths = await list_booths_for_event(session, ev.id)
+        rooms = await list_rooms_for_event(session, ev.id, limit=None)
+        db_booths = await list_booths_for_event(session, ev.id, limit=None)
 
     booths_data = []
     ensure_tasks = []
@@ -190,17 +172,55 @@ async def listener_room_audio_delay(
         ev = await get_event_by_slug(session, event_slug)
         if not ev:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event not found")
-        if not has_listener_access(request, event_slug, ev.listener_join_code, code):
-            if _submitted_code(request, event_slug, code) and _register_failed_attempt(_client_ip(request)):
-                raise HTTPException(
-                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-                    detail="Too many join attempts. Please try again later.",
-                )
+        if not await has_listener_access(request, event_slug, ev.listener_join_code, code):
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Listener access required")
         room = await get_room_by_id(session, room_id)
         if room is None or room.event_id != ev.id:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Room not found")
         return {"audio_delay_ms": room.audio_delay_ms}
+
+
+@router.get("/overlay/{event_slug}/{room_id}/{language_code}/session")
+@router.get("/overlay/{event_slug}/{room_id}/{language_code}")
+async def subtitle_overlay(
+    request: Request, event_slug: str, room_id: int, language_code: str, code: str | None = None
+) -> Any:
+    """Transparent caption layer for OBS / vMix browser sources, gated by the listener join code."""
+    async with get_session() as session:
+        ev = await get_event_by_slug(session, event_slug)
+        if not ev:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Event not found")
+        if not await has_listener_access(request, event_slug, ev.listener_join_code, code):
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Listener access required")
+        room = await get_room_by_id(session, room_id)
+        if room is None or room.event_id != ev.id:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Room not found")
+        channels = overlay_channels([room], await list_booths_for_room(session, room.id))
+        channel = next((ch for ch in channels if ch.code == language_code.lower()), None)
+        if channel is None:
+            raise HTTPException(status_code=404, detail="Caption channel not found")
+        booth_id = make_booth_id(ev.slug, room.id, channel.code)
+
+    token = create_listener_token(event_slug=ev.slug)
+    if request.url.path.endswith("/session"):
+        return JSONResponse(
+            {"token": token, "booth_id": booth_id},
+            headers={"Cache-Control": "no-store, private", "Referrer-Policy": "no-referrer"},
+        )
+    response = templates.TemplateResponse(
+        request=request,
+        name="overlay.html",
+        context={"event": ev, "booth_id": booth_id, "token": token, "language_code": channel.code},
+        headers={
+            "Cache-Control": "no-store, private",
+            "Referrer-Policy": "no-referrer",
+            # The workspace previews the overlay in an iframe; nothing else should frame it.
+            "Content-Security-Policy": "frame-ancestors 'self'",
+        },
+    )
+    if code and code == ev.listener_join_code:
+        response.set_cookie(f"listener_code_{event_slug}", code, httponly=True, max_age=31536000)
+    return response
 
 
 def _verify_embed_token(token: str, event_slug: str) -> None:
@@ -229,7 +249,7 @@ def _verify_embed_token(token: str, event_slug: str) -> None:
 
 async def _resolve_embed_room(session: Any, ev: Any, room_id: int | None) -> tuple[int, int]:
     """Resolve the target room id and its audio delay for an embed request."""
-    rooms = await list_rooms_for_event(session, ev.id)
+    rooms = await list_rooms_for_event(session, ev.id, limit=None)
     if room_id is None:
         if not rooms:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No rooms found for this event.")
@@ -259,7 +279,7 @@ async def _resolve_embed_channel(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Invalid language code.")
 
     if language_code.lower() != "floor":
-        db_booths = await list_booths_for_event(session, ev.id)
+        db_booths = await list_booths_for_event(session, ev.id, limit=None)
         booth = next(
             (b for b in db_booths if b.language_code.lower() == language_code.lower() and b.room_id == room_id),
             None,
