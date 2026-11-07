@@ -3,9 +3,10 @@ from __future__ import annotations
 import asyncio
 import logging
 
+from portal import youtube_captions
 from portal.database import get_session
 from portal.models import DBBooth, Event, Room, TranscriptTranslation
-from portal.transcription.timing import timing_metadata
+from portal.transcription.timing import segment_timing, timing_metadata
 from portal.translations.constants import OPENAI_COMPATIBLE_ENDPOINTS, TranslationProviderEnum
 from portal.translations.keys import get_translation_api_key
 from portal.translations.providers.anthropic import AnthropicProvider
@@ -140,7 +141,8 @@ class TranslationWorker:
                     from portal.websockets.manager import listener_manager
                     has_tts = tts_manager.has_listeners(room.id, lang.language_code, booth_id_str)
                     has_text = listener_manager.has_listeners(target_booth_id)
-                    if not has_tts and not has_text:
+                    # A language posted to YouTube's caption track is translated even with no listeners.
+                    if not has_tts and not has_text and not youtube_captions.wants(room.id, lang.language_code):
                         continue
 
                     tasks.append(
@@ -296,6 +298,12 @@ class TranslationWorker:
                     from portal.websockets.manager import listener_manager
                     await listener_manager.broadcast(target_booth_id, {"type": "translated_caption", "status": "final", "text": translated_text,
                                                                       "segment_id": uuid_segment_id, "seq": seq, **timing_metadata()})
+                if booth_id_str.endswith("-floor"):
+                    # Non-blocking: queues the translation for the room's YouTube caption track, if it asks for this language.
+                    timing = segment_timing.get()
+                    youtube_captions.offer(
+                        room.id, lang_code, translated_text, timing.source_received_at_ms if timing else None
+                    )
 
             # Decrement queue early so slow TTS doesn't cause new incoming segments to be dropped
             LANGUAGE_QUEUES[queue_key] -= 1
