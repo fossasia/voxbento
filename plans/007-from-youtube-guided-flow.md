@@ -143,11 +143,14 @@ A three-step card (reuse `.program-setup-step`, `.program-step` classes from
      to YouTube." Button **Set up forwarding** switches the encoder panel to relay mode
      (call the existing `POST …/program-ingest` with `{"action": "enable", "mode": "rtmps_relay"}`
      after a confirm dialog that states the reliability trade-off verbatim:
-     "While this is on, a VoxBento outage also interrupts your YouTube stream.") and then
-     reveals the server/stream-key display from the encoder panel (link or scroll to
-     `data-audio-panel="encoder"`). If signed in and a broadcast is linked, the YouTube
-     key is already stored. Say so: "Your YouTube stream key was filled in for you."
-     Disable this option when `relay_available` is false, with the operator hint.
+     "While this is on, a VoxBento outage also interrupts your YouTube stream."). Ensure the linked
+     broadcast's destination is stored after relay mode is enabled (if a broadcast was already linked
+     in Step 1, immediately re-resolve and store its stream destination, e.g. by re-triggering
+     `PUT …/youtube/broadcast` or ensuring relay enablement resolves the linked broadcast's stream key).
+     Only when `destination.configured` is confirmed true in the ingest status response, display the
+     confirmation: "Your YouTube stream key was filled in for you." Then reveal the server/stream-key
+     display from the encoder panel (link or scroll to `data-audio-panel="encoder"`). Disable this option
+     when `relay_available` is false, with the operator hint.
    - `multi`: "StreamYard, Restream, Zoom or Teams live streaming, or OBS with a
      multi-output plugin". Result: enable mode `rtmps` and show Server + Stream key with
      platform-specific one-liners (StreamYard: *Destinations → Custom RTMP*; Restream:
@@ -207,6 +210,7 @@ the steps.
 - [ ] `node --check portal/static/js/youtube-source.js` exits 0
 - [ ] `uv run ruff check .` exits 0
 - [ ] `grep -rn "youtube.com/embed\|iframe_api" portal` returns no matches
+- [ ] ! grep -rnE "stream_name|refresh_token|captions_url" portal/static/js/youtube-source.js | grep -i "log" (machine-checkable no-match check confirming secrets are never logged)
 - [ ] `git diff --name-only dev...HEAD` lists only in-scope files
 - [ ] `plans/README.md` status row updated
 

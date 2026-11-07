@@ -44,6 +44,16 @@
     <span class="tile-title">API keys</span>
     <span class="tile-desc">Transcription &amp; translation providers</span>
   </a>
+  <a href='{{ management_prefix }}/events/{{ event.id }}/caption-overlays/' class='tile'>
+    <span class='tile-icon' aria-hidden='true'>
+      <svg width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='1.75' stroke-linecap='round' stroke-linejoin='round'>
+        <rect x='3' y='5' width='18' height='14' rx='2'></rect>
+        <path d='M7 12h4m2 0h4M7 15h10'></path>
+      </svg>
+    </span>
+    <span class='tile-title'>Caption overlays</span>
+    <span class='tile-desc'>Style, preview and copy captions for OBS or vMix</span>
+  </a>
   {% endif %}
   <a href="{{ management_prefix }}/events/{{ event.id }}/setup/rooms" class="tile">
     <span class="tile-icon">🧭</span>
@@ -54,7 +64,7 @@
 
 {% if is_event_owner %}
 <!-- Listener Access -->
-<div class="section-card section-card--spaced">
+<div class="section-card section-card--spaced" id="listener-access">
   <div class="section-header">
     <h2>Listener access</h2>
     {% if event.listener_join_code %}
@@ -80,79 +90,6 @@
   </form>
   {% endif %}
 </div>
-
-<!-- Subtitles overlay -->
-<div class="section-card section-card--spaced" id="subtitle-overlay-builder"
-     data-event-slug="{{ event.slug }}" data-join-code="{{ event.listener_join_code or '' }}">
-  <div class="section-header">
-    <h2>Subtitles overlay</h2>
-  </div>
-  <p class="muted hint--spaced">Transparent caption layer for OBS or vMix. Add the URL below as a Browser source at 1920&times;1080.</p>
-  {% if event.listener_join_code and overlay_channels %}
-  <div class="overlay-preview" id="overlay-preview">
-    <iframe id="overlay-preview-frame" title="Subtitles overlay preview" tabindex="-1"></iframe>
-  </div>
-  <p id="overlay-status" role="status">Connecting to captions…</p>
-  <p id="overlay-source" class="muted"></p>
-  <div class="overlay-preview-actions">
-    <span class="muted">Live captions appear while broadcasting. Test captions appear only in this preview, never on your live output.</span>
-    <button type="button" class="btn btn-sm btn-outline" id="overlay-test">Send test caption</button>
-  </div>
-  <div class="overlay-controls">
-    <label class="overlay-control">
-      <span>Language</span>
-      <select id="overlay-channel">
-        {% for room in rooms %}
-        <optgroup label="{{ room.display_name }}">
-          {% for channel in overlay_channels if channel.room_id == room.id %}
-          <option value="{{ channel.room_id }}/{{ channel.code }}" data-source="{{ channel.source }}">{{ channel.name }} ({{ channel.code }})</option>
-          {% endfor %}
-        </optgroup>
-        {% endfor %}
-      </select>
-    </label>
-    <fieldset class="overlay-control overlay-position">
-      <legend>Position</legend>
-      <label><input type="radio" name="overlay-position" value="top" /> Top</label>
-      <label><input type="radio" name="overlay-position" value="center" /> Center</label>
-      <label><input type="radio" name="overlay-position" value="bottom" checked /> Bottom</label>
-    </fieldset>
-    <label class="overlay-control">
-      <span>Font size · <output id="overlay-font-size-value">36</output>px</span>
-      <input type="range" id="overlay-font-size" min="16" max="96" step="2" value="36" />
-    </label>
-    <label class="overlay-control">
-      <span>Background · <output id="overlay-bg-value">70</output>%</span>
-      <input type="range" id="overlay-bg" min="0" max="100" step="5" value="70" />
-    </label>
-    <label class="overlay-control">
-      <span>Lines · <output id="overlay-lines-value">2</output></span>
-      <input type="range" id="overlay-lines" min="1" max="4" step="1" value="2" />
-    </label>
-  </div>
-  <div class="copy-field">
-    <input type="text" readonly aria-label="Subtitles overlay URL" id="overlay-url" />
-    <button type="button" class="btn btn-sm btn-copy" data-copy-target="overlay-url">Copy URL</button>
-  </div>
-  <p class="muted">One URL per room and language. Copy each language into its own input or scene. Changing these controls updates the preview and URL; paste the new URL into existing inputs to apply it.</p>
-  <details>
-    <summary>Set up in vMix or OBS</summary>
-    <ol>
-      <li>Choose a room and language above. Enable its transcription or translation, and connect live audio.</li>
-      <li><strong>vMix:</strong> Add Input → Web Browser. Paste the URL, set Width to 1920 and Height to 1080, then choose OK. Use an Overlay button (1–4) on that input to place captions over your video.</li>
-      <li><strong>OBS:</strong> Sources → + → Browser. Paste the URL, set Width to 1920 and Height to 1080, and place the source above your video. Keep “Shutdown source when not visible” off for continuous captions.</li>
-      <li>Speak into the selected source and confirm captions on the output before going live. The page is transparent and carries no audio; no chroma key is needed.</li>
-    </ol>
-    <p>Keep overlay URLs private: the included join code also grants listener access to the event. Regenerating the event join code requires replacing saved URLs. If captions stop, check the source audio and transcription, then refresh the browser input.</p>
-    <p><a href="https://www.vmix.com/help28/WebBrowser.html" target="_blank" rel="noopener noreferrer">vMix Web Browser help</a> · <a href="https://obsproject.com/kb/browser-source" target="_blank" rel="noopener noreferrer">OBS Browser Source help</a></p>
-  </details>
-  {% elif not event.listener_join_code %}
-  <p class="muted">Generate a listener join code first. The overlay URL uses it to read captions.</p>
-  {% else %}
-  <p class="muted">Add an interpreter booth or turn on floor transcription in a room to get a caption channel.</p>
-  {% endif %}
-</div>
-<script type="module" src="{{ url_for('static', path='js/overlay-builder.js') }}?v={{ asset_version }}"></script>
 
 <!-- API & Integrations-->
 <div class="section-card section-card--spaced" id="api-keys-section" data-event-id="{{ event.id }}">

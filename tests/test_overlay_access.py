@@ -23,8 +23,10 @@ from portal.database import (
     dispose,
     get_session,
     init_db,
+    set_event_membership,
 )
 from portal.models import BoothTranslationLanguage, Event, Room, RoomTranslationLanguage, User
+from portal.roles import EVENT_OWNER, INTERPRETER, ROOM_COORDINATOR
 
 
 @pytest.fixture(autouse=True)
@@ -49,6 +51,56 @@ async def channel():
 
 def client():
     return AsyncClient(transport=ASGITransport(app, client=("testclient", 5000)), base_url="http://testserver")
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("role", [EVENT_OWNER, ROOM_COORDINATOR, INTERPRETER, None])
+async def test_caption_builder_requires_ownership_of_this_event(channel, role):
+    event, _, _ = channel
+    async with get_session() as s:
+        user = await create_user(s, email="builder@example.com", display_name="Builder")
+        other = await create_event(s, slug="other-event", display_name="Other event")
+        await set_event_membership(s, user_id=user.id, event_id=other.id, role=EVENT_OWNER)
+        if role:
+            await set_event_membership(s, user_id=user.id, event_id=event.id, role=role)
+    async with client() as c:
+        c.cookies.set("user_token", create_user_token(user_id=user.id, email=user.email))
+        response = await c.get(f"/workspace/events/{event.id}/caption-overlays/")
+        assert response.status_code == (200 if role == EVENT_OWNER else 403)
+        if role == EVENT_OWNER:
+            assert f"/workspace/events/{event.id}/" in response.text
+            legacy = await c.get(f"/admin/events/{event.id}/caption-overlays/")
+            assert legacy.status_code == 307
+            assert legacy.headers["location"] == f"/workspace/events/{event.id}/caption-overlays/"
+        else:
+            assert "ROOM42" not in response.text
+        c.cookies.clear()
+        anonymous = await c.get(f"/workspace/events/{event.id}/caption-overlays/")
+        assert anonymous.status_code == 403
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("missing", ["code", "channels", "event"])
+async def test_caption_builder_empty_states_and_missing_event(channel, missing):
+    event, _, booth = channel
+    async with get_session() as s:
+        admin = await create_user(s, email="builder-admin@example.com", display_name="Admin", is_admin=True)
+        if missing == "code":
+            stored = await s.get(Event, event.id)
+            stored.listener_join_code = None
+        elif missing == "channels":
+            stored = await s.get(type(booth), booth.id)
+            await s.delete(stored)
+    async with client() as c:
+        c.cookies.set("user_token", create_user_token(user_id=admin.id, email=admin.email, is_admin=True))
+        event_id = event.id if missing != "event" else event.id + 1000
+        response = await c.get(f"/workspace/events/{event_id}/caption-overlays/")
+        assert response.status_code == (404 if missing == "event" else 200)
+        assert "overlay-preview-frame" not in response.text
+        if missing == "code":
+            assert "Go to listener access" in response.text
+        elif missing == "channels":
+            assert "Open rooms &amp; booths" in response.text
 
 
 @pytest.mark.anyio
@@ -202,14 +254,14 @@ async def test_every_supported_language_and_translation_only_channels(channel):
         admin = await create_user(s, email="owner@example.com", display_name="Owner", password_hash="x", is_admin=True)
     async with client() as c:
         c.cookies.set("user_token", create_user_token(user_id=admin.id, email=admin.email, is_admin=True))
-        builder = await c.get(f"/workspace/events/{event.id}/")
+        builder = await c.get(f"/workspace/events/{event.id}/caption-overlays/")
         assert builder.status_code == 200
         for code in sorted(ISO_639_1_CODES) + ["floor"]:
-            assert f'value="{room.id}/{code}"' in builder.text
+            assert f"value='{room.id}/{code}'" in builder.text
             response = await c.get(f"/overlay/{event.slug}/{room.id}/{code}/session?code=ROOM42")
             assert response.status_code == 200, code
             assert response.json()["booth_id"] == f"{event.slug}-{room.id}-{code}"
-        assert f'value="{other.id}/ar"' in builder.text
+        assert f"value='{other.id}/ar'" in builder.text
         assert (await c.get(f"/overlay/{event.slug}/{other.id}/ar?code=ROOM42")).status_code == 200
         room_page = await c.get(f"/workspace/events/{event.id}/rooms/{other.id}/")
         assert f"/overlay/{event.slug}/{other.id}/ar?code=ROOM42" in room_page.text

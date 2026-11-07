@@ -234,10 +234,15 @@ stores or embeds YouTube audio/video."* Contents:
     (best effort; ignore network errors).
 11. `async def link_broadcast(session, room, connection, text) -> Broadcast`:
     parse id (ValueError on bad input), `get_broadcast` (ValueError
-    `"That broadcast is not on the connected channel."` when None), set
-    `room.youtube_broadcast_id`, and when `bound_stream_id` exists set
-    `room.youtube_stream_id`, `get_stream`, and **if** `room.program_ingest_mode == program_relay.RELAY_MODE`
-    call `program_relay.store_destination(room, stream.ingestion_address, stream.stream_name)`.
+    `"That broadcast is not on the connected channel."` when None).
+    Check `bound_stream_id = broadcast.contentDetails.boundStreamId`: if missing, reject
+    with `ValueError("That broadcast does not have a stream bound in YouTube Studio yet. Bind a stream in Studio and try again.")`
+    before mutating room state (or atomically clear `room.youtube_stream_id = None` and clear
+    any existing relay destination via `program_relay.clear_destination(room)` when unbound, ensuring
+    relay mode can never retain a destination associated with a previous stream). When bound:
+    set `room.youtube_broadcast_id`, set `room.youtube_stream_id = bound_stream_id`, `get_stream`,
+    and **if** `room.program_ingest_mode == program_relay.RELAY_MODE` call
+    `program_relay.store_destination(room, stream.ingestion_address, stream.stream_name)`.
     Return the broadcast. Never return or log `stream_name`.
 12. Status cache: `async def room_status(connection, room) -> dict` returning
     `{"broadcast_id", "title", "life_cycle_status", "stream_status", "health", "latency_preference", "checked_at"}`
@@ -257,7 +262,7 @@ check as `program_ingest._check_origin` (import or copy it); all 404 when
 |---|---|---|---|
 | GET | `/admin/events/{event_id}/youtube` | `require_event_owner` | `{available, connected, channel_title, channel_id, connected_at, last_error}` |
 | GET | `/admin/events/{event_id}/youtube/connect?room_id=N` | `require_event_owner` | Create nonce + PKCE; set HttpOnly, Secure (unless `settings.debug`), SameSite=Lax cookie `vb_yt_oauth` (path `/youtube/oauth`, max-age 600) holding a JWT signed with `settings.effective_jwt_secret` containing `{nonce, verifier, event_id, room_id, sub}`; 303 to `authorization_url(nonce, challenge)` |
-| GET | `/youtube/oauth/callback` | user cookie | Decode cookie JWT (reject expired/missing); `state` must equal `nonce` (`secrets.compare_digest`); current `user_token` sub must equal cookie `sub`; re-check ownership with `resolve_principal` (`is_admin` or `event_id in owned_event_ids`). On `error` param (user cancelled), redirect back with `?youtube=cancelled`. Exchange code, read `my_channel`, upsert `YouTubeConnection` (encrypt refresh token; replace an existing row for the event and best-effort revoke the old token), delete the cookie, `safe_redirect` to the room page (`/workspace/events/{id}/rooms/{room}/?youtube=connected#room-audio`, or `/admin/...` for Admins without ownership, following `portal/workspace_routing.py` helpers) |
+| GET | `/youtube/oauth/callback` | user cookie | Decode cookie JWT (reject expired/missing); `state` must equal `nonce` (`secrets.compare_digest`); current `user_token` sub must equal cookie `sub`; re-check ownership with `resolve_principal` (`is_admin` or `event_id in owned_event_ids`). On `error` param (user cancelled), redirect back with `?youtube=cancelled`. Exchange code, read `my_channel`, upsert `YouTubeConnection` (encrypt refresh token; replace an existing row for the event and best-effort revoke the old token), evict `_tokens.pop(event_id, None)` and all cached `room_status` entries for the event's rooms so subsequent requests immediately use the new channel's access token, delete the cookie, `safe_redirect` to the room page (`/workspace/events/{id}/rooms/{room}/?youtube=connected#room-audio`, or `/admin/...` for Admins without ownership, following `portal/workspace_routing.py` helpers) |
 | GET | `/admin/events/{event_id}/youtube/broadcasts` | `require_event_owner` | `{"broadcasts": [ {id, title, scheduled_start, life_cycle_status, latency_preference} ]}`; 409 with `last_error` on `YouTubeAuthError` |
 | PUT | `/admin/events/{event_id}/rooms/{room_id}/youtube/broadcast` | `require_event_owner` | Body `{"broadcast": str (≤ 300)}`. Under `room_lock`, `link_broadcast`. Returns `{broadcast_id, title, life_cycle_status, stream_bound, destination_configured}`. 422 on ValueError, 409 on auth error, 502 on API error |
 | DELETE | `/admin/events/{event_id}/rooms/{room_id}/youtube/broadcast` | `require_event_owner` | Clear `youtube_broadcast_id`/`youtube_stream_id`. Leave the relay destination (owner removes it explicitly) |
@@ -364,7 +369,7 @@ See Step 6 (≥ 14 cases). Pattern: `tests/test_program_relay.py` fixture +
 - [ ] `uv run alembic upgrade head` and downgrade/upgrade round-trip exit 0
 - [ ] `uv run pytest tests/ -q` exits 0; `tests/test_youtube_account.py` ≥ 14 passed
 - [ ] `uv run ruff check .` exits 0
-- [ ] `grep -rn "stream_name\|refresh_token" portal --include=*.py | grep -i "log"` shows no logging of those values
+- [ ] ! grep -rnE "stream_name|refresh_token" portal --include=*.py | grep -i "log" (machine-checkable no-match check confirming sensitive values are never logged)
 - [ ] `grep -rn "youtube.com/embed\|iframe_api\|yt-dlp\|youtube-dl\|streamlink" portal` returns no matches
 - [ ] `git diff --name-only dev...HEAD` lists only in-scope files
 - [ ] `plans/README.md` status row updated

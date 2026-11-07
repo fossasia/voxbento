@@ -109,14 +109,15 @@ idempotent, batch-alter for SQLite.
 ### Step 2: Enable HTTP-POST captions on the broadcast
 
 In `portal/youtube_account.py` add `async def enable_http_captions(connection, broadcast_id) -> None`:
-1. `get_broadcast` with `part=contentDetails` (keep the **full** `contentDetails` object).
-2. If `latencyPreference == "ultraLow"` → `raise ValueError("Ultra-low latency YouTube broadcasts cannot show captions. Choose Normal or Low latency in YouTube Studio.")`.
-3. If `closedCaptionsType == "closedCaptionsHttpPost"` → return.
-4. Else `PUT {API_BASE}/liveBroadcasts?part=contentDetails` with body
-   `{"id": broadcast_id, "contentDetails": {**current, "closedCaptionsType": "closedCaptionsHttpPost"}}`
-   (drop read-only fields `boundStreamId`, `boundStreamLastUpdateTimeMs` if the API rejects them; this is the
-   documented update pattern: send the whole part back).
-5. On `YouTubeAPIError` raise `ValueError("YouTube would not switch captions on. In YouTube Studio open the stream settings, set Closed captions to 'POST captions to URL', then try again.")`.
+1. `get_broadcast` with `part=snippet,contentDetails,status` (keep the **full** `contentDetails` object and check lifecycle status). Note the API restriction: YouTube Live API only allows caption configuration updates on `created` or `ready` broadcasts; active or live broadcasts cannot switch to HTTP-post captions via the API.
+2. Check `broadcast.status.lifeCycleStatus`: if not in `("created", "ready")`, raise `ValueError("Captions must be set up before the broadcast starts. Active or live broadcasts cannot switch to HTTP-post captions via the API; turn on 'POST captions to URL' in YouTube Studio directly.")`.
+3. If `latencyPreference == "ultraLow"` → `raise ValueError("Ultra-low latency YouTube broadcasts cannot show captions. Choose Normal or Low latency in YouTube Studio.")`.
+4. If `closedCaptionsType == "closedCaptionsHttpPost"` → return.
+5. Prepare `current = dict(broadcast.contentDetails)`. Remove `enableClosedCaptions` (`current.pop("enableClosedCaptions", None)`) so the update payload does not include conflicting caption properties before adding `closedCaptionsType`. Set `current["closedCaptionsType"] = "closedCaptionsHttpPost"`.
+6. Else `PUT {API_BASE}/liveBroadcasts?part=id,snippet,contentDetails` with body
+   `{"id": broadcast_id, "snippet": {"scheduledStartTime": broadcast.snippet.scheduled_start_time}, "contentDetails": current}`
+   (drop read-only fields `boundStreamId`, `boundStreamLastUpdateTimeMs` if the API rejects them; this is the documented update pattern: send the whole part back).
+7. On `YouTubeAPIError` raise `ValueError("YouTube would not switch captions on. In YouTube Studio open the stream settings, set Closed captions to 'POST captions to URL', then try again.")`.
 
 **Verify**: covered by tests in Step 6.
 
@@ -270,7 +271,7 @@ on "floor" → CC visible in the YouTube player within the spike-measured delay.
 - [ ] `uv run pytest tests/ -q` exits 0; `tests/test_youtube_captions.py` ≥ 12 passed
 - [ ] `uv run ruff check .` exits 0
 - [ ] `uv run python -c "import inspect, portal.youtube_captions as m; assert not inspect.iscoroutinefunction(m.offer)"` exits 0 (offer never awaits)
-- [ ] `grep -rn "captions_url\|closedCaptionsIngestionUrl" portal --include=*.py | grep -i "log"` → no matches
+- [ ] ! grep -rnE "captions_url|closedCaptionsIngestionUrl" portal --include=*.py | grep -i "log" (machine-checkable no-match check confirming caption URLs are never logged)
 - [ ] `git diff --name-only dev...HEAD` lists only in-scope files
 - [ ] `plans/README.md` status row updated
 

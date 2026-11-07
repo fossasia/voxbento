@@ -78,9 +78,11 @@ overlay (support.kudoway.com/hc/en-us/articles/40800864893335), Interprefy YouTu
 | Stream health / lifecycle | `liveStreams.status.streamStatus`, `healthStatus`; `liveBroadcasts.status.lifeCycleStatus` | readonly or force-ssl |
 
 Notes: ultra-low-latency broadcasts do not support closed captions. `youtube.force-ssl`
-is a sensitive scope: Google app verification is required before more than 100 users,
-and unverified apps show a warning screen. Every self-hosted deployment registers its
-own Google OAuth client.
+is a sensitive scope: 100 users is the hard cap for unverified apps, not the threshold when
+verification becomes required. Public production applications requesting sensitive scopes
+must complete Google OAuth verification before public use (subject to internal testing and
+personal-use exceptions). Unverified apps display a consent warning screen. Every self-hosted
+deployment registers its own Google OAuth client.
 
 ## Target organiser experience
 
@@ -101,7 +103,12 @@ Room page → **Room audio → From a YouTube stream**
 
 4. **Captions on YouTube** (toggle, on by default when signed in): VoxBento posts
    final captions (floor language, or one chosen translation) to the broadcast's
-   caption ingestion URL, so viewers get native YouTube CC. Complementary option already
+   caption ingestion URL, so viewers get native YouTube CC. **Important:** The YouTube Live
+   API requires caption configuration (`closedCaptionsHttpPost`) to be set up **before**
+   a broadcast starts. Active or live broadcasts cannot switch to HTTP-post captions via
+   the API; for broadcasts already live or active without HTTP captions enabled, the UI
+   shows a clear unsupported state explaining that "POST captions to URL" must be enabled
+   in YouTube Studio settings prior to going live. Complementary option already
    on `dev`: encoder users can burn captions into the video with the room's
    **Captions overlay** URL as an OBS/vMix browser source (any number of languages,
    but only one per output).

@@ -17,7 +17,7 @@
 - **Priority**: P1
 - **Effort**: S
 - **Risk**: LOW (frontend only; no backend, auth or schema change)
-- **Depends on**: `plans/002-youtube-intake-spike.md` step 1 (Chrome/Edge tab audio confirmed). If `plans/002-results.md` is missing, read STOP conditions.
+- **Depends on**: `plans/002-youtube-intake-spike.md` (must be marked DONE in `plans/README.md` and `plans/002-results.md` Step 1 must have confirmed Chrome/Edge tab audio). If `plans/002-results.md` is missing or plan 002 is not marked DONE, stop execution immediately (see STOP conditions).
 - **Category**: direction
 - **Planned at**: commit `250aefde`, 2026-11-01
 - **Issue**: https://github.com/fossasia/voxbento/issues/1087
@@ -98,13 +98,14 @@ the user explicitly shares via the browser's picker.
 - `.github/workflows/tests.yml` (add one `node --check` line and one node test line)
 - `docs/program-stream-ingest.md` (section "Browser program-audio sender")
 - `website/docs/admin/program-ingest.mdx` (short subsection)
+- `plans/README.md` (status-row update for plan 003)
 
 **Out of scope** (do NOT touch):
 - `portal/program_ingest.py`, `portal/routers/program_ingest.py`: the session/auth
   flow is already correct for any audio track.
 - `floor-bot/`, `portal/meeting_source.py`: Jitsi stays for real meetings.
 - Anything that embeds or scripts a YouTube player.
-- `README.md` (repo rule: no feature docs in README).
+- `README.md` (root README; repo rule: no feature docs in root README).
 
 ## Git workflow
 
@@ -202,7 +203,11 @@ Edits (keep the file's style):
    at the top; replace the inline `audioConstraints` literal in `openInput()` with `{...RAW_AUDIO}`.
 2. New state: `let source = normalizeSource(savedSource());` with
    `savedSource()`/`saveSource()` using `localStorage` key `${card.dataset.storageKey}.source`,
-   wrapped in try/catch exactly like `savedDevice()`/`saveDevice()`.
+   wrapped in try/catch exactly like `savedDevice()`/`saveDevice()`. On initial load, find the
+   radio matching `source` (`document.querySelector(\`input[name='sender-source'][value='${source}']\`)`),
+   and set its `.checked = true` before toggling container visibility (`#sender-device-row` and
+   `#sender-tab-help`). This ensures the selected radio remains strictly consistent with the
+   source used by `start()`, including when the restored selection is `tab`.
 3. `supported()` returns true for tab mode only when `tabCaptureSupported(navigator.mediaDevices) && window.RTCPeerConnection`.
    When tab mode is selected but unsupported, set state `error` with
    `'This browser cannot share a tab\'s audio. Use Chrome or Edge.'`.
@@ -239,12 +244,15 @@ Edits (keep the file's style):
    `'Confirm you have the right to interpret this stream.'` unless
    `#sender-tab-rights` is checked.
 8. `reportInputError(error)`: for `SourceError` show its message with state `error`;
-   for `NotAllowedError` in tab mode show `'Tab sharing was cancelled or blocked.'`
-   with state `permission-denied`. Add `'permission-denied'` label wording stays.
-9. Source radio `change` handler: if `sending` or `testing`, revert the radio and show
-   `'Stop sending before changing the source.'`; otherwise set `source`, `saveSource()`,
-   `releaseInput()`, toggle `#sender-device-row` (hidden in tab mode) and
-   `#sender-tab-help` (shown in tab mode). Apply the same toggling once on load.
+   for `NotAllowedError` or `SecurityError` in tab mode show `'Tab sharing was cancelled or blocked.'`
+   with a source-neutral or tab-specific badge state (e.g. `'permission-denied'` with badge label
+   `'Permission denied'` or `'Tab sharing blocked'`, avoiding the microphone-specific `'Microphone blocked'`
+   badge label while keeping the status message's tab-sharing context intact).
+9. Source radio `change` handler: if `sending`, `testing`, or `recorder` is active, revert the radio
+   and show `'Stop sending or testing before changing the source.'` (rejecting source changes while
+   recording ensures `releaseInput()` cannot interrupt an active 5-second recording of `meterStream`);
+   otherwise set `source`, `saveSource()`, `releaseInput()`, toggle `#sender-device-row` (hidden in tab mode)
+   and `#sender-tab-help` (shown in tab mode). Apply the same toggling once on load.
 10. Ensure nothing new connects to `audioContext.destination`.
 
 **Verify**:
@@ -310,8 +318,9 @@ In `.github/workflows/tests.yml`: under "Validate JS syntax" add
 
 ## STOP conditions
 
-- `plans/002-results.md` says Chrome/Edge do not deliver a tab audio track, or that
-  the track dies when the tab is backgrounded.
+- `plans/002-results.md` is missing, plan 002 is not marked DONE in `plans/README.md`, or Step 1
+  results say Chrome/Edge do not deliver a tab audio track, or that the track dies when the
+  tab is backgrounded.
 - `program-sender.js` no longer has `openInput()`/`connect()`/`stop()` shaped as described
   (drift).
 - Making tab mode work appears to need a backend change (route, auth, session TTL).
