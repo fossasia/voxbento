@@ -147,7 +147,7 @@ async def test_cross_event_leak_gets_403(client, setup_db):
 @pytest.mark.anyio
 @patch('portal.meeting_source.start_transcription_worker')
 @patch('portal.meeting_source.stop_transcription_worker')
-async def test_super_admin_does_no_extra_query(mock_stop, mock_start, client, setup_db):
+async def test_admin_does_no_extra_query(mock_stop, mock_start, client, setup_db):
     user = await _create_user(is_admin=True)
     ev, rm = await _create_event_room()
     token = create_user_token(user_id=user.id, email=user.email)
@@ -168,8 +168,8 @@ async def test_super_admin_does_no_extra_query(mock_stop, mock_start, client, se
 
 
 @pytest.mark.anyio
-async def test_super_admin_missing_room_gets_400(client, setup_db):
-    # A super-admin bypasses the 403 membership check; the endpoint itself raises 400
+async def test_admin_missing_room_gets_400(client, setup_db):
+    # A Admin bypasses the 403 membership check; the endpoint itself raises 400
     # for a non-existent room because the room lookup fails before bot logic runs.
     user = await _create_user(is_admin=True)
     token = create_user_token(user_id=user.id, email=user.email)
@@ -202,7 +202,7 @@ async def test_malformed_room_id_422(client, setup_db):
 async def test_unauthenticated_403(client, setup_db):
     r = await client.post("/api/rooms/1/floor-transcription/start")
     assert r.status_code == 403
-    assert "Admin access required." in r.text
+    assert "Sign-in required." in r.text
 
 
 @pytest.mark.anyio
@@ -260,7 +260,7 @@ async def test_legacy_admin_token_rejected(client, setup_db):
 async def test_revoked_admin_flag_takes_effect_immediately(client, setup_db):
     """Regression: a JWT carrying is_admin=True must NOT bypass a DB revocation.
 
-    resolve_principal must always consult the database for is_global_admin;
+    resolve_principal must always consult the database for is_admin;
     it must never trust the is_admin claim baked into the token alone.
     """
     from portal.database import get_session

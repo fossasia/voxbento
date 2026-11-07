@@ -84,6 +84,7 @@
   align-items: flex-start;
 }
 .dev-notice--approved { margin-bottom: 3rem; }
+.dev-notice--form-error { margin-bottom: 2rem; }
 .dev-notice-icon { width: 24px; height: 24px; flex-shrink: 0; margin-top: 2px; }
 .dev-notice-title { font-size: 1.1rem; font-weight: 700; margin-bottom: 0.25rem; }
 .dev-notice-text { font-size: 0.95rem; line-height: 1.5; }

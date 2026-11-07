@@ -54,7 +54,7 @@ from portal.models import (
     generate_token,
     utc_now,
 )
-from portal.roles import ALL_ROLES
+from portal.roles import BOOTH_ROLES
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -395,6 +395,36 @@ async def test_list_booths_for_event(db: AsyncSession):
 
 
 @pytest.mark.anyio
+async def test_list_booths_for_event_excludes_a_booth_whose_room_is_in_another_event(db: AsyncSession):
+    """A booth recorded under one event but in another event's room is not part of either list."""
+    ev = await create_event(db, slug="ev-cross-booth", display_name="Ev")
+    other = await create_event(db, slug="ev-cross-booth-other", display_name="Other")
+    room = await create_room(db, event_id=ev.id, display_name="Hall")
+    foreign_room = await create_room(db, event_id=other.id, display_name="Elsewhere")
+    valid = await create_booth(db, event_id=ev.id, room_id=room.id, language_code="en", language_name="English")
+    await create_booth(db, event_id=ev.id, room_id=foreign_room.id, language_code="de", language_name="German")
+
+    booths = await list_booths_for_event(db, ev.id)
+    assert [b.id for b in booths] == [valid.id]
+    assert await list_booths_for_event(db, other.id) == []
+
+
+@pytest.mark.anyio
+async def test_list_all_booths_for_events_excludes_a_booth_whose_room_is_in_another_event(db: AsyncSession):
+    """The per-event mapping never gains a booth from a room that belongs to a different event."""
+    ev1 = await create_event(db, slug="ev-all-cross1", display_name="Ev 1")
+    ev2 = await create_event(db, slug="ev-all-cross2", display_name="Ev 2")
+    room1 = await create_room(db, event_id=ev1.id, display_name="Hall 1")
+    room2 = await create_room(db, event_id=ev2.id, display_name="Hall 2")
+    valid = await create_booth(db, event_id=ev1.id, room_id=room1.id, language_code="en", language_name="English")
+    await create_booth(db, event_id=ev1.id, room_id=room2.id, language_code="de", language_name="German")
+
+    result = await list_all_booths_for_events(db, [ev1.id, ev2.id])
+    assert [b.id for b in result[ev1.id]] == [valid.id]
+    assert result[ev2.id] == []
+
+
+@pytest.mark.anyio
 async def test_list_all_booths_for_events_empty_input(db: AsyncSession):
     result = await list_all_booths_for_events(db, [])
     assert result == {}
@@ -586,12 +616,12 @@ async def test_invite_token_role_validation(db: AsyncSession):
         language_code="en",
         language_name="English",
     )
-    with pytest.raises(ValueError, match="Invalid role"):
+    with pytest.raises(ValueError, match="Unknown role"):
         await create_invite_token(db, booth_id=booth.id, role="hacker")
 
 
 @pytest.mark.anyio
-@pytest.mark.parametrize("role", sorted(ALL_ROLES))
+@pytest.mark.parametrize("role", sorted(BOOTH_ROLES))
 async def test_invite_token_all_valid_roles(db: AsyncSession, role: str):
     slug = f"ev-role-{role.replace('_', '-')}"
     ev = await create_event(db, slug=slug, display_name="Ev")

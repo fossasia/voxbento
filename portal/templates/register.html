@@ -4,6 +4,9 @@
 
 {% block head %}
 <link rel="stylesheet" href="{{ url_for('static', path='css/auth.css') }}" />
+{% if turnstile_enabled %}
+<script src='https://challenges.cloudflare.com/turnstile/v0/api.js' async defer></script>
+{% endif %}
 {% endblock %}
 
 {% block content %}
@@ -40,6 +43,11 @@
       <label for="password_confirm">Confirm Password</label>
       <input type="password" id="password_confirm" name="password_confirm" placeholder="Re-enter your password" autocomplete="new-password" />
 
+      {% if turnstile_enabled %}
+      <div class='cf-turnstile' data-sitekey='{{ turnstile_site_key }}' data-action='register' data-size='flexible'></div>
+      <p class='field-hint'>Complete the security check before creating your account. If it does not load, refresh this page.</p>
+      <noscript><p class='alert alert-error'>JavaScript is required for the signup security check.</p></noscript>
+      {% endif %}
       <button type="submit" class="btn btn-primary">Create Account</button>
     </form>
     

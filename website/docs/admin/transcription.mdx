@@ -146,10 +146,10 @@ Listeners receive captions by connecting to the captions WebSocket:
 /ws/captions/{booth_id}
 ```
 
-For example:
+For booth captions, `{booth_id}` uses the `{event_slug}-{room_id}-{language_code}` format (e.g. `pycon2026-14-en`). For floor stage captions, the channel is `floor-{room_id}` (e.g. `floor-14`).
 
 ```text
-wss://voxbento.com/ws/captions/pycon2026-en
+wss://voxbento.com/ws/captions/pycon2026-14-en
 ```
 
 This endpoint requires no authentication and sends JSON messages in the following format:
@@ -196,3 +196,27 @@ This endpoint requires no authentication and sends JSON messages in the followin
 
 
 Your listener UI can subscribe to this WebSocket and render captions in real time with no additional backend work required.
+
+## Live Translations & Direct Push TTS
+
+Beyond transcription, Voxbento provides a synchronized AI translation and synthetic speech pipeline for floor sessions:
+
+### Translated Captions Delivery
+Translated segments are broadcast to subscribers through two synchronized paths rather than a standalone translations socket:
+1. **Target Booth Captions Feed**: Real-time sentence-by-sentence translated text is delivered as `translated_caption` JSON events over `/ws/captions/{booth_id}` for the target language booth.
+2. **TTS Bundle Frames**: Translation text is also packaged in the JSON metadata header of each binary bundle emitted on `/ws/tts/{room_id}/{language_code}/{booth_id}`.
+
+Translations can be customized using room **AI Interpreter Persona**, **Interpretation Style**, and uploaded **Vocabulary Glossaries** (see [AI Interpretation](./ai-interpretation.mdx)).
+
+### Direct Push Text-to-Speech (TTS)
+When a room language uses **AI voice**, translated segments are synthesized into natural speech via **Deepgram Aura** or self-hosted **Supertonic ONNX**. Attendees receive binary framed messages on:
+```text
+/ws/tts/{room_id}/{language_code}/{booth_id}
+```
+Each frame is emitted by `TTSConnectionManager.broadcast_bundle` with a structured binary layout:
+- **Version byte** (1 byte, `0x01`)
+- **Header length** (4-byte big-endian unsigned integer `L`)
+- **JSON header** (`L` bytes UTF-8 JSON containing metadata such as `sentence_id`, `text`, `channel_id`, and `sample_rate`)
+- **Optional PCM payload** (remainder bytes, 24 kHz 16-bit mono PCM). Notice that some messages (such as text demarcation or status updates) contain no audio payload.
+
+Subscriptions are authorized before acceptance and scheduled through `audio-scheduler.js` in the browser for continuous, seamless playback.

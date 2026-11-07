@@ -15,17 +15,21 @@ const sidebars: SidebarsConfig = {
         {
           type: 'category',
           label: 'Get Started',
-          items: ['introduction', 'quickstart', 'how-it-works'],
+          items: ['introduction', 'quickstart', 'how-it-works', 'subtitle-overlays'],
         },
         {
           type: 'category',
           label: 'Admin Guide',
           items: [
+            'admin/dashboard-guide',
             'admin/events-and-rooms',
             'admin/booths',
             'admin/members-and-roles',
+            'admin/hosting-access',
             'admin/invite-tokens',
             'admin/transcription',
+            'admin/ai-interpretation',
+            'admin/program-ingest',
           ],
         },
         {
@@ -76,7 +80,7 @@ const sidebars: SidebarsConfig = {
         {
           type: 'category',
           label: 'Real-Time',
-          items: ['api/websocket/booth', 'api/websocket/captions'],
+          items: ['api/websocket/coordination', 'api/websocket/captions'],
         },
       ],
     },

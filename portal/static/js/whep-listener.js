@@ -20,6 +20,8 @@ function createWhepClient() {
   let reconnectTimer = null;
   /** Exponential back-off delay (ms). */
   let reconnectDelay = 100;
+  /** True from a failed attempt until a WHEP session is established again. */
+  let retrying = false;
 
   // Callbacks supplied by caller.
   let _onState = () => {};
@@ -49,6 +51,7 @@ function createWhepClient() {
       signaling:      pc ? pc.signalingState : 'closed',
       audioActive:    _audioDelayMs > 0 ? isDelayedAudioActive() : (_audioEl ? !_audioEl.paused && _audioEl.srcObject !== null : false),
       whepUrl:        _whepUrl,
+      retrying:       retrying,
     });
   }
 
@@ -249,6 +252,7 @@ function createWhepClient() {
     await pc.setRemoteDescription({ type: 'answer', sdp: answerSdp });
 
     reconnectDelay = 100;  // reset back-off on success
+    retrying = false;
     log('WHEP session established');
     emitState();
   }
@@ -257,6 +261,7 @@ function createWhepClient() {
 
   function scheduleReconnect() {
     if (reconnectTimer) return;
+    retrying = true;
     const delay = reconnectDelay;
     reconnectDelay = Math.min(reconnectDelay * 1.5, 8000);
     log('Reconnecting in ' + (delay / 1000).toFixed(1) + 's...');
@@ -311,6 +316,7 @@ function createWhepClient() {
       _audioDelayMs = Math.max(0, parseInt(opts.audioDelayMs || 0, 10) || 0);
       _onState = opts.onState || (() => {});
       _onLog   = opts.onLog   || (() => {});
+      retrying = false;
       if (_audioDelayMs > 0) {
         prepareDelayedContext();
       }
@@ -334,6 +340,7 @@ function createWhepClient() {
     /** Tear down the session. */
     stop() {
       cleanup();
+      retrying = false;
       emitState();
     },
   };

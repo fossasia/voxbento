@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 
+from portal.auth import booth_session_key, create_participant_token, create_token, create_user_token, decode_token
 from portal.booth_state import BoothRegistry
 
 
@@ -840,3 +841,66 @@ async def test_a_non_publisher_leaving_keeps_an_overloaded_status():
     state = await registry.leave_participant(BOOTH[0], passive.participant_id, *BOOTH[1:])
 
     assert state["ingest_status"] == "overloaded"
+
+
+@pytest.mark.anyio
+async def test_who_joined_a_participant_stays_on_the_server():
+    registry = BoothRegistry()
+
+    _, state = await registry.join_participant(
+        booth_id="hall-1-fr",
+        display_name="A",
+        role="interpreter",
+        language="French",
+        channel_id="c",
+        joined_by="user:7",
+    )
+
+    [participant] = state["participants"]
+    assert "joined_by" not in participant
+    assert "user:7" not in repr(registry.get_booth_sync("hall-1-fr"))
+
+
+@pytest.mark.anyio
+async def test_only_the_session_that_joined_the_live_participant_can_stop_live():
+    registry = BoothRegistry()
+    assert await registry.can_stop_live("hall-1-fr", set())
+
+    for name, key in (("Live", "user:1"), ("Standby", "user:2")):
+        await registry.join_participant(
+            booth_id="hall-1-fr",
+            display_name=name,
+            role="interpreter",
+            language="French",
+            channel_id="c",
+            joined_by=key,
+        )
+
+    assert await registry.can_stop_live("hall-1-fr", {"user:1"})
+    assert await registry.can_stop_live("hall-1-fr", {"invite:x", "user:1"})
+    assert not await registry.can_stop_live("hall-1-fr", {"user:2"})
+    assert not await registry.can_stop_live("hall-1-fr", set())
+
+
+@pytest.mark.anyio
+async def test_a_live_participant_without_a_session_key_matches_no_caller():
+    registry = BoothRegistry()
+    await join(registry, "Joined without a session key")
+
+    assert not await registry.can_stop_live("hall-1-fr", set())
+
+
+def test_booth_session_key_tells_users_and_invite_visits_apart():
+    def invite():
+        return decode_token(
+            create_participant_token(booth_id=1, role="interpreter", event_slug="hall", room_id=1, language_code="fr")
+        )
+
+    first, second = invite(), invite()
+
+    assert booth_session_key(decode_token(create_user_token(user_id=7, email="a@example.com"))) == "user:7"
+    assert booth_session_key(first) == f"invite:{first['sub']}"
+    assert booth_session_key(first) != booth_session_key(second)
+    assert booth_session_key(decode_token(create_token())) is None
+    assert booth_session_key({"sub": "x", "kind": "listener"}) is None
+    assert booth_session_key(None) is None

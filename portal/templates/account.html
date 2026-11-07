@@ -1,328 +1,223 @@
 {% extends "base.html" %}
 
-{% block title %}My Account — Voxbento{% endblock %}
+{% block title %}Account — Voxbento{% endblock %}
+
+{% block body_class %} class="account-area"{% endblock %}
 
 {% block head %}
-<link rel="stylesheet" href="{{ url_for('static', path='css/auth.css') }}" />
+<link rel="stylesheet" href="{{ url_for('static', path='css/account-area.css') }}?v={{ asset_version }}" />
+<link rel="stylesheet" href="{{ url_for('static', path='css/app-header.css') }}?v={{ asset_version }}" />
+<script type="module" src="{{ url_for('static', path='js/user-menu.js') }}?v={{ asset_version }}"></script>
+<script type="module" src="{{ url_for('static', path='js/account.js') }}?v={{ asset_version }}"></script>
 {% endblock %}
 
-{% block content %}
-<header class="portal-home-header">
-  <a class="brand account-brand" href="/">
-    <img src="{{ url_for('static', path='img/app_icon.png') }}" alt="VoxBento Icon" class="account-brand-icon" />
-    <span class="account-brand-name">VoxBento</span>
-  </a>
-  <nav class="header-nav">
-    <a href="/account">My Account</a>
-    <a href="/developer">Developer API</a>
-    {% if management_home != "/account" %}
-    <a href="{{ management_home }}">{{ management_label }}</a>
-    {% endif %}
-    <a href="/logout">Logout</a>
-  </nav>
-</header>
+{% block header %}
+{% from "_app_header.html" import app_header with context %}
+{{ app_header() }}
+{% endblock %}
 
-<main class="admin-main account-main">
-  {% if request.query_params.get('error') == 'hosting_revoked' %}
-  <div class="account-alert-banner">
-    Your hosting access has been revoked. You cannot create new events until hosting access is restored.
+{% macro check_icon() -%}
+<svg class="aa-notice-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10" /><path d="m8 12 3 3 5-6" /></svg>
+{%- endmacro %}
+
+{% block content %}
+<div class="aa-page aa-page--wide">
+  {% if hosting_request_sent %}
+  <div class="aa-notice" role="status">
+    {{ check_icon() }}
+    <div>
+      <p class="aa-notice-title">Your request was sent</p>
+      <p class="aa-notice-text">We'll email you at {{ user.email }} once the VoxBento team has reviewed it.</p>
+    </div>
   </div>
-  {% elif request.query_params.get('error') == 'hosting_access_required' %}
-  <div class="account-alert-banner">
-    Hosting access is required to create events. You can request access below.
+  {% elif notice %}
+  <div class="aa-notice" role="status">
+    {{ check_icon() }}
+    <p class="aa-notice-title">{{ notice }}</p>
   </div>
   {% endif %}
-  <div class="account-page-header">
-    <h1 class="account-page-title">My Account</h1>
-    <p class="account-page-subtitle">Manage your profile, roles, and security settings.</p>
+  {% if error == 'hosting_revoked' %}
+  <div class="aa-notice aa-notice--error" role="alert">
+    <p class="aa-notice-title">Your hosting access was removed. You can't create new events until it is restored.</p>
   </div>
-
-  <div class="account-panel account-panel--spaced">
-    <table class="data-table account-table">
-      <tbody>
-        <tr class="account-row">
-          <th class="account-th--first">Email</th>
-          <td class="account-td--strong">{{ user.email }}</td>
-        </tr>
-        <tr class="account-row">
-          <th>Display Name</th>
-          <td>{{ user.display_name }}</td>
-        </tr>
-        <tr class="account-row">
-          <th>Joined</th>
-          <td class="account-td--date">{{ user.created_at.strftime('%b %d, %Y, %H:%M UTC') if user.created_at else '—' }}</td>
-        </tr>
-        <tr class="account-row">
-          <th>Status</th>
-          <td>
-            {% if user.is_active %}
-            <span class="account-pill account-pill--active">
-              <span class="account-dot account-dot--active"></span>
-              Active
-            </span>
-            {% else %}
-            <span class="account-pill account-pill--inactive">
-              <span class="account-dot account-dot--inactive"></span>
-              Deactivated
-            </span>
-            {% endif %}
-          </td>
-        </tr>
-        {% if user.is_admin %}
-        <tr>
-          <th>System Role</th>
-          <td>
-            <span class="account-badge account-badge--admin">Super Admin</span>
-            <p class="account-admin-note">You have global admin panel and event access.</p>
-          </td>
-        </tr>
-        {% endif %}
-      </tbody>
-    </table>
+  {% elif error == 'hosting_access_required' %}
+  <div class="aa-notice aa-notice--error" role="alert">
+    <p class="aa-notice-title">You need hosting access to create events. You can request it below.</p>
   </div>
+  {% endif %}
 
-  <div class="account-section">
-    <div class="account-section-head">
-      <h2 class="account-section-title">Your Roles</h2>
-      <p class="account-section-text">Roles assigned to you across all events and rooms.</p>
+  <h1 class="aa-title">Account</h1>
+  <p class="aa-lead aa-lead--tight">Your profile, sign-in and access to VoxBento.</p>
+
+  {# ── Profile ── #}
+  <section class="aa-card aa-section" aria-labelledby="profile-title">
+    <div class="aa-card-head">
+      <h2 class="aa-card-title" id="profile-title">Profile</h2>
     </div>
-    
-    {% if memberships %}
-    <div class="account-panel">
-      <table class="data-table account-table account-roles">
-        <thead class="account-roles-head">
-          <tr>
-            <th>Scope</th>
-            <th>Context</th>
-            <th>Role</th>
-            <th>Since</th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for m in memberships %}
-          <tr class="account-row {% if m.is_disabled %}account-row--disabled{% endif %}">
-            <td class="account-td--scope">{{ m.type }}</td>
-            <td class="account-td--context">
-              {% if m.link != '#' and not m.is_disabled %}
-              <a href="{{ m.link }}" class="account-link">{{ m.context }} &rarr;</a>
-              {% else %}
-              <span class="account-context-disabled">
-                {{ m.context }}
-                {% if m.is_disabled %}
-                <span class="account-sub-badge">Access Suspended</span>
-                {% endif %}
-              </span>
-              {% endif %}
-            </td>
-            <td>
-              <span class="badge badge-role badge-{{ m.role }} account-badge {% if m.is_disabled %}badge-disabled{% endif %}">{{ m.role }}</span>
-            </td>
-            <td class="account-td--since">
-              {{ m.created_at.strftime('%b %d, %Y') if m.created_at else '—' }}
-            </td>
-          </tr>
-          {% endfor %}
-        </tbody>
-      </table>
+    <div class="aa-card-body">
+      <form method="post" action="/account/profile" class="aa-field">
+        <label for="display-name">Display name</label>
+        <div class="aa-input-row">
+          <input class="aa-input" id="display-name" name="display_name" type="text" value="{{ user.display_name }}"
+            maxlength="{{ display_name_max }}" required autocomplete="name" aria-describedby="display-name-help{{ ' display-name-error' if error == 'display_name' else '' }}"{% if error == 'display_name' %} aria-invalid="true"{% endif %} />
+          <button type="submit" class="aa-btn">Save</button>
+        </div>
+        {% if error == 'display_name' %}
+        <p class="aa-error" id="display-name-error">Enter a name of up to {{ display_name_max }} characters.</p>
+        {% endif %}
+        <p class="aa-help" id="display-name-help">Shown to event owners and on your events.</p>
+      </form>
+      <div class="aa-field aa-field--static">
+        <span class="aa-label">Email</span>
+        <span class="aa-value">{{ user.email }}</span>
+      </div>
+    </div>
+  </section>
+
+  {# ── Hosting events ── #}
+  <section class="aa-card aa-section{{ ' aa-card--highlight' if open_hosting_request else '' }}" aria-labelledby="hosting-events-title">
+    <div class="aa-card-head">
+      <h2 class="aa-card-title" id="hosting-events-title">Hosting events</h2>
+    </div>
+    <div class="aa-card-body">
+      {% if user.is_admin or user.can_host %}
+      <div class="aa-status-row">
+        <div>
+          <p class="aa-status-title">You have hosting access</p>
+          <p class="aa-status-text">You can create events, set up rooms and booths, and invite your team.</p>
+        </div>
+        <a href="/workspace/" class="aa-btn">Go to My events</a>
+      </div>
+      {% elif open_hosting_request %}
+      <p class="aa-status-title">Request sent <span class="aa-pill aa-pill--waiting">Waiting for review</span></p>
+      <p class="aa-status-text">You asked for hosting access on {{ open_hosting_request.created_at.strftime('%b %d, %Y') }}. The VoxBento team will get back to you by email.</p>
+      {% else %}
+      <div class="aa-status-row">
+        <div>
+          {% if is_hosting_revoked %}
+          <p class="aa-status-title">Hosting access was removed</p>
+          <p class="aa-status-text">Your existing events are kept, but you can't create new ones. Request access again to tell the VoxBento team about your next event.</p>
+          {% else %}
+          <p class="aa-status-title">Want to host your event on VoxBento?</p>
+          <p class="aa-status-text">With hosting access you can create your own events and invite interpreters and coordinators. The VoxBento team reviews each request.</p>
+          {% endif %}
+        </div>
+        <a href="/account/hosting-request" class="aa-btn aa-btn--primary">Request access</a>
+      </div>
+      {% endif %}
+    </div>
+  </section>
+
+  {# ── Developer API ── #}
+  {% set dev_status = developer_account.status if developer_account else '' %}
+  <section class="aa-card aa-section{{ ' aa-card--highlight' if dev_status == 'pending' else '' }}" aria-labelledby="developer-title">
+    <div class="aa-card-head">
+      <h2 class="aa-card-title" id="developer-title">Developer API</h2>
+    </div>
+    <div class="aa-card-body">
+      {% if dev_status == 'approved' %}
+      <div class="aa-status-row">
+        <div>
+          <p class="aa-status-title">You have developer access</p>
+          <p class="aa-status-text">Create apps, manage their keys and webhooks on the Developer API page.</p>
+        </div>
+        <a href="/developer" class="aa-btn">Open Developer API</a>
+      </div>
+      {% elif dev_status == 'pending' %}
+      <p class="aa-status-title">Application sent <span class="aa-pill aa-pill--waiting">Waiting for review</span></p>
+      <p class="aa-status-text">You applied for developer access on {{ developer_account.created_at.strftime('%b %d, %Y') }}. The VoxBento team is reviewing your application.</p>
+      {% elif dev_status == 'suspended' %}
+      <p class="aa-status-title">Developer access suspended</p>
+      <p class="aa-status-text">Your apps can't use the VoxBento API right now. Contact the VoxBento team to restore access.</p>
+      {% elif dev_status == 'rejected' %}
+      <p class="aa-status-title">Application not approved</p>
+      <p class="aa-status-text">The VoxBento team didn't approve your application for developer access. Contact them if you think this is a mistake.</p>
+      {% else %}
+      <div class="aa-status-row">
+        <div>
+          <p class="aa-status-title">Connect your own app to VoxBento</p>
+          <p class="aa-status-text">Apply for developer access to create apps that use the VoxBento API. Applications are reviewed by the VoxBento team.</p>
+        </div>
+        <a href="/developer" class="aa-btn">Apply for developer access</a>
+      </div>
+      {% endif %}
+    </div>
+  </section>
+
+  {# ── Sign-in ── #}
+  <section class="aa-card aa-section" aria-labelledby="signin-title">
+    <div class="aa-card-head">
+      <h2 class="aa-card-title" id="signin-title">Sign-in</h2>
+    </div>
+    {% if user.password_hash %}
+    <div class="aa-card-row">
+      <div class="aa-status-row">
+        <div>
+          <p class="aa-status-title">Password</p>
+          <p class="aa-status-text">You can sign in with your password or with a link sent to your email.</p>
+        </div>
+        <button type="button" class="aa-btn" data-reveal="change-password" aria-expanded="false" aria-controls="change-password">Change password</button>
+      </div>
+      <form class="aa-inline-form" id="change-password" data-password-form="change" hidden>
+        <div class="aa-field">
+          <label for="cp-current">Current password</label>
+          <input class="aa-input" id="cp-current" name="current_password" type="password" autocomplete="current-password" required />
+        </div>
+        <div class="aa-field">
+          <label for="cp-new">New password</label>
+          <input class="aa-input" id="cp-new" name="password" type="password" autocomplete="new-password" minlength="8" required aria-describedby="cp-new-help" />
+          <p class="aa-help" id="cp-new-help">At least 8 characters.</p>
+        </div>
+        <p class="aa-error" data-form-error role="alert" hidden></p>
+        <div class="aa-actions">
+          <button type="submit" class="aa-btn aa-btn--primary">Save password</button>
+          <button type="button" class="aa-btn" data-reveal-close="change-password">Cancel</button>
+        </div>
+      </form>
+    </div>
+    <div class="aa-card-row">
+      <div class="aa-status-row">
+        <div>
+          <p class="aa-status-title">Sign in with email links only</p>
+          <p class="aa-status-text">Remove your password and always sign in with a link sent to your email.</p>
+        </div>
+        <button type="button" class="aa-btn" data-reveal="remove-password" aria-expanded="false" aria-controls="remove-password">Remove password</button>
+      </div>
+      <form class="aa-inline-form" id="remove-password" data-password-form="remove" hidden>
+        <div class="aa-field">
+          <label for="rp-current">Confirm with your current password</label>
+          <input class="aa-input" id="rp-current" name="password" type="password" autocomplete="current-password" required />
+        </div>
+        <p class="aa-error" data-form-error role="alert" hidden></p>
+        <div class="aa-actions">
+          <button type="submit" class="aa-btn aa-btn--danger">Remove password</button>
+          <button type="button" class="aa-btn" data-reveal-close="remove-password">Cancel</button>
+        </div>
+      </form>
     </div>
     {% else %}
-    <div class="account-empty">
-      <p>You have not been assigned a role for any event, room, or booth yet.</p>
+    <div class="aa-card-row">
+      <div class="aa-status-row">
+        <div>
+          <p class="aa-status-title">Password</p>
+          <p class="aa-status-text">You sign in with a link sent to your email. Set a password to sign in with it as well.</p>
+        </div>
+        <button type="button" class="aa-btn" data-reveal="set-password" aria-expanded="false" aria-controls="set-password">Set password</button>
+      </div>
+      <form class="aa-inline-form" id="set-password" data-password-form="set" hidden>
+        <div class="aa-field">
+          <label for="sp-new">New password</label>
+          <input class="aa-input" id="sp-new" name="password" type="password" autocomplete="new-password" minlength="8" required aria-describedby="sp-new-help" />
+          <p class="aa-help" id="sp-new-help">At least 8 characters.</p>
+        </div>
+        <p class="aa-error" data-form-error role="alert" hidden></p>
+        <div class="aa-actions">
+          <button type="submit" class="aa-btn aa-btn--primary">Set password</button>
+          <button type="button" class="aa-btn" data-reveal-close="set-password">Cancel</button>
+        </div>
+      </form>
     </div>
     {% endif %}
-  </div>
-
-  <div class="account-section">
-    <div class="account-section-head">
-      <h2 class="account-section-title">Event Hosting</h2>
-      <p class="account-section-text">Create and manage your own multilingual events.</p>
-    </div>
-    
-    <div class="account-hosting-card">
-      {% if user.is_admin %}
-      <div class="security-row">
-        <div>
-          <h3 class="security-title">Global Administrator</h3>
-          <p class="security-text">As a <strong>Super Admin</strong>, you have full access to host and manage events.</p>
-        </div>
-        <a href="/workspace/" class="btn btn-primary">Go to My Events &rarr;</a>
-      </div>
-      {% elif user.can_host %}
-      <div class="security-row">
-        <div>
-          <h3 class="security-title">Hosting Access Active</h3>
-          <p class="security-text">You have active <strong>Hosting Access</strong>. You can create events, configure rooms, and invite participants.</p>
-        </div>
-        <a href="/workspace/" class="btn btn-primary">Go to My Events &rarr;</a>
-      </div>
-      {% elif is_hosting_revoked %}
-      <div class="security-row">
-        <div>
-          <h3 class="security-title">Hosting Access Revoked</h3>
-          <p class="security-text">Your hosting access has been revoked. Your existing events are preserved, but you cannot create new events until hosting is restored.</p>
-        </div>
-        {% if not user.hosting_requested_at %}
-        <button type="button" class="btn btn-primary" onclick="openDemoModal()">Re-request Hosting Access</button>
-        {% endif %}
-      </div>
-      {% if user.hosting_requested_at %}
-      <div class="account-hosting-banner account-hosting-banner--spaced">
-        <div class="account-hosting-banner-content">
-          <div>
-            <p class="account-hosting-banner-title">
-              Hosting re-request submitted on {{ user.hosting_requested_at.strftime('%b %d, %Y') }}.
-            </p>
-            <p class="account-hosting-banner-text">
-              Our administration team is reviewing your request to restore hosting access.
-            </p>
-          </div>
-          <button type="button" class="btn btn-outline btn-sm" onclick="openDemoModal()">Re-request Hosting Access</button>
-        </div>
-      </div>
-      {% endif %}
-      {% else %}
-        {% if user.hosting_requested_at %}
-        <div class="account-hosting-banner">
-          <p class="account-hosting-banner-title">
-            Hosting request submitted on {{ user.hosting_requested_at.strftime('%b %d, %Y') }}.
-          </p>
-          <p class="account-hosting-banner-text">
-            Our administration team is reviewing your request. You'll receive an email as soon as hosting is enabled.
-          </p>
-        </div>
-        {% else %}
-        <div class="security-row">
-          <div>
-            <h3 class="security-title">Organizer Access</h3>
-            <p class="security-text">Only authorized organizers can create events. If you'd like to host your own events on VoxBento, request hosting access from the team.</p>
-          </div>
-          <button type="button" class="btn btn-primary" onclick="openDemoModal()">Request Hosting Access</button>
-        </div>
-        {% endif %}
-      {% endif %}
-    </div>
-  </div>
-
-  <div>
-    <div class="account-section-head">
-      <h2 class="account-section-title">Security Settings</h2>
-      <p class="account-section-text">Manage your login methods and credentials.</p>
-    </div>
-    
-    <div class="security-card">
-      {% if user.password_hash %}
-      <div id="has-password-section">
-        <div class="security-row">
-          <div>
-            <h3 class="security-title">Password Login</h3>
-            <p class="security-text">You currently sign in using a password or magic link.</p>
-          </div>
-          <button type="button" class="btn btn-outline security-toggle security-toggle--danger" id="btn-remove-pwd">Disable Password</button>
-        </div>
-        
-        <form id="remove-pwd-form" class="hidden security-form security-form--account">
-          <p class="security-lead">Confirm your current password to switch to passwordless sign-in.</p>
-          <div class="security-fields">
-            <input type="password" id="current_password" placeholder="Current Password" required class="security-input" />
-            <button type="submit" class="btn btn-primary security-submit">Confirm Disable</button>
-          </div>
-          <div id="remove-pwd-error" class="alert alert-error hidden security-error"></div>
-        </form>
-      </div>
-      {% else %}
-      <div id="no-password-section">
-        <div class="security-row">
-          <div>
-            <h3 class="security-title">Passwordless Login</h3>
-            <p class="security-text">You currently use passwordless login. Want a faster way to sign in on shared devices?</p>
-          </div>
-          <button type="button" class="btn btn-outline security-toggle" id="btn-add-pwd">Create Password</button>
-        </div>
-        
-        <form id="add-pwd-form" class="hidden security-form security-form--account">
-          <p class="security-lead">Set a new password for your account.</p>
-          <div class="security-fields">
-            <input type="password" id="new_password" placeholder="Min 8 characters" minlength="8" required class="security-input" />
-            <button type="submit" class="btn btn-primary security-submit">Save Password</button>
-          </div>
-          <div id="add-pwd-error" class="alert alert-error hidden security-error"></div>
-        </form>
-      </div>
-      {% endif %}
-    </div>
-  </div>
-</main>
-
-<script>
-document.addEventListener("DOMContentLoaded", () => {
-  const btnRemovePwd = document.getElementById("btn-remove-pwd");
-  const removePwdForm = document.getElementById("remove-pwd-form");
-  const currentPasswordInput = document.getElementById("current_password");
-  const removePwdError = document.getElementById("remove-pwd-error");
-  
-  if (btnRemovePwd) {
-    btnRemovePwd.addEventListener("click", () => {
-      btnRemovePwd.classList.add("hidden");
-      removePwdForm.classList.remove("hidden");
-    });
-    
-    removePwdForm.addEventListener("submit", async (e) => {
-      e.preventDefault();
-      removePwdError.classList.add("hidden");
-      try {
-        const res = await fetch("/api/auth/remove-password", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ password: currentPasswordInput.value })
-        });
-        if (res.ok) {
-          window.location.reload();
-        } else {
-          const data = await res.json();
-          removePwdError.textContent = data.detail || "Failed to remove password";
-          removePwdError.classList.remove("hidden");
-        }
-      } catch (err) {
-        removePwdError.textContent = "Network error";
-        removePwdError.classList.remove("hidden");
-      }
-    });
-  }
-
-  const btnAddPwd = document.getElementById("btn-add-pwd");
-  const addPwdForm = document.getElementById("add-pwd-form");
-  const newPasswordInput = document.getElementById("new_password");
-  const addPwdError = document.getElementById("add-pwd-error");
-  
-  if (btnAddPwd) {
-    btnAddPwd.addEventListener("click", () => {
-      btnAddPwd.classList.add("hidden");
-      addPwdForm.classList.remove("hidden");
-    });
-    
-    addPwdForm.addEventListener("submit", async (e) => {
-      e.preventDefault();
-      addPwdError.classList.add("hidden");
-      try {
-        const res = await fetch("/api/auth/set-password", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ password: newPasswordInput.value })
-        });
-        if (res.ok) {
-          window.location.reload();
-        } else {
-          const data = await res.json();
-          addPwdError.textContent = data.detail || "Failed to set password";
-          addPwdError.classList.remove("hidden");
-        }
-      } catch (err) {
-        addPwdError.textContent = "Network error";
-        addPwdError.classList.remove("hidden");
-      }
-    });
-  }
-});
-</script>
-{% include "_demo_modal.html" %}
+  </section>
+</div>
 {% endblock %}

@@ -15,9 +15,9 @@ description: Use this skill for tasks involving transcription providers, caption
 ```
 Interpreter browser
   └── getUserMedia (mic, 16-bit PCM via WebRTC/WHIP)
-        └── MediaMTX (RTSP port 8554, path: {event_slug}/{language_code})
+        └── MediaMTX (RTSP port 8554, path: {event_slug}/{room_id}/{language_code})
               └── ffmpeg (spawned by worker.py)
-                    -rtsp_transport tcp -i rtsp://mediamtx:8554/{path}
+                    -rtsp_transport tcp -i rtsp://mediamtx:8554/{event_slug}/{room_id}/{language_code}
                     -f s16le -acodec pcm_s16le -ar 16000 -ac 1 -
                         └── TranscriptionProvider.run_stream()
                               └── 3-second PCM chunks
@@ -123,7 +123,7 @@ await aggregator.handle_clear(booth_id)                   # silence endpoint
 
 1. Check `active_workers` dict for the booth_id.
 2. Check ffmpeg process is alive: `active_processes[booth_id].returncode is None`.
-3. Check MediaMTX RTSP is reachable: `rtsp://mediamtx:8554/{event_slug}/{language_code}`.
+3. Check MediaMTX RTSP is reachable: `rtsp://mediamtx:8554/{event_slug}/{room_id}/{language_code}`.
 4. Check API key: `get_api_key(event, ProviderEnum.X)` — returns `None` if not set.
 5. Check `MAX_TOTAL_WORKERS` not exceeded.
 6. Check `event.transcription_api_enabled` is `True` for external providers.
