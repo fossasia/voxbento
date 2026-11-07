@@ -11,6 +11,7 @@ from fastapi import APIRouter, HTTPException, Query, Request, status
 from fastapi.templating import Jinja2Templates
 from starlette.responses import JSONResponse
 
+from portal import program_relay
 from portal.auth import _current_user, create_listener_token, decode_token, get_booth_session, is_listener_token
 from portal.booth_identity import make_booth_id
 from portal.config import settings
@@ -24,7 +25,9 @@ from portal.database import (
 )
 from portal.globals import _JS_CACHE_BUST, asset_version_context
 from portal.join_code_limit import JoinCodeThrottled, verify_join_code
+from portal.models import Room
 from portal.overlay_channels import overlay_channels
+from portal.program_ingest import has_valid_credential
 from portal.utils import _ensure_mediamtx_path
 
 # Allowlists for embed theming params — no free-text values accepted.
@@ -46,6 +49,21 @@ def _client_ip(request: Request) -> str:
 def _submitted_code(request: Request, event_slug: str, code: str | None) -> str | None:
     """The join code this request submits, from the query parameter or the stored cookie."""
     return code or request.cookies.get(f"listener_code_{event_slug}")
+
+
+def _has_floor_audio_source(room: Room) -> bool:
+    """Return whether a room has an available or configured floor audio source."""
+    if not room.floor_source or room.floor_source == "none":
+        return False
+    if room.floor_source == "program_ingest":
+        if not settings.program_ingest_enabled:
+            return False
+        if room.program_ingest_mode == program_relay.RELAY_MODE and not settings.program_relay_enabled:
+            return False
+        return bool(has_valid_credential(room) or room.program_session_id or room.floor_transcription_enabled)
+    if room.floor_source == "jitsi_bot":
+        return bool(room.meeting_agent_enabled or room.jitsi_url or room.floor_transcription_enabled)
+    return False
 
 
 async def has_listener_access(
@@ -122,7 +140,7 @@ async def listen_event_page(request: Request, event_slug: str, code: str | None 
             }
         )
 
-        if r.floor_transcription_enabled:
+        if _has_floor_audio_source(r):
             from portal.booth_identity import make_mediamtx_path
 
             channel_id = make_mediamtx_path(ev.slug, r.id, "floor")
