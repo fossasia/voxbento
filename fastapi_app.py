@@ -35,7 +35,7 @@ from portal.routers.oauth import router as oauth_router
 from portal.routers.program_ingest import router as program_ingest_router
 from portal.routers.public import router as public_router
 from portal.routers.webhooks import router as webhooks_router
-from portal.security_headers import SecurityHeadersMiddleware, apply_security_headers
+from portal.security_headers import SecurityHeadersMiddleware, apply_security_headers, forwarded_https
 from portal.websockets.handlers import router as ws_router
 from portal.workspace_routing import WorkspaceRoutingMiddleware
 
@@ -311,7 +311,7 @@ async def general_exception_handler(request: Request, exc: Exception):
     else:
         response = JSONResponse({"detail": "Internal Server Error"}, status_code=500)
     # Unhandled-error responses are built outside the middleware stack, so add the headers here.
-    is_https = request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https"
+    is_https = request.url.scheme == "https" or forwarded_https(request.headers)
     apply_security_headers(response.headers, path=request.url.path, is_https=is_https)
     return response
 

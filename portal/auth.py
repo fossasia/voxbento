@@ -15,6 +15,7 @@ from portal.config import settings
 from portal.database import get_db_session
 from portal.models import User
 from portal.roles import ADMIN, EVENT_OWNER, INTERPRETER, ROLE_RANK, ROOM_COORDINATOR, highest_role, is_at_least
+from portal.security_headers import forwarded_https
 
 logger = logging.getLogger(__name__)
 
@@ -538,7 +539,7 @@ def is_cookie_secure(request: Request) -> bool:
     True for direct or proxied HTTPS requests; otherwise only when the configured public URL
     is HTTPS outside debug mode, so plain-HTTP local development keeps working.
     """
-    if request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https":
+    if request.url.scheme == "https" or forwarded_https(request.headers):
         return True
     return bool(settings.public_base_url.lower().startswith("https://") and not settings.debug)
 

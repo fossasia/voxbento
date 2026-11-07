@@ -5,9 +5,19 @@ from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from portal.config import settings
 
-_HSTS = "max-age=31536000; includeSubDomains"
+# No includeSubDomains: that would force HTTPS on every sibling subdomain, including ones that only speak HTTP.
+_HSTS = "max-age=31536000"
 # The /embed/ route builds its own configurable frame-ancestors policy.
 _EMBED_PREFIX = "/embed/"
+
+
+def forwarded_https(headers: Headers) -> bool:
+    """Whether a proxy says the client used HTTPS.
+
+    Reads the first (client-facing) value of ``X-Forwarded-Proto``, so ``HTTPS`` and a
+    ``https, http`` chain from several proxies are handled.
+    """
+    return headers.get("x-forwarded-proto", "").split(",")[0].strip().lower() == "https"
 
 
 def apply_security_headers(headers: MutableHeaders, *, path: str, is_https: bool) -> None:
@@ -39,7 +49,7 @@ class SecurityHeadersMiddleware:
             await self.app(scope, receive, send)
             return
 
-        is_https = scope["scheme"] == "https" or Headers(scope=scope).get("x-forwarded-proto") == "https"
+        is_https = scope.get("scheme", "http") == "https" or forwarded_https(Headers(scope=scope))
 
         async def send_with_headers(message: Message) -> None:
             if message["type"] == "http.response.start":

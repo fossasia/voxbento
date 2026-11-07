@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 from fastapi import FastAPI, Request
 from fastapi.responses import PlainTextResponse
@@ -11,7 +13,7 @@ from portal.auth import is_cookie_secure
 from portal.config import settings
 from portal.security_headers import SecurityHeadersMiddleware
 
-HSTS = "max-age=31536000; includeSubDomains"
+HSTS = "max-age=31536000"
 
 
 def _build_app() -> FastAPI:
@@ -94,6 +96,9 @@ def test_hsts_not_sent_in_debug(client, monkeypatch):
         ("HTTPS://voxbento.com", False, {}, "True"),
         ("https://voxbento.com", True, {}, "False"),
         ("http://localhost:8000", False, {"x-forwarded-proto": "https"}, "True"),
+        ("http://localhost:8000", False, {"x-forwarded-proto": "HTTPS"}, "True"),
+        ("http://localhost:8000", False, {"x-forwarded-proto": "https, http"}, "True"),
+        ("http://localhost:8000", False, {"x-forwarded-proto": "http, https"}, "False"),
         ("https://voxbento.com", True, {"x-forwarded-proto": "https"}, "True"),
     ],
 )
@@ -101,3 +106,28 @@ def test_is_cookie_secure(client, monkeypatch, public_url, debug, headers, expec
     monkeypatch.setattr(settings, "public_base_url", public_url)
     monkeypatch.setattr(settings, "debug", debug)
     assert client.get("/secure", headers=headers).text == expected
+
+
+def test_hsts_does_not_cover_subdomains(client, monkeypatch):
+    monkeypatch.setattr(settings, "public_base_url", "https://voxbento.com")
+    monkeypatch.setattr(settings, "debug", False)
+    assert "includesubdomains" not in client.get("/page").headers["strict-transport-security"].lower()
+
+
+def test_middleware_accepts_a_scope_without_scheme():
+    """`scheme` is optional in the ASGI spec; a server that leaves it out must not crash the request."""
+    sent = []
+
+    async def app(scope, receive, send):
+        await send({"type": "http.response.start", "status": 200, "headers": []})
+        await send({"type": "http.response.body", "body": b""})
+
+    async def receive():
+        return {"type": "http.request"}
+
+    async def send(message):
+        sent.append(message)
+
+    scope = {"type": "http", "path": "/page", "headers": []}
+    asyncio.run(SecurityHeadersMiddleware(app)(scope, receive, send))
+    assert (b"x-content-type-options", b"nosniff") in sent[0]["headers"]
