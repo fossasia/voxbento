@@ -44,6 +44,16 @@
     <span class="tile-title">API keys</span>
     <span class="tile-desc">Transcription &amp; translation providers</span>
   </a>
+  <a href='{{ management_prefix }}/events/{{ event.id }}/caption-overlays/' class='tile'>
+    <span class='tile-icon' aria-hidden='true'>
+      <svg width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='currentColor' stroke-width='1.75' stroke-linecap='round' stroke-linejoin='round'>
+        <rect x='3' y='5' width='18' height='14' rx='2'></rect>
+        <path d='M7 12h4m2 0h4M7 15h10'></path>
+      </svg>
+    </span>
+    <span class='tile-title'>Caption overlays</span>
+    <span class='tile-desc'>Style, preview and copy captions for OBS or vMix</span>
+  </a>
   {% endif %}
   <a href="{{ management_prefix }}/events/{{ event.id }}/setup/rooms" class="tile">
     <span class="tile-icon">🧭</span>
@@ -54,7 +64,7 @@
 
 {% if is_event_owner %}
 <!-- Listener Access -->
-<div class="section-card section-card--spaced">
+<div class="section-card section-card--spaced" id="listener-access">
   <div class="section-header">
     <h2>Listener access</h2>
     {% if event.listener_join_code %}
