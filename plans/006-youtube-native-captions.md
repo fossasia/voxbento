@@ -110,13 +110,13 @@ idempotent, batch-alter for SQLite.
 
 In `portal/youtube_account.py` add `async def enable_http_captions(connection, broadcast_id) -> None`:
 1. `get_broadcast` with `part=snippet,contentDetails,status` (keep the **full** `contentDetails` object and check lifecycle status). Note the API restriction: YouTube Live API only allows caption configuration updates on `created` or `ready` broadcasts; active or live broadcasts cannot switch to HTTP-post captions via the API.
-2. Check `broadcast.status.lifeCycleStatus`: if not in `("created", "ready")`, raise `ValueError("Captions must be set up before the broadcast starts. Active or live broadcasts cannot switch to HTTP-post captions via the API; turn on 'POST captions to URL' in YouTube Studio directly.")`.
-3. If `latencyPreference == "ultraLow"` → `raise ValueError("Ultra-low latency YouTube broadcasts cannot show captions. Choose Normal or Low latency in YouTube Studio.")`.
-4. If `closedCaptionsType == "closedCaptionsHttpPost"` → return.
+2. If `latencyPreference == "ultraLow"` → `raise ValueError("Ultra-low latency YouTube broadcasts cannot show captions. Choose Normal or Low latency in YouTube Studio.")`. This comes first so it also applies to a broadcast that is already set to "POST captions to URL".
+3. If `closedCaptionsType == "closedCaptionsHttpPost"` → return, without a PUT, whatever the lifecycle status. Measured in `plans/002-results.md`: a live broadcast rejects every caption update, even one that changes nothing (403 `enableClosedCaptionsModificationNotAllowed`), so a broadcast that was set to "POST captions to URL" in Studio before it went live must not be refused.
+4. Check `broadcast.status.lifeCycleStatus`: if not in `("created", "ready")`, raise `ValueError("Captions must be set up before the broadcast starts. Active or live broadcasts cannot switch to HTTP-post captions via the API; turn on 'POST captions to URL' in YouTube Studio directly.")`.
 5. Prepare `current = dict(broadcast.contentDetails)`. Remove `enableClosedCaptions` (`current.pop("enableClosedCaptions", None)`) so the update payload does not include conflicting caption properties before adding `closedCaptionsType`. Set `current["closedCaptionsType"] = "closedCaptionsHttpPost"`.
 6. Else `PUT {API_BASE}/liveBroadcasts?part=id,snippet,contentDetails` with body
    `{"id": broadcast_id, "snippet": {"scheduledStartTime": broadcast.snippet.scheduled_start_time}, "contentDetails": current}`
-   (drop read-only fields `boundStreamId`, `boundStreamLastUpdateTimeMs` if the API rejects them; this is the documented update pattern: send the whole part back).
+   (drop read-only fields `boundStreamId`, `boundStreamLastUpdateTimeMs` if the API rejects them; this is the documented update pattern: send the whole part back.)
 7. On `YouTubeAPIError` raise `ValueError("YouTube would not switch captions on. In YouTube Studio open the stream settings, set Closed captions to 'POST captions to URL', then try again.")`.
 
 **Verify**: covered by tests in Step 6.
@@ -170,9 +170,16 @@ async def _sender(room_id: int) -> None: ...      # loop: get; for each chunk PO
 ```
 
 Rules for `_sender`:
+- Post over `https`. The API returns the caption URL as `http://`, but `https://` is accepted
+  (`plans/002-results.md`, step 4), and its `cid` has the same value as the stream key. `activate()` rewrites an
+  `http://` URL to `https://` before storing it; never post to the returned scheme as-is.
 - Append `seq` as a query parameter (`&seq=N` or `?seq=N` depending on whether the URL
   already has a query), incrementing per POST.
-- Chunk timestamps: `received_at_ms + i * CHUNK_SPACING_MS`.
+- Chunk timestamps: `received_at_ms + i * CHUNK_SPACING_MS`, then clamped to within 55 s of `time.time()`.
+  YouTube rejects a timestamp more than 60 s from its own clock with HTTP 400 (`plans/002-results.md`, step 4),
+  so a caption that waited in the queue, or a host clock that is off, must not turn into a stream of 400s.
+  A 400 whose body mentions the timestamp skew sets health `failing` with
+  `"YouTube rejected the caption timestamp (more than 60 s from its clock). Check this server's clock."`.
 - 2xx → health `posting`, `last_ok_at = time.time()`.
 - 4xx → health `failing` with `"YouTube rejected the caption (HTTP <code>). Check the broadcast's caption settings."`;
   keep consuming (do not retry the same item).
@@ -244,6 +251,9 @@ Rules for `_sender`:
 12. Route: language not in room languages → 422; no linked broadcast → 409; success → column set and `targets[room_id].language` set.
 13. Aggregator hook: a floor final calls `offer` with `"floor"`; an interpreter-booth final does not (monkeypatch `youtube_captions.offer`).
 14. Unlink broadcast → `deactivate` called, column cleared.
+15. `activate()` rewrites an `http://` caption URL to `https://`, and the sender's requests use `https`.
+16. A caption that is older than 60 s when it is sent has its timestamp clamped to within 55 s of now; a 400 whose body mentions the timestamp skew sets the clock-skew health reason.
+17. `enable_http_captions` on a `live` broadcast that is already `closedCaptionsHttpPost` returns without a PUT; on a `live` broadcast that is not, it raises the "set it up in Studio" error; an `ultraLow` broadcast is refused even when it is already `closedCaptionsHttpPost`.
 
 **Verify**: `uv run pytest tests/test_youtube_captions.py -q` → ≥ 12 passed.
 

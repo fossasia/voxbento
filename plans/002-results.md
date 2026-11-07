@@ -20,7 +20,7 @@ been measured. They are not passes. Plan 002 stays IN PROGRESS until every step 
 |---|---|---|---|
 | 1 | Chrome gives a live tab-audio track from `getDisplayMedia` that survives stopping video and backgrounding | YES in Chrome 156 and Edge 156, for a regular video and for a live stream (synthetic test stream); Firefox 159 gives no audio track; Safari untested | Plan 003 (merged in #1097) |
 | 2 | At least one third-party platform publishes to VoxBento RTMPS with the `floor?key=<secret>` key | PENDING | Plan 004 |
-| 3 | `liveStreams.list` returns `cdn.ingestionInfo.streamName` with `youtube.force-ssl` | YES with `youtube.force-ssl`; `youtube.readonly` result recorded but the granted scope was not captured (see Step 3); quota costs are 1 unit per call (documented) | Plan 005 |
+| 3 | `liveStreams.list` returns `cdn.ingestionInfo.streamName` with `youtube.force-ssl` | YES with `youtube.force-ssl`. Whether a `youtube.readonly`-only grant returns `streamName` is **unconfirmed**: the scopes granted for that call were not captured (see Step 3). Quota costs are 1 unit per call (documented) | Plan 005 |
 | 4 | A caption POST to `closedCaptionsIngestionUrl` renders in the YouTube player | YES on a live unlisted broadcast; delay not timed | Plan 006 |
 
 ## Preflight (historical)
@@ -136,7 +136,7 @@ before live streaming was enabled on the channel; the rest ran on 2026-11-05.
 | `cdn.ingestionInfo.ingestionAddress` host | `a.rtmp.youtube.com` (`rtmp://a.rtmp.youtube.com/live2`). The response also returns `rtmpsIngestionAddress` (`rtmps://a.rtmps.youtube.com/live2`) and backup addresses on `b.rtmp.youtube.com` / `b.rtmps.youtube.com` |
 | `contentDetails.closedCaptionsIngestionUrl` host and path (query redacted) | `http://upload.youtube.com/closedcaption?cid=<redacted>`: **`http`** scheme as returned; `https` was also accepted (see Step 4) |
 | `contentDetails.isDefaultStream` | **absent** from the response. `contentDetails.isReusable: true` was returned instead |
-| `streamName` returned with `youtube.readonly` only | 200 with `streamName` and `closedCaptionsIngestionUrl` present. Caveat: the granted scope was re-authorised as `youtube.readonly` but the Playground's authorised-scope list was not captured, so scope isolation is unconfirmed |
+| `streamName` returned with `youtube.readonly` only | **UNCONFIRMED.** The call was repeated after re-authorising for `youtube.readonly` and returned 200 with `streamName` and `closedCaptionsIngestionUrl`, but the scopes the token was granted were not captured and may still have included `youtube.force-ssl`. This does not show what a read-only grant alone exposes. Needs a re-run with the granted scopes recorded |
 | `liveBroadcasts.update` setting `closedCaptionsType=closedCaptionsHttpPost` succeeds while `ready` (`upcoming`) | **200**. The body copied the whole `contentDetails` (including `boundStreamId` and `boundStreamLastUpdateTimeMs`), omitted `enableClosedCaptions`, and carried `snippet.title` and `snippet.scheduledStartTime` (already in the past). Round trip `closedCaptionsDisabled` -> `closedCaptionsHttpPost` both **200**; `enableClosedCaptions` followed the type (`false` then `true`) |
 | Same update while `live` | **403** `enableClosedCaptionsModificationNotAllowed` ("Modification on enableClosedCaptions is not allowed in current status") when setting `closedCaptionsDisabled`, and **also 403 with the same reason when sending `closedCaptionsHttpPost` while the broadcast was already `closedCaptionsHttpPost`** (a no-op update) |
 
@@ -160,7 +160,7 @@ and 4 `liveBroadcasts.update`, of which 2 were rejected with 403. That is 7 unit
 reading, and it was not checked whether a rejected call is charged.
 
 **Verdict: YES** for `streamName`, the ingestion addresses and `closedCaptionsIngestionUrl` with
-`youtube.force-ssl` on this channel. The `youtube.readonly` scope isolation is unconfirmed.
+`youtube.force-ssl` on this channel. What a `youtube.readonly`-only grant returns is unconfirmed (granted scopes not captured).
 
 ## Step 4: Caption POST
 
@@ -193,6 +193,7 @@ Hello from VoxBento
 Observations:
 
 - The response body is YouTube's server time. A timestamp more than 60 s from it, in either direction, is rejected with 400; 30 s was accepted. The exact boundary between 30 s and 90 s was not tested.
+- Rendering in the player was observed over `https` only. Over `http` the POST returned 200 once, before the broadcast was live, and its rendering was not observed.
 - Each `curl` round trip took about 2 s (new TLS connection each time).
 - Captions arrive in the player as a roll-up: later lines appear next to earlier ones.
 - The caption delay was not timed. The operator's informal estimate (20-30 s) is plausibly the viewer latency of a "Normal" latency broadcast, but that is an inference, not a measurement.
@@ -201,12 +202,14 @@ Observations:
 
 ## Findings for plans 004, 005 and 006
 
+Plan 006 (Steps 2 and 3 and its test list) and plan 002 (Step 3 items 3 and 5) are updated in this PR to apply the findings below.
+
 - **Caption URL is as secret as the stream key.** The `cid` of `closedCaptionsIngestionUrl` has the same value as `streamName`. Never log it or return it to the browser (plan 006 already says so).
-- **Use `https` for the caption POST.** The API returns an `http://` URL, but `https://` is accepted. A client that posts to the returned URL as-is sends the secret in clear text.
-- **Timestamps must stay within 60 s of YouTube's clock.** A caption that sat in a queue for more than about a minute is rejected with 400, and so is every caption if the host clock is off by more than 60 s. Plan 006's sender should clamp or drop old items.
-- **Live broadcasts cannot have their caption settings updated, even to the same value.** Plan 006 Step 2 checks the lifecycle status first and the "already `closedCaptionsHttpPost`" shortcut after. With this order a broadcast that was already set to "POST captions to URL" in Studio and then went live would be refused. The check for "already `closedCaptionsHttpPost`" should come first and return without a PUT; only otherwise should a non-`created`/`ready` status raise the "set it up in Studio" error.
+- **Use `https` for the caption POST.** The API returns an `http://` URL, but `https://` is accepted. A client that posts to the returned URL as-is sends the secret in clear text. Plan 006 Step 3 now says `activate()` rewrites the scheme to `https` before storing the URL.
+- **Timestamps must stay within 60 s of YouTube's clock.** A caption that sat in a queue for more than about a minute is rejected with 400, and so is every caption if the host clock is off by more than 60 s. Plan 006 Step 3 now clamps chunk timestamps to within 55 s of the host clock and gives a clock-skew health reason.
+- **Live broadcasts cannot have their caption settings updated, even to the same value.** Plan 006 Step 2 used to check the lifecycle status before the "already `closedCaptionsHttpPost`" shortcut, so a broadcast set to "POST captions to URL" in Studio before it went live would have been refused. Step 2 now checks `ultraLow` first (it applies to already-configured broadcasts too), then returns early when the type is already `closedCaptionsHttpPost`, and only then checks the lifecycle status.
 - **`isDefaultStream` is not returned** by `liveStreams.list` on this channel. Plan 005 should not rely on it; `isReusable` was present.
-- **`youtube.readonly` also returned `streamName`** in this run (scope isolation unconfirmed), so a read-only grant still exposes the stream key. Plan 005 should say so in its consent copy.
+- **`youtube.readonly` and the stream key is unconfirmed.** A `liveStreams.list` call made after re-authorising for `youtube.readonly` returned `streamName`, but the granted scopes were not captured and may still have included `youtube.force-ssl`, so this run does not show what a read-only grant exposes. Plan 005 should not make a claim about it in its consent copy until the call is repeated with the granted scopes recorded (plan 002 Step 3, item 5, now asks for that).
 - **The API also returns `rtmpsIngestionAddress`** (`rtmps://a.rtmps.youtube.com/live2`), which plan 004 can use when it relays to YouTube.
 
 ## Documentation gap to decide
