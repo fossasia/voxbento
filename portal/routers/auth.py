@@ -598,8 +598,12 @@ async def reset_password_submit(request: Request, token: str):
     form = await request.form()
     password = form.get("password", "")
 
-    if len(password) < 8 or password_too_long(password):
-        error = "Password must be at least 8 characters" if len(password) < 8 else PASSWORD_TOO_LONG_MESSAGE
+    error = None
+    if len(password) < 8:
+        error = "Password must be at least 8 characters"
+    elif password_too_long(password):
+        error = PASSWORD_TOO_LONG_MESSAGE
+    if error:
         return templates.TemplateResponse(
             request=request,
             name="reset_password.html",

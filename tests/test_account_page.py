@@ -272,7 +272,7 @@ async def test_setting_a_first_password_and_removing_it():
         page = await http.get("/account?success=password_removed", cookies=cookies)
     assert short.status_code == 400
     assert too_long.status_code == 400
-    assert too_long.json()["detail"] == "Password must be at most 72 bytes."
+    assert too_long.json()["detail"].startswith("Password must be at most 72 bytes.")
     assert first.status_code == 200
     assert bad_remove.status_code == 403
     assert removed.status_code == 200

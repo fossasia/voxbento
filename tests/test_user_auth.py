@@ -89,6 +89,11 @@ class TestPasswordHashing:
         assert verify_password("é" * 36, hashed)
         assert not verify_password("é" * 37, hashed)
 
+    @pytest.mark.anyio
+    async def test_hash_rejects_password_longer_than_72_bytes(self, setup_db):
+        with pytest.raises(ValueError, match="at most 72 bytes"):
+            hash_password("a" * 73)
+
 
 # ---------------------------------------------------------------------------
 # Registration
