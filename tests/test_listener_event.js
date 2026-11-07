@@ -234,7 +234,8 @@ function make(tagName, id) {
 );
 
 const roomSelect = document.getElementById('room-select');
-roomSelect.innerHTML = '<option value="">-- Select Room --</option><option value="1">Main Hall</option>';
+roomSelect.innerHTML =
+  '<option value="">-- Select Room --</option><option value="1">Main Hall</option><option value="2">Recovery Hall</option>';
 const captionModeSelect = document.getElementById('caption-mode-select');
 captionModeSelect.innerHTML =
   '<option value="original">Original</option><option value="translated">Translated</option>';
@@ -264,10 +265,20 @@ const listenerData = make('script', 'listener-data');
 listenerData.textContent = JSON.stringify({
   eventSlug: 'demo',
   shareUrl: 'https://example.test/listener/demo',
-  rooms: [{ id: 1, floor_tts_enabled: false }],
+  rooms: [{ id: 1, floor_tts_enabled: false }, { id: 2, floor_tts_enabled: true }],
   booths: [
     { id: 'floor_1', room_id: 1, language_code: 'floor', language_name: 'Floor Audio', whep_url: 'http://mtx/floor/whep', audio_delay_ms: 0 },
     { id: 2, room_id: 1, language_code: 'es', language_name: 'Spanish', whep_url: 'http://mtx/es/whep', audio_delay_ms: 0 },
+    {
+      id: 'floor_2',
+      room_id: 2,
+      language_code: 'floor',
+      language_name: 'Floor Audio',
+      whep_url: 'http://mtx/floor2/whep',
+      audio_delay_ms: 0,
+      translation_enabled: true,
+      translation_languages: [{ code: 'fr', name: 'French', tts_enabled: true }],
+    },
   ],
 });
 
@@ -307,6 +318,26 @@ function fetch(url) {
   return Promise.resolve({ ok: true, json: () => Promise.resolve(body) });
 }
 
+// Translated speech: each decoded segment is recorded in the order the
+// listener hands it to the scheduler. A segment's PCM length identifies it.
+const scheduledSegments = [];
+class FakeAudioContext {
+  constructor() {
+    this.state = 'running';
+  }
+  createBuffer(channels, length) {
+    return { length, copyToChannel() {} };
+  }
+}
+const AudioScheduler = {
+  create: () => ({
+    scheduleBuffer(buffer) {
+      scheduledSegments.push(buffer.length / 10);
+    },
+    reset() {},
+  }),
+};
+
 Object.assign(globalThis, {
   document,
   WhepListener,
@@ -317,8 +348,11 @@ Object.assign(globalThis, {
     setTimeout,
     setInterval: () => 0,
     addEventListener: () => {},
+    AudioContext: FakeAudioContext,
+    AudioScheduler,
   },
 });
+require(path.join(__dirname, '..', 'portal', 'static', 'js', 'tts-parser.js'));
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -335,6 +369,43 @@ function choose(select, value) {
 
 function flush() {
   return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function ttsSocket() {
+  return sockets.filter((s) => s.url.includes('/ws/tts/')).pop();
+}
+
+// A binary TTS bundle as the server frames it: version byte, big-endian JSON
+// header length, JSON header, then 16-bit PCM. A segment carries seq * 10
+// samples so the scheduler stub can tell which segment it received.
+function ttsFrame(header, withAudio) {
+  const json = Buffer.from(JSON.stringify(header));
+  const pcm = Buffer.alloc(withAudio ? header.seq * 10 * 2 : 0, 1);
+  const frame = Buffer.alloc(5 + json.length + pcm.length);
+  frame[0] = 1;
+  frame.writeUInt32BE(json.length, 1);
+  json.copy(frame, 5);
+  pcm.copy(frame, 5 + json.length);
+  return frame.buffer.slice(frame.byteOffset, frame.byteOffset + frame.length);
+}
+
+// The floor pipeline sends each final sentence on the captions feed and then
+// as two TTS bundles: text-ready (audio pending) and audio-ready.
+function sendFloorSegment(seq, segmentId, text, translation, stage) {
+  const header = { seq, segment_id: segmentId, caption: text, translation, error: null };
+  if (stage === 'caption') {
+    captionsSocket().onmessage({
+      data: JSON.stringify({ type: 'caption', status: 'final', seq, segment_id: segmentId, text }),
+    });
+  } else if (stage === 'text') {
+    ttsSocket().onmessage({ data: ttsFrame({ ...header, audio_pending: true }, false) });
+  } else {
+    ttsSocket().onmessage({ data: ttsFrame({ ...header, audio_pending: false }, true) });
+  }
 }
 
 async function run() {
@@ -455,6 +526,68 @@ async function run() {
   captionsSocket().onmessage({ data: JSON.stringify({ type: 'caption', status: 'final', seq: 1, text: 'Floor' }) });
   choose(roomSelect, '');
   assert(!waitingText.classList.contains('listener-hidden'), 'the placeholder comes back after clearing the room');
+
+  console.log('\n── Floor transcription recovery (#1061) ──');
+
+  // A listener stays on floor audio with French speech while the room's floor
+  // transcription restarts. The restarted worker continues the room's stored
+  // sequence, so new sentences arrive as 3, 4, 5 with new segment IDs.
+  choose(roomSelect, '2');
+  choose(languageSelect, 'http://mtx/floor2/whep');
+  const ttsToggle = document.getElementById('tts-sync-toggle');
+  ttsToggle.checked = true;
+  ttsToggle.dispatchEvent(new Event('change'));
+  choose(document.getElementById('translation-lang-select'), 'fr');
+  assert(Boolean(ttsSocket()) && ttsSocket().url.endsWith('/ws/tts/2/fr/demo-2-floor'), 'French speech opens the room TTS feed');
+
+  // Before the restart: sentence 1 plays; sentence 2's audio is still being synthesized.
+  for (const stage of ['caption', 'text', 'audio']) sendFloorSegment(1, 'before-1', 'Before 1', 'Avant 1', stage);
+  for (const stage of ['caption', 'text']) sendFloorSegment(2, 'before-2', 'Before 2', 'Avant 2', stage);
+  await sleep(60);
+  assert(JSON.stringify(scheduledSegments) === '[1]', 'the first sentence plays before the restart, got ' + JSON.stringify(scheduledSegments));
+
+  // After the restart, then the delayed audio for sentence 2 from the old worker.
+  for (const seq of [3, 4, 5]) {
+    for (const stage of ['caption', 'text', 'audio']) {
+      sendFloorSegment(seq, 'after-' + seq, 'After ' + seq, 'Après ' + seq, stage);
+    }
+  }
+  await sleep(60);
+  assert(JSON.stringify(scheduledSegments) === '[1]', 'recovered sentences wait for the delayed pre-restart audio');
+  sendFloorSegment(2, 'before-2', 'Before 2', 'Avant 2', 'audio');
+  await sleep(200);
+  assert(
+    JSON.stringify(scheduledSegments) === '[1,2,3,4,5]',
+    'speech continues across the restart in sentence order, got ' + JSON.stringify(scheduledSegments),
+  );
+
+  // A late copy of already played audio must not replay or reorder speech.
+  sendFloorSegment(1, 'before-1', 'Before 1', 'Avant 1', 'audio');
+  sendFloorSegment(3, 'after-3', 'After 3', 'Après 3', 'audio');
+  await sleep(60);
+  assert(JSON.stringify(scheduledSegments) === '[1,2,3,4,5]', 'late audio from expired sentences is not replayed');
+
+  const rows = historyBox.children.map((row) => ({
+    id: row.id,
+    source: row.querySelector('.caption-src-text').textContent,
+    translation: row.querySelector('.translation-text').textContent,
+  }));
+  assert(rows.length === 5, 'every sentence keeps its own history row, got ' + rows.length);
+  [
+    ['Before 1', 'Avant 1'],
+    ['Before 2', 'Avant 2'],
+    ['After 3', 'Après 3'],
+    ['After 4', 'Après 4'],
+    ['After 5', 'Après 5'],
+  ].forEach(([source, translation], index) => {
+    const row = rows[index] || {};
+    assert(
+      row.id === 'segment-seq-' + (index + 1) &&
+        (row.source || '').endsWith(source) &&
+        (row.translation || '').endsWith(translation),
+      'history row ' + (index + 1) + ' still shows "' + source + '" / "' + translation + '", got ' + JSON.stringify(row),
+    );
+  });
 
   console.log('\n' + passed + ' passed, ' + failed + ' failed');
   process.exit(failed > 0 ? 1 : 0);
