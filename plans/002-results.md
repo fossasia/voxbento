@@ -196,7 +196,7 @@ Observations:
 - Rendering in the player was observed over `https` only. Over `http` the POST returned 200 once, before the broadcast was live, and its rendering was not observed.
 - Each `curl` round trip took about 2 s (new TLS connection each time).
 - Captions arrive in the player as a roll-up: later lines appear next to earlier ones.
-- The caption delay was not timed. The operator's informal estimate (20-30 s) is plausibly the viewer latency of a "Normal" latency broadcast, but that is an inference, not a measurement.
+- The caption delay was not timed. The operator's informal estimate (20-30 s) is plausibly the viewer latency of a "Normal" latency broadcast, but that is an inference, not a measurement. Plan 006's manual check does not wait for it: it uses a 60 s ceiling and records the measured delay in the PR.
 
 **Verdict: YES.** A caption POST to the broadcast's ingestion URL renders in the YouTube player's native CC for ASCII and non-ASCII text. Delay is PENDING.
 
@@ -206,14 +206,12 @@ Plan 006 (Steps 2 and 3 and its test list) and plan 002 (Step 3 items 3 and 5) a
 
 - **Caption URL is as secret as the stream key.** The `cid` of `closedCaptionsIngestionUrl` has the same value as `streamName`. Never log it or return it to the browser (plan 006 already says so).
 - **Use `https` for the caption POST.** The API returns an `http://` URL, but `https://` is accepted. A client that posts to the returned URL as-is sends the secret in clear text. Plan 006 Step 3 now says `activate()` rewrites the scheme to `https` before storing the URL.
-- **Timestamps must stay within 60 s of YouTube's clock.** A caption that sat in a queue for more than about a minute is rejected with 400, and so is every caption if the host clock is off by more than 60 s. Plan 006 Step 3 now clamps chunk timestamps to within 55 s of the host clock and gives a clock-skew health reason.
-- **Live broadcasts cannot have their caption settings updated, even to the same value.** Plan 006 Step 2 used to check the lifecycle status before the "already `closedCaptionsHttpPost`" shortcut, so a broadcast set to "POST captions to URL" in Studio before it went live would have been refused. Step 2 now checks `ultraLow` first (it applies to already-configured broadcasts too), then returns early when the type is already `closedCaptionsHttpPost`, and only then checks the lifecycle status.
+- **Timestamps must stay within 60 s of YouTube's clock.** A caption that sat in a queue for more than about a minute is rejected with 400, and so is every caption if the host clock is off by more than 60 s. Plan 006 Step 3 therefore learns YouTube's clock offset from the `Date` header of its responses, clamps chunk timestamps to within 55 s of YouTube's clock (not the host's), retries once after a skew rejection, and gives a clock-skew health reason.
+- **Live broadcasts cannot have their caption settings updated, even to the same value.** Plan 006 Step 2 used to check the lifecycle status before the "already `closedCaptionsHttpPost`" shortcut, so a broadcast set to "POST captions to URL" in Studio before it went live would have been refused. Step 2 now checks `ultraLow` first (it applies to already-configured broadcasts too), then refuses a `complete` or `revoked` broadcast, then returns early when the type is already `closedCaptionsHttpPost`, and only then checks the lifecycle status.
 - **`isDefaultStream` is not returned** by `liveStreams.list` on this channel. Plan 005 should not rely on it; `isReusable` was present.
 - **`youtube.readonly` and the stream key is unconfirmed.** A `liveStreams.list` call made after re-authorising for `youtube.readonly` returned `streamName`, but the granted scopes were not captured and may still have included `youtube.force-ssl`, so this run does not show what a read-only grant exposes. Plan 005 should not make a claim about it in its consent copy until the call is repeated with the granted scopes recorded (plan 002 Step 3, item 5, now asks for that).
 - **The API also returns `rtmpsIngestionAddress`** (`rtmps://a.rtmps.youtube.com/live2`), which plan 004 can use when it relays to YouTube.
 
-## Documentation gap to decide
+## Plan 003 and the tracker
 
-`plans/README.md` gives per-step gates (003 needs Step 1; 004 Step 2; 005 Step 3; 006 Step 4),
-while plan 003's own dependency and STOP text require all of plan 002 to be DONE. Plan 003 is
-already merged, so this does not block it, but the two documents should be reconciled by a maintainer.
+`plans/README.md` gives per-step gates (003 needs Step 1; 004 Step 2; 005 Step 3; 006 Step 4). Plan 003's own dependency and STOP text said all of plan 002 had to be DONE, which contradicted that. They now match: plan 003 depends on plan 002 Step 1, so it can be DONE while plan 002 stays IN PROGRESS.
