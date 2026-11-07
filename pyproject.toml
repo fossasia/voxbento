@@ -27,6 +27,7 @@ dependencies = [
     "fastapi-mail>=1.4.2",
     "ctranslate2>=4.5.0",
     "transformers>=4.40.0",
+    "unilimit>=0.1.0",
 ]
 
 [project.optional-dependencies]
@@ -35,7 +36,7 @@ supertonic = ["supertonic>=1.3.0"]
 
 [dependency-groups]
 dev = [
-    "pytest==9.1.1",
+    "pytest==9.2.0",
     "anyio>=4.0.0",
     "ruff>=0.9.0",
 ]

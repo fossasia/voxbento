@@ -118,8 +118,11 @@ class Settings(BaseSettings):
             )
         # Every outgoing email is encrypted at rest in the outbox, so sign-in links,
         # invitations and password resets cannot be sent without this key.
-        encryption_key = (self.api_key_encryption_key or "").strip()
-        if encryption_key in {"", "change-this-encryption-key-in-production", "your-secure-32-char-key-here"}:
+        encryption_keys = [
+            key.strip() for key in (self.api_key_encryption_key or "").split(",") if key.strip()
+        ]
+        weak_encryption_keys = {"change-this-encryption-key-in-production", "your-secure-32-char-key-here"}
+        if not encryption_keys or any(key in weak_encryption_keys or len(key) < 32 for key in encryption_keys):
             raise RuntimeError(
                 "API_KEY_ENCRYPTION_KEY is not set. It encrypts stored provider keys and queued email, "
                 "so sign-in and invitation emails cannot be sent without it. "
@@ -147,6 +150,11 @@ class Settings(BaseSettings):
     # Team inbox notified of each new hosting access request.
     hosting_requests_email: str = "voxbento.dev@gmail.com"
     public_base_url: str = "https://voxbento.com"
+    # Opt-in so existing deployments work before a Turnstile widget is provisioned.
+    registration_turnstile_enabled: bool = False
+    turnstile_site_key: str = ""
+    turnstile_secret_key: str = Field(default="", repr=False)
+    registration_requests_per_minute: int = Field(default=20, ge=1)
     # Webhook Settings
     max_webhook_subscriptions: int = 50
     # Caption WebSocket Settings

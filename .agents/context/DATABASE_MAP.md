@@ -207,6 +207,7 @@ Unique index on `(segment_id, language_code)`.
 | `language_code` | String(20) | ISO 639-1 target language |
 | `language_name` | String(100) | Human readable |
 | `enabled` | Boolean | Default True |
+| `tts_enabled` | Boolean | Room table only. Default True; False for an AI captions language (`ai_text`: translated, never spoken). Migration 035 |
 
 Tracks which languages the translation worker should generate for a given room or booth.
 
@@ -311,6 +312,16 @@ URL), `program_relay_key_enc` (Fernet ciphertext of the YouTube stream key; writ
 never serialize or log) and `program_relay_updated_at`. Helpers live in
 `portal/program_relay.py` (`store_destination`, `clear_destination`, `destination`).
 
+## Migration 035 — per-language AI voice (#1005)
+
+`room_translation_languages.tts_enabled` (Boolean, default true, server default true)
+records whether an AI language is **AI voice** (spoken by floor TTS) or **AI captions** (`ai_text`)
+(translated for reading only). Room setup writes it; `portal/tts/worker.py` synthesizes
+only enabled languages with `tts_enabled`, and the listener page offers spoken
+translation only for them. `rooms.floor_tts_enabled` stays the room-wide switch and is
+on when at least one language is AI voice. Existing rows default to spoken, which keeps
+rooms whose TTS was already on unchanged.
+
 ## Migration 034 — transactional email outbox (#962)
 
 `email_templates` stores draft and published subject/HTML for every registered
@@ -328,6 +339,22 @@ No links or email content are shown in the administration history.
 `email_settings` holds one row (id 1) of branding shared by every email:
 `show_logo` (default true) and an optional https `logo_url` (empty means the
 VoxBento logo served by the site). No row means the defaults.
+
+## Migrations 036–038 — live booth session revocation
+
+Migration 036 adds nullable `users.sessions_valid_after`; Admin demotion and
+account deactivation advance it so existing booth sockets can be evicted.
+SQLite returns this value without timezone information; comparisons treat those
+values as UTC. Migration 037 adds nullable `invite_tokens.revoked_at`.
+Migration 038 adds a unique, non-null `invite_tokens.public_id`, backfilling
+existing invitations without changing their bearer link tokens.
+
+New participant JWTs carry that public ID as `token_id` for invitation revocation.
+Legacy participant JWTs without `token_id` remain compatible until expiry but
+cannot be individually matched to a revoked invitation. Apply migrations before
+starting the new portal image. `portal/websockets/revocation.py` pushes scoped
+closures; `portal/websockets/reaper.py` checks database state as a fallback.
+These mechanisms retain the supported single-process deployment model.
 
 ## Migration 027 — managed meeting agent
 
