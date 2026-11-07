@@ -5,7 +5,7 @@
 Please **do not** report security vulnerabilities through public GitHub issues,
 pull requests or discussions.
 
-Instead, email the maintainers directly at **voxbento.dev@gmail.com**. Include as much of the following as you can:
+Instead, email the maintainers directly. Include as much of the following as you can:
 
 - The affected component (for example the portal, booth WebSocket, MediaMTX auth hook,
   Program Stream Ingest or the YouTube relay) and the commit or branch you tested.
