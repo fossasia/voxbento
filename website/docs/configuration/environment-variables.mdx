@@ -99,6 +99,9 @@ These variables control external encoder ingest and YouTube RTMPS forwarding.
 | `PROGRAM_RELAY_CONTROL_SECRET` | _(none)_ | Shared Bearer token (min 32 characters) for authenticating commands to `program-relay`. |
 | `PROGRAM_RELAY_MAX` | `4` | Maximum concurrent active YouTube relay streams. |
 | `PROGRAM_RELAY_ALLOWED_HOSTS` | `a.rtmps.youtube.com,b.rtmps.youtube.com` | Comma-separated allowlist of permitted destination hostnames for RTMPS relay. |
+| `YOUTUBE_OAUTH_CLIENT_ID` | _(none)_ | Google OAuth web client id for Sign in with YouTube. The feature is off unless this and the secret are both set; see `docs/youtube-connect.md`. |
+| `YOUTUBE_OAUTH_CLIENT_SECRET` | _(none)_ | Its client secret. Production refuses to start when only one of the two is set. The client's redirect URI is `{PUBLIC_BASE_URL}/youtube/oauth/callback`. |
+| `YOUTUBE_STATUS_CACHE_SECS` | `30.0` | How long a room's YouTube broadcast status is reused before asking YouTube again (saves API quota). |
 
 ## Token Expiry and Embed Controls
 
