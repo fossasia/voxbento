@@ -492,6 +492,7 @@ async def test_room_setup_does_not_add_booths_to_another_events_room(event):
 
 @pytest.mark.anyio
 async def test_revocation_cache_failure_still_commits_and_closes_sockets(event, caplog):
+    """Cache failure must not prevent persistent revocation or closing active sockets."""
     async with client() as http:
         await post(http, event, "links", {"booth": f"booth:{event['booth']}", "link_role": INTERPRETER})
         async with get_session() as s:

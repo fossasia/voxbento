@@ -460,6 +460,7 @@ async def test_queue_counter_restored_when_glossary_lookup_cancelled(db_data, mo
 @pytest.mark.anyio
 @pytest.mark.parametrize("failure_location", ["status_helper", "cache_probe"])
 async def test_download_status_failure_preserves_inference_timeout(db_data, mock_broadcast, caplog, failure_location):
+    """Both status-failure paths must preserve successful translation and its timeout."""
     worker = TranslationWorker(mock_broadcast)
     target = (
         "portal.translations.providers.local.get_download_progress"

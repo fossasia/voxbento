@@ -1054,6 +1054,7 @@ async def test_booth_connect_handles_database_session_cutoff(monkeypatch, naive_
 @pytest.mark.anyio
 @pytest.mark.parametrize("transport_state", ["missing", "unsupported", "raising"])
 async def test_timed_out_close_warns_and_removes_revoked_session(transport_state, monkeypatch, caplog):
+    """Transport cleanup failures must warn while the revoked session is removed."""
     manager = ConnectionManager()
     ws = MockWebSocket(hang_close=True)
     session = _make_session()

@@ -6,7 +6,7 @@ import time
 from unittest.mock import patch
 
 import pytest
-from huggingface_hub.errors import LocalEntryNotFoundError
+from huggingface_hub.utils import LocalEntryNotFoundError
 
 from portal.translations.providers.local import (
     LocalProvider,
@@ -148,6 +148,7 @@ async def test_eviction_loop_does_not_block_on_model_load():
 
 @pytest.mark.parametrize("error_type", [PermissionError, ImportError, RuntimeError])
 def test_download_status_unexpected_probe_failure_warns_without_private_details(error_type, caplog):
+    """Unexpected probe failures return no status and log only the exception type."""
     with patch("huggingface_hub.snapshot_download", side_effect=error_type("private model path")):
         assert get_download_progress("uncached-test-model") == {}
 
@@ -156,6 +157,7 @@ def test_download_status_unexpected_probe_failure_warns_without_private_details(
 
 
 def test_download_status_cache_miss_is_quiet(caplog):
+    """An uncached model is an ordinary miss and must not produce a warning."""
     with patch("huggingface_hub.snapshot_download", side_effect=LocalEntryNotFoundError("not cached")):
         assert get_download_progress("uncached-test-model") == {}
 

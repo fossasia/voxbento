@@ -14,7 +14,7 @@ if TYPE_CHECKING:
     import ctranslate2
     from transformers import PreTrainedTokenizer, PreTrainedTokenizerFast
 
-from huggingface_hub.errors import LocalEntryNotFoundError
+from huggingface_hub.utils import LocalEntryNotFoundError
 from tqdm.auto import tqdm
 
 from portal.translations.constants import NLLB_LANGUAGE_MAP
