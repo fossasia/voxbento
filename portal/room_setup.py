@@ -148,6 +148,7 @@ _SPEECH_ENGINES = (
     ("deepgram", "nova-2", "Deepgram Nova", "encrypted_deepgram_api_key"),
     ("elevenlabs", "scribe_v2_realtime", "ElevenLabs Scribe", "encrypted_elevenlabs_api_key"),
     ("openai", "whisper-1", "OpenAI Whisper", "encrypted_openai_api_key"),
+    ("atlascloud", "bytedance/seed-asr-2.0", "Atlas Cloud Seed ASR", "encrypted_atlascloud_api_key"),
     ("nvidia", "parakeet-rnnt", "NVIDIA Parakeet", "encrypted_nvidia_api_key"),
 )
 _TRANSLATION_ENGINES = (
@@ -169,6 +170,7 @@ SPEECH_MODELS: dict[str, tuple[tuple[str, str], ...]] = {
         ("gpt-4o-transcribe", "GPT-4o transcribe, more accurate"),
         ("gpt-realtime-whisper", "Realtime Whisper, lowest delay"),
     ),
+    "atlascloud": (("bytedance/seed-asr-2.0", "Seed ASR 2.0"),),
     "nvidia": (("parakeet-rnnt", "Parakeet RNNT"), ("parakeet-ctc", "Parakeet CTC")),
     "local": (("tiny", "Tiny, fastest"), ("base", "Base, more accurate but slower")),
 }
@@ -178,6 +180,7 @@ _BRANDS = {
     "deepgram": "Deepgram",
     "elevenlabs": "ElevenLabs",
     "openai": "OpenAI",
+    "atlascloud": "Atlas Cloud",
     "nvidia": "NVIDIA",
     "anthropic": "Anthropic",
     "gemini": "Google Gemini",
