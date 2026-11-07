@@ -102,7 +102,32 @@ document.addEventListener('DOMContentLoaded', () => {
   initCustomModal();
   initLocalModelDownloader();
   initAsyncSave();
+  initRevealPanels();
 });
+
+// Buttons with data-reveal-target show a hidden panel (e.g. the reason form for
+// declining a hosting request); data-reveal-close hides it again.
+function initRevealPanels() {
+  document.querySelectorAll('[data-reveal-target]').forEach((btn) => {
+    const panel = document.getElementById(btn.dataset.revealTarget);
+    if (!panel) return;
+    btn.addEventListener('click', () => {
+      panel.hidden = false;
+      btn.setAttribute('aria-expanded', 'true');
+      panel.querySelector('textarea, input')?.focus();
+    });
+  });
+  document.querySelectorAll('[data-reveal-close]').forEach((btn) => {
+    const panel = document.getElementById(btn.dataset.revealClose);
+    if (!panel) return;
+    btn.addEventListener('click', () => {
+      panel.hidden = true;
+      const opener = document.querySelector(`[data-reveal-target="${panel.id}"]`);
+      opener?.setAttribute('aria-expanded', 'false');
+      opener?.focus();
+    });
+  });
+}
 
 const FUNNY_WARNINGS = [
   "Are you sure? We can't undo this, but we can judge you.",
@@ -187,30 +212,54 @@ function initCustomModal() {
   if (!modalOverlay) return;
 
   let pendingForm = null;
+  let opener = null;
+
+  function finishClose() {
+    modalOverlay.removeEventListener('transitionend', finishClose);
+    if (modalOverlay.classList.contains('active') || !modalOverlay.open) return;
+    modalOverlay.close();
+    if (opener && opener.isConnected) opener.focus();
+    opener = null;
+  }
 
   function closeModal() {
     modalOverlay.classList.remove('active');
     pendingForm = null;
     btnOk.disabled = false;
     btnCancel.disabled = false;
+    modalOverlay.addEventListener('transitionend', finishClose);
+    setTimeout(finishClose, 250);
   }
 
   function openModal(message, formElement) {
+    if (typeof modalOverlay.showModal !== 'function') {
+      if (window.confirm(message)) formElement.submit();
+      return;
+    }
+    if (modalOverlay.classList.contains('active')) return;
+    if (modalOverlay.open) modalOverlay.close();
     messageEl.textContent = message;
     const randomFunny = FUNNY_WARNINGS[Math.floor(Math.random() * FUNNY_WARNINGS.length)];
     funnyEl.textContent = randomFunny;
     pendingForm = formElement;
     btnOk.disabled = false;
     btnCancel.disabled = false;
+    opener = document.activeElement;
 
+    modalOverlay.showModal();
     // Force reflow before activating so the CSS transition plays
     void modalOverlay.offsetWidth;
     modalOverlay.classList.add('active');
+    btnCancel.focus();
   }
 
   btnCancel.addEventListener('click', closeModal);
   modalOverlay.addEventListener('click', (e) => {
     if (e.target === modalOverlay) closeModal();
+  });
+  modalOverlay.addEventListener('cancel', (e) => {
+    e.preventDefault();
+    if (!btnOk.disabled) closeModal();
   });
 
   btnOk.addEventListener('click', () => {
@@ -321,7 +370,7 @@ window.adminAPIKeys = {
       document.getElementById('api-key-name').value = '';
     }
     
-    modal.style.display = 'flex';
+    modal.hidden = false;
     void modal.offsetWidth; // force reflow
     modal.classList.add('active');
   },
@@ -336,7 +385,7 @@ window.adminAPIKeys = {
     
     modal.classList.remove('active');
     setTimeout(() => {
-      modal.style.display = 'none';
+      modal.hidden = true;
     }, 200);
   },
 

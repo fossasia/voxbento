@@ -57,18 +57,16 @@
 
 ---
 
-### TD-08: No rate limiting on `/register` and `/login`
-**File:** `portal/routers/public.py` + `portal/routers/auth.py`
-**Problem:** No brute-force protection on password endpoints.
-**Impact:** Medium — password enumeration and brute-force risk.
-**Fix:** Add `slowapi` or a simple in-memory rate limiter keyed on client IP.
+### TD-08: Rate limiting on `/register` (login rate limiting resolved)
+**File:** `portal/routers/auth.py`
+**Status:** Partially addressed. Sliding-window rate limiting is implemented on `/login` (10 attempts per normalized email per hour) and verification email requests. However, `POST /register` does not yet enforce a sliding-window limit on registration attempts. TD-08 remains open until registration rate limiting is implemented to prevent automated registration abuse and email flooding.
 
 ---
 
-### TD-09: `alembic/versions/` uses integer revision IDs (001–008)
+### TD-09: `alembic/versions/` uses integer revision IDs (001–038)
 **File:** `alembic/versions/*.py`
-**Problem:** Alembic expects random hex IDs. Using `001`–`008` works but creates ordering confusion if revisions are created out-of-order by different developers.
-**Impact:** Low — functional for single-developer usage; becomes a problem with parallel branches.
+**Problem:** Alembic expects random hex IDs. Using sequential integer IDs (`001`–`038`) works for linear migrations but creates merge conflict risk with parallel feature branches.
+**Impact:** Low — functional; requires renumbering if branches land out of order.
 **Fix:** Switch to Alembic-generated hex IDs for future migrations; update `alembic.ini` to use `revision_id_length`.
 
 ---
@@ -91,9 +89,8 @@
 
 ## Documentation Gaps
 
-- `docs/` directory is partially outdated (pre-database auth design).
-- `docs/how-it-works.mdx` needs update to reflect 8-migration DB state and transcription subsystem.
-- No OpenAPI documentation for REST API endpoints (FastAPI generates `/docs` automatically but no custom descriptions on most routes).
+- Legacy `docs/` notes partially reflect pre-database auth designs.
+- REST API endpoint OpenAPI documentation can be enriched with detailed schema examples.
 
 ---
 

@@ -4,7 +4,8 @@ MEDIAMTX_TEST_BINARY=/path/to/mediamtx uv run pytest tests/test_program_relay_me
 Requires MediaMTX 1.18.2 and FFmpeg (libx264, AAC, TLS) on PATH. CI runs this module in the
 ``program-relay-media`` job against the pinned MediaMTX release. The local MediaMTX instance
 doubles as the RTMPS sink standing in for YouTube; nothing leaves the machine. Every
-publish goes through the real MediaMTX -> /internal/media-auth callback, never a mock.
+VoxBento publish goes through the real MediaMTX -> /internal/media-auth callback, never a
+mock; only the stand-in sink/ path is excluded, as YouTube is outside the portal's authority.
 """
 
 from __future__ import annotations
@@ -57,10 +58,41 @@ STALL_SECS = 3.0
 IO_TIMEOUT_SECS = 8.0
 
 
+_RESERVED_PORTS: set[int] = set()
+
+
+def free_ports(*names: str) -> dict[str, int]:
+    """Allocate distinct, unreserved ephemeral ports for the named services."""
+    sockets: list[socket.socket] = []
+    result: dict[str, int] = {}
+    try:
+        for name in names:
+            while True:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                sock.bind(("127.0.0.1", 0))
+                port = sock.getsockname()[1]
+                if port not in _RESERVED_PORTS:
+                    _RESERVED_PORTS.add(port)
+                    sockets.append(sock)
+                    result[name] = port
+                    break
+                sock.close()
+    finally:
+        for sock in sockets:
+            sock.close()
+    return result
+
+
 def free_port() -> int:
-    with socket.socket() as sock:
-        sock.bind(("127.0.0.1", 0))
-        return sock.getsockname()[1]
+    while True:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            sock.bind(("127.0.0.1", 0))
+            port = sock.getsockname()[1]
+            if port not in _RESERVED_PORTS:
+                _RESERVED_PORTS.add(port)
+                return port
 
 
 def self_signed(directory: Path) -> tuple[Path, Path]:
@@ -138,14 +170,21 @@ class FreezingProxy:
         self.tasks: set[asyncio.Task] = set()
 
     async def start(self) -> int:
-        sock = socket.socket()
-        # A small receive window makes the sender block quickly once we stop reading.
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4096)
-        sock.bind(("127.0.0.1", 0))
+        while True:
+            sock = socket.socket()
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            # A small receive window makes the sender block quickly once we stop reading.
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4096)
+            sock.bind(("127.0.0.1", 0))
+            port = sock.getsockname()[1]
+            if port not in _RESERVED_PORTS:
+                _RESERVED_PORTS.add(port)
+                break
+            sock.close()
         sock.listen()
         sock.setblocking(False)
         self.server = await asyncio.start_server(self._handle, sock=sock)
-        return sock.getsockname()[1]
+        return port
 
     def freeze(self) -> None:
         for session in self.sessions:
@@ -220,19 +259,27 @@ class Stack:
         )
         assert response.status_code == 200, response.text
 
-    async def publish(self, url: str) -> asyncio.subprocess.Process:
-        # What OBS sends: "Server" + "/" + "Stream Key", H.264 + AAC over RTMPS.
+    async def publish(self, url: str, *rtmp_options: str) -> asyncio.subprocess.Process:
+        # "Server" + "/" + "Stream Key" as one URL, H.264 + AAC over RTMPS.
         process = await asyncio.create_subprocess_exec(
             "ffmpeg", "-hide_banner", "-loglevel", "error", "-re",
             "-f", "lavfi", "-i", "testsrc2=size=640x360:rate=25",
             "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000",
             "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency", "-g", "50",
             "-pix_fmt", "yuv420p", "-b:v", "1500k",
-            "-c:a", "aac", "-b:a", "96k", "-tls_verify", "0", "-f", "flv", url,
+            "-c:a", "aac", "-b:a", "96k", "-tls_verify", "0", *rtmp_options, "-f", "flv", url,
             stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
         )  # fmt: skip
         self.processes.append(process)
         return process
+
+    async def publish_like_obs(self, room: Room, stream_key: str) -> asyncio.subprocess.Process:
+        """OBS sends the whole Server path as the RTMP app and the Stream Key as the stream name."""
+        server = self.server_url(room)
+        app = server.split("/", 3)[3]
+        return await self.publish(
+            f"{server}/{stream_key}", "-rtmp_app", app, "-rtmp_tcurl", server, "-rtmp_playpath", stream_key
+        )
 
     async def rejected(self, url: str, path: str) -> bool:
         """The real MediaMTX auth callback refused the publish: FFmpeg failed and nothing went live."""
@@ -279,7 +326,7 @@ async def native(tmp_path, monkeypatch):
     assert os.environ.get("MEDIAMTX_TEST_BINARY"), "Set MEDIAMTX_TEST_BINARY to a MediaMTX 1.18.2 binary"
     configure(f"sqlite+aiosqlite:///{tmp_path}/test.db")
     await init_db()
-    ports = {name: free_port() for name in ("http", "api", "rtsp", "rtmps", "relay")}
+    ports = free_ports("http", "api", "rtsp", "rtmps", "relay")
     for name, value in {
         "program_ingest_enabled": True,
         "mediamtx_auth_hook_secret": HOOK_SECRET,
@@ -316,6 +363,10 @@ authHTTPAddress: http://127.0.0.1:{ports["http"]}/internal/media-auth?key={HOOK_
 authHTTPExclude:
   - action: api
   - action: read
+  # sink/ stands in for YouTube, an external destination the portal never authorizes.
+  # VoxBento paths stay behind the callback (booth paths need a ticket since #783).
+  - action: publish
+    path: '~^sink/'
 api: yes
 apiAddress: 127.0.0.1:{ports["api"]}
 rtspAddress: 127.0.0.1:{ports["rtsp"]}
@@ -421,6 +472,16 @@ async def test_native_rtmps_publish_is_authorized_for_exactly_one_room(native):
     assert encoder.returncode is None and other_encoder.returncode is None
 
 
+async def test_native_obs_style_server_and_stream_key_publish(native):
+    """The values the room page shows work when pasted into OBS's separate Server and Stream Key fields."""
+    room = native.rooms[0]
+    _, stream_key = await native.enable(room)
+    encoder = await native.publish_like_obs(room, stream_key)
+    assert await wait_path(native.floor(room)) is not None, (native.tmp_path / "media.log").read_text()
+    assert len(await native.rtmps_publishers(native.floor(room))) == 1
+    assert encoder.returncode is None
+
+
 async def test_native_revoke_kicks_the_active_rtmps_connection(native):
     room, other = native.rooms
     secret, stream_key = await native.enable(room)
@@ -495,6 +556,9 @@ async def test_native_relay_detects_destination_that_stops_consuming(native):
         assert current.reason in {
             "Destination stopped accepting the stream; reconnecting.",
             "Destination unreachable.",
+            "TLS handshake with the destination failed.",
+            "No media reached the destination; reconnecting.",
+            "Relay process exited; retrying.",
             "Relaying the program feed to the destination.",
         }
         # A new session passes through the proxy: the relay reconnects and forwards again.

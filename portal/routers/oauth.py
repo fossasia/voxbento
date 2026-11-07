@@ -16,8 +16,9 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from portal.auth import get_current_user, require_user
+from portal.auth import get_current_user, load_membership_scope, require_user
 from portal.database import get_db_session
+from portal.globals import asset_version_context
 from portal.models import (
     Event,
     EventMembership,
@@ -28,13 +29,14 @@ from portal.models import (
     OAuthToken,
 )
 from portal.rate_limit import auth_rate_limiter, token_rate_limiter
+from portal.roles import EVENT_OWNER
 from portal.utils import safe_redirect
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["oauth"])
 
 _BASE_DIR = Path(__file__).resolve().parent.parent
-templates = Jinja2Templates(directory=str(_BASE_DIR / "templates"))
+templates = Jinja2Templates(directory=str(_BASE_DIR / "templates"), context_processors=[asset_version_context])
 
 VALID_SCOPES = {
     "events:read": "Read event information",
@@ -59,6 +61,22 @@ def hash_token(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
 
 
+def is_absolute_http_url(uri: str) -> bool:
+    """Whether ``uri`` is an absolute http(s) URL with a host.
+
+    Clients registered before redirect URIs were validated can hold any string.
+    Redirecting to one that is relative or uses another scheme (``javascript:``)
+    would send the authorization response somewhere other than the client.
+    """
+    try:
+        parts = urllib.parse.urlsplit(uri)
+        # Reading .port is what raises ValueError for a malformed or out-of-range port.
+        hostname, _port = parts.hostname, parts.port
+    except ValueError:
+        return False
+    return parts.scheme in ("http", "https") and bool(hostname)
+
+
 def verify_pkce(code_verifier: str, code_challenge: str, method: str) -> bool:
     if method == "S256":
         hashed = hashlib.sha256(code_verifier.encode()).digest()
@@ -67,42 +85,36 @@ def verify_pkce(code_verifier: str, code_challenge: str, method: str) -> bool:
     return False
 
 
+# What a Room coordinator may let an app do: run live sessions and read, never manage rooms or
+# booths (the roles table in website/docs/admin/members-and-roles.mdx).
+COORDINATOR_SCOPES = frozenset(
+    {
+        "rooms:read",
+        "booths:read",
+        "sessions:manage",
+        "sessions:read",
+        "transcripts:read",
+        "listeners:provision",
+    }
+)
+
+
 async def get_effective_scopes(
     db: AsyncSession, user: dict, event_id: int, requested_scopes: list[str], client: OAuthClient
 ) -> list[str]:
-    # Check if user has EventMembership
-    result = await db.execute(
-        select(EventMembership).where(EventMembership.user_id == int(user["sub"]), EventMembership.event_id == event_id)
-    )
-    event_membership = result.scalars().first()
+    """The requested scopes this person may grant the app for this event.
 
-    # Check if user has RoomMembership in this event (for room_coordinators)
-    # simplified for now: if they have any role in the event, we grant scopes they requested
-    # that map to their role.
-    # Accept "owner" as a synonym for "event_owner" (e.g. roles synced from Eventyay)
-    is_event_admin = event_membership and event_membership.role in ("event_owner", "super_admin", "owner")
-    is_room_coordinator = event_membership and event_membership.role == "room_coordinator"
-
-    # In a full implementation, we would narrow this down per-room.
-    # For MVP, if they are event_owner, they get all they asked for.
-    # If they are room_coordinator, they get room/booth level scopes.
-    # Confidential clients are trusted to manage permissions (e.g. for ownerless events or multi-organizer auth)
-    allowed = set()
-    if is_event_admin or client.is_confidential:
-        allowed = set(VALID_SCOPES.keys())
-    elif is_room_coordinator:
-        allowed = {
-            "rooms:read",
-            "rooms:write",
-            "booths:read",
-            "booths:write",
-            "sessions:manage",
-            "sessions:read",
-            "transcripts:read",
-            "listeners:provision",
-        }
-
-    # Intersection with user's allowed scopes AND the client's registered scopes
+    Event owners grant everything. Room coordinators, given per event, room or booth (#757),
+    grant only COORDINATOR_SCOPES; the API still limits them to their rooms. Confidential
+    clients are trusted to check the organizer themselves.
+    """
+    scope = await load_membership_scope(db, int(user["sub"]))
+    if event_id in scope["owned_event_ids"] or client.is_confidential:
+        allowed = set(VALID_SCOPES)
+    elif event_id in scope["coordinated_event_ids"]:
+        allowed = set(COORDINATOR_SCOPES)
+    else:
+        allowed = set()
     return list(set(requested_scopes) & allowed & set(client.scopes_requested))
 
 
@@ -130,7 +142,6 @@ async def authorize_get(
             login_url += f"&email={urllib.parse.quote(login_hint)}"
         return safe_redirect(url=login_url, status_code=status.HTTP_303_SEE_OTHER)
 
-
     if response_type != "code":
         raise HTTPException(status_code=400, detail="Unsupported response_type. Only 'code' is supported.")
     if code_challenge_method != "S256":
@@ -148,7 +159,7 @@ async def authorize_get(
     if not client or client.status != "active":
         raise HTTPException(status_code=400, detail="Invalid or inactive client_id.")
 
-    if redirect_uri not in client.redirect_uris:
+    if redirect_uri not in client.redirect_uris or not is_absolute_http_url(redirect_uri):
         raise HTTPException(status_code=400, detail="Invalid redirect_uri.")
 
     # 2. Validate Event
@@ -222,7 +233,7 @@ async def authorize_post(
 
     # Use the canonical registered redirect URI value for all redirects.
     validated_redirect_uri = next((uri for uri in client.redirect_uris if uri == redirect_uri), None)
-    if not validated_redirect_uri:
+    if not validated_redirect_uri or not is_absolute_http_url(validated_redirect_uri):
         raise HTTPException(status_code=400, detail="Invalid client or redirect URI.")
 
     if action == "deny":
@@ -266,40 +277,9 @@ async def authorize_post(
             .values(scopes=effective_scopes)
         )
 
-    # 2. Manage event membership for authorizing user outside the consent savepoint
-    try:
-        async with db.begin_nested():
-            mem_res = await db.execute(
-                select(EventMembership).where(
-                    EventMembership.user_id == int(user["sub"]),
-                    EventMembership.event_id == event_id,
-                )
-            )
-            existing_mem = mem_res.scalars().first()
-            if existing_mem:
-                # Upgrade existing lower role (e.g. room_coordinator) to event_owner if confidential client
-                if client.is_confidential and existing_mem.role not in ("event_owner", "super_admin", "owner"):
-                    existing_mem.role = "event_owner"
-            else:
-                # Only grant event_owner if event currently has no owners (initial setup)
-                # or if client is confidential and user was verified by the platform
-                existing_owners = (
-                    (
-                        await db.execute(
-                            select(EventMembership).where(
-                                EventMembership.event_id == event_id,
-                                EventMembership.role.in_(("event_owner", "super_admin", "owner")),
-                            )
-                        )
-                    )
-                    .scalars()
-                    .all()
-                )
-                if not existing_owners or client.is_confidential:
-                    db.add(EventMembership(user_id=int(user["sub"]), event_id=event_id, role="event_owner"))
-            await db.flush()
-    except IntegrityError:
-        pass
+    # No membership changes here. Clicking Allow proves only that someone is signed in; anyone can
+    # open this page with any event. Event ownership is given at the token exchange, where the
+    # confidential client proves itself with its secret (_handle_authorization_code_grant).
 
     # Generate authorization code
     code = generate_token()
@@ -336,6 +316,7 @@ async def _handle_authorization_code_grant(
     code: str | None,
     redirect_uri: str | None,
     code_verifier: str | None,
+    event: str | None = None,
 ) -> dict | JSONResponse:
     if not code or not redirect_uri or not code_verifier:
         return JSONResponse(status_code=400, content={"error": "invalid_request"})
@@ -361,6 +342,15 @@ async def _handle_authorization_code_grant(
     if not verify_pkce(code_verifier, auth_code.code_challenge, auth_code.code_challenge_method):
         return JSONResponse(
             status_code=400, content={"error": "invalid_grant", "error_description": "PKCE verification failed"}
+        )
+
+    # The event on the code was chosen in the browser (#925). A client that sends the event it
+    # started the flow for gets the code rejected when they differ, before any membership changes.
+    code_event = await db.get(Event, auth_code.event_id)
+    if code_event is None or (event is not None and event != code_event.slug):
+        return JSONResponse(
+            status_code=400,
+            content={"error": "invalid_grant", "error_description": "Code was issued for another event"},
         )
 
     # Atomically claim the authorization code
@@ -391,11 +381,11 @@ async def _handle_authorization_code_grant(
                 )
                 membership = membership_result.scalars().first()
                 if membership:
-                    if membership.role not in ("event_owner", "super_admin", "owner"):
-                        membership.role = "event_owner"
+                    if membership.role != EVENT_OWNER:
+                        membership.role = EVENT_OWNER
                 else:
                     membership = EventMembership(
-                        user_id=auth_code.user_id, event_id=auth_code.event_id, role="event_owner"
+                        user_id=auth_code.user_id, event_id=auth_code.event_id, role=EVENT_OWNER
                     )
                     db.add(membership)
                 await db.flush()
@@ -406,8 +396,8 @@ async def _handle_authorization_code_grant(
                 )
             )
             membership = membership_result.scalars().first()
-            if membership and membership.role not in ("event_owner", "super_admin", "owner"):
-                membership.role = "event_owner"
+            if membership and membership.role != EVENT_OWNER:
+                membership.role = EVENT_OWNER
 
     token_record = OAuthToken(
         client_id=client.id,
@@ -438,6 +428,7 @@ async def _handle_authorization_code_grant(
         "expires_in": 3600,
         "refresh_token": refresh_token_raw,
         "scope": " ".join(auth_code.scopes),
+        "event": code_event.slug,
     }
 
 
@@ -541,6 +532,7 @@ async def _handle_refresh_token_grant(
         "expires_in": 3600,
         "refresh_token": new_refresh_token_raw,
         "scope": " ".join(token_record.scopes),
+        "event": token_record.event.slug,
     }
 
 
@@ -554,6 +546,7 @@ async def token_exchange(
     redirect_uri: Annotated[str | None, Form()] = None,
     code_verifier: Annotated[str | None, Form()] = None,
     refresh_token: Annotated[str | None, Form()] = None,
+    event: Annotated[str | None, Form()] = None,
     db: AsyncSession = Depends(get_db_session),
 ):
     # Basic client validation
@@ -570,7 +563,7 @@ async def token_exchange(
             return JSONResponse(status_code=401, content={"error": "invalid_client"})
 
     if grant_type == "authorization_code":
-        return await _handle_authorization_code_grant(db, client, code, redirect_uri, code_verifier)
+        return await _handle_authorization_code_grant(db, client, code, redirect_uri, code_verifier, event)
 
     elif grant_type == "refresh_token":
         return await _handle_refresh_token_grant(db, client, refresh_token)

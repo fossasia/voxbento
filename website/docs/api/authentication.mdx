@@ -10,6 +10,24 @@ import TabItem from "@theme/TabItem";
 
 The Voxbento API uses bearer token authentication. You call the `voxbento.com` token endpoint once with your booth access token, receive a signed JWT in return, and then include that JWT as an `Authorization: Bearer {token}` header on every subsequent request. Tokens expire after 24 hours by default, at which point you request a fresh one.
 
+## Binding an OAuth exchange to an event
+
+OAuth integrations using `/oauth/token` can send an `event` form field with
+`grant_type=authorization_code`. Its value must be the event slug retained by
+the integration's server when the flow started, alongside its validated OAuth
+state. Do not take this value from the returning browser or consent form.
+
+VoxBento checks that slug against the authorization code before consuming the
+code, creating tokens, or granting event membership. A mismatch returns HTTP 400
+with `error: "invalid_grant"`. Both successful authorization-code and refresh-token
+responses include `event`, the slug bound to the issued token.
+
+The parameter is optional for compatibility. Existing clients keep working, but
+omitting it does **not** prevent an event swap. Deploy the VoxBento support first,
+then update Eventyay or another integration to send its server-retained event on
+every authorization-code exchange. Also verify the returned event before storing
+the tokens. Checking only the response is too late to prevent a membership grant.
+
 ## Obtaining a Token
 
 Send a `POST` request to the Voxbento token endpoint with a JSON body containing the `token` field set to your booth access token. The `BOOTH_ACCESS_TOKEN` value is provided by the Voxbento platform.
@@ -136,15 +154,15 @@ the booth they are scoped to (matching event, room, and language).
 
 When a user joins a booth via WebSocket, the backend `resolve_booth_role` function determines their ultimate permissions by checking the database and comparing their tokens.
 
-Voxbento enforces the following role hierarchy:
-`super_admin` > `event_owner` > `room_coordinator` > `interpreter` > `listener`
+VoxBento's roles, highest first, are defined in `portal/roles.py`:
+`admin` > `event_owner` > `room_coordinator` > `interpreter`
 
-If a user has multiple conflicting roles (e.g., they clicked an `interpreter` invite link, but they are logged in as an `event_owner` for that event), **the highest privilege wins**. 
+Each role holds every permission of the roles below it, so when a user has several roles here (for example an `interpreter` invite link while signed in as the event's owner) **the highest one wins**, which equals their combined permissions. The Admin role is read from the account in the database, so a demoted Admin loses it immediately.
 
-### The `require_admin` Dependency
+### Access checks
 
-For administrative HTTP routes, Voxbento uses the `require_admin` FastAPI dependency. This dependency:
-1. Checks for a valid `user_token`.
-2. If the user token has `is_admin=True`, they are treated as a `super_admin` and granted access.
-3. If not a `super_admin`, it checks the database to see if the user is an `event_owner` for the specific `event_id` or `room_id` in the URL path.
-4. If neither condition is met, it returns HTTP `403 Forbidden`.
+HTTP routes use FastAPI dependencies named after the people they let in. Admins pass every check.
+1. `require_admin`: Admins only (`/admin/users/`, hosting access, developer apps).
+2. `require_event_owner`: owners of the event in the URL path.
+3. `require_owner_or_coordinator`: owners of the event or coordinators of the room in the URL path.
+4. Anyone else gets HTTP `403 Forbidden`.

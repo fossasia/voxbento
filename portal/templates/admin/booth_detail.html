@@ -3,7 +3,7 @@
 
 {% block breadcrumb %}
 <nav class="breadcrumb">
-  <a href="{{ management_prefix }}/">Dashboard</a> <span>/</span>
+  <a href="{{ management_prefix }}/">{{ 'My events' if is_workspace else 'Overview' }}</a> <span>/</span>
   <a href="{{ management_prefix }}/events/">Events</a> <span>/</span>
   <a href="{{ management_prefix }}/events/{{ event.id }}/">{{ event.display_name }}</a> <span>/</span>
   <a href="{{ management_prefix }}/events/{{ event.id }}/rooms/">Rooms</a> <span>/</span>
@@ -65,6 +65,15 @@
           /listener/{{ event.slug }} ↗
         </a>
       </dd>
+      <dt>Subtitles Overlay (OBS / vMix)</dt>
+      {% if overlay_url %}
+      <dd class="copyable-field">
+        <code id="overlay-url">{{ overlay_url }}</code>
+        <button type="button" class="btn btn-sm btn-copy" data-copy-target="overlay-url">Copy</button>
+      </dd>
+      {% else %}
+      <dd class="muted">Generate a listener join code on the event page to get this link.</dd>
+      {% endif %}
     </dl>
   </div>
 
@@ -91,6 +100,8 @@
   </div>
 </div>
 
+{# Booth settings: Event owners and Admins only (#757). #}
+{% if is_event_owner %}
 <!-- Booth Settings Form -->
 <form method="post" action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/booths/{{ booth.id }}/edit" class="token-form">
   <div class="token-form-card token-form-card--spaced">
@@ -144,6 +155,7 @@
           <option value="deepgram" {% if booth.transcription_provider == 'deepgram' %}selected{% endif %}>Deepgram</option>
           <option value="nvidia" {% if booth.transcription_provider == 'nvidia' %}selected{% endif %}>NVIDIA Parakeet</option>
           <option value="elevenlabs" {% if booth.transcription_provider == 'elevenlabs' %}selected{% endif %}>ElevenLabs</option>
+          <option value="atlascloud" {% if booth.transcription_provider == 'atlascloud' %}selected{% endif %}>Atlas Cloud</option>
           {% else %}
           <option disabled>External APIs disabled in Event settings</option>
           {% endif %}
@@ -154,12 +166,10 @@
         <select id="transcription_model" name="transcription_model" class="input">
           <option value="tiny" data-provider="local" {% if booth.transcription_model == 'tiny' %}selected{% endif %}>Local: tiny (Fastest)</option>
           <option value="base" data-provider="local" {% if booth.transcription_model == 'base' %}selected{% endif %}>Local: base</option>
-          <!-- Temporarily disabled per user request: only show tiny and base
           <option value="small" data-provider="local" {% if booth.transcription_model == 'small' %}selected{% endif %}>Local: small</option>
           <option value="medium" data-provider="local" {% if booth.transcription_model == 'medium' %}selected{% endif %}>Local: medium</option>
           <option value="large-v2" data-provider="local" {% if booth.transcription_model == 'large-v2' %}selected{% endif %}>Local: large-v2</option>
           <option value="large-v3" data-provider="local" {% if booth.transcription_model == 'large-v3' %}selected{% endif %}>Local: large-v3 (Accurate/Slow)</option>
-          -->
           <option value="gpt-realtime-whisper" data-provider="openai" {% if booth.transcription_model == 'gpt-realtime-whisper' %}selected{% endif %}>OpenAI: gpt-realtime-whisper</option>
           <option value="gpt-4o-transcribe" data-provider="openai" {% if booth.transcription_model == 'gpt-4o-transcribe' %}selected{% endif %}>OpenAI: gpt-4o-transcribe</option>
           <option value="gpt-4o-mini-transcribe" data-provider="openai" {% if booth.transcription_model == 'gpt-4o-mini-transcribe' %}selected{% endif %}>OpenAI: gpt-4o-mini-transcribe</option>
@@ -168,6 +178,7 @@
           <option value="parakeet-rnnt" data-provider="nvidia" {% if booth.transcription_model == 'parakeet-rnnt' %}selected{% endif %}>NVIDIA: parakeet-rnnt</option>
           <option value="parakeet-ctc" data-provider="nvidia" {% if booth.transcription_model == 'parakeet-ctc' %}selected{% endif %}>NVIDIA: parakeet-ctc</option>
           <option value="scribe_v2_realtime" data-provider="elevenlabs" {% if booth.transcription_model == 'scribe_v2_realtime' or booth.transcription_model == 'scribe_v2' %}selected{% endif %}>ElevenLabs: scribe_v2_realtime (Streaming)</option>
+          <option value="bytedance/seed-asr-2.0" data-provider="atlascloud" {% if booth.transcription_model == 'bytedance/seed-asr-2.0' %}selected{% endif %}>Atlas Cloud: Seed ASR 2.0</option>
         </select>
       </div>
       <div class="form-group form-group-btn">
@@ -241,176 +252,14 @@
   </div>
 </form>
 
-<script>
-  document.addEventListener('DOMContentLoaded', function() {
-    const providerSelect = document.getElementById('transcription_provider');
-    const modelSelect = document.getElementById('transcription_model');
-    const allOptions = Array.from(modelSelect.options);
-
-    function filterModels() {
-      const selectedProvider = providerSelect.value;
-      let firstVisible = null;
-      let currentSelectedStillVisible = false;
-
-      allOptions.forEach(opt => {
-        if (opt.getAttribute('data-provider') === selectedProvider) {
-          opt.style.display = '';
-          opt.disabled = false;
-          if (!firstVisible) firstVisible = opt;
-          if (opt.selected) currentSelectedStillVisible = true;
-        } else {
-          opt.style.display = 'none';
-          opt.disabled = true;
-        }
-      });
-
-      if (!currentSelectedStillVisible && firstVisible) {
-        firstVisible.selected = true;
-      }
-    }
-
-    providerSelect.addEventListener('change', filterModels);
-    // Run once on load
-    filterModels();
-    
-    // Translation Model Filtering
-    const transProviderSelect = document.getElementById('translation_provider');
-    const transModelSelect = document.getElementById('translation_model');
-    const allTransOptions = Array.from(transModelSelect.options);
-
-    function filterTransModels() {
-      const selectedProvider = transProviderSelect.value;
-      let firstVisible = null;
-      let currentSelectedStillVisible = false;
-
-      allTransOptions.forEach(opt => {
-        if (opt.getAttribute('data-trans-provider') === selectedProvider) {
-          opt.style.display = '';
-          opt.disabled = false;
-          if (!firstVisible) firstVisible = opt;
-          if (opt.selected) currentSelectedStillVisible = true;
-        } else {
-          opt.style.display = 'none';
-          opt.disabled = true;
-        }
-      });
-
-      if (!currentSelectedStillVisible && firstVisible) {
-        firstVisible.selected = true;
-      }
-    }
-
-    transProviderSelect.addEventListener('change', filterTransModels);
-    filterTransModels();
-
-    // Language tag picker
-    function initLangPicker(cfg) {
-      const tagsEl = document.getElementById(cfg.tagsId);
-      const searchEl = document.getElementById(cfg.searchId);
-      const dropdownEl = document.getElementById(cfg.dropdownId);
-      const hiddenEl = document.getElementById(cfg.hiddenId);
-      const selected = new Set(cfg.selectedCodes);
-      let filtered = [];
-      let focusedIdx = -1;
-
-      function renderTags() {
-        tagsEl.innerHTML = '';
-        selected.forEach(code => {
-          const lang = cfg.allLanguages.find(l => l.code === code);
-          if (!lang) return;
-          const tag = document.createElement('span');
-          tag.className = 'lang-tag';
-          const nameSpan = document.createElement('span');
-          nameSpan.textContent = lang.name + ' (' + lang.code + ')';
-          const btn = document.createElement('button');
-          btn.type = 'button';
-          btn.className = 'lang-tag-remove';
-          btn.setAttribute('aria-label', 'Remove ' + lang.name);
-          btn.textContent = '×';
-          btn.addEventListener('click', () => { selected.delete(code); renderTags(); syncHidden(); });
-          tag.appendChild(nameSpan);
-          tag.appendChild(btn);
-          tagsEl.appendChild(tag);
-        });
-      }
-
-      function syncHidden() {
-        hiddenEl.innerHTML = '';
-        selected.forEach(code => {
-          const inp = document.createElement('input');
-          inp.type = 'hidden';
-          inp.name = cfg.inputName;
-          inp.value = code;
-          hiddenEl.appendChild(inp);
-        });
-      }
-
-      function renderDropdown(q) {
-        const ql = q.toLowerCase();
-        filtered = cfg.allLanguages.filter(l =>
-          !selected.has(l.code) &&
-          (l.name.toLowerCase().includes(ql) || l.code.toLowerCase().includes(ql))
-        ).slice(0, 60);
-        focusedIdx = -1;
-        dropdownEl.innerHTML = '';
-        if (filtered.length === 0) { dropdownEl.hidden = true; return; }
-        filtered.forEach(lang => {
-          const li = document.createElement('li');
-          li.textContent = lang.name + ' (' + lang.code + ')';
-          li.addEventListener('mousedown', e => { e.preventDefault(); addLang(lang.code); });
-          dropdownEl.appendChild(li);
-        });
-        dropdownEl.hidden = false;
-      }
-
-      function addLang(code) {
-        selected.add(code);
-        searchEl.value = '';
-        renderTags();
-        syncHidden();
-        dropdownEl.hidden = true;
-        searchEl.focus();
-      }
-
-      searchEl.addEventListener('input', () => renderDropdown(searchEl.value));
-      searchEl.addEventListener('focus', () => renderDropdown(searchEl.value));
-      searchEl.addEventListener('blur', () => { setTimeout(() => { dropdownEl.hidden = true; }, 150); });
-      searchEl.addEventListener('keydown', e => {
-        if (dropdownEl.hidden) return;
-        const items = dropdownEl.querySelectorAll('li');
-        if (e.key === 'ArrowDown') {
-          e.preventDefault();
-          focusedIdx = Math.min(focusedIdx + 1, filtered.length - 1);
-          items.forEach((li, i) => li.classList.toggle('lp-focused', i === focusedIdx));
-          if (items[focusedIdx]) items[focusedIdx].scrollIntoView({ block: 'nearest' });
-        } else if (e.key === 'ArrowUp') {
-          e.preventDefault();
-          focusedIdx = Math.max(focusedIdx - 1, 0);
-          items.forEach((li, i) => li.classList.toggle('lp-focused', i === focusedIdx));
-        } else if (e.key === 'Enter') {
-          e.preventDefault();
-          if (focusedIdx >= 0 && filtered[focusedIdx]) addLang(filtered[focusedIdx].code);
-        } else if (e.key === 'Escape') {
-          dropdownEl.hidden = true;
-          focusedIdx = -1;
-        }
-      });
-
-      renderTags();
-      syncHidden();
-    }
-
-    initLangPicker({
-      allLanguages: {{ translation_languages_dataset | tojson }},
-      selectedCodes: {{ enabled_translation_language_codes | tojson }},
-      inputName: 'translation_languages',
-      tagsId: 'lp_translation_tags',
-      searchId: 'lp_translation_search',
-      dropdownId: 'lp_translation_dropdown',
-      hiddenId: 'lp_translation_hidden',
-    });
-  });
+<script type="application/json" id="booth-detail-config">
+  {
+    "languages": {{ translation_languages_dataset | tojson }},
+    "selected_codes": {{ enabled_translation_language_codes | tojson }}
+  }
 </script>
+<script type="module" src="{{ url_for('static', path='js/booth-detail.js') }}?v={{ asset_version }}"></script>
+{% endif %}
 
 <!-- Participant Roster -->
 <div class="section-card">
@@ -437,7 +286,7 @@
           <span class="badge badge-active">Active</span>
           {% endif %}
         </td>
-        <td><span class="badge badge-role badge-{{ p.role }}">{{ p.role }}</span></td>
+        <td><span class="badge badge-role badge-{{ p.role }}">{{ p.role|role_label }}</span></td>
         <td>{{ 'On' if p.mic_active else 'Off' }}</td>
         <td>{{ '📡 Connected' if p.ingest_connected else '—' }}</td>
         <td>{{ p.joined_at if p.joined_at else '—' }}</td>
@@ -452,192 +301,11 @@
   {% endif %}
 </div>
 
-<!-- Assigned Members -->
-<div class="section-card">
-  <div class="section-header">
-    <h2>Assigned Members</h2>
-  </div>
-  
-  {% if request.query_params.get('error') == 'user_not_found' %}
-  <div class="alert alert-danger alert-flash">
-    <strong>Error:</strong> User with that email address was not found. They must register first.
-  </div>
-  {% endif %}
-  {% if request.query_params.get('error') == 'invalid_role' %}
-  <div class="alert alert-danger alert-flash">
-    <strong>Error:</strong> Invalid role selected for a booth. Only interpreters are allowed.
-  </div>
-  {% endif %}
-  <!-- Assign Member Form -->
-  <div class="token-form-card token-form-card--spaced-sm">
-    <h3>Assign Member</h3>
-    <form method="post" action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/booths/{{ booth.id }}/members/" class="token-form">
-      <div class="form-row">
-        <div class="form-group">
-          <label for="member_email">User Email</label>
-          <input type="email" name="email" id="member_email" class="input" placeholder="user@example.com" required />
-        </div>
-        <div class="form-group">
-          <label for="member_role">Role</label>
-          <select name="role" id="member_role" class="input" required>
-            <option value="interpreter" selected>interpreter</option>
-          </select>
-        </div>
-        <div class="form-group form-group-btn">
-          <button type="submit" class="btn btn-primary">Assign</button>
-        </div>
-      </div>
-    </form>
-  </div>
-
-  {% set current_members = [] %}
-  {% for m in memberships %}
-    {% set current_members = current_members.append(m) %}
-  {% endfor %}
-
-  {% if memberships %}
-  <table class="data-table">
-    <thead>
-      <tr>
-        <th>Email</th>
-        <th>Display Name</th>
-        <th>Account Status</th>
-        <th>Booth Role</th>
-        <th>Actions</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for m in memberships %}
-      {% set u = m.user %}
-      <tr class="row-assigned">
-        <td>{{ u.email }}</td>
-        <td>{{ u.display_name }}</td>
-        <td>
-          {% if u.is_active %}
-          <span class="status-live">● Active</span>
-          {% else %}
-          <span class="status-offline">○ Inactive</span>
-          {% endif %}
-        </td>
-        <td>
-          <span class="badge badge-role badge-{{ m.role }}">{{ m.role }}</span>
-        </td>
-        <td class="actions-cell">
-          <form method="post"
-                action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/booths/{{ booth.id }}/members/{{ m.id }}/invite"
-                class="inline-form form-inline-spaced">
-            <button type="submit" class="btn btn-sm btn-outline btn-invite">✉️ Invite</button>
-          </form>
-          <form method="post"
-                action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/booths/{{ booth.id }}/members/{{ m.id }}/delete"
-                class="inline-form"
-                data-confirm="Remove {{ u.display_name }} from this booth?">
-            <button type="submit" class="btn btn-sm btn-danger">Remove</button>
-          </form>
-        </td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
-  {% else %}
-  <div class="empty-state">
-    <p>No users are assigned to this booth yet.</p>
-  </div>
-  {% endif %}
-</div>
-
-<!-- Invite Tokens -->
-<div class="section-card">
-  <div class="section-header">
-    <h2>Invite Tokens ({{ tokens|length }})</h2>
-  </div>
-
-  <!-- Token Generation Form -->
-  <div class="token-form-card">
-    <h3>Generate New Token</h3>
-    <form method="post" action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/booths/{{ booth.id }}/tokens/" class="token-form">
-      <div class="form-row">
-        <div class="form-group">
-          <label for="role">Role</label>
-          <select name="role" id="role" class="input" required>
-            <option value="interpreter" selected>interpreter</option>
-          </select>
-        </div>
-        <div class="form-group">
-          <label for="label">Label</label>
-          <input type="text" name="label" id="label" class="input" placeholder="e.g. Alice — Spanish interpreter" />
-        </div>
-        <div class="form-group">
-          <label for="expires_hours">Expires in (hours)</label>
-          <input type="number" name="expires_hours" id="expires_hours" class="input" placeholder="Empty = never" min="1" />
-        </div>
-        <div class="form-group form-group-btn">
-          <button type="submit" class="btn btn-primary">Generate Token</button>
-        </div>
-      </div>
-    </form>
-  </div>
-
-  {% if tokens %}
-  <table class="data-table">
-    <thead>
-      <tr>
-        <th>Label</th>
-        <th>Role</th>
-        <th>Invite Link</th>
-        <th>Status</th>
-        <th>Expires</th>
-        <th>Created</th>
-        <th>Actions</th>
-      </tr>
-    </thead>
-    <tbody>
-      {% for tok in tokens %}
-      <tr class="{{ 'row-used' if tok.is_used else ('row-expired' if tok.is_expired else '') }}">
-        <td>{{ tok.label or '—' }}</td>
-        <td><span class="badge badge-role badge-{{ tok.role }}">{{ tok.role }}</span></td>
-        <td>
-          {% if not tok.is_used and not tok.is_expired %}
-          <span class="copyable-field">
-            <code id="tok-{{ tok.token[:8] }}">/join/{{ tok.token }}</code>
-            <button type="button" class="btn btn-sm btn-copy" data-copy-target="tok-{{ tok.token[:8] }}">Copy Link</button>
-          </span>
-          {% else %}
-          <span class="muted">—</span>
-          {% endif %}
-        </td>
-        <td>
-          {% if tok.is_used %}
-          <span class="badge badge-used">Revoked / Used</span>
-          {% elif tok.is_expired %}
-          <span class="badge badge-expired">Expired</span>
-          {% else %}
-          <span class="badge badge-valid">Valid</span>
-          {% endif %}
-        </td>
-        <td>{{ tok.expires_at.strftime('%b %d, %Y, %H:%M') if tok.expires_at else 'Never' }}</td>
-        <td>{{ tok.created_at.strftime('%b %d, %Y, %H:%M') if tok.created_at else '—' }}</td>
-        <td>
-          {% if not tok.is_used and not tok.is_expired %}
-          <form method="post"
-                action="{{ management_prefix }}/events/{{ event.id }}/rooms/{{ room.id }}/booths/{{ booth.id }}/tokens/{{ tok.token }}/revoke"
-                class="inline-form"
-                data-confirm="Revoke this token? It cannot be used to join after revocation.">
-            <button type="submit" class="btn btn-sm btn-danger">Revoke</button>
-          </form>
-          {% else %}
-          <span class="muted">—</span>
-          {% endif %}
-        </td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
-  {% else %}
-  <div class="empty-state">
-    <p>No invite tokens for this booth yet. Use the form above to generate one.</p>
-  </div>
-  {% endif %}
+{# Link to the Team page and deleting the booth: Event owners and Admins only (#757). #}
+{% if is_event_owner %}
+<div class="tm-pointer">
+  <p><strong>Interpreters, coordinators and invite links</strong> for this booth are managed on the event's Team page.</p>
+  <a href="{{ management_prefix }}/events/{{ event.id }}/team/" class="btn btn-outline">Open Team</a>
 </div>
 
 <div class="danger-zone">
@@ -649,6 +317,5 @@
     <span class="danger-text">This removes all invite tokens for this booth.</span>
   </form>
 </div>
-
-<script type="module" src="{{ url_for('static', path='js/admin.js') }}"></script>
+{% endif %}
 {% endblock %}

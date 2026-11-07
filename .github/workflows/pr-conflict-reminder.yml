@@ -1,0 +1,184 @@
+name: PR Conflict Reminder
+
+on:
+  schedule:
+    # Runs every hour at minute 20
+    - cron: '20 * * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Only log conflicting PRs without posting comments'
+        type: boolean
+        default: false
+      pr_number:
+        description: 'Specific PR number to check (leave empty to check all open PRs)'
+        required: false
+        type: number
+
+permissions:
+  pull-requests: write
+  contents: read
+
+jobs:
+  check-conflicts:
+    name: Check merge conflicts on open PRs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v9
+        with:
+          script: |
+            const dryRun = String(context.payload.inputs?.dry_run ?? 'false') === 'true';
+            const rawPrNumber = context.payload.inputs?.pr_number;
+            const targetPrNumber = rawPrNumber ? Number(rawPrNumber) : null;
+            const { owner, repo } = context.repo;
+
+            core.info(`Checking open pull requests for merge conflicts (dry_run=${dryRun})...`);
+
+            let openPrs = [];
+            if (targetPrNumber) {
+              const { data: singlePr } = await github.rest.pulls.get({
+                owner,
+                repo,
+                pull_number: targetPrNumber,
+              });
+              openPrs = [singlePr];
+            } else {
+              openPrs = await github.paginate(github.rest.pulls.list, {
+                owner,
+                repo,
+                state: 'open',
+                per_page: 100,
+              });
+            }
+
+            core.info(`Found ${openPrs.length} open pull request(s) to inspect.`);
+
+            const failedPrs = [];
+            let conflictingCount = 0;
+            let commentedCount = 0;
+
+            for (const pr of openPrs) {
+              const n = pr.number;
+              try {
+                // Skip bot PRs (e.g. dependabot)
+                if (pr.user?.type === 'Bot' || pr.user?.login?.endsWith('[bot]')) {
+                  core.info(`#${n}: author @${pr.user?.login} is a bot, skipping.`);
+                  continue;
+                }
+
+                // Skip draft PRs
+                if (pr.draft) {
+                  core.info(`#${n}: draft PR, skipping.`);
+                  continue;
+                }
+
+                // Only check PRs targeting the main integration branches (dev or main)
+                if (!['dev', 'main'].includes(pr.base?.ref)) {
+                  core.info(`#${n}: base branch '${pr.base?.ref}' is not dev or main, skipping.`);
+                  continue;
+                }
+
+                // Retrieve fresh PR details to ensure mergeable state is calculated
+                let pull = pr;
+                if (pull.mergeable === undefined || pull.mergeable === null) {
+                  const res = await github.rest.pulls.get({
+                    owner,
+                    repo,
+                    pull_number: n,
+                  });
+                  pull = res.data;
+
+                  // GitHub computes mergeable asynchronously; if still null, wait and retry once
+                  if (pull.mergeable === null) {
+                    await new Promise((resolve) => setTimeout(resolve, 2500));
+                    const retryRes = await github.rest.pulls.get({
+                      owner,
+                      repo,
+                      pull_number: n,
+                    });
+                    pull = retryRes.data;
+                  }
+                }
+
+                const hasConflicts = pull.mergeable === false || pull.mergeable_state === 'dirty';
+                if (!hasConflicts) {
+                  core.info(`#${n} (@${pull.user.login}): clean/mergeable (state: ${pull.mergeable_state ?? 'unknown'}).`);
+                  continue;
+                }
+
+                conflictingCount++;
+                const headSha = pull.head.sha;
+                const author = pull.user.login;
+                const baseRef = pull.base.ref;
+                const headRef = pull.head.ref;
+                const marker = `<!-- pr-conflict-reminder:${headSha} -->`;
+
+                core.warning(`#${n} (@${author}): has merge conflicts with ${baseRef} on commit ${headSha.slice(0, 7)}`);
+
+                // Check if a reminder for this exact commit was already posted to avoid hourly spam.
+                // We paginate all comments so we never miss the marker on PRs with >100 comments.
+                const comments = await github.paginate(github.rest.issues.listComments, {
+                  owner,
+                  repo,
+                  issue_number: n,
+                  per_page: 100,
+                });
+
+                const alreadyNotified = comments.some((c) => c.body?.includes(marker));
+                if (alreadyNotified) {
+                  core.info(`#${n}: conflict reminder already posted for commit ${headSha.slice(0, 7)}. Skipping.`);
+                  continue;
+                }
+
+                const body = [
+                  marker,
+                  `Hi @${author}! 👋`,
+                  ``,
+                  `It looks like this pull request currently has **merge conflicts** with the base branch (\`${baseRef}\`) that prevent it from being merged.`,
+                  ``,
+                  `Could you please rebase or merge the latest changes from \`${baseRef}\` and resolve the conflicts?`,
+                  ``,
+                  `<details>`,
+                  `<summary><strong>How to resolve merge conflicts</strong></summary>`,
+                  ``,
+                  `1. Fetch the latest changes from upstream:`,
+                  `   \`\`\`bash`,
+                  `   git fetch upstream ${baseRef}`,
+                  `   git checkout ${headRef}`,
+                  `   git merge upstream/${baseRef}`,
+                  `   \`\`\``,
+                  `2. Open the conflicting files in your editor, resolve the conflicts, and save.`,
+                  `3. Stage and commit the resolved files:`,
+                  `   \`\`\`bash`,
+                  `   git add <resolved-files>`,
+                  `   git commit -m "Merge upstream/${baseRef} and resolve conflicts"`,
+                  `   git push origin ${headRef}`,
+                  `   \`\`\``,
+                  `</details>`,
+                  ``,
+                  `Thank you for your contribution! 🚀`,
+                ].join('\n');
+
+                if (dryRun) {
+                  core.info(`[dry-run] Would post conflict reminder on #${n} for @${author}`);
+                } else {
+                  await github.rest.issues.createComment({
+                    owner,
+                    repo,
+                    issue_number: n,
+                    body,
+                  });
+                  commentedCount++;
+                  core.info(`#${n}: posted conflict reminder for @${author}`);
+                }
+              } catch (err) {
+                core.warning(`Error processing PR #${n}: ${err.message}`);
+                failedPrs.push(n);
+              }
+            }
+
+            core.info(`Done. Conflicting PRs: ${conflictingCount}, Notifications sent: ${commentedCount}.`);
+
+            if (failedPrs.length > 0) {
+              core.setFailed(`Failed while processing PR(s): ${failedPrs.map((x) => '#' + x).join(', ')}`);
+            }

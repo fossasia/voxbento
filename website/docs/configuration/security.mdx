@@ -16,7 +16,9 @@ Before exposing your Voxbento instance to the internet, verify each of the follo
 
 - Generate `SECRET_KEY` with `openssl rand -hex 32` — never use the default `change-me` value
 - Generate `API_KEY_ENCRYPTION_KEY` with `openssl rand -hex 32` — required if you store any third-party API credentials
+- Generate `MEDIAMTX_AUTH_HOOK_SECRET` with `openssl rand -hex 32` — required in production to secure private media callbacks (`/internal/media-auth`)
 - Set `BOOTH_ACCESS_TOKEN` to a strong random value (`openssl rand -hex 32`) before production startup. Legacy API routes fail closed when it is missing outside debug mode.
+- If using Program Relay, configure `PROGRAM_RELAY_CONTROL_SECRET` (`openssl rand -hex 32`, min 32 chars) shared with the `program-relay` service
 - Use `Authorization: Bearer <token>` rather than `?token=`; query-string credentials are redacted from access logs but can still leak through browser history and intermediaries.
 - Change `JVB_AUTH_PASSWORD` and `JICOFO_AUTH_PASSWORD` from `changeme` to strong random values
 - Never commit `.env` to source control — add it to `.gitignore` and use environment variable injection in your deployment platform instead
@@ -94,13 +96,15 @@ Roles in Voxbento are scoped per event, and each role carries a distinct set of 
 
 | Role | What they can do |
 | --- | --- |
-| `listener` | View booths, listen to audio streams, send chat messages |
-| `interpreter` | All listener permissions, plus go live and publish audio via WHIP |
-| `room_coordinator` | All listener permissions, plus go live, assign the active interpreter, and manage handoffs |
-| `event_owner` | All room_coordinator permissions, plus manage booths and generate invite tokens |
+| **Interpreter** | View booths, use the booth chat, and publish audio via WHIP when designated active |
+| **Room coordinator** | Everything an Interpreter can do, plus choose the active interpreter, use Mission Control and control floor transcription |
+| **Event owner** | Everything a Room coordinator can do, plus edit the event and manage its rooms, booths, team and keys |
+| **Admin** | Everything, in every event, plus managing users, Admins, hosting access and developer apps |
+
+See [Roles](../admin/members-and-roles) for the full table. Listening is open to everyone with the event link or join code and needs no role.
 
 :::tip
-Assign `interpreter` to interpreters, `room_coordinator` only to the booth room_coordinator managing handoffs, and `event_owner` only to the person responsible for setting up the event. Listeners do not need any elevated role.
+Give **Interpreter** to interpreters, **Room coordinator** only to the person running handoffs in a room, and **Event owner** only to people responsible for setting up the event.
 :::
 
 To remove a role, go to the event or booth detail page, find the user in the **Members** section, and click **Remove**.
