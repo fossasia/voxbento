@@ -168,24 +168,33 @@ Cancels the asyncio Task and awaits it; removes from state dicts.
 
 ## Transcript Validation (`portal/transcript_processing.py`)
 
-`handle_final` is the one funnel where text reaches listeners, the stored
-transcript, the translation LLM and TTS, so `hallucination_reason(text,
-complete_turn=...)` is checked there — that is the call to change or instrument,
-not `is_hallucination()`, which is only the boolean wrapper around it. A
-rejected utterance broadcasts `clear`, resets the utterance state and consumes
-no caption sequence number, so listeners see no gap.
+`handle_final` is the funnel for **final** captions — the one point at which
+settled text reaches the stored transcript, the translation LLM and TTS — so
+`hallucination_reason(text, complete_turn=...)` is checked there. That is the
+call to change or instrument, not `is_hallucination()`, which is only the
+boolean wrapper around it. Partial captions reach listeners earlier, straight
+from `handle_partial`, and are **not** validated: a rejected final may have
+already been seen on the way as a partial, and the `clear` broadcast that
+follows the rejection is what retracts it. A rejected utterance consumes no
+caption sequence number, so listeners see no gap.
 
-Two empty cases are distinct and easy to confuse. The classifier's `"empty"`
-category rejects text that *is* present but has no printable content, and that
-path broadcasts `clear`. Separately, before the classifier runs, `handle_final`
-falls back to the pending partial when the text it was handed is blank
-(`text.strip() or state.current_utterance`) — so a blank final publishes the
-buffered partial rather than nothing. If there is no pending partial either, it
-returns immediately and broadcasts nothing at all, leaving any existing caption
-on screen for `handle_clear` to deal with.
+Three empty cases are distinct and easy to conflate:
 
-Rejected: empty or punctuation-only text, any word longer than
-`MAX_WORD_LENGTH` (40), a single token repeated with nothing else
+- The classifier returns **`"empty"`** when the stripped text is blank — nothing
+  to publish.
+- It returns **`"no printable content"`** when the text is present but carries
+  no printable characters once normalised: punctuation only, whitespace with
+  invisible marks, and so on.
+- Separately, **before the classifier runs**, `handle_final` falls back to the
+  pending partial when the text it was handed is blank
+  (`text.strip() or state.current_utterance`). The fallback text is then
+  validated like any other, so a buffered `"thank you"` on a complete turn is
+  dropped and broadcast as `clear` rather than published. With no pending
+  partial either, `handle_final` returns immediately and broadcasts nothing at
+  all, leaving any existing caption on screen for `handle_clear` to deal with.
+
+Rejected: blank text (`"empty"`), text with no printable content, any word
+longer than `MAX_WORD_LENGTH` (40), a single token repeated with nothing else
 ("Click click click"), and known subtitle-training phrases
 ("Thanks for watching", "[Music]", bare fillers like "uh"). A phrase is only
 rejected when it is the whole utterance, so the same words inside real speech
