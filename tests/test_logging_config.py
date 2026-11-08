@@ -121,6 +121,26 @@ def test_redaction_filter_scrubs_dict_args():
     assert "carol@example.com" not in record.getMessage()
 
 
+def test_redaction_filter_recurses_into_a_dict_positional_arg():
+    """logger.info("Data: %s", my_dict) used to dump the dict unchanged."""
+    record = _record("Data: %s", ({"password": "secret", "ok": True},))
+    RedactionFilter().filter(record)
+    message = record.getMessage()
+    assert "secret" not in message
+    assert "[REDACTED]" in message
+    # Non-sensitive fields survive — the walk doesn't nuke the whole container.
+    assert "'ok': True" in message
+
+
+def test_redaction_filter_recurses_into_a_list_positional_arg():
+    """A list of records with emails must be scrubbed element by element."""
+    record = _record("Users: %s", ([{"email": "a@example.com"}, {"email": "b@example.com"}],))
+    RedactionFilter().filter(record)
+    message = record.getMessage()
+    assert "a@example.com" not in message
+    assert "b@example.com" not in message
+
+
 def test_redaction_filter_never_breaks_placeholder_interpolation():
     # A pattern that ate "%s" would make getMessage() raise and lose the line.
     record = _record("auth token %s for user %s", ("eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.sIg", 42))
