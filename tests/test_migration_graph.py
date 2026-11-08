@@ -87,8 +87,17 @@ def test_no_two_migrations_share_a_parent():
     assert not branches, f"Several migrations follow the same revision: {branches}. {FIX_HINT}"
 
 
+def test_each_migration_follows_one_revision():
+    roots = [name for name, _, parents in MIGRATIONS if not parents]
+    merges = [(name, parents) for name, _, parents in MIGRATIONS if len(parents) > 1]
+    assert len(roots) == 1, f"Exactly one migration may have no `down_revision`, found: {roots}. {FIX_HINT}"
+    assert not merges, f"Migrations must follow exactly one revision, not merge several: {merges}. {FIX_HINT}"
+
+
 def test_alembic_sees_one_head():
-    config = Config(str(ROOT / "alembic.ini"))
-    config.set_main_option("script_location", str(ROOT / "alembic"))
+    # No alembic.ini: it interpolates %(here)s, which breaks when the checkout path contains %.
+    # Values set here are interpolated too, so the % is doubled.
+    config = Config()
+    config.set_main_option("script_location", str(ROOT / "alembic").replace("%", "%%"))
     heads = ScriptDirectory.from_config(config).get_heads()
     assert len(heads) == 1, f"Alembic has {len(heads)} heads: {sorted(heads)}. {FIX_HINT}"
