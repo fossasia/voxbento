@@ -230,18 +230,16 @@ Max concurrent workers: 10 (`MAX_TOTAL_WORKERS`).
 - Verify the PR's base branch is `dev` before reporting it as ready. Do not rely on
   GitHub's default branch or target `main` unless the user explicitly requests it.
 
-## AI-Assisted Pull Requests
+## AI Attribution Rules
 
-When a PR is created or substantially authored by an AI coding assistant, include an
-**AI Attribution** section in the PR description:
+1. **PR Authoring**: When creating or assisting a PR with AI, include attribution at the end of the PR description:
+   `Created with <Model> in <Harness/IDE>, run from <Environment>.`
+   (e.g., `Created with Claude Opus 4.6 in Claude Code` or `Created with Gemini in Antigravity`).
+   Name only the tools you actually used; leave out a model or harness you do not know rather than guessing.
+2. **PR Reviews**: When reviewing a PR with AI (inline comments, review summaries, or change requests), include attribution at the end of the review comment or summary:
+   `Reviewed with <Model> in <Harness/IDE>, run from <Environment>.`
+   (e.g., `Reviewed with Claude Opus 4.6 in Claude Code` or `Reviewed with Gemini in Antigravity`).
 
-```
-## AI Attribution
-
-This PR was created with the assistance of **<Model Name>** (e.g. Claude Sonnet 4.6).
-```
-
-- Always name the specific model (e.g. "Claude Sonnet 4.6", "Gemini 2.5 Pro").
 - "AI-assisted" means the AI wrote or significantly shaped the code, commit messages,
   or PR description — not just that it answered a question.
 - Human reviewers should validate AI-generated diffs with the same rigour as any other PR.
