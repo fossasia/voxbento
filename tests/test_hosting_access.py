@@ -674,6 +674,42 @@ async def test_demo_request_hosting_rate_limit_and_user_flag():
 
 
 @pytest.mark.anyio
+async def test_rotating_forwarded_headers_cannot_evade_demo_request_ip_limit():
+    """Rotating X-Forwarded-For headers cannot evade the 20 req/hr IP rate limit on /api/request-demo."""
+    async with AsyncClient(
+        transport=ASGITransport(app=app, client=("192.0.2.10", 12345)),
+        base_url="http://test",
+    ) as http:
+        for i in range(20):
+            res = await http.post(
+                "/api/request-demo",
+                json={
+                    "firstName": "Jane",
+                    "lastName": "Doe",
+                    "email": f"ip_test_requester_{i}@example.com",
+                    "companyName": "Acme Corp",
+                },
+                headers={"X-Forwarded-For": f"198.51.100.{i}"},
+            )
+            assert res.status_code == 200
+            assert res.json()["ok"] is True
+
+        # 21st request from the same peer must be rate limited even with a new forged header
+        res21 = await http.post(
+            "/api/request-demo",
+            json={
+                "firstName": "Jane",
+                "lastName": "Doe",
+                "email": "ip_test_requester_21@example.com",
+                "companyName": "Acme Corp",
+            },
+            headers={"X-Forwarded-For": "198.51.100.99"},
+        )
+        assert res21.status_code == 429
+        assert "too many" in res21.json()["detail"].lower()
+
+
+@pytest.mark.anyio
 async def test_rate_limit_ordering_on_event_creation():
     """Review 6 A2: Slug pre-check must run before rate limiter so slug collision does not consume quota."""
     async with get_session() as session:
