@@ -213,11 +213,12 @@ def engine_catalog(event: Event) -> EngineCatalog:
             translation.append(Engine(provider, model, label, _KEY_ADDED))
         else:
             locked.append(_BRANDS[provider])
-    if settings.self_hosted_llm_base_url:
-        if models := settings.self_hosted_llm_model_list:
-            translation.append(Engine("self_hosted", models[0], "Self-hosted LLM", _SERVER_MODEL))
-        else:
-            unavailable.append("Self-hosted LLM needs SELF_HOSTED_LLM_MODELS")
+    if settings.self_hosted_llm_enabled:
+        translation.append(
+            Engine("self_hosted", settings.self_hosted_llm_model_list[0], "Self-hosted LLM", _SERVER_MODEL)
+        )
+    elif settings.self_hosted_llm_base_url:
+        unavailable.append("Self-hosted LLM needs SELF_HOSTED_LLM_MODELS")
     translation.append(Engine("local", "nllb-200-distilled-600M", "NLLB (built in)", _SELF_HOSTED))
 
     if event.encrypted_deepgram_api_key:
@@ -488,9 +489,15 @@ async def apply_plan(
     room.floor_translation_enabled = bool(ai_codes)
     if ai_codes:
         translation = catalog.find("translation", plan.translation_engine)
-        # Keep a model chosen on the Captions tab while the provider stays the same.
+        # Keep a model chosen on the Captions tab while the provider stays the same, unless the
+        # operator has since taken that model off the self-hosted allow list.
         if translation and (
-            translation.provider != room.floor_translation_provider or not room.floor_translation_model
+            translation.provider != room.floor_translation_provider
+            or not room.floor_translation_model
+            or (
+                translation.provider == "self_hosted"
+                and not settings.self_hosted_llm_allows(room.floor_translation_model)
+            )
         ):
             room.floor_translation_provider = translation.provider
             room.floor_translation_model = translation.model

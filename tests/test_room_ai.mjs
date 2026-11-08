@@ -61,4 +61,26 @@ for (const details of [null, { hidden: false }]) {
   assert.equal(options[1].disabled, true);
   if (details) assert.equal(details.hidden, true);
 }
+// A saved self-hosted model the server no longer lists isn't offered; a custom cloud model is kept.
+for (const [provider, saved, expected] of [
+  ['self_hosted', 'removed-model', ['', 'llama3.2', 'qwen2.5:7b']],
+  ['openai', 'my-custom-model', ['', 'my-custom-model', 'gpt-4o-mini']],
+]) {
+  const added = [];
+  const transProvider = { value: provider, addEventListener() {} };
+  const transModel = { replaceChildren(...opts) { added.length = 0; added.push(...opts); }, append(opt) { added.push(opt); } };
+  const elements = {
+    'room-detail': { dataset: { initialTranslationModel: saved } },
+    floor_translation_provider: transProvider,
+    floor_translation_model: transModel,
+  };
+  vm.runInNewContext(roomDetail, {
+    console,
+    Option: class { constructor(text, value) { this.text = text; this.value = value; } },
+    fetch: async () => ({ ok: true, json: async () => ({ self_hosted: ['llama3.2', 'qwen2.5:7b'], openai: ['gpt-4o-mini'] }) }),
+    document: { querySelector: () => null, querySelectorAll: () => [], getElementById: (id) => elements[id] },
+  });
+  await new Promise(setImmediate);
+  assert.deepEqual(added.map((opt) => opt.value), expected);
+}
 console.log('Room AI regression checks passed');

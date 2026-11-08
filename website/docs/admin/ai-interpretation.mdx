@@ -82,9 +82,9 @@ This keeps real-time prompts compact, minimizing LLM inference latency.
 
 ## Self-hosted Translation Server
 
-Operators can point VoxBento at their own OpenAI-compatible `/v1/chat/completions` server (Ollama, llama.cpp `llama-server`, vLLM, LM Studio). Rooms then get persona, style and glossary support without a cloud API key.
+Operators can point VoxBento at their own OpenAI-compatible `/v1/chat/completions` server (Ollama, llama.cpp `llama-server`, vLLM, LM Studio). Rooms and booths then get persona, style and glossary support without a cloud API key.
 
-The server address is set only in the server environment. Event owners can pick the service and one of the allowed models, but they can never enter a URL.
+The server address is set only in the server environment. Event owners can pick the service and one of the allowed models, but they can never enter a URL. A model that isn't on the list is never saved: the room forms fall back to the first listed model, and the booth form and the API v1 room update reject it.
 
 1. Start a model, for example with Ollama:
 
@@ -100,16 +100,33 @@ The server address is set only in the server environment. Event owners can pick 
    SELF_HOSTED_LLM_MODELS=llama3.2
    ```
 
-   From the Docker portal container, use `http://host.docker.internal:11434/v1`. On Linux, also add `extra_hosts: ["host.docker.internal:host-gateway"]` to the portal service. Set `SELF_HOSTED_LLM_API_KEY` only if your server requires a key.
+   Leave out `/chat/completions`, and spell each model exactly as the server names it (`ollama list`). A model the server doesn't have fails every segment with a `404` in the portal log. Set `SELF_HOSTED_LLM_API_KEY` only if your server requires a key.
 
-3. Open the room's **Translation** card and choose **Self-hosted LLM**. If only the URL is set, the room setup page says `SELF_HOSTED_LLM_MODELS` is missing.
+   From the Docker portal container, use `http://host.docker.internal:11434/v1`. Docker Desktop resolves that name itself. On Linux, also add `extra_hosts: ["host.docker.internal:host-gateway"]` to the portal service, and make Ollama listen on an address the container can reach (`OLLAMA_HOST`; it binds to `127.0.0.1` by default). Ollama has no authentication, so don't expose it beyond your own machine or network.
+
+3. Choose **Self-hosted LLM** in the room's **Translation** card or the booth's **Translation Provider**. If only the URL is set, the room setup page says `SELF_HOSTED_LLM_MODELS` is missing.
+
+If you later remove the server or a model, rooms and booths that used it show it as not available, translate nothing until you pick another service or model, and can still turn translation off.
+
+### Reasoning models
+
+Reasoning models (for example `qwen3`, `deepseek-r1`, `gpt-oss`) think before they answer. VoxBento never shows that thinking to listeners: when a server returns it inside the answer as `<think>...</think>`, it is removed, and an answer that stops while still thinking counts as a failed segment. Replies are capped at 1024 tokens. The thinking takes time, so a reasoning model is usually slower than a plain instruct model of the same size.
 
 ### Latency
 
-Each caption segment gets 10 seconds for its translation request. A slower answer drops that segment for that language and the next one carries on. Other rooms are not affected.
+Each caption segment gets 10 seconds for its translation request. A slower answer fails that segment for that language, the listener sees it marked as failed, and the next segment carries on. The portal stays responsive and rooms on other services are unaffected, but every room and language that uses the self-hosted server shares it, so requests queue on a busy server.
 
-- Pick the smallest instruct model that translates your languages well enough. Small models answer fast but can make more mistakes and may not follow the glossary.
-- Larger models are slower, especially on CPU only. Test with a real talk before the event.
+- Pick the smallest instruct model that translates your languages well enough, and test it with real talks before the event, with as many rooms and languages running at once as you expect.
+- On CPU only, loading the model takes longer and requests that arrive together queue up, so more of them miss the 10 seconds.
 - Ollama unloads a model after 5 minutes idle, and the next request waits for it to load again. Set `OLLAMA_KEEP_ALIVE=-1` to keep it loaded during the event.
 
-For reference, Qwen2.5 0.5B Instruct (Q4_K_M) in `llama-server` on an Apple M5 answered short caption segments in 0.04 to 0.6 seconds, on both CPU and GPU.
+Measured on an Apple M5 with Ollama 0.40.15, through VoxBento's own request path with a persona, style and glossary entry:
+
+| Model | First request (model loading) | Warm request (median) | Six requests at once (slowest) |
+| --- | --- | --- | --- |
+| `llama3.2:3b`, GPU | 3.2 s | 0.67 s | 3.4 s, all finished |
+| `llama3.2:3b`, CPU only | 6.1 s | 0.85 s | 10 s, 2 of 6 timed out |
+| `qwen3:0.6b` (reasoning), GPU | 2.1 s | 1.9 s | 8.5 s, all finished |
+| `qwen3:0.6b` (reasoning), CPU only | 4.3 s | 3.3 s | 10 s, 3 of 6 timed out |
+
+A single request on CPU can look fast; it is several rooms and languages at once that push CPU-only setups past the limit.

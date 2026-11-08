@@ -211,6 +211,11 @@
           <option value="groq" {% if booth.translation_provider == 'groq' %}selected{% endif %}>Groq</option>
           <option value="openrouter" {% if booth.translation_provider == 'openrouter' %}selected{% endif %}>OpenRouter</option>
           <option value="local" {% if booth.translation_provider == 'local' %}selected{% endif %}>Local LLM</option>
+          {% if self_hosted_models %}
+          <option value="self_hosted" {% if booth.translation_provider == 'self_hosted' %}selected{% endif %}>Self-hosted LLM</option>
+          {% elif booth.translation_provider == 'self_hosted' %}
+          <option value="self_hosted" selected>Self-hosted LLM — not available on this server, choose another</option>
+          {% endif %}
         </select>
       </div>
       <div class="form-group form-group--grow">
@@ -228,6 +233,9 @@
           <option value="meta-llama/llama-3-8b-instruct" data-trans-provider="openrouter" {% if booth.translation_model == 'meta-llama/llama-3-8b-instruct' %}selected{% endif %}>OpenRouter: LLaMA 3 8B</option>
           <option value="google/gemma-7b-it" data-trans-provider="openrouter" {% if booth.translation_model == 'google/gemma-7b-it' %}selected{% endif %}>OpenRouter: Gemma 7B</option>
           <option value="nllb-200-distilled-600M" data-trans-provider="local" {% if booth.translation_model == 'nllb-200-distilled-600M' %}selected{% endif %}>Local: NLLB 200 (600M)</option>
+          {% for model in self_hosted_models %}
+          <option value="{{ model }}" data-trans-provider="self_hosted" {% if booth.translation_provider == 'self_hosted' and booth.translation_model == model %}selected{% endif %}>Self-hosted: {{ model }}</option>
+          {% endfor %}
         </select>
       </div>
     </div>

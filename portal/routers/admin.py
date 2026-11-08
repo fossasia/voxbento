@@ -1567,10 +1567,8 @@ def _apply_ai_settings(room: Room, form: FormData, catalog: EngineCatalog) -> No
     translation = catalog.find("translation", str(form.get("floor_translation_provider", "")))
     if translation:
         model = str(form.get("floor_translation_model", "")).strip()[:100]
-        if translation.provider == TranslationProviderEnum.SELF_HOSTED.value and (
-            model not in settings.self_hosted_llm_model_list
-        ):
-            model = ""
+        if translation.provider == TranslationProviderEnum.SELF_HOSTED.value:
+            model = settings.self_hosted_llm_model_or_default(model) or ""
         room.floor_translation_provider = translation.provider
         room.floor_translation_model = model or translation.model
     if "floor_ai_interpreter_persona" in form:
@@ -1603,6 +1601,8 @@ async def admin_edit_room(request: Request, event_id: int, room_id: int):
     floor_translation_enabled = form.get("floor_translation_enabled") == "on"
     floor_translation_provider = form.get("floor_translation_provider", "").strip() or None
     floor_translation_model = form.get("floor_translation_model", "").strip() or None
+    if floor_translation_provider == TranslationProviderEnum.SELF_HOSTED.value:
+        floor_translation_model = settings.self_hosted_llm_model_or_default(floor_translation_model)
     floor_translation_languages = form.getlist("floor_translation_languages")
     floor_ai_interpreter_persona = form.get("floor_ai_interpreter_persona", "").strip() or None
     floor_ai_interpretation_style = form.get("floor_ai_interpretation_style", "").strip() or None
@@ -1823,7 +1823,7 @@ async def admin_delete_ai_vocabulary(request: Request, event_id: int, room_id: i
 
 @router.get("/api/admin/providers/translation/models", dependencies=[Depends(require_owner_or_coordinator)])
 async def get_translation_models():
-    if not settings.self_hosted_llm_base_url or not settings.self_hosted_llm_model_list:
+    if not settings.self_hosted_llm_enabled:
         return TRANSLATION_MODELS
     return {**TRANSLATION_MODELS, TranslationProviderEnum.SELF_HOSTED.value: list(settings.self_hosted_llm_model_list)}
 
@@ -2084,6 +2084,7 @@ async def admin_booth_detail(request: Request, event_id: int, room_id: int, boot
             "membership_map": membership_map,
             "translation_languages_dataset": translation_languages_dataset,
             "enabled_translation_language_codes": enabled_translation_language_codes,
+            "self_hosted_models": settings.self_hosted_llm_model_list if settings.self_hosted_llm_enabled else (),
             **admin_flags,
         },
     )
@@ -2325,6 +2326,12 @@ async def admin_booth_translation_settings(
             TranslationProviderEnum(translation_provider)
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid translation provider")
+        # Checked only when translation is on, so a booth left on a removed server can still turn it off.
+        if translation_enabled and translation_provider == TranslationProviderEnum.SELF_HOSTED.value:
+            if not settings.self_hosted_llm_enabled:
+                raise HTTPException(status_code=400, detail="Self-hosted translation is not configured on this server")
+            if not settings.self_hosted_llm_allows(translation_model):
+                raise HTTPException(status_code=400, detail="That model is not allowed for self-hosted translation")
         db_booth.translation_enabled = translation_enabled
         db_booth.translation_provider = translation_provider
         db_booth.translation_model = translation_model

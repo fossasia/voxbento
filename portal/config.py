@@ -193,14 +193,42 @@ class Settings(BaseSettings):
         parsed = urlparse(value)
         if parsed.scheme not in {"http", "https"} or not parsed.hostname:
             raise ValueError("self_hosted_llm_base_url must be an http(s) URL such as http://localhost:11434/v1")
+        # Reading the port raises ValueError for one that isn't a number in 0-65535.
+        if parsed.port == 0:
+            raise ValueError("self_hosted_llm_base_url port must be between 1 and 65535")
         if parsed.username or parsed.password or parsed.query or parsed.fragment:
             raise ValueError("self_hosted_llm_base_url must not include credentials, a query string or a fragment")
+        if parsed.path.endswith("/chat/completions"):
+            raise ValueError("self_hosted_llm_base_url is the base URL; leave out /chat/completions")
+        return value
+
+    @field_validator("self_hosted_llm_models")
+    @classmethod
+    def validate_self_hosted_llm_models(cls, value: str) -> str:
+        """Model names are stored on rooms and booths, whose columns hold 100 characters."""
+        if any(len(m.strip()) > 100 for m in value.split(",")):
+            raise ValueError("each SELF_HOSTED_LLM_MODELS name must be 100 characters or fewer")
         return value
 
     @property
     def self_hosted_llm_model_list(self) -> tuple[str, ...]:
         """The allowed self-hosted models, in the order the operator listed them."""
         return tuple(dict.fromkeys(m.strip() for m in self.self_hosted_llm_models.split(",") if m.strip()))
+
+    @property
+    def self_hosted_llm_enabled(self) -> bool:
+        """Self-hosted translation is offered only with both a server URL and at least one model."""
+        return bool(self.self_hosted_llm_base_url and self.self_hosted_llm_model_list)
+
+    def self_hosted_llm_allows(self, model: str | None) -> bool:
+        """Whether rooms and booths may use ``model`` on the self-hosted server right now."""
+        return self.self_hosted_llm_enabled and model in self.self_hosted_llm_model_list
+
+    def self_hosted_llm_model_or_default(self, model: str | None) -> str | None:
+        """``model`` when allowed, else the default (first listed) model, else None when not configured."""
+        if self.self_hosted_llm_allows(model):
+            return model
+        return self.self_hosted_llm_model_list[0] if self.self_hosted_llm_enabled else None
 
 
 settings = Settings()

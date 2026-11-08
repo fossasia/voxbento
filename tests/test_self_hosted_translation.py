@@ -2,25 +2,50 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
 from httpx import ASGITransport, AsyncClient
 from pydantic import ValidationError
+from sqlalchemy import select
 
 import portal.globals as pg
 from fastapi_app import app
 from portal.auth import create_user_token
 from portal.config import Settings, settings
-from portal.database import configure, create_event, create_room, dispose, get_session, init_db
-from portal.models import AIVocabularyEntry, Event, Room, RoomTranslationLanguage, TranscriptSegment, User
+from portal.database import (
+    configure,
+    create_booth,
+    create_event,
+    create_room,
+    dispose,
+    get_session,
+    init_db,
+    set_event_membership,
+)
+from portal.models import (
+    AIVocabularyEntry,
+    DBBooth,
+    DeveloperAccount,
+    Event,
+    OAuthClient,
+    OAuthToken,
+    Room,
+    RoomTranslationLanguage,
+    TranscriptSegment,
+    User,
+)
+from portal.roles import EVENT_OWNER
 from portal.room_setup import engine_catalog
 from portal.translations.keys import get_translation_api_key
-from portal.translations.providers.openai import OpenAIProvider
+from portal.translations.providers.openai import SELF_HOSTED_MAX_TOKENS, OpenAIProvider, strip_reasoning
 from portal.translations.worker import TranslationWorker
 
+ORIGIN = {"origin": "http://test"}
 BASE_URL = "http://llm.internal:11434/v1"
 MODELS = "llama3.2,qwen2.5:7b"
 
@@ -418,3 +443,433 @@ async def test_worker_runs_self_hosted_without_an_event_key(setup_db, self_hoste
         await worker.handle_translation(room_id, segment_id, "Hello world", "floor", "uuid-1", 1)
 
     assert calls == ([("self_hosted", "llama3.2", None)] if translated else [])
+
+
+# ── Settings edge cases ────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://llm.internal:0/v1",
+        "http://llm.internal:99999/v1",
+        "http://llm.internal:abc/v1",
+        "http://localhost:11434/v1/chat/completions",
+        "http://localhost:11434/v1/chat/completions/",
+    ],
+)
+def test_bad_ports_and_full_endpoint_urls_are_rejected(url):
+    with pytest.raises(ValidationError):
+        _settings(url)
+
+
+def test_ipv6_base_url_is_accepted():
+    assert _settings("http://[::1]:11434/v1").self_hosted_llm_base_url == "http://[::1]:11434/v1"
+
+
+def test_model_names_longer_than_the_column_are_rejected():
+    assert Settings(_env_file=None, self_hosted_llm_models="m" * 100).self_hosted_llm_model_list == ("m" * 100,)
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None, self_hosted_llm_models="ok," + "m" * 101)
+
+
+@pytest.mark.parametrize(
+    ("url", "models", "enabled"),
+    [("", "", False), ("", MODELS, False), (BASE_URL, "", False), (BASE_URL, " , ", False), (BASE_URL, MODELS, True)],
+)
+def test_enabled_needs_both_url_and_models(url, models, enabled):
+    s = Settings(_env_file=None, self_hosted_llm_base_url=url, self_hosted_llm_models=models)
+    assert s.self_hosted_llm_enabled is enabled
+    assert s.self_hosted_llm_allows("llama3.2") is enabled
+    assert s.self_hosted_llm_model_or_default("missing") == ("llama3.2" if enabled else None)
+    assert s.self_hosted_llm_model_or_default("qwen2.5:7b") == ("qwen2.5:7b" if enabled else None)
+    assert s.self_hosted_llm_allows(None) is False
+
+
+# ── Reasoning output ───────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    ("content", "expected"),
+    [
+        ("Hallo Welt", "Hallo Welt"),
+        ("<think>The user wants German.</think>\n\nHallo Welt", "Hallo Welt"),
+        ("<THINK>Upper case tags</THINK> Hallo Welt", "Hallo Welt"),
+        # Templates that open the tag in the prompt return only the closing tag.
+        ("German, formal.</think>Hallo Welt", "Hallo Welt"),
+        ("<think>a</think><think>b</think>Hallo Welt", "Hallo Welt"),
+        ("<think>Cut off by the token limit", None),
+        ("<think>a</think>Hallo<think>more", None),
+        ("<think>only reasoning</think>", None),
+        ("   ", None),
+        ("", None),
+        (None, None),
+        (42, None),
+    ],
+)
+def test_reasoning_is_never_shown_to_listeners(content, expected):
+    assert strip_reasoning(content) == expected
+
+
+@pytest.mark.anyio
+async def test_reasoning_reply_is_stripped_and_output_is_capped(self_hosted, llm_server):
+    requests, state = llm_server
+    state["content"] = "<think>Formal German is needed.</think>Hallo Welt"
+    assert await _translate() == "Hallo Welt"
+    assert json.loads(requests[0].content)["max_tokens"] == SELF_HOSTED_MAX_TOKENS
+
+
+@pytest.mark.anyio
+async def test_null_content_counts_as_no_translation(self_hosted):
+    def null_content(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"choices": [{"message": {"content": None, "reasoning_content": "..."}}]})
+
+    previous = pg.shared_http_client
+    pg.shared_http_client = httpx.AsyncClient(transport=httpx.MockTransport(null_content))
+    try:
+        assert await _translate() is None
+    finally:
+        pg.shared_http_client = previous
+
+
+@pytest.mark.anyio
+async def test_cloud_requests_are_unchanged(self_hosted, llm_server):
+    requests, state = llm_server
+    state["content"] = "<think>kept for cloud</think>Hallo"
+    result = await OpenAIProvider().translate(
+        provider_name="groq",
+        text="Hello",
+        target_lang_name="German",
+        target_lang_code="de",
+        source_lang_name="English",
+        model="openai/gpt-oss-20b",
+        api_key="sk-cloud",
+    )
+    assert result == "<think>kept for cloud</think>Hallo"
+    assert "max_tokens" not in json.loads(requests[0].content)
+
+
+# ── Booths ─────────────────────────────────────────────────────────────────
+
+
+@pytest.fixture
+async def admin_booth(admin_room):
+    cookie, event_id, room_id = admin_room
+    async with get_session() as s:
+        booth = await create_booth(s, event_id=event_id, room_id=room_id, language_code="fr", language_name="French")
+        return cookie, event_id, room_id, booth.id
+
+
+async def _booth_page(cookie, event_id, room_id, booth_id) -> str:
+    async with _client(cookie) as client:
+        page = await client.get(f"/admin/events/{event_id}/rooms/{room_id}/booths/{booth_id}/")
+    assert page.status_code == 200
+    return page.text
+
+
+async def _save_booth(cookie, event_id, room_id, booth_id, **fields):
+    async with _client(cookie) as client:
+        return await client.post(
+            f"/admin/events/{event_id}/rooms/{room_id}/booths/{booth_id}/translation-settings",
+            data={"translation_languages": ["de"], **fields},
+            headers={"origin": "http://test"},
+        )
+
+
+async def _booth(booth_id: int) -> DBBooth:
+    async with get_session() as s:
+        return await s.get(DBBooth, booth_id)
+
+
+@pytest.mark.anyio
+async def test_booth_page_lists_self_hosted_models_only_when_configured(admin_booth, monkeypatch, self_hosted):
+    page = await _booth_page(*admin_booth)
+    assert '<option value="self_hosted" >Self-hosted LLM</option>' in page
+    assert 'value="llama3.2" data-trans-provider="self_hosted"' in page
+    assert 'value="qwen2.5:7b" data-trans-provider="self_hosted"' in page
+
+    monkeypatch.setattr(settings, "self_hosted_llm_base_url", "")
+    page = await _booth_page(*admin_booth)
+    assert "Self-hosted" not in page
+    assert 'data-trans-provider="self_hosted"' not in page
+
+
+@pytest.mark.anyio
+async def test_booth_saves_self_hosted_with_an_allowed_model(admin_booth, self_hosted):
+    cookie, event_id, room_id, booth_id = admin_booth
+    res = await _save_booth(
+        cookie,
+        event_id,
+        room_id,
+        booth_id,
+        translation_enabled="true",
+        translation_provider="self_hosted",
+        translation_model="qwen2.5:7b",
+    )
+    assert res.status_code == 303
+    booth = await _booth(booth_id)
+    assert (booth.translation_provider, booth.translation_model) == ("self_hosted", "qwen2.5:7b")
+
+    page = await _booth_page(cookie, event_id, room_id, booth_id)
+    assert '<option value="self_hosted" selected>Self-hosted LLM</option>' in page
+    assert 'value="qwen2.5:7b" data-trans-provider="self_hosted" selected' in page
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("configured", "model", "detail"),
+    [
+        (False, "llama3.2", "Self-hosted translation is not configured on this server"),
+        (True, "http://169.254.169.254/v1", "That model is not allowed for self-hosted translation"),
+        (True, "gpt-4o-mini", "That model is not allowed for self-hosted translation"),
+    ],
+)
+async def test_booth_rejects_self_hosted_it_cannot_run(
+    admin_booth, monkeypatch, self_hosted, configured, model, detail
+):
+    if not configured:
+        monkeypatch.setattr(settings, "self_hosted_llm_models", "")
+    cookie, event_id, room_id, booth_id = admin_booth
+    res = await _save_booth(
+        cookie,
+        event_id,
+        room_id,
+        booth_id,
+        translation_enabled="true",
+        translation_provider="self_hosted",
+        translation_model=model,
+    )
+    assert res.status_code == 400
+    assert res.json()["detail"] == detail
+    assert (await _booth(booth_id)).translation_provider != "self_hosted"
+
+
+@pytest.mark.anyio
+async def test_booth_left_on_a_removed_server_can_still_turn_translation_off(admin_booth, monkeypatch, self_hosted):
+    cookie, event_id, room_id, booth_id = admin_booth
+    await _save_booth(
+        cookie,
+        event_id,
+        room_id,
+        booth_id,
+        translation_enabled="true",
+        translation_provider="self_hosted",
+        translation_model="llama3.2",
+    )
+    monkeypatch.setattr(settings, "self_hosted_llm_base_url", "")
+
+    page = await _booth_page(cookie, event_id, room_id, booth_id)
+    assert (
+        '<option value="self_hosted" selected>Self-hosted LLM — not available on this server, choose another</option>'
+        in page
+    )
+
+    res = await _save_booth(cookie, event_id, room_id, booth_id, translation_provider="self_hosted")
+    assert res.status_code == 303
+    assert (await _booth(booth_id)).translation_enabled is False
+
+
+# ── API v1 ─────────────────────────────────────────────────────────────────
+
+API_TOKEN = "self-hosted-api-token"
+
+
+@pytest.fixture
+async def api_event(setup_db):
+    async with get_session() as s:
+        user = User(email="api-owner@example.com", display_name="Owner", email_verified=True)
+        s.add(user)
+        event = await create_event(s, slug="apicon", display_name="APICon")
+        await s.flush()
+        await set_event_membership(s, user_id=user.id, event_id=event.id, role=EVENT_OWNER)
+        account = DeveloperAccount(user_id=user.id, status="approved")
+        s.add(account)
+        await s.flush()
+        oauth_client = OAuthClient(developer_account_id=account.id, client_id="self-hosted-client", name="API")
+        s.add(oauth_client)
+        await s.flush()
+        s.add(
+            OAuthToken(
+                client_id=oauth_client.id,
+                user_id=user.id,
+                event_id=event.id,
+                scopes=["rooms:write"],
+                access_token_hash=hashlib.sha256(API_TOKEN.encode()).hexdigest(),
+                expires_at=datetime.now(timezone.utc) + timedelta(hours=1),
+            )
+        )
+    return event
+
+
+async def _put_room(body: dict):
+    async with _client({}) as client:
+        return await client.put(
+            "/api/v1/events/apicon/rooms/hall-1", json=body, headers={"Authorization": f"Bearer {API_TOKEN}"}
+        )
+
+
+async def _api_room() -> Room:
+    async with get_session() as s:
+        return await s.scalar(select(Room).where(Room.eventyay_room_id == "hall-1"))
+
+
+@pytest.mark.anyio
+async def test_api_creates_and_updates_self_hosted_rooms(api_event, self_hosted):
+    res = await _put_room({"name": "Hall", "translation_provider": "self_hosted"})
+    assert res.status_code == 200, res.text
+    room = await _api_room()
+    assert (room.floor_translation_provider, room.floor_translation_model) == ("self_hosted", "llama3.2")
+
+    assert (await _put_room({"translation_model": "qwen2.5:7b"})).status_code == 200
+    assert (await _api_room()).floor_translation_model == "qwen2.5:7b"
+
+    # Switching back keeps an allowed model; leaving the model out never resets it.
+    assert (await _put_room({"translation_provider": "self_hosted"})).status_code == 200
+    assert (await _api_room()).floor_translation_model == "qwen2.5:7b"
+
+
+@pytest.mark.anyio
+async def test_api_switch_from_a_cloud_model_gets_the_default(api_event, self_hosted):
+    await _put_room({"name": "Hall", "translation_provider": "openai", "translation_model": "gpt-4o-mini"})
+    assert (await _put_room({"translation_provider": "self_hosted"})).status_code == 200
+    room = await _api_room()
+    assert (room.floor_translation_provider, room.floor_translation_model) == ("self_hosted", "llama3.2")
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("configured", "body", "detail"),
+    [
+        (False, {"translation_provider": "self_hosted"}, "Self-hosted translation is not configured on this server"),
+        (
+            True,
+            {"translation_provider": "self_hosted", "translation_model": "http://169.254.169.254/v1"},
+            "translation_model is not allowed for self-hosted translation",
+        ),
+    ],
+)
+async def test_api_rejects_self_hosted_it_cannot_run(api_event, monkeypatch, self_hosted, configured, body, detail):
+    await _put_room({"name": "Hall", "translation_provider": "openai", "translation_model": "gpt-4o-mini"})
+    if not configured:
+        monkeypatch.setattr(settings, "self_hosted_llm_base_url", "")
+    res = await _put_room(body)
+    assert res.status_code == 422
+    assert res.json()["detail"] == detail
+    room = await _api_room()
+    assert (room.floor_translation_provider, room.floor_translation_model) == ("openai", "gpt-4o-mini")
+
+
+@pytest.mark.anyio
+async def test_api_model_only_update_on_a_self_hosted_room_is_checked(api_event, self_hosted):
+    await _put_room({"name": "Hall", "translation_provider": "self_hosted"})
+    res = await _put_room({"translation_model": "not-listed"})
+    assert res.status_code == 422
+    assert (await _api_room()).floor_translation_model == "llama3.2"
+
+
+@pytest.mark.anyio
+async def test_api_requests_without_self_hosted_are_untouched(api_event, unset):
+    res = await _put_room({"name": "Hall", "translation_provider": "openai", "translation_model": "gpt-4o"})
+    assert res.status_code == 200
+    assert (await _put_room({"enable_translation": True})).status_code == 200
+    room = await _api_room()
+    assert (room.floor_translation_provider, room.floor_translation_model) == ("openai", "gpt-4o")
+
+
+# ── Room setup and the older room form ─────────────────────────────────────
+
+
+@pytest.mark.anyio
+async def test_setup_resave_replaces_a_model_taken_off_the_list(admin_room, monkeypatch, self_hosted):
+    cookie, event_id, room_id = admin_room
+    form = {
+        "display_name": "Main Hall",
+        "spoken_language": "en",
+        "languages": ["de"],
+        "delivery_de": "ai_text",
+        "speech_engine": "local",
+        "translation_engine": "self_hosted",
+    }
+    async with _client(cookie) as client:
+        res = await client.post(f"/admin/events/{event_id}/rooms/{room_id}/setup", data=form, headers=ORIGIN)
+        assert res.status_code == 303, res.text
+        await _save_ai(cookie, event_id, room_id, floor_translation_model="qwen2.5:7b")
+
+        monkeypatch.setattr(settings, "self_hosted_llm_models", "llama3.2")
+        res = await client.post(f"/admin/events/{event_id}/rooms/{room_id}/setup", data=form, headers=ORIGIN)
+        assert res.status_code == 303
+    assert (await s_room(room_id)).floor_translation_model == "llama3.2"
+
+
+@pytest.mark.anyio
+async def test_setup_resave_keeps_an_allowed_model(admin_room, self_hosted):
+    cookie, event_id, room_id = admin_room
+    form = {
+        "display_name": "Main Hall",
+        "spoken_language": "en",
+        "languages": ["de"],
+        "delivery_de": "ai_text",
+        "speech_engine": "local",
+        "translation_engine": "self_hosted",
+    }
+    async with _client(cookie) as client:
+        await client.post(f"/admin/events/{event_id}/rooms/{room_id}/setup", data=form, headers=ORIGIN)
+        await _save_ai(cookie, event_id, room_id, floor_translation_model="qwen2.5:7b")
+        await client.post(f"/admin/events/{event_id}/rooms/{room_id}/setup", data=form, headers=ORIGIN)
+    assert (await s_room(room_id)).floor_translation_model == "qwen2.5:7b"
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("configured", "model", "saved"),
+    [(True, "http://169.254.169.254/v1", "llama3.2"), (True, "qwen2.5:7b", "qwen2.5:7b"), (False, "llama3.2", None)],
+)
+async def test_older_room_form_keeps_self_hosted_models_on_the_list(
+    admin_room, monkeypatch, self_hosted, configured, model, saved
+):
+    if not configured:
+        monkeypatch.setattr(settings, "self_hosted_llm_base_url", "")
+    cookie, event_id, room_id = admin_room
+    async with _client(cookie) as client:
+        res = await client.post(
+            f"/admin/events/{event_id}/rooms/{room_id}/edit",
+            data={
+                "form_section": "translation",
+                "floor_translation_enabled": "on",
+                "floor_translation_provider": "self_hosted",
+                "floor_translation_model": model,
+                "floor_translation_languages": ["de"],
+            },
+            headers=ORIGIN,
+        )
+    assert res.status_code == 303
+    room = await s_room(room_id)
+    assert (room.floor_translation_provider, room.floor_translation_model) == ("self_hosted", saved)
+
+
+async def s_room(room_id: int) -> Room:
+    async with get_session() as s:
+        return await s.get(Room, room_id)
+
+
+@pytest.mark.anyio
+async def test_other_providers_pass_through_both_room_forms(admin_room, self_hosted):
+    cookie, event_id, room_id = admin_room
+    room = await _save_ai(cookie, event_id, room_id, floor_translation_provider="local", floor_translation_model="")
+    assert (room.floor_translation_provider, room.floor_translation_model) == ("local", "nllb-200-distilled-600M")
+
+    async with _client(cookie) as client:
+        res = await client.post(
+            f"/admin/events/{event_id}/rooms/{room_id}/edit",
+            data={
+                "form_section": "translation",
+                "floor_translation_enabled": "on",
+                "floor_translation_provider": "openai",
+                "floor_translation_model": "gpt-4o",
+                "floor_translation_languages": ["de"],
+            },
+            headers=ORIGIN,
+        )
+    assert res.status_code == 303
+    room = await s_room(room_id)
+    assert (room.floor_translation_provider, room.floor_translation_model) == ("openai", "gpt-4o")

@@ -14,11 +14,31 @@ from portal.translations.providers.base import TranslationProvider
 logger = logging.getLogger(__name__)
 
 
+#: Caption segments are short (the aggregator closes one at 50 words or 15 seconds), so this
+#: leaves room for a reasoning model's thinking while bounding how long a run-on answer holds the server.
+SELF_HOSTED_MAX_TOKENS = 1024
+
+
 def self_hosted_endpoint(model: str) -> str | None:
     """The operator's chat-completions URL, or None when it isn't set or the model isn't allowed."""
-    if not settings.self_hosted_llm_base_url or model not in settings.self_hosted_llm_model_list:
+    if not settings.self_hosted_llm_allows(model):
         return None
     return f"{settings.self_hosted_llm_base_url}/chat/completions"
+
+
+def strip_reasoning(content: object) -> str | None:
+    """The translation without a reasoning model's ``<think>`` section.
+
+    Some servers return the model's thinking inline. Listeners must never see it, so an answer
+    that stops while still thinking, or holds nothing else, counts as no translation.
+    """
+    if not isinstance(content, str):
+        return None
+    close = content.lower().rfind("</think>")
+    answer = content[close + len("</think>") :] if close != -1 else content
+    if "<think>" in answer.lower():
+        return None
+    return answer.strip() or None
 
 
 class OpenAIProvider(TranslationProvider):
@@ -35,7 +55,8 @@ class OpenAIProvider(TranslationProvider):
         style: str | None = None,
         vocabulary_entries: Sequence[Any] = (),
     ) -> str | None:
-        if provider_name == TranslationProviderEnum.SELF_HOSTED.value:
+        self_hosted = provider_name == TranslationProviderEnum.SELF_HOSTED.value
+        if self_hosted:
             endpoint = self_hosted_endpoint(model)
             if not endpoint:
                 logger.error("Self-hosted translation is not configured for model %r", model)
@@ -60,19 +81,21 @@ class OpenAIProvider(TranslationProvider):
 
         import portal.globals as pg
 
+        payload: dict[str, Any] = {"model": model, "messages": messages}
+        if self_hosted:
+            payload["max_tokens"] = SELF_HOSTED_MAX_TOKENS
+
         try:
             client = pg.get_http_client()
             res = await client.post(
                 endpoint,
                 headers={"Authorization": f"Bearer {api_key}"} if api_key else {},
-                json={
-                    "model": model,
-                    "messages": messages,
-                },
+                json=payload,
                 timeout=timeout,
             )
             res.raise_for_status()
-            return res.json()["choices"][0]["message"]["content"].strip()
+            content = res.json()["choices"][0]["message"]["content"]
+            return strip_reasoning(content) if self_hosted else content.strip()
         except Exception as e:
             logger.error(f"Translation via {provider_name} failed for {target_lang_name}: {e!r}")
             return None
