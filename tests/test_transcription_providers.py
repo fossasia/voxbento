@@ -412,6 +412,35 @@ class TestTranscriptionProviders:
         finally:
             pg.shared_http_client = None
 
+    async def test_openai_run_stream_reads_three_seconds_at_provider_rate(self):
+        from portal.transcription.providers.openai import OpenAIProvider
+
+        provider = OpenAIProvider()
+        provider.process_chunk = AsyncMock(return_value="")
+        read_sizes = []
+
+        async def readexactly(size):
+            read_sizes.append(size)
+            if len(read_sizes) == 1:
+                return bytes(size)
+            raise asyncio.IncompleteReadError(b"", size)
+
+        process = MagicMock()
+        process.returncode = None
+        process.stdout.readexactly = readexactly
+
+        await provider.run_stream(
+            process,
+            "en",
+            "whisper-1",
+            ProviderConfig(api_key="fake"),
+            AsyncMock(),
+            "booth-1",
+        )
+
+        # 3 seconds of 16-bit mono audio at OpenAI's 24 kHz
+        assert read_sizes[0] == 24000 * 2 * 3 == 144000
+
     async def test_openai_process_chunk_returns_empty_on_api_error(self):
         from portal.transcription.providers.openai import OpenAIProvider
 
