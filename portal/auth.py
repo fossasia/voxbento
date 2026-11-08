@@ -128,7 +128,7 @@ def create_participant_token(
 
 # Listening is open to everyone with the event link or join code; it is not a
 # role (#757). Listener tokens are marked with this "kind" instead.
-LISTENER_TOKEN_KIND = "listener"
+LISTENER_TOKEN_KIND = "listener"  # nosec B105 # token kind discriminator, not a credential
 
 
 def is_listener_token(payload: dict | None) -> bool:

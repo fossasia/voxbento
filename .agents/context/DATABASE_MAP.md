@@ -306,8 +306,8 @@ Fields: `id`, `event_id`, `room_id` (nullable), `booth_id` (nullable), `source_t
 
 ## Migration 028 — RTMPS relay mode (#749)
 
-Room fields: `program_ingest_mode` (`whip` default | `rtmps_relay`; binds the program
-key to its transport), nullable `program_relay_server` (normalized allow-listed RTMPS
+Room fields: `program_ingest_mode` (`whip` default | `rtmps` (extra RTMPS destination, #1087;
+no migration needed) | `rtmps_relay`; binds the program key to its transport), nullable `program_relay_server` (normalized allow-listed RTMPS
 URL), `program_relay_key_enc` (Fernet ciphertext of the YouTube stream key; write-only,
 never serialize or log) and `program_relay_updated_at`. Helpers live in
 `portal/program_relay.py` (`store_destination`, `clear_destination`, `destination`).
