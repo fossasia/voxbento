@@ -14,6 +14,7 @@ if TYPE_CHECKING:
     import ctranslate2
     from transformers import PreTrainedTokenizer, PreTrainedTokenizerFast
 
+from huggingface_hub.utils import LocalEntryNotFoundError
 from tqdm.auto import tqdm
 
 from portal.translations.constants import NLLB_LANGUAGE_MAP
@@ -80,6 +81,7 @@ def trigger_download(model_size: str):
 
 
 def get_download_progress(model_size: str):
+    """Return download/cache status; cache misses are normal, other probe failures warn."""
     with _progress_lock:
         prog = _download_progress.get(model_size)
         if prog:
@@ -93,7 +95,10 @@ def get_download_progress(model_size: str):
 
         snapshot_download(repo_id=hf_repo_id, revision=rev, local_files_only=True)
         return {"status": "completed", "n": 1, "total": 1, "rate": 0}
-    except Exception:
+    except LocalEntryNotFoundError:
+        return {}
+    except Exception as exc:
+        logger.warning("Local model cache lookup failed (%s); download status unavailable", type(exc).__name__)
         return {}
 
 
