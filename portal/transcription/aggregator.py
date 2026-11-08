@@ -54,7 +54,10 @@ class CaptionAggregator:
         # Check forced finalization rules (15s or 50 words)
         if state.current_word_count >= 50 or (time.time() - state.utterance_start_time) >= 15.0:
             logger.info(f"[{booth_id}] Forced utterance finalization triggered (words: {state.current_word_count})")
-            await self.handle_final(booth_id, text)
+            # The speaker has not stopped — we are cutting a long turn, so the
+            # whole-utterance rules must not apply. A fragment that happens to
+            # read like a subtitle phrase ("thank you") is still real speech here.
+            await self.handle_final(booth_id, text, complete_turn=False)
             return
 
         await self.broadcast_callback(
