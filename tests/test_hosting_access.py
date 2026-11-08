@@ -16,7 +16,7 @@ from sqlalchemy import select
 from starlette.requests import Request
 
 from fastapi_app import app
-from portal import database
+from portal import database, rate_limit
 from portal.auth import create_user_token, get_access_flags, hash_password, verify_password
 from portal.database import (
     configure,
@@ -676,6 +676,7 @@ async def test_demo_request_hosting_rate_limit_and_user_flag():
 @pytest.mark.anyio
 async def test_rotating_forwarded_headers_cannot_evade_demo_request_ip_limit():
     """Rotating X-Forwarded-For headers cannot evade the 20 req/hr IP rate limit on /api/request-demo."""
+    rate_limit._rates.clear()
     async with AsyncClient(
         transport=ASGITransport(app=app, client=("192.0.2.10", 12345)),
         base_url="http://test",
@@ -707,6 +708,48 @@ async def test_rotating_forwarded_headers_cannot_evade_demo_request_ip_limit():
         )
         assert res21.status_code == 429
         assert "too many" in res21.json()["detail"].lower()
+
+
+@pytest.mark.anyio
+async def test_rotating_forwarded_headers_cannot_evade_event_create_limit():
+    """Rotating X-Forwarded-For headers cannot evade the 10 req/min limit on event creation."""
+    rate_limit._rates.clear()
+    async with get_session() as session:
+        host = await create_user(
+            session,
+            email="rate_limit_creator@example.com",
+            display_name="Rate Limit Creator",
+            password_hash=hash_password("pw123"),
+            can_host=True,
+        )
+        host_id = host.id
+
+    token = create_user_token(user_id=host_id, email="rate_limit_creator@example.com")
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app, client=("192.0.2.30", 12345)),
+        base_url="http://test",
+    ) as http:
+        for i in range(10):
+            resp = await http.post(
+                "/workspace/setup",
+                data={"display_name": f"Event {i}", "slug": f"unique-event-slug-{i}"},
+                cookies={"user_token": token},
+                headers={"X-Forwarded-For": f"198.51.100.{i}"},
+                follow_redirects=False,
+            )
+            assert resp.status_code == 303
+
+        # 11th request from the same peer must be rate limited despite a new forged header
+        resp11 = await http.post(
+            "/workspace/setup",
+            data={"display_name": "Event 11", "slug": "unique-event-slug-11"},
+            cookies={"user_token": token},
+            headers={"X-Forwarded-For": "198.51.100.99"},
+            follow_redirects=False,
+        )
+        assert resp11.status_code == 429
+        assert "rate limit exceeded" in resp11.text.lower()
 
 
 @pytest.mark.anyio
