@@ -104,7 +104,12 @@ async def _configured_mediamtx_paths(api_base: str) -> set[str] | None:
             payload = r.json()
             if not isinstance(payload, dict):
                 return None
-            items = payload.get("items") or []
+            # Only an absent or null "items" means "no paths". A falsey wrong
+            # type ({}, 0, "") must not be coerced to [], or revalidation would
+            # read it as an empty MediaMTX and evict every cached path.
+            items = payload.get("items")
+            if items is None:
+                items = []
             if not isinstance(items, list):
                 return None
             # A malformed entry makes the whole answer untrustworthy: skipping it
