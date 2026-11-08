@@ -176,25 +176,38 @@ class CaptionStream:
             state.current_utterance += " " + text.strip()
 
         events: list[CaptionEvent] = []
+        settled = False
         split_point = self._first_sentence_end(state.current_utterance)
         if split_point is not None:
             sentence = state.current_utterance[:split_point].strip()
             remainder = state.current_utterance[split_point:].strip()
             if sentence:
                 events.extend(self._finalise(state, sentence))
+                settled = True
             # _finalise cleared the buffer, so carry the tail across.
             state.current_utterance = remainder
+            # The remainder is the start of a new utterance; begin its clock now
+            # rather than inheriting the previous accumulation's start time.
+            if settled and remainder:
+                state.utterance_start_time = self._clock()
 
         state.current_word_count = len(state.current_utterance.split()) if state.current_utterance else 0
-        state.utterance_start_time = self._clock() if state.current_utterance else 0.0
 
         if state.current_utterance:
-            events.append(PartialCaption(booth_id, state.current_utterance, state.segment_id))
+            # Force a cut if accumulation has run past 50 words or 15 seconds
+            # without punctuation. Without this the chunk path could buffer an
+            # entire talk if a speaker went without a sentence boundary.
+            if self._is_overdue(state):
+                events.extend(self._finalise(state, state.current_utterance))
+                events.append(ClearCaption(booth_id))
+            else:
+                events.append(PartialCaption(booth_id, state.current_utterance, state.segment_id))
         elif events:
             # A sentence was settled and nothing is left, so empty the partial
             # line. The previous code then re-tested forced finalisation here,
             # which could only ever call _finalise with an empty buffer and
             # return nothing; that unreachable tail is dropped.
+            state.utterance_start_time = 0.0
             events.append(ClearCaption(booth_id))
         return events
 
