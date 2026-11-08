@@ -169,6 +169,16 @@ async def test_invite_acceptance_flow_and_primitive_copying():
         assert resp_get.status_code == 200
         assert "Create Account & Go to Workspace" in resp_get.text
 
+        # A password longer than 72 bytes is rejected without using the token
+        resp_long = await http.post(
+            f"/invite/accept/{raw_token}",
+            data={"display_name": "Invited Organizer", "password": "a" * 80, "password_confirm": "a" * 80},
+            headers={"Origin": "http://test"},
+            follow_redirects=False,
+        )
+        assert resp_long.status_code == 400
+        assert "Password must be at most 72 bytes." in resp_long.text
+
         # POST accept
         resp_post = await http.post(
             f"/invite/accept/{raw_token}",

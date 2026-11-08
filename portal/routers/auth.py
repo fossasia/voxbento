@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from unilimit.integrations.fastapi import RateLimit
 
 from portal.auth import (
+    PASSWORD_TOO_LONG_MESSAGE,
     create_participant_token,
     create_token,
     create_user_token,
@@ -28,6 +29,7 @@ from portal.auth import (
     get_current_user,
     hash_password,
     is_cookie_secure,
+    password_too_long,
     require_user,
     resolve_request_principal,
     verify_password,
@@ -68,7 +70,7 @@ logger = logging.getLogger(__name__)
 
 # Hash of a fixed throwaway value; it is only used when no stored password
 # exists, and the user-state checks below still reject the login.
-_DUMMY_PASSWORD_HASH = "$2b$12$OEvt/xgDNq5iYebPcyO6L.ntTqE5qjv39rH/iPdAnvHg33d2vcG4e"
+_DUMMY_PASSWORD_HASH = "$2b$12$OEvt/xgDNq5iYebPcyO6L.ntTqE5qjv39rH/iPdAnvHg33d2vcG4e"  # nosec B105 # timing-only dummy; never grants access
 
 
 async def _queue_verification_email(
@@ -82,7 +84,7 @@ async def _queue_verification_email(
     them now could leave the person with no working link if this email fails.
     """
     token_val = secrets.token_hex(32)
-    auth_token = await create_auth_token(session, jti=token_val, user_id=user_id, token_type="verification")  # nosec B105
+    auth_token = await create_auth_token(session, jti=token_val, user_id=user_id, token_type="verification")  # nosec B106 # token purpose; jti is randomly generated
     await queue_notification(
         session,
         "verification",
@@ -179,7 +181,7 @@ async def check_email_api(request: Request):
     # oracle. These constant legacy fields keep older login pages on the
     # authentication path without exposing real account state; they are
     # compatibility sentinels, not facts about this email address.
-    return {"status": "ok", "exists": True, "has_password": True}
+    return {"status": "ok", "exists": True, "has_password": True}  # nosec B105 # boolean compatibility sentinel
 
 
 def render_registration(
@@ -237,6 +239,8 @@ async def register_submit(request: Request):
         errors.append("Password cannot be blank or only whitespace.")
     elif password_raw and len(password_raw) < 8:
         errors.append("Password must be at least 8 characters.")
+    elif password_raw and password_too_long(password_raw):
+        errors.append(PASSWORD_TOO_LONG_MESSAGE)
     elif password_raw and password_raw != password_confirm:
         errors.append("Passwords do not match.")
 
@@ -436,7 +440,7 @@ async def request_magic_link(request: Request):
                 session,
                 jti=token_val,
                 user_id=user.id,
-                token_type="magic_link",  # nosec B105
+                token_type="magic_link",  # nosec B106 # token purpose; jti is randomly generated
             )
             # The link signs in only the browser that opens it (#929); nothing here is
             # returned to the requesting browser.
@@ -547,7 +551,7 @@ async def forgot_password_request(request: Request):
                 session,
                 jti=token_val,
                 user_id=user.id,
-                token_type="password_reset",  # nosec B105
+                token_type="password_reset",  # nosec B106 # token purpose; jti is randomly generated
             )
             await queue_notification(
                 session,
@@ -567,7 +571,7 @@ async def reset_password_page(request: Request, token: str):
     async with get_session() as session:
         tok = await get_auth_token(session, token)
         error = None
-        if tok is None or tok.token_type != "password_reset":
+        if tok is None or tok.token_type != "password_reset":  # nosec B105 # token purpose discriminator
             error = "Invalid reset link."
         elif tok.is_expired:
             error = "This reset link has expired."
@@ -578,7 +582,7 @@ async def reset_password_page(request: Request, token: str):
             return templates.TemplateResponse(
                 request=request,
                 name="reset_password.html",
-                context={"token": token, "error": error, "token_invalid": True},
+                context={"token": token, "error": error, "token_invalid": True},  # nosec B105 # boolean template flag
                 status_code=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -590,11 +594,16 @@ async def reset_password_submit(request: Request, token: str):
     form = await request.form()
     password = form.get("password", "")
 
+    error = None
     if len(password) < 8:
+        error = "Password must be at least 8 characters"
+    elif password_too_long(password):
+        error = PASSWORD_TOO_LONG_MESSAGE
+    if error:
         return templates.TemplateResponse(
             request=request,
             name="reset_password.html",
-            context={"token": token, "error": "Password must be at least 8 characters"},
+            context={"token": token, "error": error},
             status_code=status.HTTP_400_BAD_REQUEST,
         )
 
@@ -606,7 +615,7 @@ async def reset_password_submit(request: Request, token: str):
                 return templates.TemplateResponse(
                     request=request,
                     name="reset_password.html",
-                    context={"token": token, "error": str(e), "token_invalid": True},
+                    context={"token": token, "error": str(e), "token_invalid": True},  # nosec B105 # boolean template flag
                     status_code=status.HTTP_400_BAD_REQUEST,
                 )
 
@@ -657,7 +666,7 @@ ACCOUNT_NOTICES = {
     "profile_saved": "Your display name was saved.",
     "password_changed": "Your password was changed.",
     "password_set": "Your password was set. You can now sign in with it or with an email link.",
-    "password_removed": "Your password was removed. Sign in with a link sent to your email from now on.",
+    "password_removed": "Your password was removed. Sign in with a link sent to your email from now on.",  # nosec B105 # UI notice
 }
 DISPLAY_NAME_MAX = 200
 _CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
@@ -824,6 +833,8 @@ async def set_password_api(request: Request):
 
     if not isinstance(password, str) or len(password) < 8:
         raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
+    if password_too_long(password):
+        raise HTTPException(status_code=400, detail=PASSWORD_TOO_LONG_MESSAGE)
 
     async with get_session() as session:
         user = await get_user_by_id(session, int(user_token["sub"]))
@@ -981,6 +992,8 @@ async def invite_accept_submit(request: Request, token: str):
                 display_name = form.get("display_name", "").strip()
                 if len(submitted_password) < 8:
                     raise HTTPException(status_code=400, detail="Password must be at least 8 characters.")
+                if password_too_long(submitted_password):
+                    raise HTTPException(status_code=400, detail=PASSWORD_TOO_LONG_MESSAGE)
                 if submitted_password != raw_confirm:
                     raise HTTPException(status_code=400, detail="Passwords do not match.")
                 user.password_hash = hash_password(submitted_password)
