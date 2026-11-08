@@ -94,16 +94,21 @@ class CaptionStream:
 
         `_finalise` clears the buffer as soon as it yields the event, so without
         this a failed publish would drop the caption entirely and the next
-        silence would emit only a clear. Newer speech wins: if the booth has
-        started a fresh utterance meanwhile, the stale one is discarded rather
-        than overwriting it.
+        silence would emit only a clear.
+
+        The settled text goes back in *front* of whatever is buffered rather
+        than only when the buffer is empty. `chunk()` splits one fragment into a
+        final plus the remainder and stores that remainder before returning, so
+        on a failed publish the buffer already holds the tail of the very same
+        utterance — bailing out there would drop the sentence this method
+        exists to save. Prepending restores the original order in that case and
+        still keeps the text when genuinely newer speech has arrived.
         """
         state = self.state_for(event.booth_id)
-        if state.current_utterance:
-            return
-        state.current_utterance = event.text
+        tail = state.current_utterance
+        state.current_utterance = f"{event.text} {tail}" if tail else event.text
         state.utterance_start_time = event.utterance_start_time
-        state.current_word_count = len(event.text.split())
+        state.current_word_count = len(state.current_utterance.split())
         state.segment_id = event.segment_id
 
     def _is_overdue(self, state: CaptionState) -> bool:
