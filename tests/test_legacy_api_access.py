@@ -665,3 +665,34 @@ def test_legacy_api_bearer_only_skips_the_live_check_with_a_configured_token(
 
     assert response.status_code == expected, response.text
     assert calls == (["stop"] if expected == 200 else [])
+
+
+def test_transcription_start_uses_logger_not_stdout(booth_team, caplog, capsys):
+    import logging
+
+    _, room_id, _, _ = booth_team
+    caplog.set_level(logging.DEBUG)
+
+    # 1. Disabled booth path (fr booth has transcription_enabled=False)
+    response_disabled = client.post(
+        f"/api/events/team-event/rooms/{room_id}/booths/fr/transcription/start?token=configured-master-token"
+    )
+    assert response_disabled.status_code == 200
+    assert response_disabled.json()["status"] == "disabled"
+
+    # 2. Success path (es booth has transcription_enabled=True)
+    response_started = client.post(
+        f"/api/events/team-event/rooms/{room_id}/booths/es/transcription/start?token=configured-master-token"
+    )
+    assert response_started.status_code == 200
+    assert response_started.json()["status"] == "started"
+
+    # Assert no raw print statements reached stdout/stderr
+    captured = capsys.readouterr()
+    assert "API START:" not in captured.out
+    assert "API START:" not in captured.err
+
+    # Assert proper structured log records were captured
+    log_messages = [record.getMessage() for record in caplog.records]
+    assert any("Transcription disabled for booth" in msg for msg in log_messages)
+    assert any("Started transcription worker for booth" in msg for msg in log_messages)

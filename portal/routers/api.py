@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 import jwt as pyjwt
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -48,6 +50,8 @@ from portal.utils import (
     verify_same_origin,
 )
 from portal.websockets.manager import broadcast_transcription
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api")
 bearer_scheme = HTTPBearer(auto_error=False)
@@ -832,12 +836,10 @@ async def api_transcription_start(
         )
         db_booth = await session.scalar(stmt)
         if not db_booth or not db_booth.transcription_enabled:
-            print(
-                "API START: Transcription disabled for booth",
+            logger.debug(
+                "Transcription disabled for booth %s (db_booth present: %s, enabled: %s)",
                 booth_id,
-                "db_booth=",
-                db_booth,
-                "enabled=",
+                db_booth is not None,
                 getattr(db_booth, "transcription_enabled", None),
             )
             return {"status": "disabled", "message": "Transcription is not enabled for this booth."}
@@ -865,7 +867,7 @@ async def api_transcription_start(
         )
     except ValueError as e:
         raise HTTPException(status_code=429, detail=str(e))
-    print("API START: Successfully started worker for booth", booth_id)
+    logger.info("Started transcription worker for booth %s (provider: %s)", booth_id, provider)
     return {"status": "started", "provider": provider, "model": model_size}
 
 
