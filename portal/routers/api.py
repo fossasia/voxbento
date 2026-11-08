@@ -872,7 +872,7 @@ async def api_transcription_start(
         )
     except ValueError as e:
         raise HTTPException(status_code=429, detail=str(e))
-    logger.info("Started transcription worker for booth %s (provider: %s)", booth_id, provider)
+    logger.info("Transcription worker running for booth %s (provider: %s)", booth_id, provider)
     return {"status": "started", "provider": provider, "model": model_size}
 
 

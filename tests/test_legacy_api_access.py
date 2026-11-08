@@ -694,13 +694,13 @@ def test_transcription_start_uses_logger_not_stdout(booth_team, caplog, capsys, 
     assert response_started.status_code == 200
     assert response_started.json()["status"] == "started"
 
-    # Verify structured logs for disabled and started paths
+    # Verify structured logs for disabled and running paths
     assert any(
         r.levelno == logging.DEBUG and "Transcription disabled for booth" in r.getMessage()
         for r in caplog.records
     )
     assert any(
-        r.levelno == logging.INFO and "Started transcription worker for booth" in r.getMessage()
+        r.levelno == logging.INFO and "Transcription worker running for booth" in r.getMessage()
         for r in caplog.records
     )
 
@@ -717,7 +717,7 @@ def test_transcription_start_uses_logger_not_stdout(booth_team, caplog, capsys, 
     assert response_error.status_code == 429
     assert response_error.json()["detail"] == "Capacity reached"
     assert not any(
-        r.levelno == logging.INFO and "Started transcription worker for booth" in r.getMessage()
+        r.levelno == logging.INFO and "Transcription worker running for booth" in r.getMessage()
         for r in caplog.records
     )
 
