@@ -1567,6 +1567,10 @@ def _apply_ai_settings(room: Room, form: FormData, catalog: EngineCatalog) -> No
     translation = catalog.find("translation", str(form.get("floor_translation_provider", "")))
     if translation:
         model = str(form.get("floor_translation_model", "")).strip()[:100]
+        if translation.provider == TranslationProviderEnum.SELF_HOSTED.value and (
+            model not in settings.self_hosted_llm_model_list
+        ):
+            model = ""
         room.floor_translation_provider = translation.provider
         room.floor_translation_model = model or translation.model
     if "floor_ai_interpreter_persona" in form:
@@ -1819,7 +1823,9 @@ async def admin_delete_ai_vocabulary(request: Request, event_id: int, room_id: i
 
 @router.get("/api/admin/providers/translation/models", dependencies=[Depends(require_owner_or_coordinator)])
 async def get_translation_models():
-    return TRANSLATION_MODELS
+    if not settings.self_hosted_llm_base_url or not settings.self_hosted_llm_model_list:
+        return TRANSLATION_MODELS
+    return {**TRANSLATION_MODELS, TranslationProviderEnum.SELF_HOSTED.value: list(settings.self_hosted_llm_model_list)}
 
 
 MAX_AUDIO_DELAY_MS = 10_000

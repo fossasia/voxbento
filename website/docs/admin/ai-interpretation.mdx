@@ -77,4 +77,39 @@ This keeps real-time prompts compact, minimizing LLM inference latency.
 - **OpenAI / OpenRouter / Groq**: Shared system and user messages with contextual instructions.
 - **Anthropic**: Persona, style, and glossary terms supplied through the top-level `system` prompt parameter.
 - **Google Gemini**: Applied via `systemInstruction`.
+- **Self-hosted LLM**: Same messages as OpenAI, sent to the operator's own OpenAI-compatible server (see below).
 - **Local NLLB**: Deterministic sequence-to-sequence translation models do not support system prompts or glossaries. Persona, style, and vocabulary settings are safely stored but bypassed when running local NLLB.
+
+## Self-hosted Translation Server
+
+Operators can point VoxBento at their own OpenAI-compatible `/v1/chat/completions` server (Ollama, llama.cpp `llama-server`, vLLM, LM Studio). Rooms then get persona, style and glossary support without a cloud API key.
+
+The server address is set only in the server environment. Event owners can pick the service and one of the allowed models, but they can never enter a URL.
+
+1. Start a model, for example with Ollama:
+
+   ```bash
+   ollama pull llama3.2
+   ollama serve
+   ```
+
+2. Set the server variables and restart the portal:
+
+   ```bash
+   SELF_HOSTED_LLM_BASE_URL=http://localhost:11434/v1
+   SELF_HOSTED_LLM_MODELS=llama3.2
+   ```
+
+   From the Docker portal container, use `http://host.docker.internal:11434/v1`. On Linux, also add `extra_hosts: ["host.docker.internal:host-gateway"]` to the portal service. Set `SELF_HOSTED_LLM_API_KEY` only if your server requires a key.
+
+3. Open the room's **Translation** card and choose **Self-hosted LLM**. If only the URL is set, the room setup page says `SELF_HOSTED_LLM_MODELS` is missing.
+
+### Latency
+
+Each caption segment gets 10 seconds for its translation request. A slower answer drops that segment for that language and the next one carries on. Other rooms are not affected.
+
+- Pick the smallest instruct model that translates your languages well enough. Small models answer fast but can make more mistakes and may not follow the glossary.
+- Larger models are slower, especially on CPU only. Test with a real talk before the event.
+- Ollama unloads a model after 5 minutes idle, and the next request waits for it to load again. Set `OLLAMA_KEEP_ALIVE=-1` to keep it loaded during the event.
+
+For reference, Qwen2.5 0.5B Instruct (Q4_K_M) in `llama-server` on an Apple M5 answered short caption segments in 0.04 to 0.6 seconds, on both CPU and GPU.

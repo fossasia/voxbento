@@ -6,11 +6,19 @@ from typing import Any
 
 import httpx
 
-from portal.translations.constants import OPENAI_COMPATIBLE_ENDPOINTS
+from portal.config import settings
+from portal.translations.constants import OPENAI_COMPATIBLE_ENDPOINTS, TranslationProviderEnum
 from portal.translations.prompts import build_interpretation_messages
 from portal.translations.providers.base import TranslationProvider
 
 logger = logging.getLogger(__name__)
+
+
+def self_hosted_endpoint(model: str) -> str | None:
+    """The operator's chat-completions URL, or None when it isn't set or the model isn't allowed."""
+    if not settings.self_hosted_llm_base_url or model not in settings.self_hosted_llm_model_list:
+        return None
+    return f"{settings.self_hosted_llm_base_url}/chat/completions"
 
 
 class OpenAIProvider(TranslationProvider):
@@ -27,13 +35,18 @@ class OpenAIProvider(TranslationProvider):
         style: str | None = None,
         vocabulary_entries: Sequence[Any] = (),
     ) -> str | None:
-        if not api_key:
-            return None
-
-        endpoint = OPENAI_COMPATIBLE_ENDPOINTS.get(provider_name)
-        if not endpoint:
-            logger.error(f"Endpoint not found for provider {provider_name}")
-            return None
+        if provider_name == TranslationProviderEnum.SELF_HOSTED.value:
+            endpoint = self_hosted_endpoint(model)
+            if not endpoint:
+                logger.error("Self-hosted translation is not configured for model %r", model)
+                return None
+        else:
+            if not api_key:
+                return None
+            endpoint = OPENAI_COMPATIBLE_ENDPOINTS.get(provider_name)
+            if not endpoint:
+                logger.error(f"Endpoint not found for provider {provider_name}")
+                return None
 
         messages = build_interpretation_messages(
             source_language_name=source_lang_name,
@@ -51,7 +64,7 @@ class OpenAIProvider(TranslationProvider):
             client = pg.get_http_client()
             res = await client.post(
                 endpoint,
-                headers={"Authorization": f"Bearer {api_key}"},
+                headers={"Authorization": f"Bearer {api_key}"} if api_key else {},
                 json={
                     "model": model,
                     "messages": messages,

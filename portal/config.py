@@ -139,6 +139,13 @@ class Settings(BaseSettings):
     # Transcription Settings
     nvidia_function_id: str = ""
 
+    # Self-hosted translation: an OpenAI-compatible server (Ollama, llama.cpp, vLLM) run by
+    # the operator. Only the server sets this URL, so event owners can't aim requests at
+    # internal addresses. Models is a comma-separated allow list; the first is the default.
+    self_hosted_llm_base_url: str = ""
+    self_hosted_llm_api_key: str = Field(default="", repr=False)
+    self_hosted_llm_models: str = ""
+
     # Supertonic synthesis quality/speed trade-off. Fewer diffusion steps =
     # faster (lower real-time factor) at a small quality cost. 4 keeps CPU
     # synthesis at/below real-time so audio never backs up; 8 is reference
@@ -175,6 +182,25 @@ class Settings(BaseSettings):
         if parsed.query or parsed.fragment:
             raise ValueError("public_base_url must not include a query string or fragment")
         return value
+
+    @field_validator("self_hosted_llm_base_url")
+    @classmethod
+    def validate_self_hosted_llm_base_url(cls, value: str) -> str:
+        """Accept only a plain http(s) base URL; the key belongs in SELF_HOSTED_LLM_API_KEY."""
+        value = value.strip().rstrip("/")
+        if not value:
+            return ""
+        parsed = urlparse(value)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            raise ValueError("self_hosted_llm_base_url must be an http(s) URL such as http://localhost:11434/v1")
+        if parsed.username or parsed.password or parsed.query or parsed.fragment:
+            raise ValueError("self_hosted_llm_base_url must not include credentials, a query string or a fragment")
+        return value
+
+    @property
+    def self_hosted_llm_model_list(self) -> tuple[str, ...]:
+        """The allowed self-hosted models, in the order the operator listed them."""
+        return tuple(dict.fromkeys(m.strip() for m in self.self_hosted_llm_models.split(",") if m.strip()))
 
 
 settings = Settings()

@@ -140,6 +140,7 @@ def voice_languages_for(provider: str) -> Iterable[str]:
 
 _KEY_ADDED = "uses your API key"
 _SELF_HOSTED = "free, downloads the first time it's used"
+_SERVER_MODEL = "runs on this server's own AI model"
 
 # (provider, default model, label, event key attribute). Cloud first: they are faster
 # and more accurate than the self-hosted fallback when the event has a key for them.
@@ -212,6 +213,11 @@ def engine_catalog(event: Event) -> EngineCatalog:
             translation.append(Engine(provider, model, label, _KEY_ADDED))
         else:
             locked.append(_BRANDS[provider])
+    if settings.self_hosted_llm_base_url:
+        if models := settings.self_hosted_llm_model_list:
+            translation.append(Engine("self_hosted", models[0], "Self-hosted LLM", _SERVER_MODEL))
+        else:
+            unavailable.append("Self-hosted LLM needs SELF_HOSTED_LLM_MODELS")
     translation.append(Engine("local", "nllb-200-distilled-600M", "NLLB (built in)", _SELF_HOSTED))
 
     if event.encrypted_deepgram_api_key:
