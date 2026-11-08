@@ -1585,6 +1585,70 @@ class TestRoomCRUD:
         assert response.status_code == 400
 
     @pytest.mark.anyio
+    @pytest.mark.parametrize("section", ["transcription", "translation", "tts", "relay"])
+    async def test_edit_room_other_sections_ignore_a_bad_audio_delay(self, admin_cookie, seed_event, section):
+        """A stale audio-delay field must not block an unrelated section's save.
+
+        parse_audio_delay_ms answers a bad value with a 400, so validating it on
+        every submission let one tab's leftover input break another tab.
+        """
+        event, room, _ = seed_event
+
+        async with _client() as c:
+            response = await c.post(
+                f"/admin/events/{event.id}/rooms/{room.id}/edit",
+                cookies=admin_cookie,
+                data={"form_section": section, "audio_delay_ms": "not-a-number"},
+                follow_redirects=False,
+            )
+        assert response.status_code == 303
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize("data", [
+        {"form_section": "general", "audio_delay_ms": "not-a-number"},
+        {"form_section": "general", "audio_delay_ms": "-5"},
+        {"form_section": "general", "audio_delay_ms": "999999"},
+        {"display_name": "Hall", "audio_delay_ms": "not-a-number"},
+    ])
+    async def test_edit_room_still_validates_audio_delay_where_it_is_written(
+        self, admin_cookie, seed_event, data
+    ):
+        """The general section, and a legacy all-sections save, still reject it."""
+        event, room, _ = seed_event
+
+        async with _client() as c:
+            response = await c.post(
+                f"/admin/events/{event.id}/rooms/{room.id}/edit",
+                cookies=admin_cookie,
+                data=data,
+                follow_redirects=False,
+            )
+        assert response.status_code == 400
+
+    @pytest.mark.anyio
+    async def test_edit_room_other_sections_leave_audio_delay_untouched(self, admin_cookie, seed_event):
+        """Skipping the parse must not reset the stored delay to zero."""
+        from portal.database import get_room_by_id, get_session
+
+        event, room, _ = seed_event
+        async with get_session() as session:
+            stored = await get_room_by_id(session, room.id)
+            stored.audio_delay_ms = 250
+            await session.flush()
+
+        async with _client() as c:
+            response = await c.post(
+                f"/admin/events/{event.id}/rooms/{room.id}/edit",
+                cookies=admin_cookie,
+                data={"form_section": "tts", "floor_tts_voice": "F2"},
+                follow_redirects=False,
+            )
+        assert response.status_code == 303
+        async with get_session() as session:
+            updated = await get_room_by_id(session, room.id)
+            assert updated.audio_delay_ms == 250
+
+    @pytest.mark.anyio
     async def test_edit_room_relay_section_clears_on_none_or_empty(self, admin_cookie, seed_event):
         """`none` and empty relay values both clear the relay booth."""
         from portal.database import get_room_by_id, get_session
