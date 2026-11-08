@@ -96,19 +96,25 @@ class CaptionStream:
         this a failed publish would drop the caption entirely and the next
         silence would emit only a clear.
 
-        The settled text goes back in *front* of whatever is buffered rather
-        than only when the buffer is empty. `chunk()` splits one fragment into a
-        final plus the remainder and stores that remainder before returning, so
-        on a failed publish the buffer already holds the tail of the very same
-        utterance — bailing out there would drop the sentence this method
-        exists to save. Prepending restores the original order in that case and
-        still keeps the text when genuinely newer speech has arrived.
+        If the buffer is still empty, the restore is a full one: text, id and
+        start time all come back. If something else is already in flight — a
+        chunk remainder from the same fragment, or a newer partial from a
+        provider that interleaves — the settled text is prepended but the
+        buffer's own id and start time are kept. The newer utterance's
+        identity is not ours to overwrite, which would make the next final
+        publish the newer text under the restored one's id and timing; letting
+        the restored sentence ride out under the newer id instead carries no
+        corruption and loses no words.
         """
         state = self.state_for(event.booth_id)
         tail = state.current_utterance
-        state.current_utterance = f"{event.text} {tail}" if tail else event.text
+        if tail:
+            state.current_utterance = f"{event.text} {tail}"
+            state.current_word_count = len(state.current_utterance.split())
+            return
+        state.current_utterance = event.text
         state.utterance_start_time = event.utterance_start_time
-        state.current_word_count = len(state.current_utterance.split())
+        state.current_word_count = len(event.text.split())
         state.segment_id = event.segment_id
 
     def _is_overdue(self, state: CaptionState) -> bool:
