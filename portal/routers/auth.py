@@ -176,12 +176,15 @@ async def join_via_invite(request: Request, token: str) -> RedirectResponse:
     return response
 
 
-async def read_json_body(request: Request) -> Any:
-    """Return the parsed JSON body, answering 400 instead of a 500 when it is not valid JSON."""
+async def read_json_body(request: Request) -> dict[str, Any]:
+    """Return the JSON object in the request body, answering 400 instead of a 500 for anything else."""
     try:
-        return await request.json()
+        data = await request.json()
     except (json.JSONDecodeError, UnicodeDecodeError):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Request body must be valid JSON")
+    if not isinstance(data, dict):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Request body must be a JSON object")
+    return data
 
 
 @router.post("/api/auth/check-email")
@@ -841,8 +844,8 @@ async def submit_hosting_request(request: Request):
 async def set_password_api(request: Request):
     user_token = await require_user(request)
     data = await read_json_body(request)
-    password = data.get("password", "") if isinstance(data, dict) else ""
-    current_password = data.get("current_password", "") if isinstance(data, dict) else ""
+    password = data.get("password", "")
+    current_password = data.get("current_password", "")
 
     if not isinstance(password, str) or len(password) < 8:
         raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
@@ -874,7 +877,7 @@ async def set_password_api(request: Request):
 async def remove_password_api(request: Request):
     user_token = await require_user(request)
     data = await read_json_body(request)
-    password = data.get("password", "") if isinstance(data, dict) else ""
+    password = data.get("password", "")
 
     async with get_session() as session:
         user = await get_user_by_id(session, int(user_token["sub"]))

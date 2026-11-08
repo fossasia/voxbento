@@ -306,3 +306,22 @@ async def test_auth_json_api_rejects_malformed_json(path, body):
     async with client() as http:
         res = await http.post(path, content=body, headers={"content-type": "application/json"}, cookies=cookies)
     assert res.status_code == 400
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/api/auth/set-password",
+        "/api/auth/remove-password",
+        "/api/auth/check-email",
+        "/api/auth/magic-link",
+        "/api/auth/forgot-password",
+    ],
+)
+@pytest.mark.parametrize("body", [b"[]", b'["x"]', b'"text"', b"123", b"null", b"true"])
+async def test_auth_json_api_rejects_non_object_json_body(path, body):
+    _, cookies = await make_user()
+    async with client() as http:
+        res = await http.post(path, content=body, headers={"content-type": "application/json"}, cookies=cookies)
+    assert res.status_code == 400
