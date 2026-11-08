@@ -43,6 +43,7 @@ _API_KEY_FIELDS: list[tuple[str, str]] = [
     ("deepgram_api_key",           "encrypted_deepgram_api_key"),
     ("nvidia_api_key",             "encrypted_nvidia_api_key"),
     ("elevenlabs_api_key",         "encrypted_elevenlabs_api_key"),
+    ("atlascloud_api_key",         "encrypted_atlascloud_api_key"),
     ("translation_openai_api_key", "encrypted_translation_openai_api_key"),
     ("openrouter_api_key",         "encrypted_openrouter_api_key"),
     ("gemini_api_key",             "encrypted_gemini_api_key"),
@@ -1098,6 +1099,7 @@ class EventAPIKeysUpdate(BaseModel):
     deepgram_api_key: str | None = None
     nvidia_api_key: str | None = None
     elevenlabs_api_key: str | None = None
+    atlascloud_api_key: str | None = None
     translation_openai_api_key: str | None = None
     openrouter_api_key: str | None = None
     gemini_api_key: str | None = None
