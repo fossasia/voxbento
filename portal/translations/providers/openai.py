@@ -74,5 +74,5 @@ class OpenAIProvider(TranslationProvider):
             res.raise_for_status()
             return res.json()["choices"][0]["message"]["content"].strip()
         except Exception as e:
-            logger.error(f"OpenAI translation failed for {target_lang_name}: {e}")
+            logger.error(f"Translation via {provider_name} failed for {target_lang_name}: {e!r}")
             return None

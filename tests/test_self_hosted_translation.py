@@ -180,16 +180,27 @@ async def test_server_errors_fail_the_segment_quietly(self_hosted, llm_server):
 
 
 @pytest.mark.anyio
-async def test_unreachable_server_fails_the_segment_quietly(self_hosted):
-    def refuse(request: httpx.Request) -> httpx.Response:
-        raise httpx.ConnectError("connection refused", request=request)
+@pytest.mark.parametrize(
+    ("error", "logged"),
+    [
+        (httpx.ConnectError("connection refused"), "ConnectError('connection refused')"),
+        # A timeout has an empty message, so the log names the error type instead.
+        (httpx.ReadTimeout(""), "ReadTimeout('')"),
+    ],
+)
+async def test_unreachable_or_slow_server_is_logged_by_provider_and_error(self_hosted, caplog, error, logged):
+    def fail(request: httpx.Request) -> httpx.Response:
+        error.request = request
+        raise error
 
     previous = pg.shared_http_client
-    pg.shared_http_client = httpx.AsyncClient(transport=httpx.MockTransport(refuse))
+    pg.shared_http_client = httpx.AsyncClient(transport=httpx.MockTransport(fail))
     try:
         assert await _translate() is None
     finally:
         pg.shared_http_client = previous
+    assert f"Translation via self_hosted failed for German: {logged}" in caplog.text
+    assert "OpenAI" not in caplog.text
 
 
 @pytest.mark.anyio
@@ -342,6 +353,24 @@ async def test_unset_server_hides_the_option_from_the_room_form(admin_room, unse
     cookie, event_id, room_id = admin_room
     room = await _save_ai(cookie, event_id, room_id, floor_translation_model="llama3.2")
     assert room.floor_translation_provider != "self_hosted"
+
+
+@pytest.mark.anyio
+async def test_room_page_names_a_removed_self_hosted_service_plainly(admin_room, unset):
+    cookie, event_id, room_id = admin_room
+    async with get_session() as s:
+        room = await s.get(Room, room_id)
+        # AI languages always come with captions; the AI cards only render for such rooms.
+        room.floor_transcription_enabled = True
+        room.floor_translation_enabled = True
+        room.floor_translation_provider = "self_hosted"
+        room.floor_translation_model = "llama3.2"
+        s.add(RoomTranslationLanguage(room_id=room_id, language_code="de", language_name="German", enabled=True))
+    async with _client(cookie) as client:
+        page = await client.get(f"/admin/events/{event_id}/rooms/{room_id}/")
+    assert page.status_code == 200
+    assert "Self-hosted — not available now, choose another" in page.text
+    assert "Self_hosted" not in page.text
 
 
 # ── Worker ─────────────────────────────────────────────────────────────────
