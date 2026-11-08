@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 import logging
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock
 
 import httpx
@@ -713,3 +714,46 @@ async def test_owner_endpoints_reject_cross_origin_and_wrong_event(env):
     wrong = f"/workspace/events/{env['event_id'] + 99}/rooms/{env['room_id']}/meeting-source"
     assert (await env["client"].get(wrong)).status_code in {403, 404}
     assert env["agents"].starts == []
+
+
+@pytest.mark.anyio
+async def test_deleted_event_agent_and_worker_are_stopped(env):
+    response = await env["client"].post(
+        env["url"], json={"action": "connect", "meeting_url": "https://meet.example.org/TrackA"}
+    )
+    assert response.status_code == 200, response.text
+    env["agents"].rooms[env["key"]]["stage"] = "in_meeting"
+    await meeting.reconcile_once()
+    publish(env, 100)
+    await meeting.reconcile_once()
+    env["start"].assert_awaited_once()
+    assert env["agents"].stops == []
+
+    async with get_session() as session:
+        event = await session.get(Event, env["event_id"])
+        event.deleted_at = datetime.now(timezone.utc)
+
+    env["stop"].reset_mock()
+    # With no enabled room left, the stale-agent sweep runs on the idle interval.
+    env["clock"].now += meeting.IDLE_SWEEP_SECS
+    await meeting.reconcile_once()
+    assert env["agents"].stops == [env["key"]]
+    env["stop"].assert_awaited_once_with(env["booth_id"])
+    assert env["room_id"] not in meeting.health
+
+
+@pytest.mark.anyio
+async def test_deleted_event_worker_is_stopped_when_its_health_record_is_gone(env):
+    response = await env["client"].post(
+        env["url"], json={"action": "connect", "meeting_url": "https://meet.example.org/TrackA"}
+    )
+    assert response.status_code == 200, response.text
+    async with get_session() as session:
+        event = await session.get(Event, env["event_id"])
+        event.deleted_at = datetime.now(timezone.utc)
+
+    # disconnect() can drop the room's health record while the reconciler is querying the database.
+    meeting.health.pop(env["room_id"], None)
+    env["stop"].reset_mock()
+    await meeting._stop_deleted_event_workers({env["room_id"]})
+    env["stop"].assert_awaited_once_with(env["booth_id"])

@@ -21,12 +21,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from unilimit.integrations.fastapi import RateLimit
 
 from portal.auth import (
+    PASSWORD_TOO_LONG_MESSAGE,
     create_participant_token,
     create_token,
     create_user_token,
     decode_token,
     get_current_user,
     hash_password,
+    password_too_long,
     require_user,
     resolve_request_principal,
     verify_password,
@@ -67,7 +69,13 @@ logger = logging.getLogger(__name__)
 
 # Hash of a fixed throwaway value; it is only used when no stored password
 # exists, and the user-state checks below still reject the login.
-_DUMMY_PASSWORD_HASH = "$2b$12$OEvt/xgDNq5iYebPcyO6L.ntTqE5qjv39rH/iPdAnvHg33d2vcG4e"
+_DUMMY_PASSWORD_HASH = "$2b$12$OEvt/xgDNq5iYebPcyO6L.ntTqE5qjv39rH/iPdAnvHg33d2vcG4e"  # nosec B105 # timing-only dummy; never grants access
+
+
+def _is_retryable_sign_in_write_conflict(exc: DBAPIError) -> bool:
+    """Return whether a SQLite snapshot or lock conflict can be retried safely."""
+    message = str(exc).lower()
+    return any(marker in message for marker in ("busy", "locked", "snapshot"))
 
 
 async def _queue_verification_email(
@@ -81,7 +89,7 @@ async def _queue_verification_email(
     them now could leave the person with no working link if this email fails.
     """
     token_val = secrets.token_hex(32)
-    auth_token = await create_auth_token(session, jti=token_val, user_id=user_id, token_type="verification")  # nosec B105
+    auth_token = await create_auth_token(session, jti=token_val, user_id=user_id, token_type="verification")  # nosec B106 # token purpose; jti is randomly generated
     await queue_notification(
         session,
         "verification",
@@ -183,7 +191,7 @@ async def check_email_api(request: Request):
     # oracle. These constant legacy fields keep older login pages on the
     # authentication path without exposing real account state; they are
     # compatibility sentinels, not facts about this email address.
-    return {"status": "ok", "exists": True, "has_password": True}
+    return {"status": "ok", "exists": True, "has_password": True}  # nosec B105 # boolean compatibility sentinel
 
 
 def render_registration(
@@ -241,6 +249,8 @@ async def register_submit(request: Request):
         errors.append("Password cannot be blank or only whitespace.")
     elif password_raw and len(password_raw) < 8:
         errors.append("Password must be at least 8 characters.")
+    elif password_raw and password_too_long(password_raw):
+        errors.append(PASSWORD_TOO_LONG_MESSAGE)
     elif password_raw and password_raw != password_confirm:
         errors.append("Passwords do not match.")
 
@@ -315,7 +325,7 @@ async def verify_email_route(request: Request, token: str):
             user = await get_user_by_id(session, auth_token.user_id)
             if user is None or not user.is_active:
                 raise ValueError("Invalid verification link.")
-            user = await update_user(session, auth_token.user_id, email_verified=True)
+            user = await update_user(session, auth_token.user_id, email_verified=True, last_sign_in_at=utc_now())
             await queue_notification(
                 session,
                 "onboarding",
@@ -402,6 +412,15 @@ async def user_login_submit(request: Request):
     jwt_token = create_user_token(
         user_id=user.id, email=user.email, display_name=user.display_name, is_admin=user.is_admin
     )
+    for attempt in range(3):
+        try:
+            async with get_session() as session:
+                await update_user(session, user.id, last_sign_in_at=utc_now())
+            break
+        except (OperationalError, DBAPIError) as exc:
+            if attempt == 2 or not _is_retryable_sign_in_write_conflict(exc):
+                raise
+            await asyncio.sleep(0)
     redirect_to = next_url if next_url else "/account"
     response = safe_redirect(url=redirect_to, status_code=status.HTTP_303_SEE_OTHER)
     response.set_cookie(
@@ -440,7 +459,7 @@ async def request_magic_link(request: Request):
                 session,
                 jti=token_val,
                 user_id=user.id,
-                token_type="magic_link",  # nosec B105
+                token_type="magic_link",  # nosec B106 # token purpose; jti is randomly generated
             )
             # The link signs in only the browser that opens it (#929); nothing here is
             # returned to the requesting browser.
@@ -471,7 +490,7 @@ async def redeem_magic_link(request: Request, token: str, next: str | None = Non
 
             # If they log in via magic link, we can implicitly consider their email verified
             if not user.email_verified:
-                await update_user(session, user.id, email_verified=True)
+                await update_user(session, user.id, email_verified=True, last_sign_in_at=utc_now())
                 await queue_notification(
                     session,
                     "onboarding",
@@ -480,6 +499,8 @@ async def redeem_magic_link(request: Request, token: str, next: str | None = Non
                     scheduled_at=utc_now() + timedelta(minutes=15),
                     idempotency_key=f"onboarding:{user.id}",
                 )
+            else:
+                await update_user(session, user.id, last_sign_in_at=utc_now())
 
             jwt_token = create_user_token(
                 user_id=user.id, email=user.email, display_name=user.display_name, is_admin=user.is_admin
@@ -551,7 +572,7 @@ async def forgot_password_request(request: Request):
                 session,
                 jti=token_val,
                 user_id=user.id,
-                token_type="password_reset",  # nosec B105
+                token_type="password_reset",  # nosec B106 # token purpose; jti is randomly generated
             )
             await queue_notification(
                 session,
@@ -571,7 +592,7 @@ async def reset_password_page(request: Request, token: str):
     async with get_session() as session:
         tok = await get_auth_token(session, token)
         error = None
-        if tok is None or tok.token_type != "password_reset":
+        if tok is None or tok.token_type != "password_reset":  # nosec B105 # token purpose discriminator
             error = "Invalid reset link."
         elif tok.is_expired:
             error = "This reset link has expired."
@@ -582,7 +603,7 @@ async def reset_password_page(request: Request, token: str):
             return templates.TemplateResponse(
                 request=request,
                 name="reset_password.html",
-                context={"token": token, "error": error, "token_invalid": True},
+                context={"token": token, "error": error, "token_invalid": True},  # nosec B105 # boolean template flag
                 status_code=status.HTTP_400_BAD_REQUEST,
             )
 
@@ -594,11 +615,16 @@ async def reset_password_submit(request: Request, token: str):
     form = await request.form()
     password = form.get("password", "")
 
+    error = None
     if len(password) < 8:
+        error = "Password must be at least 8 characters"
+    elif password_too_long(password):
+        error = PASSWORD_TOO_LONG_MESSAGE
+    if error:
         return templates.TemplateResponse(
             request=request,
             name="reset_password.html",
-            context={"token": token, "error": "Password must be at least 8 characters"},
+            context={"token": token, "error": error},
             status_code=status.HTTP_400_BAD_REQUEST,
         )
 
@@ -610,18 +636,26 @@ async def reset_password_submit(request: Request, token: str):
                 return templates.TemplateResponse(
                     request=request,
                     name="reset_password.html",
-                    context={"token": token, "error": str(e), "token_invalid": True},
+                    context={"token": token, "error": str(e), "token_invalid": True},  # nosec B105 # boolean template flag
                     status_code=status.HTTP_400_BAD_REQUEST,
                 )
 
             pw_hash = hash_password(password)
+            reset_user = await get_user_by_id(session, auth_token.user_id)
+            if reset_user is None:
+                raise ValueError("User not found.")
+            if not reset_user.is_active:
+                raise HTTPException(status_code=403, detail="Account deactivated")
             user = await update_user(session, auth_token.user_id, password_hash=pw_hash)
             if user is None:
                 raise ValueError("User not found.")
+            await update_user(session, user.id, last_sign_in_at=utc_now())
             await _queue_password_notice(session, user.email, user.id, "Your VoxBento password was reset.")
             jwt_token = create_user_token(
                 user_id=user.id, email=user.email, display_name=user.display_name, is_admin=user.is_admin
             )
+    except HTTPException:
+        raise
     except Exception:
         logger.exception("Failed to complete password reset for token")
         return templates.TemplateResponse(
@@ -661,7 +695,7 @@ ACCOUNT_NOTICES = {
     "profile_saved": "Your display name was saved.",
     "password_changed": "Your password was changed.",
     "password_set": "Your password was set. You can now sign in with it or with an email link.",
-    "password_removed": "Your password was removed. Sign in with a link sent to your email from now on.",
+    "password_removed": "Your password was removed. Sign in with a link sent to your email from now on.",  # nosec B105 # UI notice
 }
 DISPLAY_NAME_MAX = 200
 _CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
@@ -828,6 +862,8 @@ async def set_password_api(request: Request):
 
     if not isinstance(password, str) or len(password) < 8:
         raise HTTPException(status_code=400, detail="Password must be at least 8 characters")
+    if password_too_long(password):
+        raise HTTPException(status_code=400, detail=PASSWORD_TOO_LONG_MESSAGE)
 
     async with get_session() as session:
         user = await get_user_by_id(session, int(user_token["sub"]))
@@ -985,6 +1021,8 @@ async def invite_accept_submit(request: Request, token: str):
                 display_name = form.get("display_name", "").strip()
                 if len(submitted_password) < 8:
                     raise HTTPException(status_code=400, detail="Password must be at least 8 characters.")
+                if password_too_long(submitted_password):
+                    raise HTTPException(status_code=400, detail=PASSWORD_TOO_LONG_MESSAGE)
                 if submitted_password != raw_confirm:
                     raise HTTPException(status_code=400, detail="Passwords do not match.")
                 user.password_hash = hash_password(submitted_password)
@@ -1009,6 +1047,8 @@ async def invite_accept_submit(request: Request, token: str):
 
             # Perform account activation and hosting grant in the same transaction
             user.can_host = True
+            if not is_signed_in_as_user:
+                await update_user(session, user.id, last_sign_in_at=utc_now())
             user.hosting_revoked_at = None
             user.hosting_requested_at = None
             await close_open_hosting_request(session, user.id, status=HOSTING_REQUEST_GRANTED, decided_by_user_id=None)
