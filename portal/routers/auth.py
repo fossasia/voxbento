@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import logging
 import re
 import secrets
 import urllib.parse
 from datetime import timedelta
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
 import jwt
@@ -175,9 +176,17 @@ async def join_via_invite(request: Request, token: str) -> RedirectResponse:
     return response
 
 
+async def read_json_body(request: Request) -> Any:
+    """Return the parsed JSON body, answering 400 instead of a 500 when it is not valid JSON."""
+    try:
+        return await request.json()
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Request body must be valid JSON")
+
+
 @router.post("/api/auth/check-email")
 async def check_email_api(request: Request):
-    data = await request.json()
+    data = await read_json_body(request)
     email = data.get("email", "").strip().lower()
     if not email:
         raise HTTPException(status_code=422, detail="Email required")
@@ -429,7 +438,7 @@ async def get_auth_status(request: Request):
 
 @router.post("/api/auth/magic-link")
 async def request_magic_link(request: Request):
-    data = await request.json()
+    data = await read_json_body(request)
     email = data.get("email", "").strip().lower()
     next_url = data.get("next_url", "")
 
@@ -539,7 +548,7 @@ async def redeem_magic_link(request: Request, token: str, next: str | None = Non
 
 @router.post("/api/auth/forgot-password")
 async def forgot_password_request(request: Request):
-    data = await request.json()
+    data = await read_json_body(request)
     email = data.get("email", "").strip().lower()
 
     if not check_rate_limit("forgot_password", email, max_requests=5, window_seconds=3600):
@@ -831,7 +840,7 @@ async def submit_hosting_request(request: Request):
 @router.post("/api/auth/set-password")
 async def set_password_api(request: Request):
     user_token = await require_user(request)
-    data = await request.json()
+    data = await read_json_body(request)
     password = data.get("password", "") if isinstance(data, dict) else ""
     current_password = data.get("current_password", "") if isinstance(data, dict) else ""
 
@@ -864,7 +873,7 @@ async def set_password_api(request: Request):
 @router.post("/api/auth/remove-password")
 async def remove_password_api(request: Request):
     user_token = await require_user(request)
-    data = await request.json()
+    data = await read_json_body(request)
     password = data.get("password", "") if isinstance(data, dict) else ""
 
     async with get_session() as session:
