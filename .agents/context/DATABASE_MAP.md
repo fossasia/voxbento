@@ -256,7 +256,8 @@ Tracks which languages the translation worker should generate for a given room o
 | 036 | `036_add_sessions_valid_after_to_users.py` | `users.sessions_valid_after` |
 | 037 | `037_add_revoked_at_to_invite_tokens.py` | `invite_tokens.revoked_at` |
 | 038 | `038_add_public_id_to_invite_tokens.py` | `invite_tokens.public_id` |
-| 039 | `039_add_last_sign_in_at_to_users.py` | Nullable `users.last_sign_in_at` |
+| 039 | `039_add_atlascloud_api_key.py` | AtlasCloud API key setting |
+| 040 | `040_add_last_sign_in_at_to_users.py` | Nullable `users.last_sign_in_at` |
 
 Run migrations: `uv run alembic upgrade head`
 

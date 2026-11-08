@@ -1,7 +1,7 @@
 """add last sign-in timestamp to users
 
-Revision ID: 039
-Revises: 038
+Revision ID: 040
+Revises: 039
 """
 from __future__ import annotations
 
@@ -11,8 +11,8 @@ import sqlalchemy as sa
 
 from alembic import op
 
-revision: str = "039"
-down_revision: Union[str, Sequence[str], None] = "038"
+revision: str = "040"
+down_revision: Union[str, Sequence[str], None] = "039"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
