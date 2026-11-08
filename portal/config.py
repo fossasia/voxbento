@@ -42,11 +42,18 @@ class Settings(BaseSettings):
     program_sender_session_ttl_secs: int = 150  # Browser sender publish window; long enough to negotiate, short enough to expire.
     # RTMPS ingest with YouTube relay (#749). Off unless the operator deploys docker-compose.relay.yml.
     program_relay_enabled: bool = False
+    # RTMPS contribution ingest without relaying (VoxBento as an extra destination).
+    # Relay deployments imply it; see rtmps_ingest_enabled.
+    program_rtmps_enabled: bool = False
     program_rtmps_public_base: str = ""  # e.g. rtmps://voxbento.com:1936 (MediaMTX RTMPS listener)
     program_relay_base: str = "http://program-relay:8090"
     program_relay_control_secret: str = ""
     program_relay_max: int = 4
     program_relay_allowed_hosts: str = "a.rtmps.youtube.com,b.rtmps.youtube.com"
+
+    @property
+    def rtmps_ingest_enabled(self) -> bool:
+        return self.program_ingest_enabled and (self.program_rtmps_enabled or self.program_relay_enabled)
 
     @property
     def effective_jitsi_base_url(self) -> str:
