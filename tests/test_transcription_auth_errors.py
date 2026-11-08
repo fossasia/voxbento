@@ -452,7 +452,7 @@ async def test_openai_realtime_handshake_401_is_reported():
         with patch("websockets.connect", side_effect=raise_handshake):
             with pytest.raises(TranscriptionAuthError) as excinfo:
                 await OpenAIProvider().run_stream(
-                    process, "en", "gpt-realtime", ProviderConfig(api_key="bad"), AsyncMock(), "booth-1"
+                    process, "en", "gpt-4o-realtime-preview", ProviderConfig(api_key="bad"), AsyncMock(), "booth-1"
                 )
         assert excinfo.value.error_code == "auth_failed"
         assert excinfo.value.provider == "openai"
@@ -476,7 +476,7 @@ async def test_openai_realtime_non_auth_failure_still_retries():
         with patch("portal.transcription.providers.openai.asyncio.sleep", new=AsyncMock()):
             await asyncio.wait_for(
                 OpenAIProvider().run_stream(
-                    process, "en", "gpt-realtime", ProviderConfig(api_key="good"), AsyncMock(), "booth-1"
+                    process, "en", "gpt-4o-realtime-preview", ProviderConfig(api_key="good"), AsyncMock(), "booth-1"
                 ),
                 timeout=5,
             )
