@@ -157,3 +157,14 @@ A redaction must never change the number of `%` placeholders in a format
 string — that would break interpolation and lose the line. `_redact_format_string()`
 discards any such rewrite, and both formatters redact the final interpolated
 message as a last guard.
+
+Split-context secrets (`logger.info("key=%s", "my-secret")` — context in the
+format string, value in the args) are caught by a final fallback in the filter:
+after per-field redaction it interpolates once, and if the pattern catches
+anything the per-field pass missed, it overwrites `record.msg` with the
+redacted interpolated form and clears `record.args`. The result is that even a
+foreign handler reading `record.getMessage()` directly sees the redacted
+string. The uvicorn.access path is unaffected because each of its args carries
+its own credential context (the URL *is* the arg), so per-arg redaction
+already covers it and the fallback finds nothing new; `args` stays intact for
+AccessFormatter's positional access.
