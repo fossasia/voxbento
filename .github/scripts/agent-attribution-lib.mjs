@@ -1,11 +1,14 @@
 // Detects AI models and harnesses/IDEs used to create a PR, matching the
 // attribution convention "Created with <Model> in <Harness>".
 //
-// Only attribution-specific evidence counts, so ordinary prose that happens to
-// mention a tool name (for example "cursor" or "composer.json") never triggers it:
-//   1. an explicit attribution line ("Created with ... in ...") in the PR body
-//      (HTML comments excluded) or in a commit message, or
-//   2. a Co-authored-by: trailer from a known AI agent in a commit message.
+// Only authoring evidence counts, so ordinary prose that happens to mention a
+// tool name (for example "cursor" or "composer.json") never triggers it:
+//   1. an explicit "Created with ..." line in the PR body or a commit message,
+//      outside HTML comments and fenced code blocks ("Reviewed with ..." lines
+//      describe a review, not authorship, and are ignored), or
+//   2. a Co-authored-by: trailer from a known AI agent in a commit message, or
+//   3. the older "created with the assistance of **<Model>**" wording that
+//      CONTRIBUTING.md used to recommend.
 //
 // When an agent is detected, the "ai-assisted" label is applied and, if the
 // description lacks attribution, the line is placed at the end of the
@@ -25,6 +28,9 @@ export const ATTRIBUTION_LINE_PATTERN = new RegExp(
   'i',
 );
 
+// Older format: "This PR was created with the assistance of **Claude Sonnet 4.6**".
+const LEGACY_ATTRIBUTION_PATTERN = /\bcreated with the assistance of \*\*([^*<>\n]+?)\*\*/i;
+
 const CO_AUTHOR_TRAILER_PATTERN = /^\s*Co-authored-by:\s*(.+)$/gim;
 
 // Bot-generated sections appended to PR descriptions (Sourcery, CodeRabbit).
@@ -35,57 +41,115 @@ const BOT_SECTION_MARKERS = [
   /^<!-- This is an auto-generated comment: release notes by coderabbit\.ai -->/m,
 ];
 
-export const KNOWN_MODELS = [
-  { name: 'Claude Opus 5.5', regex: /\bclaude[- ](?:opus[- ]5\.5|5\.5[- ]opus)\b/i },
-  { name: 'Claude Opus 4.6', regex: /\bclaude[- ](?:opus[- ]4\.6|4\.6[- ]opus)\b/i },
-  { name: 'Claude Opus', regex: /\bclaude[- ]opus\b/i },
-  { name: 'Claude Sonnet 4.6', regex: /\bclaude[- ](?:sonnet[- ]4\.6|4\.6[- ]sonnet)\b/i },
-  { name: 'Claude Sonnet 3.5', regex: /\bclaude[- ](?:sonnet[- ]3\.5|3\.5[- ]sonnet)\b/i },
-  { name: 'Claude Sonnet', regex: /\bclaude[- ]sonnet\b/i },
-  { name: 'Claude Haiku', regex: /\bclaude[- ]haiku\b/i },
-  { name: 'Claude', regex: /\bclaude\b/i },
-  { name: 'GPT-4o', regex: /\bgpt-4o\b/i },
-  { name: 'GPT-4', regex: /\bgpt-4\b/i },
-  { name: 'ChatGPT', regex: /\bchatgpt\b/i },
-  { name: 'Codex', regex: /\bcodex\b/i },
-  { name: 'Gemini 2.0 Flash', regex: /\bgemini[- ]2\.0[- ]flash\b/i },
-  { name: 'Gemini 2.0 Pro', regex: /\bgemini[- ]2\.0[- ]pro\b/i },
-  { name: 'Gemini 1.5 Pro', regex: /\bgemini[- ]1\.5[- ]pro\b/i },
-  { name: 'Gemini', regex: /\bgemini\b/i },
-  { name: 'DeepSeek-V3', regex: /\bdeepseek[- ]v3\b/i },
-  { name: 'DeepSeek-R1', regex: /\bdeepseek[- ]r1\b/i },
+const VERSION = String.raw`\d+(?:\.\d+)*`;
+const titleCase = (s) => s.charAt(0).toUpperCase() + s.slice(1).toLowerCase();
+
+// Each family reports the model exactly as written (tier and version included),
+// so a version that is not listed anywhere is never rewritten into another one.
+// `specific` is false for a bare family name such as "Claude", which is how
+// agents name themselves in trailers and says nothing about the model used.
+export const MODEL_FAMILIES = [
+  {
+    regex: new RegExp(
+      String.raw`\bclaude(?:[- ](opus|sonnet|haiku))?(?:[- ](${VERSION}))?(?:[- ](opus|sonnet|haiku))?\b`,
+      'i',
+    ),
+    format: ([, tierA, version, tierB]) => {
+      const tier = tierA || tierB;
+      return {
+        name: ['Claude', tier && titleCase(tier), version].filter(Boolean).join(' '),
+        specific: Boolean(tier || version),
+      };
+    },
+  },
+  {
+    regex: new RegExp(String.raw`\bgpt-(${VERSION})(o|-mini|-turbo)?(?!\w|\.\d)`, 'i'),
+    format: ([, version, suffix = '']) => ({ name: `GPT-${version}${suffix.toLowerCase()}`, specific: true }),
+  },
+  {
+    regex: new RegExp(String.raw`\bgemini(?:[- ](${VERSION}))?(?:[- ](pro|flash|ultra|nano))?\b`, 'i'),
+    format: ([, version, tier]) => ({
+      name: ['Gemini', version, tier && titleCase(tier)].filter(Boolean).join(' '),
+      specific: Boolean(version || tier),
+    }),
+  },
+  {
+    regex: new RegExp(String.raw`\bdeepseek(?:[- ]?([vr]${VERSION}))?\b`, 'i'),
+    format: ([, version]) => ({
+      name: version ? `DeepSeek-${version.toUpperCase()}` : 'DeepSeek',
+      specific: Boolean(version),
+    }),
+  },
 ];
 
-// Matched only against Co-authored-by: trailer values (name and email).
+// Matched against Co-authored-by: trailer values (name and email).
 export const KNOWN_HARNESSES = [
   { name: 'Claude Code', regex: /\bclaude[- ]code\b|<noreply@anthropic\.com>/i },
   { name: 'Cursor', regex: /\bcursor(?:[- ]?agent)?\b|@cursor\.com>/i },
   { name: 'GitHub Copilot', regex: /\b(?:github[- ])?copilot\b/i },
+  { name: 'ChatGPT', regex: /\bchatgpt\b/i },
+  { name: 'Codex', regex: /\bcodex\b/i },
   { name: 'Antigravity', regex: /\bantigravity\b/i },
   { name: 'Windsurf', regex: /\bwindsurf\b/i },
   { name: 'Aider', regex: /\baider\b/i },
   { name: 'T3 Code', regex: /\bt3[- ]code\b/i },
 ];
 
-export function stripHtmlComments(text) {
-  return (text || '').replace(/<!--[\s\S]*?(?:-->|$)/g, '');
+// Marks each line as prose (true) or not: lines inside a fenced code block, and
+// lines that are wholly or partly inside an HTML comment, are not prose.
+function proseLineMask(lines) {
+  let inComment = false;
+  let fence = null;
+  return lines.map((line) => {
+    if (!inComment) {
+      const fenceMatch = line.match(/^\s{0,3}(`{3,}|~{3,})/);
+      if (fence) {
+        if (fenceMatch && fenceMatch[1][0] === fence[0] && fenceMatch[1].length >= fence.length) {
+          fence = null;
+        }
+        return false;
+      }
+      if (fenceMatch) {
+        fence = fenceMatch[1];
+        return false;
+      }
+    }
+    let touchedComment = inComment;
+    let rest = line;
+    while (rest) {
+      const token = inComment ? '-->' : '<!--';
+      const at = rest.indexOf(token);
+      if (at === -1) break;
+      touchedComment = true;
+      inComment = !inComment;
+      rest = rest.slice(at + token.length);
+    }
+    return !touchedComment;
+  });
+}
+
+function proseLines(text) {
+  const lines = (text || '').split(/\r?\n/);
+  const mask = proseLineMask(lines);
+  return lines.filter((_, i) => mask[i]);
 }
 
 function parseAttributionLine(line) {
   const match = line.match(ATTRIBUTION_LINE_PATTERN);
-  if (!match) return null;
+  if (!match || match[1].toLowerCase() !== 'created') return null;
   return {
     raw: match[0].trim(),
-    action: match[1].trim(),
+    action: 'Created',
     model: match[2].trim(),
     harness: match[3]?.trim() || null,
     environment: match[4]?.trim() || null,
   };
 }
 
-// Returns the last attribution line found in the text (HTML comments excluded).
+// Returns the last "Created with ..." line in the text, ignoring HTML comments,
+// fenced code blocks and "Reviewed with ..." lines.
 export function parseExistingAttribution(text) {
-  const lines = stripHtmlComments(text).split(/\r?\n/);
+  const lines = proseLines(text);
   for (let i = lines.length - 1; i >= 0; i -= 1) {
     const parsed = parseAttributionLine(lines[i]);
     if (parsed) return parsed;
@@ -93,11 +157,37 @@ export function parseExistingAttribution(text) {
   return null;
 }
 
-function firstMatchName(list, text) {
-  return list.find(({ regex }) => regex.test(text))?.name || null;
+function parseLegacyAttribution(text) {
+  for (const line of proseLines(text)) {
+    const match = line.match(LEGACY_ATTRIBUTION_PATTERN);
+    if (match) return match[1].trim();
+  }
+  return null;
 }
 
-// Detects agent details from attribution-specific evidence only.
+export function detectModel(text, { requireSpecific = false } = {}) {
+  for (const family of MODEL_FAMILIES) {
+    const match = (text || '').match(family.regex);
+    if (!match) continue;
+    const { name, specific } = family.format(match);
+    if (requireSpecific && !specific) continue;
+    return name;
+  }
+  return null;
+}
+
+function detectFromTrailer(trailer) {
+  const harness = KNOWN_HARNESSES.find(({ regex }) => regex.test(trailer))?.name || null;
+  // Only the display name can carry model information; the email is identity.
+  // Drop harness names first so "Claude Code" is not read as a model, and accept
+  // only a specific model, not a bare agent name such as "Claude".
+  let displayName = trailer.replace(/<[^>]*>/g, ' ');
+  for (const { regex } of KNOWN_HARNESSES) displayName = displayName.replace(regex, ' ');
+  const model = detectModel(displayName, { requireSpecific: true });
+  return { harness, model };
+}
+
+// Detects agent details from authoring evidence only.
 // `body` is the PR description; `commitMessages` is a list of commit messages.
 export function detectAgentDetails({ body = '', commitMessages = [] } = {}) {
   for (const text of [body, ...commitMessages]) {
@@ -112,25 +202,23 @@ export function detectAgentDetails({ body = '', commitMessages = [] } = {}) {
     }
   }
 
-  const trailers = [];
-  for (const message of commitMessages) {
-    for (const match of (message || '').matchAll(CO_AUTHOR_TRAILER_PATTERN)) {
-      trailers.push(match[1]);
-    }
-  }
-
   let harness = null;
   let model = null;
-  for (const trailer of trailers) {
-    const trailerHarness = firstMatchName(KNOWN_HARNESSES, trailer);
-    const trailerModel = firstMatchName(KNOWN_MODELS, trailer);
-    if (!trailerHarness && !trailerModel) continue;
-    harness = harness || trailerHarness;
-    model = model || trailerModel;
+  for (const message of commitMessages) {
+    for (const match of (message || '').matchAll(CO_AUTHOR_TRAILER_PATTERN)) {
+      const found = detectFromTrailer(match[1]);
+      if (!found.harness) continue;
+      harness = harness || found.harness;
+      model = model || found.model;
+    }
   }
+  if (harness) return { model, harness, environment: null, explicit: false };
 
-  if (!harness && !model) return null;
-  return { model, harness, environment: null, explicit: false };
+  for (const text of [body, ...commitMessages]) {
+    const legacyModel = parseLegacyAttribution(text);
+    if (legacyModel) return { model: legacyModel, harness: null, environment: null, explicit: true };
+  }
+  return null;
 }
 
 // Formats "<Action> with <Model> in <Harness>, run from <Environment>."
@@ -153,30 +241,87 @@ function splitAuthorSection(body) {
 }
 
 function isLastContentLine(section, line) {
-  const contentLines = stripHtmlComments(section)
-    .split(/\r?\n/)
-    .map((l) => l.trim())
-    .filter(Boolean);
-  return contentLines[contentLines.length - 1] === line;
+  const content = proseLines(section).map((l) => l.trim()).filter(Boolean);
+  return content[content.length - 1] === line;
 }
 
 // Places the attribution line at the end of the author-written part of the body,
-// above any bot-generated summaries, and removes stray attribution lines elsewhere
-// in that part. Returns the body unchanged when it already ends with the line.
+// above any bot-generated summaries, and removes stray "Created with" lines
+// elsewhere in that part. Lines in code fences and HTML comments are kept as is.
+// Returns the body unchanged when it already ends with the line.
 export function appendAttributionToBody(body, attributionLine) {
   const [authorSection, botSection] = splitAuthorSection(body);
   if (isLastContentLine(authorSection, attributionLine)) {
     return body || '';
   }
 
-  const kept = authorSection
-    .split(/\r?\n/)
-    .filter((line) => !parseAttributionLine(line))
+  const lines = authorSection.split(/\r?\n/);
+  const mask = proseLineMask(lines);
+  const kept = lines
+    .filter((line, i) => !(mask[i] && parseAttributionLine(line)))
     .join('\n')
     .replace(/\n{3,}/g, '\n\n')
     .trimEnd();
   const updatedAuthor = kept ? `${kept}\n\n${attributionLine}\n` : `${attributionLine}\n`;
   return botSection ? `${updatedAuthor}\n${botSection}` : updatedAuthor;
+}
+
+function isTransient(error) {
+  return !error.status || error.status === 429 || error.status >= 500;
+}
+
+export async function withRetry(fn, { attempts = 3, delayMs = 1000, core } = {}) {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await fn();
+    } catch (error) {
+      if (error instanceof StaleRunError || attempt >= attempts || !isTransient(error)) throw error;
+      core?.warning(`Transient error (${error.status || error.message}); retrying (${attempt}/${attempts - 1}).`);
+      await new Promise((resolve) => setTimeout(resolve, delayMs * attempt));
+    }
+  }
+}
+
+class StaleRunError extends Error {}
+
+// Lists every commit message on the PR. The pull request commits endpoint stops
+// at 250 commits, so larger PRs fall back to the compare API, which pages
+// through all of them. A result that is still short is reported, not hidden.
+async function listAllCommitMessages({ github, owner, repo, pr, core }) {
+  const commits = await github.paginate(github.rest.pulls.listCommits, {
+    owner,
+    repo,
+    pull_number: pr.number,
+    per_page: 100,
+  });
+  let messages = commits.map((c) => c.commit?.message).filter(Boolean);
+
+  const expected = pr.commits ?? messages.length;
+  if (messages.length < expected) {
+    const all = [];
+    for (let page = 1; ; page += 1) {
+      const { data } = await github.rest.repos.compareCommitsWithBasehead({
+        owner,
+        repo,
+        basehead: `${pr.base.sha}...${pr.head.sha}`,
+        per_page: 100,
+        page,
+      });
+      const pageCommits = data.commits || [];
+      all.push(...pageCommits);
+      if (pageCommits.length < 100) break;
+    }
+    if (all.length > messages.length) {
+      messages = all.map((c) => c.commit?.message).filter(Boolean);
+    }
+    if (messages.length < expected) {
+      core.warning(
+        `#${pr.number}: read ${messages.length} of ${expected} commits; ` +
+          'trailers in the missing commits were not checked.',
+      );
+    }
+  }
+  return messages;
 }
 
 async function ensureLabel({ github, owner, repo, prNumber, labels, core }) {
@@ -209,26 +354,49 @@ async function ensureLabel({ github, owner, repo, prNumber, labels, core }) {
   core.info(`#${prNumber}: Added "${AI_LABEL}" label.`);
 }
 
-async function ensureAttribution({ github, owner, repo, prNumber, attributionLine, core }) {
-  // Re-fetch right before writing so edits made since the first fetch are kept.
-  const { data: latest } = await github.rest.pulls.get({ owner, repo, pull_number: prNumber });
-  const latestBody = latest.body || '';
-  const updatedBody = appendAttributionToBody(latestBody, attributionLine);
-
-  if (updatedBody === latestBody) {
-    core.info(`#${prNumber}: PR description already ends with attribution.`);
-    return;
+// Reads the PR and stops the run if its head moved since this run started, so a
+// run that began before a force-push never writes results based on removed commits.
+async function readCurrentPr({ github, owner, repo, prNumber, headSha }) {
+  const { data } = await github.rest.pulls.get({ owner, repo, pull_number: prNumber });
+  if (data.state !== 'open' || (headSha && data.head?.sha !== headSha)) {
+    throw new StaleRunError(`#${prNumber} changed since this run started; leaving it to the newer run.`);
   }
-  if (updatedBody.length > MAX_BODY_LENGTH) {
-    core.warning(`#${prNumber}: PR description is too long to add attribution; skipped.`);
-    return;
-  }
-
-  await github.rest.pulls.update({ owner, repo, pull_number: prNumber, body: updatedBody });
-  core.info(`#${prNumber}: Placed attribution at the end of the PR description.`);
+  return data;
 }
 
-export async function runAgentAttribution({ github, context, core }) {
+async function ensureAttribution({ github, owner, repo, prNumber, headSha, detectedLine, core }) {
+  // GitHub has no conditional update for PR bodies. Read, build the new body,
+  // then read again right before writing and start over if the body changed,
+  // so an author's edit can only be lost inside a single request's window.
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    const latest = await readCurrentPr({ github, owner, repo, prNumber, headSha });
+    const latestBody = latest.body || '';
+    const lineToPlace = parseExistingAttribution(latestBody)?.raw || detectedLine;
+    const updatedBody = appendAttributionToBody(latestBody, lineToPlace);
+
+    if (updatedBody === latestBody) {
+      core.info(`#${prNumber}: PR description already ends with attribution.`);
+      return;
+    }
+    if (updatedBody.length > MAX_BODY_LENGTH) {
+      core.warning(`#${prNumber}: PR description is too long to add attribution; skipped.`);
+      return;
+    }
+
+    const check = await readCurrentPr({ github, owner, repo, prNumber, headSha });
+    if ((check.body || '') !== latestBody) {
+      core.info(`#${prNumber}: PR description changed while preparing the update; re-reading.`);
+      continue;
+    }
+
+    await github.rest.pulls.update({ owner, repo, pull_number: prNumber, body: updatedBody });
+    core.info(`#${prNumber}: Placed attribution at the end of the PR description.`);
+    return;
+  }
+  core.warning(`#${prNumber}: PR description kept changing; attribution not added this run.`);
+}
+
+export async function runAgentAttribution({ github, context, core, retryDelayMs = 1000 }) {
   const { owner, repo } = context.repo;
   const prNumber = context.payload.pull_request?.number;
 
@@ -244,29 +412,43 @@ export async function runAgentAttribution({ github, context, core }) {
     return;
   }
 
-  const commits = await github.paginate(github.rest.pulls.listCommits, {
+  const headSha = pr.head?.sha;
+  const commitMessages = await listAllCommitMessages({
+    github,
     owner,
     repo,
-    pull_number: prNumber,
-    per_page: 100,
+    pr: { ...pr, number: prNumber },
+    core,
   });
-  const commitMessages = commits.map((c) => c.commit?.message).filter(Boolean);
 
-  const detected = detectAgentDetails({ body: pr.body || '', commitMessages });
-  if (!detected) {
-    core.info(`#${prNumber}: No AI attribution evidence found.`);
-    return;
+  try {
+    // Re-read so detection uses the latest body, and stop if a force-push
+    // moved the head while the commits were being listed.
+    const current = await readCurrentPr({ github, owner, repo, prNumber, headSha });
+    const detected = detectAgentDetails({ body: current.body || '', commitMessages });
+    if (!detected) {
+      core.info(`#${prNumber}: No AI authoring evidence found.`);
+      return;
+    }
+
+    const detectedLine = formatAttributionLine(detected);
+    core.info(`#${prNumber}: Detected AI attribution -> "${detectedLine}"`);
+
+    // The label goes first and on its own, so a skipped body update never leaves
+    // the PR unlabelled. Transient failures are retried; if the body update still
+    // fails, the next run (edit, push or manual dispatch) adds the missing line.
+    const retry = { core, delayMs: retryDelayMs };
+    const labels = (current.labels || []).map((l) => l.name);
+    await withRetry(() => ensureLabel({ github, owner, repo, prNumber, labels, core }), retry);
+    await withRetry(
+      () => ensureAttribution({ github, owner, repo, prNumber, headSha, detectedLine, core }),
+      retry,
+    );
+  } catch (error) {
+    if (error instanceof StaleRunError) {
+      core.info(error.message);
+      return;
+    }
+    throw error;
   }
-
-  const attributionLine = formatAttributionLine(detected);
-  core.info(`#${prNumber}: Detected AI attribution -> "${attributionLine}"`);
-
-  // Label first and independently, so a failed or skipped body update
-  // never leaves the PR without the label.
-  const labels = (pr.labels || []).map((l) => l.name);
-  await ensureLabel({ github, owner, repo, prNumber, labels, core });
-
-  const bodyAttribution = parseExistingAttribution(pr.body);
-  const lineToPlace = bodyAttribution ? bodyAttribution.raw : attributionLine;
-  await ensureAttribution({ github, owner, repo, prNumber, attributionLine: lineToPlace, core });
 }

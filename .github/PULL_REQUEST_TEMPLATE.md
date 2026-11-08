@@ -35,5 +35,5 @@ Describe how you tested these changes.
 
 <!-- Any extra context, concerns, or information -->
 
-<!-- If you used an agent, end with the model and harness that did the work. -->
-<!-- E.g.: Created with Claude Opus 4.6 in Claude Code, run from Antigravity. -->
+<!-- If you used an agent, end with the model and harness that did the work,
+in the form: Created with <Model> in <Harness>, run from <Environment>. -->

@@ -4,12 +4,16 @@
 # and ensures proper attribution in the PR description and an "ai-assisted" label.
 #
 # pull_request_target runs in the context of the base branch and gets a write-capable
-# GITHUB_TOKEN so fork PRs can receive attribution labels and description updates safely.
+# GITHUB_TOKEN so fork PRs can receive attribution labels and description updates.
+# That is safe only because the script that runs always comes from the trusted
+# default branch: pull_request_target checks out the base branch, and manual runs
+# are limited to the default branch and check it out explicitly. PR text and
+# commit messages are only ever read as data.
 
 name: Agent Attribution
 
 on:
-  pull_request_target:
+  pull_request_target: # zizmor: ignore[dangerous-triggers] only trusted default-branch code runs; PR content is data
     types: [opened, ready_for_review, synchronize, reopened, edited]
     branches: [dev, main]
   workflow_dispatch:
@@ -31,13 +35,21 @@ permissions:
 jobs:
   attribute:
     runs-on: ubuntu-latest
+    # Manual runs are only allowed from the default branch, so a run started on
+    # another branch cannot execute that branch's script with this token.
     if: |
-      github.event_name == 'workflow_dispatch' ||
-      (github.event.pull_request.state == 'open' &&
+      (github.event_name == 'workflow_dispatch' &&
+       github.ref == format('refs/heads/{0}', github.event.repository.default_branch)) ||
+      (github.event_name == 'pull_request_target' &&
+       github.event.pull_request.state == 'open' &&
        (github.event.pull_request.base.ref == 'dev' || github.event.pull_request.base.ref == 'main'))
     steps:
+      # SECURITY: always check out the trusted default branch. Never point `ref:`
+      # at the pull request head or the dispatch ref; with this write token that
+      # would run untrusted code.
       - uses: actions/checkout@v7.0.1
         with:
+          ref: ${{ github.event.repository.default_branch }}
           persist-credentials: false
 
       - uses: actions/github-script@v9
