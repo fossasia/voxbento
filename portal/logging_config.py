@@ -93,22 +93,38 @@ def _is_sensitive_name(name: str) -> bool:
     return bool(_SENSITIVE_FIELD_RE.search(name) or _QUALIFIED_KEY_RE.search(name))
 
 
-def _redact_structure(value: object, *, name: str = "") -> object:
+# A log call must never be able to bring the process down, so the walk below
+# is bounded. Anything deeper is summarised rather than followed.
+_MAX_REDACT_DEPTH = 12
+_TRUNCATED = "[TRUNCATED]"
+
+
+def _redact_structure(value: object, *, name: str = "", _depth: int = 0, _seen: frozenset[int] = frozenset()) -> object:
     """Redact a value of any shape, recursing into containers.
 
     A log call may pass a dict or a list as an `extra` field, and a secret
     nested inside it reaches the formatter untouched unless it is walked.
+
+    The walk is bounded two ways: a container already on the current path is
+    not re-entered, so a self-referencing structure cannot loop forever, and
+    the depth is capped so a very deep one cannot exhaust the stack. Either
+    would otherwise turn a stray log call into a RecursionError.
     """
     if name and _is_sensitive_name(name):
         return _PLACEHOLDER
     if isinstance(value, str):
         return redact(value)
-    if isinstance(value, Mapping):
-        return {k: _redact_structure(v, name=str(k)) for k, v in value.items()}
-    if isinstance(value, (list, tuple, set)):
-        return [_redact_structure(v) for v in value]
     if value is None or isinstance(value, (bool, int, float)):
         return value
+
+    if isinstance(value, (Mapping, list, tuple, set)):
+        if _depth >= _MAX_REDACT_DEPTH or id(value) in _seen:
+            return _TRUNCATED
+        seen = _seen | {id(value)}
+        if isinstance(value, Mapping):
+            return {k: _redact_structure(v, name=str(k), _depth=_depth + 1, _seen=seen) for k, v in value.items()}
+        return [_redact_structure(v, _depth=_depth + 1, _seen=seen) for v in value]
+
     return redact(str(value))
 
 
