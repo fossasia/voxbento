@@ -265,11 +265,14 @@ async def test_setting_a_first_password_and_removing_it():
     user_id, cookies = await make_user(password=None)
     async with client() as http:
         short = await http.post("/api/auth/set-password", json={"password": "short"}, cookies=cookies)
+        too_long = await http.post("/api/auth/set-password", json={"password": "a" * 80}, cookies=cookies)
         first = await http.post("/api/auth/set-password", json={"password": "first-password"}, cookies=cookies)
         bad_remove = await http.post("/api/auth/remove-password", json={"password": "wrong"}, cookies=cookies)
         removed = await http.post("/api/auth/remove-password", json={"password": "first-password"}, cookies=cookies)
         page = await http.get("/account?success=password_removed", cookies=cookies)
     assert short.status_code == 400
+    assert too_long.status_code == 400
+    assert too_long.json()["detail"].startswith("Password must be at most 72 bytes.")
     assert first.status_code == 200
     assert bad_remove.status_code == 403
     assert removed.status_code == 200
