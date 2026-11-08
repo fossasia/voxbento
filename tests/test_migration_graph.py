@@ -11,8 +11,10 @@ from __future__ import annotations
 import ast
 import re
 from collections import Counter
+from functools import cache
 from pathlib import Path
 
+import pytest
 from alembic.config import Config
 from alembic.script import ScriptDirectory
 
@@ -24,41 +26,60 @@ FIX_HINT = (
 )
 
 
-def _assigned(tree: ast.Module, name: str) -> object:
-    """The literal value assigned to a module-level name, with or without a type annotation."""
+def _assigned(tree: ast.Module, name: str, source: str = "<module>") -> object:
+    """The literal assigned to a module-level name; there must be exactly one such assignment."""
+    values = []
     for node in tree.body:
         if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name) and node.target.id == name:
-            if node.value is None:  # bare annotation (`revision: str`): keep looking for the assignment
-                continue
-            return ast.literal_eval(node.value)
-        if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == name for t in node.targets):
-            return ast.literal_eval(node.value)
-    raise AssertionError(f"no module-level `{name}` assignment")
+            if node.value is not None:  # a bare annotation (`revision: str`) doesn't assign anything
+                values.append(node.value)
+        elif isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == name for t in node.targets):
+            values.append(node.value)
+    if not values:
+        raise AssertionError(
+            f'{source}: no module-level `{name}` value. Set it (`{name} = "NNN"`) to the current head.'
+        )
+    if len(values) > 1:
+        raise AssertionError(f"{source}: `{name}` is assigned {len(values)} times; assign it exactly once.")
+    try:
+        return ast.literal_eval(values[0])
+    except ValueError:
+        raise AssertionError(f"{source}: `{name}` must be a plain literal, not a computed value.") from None
 
 
-def _migrations() -> list[tuple[str, str, tuple[str, ...]]]:
-    """(file name, revision, parent revisions) for every migration file."""
+@cache
+def _migrations() -> tuple[tuple[str, str, tuple[str, ...]], ...]:
+    """(file name, revision, parent revisions) for every migration file.
+
+    Called by each test instead of at import time, so a malformed file fails the tests with a
+    clear message rather than aborting collection.
+    """
     found = []
     for path in sorted(VERSIONS.glob("*.py")):
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        revision = _assigned(tree, "revision")
-        down = _assigned(tree, "down_revision")
+        revision = _assigned(tree, "revision", path.name)
+        down = _assigned(tree, "down_revision", path.name)
         parents = () if down is None else (down,) if isinstance(down, str) else tuple(down)
         found.append((path.name, revision, parents))
-    return found
+    return tuple(found)
 
 
-MIGRATIONS = _migrations()
+def test_assigned_reads_one_value_and_rejects_duplicates():
+    assert _assigned(ast.parse('revision: str\nrevision = "040"\n'), "revision") == "040"
+    with pytest.raises(AssertionError, match="assigned 2 times"):
+        _assigned(ast.parse('revision = "040"\nrevision = "041"\n'), "revision")
+    with pytest.raises(AssertionError, match="plain literal"):
+        _assigned(ast.parse('revision = "04" + "0"\n'), "revision")
 
 
 def test_migrations_are_found():
-    assert len(MIGRATIONS) > 1
+    assert len(_migrations()) > 1
 
 
 def test_revision_ids_are_unique():
-    counts = Counter(revision for _, revision, _ in MIGRATIONS)
+    counts = Counter(revision for _, revision, _ in _migrations())
     clashes = {
-        revision: [name for name, rev, _ in MIGRATIONS if rev == revision]
+        revision: [name for name, rev, _ in _migrations() if rev == revision]
         for revision, count in counts.items()
         if count > 1
     }
@@ -68,21 +89,25 @@ def test_revision_ids_are_unique():
 def test_file_numbers_match_revisions():
     mismatched = [
         (name, revision)
-        for name, revision, _ in MIGRATIONS
+        for name, revision, _ in _migrations()
         if not (match := re.match(r"(\d{3})_", name)) or match.group(1) != revision
     ]
     assert not mismatched, f"File names must start with their revision (NNN_...): {mismatched}"
 
 
 def test_parents_exist():
-    known = {revision for _, revision, _ in MIGRATIONS}
-    missing = [(name, parent) for name, _, parents in MIGRATIONS for parent in parents if parent not in known]
-    assert not missing, f"`down_revision` points at a revision that doesn't exist: {missing}. {FIX_HINT}"
+    known = {revision for _, revision, _ in _migrations()}
+    missing = [(name, parent) for name, _, parents in _migrations() for parent in parents if parent not in known]
+    assert not missing, (
+        f"`down_revision` points at a revision that doesn't exist: {missing}. "
+        "If the parent migration was deleted by mistake, restore it; if it was renumbered, "
+        "point `down_revision` at the renumbered revision or the current head."
+    )
 
 
 def test_no_two_migrations_share_a_parent():
     children: dict[str, list[str]] = {}
-    for name, _, parents in MIGRATIONS:
+    for name, _, parents in _migrations():
         for parent in parents:
             children.setdefault(parent, []).append(name)
     branches = {parent: names for parent, names in children.items() if len(names) > 1}
@@ -90,8 +115,8 @@ def test_no_two_migrations_share_a_parent():
 
 
 def test_each_migration_follows_one_revision():
-    roots = [name for name, _, parents in MIGRATIONS if not parents]
-    merges = [(name, parents) for name, _, parents in MIGRATIONS if len(parents) > 1]
+    roots = [name for name, _, parents in _migrations() if not parents]
+    merges = [(name, parents) for name, _, parents in _migrations() if len(parents) > 1]
     assert len(roots) == 1, f"Exactly one migration may have no `down_revision`, found: {roots}. {FIX_HINT}"
     assert not merges, f"Migrations must follow exactly one revision, not merge several: {merges}. {FIX_HINT}"
 
