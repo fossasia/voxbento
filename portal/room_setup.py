@@ -128,6 +128,8 @@ class EngineCatalog:
     # The part of `locked` that is a speech or a translation service, for the pages that show only one kind.
     locked_speech: tuple[str, ...] = ()
     locked_translation: tuple[str, ...] = ()
+    # Why a provider the server can't run is missing, by provider, so a saved booth can say so.
+    unavailable_reasons: dict[str, str] = field(default_factory=dict)
 
     @property
     def voice_support(self) -> dict[str, list[str]]:
@@ -206,6 +208,11 @@ _BRANDS = {
 }
 
 
+def brand_name(provider: str) -> str:
+    """The proper name of a provider ("OpenAI", "ElevenLabs"), for a provider that is no longer offered."""
+    return _BRANDS.get(provider, provider.capitalize())
+
+
 def engine_catalog(event: Event) -> EngineCatalog:
     """List the engines this event can use, so the setup only offers choices that will work."""
     speech: list[Engine] = []
@@ -215,10 +222,13 @@ def engine_catalog(event: Event) -> EngineCatalog:
     locked_speech: list[str] = []
     locked_translation: list[str] = []
     unavailable: list[str] = []
+    unavailable_reasons: dict[str, str] = {}
 
     for provider, model, label, key_attr in _SPEECH_ENGINES:
         if provider == "nvidia" and (find_spec("riva") is None or not settings.nvidia_function_id):
-            unavailable.append("NVIDIA needs the server's nvidia extra and NVIDIA_FUNCTION_ID")
+            reason = "NVIDIA needs the server's nvidia extra and NVIDIA_FUNCTION_ID"
+            unavailable.append(reason)
+            unavailable_reasons[provider] = reason
             continue
         # Cloud speech recognition also needs the event's switch (see program_ingest.pipeline_problem).
         if getattr(event, key_attr) and event.transcription_api_enabled:
@@ -253,6 +263,7 @@ def engine_catalog(event: Event) -> EngineCatalog:
         tuple(unavailable),
         tuple(locked_speech),
         tuple(locked_translation),
+        unavailable_reasons,
     )
 
 

@@ -2424,6 +2424,122 @@ class TestBoothCRUD:
         assert saved.transcription_model == "nova-2"
 
     @pytest.mark.anyio
+    async def test_kept_service_uses_the_proper_brand_name(self, admin_cookie, seed_event):
+        from portal.models import DBBooth
+
+        event, room, booth = seed_event
+        await _update_row(
+            DBBooth,
+            booth.id,
+            transcription_provider="openai",
+            translation_provider="openrouter",
+            translation_model="meta-llama/llama-3.3-70b-instruct",
+        )
+        async with _client() as c:
+            html = (
+                await c.get(f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/", cookies=admin_cookie)
+            ).text
+        assert '<option value="openai" selected>OpenAI — add its API key to keep using it</option>' in html
+        assert '<option value="openrouter" selected>OpenRouter — add its API key to keep using it</option>' in html
+        assert "Openai" not in html
+
+    @pytest.mark.anyio
+    async def test_kept_service_the_server_cannot_run_names_the_server_reason(
+        self, admin_cookie, seed_event, monkeypatch
+    ):
+        from portal import room_setup
+        from portal.models import DBBooth
+
+        monkeypatch.setattr(room_setup, "find_spec", lambda name: None if name == "riva" else object())
+        event, room, booth = seed_event
+        await _update_row(DBBooth, booth.id, transcription_provider="nvidia", transcription_model="parakeet-rnnt")
+        async with _client() as c:
+            html = (
+                await c.get(f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/", cookies=admin_cookie)
+            ).text
+        assert '<option value="nvidia" selected>NVIDIA — not available on this server</option>' in html
+        assert "NVIDIA needs the server" in html
+        assert "NVIDIA — add its API key to keep using it" not in html
+
+    @pytest.mark.anyio
+    async def test_a_worker_that_fails_to_start_shows_the_notice_not_a_500(self, admin_cookie, seed_event, monkeypatch):
+        from types import SimpleNamespace
+
+        from portal.routers import admin
+
+        event, room, booth = seed_event
+        url = f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/"
+
+        async def noop(*_args, **_kwargs):
+            pass
+
+        async def broken(*_args, **_kwargs):
+            raise RuntimeError("model download failed")
+
+        monkeypatch.setattr(admin, "stop_transcription_worker", noop)
+        monkeypatch.setattr(admin, "broadcast_transcription", noop)
+        monkeypatch.setattr(admin, "start_transcription_worker", broken)
+        monkeypatch.setattr(
+            admin.booths,
+            "get_booth_sync",
+            lambda _bid: SimpleNamespace(active_interpreter_id="p1", ingest_status="connected", participants={}),
+        )
+        async with _client() as c:
+            resp = await c.post(
+                f"{url}transcription-settings",
+                data={"transcription_enabled": "true", "transcription_provider": "local", "transcription_model": "base"},
+                cookies=admin_cookie,
+                follow_redirects=False,
+            )
+            assert resp.status_code == 303
+            assert resp.headers["location"] == f"{url}?saved=captions&worker=failed#captions"
+            page = (await c.get(f"{url}?saved=captions&worker=failed", cookies=admin_cookie)).text
+        assert "The caption worker could not be started" in page
+
+    @pytest.mark.anyio
+    async def test_an_unsupported_saved_model_does_not_block_captions(self, admin_cookie, seed_event):
+        from portal.database import get_session
+
+        event, room, booth = seed_event
+        url = f"/admin/events/{event.id}/rooms/{room.id}/booths/{booth.id}/"
+        await _update_row(type(booth), booth.id, transcription_provider="local", transcription_model="retired-model")
+        data = {"transcription_provider": "local", "transcription_model": "retired-model"}
+        async with _client() as c:
+            off = await c.post(f"{url}transcription-settings", data=data, cookies=admin_cookie, follow_redirects=False)
+            on = await c.post(
+                f"{url}transcription-settings",
+                data={**data, "transcription_enabled": "true"},
+                cookies=admin_cookie,
+                follow_redirects=False,
+            )
+            page = (await c.get(on.headers["location"].split("#")[0], cookies=admin_cookie)).text
+        assert off.status_code == 303
+        assert off.headers["location"] == f"{url}?saved=captions#captions"
+        assert on.status_code == 303
+        assert on.headers["location"] == f"{url}?error=model#captions"
+        assert "That caption model is no longer supported" in page
+        async with get_session() as sess:
+            saved = await sess.get(type(booth), booth.id)
+        assert saved.transcription_enabled is False
+        assert saved.transcription_model == "retired-model"
+
+    @pytest.mark.anyio
+    async def test_coordinator_view_skips_the_engine_catalog(self, room_scope_events, monkeypatch):
+        from portal.routers import admin
+
+        def boom(*_args, **_kwargs):
+            raise AssertionError("coordinators never see the engine catalog")
+
+        monkeypatch.setattr(admin, "engine_catalog", boom)
+        monkeypatch.setattr(admin, "booth_speech_models", boom)
+        scope = room_scope_events
+        url = f"/admin/events/{scope['event_a']}/rooms/{scope['room_a']}/booths/{scope['booth_a']}/"
+        async with _client() as c:
+            resp = await c.get(url, cookies=scope["coordinator_cookie"])
+        assert resp.status_code == 200
+        assert "Participant Roster" in resp.text
+
+    @pytest.mark.anyio
     async def test_booth_detail_shows_next_steps_until_the_booth_is_configured(self, admin_cookie, seed_event):
         from portal.database import create_invite_token, get_session
 
