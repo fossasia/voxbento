@@ -2326,6 +2326,19 @@ class TestBoothCRUD:
             assert "Caption settings saved. These settings are used the next time an interpreter goes live." in page
             assert calls == []
 
+            # An interpreter is in the booth but not broadcasting: no stream to read, so no worker is started.
+            monkeypatch.setattr(
+                admin.booths,
+                "get_booth_sync",
+                lambda _bid: SimpleNamespace(active_interpreter_id="p1", ingest_status="disconnected", participants={}),
+            )
+            monkeypatch.setattr(admin, "active_workers", {})
+            location, page = await save(c, enabled=True)
+            assert location == f"{url}?saved=captions#captions"
+            assert "Caption settings saved. These settings are used the next time an interpreter goes live." in page
+            assert "The caption worker was restarted" not in page
+            assert calls == []
+
             monkeypatch.setattr(
                 admin.booths,
                 "get_booth_sync",

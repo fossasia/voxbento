@@ -2471,7 +2471,9 @@ async def admin_transcription_settings(
         await session.flush()
         bid = make_booth_id(event.slug, db_booth.room_id, db_booth.language_code)
         state = booths.get_booth_sync(bid)
-        is_live = state is not None and state.active_interpreter_id is not None
+        # Live means the stream is published (as on the booth page). An interpreter who only opened the
+        # booth, or clicked Off Live, is still "active" but nothing is publishing for a worker to read.
+        is_live = state is not None and state.ingest_status == "connected"
         worker = ""
         if is_live:
             worker = "kept"
