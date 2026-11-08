@@ -79,6 +79,25 @@ class TestPasswordHashing:
         hashed = hash_password("correct")
         assert not verify_password("wrong", hashed)
 
+    @pytest.mark.anyio
+    async def test_verify_rejects_password_longer_than_72_bytes(self, setup_db):
+        hashed = hash_password("a" * 72)
+        assert verify_password("a" * 72, hashed)
+        assert not verify_password("a" * 73, hashed)
+
+    @pytest.mark.anyio
+    async def test_verify_counts_bytes_not_characters(self, setup_db):
+        # "é" is 2 bytes, so 36 of them is exactly 72 bytes and 37 is too long.
+        # 37 truncated to 72 bytes would match this hash, so this catches truncation too.
+        hashed = hash_password("é" * 36)
+        assert verify_password("é" * 36, hashed)
+        assert not verify_password("é" * 37, hashed)
+
+    @pytest.mark.anyio
+    async def test_hash_rejects_password_longer_than_72_bytes(self, setup_db):
+        with pytest.raises(ValueError, match="at most 72 bytes"):
+            hash_password("a" * 73)
+
 
 # ---------------------------------------------------------------------------
 # Registration
@@ -307,6 +326,26 @@ class TestRegistration:
             assert await get_user_by_email(s, "short@example.com") is None
 
     @pytest.mark.anyio
+    async def test_register_rejects_password_longer_than_72_bytes(self, setup_db):
+        from portal.database import get_session, get_user_by_email
+
+        long_password = "a" * 80
+        async with _client() as c:
+            resp = await c.post(
+                "/register",
+                data={
+                    "email": "long@example.com",
+                    "display_name": "Long User",
+                    "password": long_password,
+                    "password_confirm": long_password,
+                },
+            )
+        assert resp.status_code == 422
+        assert b"Password must be at most 72 bytes." in resp.content
+        async with get_session() as s:
+            assert await get_user_by_email(s, "long@example.com") is None
+
+    @pytest.mark.anyio
     async def test_register_accepts_eight_character_password(self, setup_db):
         from portal.database import get_session, get_user_by_email
 
@@ -513,6 +552,15 @@ class TestUserLogin:
         assert b"Invalid email or password" in resp.content
 
     @pytest.mark.anyio
+    async def test_login_with_password_longer_than_72_bytes_is_rejected(self, setup_db):
+        await _create_test_user(email="login@example.com", password="securepass123")
+        async with _client() as c:
+            for email in ("login@example.com", "nobody@example.com"):
+                resp = await c.post("/login", data={"email": email, "password": "a" * 80})
+                assert resp.status_code == 403
+                assert b"Invalid email or password" in resp.content
+
+    @pytest.mark.anyio
     async def test_login_with_passwordless_account_uses_generic_error(self, setup_db):
         await _create_test_user(email="passwordless-login@example.com", password=None)
         async with _client() as c:
@@ -580,6 +628,61 @@ class TestUserLogin:
 
         assert response.status_code == 200
         assert response.json() == {"authenticated": False}
+
+    @pytest.mark.anyio
+    async def test_login_rate_limit_enforced_by_unilimit(self, setup_db):
+        """Ten failed attempts per email are allowed; the 11th triggers HTTP 429."""
+        email = "rate-limited@example.com"
+        async with _client() as c:
+            for _ in range(10):
+                resp = await c.post(
+                    "/login",
+                    data={"email": email, "password": "wrong-password"},
+                )
+                assert resp.status_code == 403
+
+            # 11th attempt must be rejected by unilimit rate limiter
+            limited_resp = await c.post(
+                "/login",
+                data={"email": email, "password": "wrong-password"},
+            )
+            assert limited_resp.status_code == 429
+            assert b"Too many attempts. Try again later." in limited_resp.content
+            assert "retry-after" in limited_resp.headers
+            assert "x-ratelimit-limit" in limited_resp.headers
+
+            # A different email address must not be affected
+            other_resp = await c.post(
+                "/login",
+                data={"email": "fresh-email@example.com", "password": "wrong-password"},
+            )
+            assert other_resp.status_code == 403
+
+    @pytest.mark.anyio
+    async def test_login_rate_limit_per_ip_defends_against_email_rotation(self, setup_db, monkeypatch):
+        """Sixty requests from the same IP within a minute trigger per-IP rate limiting."""
+        import portal.routers.auth as auth_router
+
+        # Avoid expensive bcrypt computations across 60 requests so the test is instantaneous
+        monkeypatch.setattr(auth_router, "verify_password", lambda _p, _h: False)
+
+        async with _client() as c:
+            for i in range(60):
+                resp = await c.post(
+                    "/login",
+                    data={"email": f"rotating-{i}@example.com", "password": "wrong-password"},
+                )
+                assert resp.status_code == 403
+
+            # 61st request from same IP exceeds the 60/min limit even with a new email
+            limited_resp = await c.post(
+                "/login",
+                data={"email": "rotating-61@example.com", "password": "wrong-password"},
+            )
+            assert limited_resp.status_code == 429
+            assert b"Too many attempts. Try again later." in limited_resp.content
+
+
 
 
 class TestEmailVerification:
@@ -749,6 +852,14 @@ class TestPasswordReset:
             )
             assert resp_short.status_code == 400
             assert b"Password must be at least 8 characters" in resp_short.content
+
+            resp_long = await c.post(
+                "/auth/reset/retryable-token",
+                data={"password": "a" * 80},
+                follow_redirects=False,
+            )
+            assert resp_long.status_code == 400
+            assert b"Password must be at most 72 bytes." in resp_long.content
             assert b'<form method="post" action="/auth/reset/retryable-token"' in resp_short.content
             assert b"Back to Login to request a new link" not in resp_short.content
 
