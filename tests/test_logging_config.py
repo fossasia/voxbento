@@ -121,6 +121,38 @@ def test_redaction_filter_scrubs_dict_args():
     assert "carol@example.com" not in record.getMessage()
 
 
+def test_redaction_filter_closes_the_split_context_leak():
+    """logger.info("key=%s", "my-secret") had the context in msg and the value
+    in args; neither matches alone. A foreign handler calling getMessage()
+    directly would have leaked.
+    """
+    record = _record("key=%s", ("my-secret-value",))
+    RedactionFilter().filter(record)
+    message = record.getMessage()
+    assert "my-secret-value" not in message
+    assert "[REDACTED]" in message
+
+
+def test_split_context_fallback_does_not_touch_an_innocuous_call():
+    """A non-credential format string must not lose its args to the fallback."""
+    record = _record("user %s did %s", ("alice", "signed in"))
+    RedactionFilter().filter(record)
+    assert record.args == ("alice", "signed in")
+    assert record.getMessage() == "user alice did signed in"
+
+
+def test_split_context_fallback_leaves_accessformatter_args_intact():
+    """Each uvicorn.access arg carries its own context, so per-arg redaction is
+    already complete and the fallback must find nothing new. args stays so
+    AccessFormatter can read them positionally.
+    """
+    record = _record("%s - %s %d", ("127.0.0.1", "/x?token=abcd1234xyz", 200))
+    RedactionFilter().filter(record)
+    assert record.args is not None
+    assert "abcd1234xyz" not in record.getMessage()
+    assert "token=[REDACTED]" in record.getMessage()
+
+
 def test_redaction_filter_recurses_into_a_dict_positional_arg():
     """logger.info("Data: %s", my_dict) used to dump the dict unchanged."""
     record = _record("Data: %s", ({"password": "secret", "ok": True},))
